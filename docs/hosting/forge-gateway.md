@@ -14,7 +14,7 @@ dashhq runs one for forge.dashhq.org. Anyone can run their own from the same ima
 8. [Rate limits and abuse controls](#rate-limits-and-abuse-controls)
 9. [Monitoring](#monitoring)
 10. [Logs](#logs)
-11. [Backups and upgrades](#backups-and-upgrades)
+11. [Backups and upgrades](#backups-and-upgrades) (and [Deploy a release](#deploy-a-release))
 12. [Show it in the web app](#show-it-in-the-web-app)
 13. [Measured on sakura](#measured-on-sakura)
 14. [Billing (later)](#billing-later)
@@ -60,11 +60,18 @@ A repository costs about its pack size on disk: the dash mirror (606 refs, a 258
 
 ## Run it
 
-Build the image from the repository root (or pull a release image once one is published):
+Use a release image, or build one from source.
+
+**A release image** (the normal way): every release publishes `ghcr.io/pastapastapasta/forge-gateway:<version>`, and `:latest` for a non-pre-release. Pull it and point the compose file at it with `GATEWAY_IMAGE` in `.env` (see [Deploy a release](#deploy-a-release)).
+
+**From source** (self-hosters who want their own build): from the repository root, always with the build argument, so that the running gateway names its commit in `/readyz`:
 
 ```sh
-docker build -f services/forge-gateway/Dockerfile -t forge-gateway .
+docker build -f services/forge-gateway/Dockerfile \
+  --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD) -t forge-gateway .
 ```
+
+This compiles the Platform SDK tree, 20 to 40 minutes on a small host. Build it on a bigger machine and move the image over (`docker save forge-gateway | gzip` there, `gunzip -c | docker load` on the host) rather than building on the box that serves.
 
 Then, in `services/forge-gateway/`, write a `.env` and start it:
 
@@ -299,7 +306,28 @@ Never logged: client addresses, user agents, request headers, query strings and 
 
 Nothing in `GATEWAY_DATA_DIR` needs a backup: every mirror is rebuilt from Platform on its next request. Back up only your `.env` and the wake secret. Losing the volume costs a cold first clone per repository (the dash mirror took 299 s in the prototype).
 
-Upgrade: rebuild or pull the image and `docker compose up -d`. The mirrors on the volume are reused; a mirror whose manifest is missing or from another schema is removed and rebuilt. A mirror is polled after a restart only if it was served within `GATEWAY_WARM_HOURS`; the others refresh on their next request. Mirrors left by an older build start cold. `SIGTERM` stops it gracefully (compose waits 30 s).
+### Deploy a release
+
+Deploy by tag or, better, by digest, so that what runs is exactly what the release job built and attested:
+
+```sh
+# The release's "push forge-gateway image" job prints the digest in its summary; or ask the registry:
+docker buildx imagetools inspect ghcr.io/pastapastapasta/forge-gateway:<version>
+# Verify where it came from (needs the gh CLI):
+gh attestation verify oci://ghcr.io/pastapastapasta/forge-gateway@sha256:<digest> --repo PastaPastaPasta/dash-forge
+# In services/forge-gateway/.env:
+GATEWAY_IMAGE=ghcr.io/pastapastapasta/forge-gateway@sha256:<digest>
+docker compose pull && docker compose up -d
+curl -fsS http://127.0.0.1:8080/readyz     # "version": {..., "buildSha": "<the release commit>"}
+```
+
+`/readyz` reports `version.buildSha`, the full commit the image was built from. Check it against the release tag's commit (`git rev-parse v<version>^{commit}`) after every deploy, and append the date, the digest and that commit to your deploy log. **Rolling back is one line:** put the previous digest (from that log) in `GATEWAY_IMAGE` and run `docker compose up -d` again. The mirrors on the volume are reused either way, so a rollback costs no cold clones.
+
+The network's contract ids are compiled in (forge-core embeds `forge-contracts/deployments/*.json`), so a gateway needs a release whose deployment files name the network it serves. A Platform reset that changes them needs a new image.
+
+### Upgrades
+
+Upgrade: deploy a new release image (above), or rebuild from source, and `docker compose up -d`. The mirrors on the volume are reused; a mirror whose manifest is missing or from another schema is removed and rebuilt. A mirror is polled after a restart only if it was served within `GATEWAY_WARM_HOURS`; the others refresh on their next request. Mirrors left by an older build start cold. `SIGTERM` stops it gracefully (compose waits 30 s).
 
 ## Show it in the web app
 

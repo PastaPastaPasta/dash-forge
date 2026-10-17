@@ -210,11 +210,15 @@ cargo install --locked --path crates/git-remote-dash
    built archives, writes `SHA256SUMS`, attests the files, and publishes the release with
    generated notes. The run fails before anything is published in two cases: the tag does
    not match the `Cargo.toml` version, or the tagged commit is not on `master`.
-3. **Approve twice.** Two jobs use the protected `release` environment, and each waits for a
-   reviewer: `attest + publish` (the GitHub Release), then, after it succeeds,
+3. **Approve three times.** Three jobs use the protected `release` environment, and each
+   waits for a reviewer: `attest + publish` (the GitHub Release), then, after it succeeds,
    `push forge-relay image` (pushes `ghcr.io/<owner>/forge-relay:<version>`, and `:latest`
-   for a non-pre-release, built from the checksummed musl archive). Approving only the first
-   publishes the release without the image; the image job can be approved later from the
+   for a non-pre-release, built from the checksummed musl archive) and
+   `push forge-gateway image` (pushes `ghcr.io/<owner>/forge-gateway:<version>`, and
+   `:latest` for a non-pre-release, built from the tagged source, with a build provenance
+   attestation stored next to it; its job summary prints the digest to deploy by, see
+   [Deploy a release](hosting/forge-gateway.md#deploy-a-release)). Approving only the first
+   publishes the release without the images; the image jobs can be approved later from the
    same run.
 4. **Record the web app on Forge (owner, by hand).** The release also carries the web app's
    reproducible IPFS build (`forge-web-<version>.car` and `.cid`, built on two runners that
@@ -223,6 +227,21 @@ cargo install --locked --path crates/git-remote-dash
    `dg release create` with the two files, as
    [Verify the app you loaded](guides/verify-the-app.md#for-maintainers-publishing-the-forge-release)
    shows.
+
+**If the run fails on a flake, re-run the failed jobs first.** On the tag's run page,
+"Re-run failed jobs" repeats only what failed (a dropped crates connection, a macOS runner
+timeout) and keeps the built archives. Do that before anything else.
+
+**Emergency release without the web CAR.** A fix to `dg` must not wait on the web app's
+IPFS build. If the `web app (IPFS)` job keeps failing and the fix cannot wait, a maintainer
+can run the release without it: Actions → Release → Run workflow, on the `v<version>` tag,
+with `dry_run` off and `skip_ipfs` on (`gh workflow run release.yml --ref v<version> -f
+dry_run=false -f skip_ipfs=true`). It publishes the binaries, `SHA256SUMS` and the images as
+usual, behind the same approvals, but no `forge-web-<version>.*` files, and the release notes
+say that this release has no web app build. A dispatch runs the tag's own copy of the
+workflow, so the tag must have been cut after `skip_ipfs` was added. A tag push never skips
+the web build. Do not use this for a flake: re-run it first. Ship the web CAR with the next
+release, and do not record a Forge release for the web app of a tag that has none.
 
 The dry run also runs on every PR that touches `crates/`, `Cargo.*` or the pipeline. It
 builds and packages every target and uploads the archives as workflow artifacts. It never
