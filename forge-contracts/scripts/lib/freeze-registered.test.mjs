@@ -72,8 +72,11 @@ test('another schema in the way, a changed source or a wrong record are refused,
   assert.throws(() => freeze({ network: 'devnet', record: t.record, out }), /accepts "testnet" or "mainnet"/);
   assert.throws(() => freeze({ network: 'testnet', record: t.record }), /--record and --out go together/);
   assert.throws(() => freeze({ network: 'mainnet', record: t.record, out: join(t.dir, 'x'), registeredRoot: t.registeredRoot }), /records network testnet, not mainnet/);
-  // the live record has no registration yet: nothing to freeze
-  assert.throws(() => freeze({ network: 'testnet', registeredRoot: t.registeredRoot }), /records no forge-v2 registration yet: nothing to freeze/);
+  // a record with no registration yet: nothing to freeze (a scratch copy, so this holds after
+  // testnet's real registration lands in deployments/testnet.json)
+  const empty = join(t.dir, 'unregistered.json');
+  writeFileSync(empty, JSON.stringify({ network: 'testnet' }));
+  assert.throws(() => freeze({ network: 'testnet', record: empty, out: join(t.dir, 'frozen3'), registeredRoot: t.registeredRoot }), /records no forge-v2 registration yet: nothing to freeze/);
 });
 
 test('a scratch copy never goes under contracts/registered/', async () => {
