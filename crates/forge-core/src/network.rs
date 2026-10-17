@@ -482,7 +482,7 @@ impl ForgeIds {
 pub struct Deployment {
     /// The deployment key (`devnet-moutai`, `mainnet`).
     pub key: String,
-    /// DAPI addresses recorded for a devnet (normalized); empty for testnet/mainnet.
+    /// DAPI addresses recorded for this network (normalized).
     pub dapi_addresses: Vec<String>,
     /// A quorum service URL recorded for a devnet.
     pub quorum_base_url: Option<String>,
@@ -594,6 +594,17 @@ impl NetworkTarget {
             v2,
             quorum_url: None,
         })
+    }
+
+    /// The configured devnet endpoints, or the embedded deployment's endpoints on testnet
+    /// and mainnet. An empty list selects SDK seeds (testnet/mainnet) or discovery (devnet).
+    pub fn dapi_addresses(&self) -> Result<Vec<String>> {
+        match &self.network {
+            Network::Devnet { dapi_addresses, .. } => Ok(dapi_addresses.clone()),
+            network => Ok(deployment(&network.key())?
+                .map(|d| d.dapi_addresses)
+                .unwrap_or_default()),
+        }
     }
 
     /// The quorum service every proof is checked against: the one chosen, else the network's.
@@ -1069,6 +1080,26 @@ mod tests {
         );
         assert!(addrs(&format!(r#"{{"dapiAddresses":[],{v2}}}"#)).is_empty());
         assert!(addrs("{}").is_empty());
+    }
+
+    #[test]
+    fn testnet_target_uses_the_embedded_deployment_addresses() {
+        let target = NetworkTarget::for_network(Network::Testnet).unwrap();
+        let recorded = deployment("testnet").unwrap().unwrap();
+        assert!(!recorded.dapi_addresses.is_empty());
+        assert_eq!(target.dapi_addresses().unwrap(), recorded.dapi_addresses);
+    }
+
+    #[test]
+    fn configured_devnet_addresses_win_over_the_deployment() {
+        let addresses = vec!["https://127.0.0.1:1443".to_string()];
+        let target = NetworkTarget::for_network(Network::Devnet {
+            name: "moutai".into(),
+            dapi_addresses: addresses.clone(),
+            quorum_base_url: None,
+        })
+        .unwrap();
+        assert_eq!(target.dapi_addresses().unwrap(), addresses);
     }
 
     #[test]

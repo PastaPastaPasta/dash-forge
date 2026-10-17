@@ -831,7 +831,20 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
                 crate::fmt::plural_with(dapi_addresses.len(), "address", "addresses")
             },
         ),
-        _ => format!("{network}, {source} (DAPI: built-in seed list; quorums: {quorums})"),
+        _ => match ctx.target.dapi_addresses() {
+            Ok(addresses) => {
+                let dapi = if addresses.is_empty() {
+                    "built-in seed list".to_string()
+                } else {
+                    format!(
+                        "{} from forge-contracts/deployments/{network}.json",
+                        crate::fmt::plural_with(addresses.len(), "address", "addresses")
+                    )
+                };
+                format!("{network}, {source} (DAPI: {dapi}; quorums: {quorums})")
+            }
+            Err(e) => return vec![Check::fail("target", e.to_string(), "update dg")],
+        },
     };
     let mut out = vec![Check::ok("target", target)];
     if let Some(notice) = forge_core::network::retired_notice(network) {

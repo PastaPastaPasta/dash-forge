@@ -1706,20 +1706,18 @@ fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
     ))
 }
 
-/// E702 as well: this build records forge-v2 contracts for `network`, but the network does not
-/// have them. A devnet was reset and Forge is not deployed again yet. Testnet or mainnet may
-/// have been reset too (a reset removes every contract), or this build targets another network
-/// (CNT-06: not "misconfigured"). Running it again cannot help.
+/// E702 as well: a recorded contract was proved absent or multiple nodes refused the read.
+/// The cause states which was observed; unproved refusals can also come from lagging nodes.
 fn contracts_missing(ctx: &ErrorContext<'_>, network: &str, detail: &str) -> UserError {
     let (note, fix) = if network.starts_with("devnet ") {
         (
-            "a devnet is reset from time to time, which removes every contract on it; retrying will not help".to_string(),
-            "the network may have been reset: update dg and git-remote-dash to a release made after Forge was deployed on it again".to_string(),
+            "a devnet reset removes every contract, but unproved refusals may also come from nodes that are behind".to_string(),
+            "if the network was reset, update dg and git-remote-dash to a release made after Forge was deployed on it again".to_string(),
         )
     } else {
         (
-            format!("{network} may have been reset (or this build targets another network); a reset removes every contract on it, and retrying will not help"),
-            format!("update dg and git-remote-dash to a release made after Forge was deployed on {network} again (a reset also removes repositories, identities and names created before it)"),
+            format!("{network} may have been reset (or this build targets another network); unproved refusals may also come from nodes that are behind"),
+            format!("if the network was reset, update dg and git-remote-dash to a release made after Forge was deployed on {network} again (a reset also removes repositories, identities and names created before it)"),
         )
     };
     let u = UserError::new(
@@ -1729,7 +1727,7 @@ fn contracts_missing(ctx: &ErrorContext<'_>, network: &str, detail: &str) -> Use
     .cause(detail)
     .note(note)
     .fix(fix)
-    .fix("`dg doctor` shows the network and contract ids in use");
+    .fix("run `dg doctor` to check the deployment with proof-verified reads and the DAPI list in use");
     if ctx.via_git {
         u.fix("check the network the helper uses: `git config --get dash.network` and `git config --get dash.devnetName` (DASH_FORGE_NETWORK overrides them)")
     } else {
@@ -2832,8 +2830,8 @@ mod tests {
         }
     }
 
-    /// Moutai after its reset to beta.6 (2026-09-28): the build's forge contracts are gone.
-    const RESET_DEVNET_CAUSE: &str = "contract 6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux: Dapi client error: transport error: grpc error: code: 'Client specified an invalid argument', message: \"contract not found error: contract not found when querying from value with contract info\"";
+    const RESET_DEVNET_CAUSE: &str =
+        "contract X: 3 nodes answered that the contract does not exist (unproved refusals)";
 
     #[test]
     fn forge_contracts_missing_is_e702_with_a_next_step_not_a_transport_error() {
@@ -2850,12 +2848,12 @@ mod tests {
         );
         assert_eq!(u.cause.as_deref(), Some(RESET_DEVNET_CAUSE));
         assert!(
-            u.fix[0].starts_with("the network may have been reset: update dg"),
+            u.fix[0].starts_with("if the network was reset, update dg"),
             "{u:?}"
         );
         assert!(u.fix.iter().any(|f| f.contains("dg doctor")), "{u:?}");
         assert!(
-            u.note
+            !u.note
                 .as_deref()
                 .unwrap_or("")
                 .contains("retrying will not help"),
