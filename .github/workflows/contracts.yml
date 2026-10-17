@@ -9,11 +9,12 @@ name: Contracts
 # items, every combination of the RC2 flags (forge-contracts/schema/variants.py), and — for
 # each contract, which only ever changes by an in-place DataContractUpdate (platform-parity-spec
 # §6, UPDATE-1) — that the update from its registered schema is accepted. negative.sh then proves the
-# validator refuses each broken rule the design relies on. The four-contract mainnet set
-# (`build.py --mainnet`: forge-meta and the mixed-visibility items of dash-forge-qa
-# design/mixed-visibility/DESIGN.md rev 4.1 §8.3) gets the same checks, and variants.py runs every
-# combination of its items. Last, every seed and verify script runs against an in-memory chain
-# (seed-offline.mjs), and each document it writes is judged the same way.
+# validator refuses each broken rule the design relies on. The four-contract mainnet set, committed
+# under forge-contracts/contracts/mainnet/ (`build.py --mainnet` writes it, `build.py --check` compares
+# it: forge-meta and the mixed-visibility items of dash-forge-qa design/mixed-visibility/DESIGN.md
+# rev 4.1 §8.3) gets the same checks, and variants.py runs every combination of its items. Last,
+# every seed and verify script runs against an in-memory chain (seed-offline.mjs), and each document
+# it writes is judged the same way.
 on:
   pull_request:
     paths:
@@ -58,10 +59,9 @@ jobs:
         run: |
           python3 forge-contracts/schema/wherecheck.py
           python3 forge-contracts/schema/wherecheck.py --self-test
-          python3 forge-contracts/schema/build.py --mainnet --out "$RUNNER_TEMP/mainnet"
           python3 forge-contracts/schema/vectors.py --mainnet --out "$RUNNER_TEMP/mainnet-vectors"
-          python3 forge-contracts/schema/wherecheck.py "$RUNNER_TEMP/mainnet"
-          python3 forge-contracts/schema/wherecheck.py --self-test "$RUNNER_TEMP/mainnet"
+          python3 forge-contracts/schema/wherecheck.py forge-contracts/contracts/mainnet
+          python3 forge-contracts/schema/wherecheck.py --self-test forge-contracts/contracts/mainnet
       # The toolchain platform v5.0.0-rc.3 pins (its rust-toolchain.toml)
       - name: Install Rust 1.98.1
         run: rustup toolchain install 1.98.1 --profile minimal
@@ -91,8 +91,11 @@ jobs:
         run: |
           python3 forge-contracts/schema/build.py --mainnet --out "$RUNNER_TEMP/mainnet" \
             --validate "$CARGO_TARGET_DIR/release/contract-validate"
+          for f in forge-core forge-collab forge-community forge-meta; do
+            cmp "$RUNNER_TEMP/mainnet/$f.json" "forge-contracts/contracts/mainnet/$f.json"
+          done
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/mainnet-vectors" \
-            "$RUNNER_TEMP"/mainnet/forge-{core,collab,community,meta}.json
+            forge-contracts/contracts/mainnet/forge-{core,collab,community,meta}.json
       # The testnet freeze's update guards (mainnet_pinned_gates): with every guarded bound loosened as an
       # update could loosen it, each document only the loosened bound admits is still refused, by its rule
       - name: Update guards hold on loosened bounds
@@ -130,7 +133,7 @@ jobs:
       # judges every document they write as an rc1 vector
       - name: Seed scripts write RC1 documents
         run: |
-          node --test forge-contracts/scripts/lib/offline-chain.test.mjs
+          node --test forge-contracts/scripts/lib/offline-chain.test.mjs forge-contracts/scripts/lib/seed-io.test.mjs
           node forge-contracts/scripts/seed-offline.mjs --out "$RUNNER_TEMP/seed-vectors"
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/seed-vectors" \
             forge-contracts/contracts/forge-core.json \
@@ -141,4 +144,4 @@ jobs:
       - name: Deploy script self-test
         run: |
           node forge-contracts/scripts/deploy-v2.mjs --self-test
-          node forge-contracts/scripts/deploy-v2.mjs --self-test --contracts "$RUNNER_TEMP/mainnet"
+          node forge-contracts/scripts/deploy-v2.mjs --self-test --contracts forge-contracts/contracts/mainnet
