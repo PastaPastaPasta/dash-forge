@@ -9,7 +9,7 @@
 //     c1..c6, lockGate, platformChunks, oneLive, atMost20), counting the new document (10422);
 //   * every rule that reads the time (`$createdAt` / `$updatedAt`: notFuture), against the clock;
 //   * `distinctFrom` (10419) and unique indices (40105);
-//   * a delete: `canBeDeleted` (10404) and `deleteConstraints`.
+//   * a delete: `canBeDeleted` (10404) and `deleteConstraints` (40147).
 // The JSON schema, `maxBytes`, `immutable` and every other rule are left to rs-dpp: `seed-offline.mjs`
 // and `rc1-live.mjs --offline` write each document as an rc1 vector for `contract-validate --vectors`.
 //
@@ -317,7 +317,7 @@ export class OfflineChain {
     return this.view(doc);
   }
 
-  /** A delete by the owner: refused when the type cannot be deleted (10404) or a `deleteConstraints` rule fails. */
+  /** A delete by the owner: refused when the type cannot be deleted (10404) or a `deleteConstraints` rule fails (40147, DocumentDeleteConstraintViolatedError). */
   delete({ document }) {
     const id = document.id?.toBase58?.() ?? document.id;
     const doc = this.docs.find((d) => d.id === id && !d.deleted);
@@ -325,7 +325,7 @@ export class OfflineChain {
     const schema = this.lookup.schemaOf(doc.type);
     if (schema.canBeDeleted === false) throw new Refusal(10404, `${doc.type}.canBeDeleted`, `a ${doc.type} can not be deleted`);
     for (const [rule, expr] of Object.entries(schema.deleteConstraints ?? {})) {
-      if (!this.evaluate(expr, doc.view, (t) => this.live(t))) throw new Refusal('deleteConstraints', rule, `this ${doc.type} can not be deleted`);
+      if (!this.evaluate(expr, doc.view, (t) => this.live(t))) throw new Refusal(40147, rule, `this ${doc.type} can not be deleted`);
     }
     doc.deleted = true;
   }

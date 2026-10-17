@@ -343,5 +343,5 @@ test('the mainnet set: dense reads $revision (R-05), and the owner\'s own mainta
   const R = idBytes((await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58());
   const row = await write(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
   await assert.rejects(write(OWNER, 'issue', issue(R, 2)), refusedWith(10422, 'dense'));
-  await assert.rejects(sdk.documents.delete({ document: row }), (e) => e.code === 'deleteConstraints' && e.rule === 'ownerRowStays');
+  await assert.rejects(sdk.documents.delete({ document: row }), (e) => e.code === 40147 && e.rule === 'ownerRowStays');
 });

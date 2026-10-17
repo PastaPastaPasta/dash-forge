@@ -180,6 +180,26 @@ const RELEASE_TARGET = 'targetOnPublish' in rules('release');
 //   mainnet_enc_framing (R-04): enc's version byte fits vis and aud (every envelope is framed, `sealed`)
 log(`layout: ${Object.keys(IDS).length} contracts (${Object.keys(IDS).join(', ')}); mainnet items: ${Object.entries({ mainnet_aud: AUD, mainnet_public_const: PUBLIC_CONST, mainnet_release_target: RELEASE_TARGET, mainnet_bot_role: 'mr' in props('repoKey'), mainnet_chunk_role: MEMBER_ROLES && !SHAPE.declares('chunk', 'r'), mainnet_member_role: 'mRole' in props('issue') }).filter(([, v]) => v).map(([k]) => k).join(' ') || 'none'}`);
 
+// The RC2 detections above, each with what a false one leaves out of this run: logged with the
+// layout and listed in the report's `notRun`. Offline, a false one the committed sets carry
+// (build.py FLAGS on) is also a failure, so a run that quietly ran fewer cases cannot pass for a
+// full one. The third entry is false for the two review indexes (S2, S3): build.py leaves them
+// off, so the committed sets never carry them and their feeds run only against a registration that does.
+const RC2 = {
+  evidenceFrozen: [EVIDENCE_FROZEN, 'S1 completed-run logUrl replace refused'],
+  reviewIndexToAuthor: [REVIEW_INDEXES.has('toAuthor'), 'S2 reviews on the member\'s PRs feed', false],
+  reviewIndexAuthor: [REVIEW_INDEXES.has('author'), 'S3 the stranger\'s reviews feed', false],
+  closeReason: [CLOSE_REASON, 'QW-069 close/reopen with a reason'],
+  reviewHunk: [REVIEW_HUNK, 'QW2-010 review-comment hunk'],
+  hideProof: [HIDE_PROOF, 'moderation group'],
+  update1: [UPDATE1, 'update1 group'],
+  fusedStar: [FUSED_STAR, 'C1 fused-star cases (the pre-RC2 starBeat cases ran instead)'],
+  memberRoles: [MEMBER_ROLES, 'roles group'],
+};
+const notRunRc2Entries = Object.entries(RC2).filter(([, [on]]) => !on);
+const notRunRc2 = notRunRc2Entries.map(([k, [, what]]) => `${k} false: ${what}`);
+log(`RC2 items: ${Object.entries(RC2).map(([k, [on]]) => `${k}=${on ? 'yes' : 'NO'}`).join(' ')}`);
+
 function loadIdentity(name) {
   if (OFF) return OFF.identity(name);
   const rec = JSON.parse(readFileSync(join(String(args.identities), `${name}.identity.json`), 'utf8'));
@@ -199,8 +219,8 @@ const RN = loadIdentity('runner');
 const id = (b58) => Buffer.from(Identifier.fromBase58(String(b58)).toBytes());
 const bytes = (n, fill) => (fill === undefined ? randomBytes(n) : Buffer.alloc(n, fill));
 // A sealed envelope: its version byte, then random bytes (consensus reads only the first byte,
-// R-04): 0x01 a private repo's document, 0x02 a config anchor, 0x03 members-only (aud 1)
-const SEAL = { private: 1, config: 2, members: 3 };
+// R-04): 0x01 a private repo's document, 0x02 a config anchor
+const SEAL = { private: 1, config: 2 };
 const sealed = (version) => Buffer.concat([Buffer.from([version]), randomBytes(60)]);
 // mainnet_aud (L1): a private repo's issue, PR, comment and review is members-only (aud 1) with the
 // writer's member proof (asMember; mRole follows from shapeData). Nothing on the devnet set.
@@ -362,7 +382,7 @@ async function no(item, label, who, type, data, codes, rule, { why } = {}) {
   }
 }
 
-/** An operation (a delete, a replace) that must be refused with one of `codes`, or a message matching `re`. Offline, a 40128 (`immutable`) is rs-dpp's, on a replace vector. */
+/** An operation (a delete, a replace) that must be refused with one of `codes`, or, for an error with no code, a message matching `re`. Offline, a 40128 (`immutable`) is rs-dpp's, on a replace vector. */
 async function refusedOp(item, label, fn, codes, re) {
   OFF?.at(item, label);
   try {
@@ -371,8 +391,10 @@ async function refusedOp(item, label, fn, codes, re) {
   } catch (e) {
     const msg = String(e?.message ?? e);
     if (codeOf(e) === null && INFRA.test(msg)) return noVerdict(item, label, new InfraError(msg.slice(0, 300)));
-    const pass = codes.includes(codeOf(e)) || Boolean(re && re.test(msg));
-    record({ item, label, expect: `refused ${codes.join('|')}`, got: `refused ${codeOf(e)}`, note: msg.slice(0, 300), pass });
+    const code = codeOf(e);
+    // `re` is only for an error that carries no code at all; one that carries another (a 40147 for a 10404) fails
+    const pass = codes.includes(code) || (code === null && Boolean(re && re.test(msg)));
+    record({ item, label, expect: `refused ${codes.join('|')}`, got: `refused ${code}`, note: msg.slice(0, 300), pass });
   }
 }
 /** A case only a node judges (an identity's keys): run live, reported as not judged offline. */
@@ -413,6 +435,11 @@ const need = (doc, what) => {
   return doc;
 };
 
+for (const [k, [, what, carried = true]] of notRunRc2Entries) {
+  const why = `${k} false: ${what}`;
+  log(`NOT RUN: ${why}`);
+  if (OFF && carried) record({ item: 'RC2', label: 'an RC2 item of the loaded contracts', expect: 'present', got: `NOT RUN (${why})`, pass: false });
+}
 let infra = null;
 try {
 // ---------------- setup: repos and membership (refs) ----------------
@@ -987,7 +1014,7 @@ const feeSummary = Object.fromEntries(Object.entries(fees).map(([k, v]) => [k, M
 // Offline: the documents as rc1 vectors, for `contract-validate --vectors <out>` (rs-dpp's half of the verdicts)
 const vectors = OFF && args.out ? OFF.writeVectors(String(args.out)) : undefined;
 const offline = OFF ? { set: args.contracts ?? 'contracts (devnet)', notJudged: offlineSkipped, vectors } : undefined;
-const report = { network: target.label, record: target.scratch ? target.recordFile : undefined, contracts: IDS, run: tag, passed, total: results.length, infra, offline, fees: feeSummary, results };
+const report = { network: target.label, record: target.scratch ? target.recordFile : undefined, contracts: IDS, run: tag, passed, total: results.length, infra, notRun: notRunRc2, offline, fees: feeSummary, results };
 if (args.report) writeFileSync(String(args.report), `${JSON.stringify(report, null, 2)}\n`);
-console.log(JSON.stringify({ passed, total: results.length, infra, offline, fees: feeSummary, failed: results.filter((r) => !r.pass) }, null, 2));
+console.log(JSON.stringify({ passed, total: results.length, infra, notRun: notRunRc2, offline, fees: feeSummary, failed: results.filter((r) => !r.pass) }, null, 2));
 process.exit(results.some((r) => !r.pass) ? 1 : infra ? 2 : 0);
