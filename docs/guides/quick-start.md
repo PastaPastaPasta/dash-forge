@@ -292,11 +292,15 @@ its owner in lower case, and an identity id is case-sensitive, so `dash://<ident
 [E102](../errors.md#e102). Add the remote with git instead, then fetch with jj:
 
 ```sh
-jj git init
+jj git init --no-colocate
 git --git-dir=.jj/repo/store/git remote add origin dash://<identity id>/<name>
 jj git fetch
+jj bookmark track main@origin
+jj new main
 ```
 
+In a colocated repository (what `jj git init` makes by default) the git directory is `.git`, so a plain
+`git remote add origin dash://<identity id>/<name>` does it; that setup has not been tested with jj yet.
 `jj git remote list` still shows the owner in lower case; jj passes git the URL as stored, so pushes and fetches
 work. An owner given as a DPNS name (`dash://alice/project`) is lower case already and is not affected (not yet
 tested with jj). Report problems in the [issue tracker](https://github.com/PastaPastaPasta/dash-forge/issues).
