@@ -1800,6 +1800,7 @@ fn contract_read_refused(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
     )
     .cause(refusal_cause(detail))
     .fix("run it again; the SDK rotates through the configured DAPI nodes")
+    .fix("if it keeps happening, `dg doctor` shows the DAPI list in use; check `--dapi-addresses` / `git config dash.dapiAddresses`")
     .note("the contract has not been proved absent; a node's refusal alone does not establish a network reset")
 }
 

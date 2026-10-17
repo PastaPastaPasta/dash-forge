@@ -485,7 +485,9 @@ Two common ones:
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.
 
-**What to do:** check your connection and run the command again after a minute. `dg doctor` tests reachability. On a devnet, check `--dapi-addresses` / `git config dash.dapiAddresses`.
+**What to do:** check your connection and run the command again after a minute. `dg doctor` tests reachability and shows the DAPI list in use. On testnet or a devnet, check `--dapi-addresses` / `git config dash.dapiAddresses`.
+
+**A node is behind.** A node may answer that a Forge contract does not exist when it is behind the rest of the network. The tools ask other nodes, and then ask Platform for a proof; when the contract is not proved absent, the error is E701 with "a node is behind; try again" rather than [E702](#e702). Running the command again usually reaches an up-to-date node. If it keeps happening, check the DAPI addresses you configured: nodes of another network refuse every contract.
 
 A devnet name that does not exist is reported here too, because a lookup failure cannot tell a typo from being offline: the quorum service host is derived from the name (`quorums.<name>.networks.dash.org`), and `cause:` shows `Failed to resolve domain 'quorums.<name>.networks.dash.org'`. When it does, the fix names the `--devnet-name` that failed. A devnet name is checked for its shape only ([E204](#e204), for example a leading `-`), never for existing.
 
