@@ -779,3 +779,164 @@ fn narrower_refusal_requires_a_present_exclusively_narrower_ledger() {
     );
     assert!(error.message.contains("isn't shared with you anymore"));
 }
+
+// Exercise the real recorder in a subprocess so its git/common-dir lookup cannot write
+// into the source worktree or race tests that use process-wide environment/cwd state.
+fn ledger_test_worker(name: &str) -> bool {
+    const WORKER: &str = "DASH_FORGE_TEST_BRANCH_PACK_LEDGER";
+    if std::env::var(WORKER).as_deref() == Ok(name) {
+        return true;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "--bare", "-q"], None);
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("helper::branch_keys_tests::{name}"),
+            "--nocapture",
+        ])
+        .current_dir(dir.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env(WORKER, name)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    false
+}
+
+#[tokio::test]
+async fn branch_key_only_fetch_records_narrower_packs_and_keeps_narrower_refusal() {
+    use forge_core::members_git::ledger::{self, EntryAudience, State};
+    if !ledger_test_worker(
+        "branch_key_only_fetch_records_narrower_packs_and_keeps_narrower_refusal",
+    ) {
+        return;
+    }
+    let kr = keyring();
+    let ring = ring(vec![BranchKey::from_bytes([7; 32])]);
+    kr.set_branch_ring(Arc::clone(&ring));
+    let token = ring.get(BRANCH).unwrap().ledger_token(&REPO);
+    let (pack, tip) = git_pack();
+    let m = super::MembersFetch {
+        keyring: Arc::clone(&kr),
+        decryptable: Vec::new(),
+        narrower: vec![(tip.clone(), token.clone())],
+    };
+    let mut manifest = super::tests::manifest(1, &encode_identifier(OWNER), &[]);
+    manifest.kind = u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK);
+    let sealed = branch_key::seal_pack(ring.write_keys(BRANCH).unwrap(), &pack).unwrap();
+    let client = offline_client().await;
+    let (read, narrower) = RepoService::reader(&client)
+        .open_members_pack_with_audience(&repo(), &kr, &[&manifest], sealed.len() as u64, sealed)
+        .await
+        .unwrap();
+    let ArtifactRead::Bytes(bytes) = read else {
+        panic!("explicit branch pack must open")
+    };
+    assert_eq!(bytes, pack);
+    let fetched = vec![(manifest.pack_hash, super::Got::Bytes { bytes, narrower })];
+    super::record_members_fetch(&m, &[manifest.clone()], &fetched).unwrap();
+    super::record_narrower(&m.narrower).unwrap();
+    let state = ledger::read(&crate::git::LocalRepo::common_dir().unwrap()).unwrap();
+    let State::Present(held) = &state else {
+        panic!("fetch must create its ledger")
+    };
+    assert_eq!(
+        held.commits.get(&tip),
+        Some(&EntryAudience::Narrower(token.clone()))
+    );
+    assert_eq!(
+        held.packs.get(&hex::encode(manifest.pack_hash)),
+        Some(&EntryAudience::Narrower(token))
+    );
+    assert!(held
+        .commits
+        .values()
+        .chain(held.packs.values())
+        .all(|a| matches!(a, EntryAudience::Narrower(_))));
+    let error = super::uncovered_refs_error(
+        &MembersKeys::from_keyring(m.keyring),
+        &state,
+        Some(&[BRANCH.into()]),
+        Some("origin"),
+        &BTreeSet::new(),
+    );
+    assert!(error
+        .message
+        .contains("no key for previously fetched branches"));
+    assert!(error
+        .fix
+        .iter()
+        .any(|f| f.contains("git branch -dr origin/sec/maintainers")));
+}
+
+#[test]
+fn fetch_without_branch_pack_token_keeps_members_audience() {
+    use forge_core::members_git::ledger::{self, EntryAudience, State};
+    if !ledger_test_worker("fetch_without_branch_pack_token_keeps_members_audience") {
+        return;
+    }
+    let tip = hex::encode([2; 20]);
+    let m = super::MembersFetch {
+        keyring: keyring(),
+        decryptable: vec![tip.clone()],
+        narrower: Vec::new(),
+    };
+    let mut members = super::tests::manifest(1, &encode_identifier(OWNER), &[]);
+    members.kind = u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK);
+    let mut skipped = members.clone();
+    skipped.pack_hash = [2; 32];
+    let public = super::tests::manifest(3, &encode_identifier(OWNER), &[]);
+    let fetched = vec![
+        (
+            members.pack_hash,
+            super::Got::Bytes {
+                bytes: Vec::new(),
+                narrower: None,
+            },
+        ),
+        (
+            skipped.pack_hash,
+            super::Got::Skipped(forge_core::repo::Skipped {
+                pack: skipped.pack_hash,
+                why: forge_core::repo::SkipReason::NoKey { epoch: 0 },
+            }),
+        ),
+        (
+            public.pack_hash,
+            super::Got::Bytes {
+                bytes: Vec::new(),
+                narrower: None,
+            },
+        ),
+    ];
+    super::record_members_fetch(&m, &[members.clone(), skipped, public], &fetched).unwrap();
+    let state = ledger::read(&crate::git::LocalRepo::common_dir().unwrap()).unwrap();
+    let State::Present(held) = &state else {
+        panic!("fetch must create its ledger")
+    };
+    assert_eq!(held.commits.get(&tip), Some(&EntryAudience::Members));
+    assert_eq!(
+        held.packs.len(),
+        1,
+        "unopened and public packs stay out of the sealed ledger"
+    );
+    assert_eq!(
+        held.packs.get(&hex::encode(members.pack_hash)),
+        Some(&EntryAudience::Members)
+    );
+    let error = super::uncovered_refs_error(
+        &MembersKeys::from_keyring(m.keyring),
+        &state,
+        Some(&["refs/heads/members".into()]),
+        Some("origin"),
+        &BTreeSet::new(),
+    );
+    assert!(error.message.contains("can't fetch members-only branches"));
+}

@@ -1292,15 +1292,33 @@ impl<'a> RepoService<'a> {
         size_bytes: u64,
         sealed: Vec<u8>,
     ) -> Result<ArtifactRead> {
+        self.open_members_pack_with_audience(repo, kr, copies, size_bytes, sealed)
+            .await
+            .map(|(read, _)| read)
+    }
+
+    /// [`Self::open_members_pack`], also returning a narrower branch's ledger token when its
+    /// key authenticated the pack. Epoch-key packs and skipped packs have no narrower token.
+    pub async fn open_members_pack_with_audience(
+        &self,
+        repo: &RepoRef,
+        kr: &std::sync::Arc<Keyring>,
+        copies: &[&PackManifestInfo],
+        size_bytes: u64,
+        sealed: Vec<u8>,
+    ) -> Result<(ArtifactRead, Option<String>)> {
         use crate::private::Head;
         let Some(manifest) = copies.first() else {
             return Err(Error::NotFound);
         };
         let skipped = |why| {
-            Ok(ArtifactRead::Skipped(Skipped {
-                pack: manifest.pack_hash,
-                why,
-            }))
+            Ok((
+                ArtifactRead::Skipped(Skipped {
+                    pack: manifest.pack_hash,
+                    why,
+                }),
+                None,
+            ))
         };
         match crate::private::sniff(&sealed) {
             // a narrower branch's pack (DFPK 0x03, phase 3F): its branch key, when held
@@ -1310,11 +1328,15 @@ impl<'a> RepoService<'a> {
                     .zip(ring.as_ref())
                     .and_then(|(kcv, r)| r.branch_of_kcv(kcv).map(|_| r));
                 match held {
-                    Some(r) => {
-                        crate::private::branch_key::open_pack(&sealed, size_bytes, r.all_keys())
-                            .map(ArtifactRead::Bytes)
-                            .map_err(|e| sealed_error(&e))
-                    }
+                    Some(r) => r
+                        .open_pack(&sealed, size_bytes)
+                        .map(|(bytes, branch)| {
+                            (
+                                ArtifactRead::Bytes(bytes),
+                                Some(branch.ledger_token(kr.repo_id())),
+                            )
+                        })
+                        .map_err(|e| sealed_error(&e)),
                     None => skipped(SkipReason::OtherFormat { version }),
                 }
             }
@@ -1326,7 +1348,7 @@ impl<'a> RepoService<'a> {
             Head::Sealed { .. } => self
                 .open_sealed(repo, kr, copies, size_bytes, sealed)
                 .await
-                .map(ArtifactRead::Bytes),
+                .map(|bytes| (ArtifactRead::Bytes(bytes), None)),
         }
     }
 

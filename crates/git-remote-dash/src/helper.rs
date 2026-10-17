@@ -1318,13 +1318,13 @@ impl Helper {
         let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
         let indexed: Vec<[u8; 32]> = fetched
             .iter()
-            .filter(|(_, g)| matches!(g, Got::Bytes(_)))
+            .filter(|(_, g)| matches!(g, Got::Bytes { .. }))
             .map(|(h, _)| *h)
             .collect();
         let parent = parent_holding(&conn.client, svc, repo, &fetched).await;
         // members-only objects are recorded in the clone's ledger before they arrive
         if let Some(m) = &members_fetch {
-            record_members_fetch(m, &git_packs, &indexed)?;
+            record_members_fetch(m, &git_packs, &fetched)?;
         }
         if let Some(sh) = &shared_fetch {
             let packs: Vec<[u8; 32]> = indexed
@@ -1992,24 +1992,39 @@ fn moved_branches(
 }
 
 /// Record, before they are indexed, what a members-only fetch brings: every members-only commit
-/// the reader decrypts and the members-only packs among `indexed` (DESIGN D21; a crash after this
-/// leaves a record of more, never less).
+/// the reader decrypts and the members-only packs among `fetched`, each under the audience whose
+/// key opened it (DESIGN D21; a crash after this leaves a record of more, never less).
 fn record_members_fetch(
     m: &MembersFetch,
     git_packs: &[forge_core::repo::PackManifestInfo],
-    indexed: &[[u8; 32]],
+    fetched: &[([u8; 32], Got)],
 ) -> Result<()> {
     let members_kind = u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK);
-    let sealed: Vec<[u8; 32]> = indexed
-        .iter()
-        .copied()
-        .filter(|h| {
-            git_packs
-                .iter()
-                .any(|g| g.pack_hash == *h && g.kind == members_kind)
-        })
-        .collect();
-    members::record(&m.decryptable, &sealed)
+    let mut sealed = Vec::new();
+    let mut narrower: BTreeMap<&str, Vec<[u8; 32]>> = BTreeMap::new();
+    for (hash, got) in fetched {
+        let Got::Bytes {
+            narrower: token, ..
+        } = got
+        else {
+            continue;
+        };
+        if !git_packs
+            .iter()
+            .any(|g| g.pack_hash == *hash && g.kind == members_kind)
+        {
+            continue;
+        }
+        match token {
+            Some(token) => narrower.entry(token).or_default().push(*hash),
+            None => sealed.push(*hash),
+        }
+    }
+    members::record(&m.decryptable, &sealed)?;
+    for (token, packs) in narrower {
+        members::record_as(&ledger_audience(token)?, &[], &packs)?;
+    }
+    Ok(())
 }
 
 /// What one fetch pass did ([`Helper::fetch_packs`]).
@@ -2064,7 +2079,7 @@ impl Pass<'_> {
         loop {
             let arrived: BTreeSet<[u8; 32]> = fetched
                 .iter()
-                .filter(|(_, g)| matches!(g, Got::Bytes(_)))
+                .filter(|(_, g)| matches!(g, Got::Bytes { .. }))
                 .map(|(h, _)| *h)
                 .collect();
             let covered = covered_packs(claims, |h| arrived.contains(h) || held(h));
@@ -2109,7 +2124,7 @@ impl Pass<'_> {
             )
             .await;
             // Only a pack that arrived adds bytes; one set aside counts as done.
-            let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
+            let arrived = matches!(&got, Ok((_, Got::Bytes { .. })));
             meter.advance(if arrived {
                 copies.first().map_or(0, |m| m.size_bytes)
             } else {
@@ -2259,19 +2274,24 @@ async fn fetch_one(
             }
             let opened = match (members_kr, shared_key) {
                 (Some(kr), _) => {
-                    svc.open_members_pack(repo, kr, copies, m.size_bytes, sealed)
+                    svc.open_members_pack_with_audience(repo, kr, copies, m.size_bytes, sealed)
                         .await
                 }
                 // a shared pack opens with its own file key alone; a key that does not open it
                 // (a bad share) sets the pack aside, and the branch is left out with a warning
-                (None, Some(key)) => Ok(open_shared_pack(&sealed, m.size_bytes, key, h, &hash)),
-                (None, None) => svc.open_or_skip(repo, copies, m.size_bytes, sealed).await,
+                (None, Some(key)) => {
+                    Ok((open_shared_pack(&sealed, m.size_bytes, key, h, &hash), None))
+                }
+                (None, None) => svc
+                    .open_or_skip(repo, copies, m.size_bytes, sealed)
+                    .await
+                    .map(|read| (read, None)),
             };
             match opened {
-                Ok(forge_core::repo::ArtifactRead::Bytes(b)) => Ok((b, m)),
+                Ok((forge_core::repo::ArtifactRead::Bytes(b), narrower)) => Ok((b, narrower)),
                 // sealed under a key this reader does not hold (a repository made public), or a
                 // header this client does not open: set aside, never fatal by itself
-                Ok(forge_core::repo::ArtifactRead::Skipped(s)) => {
+                Ok((forge_core::repo::ArtifactRead::Skipped(s), _)) => {
                     tracing::info!(pack = %hash, why = ?s.why, "a sealed pack this reader cannot open; continuing without it");
                     return Ok((*h, Got::Skipped(s)));
                 }
@@ -2295,8 +2315,8 @@ async fn fetch_one(
     let on_chain = copies
         .iter()
         .any(|m| m.storage == 0 && forge_core::repo::trusted_member(roles, &m.owner_id));
-    let bytes = match got {
-        Ok((bytes, _)) => bytes,
+    let (bytes, narrower) = match got {
+        Ok(opened) => opened,
         Err(e) if on_chain => {
             return Err(anyhow::Error::from(e)
                 .context(format!("downloading pack {}…", progress::abbrev(&hash, 12))));
@@ -2320,7 +2340,7 @@ async fn fetch_one(
             ));
         }
     };
-    Ok((*h, Got::Bytes(bytes)))
+    Ok((*h, Got::Bytes { bytes, narrower }))
 }
 
 /// `work`, redrawing `meter` every [`progress::FETCH_REDRAW`] while it runs (a single large
@@ -2400,7 +2420,11 @@ async fn parent_holding(
 /// One pack's outcome in a fetch.
 enum Got {
     /// Downloaded, verified and (for a private repo) opened.
-    Bytes(Vec<u8>),
+    Bytes {
+        bytes: Vec<u8>,
+        /// The narrower branch whose key authenticated this pack, when applicable.
+        narrower: Option<String>,
+    },
     /// No copy could be read.
     Unreadable(Unreadable),
     /// Hidden by the late-content rule (E510), with the reason. Normally no ref needs it; if
@@ -2440,7 +2464,7 @@ fn index_fetched(
     let mut skipped = Vec::new();
     for got in fetched {
         match got {
-            Got::Bytes(b) => downloaded.push(b),
+            Got::Bytes { bytes, .. } => downloaded.push(bytes),
             Got::Unreadable(u) => unreadable.push(u),
             Got::Hidden(u) => hidden.push(u),
             Got::Skipped(s) => skipped.push(s),
