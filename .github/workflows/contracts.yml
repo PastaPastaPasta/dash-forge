@@ -21,18 +21,6 @@ on:
   # workflow that a path filter keeps from starting never reports it, which blocks the merge forever.
   # The `changes` job applies the path list at job level instead (INFR-V-03).
   pull_request:
-    paths:
-      - 'forge-contracts/contracts/**'
-      - 'forge-contracts/schema/**'
-      - 'forge-contracts/vectors/rc1/**'
-      - 'forge-contracts/scripts/**'
-      - 'forge-contracts/deployments/**'
-      - 'tools/contract-validate/**'
-      # the CLI suite's network rules (config.sh) are tested here, offline
-      - 'e2e/cli/config.sh'
-      - 'e2e/cli/lib.sh'
-      - 'e2e/cli/test-config.sh'
-      - '.github/workflows/contracts.yml'
   push:
     branches: [master]
     paths:
@@ -40,10 +28,6 @@ on:
       - 'tools/contract-validate/**'
       # (check-release-network.mjs --self-test parses the web build's network out of it)
       - 'forge-web/scripts/ipfs-release.sh'
-      # the CLI suite's network rules (config.sh) are tested here, offline
-      - 'e2e/cli/config.sh'
-      - 'e2e/cli/lib.sh'
-      - 'e2e/cli/test-config.sh'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
 
