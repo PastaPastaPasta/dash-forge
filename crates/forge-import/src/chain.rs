@@ -16,7 +16,7 @@ use forge_core::collab::{CommentAnchor, Imported, Label, Release, ReleaseInput, 
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
 use forge_core::rules::v2::{issue_state_v2, pr_state_v2, ClosedAs, TransitionMove, Visibility};
-use forge_core::rules::{EventKind, MergeBaseTips};
+use forge_core::rules::{EventKind, MergeBaseTips, RefState};
 use forge_core::scope::RepoRef;
 use forge_core::Result;
 
@@ -80,6 +80,8 @@ pub trait Chain {
     async fn labels(&self, repo: &RepoRef) -> Result<Vec<Label>>;
     /// The release of each live tag.
     async fn releases(&self, repo: &RepoRef) -> Result<Vec<Release>>;
+    /// The destination's refs as read now, preserving annotated tag objects.
+    async fn refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>>;
     /// The tips a merge into `base_ref` (of a PR opened at `opened_at`) is checked against.
     async fn merge_base(
         &self,
@@ -279,6 +281,12 @@ impl Chain for CollabChain<'_> {
 
     async fn releases(&self, repo: &RepoRef) -> Result<Vec<Release>> {
         Ok(self.collab.releases(repo).await?.current)
+    }
+
+    async fn refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
+        forge_core::repo::RepoService::reader(self.client)
+            .read_refs(repo)
+            .await
     }
 
     async fn merge_base(

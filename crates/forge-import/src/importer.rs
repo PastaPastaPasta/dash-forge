@@ -647,9 +647,9 @@ pub(crate) fn planned_pushes(classes: Classes, open: Option<&[u64]>) -> Vec<Refs
 /// base branches of the merged PRs are fetched: into the `--work-dir` mirror when a code run
 /// left one there (whole commits, like the mirror's own), or else into a commits-only
 /// repository in a temporary directory, never inside `--work-dir`, so a later code run can
-/// still clone its mirror there. Releases also reuse an existing work mirror to peel their
-/// tags when no merged PR needs a proof. Returns `None` without either, or (warned) when no
-/// base could be fetched.
+/// still clone its mirror there. Releases also reuse an existing work mirror as a fallback
+/// for tag targets when no merged PR needs a proof. Returns `None` without either, or (warned)
+/// when no base could be fetched.
 fn proof_repo(
     classes: Classes,
     src: &dyn Source,
@@ -951,8 +951,8 @@ mod tests {
             &mut warnings,
         );
         assert!(code.is_some_and(|p| p.pushed && p.dir == work));
-        // A releases-only pass still needs that mirror to peel tag targets, even though
-        // there are no merged PR bases to fetch.
+        // A releases-only pass can reuse that mirror as a fallback for tag targets, even
+        // though there are no merged PR bases to fetch.
         let releases = crate::model::SrcCollab {
             releases: Some(vec![crate::model::SrcRelease {
                 tag_name: "v1".into(),
