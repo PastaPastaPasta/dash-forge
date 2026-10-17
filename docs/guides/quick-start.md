@@ -27,6 +27,8 @@ You need two programs on your `PATH`:
 - `dg`: the command-line tool, shaped like GitHub's `gh`;
 - `git-remote-dash`: the git remote helper. Git runs it whenever a URL starts with `dash://`.
 
+You also need **git 2.44 or newer**. An older git works for most repositories, but refuses to clone a history with a malformed author or committer line ([E511](../errors.md#e511)).
+
 ### Build from source
 
 You need Rust (the repository pins the version; rustup installs it for you) and `protoc` 25 or newer. [BUILDING.md](../BUILDING.md) explains both.
@@ -280,7 +282,7 @@ git config --global dash.costWarnThreshold 0.1
 git config --global dash.costWarnThreshold off
 ```
 
-Everything else is plain git: branches, tags, force-push, `git fetch`, `git clone --filter=blob:none`. jj works too. Shallow clones (`--depth`) are not supported and fail with [E205](../errors.md#e205).
+Everything else is plain git: branches, tags, force-push, `git fetch`, `git clone --filter=blob:none`. jj talks to git remotes and is expected to work, but has not been tested since July 2026; report problems. Shallow clones (`--depth`) are not supported and fail with [E205](../errors.md#e205).
 
 ### Secrets in a push
 
@@ -372,6 +374,6 @@ To file an issue, review a pull request or star a repository from the browser, c
 - [Collaborate](collaborating.md): members, issues, pull requests, merges, releases.
 - [Identity and keys](identity-and-keys.md): backups, recovery, and keeping keys out of web pages.
 - [Costs](costs.md): what each action costs, and what comes back.
-- [FAQ](../FAQ.md).
+- [FAQ](../FAQ.md), and [Limits](../limits.md) for what is too big or too many.
 
-If something fails, the error names a code such as `[E301]`. [docs/errors.md](../errors.md) explains each code and its fix.
+If something fails, the error names a code such as `[E301]`. [My first push failed](first-push-troubleshooting.md) covers the usual ones, and [docs/errors.md](../errors.md) explains each code and its fix.

@@ -237,7 +237,7 @@ A subscriber chooses topics, channels and timing in Settings → Notifications.
 | Sends | 200 instant notices per subscriber per day (more wait for the digest; a push-only subscriber gets 200 pushes); 20,000 in total per day, confirmation mails included |
 | Bad addresses | Paused after 3 permanent refusals in a row |
 
-A subscriber needs a Platform identity, which costs credits to create. That is the main brake on mass sign-ups. Confirmation mails are capped per address, so nobody can use the service to flood someone else's inbox.
+A subscriber needs a Platform identity. On mainnet that costs real credits, which slows mass sign-ups. On a test network credits are free from a faucet, so the cost is no brake there: the caps above are what bound the service on every network. Confirmation mails are capped per address, so nobody can use the service to flood someone else's inbox.
 
 ## Monitoring
 

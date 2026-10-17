@@ -23,7 +23,7 @@ What someone *can* do:
 
 ## Is there any moderation?
 
-Not at the protocol level. Spam and abuse cost the sender fees, which is the only floor. Clients can still choose what to show: an issue's or PR's state counts only changes made by its author or by the repository's members, and anyone can build a client that filters more. No one can delete another person's documents.
+Not at the protocol level. On mainnet, spam and abuse cost the sender real fees, which is the only floor; on a test network DASH is free, so fees are no floor there. Clients can still choose what to show: an issue's or PR's state counts only changes made by its author or by the repository's members, and anyone can build a client that filters more. No one can delete another person's documents.
 
 The site dashhq hosts does this too: it can leave a repository or identity out of its lists, and show "Not shown on this site" in place of a hidden repository's pages and a hidden identity's repositories and profile details. The data stays on Platform, `dash://` still works, and other builds still show it. [Hosted curation](hosted-curation.md) says how an entry is requested and added.
 
@@ -44,7 +44,7 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-Measured on devnet bonsia: creating a repository costs about **0.0016 DASH**. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0008–0.0012 DASH. Storing packs on Platform costs about 0.33 DASH per MiB. On devnet moutai, a fork of a small repository cost about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On a devnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
+Measured on devnets (to be re-measured on testnet): creating a repository costs about **0.0027 DASH**, which is 0.0016 for the repository and 0.0011 for the members-only key that new public repositories get by default. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0006–0.001 DASH. Storing packs on Platform costs about 0.33 DASH per MiB. On devnet moutai, a fork of a small repository cost about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On a devnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
 ## What happened to devnet bonsia?
 
@@ -58,7 +58,7 @@ After **Dash Platform v5** activates on mainnet and the project owner registers 
 |---|---|
 | **Devnet sakura** | **Live.** forge.dashhq.org runs here. The CLI defaults to testnet, so select sakura with `--network devnet --devnet-name sakura`. |
 | **Testnet** | Not deployed yet. Forge is registered there once testnet runs Dash Platform v5. |
-| **Mainnet** | Not deployed yet. After Dash Platform v5 activates, the owner registers Forge's contracts ([runbook](mainnet-runbook.md)). |
+| **Mainnet** | Not deployed yet. After Dash Platform v5 activates, the owner registers Forge's contracts ([runbook](deploying-to-a-network.md)). |
 
 Forge has left the earlier devnets: bonsia was retired, and moutai was upgraded in place. [Networks](networks.md) has their history.
 
@@ -74,10 +74,31 @@ Yes, on devnet sakura: `dg repo create --private` (or `dg init --private`), and 
 
 Forge is not a GitHub clone, and it does not need you to leave GitHub.
 
-- **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj works too.
+- **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj uses git remotes and is expected to work, but is untested since July 2026.
 - **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. The Mirror Action keeps code, issues, PRs, releases and labels in sync on every GitHub event.
 - **CI can listen.** `dg webhook add` and a relay you run deliver GitHub-shaped webhooks, so existing CI receivers work ([Collaborating](guides/collaborating.md#webhooks-and-ci)).
 - **It is not at feature parity.** No hosted CI (bring your own: [forge-runner](guides/self-host-runner.md) runs GitHub Actions workflows on your machine and reports checks with a runner key), and no wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. The web app opens, reviews and merges PRs and forks repositories, but some merges still need `dg`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. See [Collaborating](guides/collaborating.md#from-the-web-app). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists what has no equivalent, and the workarounds.
+
+## What doesn't Forge do (yet)?
+
+Each line says why: **by design** (the protocol or the no-server rule rules it out, and it will not change) or **later** (not built yet).
+
+| Missing | Why | What to do instead |
+|---|---|---|
+| **Wiki** | later | A `docs/` folder in the repository (the web app renders Markdown), or a second repository such as `<repo>-wiki` |
+| **Discussions** | later | Issues with a `discussion` label |
+| **Projects and boards** | later | Labels, milestones, and `dg issue list --label … --assignee …` |
+| **Gists** | later | A small public repository |
+| **Teams** | by design | Membership is never delegated: only the owner adds members. Use an [organization identity](guides/collaborating.md#organizations) or add each person to each repository |
+| **Transferring a repository** | by design | The owner is fixed. Create a repository under the new owner and push to it; `dg repo edit --moved-to` marks the old one |
+| **Deleting a repository, issue or pull request** | by design | They are permanent, and the contracts have no moderation. Archive the repository, close the issue or PR |
+| **Editing files in the browser** | later | Edit in a clone and push |
+| **Browser merges for private repositories** | later | `dg pr merge` (the browser merges public repositories) |
+| **Notifications beyond an open tab** | by design | There is no hosted notification service. The web app's **Notifications** work while a tab is open. Anyone can run [forge-notify](hosting/forge-notify.md) for email or Web Push, and a webhook can feed your own notifier |
+| **Search across repositories beyond a name prefix** | by design | Repository search finds name prefixes, topics and owners. Issues and pull requests are searched inside one repository, in the browser or with `dg search issues` and `dg search prs`; `dg search repos` finds repositories. Code search is in the browser only. A user-run index may come later |
+| **Git LFS objects** | later | Not supported; keep large binaries out of git or attach them to releases, which go to your own storage. Large files through pointers to your bucket are on the roadmap |
+
+Also not available, and by design: hosted CI (bring a [runner](guides/self-host-runner.md)), pushing over `https://`, shallow clones, and GitHub Pages. Read-only `https://` clones of public repositories work through the optional [gateway](hosting/forge-gateway.md). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists every GitHub feature with no equivalent.
 
 ## Can I use a username instead of the long identity id?
 
