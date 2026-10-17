@@ -47,10 +47,10 @@ fail=0
 # text, where a `#` line is a comment, not a heading.
 for f in $docs; do
   case "$f" in
-    docs/networks.md) allow_line='^\| \*\*Devnet\*\*' ;;
-    *) allow_line='' ;;
+    docs/networks.md) allow_prefix='| **Devnet**' ;;
+    *) allow_prefix='' ;;
   esac
-  hits=$(awk -v file="$f" -v md="$([ "${f##*.}" = md ] && echo 1 || echo 0)" -v allow_line="$allow_line" '
+  hits=$(awk -v file="$f" -v md="$([ "${f##*.}" = md ] && echo 1 || echo 0)" -v allow_prefix="$allow_prefix" '
     md == 1 && /^[[:space:]]*(```|~~~)/ { fence = !fence; if (!skip && tolower($0) ~ /sakura/) bad(); next }
     md == 1 && !fence && /^#+[[:space:]]/ {
       match($0, /^#+/)
@@ -58,7 +58,7 @@ for f in $docs; do
       if (skip && level <= skip_level) skip = 0
       if (!skip && $0 ~ /^#+ +History *$/) { skip = 1; skip_level = level; next }
     }
-    !skip && tolower($0) ~ /sakura/ && !(allow_line != "" && $0 ~ allow_line) { bad() }
+    !skip && tolower($0) ~ /sakura/ && !(allow_prefix != "" && index($0, allow_prefix) == 1) { bad() }
     function bad() { printf "%s:%d: %s\n", file, NR, $0 }
   ' "$f")
   if [ -n "$hits" ]; then
