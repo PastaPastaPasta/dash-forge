@@ -567,7 +567,6 @@ export function MergePanel({
         setMergedHere(true)
         setNewTip(done.result?.newTip ?? null)
         setPublished(publish !== undefined)
-        onMerged()
         if (deletable !== null && alsoDelete) {
           try {
             await deletable.run()
@@ -577,6 +576,10 @@ export function MergePanel({
             setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
           }
         }
+        // Record a successful source deletion before the page refreshes to Merged. Its branch
+        // read may still show the old tip; the page's BranchWrite keeps that lag from winning.
+        // Refresh after a failed deletion too: the merge itself already landed.
+        onMerged()
         if (closeIssues !== null && closing.length > 0) {
           // One at a time (each is a transition from this identity): a failure is reported and the rest still close.
           const outcome: { number: number; error: string | null }[] = []
