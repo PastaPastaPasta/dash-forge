@@ -129,7 +129,7 @@ pub struct PackManifestInput {
     /// Prior artifact `packHash`es this manifest makes redundant (repack supersedes plan).
     /// Serialized as one packed `byteArray` = concatenated 32-byte hashes.
     pub supersedes: Vec<[u8; 32]>,
-    /// Tip OIDs this artifact covers (kind-2 flatIndex tip; a gitmirror pack's ref tips).
+    /// Tip OIDs this artifact covers (the kind-2 flatIndex tip).
     /// Serialized as one packed `byteArray` = concatenated raw OID bytes.
     pub tips: Vec<Vec<u8>>,
 }

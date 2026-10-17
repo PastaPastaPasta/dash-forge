@@ -78,7 +78,7 @@ Adapt `e2e/cli/run.sh` to mainnet with a small-balance PROD identity (budget ≤
 
 ## 7. Dogfood (the credibility step)
 
-Host the Dash Forge repo itself on mainnet Forge: `dg repo create dash-forge` (owner = a jointly-held org identity), push the codebase, keep GitHub as a `gitmirror://` read-only mirror during transition. `dash://<org>/dash-forge` becomes the canonical mirror-of-record.
+Host the Dash Forge repo itself on mainnet Forge: `dg repo create dash-forge` (owner = a jointly-held org identity), push the codebase, keep the GitHub repo and the [Forge Mirror Action](guides/mirror-a-github-repo.md) running during transition. `dash://<org>/dash-forge` becomes the canonical mirror-of-record.
 
 ## 8. Rollback / incident
 

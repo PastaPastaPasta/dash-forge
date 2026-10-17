@@ -37,8 +37,8 @@ Write with credentials (CLI; browser when CORS allows); manifest stores `s3://` 
 ### 4. HTTPS (read-only)
 Any static host/mirror. CORS required for browser reads (CLI unaffected); `dg storage status` reports per-URI CORS/health.
 
-### 5. Git mirror (`gitmirror://<remote-url>`) — Phase 4
-Wraps an existing git hoster (GitHub/GitLab/Codeberg) as a byte source: CLI fetches from the mirror and rebuilds needed packs locally (integrity via OIDs chaining to Platform-signed refs; manifests carry `tips` for coverage rather than byte-equality). Write = `git push --mirror` (CLI, credentialed). Browser: unsupported (badge "CLI-only source"). Also the mechanism for import's transition mirror mode.
+### 5. Git mirror (`gitmirror://<remote-url>`) — not built
+Dropped: the backend had no callers and was removed. Mirroring a git hoster into Forge is `forge-import` and the Mirror Action ([guide](../guides/mirror-a-github-repo.md)); `dg storage add --kind` offers `s3`, `ipfs-kubo`, `ipfs-pinning-service` and `platform`.
 
 ## Operational UX
 

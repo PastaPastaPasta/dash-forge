@@ -12,7 +12,7 @@
 - **Issues/PRs/labels/milestones/releases**: mapped to repo-contract docs. **Closed PRs import as archived patch docs (metadata + diff, not full packs)** to control cost. Milestones → labels + due-date convention (no milestone doc type in template v1).
 - **Author mapping**: non-migrated authors become **placeholder author records** (login + avatar snapshot embedded in doc body metadata) with a **signed-claim flow**: prove control of the GitHub account via gist challenge, signed with a Dash identity → clients thereafter render that identity for the placeholder (claim docs in the repo contract; fold rule in `FORGE_RULES_V1`).
 - **Cost gate**: importer prints a full cost estimate (per artifact class) and **requires confirmation**; `--max-spend` hard cap; progress + running spend during import.
-- **v1.1**: bidirectional mirror mode — keep GitHub as read-only mirror during transition (mirror pushes via gitmirror backend; issue sync one-way GitHub→Forge).
+- **v1.1**: bidirectional mirror mode — keep GitHub as read-only mirror during transition (issue sync one-way GitHub→Forge; the mirror-push backend was dropped).
 
 ## UX
 ```
