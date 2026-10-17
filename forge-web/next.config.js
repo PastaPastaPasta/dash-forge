@@ -50,6 +50,101 @@ class RuntimeBasePublicPath {
   }
 }
 
+/**
+ * Keeps the minifier's output from depending on webpack's provisional chunk hashes.
+ *
+ * The runtime chunk (`webpack-<hash>.js`) lists every lazy chunk's file name, so it contains
+ * their `[contenthash]`es, as 16 hex digits each. At minify time those are provisional: webpack
+ * names a chunk by a hash of its module graph state, which differs between two builds of one
+ * commit (the same chunk, byte for byte, gets `2595-12ca…` in one and `2595-2db5…` in the next),
+ * and only afterwards (`realContentHash`) renames each chunk by its final bytes and rewrites the
+ * references. Terser (and SWC) order the names they mangle to by how often each letter occurs in
+ * the file, and the hashes add `a`-`f`; when two letters tie, a different hash picks the other,
+ * so one `a`/`f` swap renamed the runtime chunk and every page loading it, and the CID. Seen in
+ * CI as the only difference between the x86_64 and arm64 builds, and reproduced here as two
+ * different CIDs from the same commit on one machine.
+ *
+ * Fix: before the minifier, each provisional hash is replaced by a placeholder of the same
+ * length that depends only on the chunk's name without its hash (stable from build to build);
+ * after it, the hash is put back, so `realContentHash` finds what it expects.
+ */
+class StableMinifierInput {
+  constructor(webpack) {
+    this.webpack = webpack;
+  }
+  apply(compiler) {
+    const { Compilation, sources } = this.webpack;
+    const { createHash } = require('node:crypto');
+    const pluginName = 'StableMinifierInput';
+    const HEX16 = /(?<![0-9a-f])[0-9a-f]{16}(?![0-9a-f])/g;
+    compiler.hooks.thisCompilation.tap(pluginName, (compilation) => {
+      // placeholder -> provisional hash, and the assets that were rewritten
+      const restore = new Map();
+      const touched = new Set();
+      const isJs = (name) => /\.[cm]?js(\?.*)?$/i.test(name);
+      // Next's Terser plugin minifies at PROCESS_ASSETS_STAGE_OPTIMIZE_SIZE: this runs just before
+      // it, and the restore just after. (No `before: 'TerserPlugin'`: tapable puts a tap whose
+      // `before` is not registered yet at the very front, ahead of its stage.)
+      compilation.hooks.processAssets.tap(
+        { name: pluginName, stage: Compilation.PROCESS_ASSETS_STAGE_OPTIMIZE_SIZE - 1 },
+        () => {
+          const placeholders = new Map();
+          for (const { name, info } of compilation.getAssets()) {
+            [info.contenthash].flat().forEach((hash, i) => {
+              if (typeof hash !== 'string' || !/^[0-9a-f]{16}$/.test(hash) || placeholders.has(hash)) return;
+              const id = createHash('sha256').update(`${name.split(hash).join('[contenthash]')}#${i}`).digest('hex');
+              // Hash-shaped, as every other 16-digit hash in the file; it only has to be the same
+              // from build to build.
+              placeholders.set(hash, id.slice(0, 16));
+            });
+          }
+          for (const [hash, placeholder] of placeholders) {
+            // Two assets whose names differ only by their hash (e.g. hash-only names) would share a
+            // placeholder, and the restore would point both at one of them: refuse the build instead.
+            const other = restore.get(placeholder);
+            if (other !== undefined && other !== hash) {
+              compilation.errors.push(new this.webpack.WebpackError(`${pluginName}: assets with hashes ${other} and ${hash} would share a placeholder; give them names that differ beyond the hash`));
+              continue;
+            }
+            restore.set(placeholder, hash);
+          }
+          for (const { name, source, info } of compilation.getAssets()) {
+            if (info.minimized || !isJs(name)) continue;
+            const code = source.source().toString();
+            let found = false;
+            const replaced = code.replace(HEX16, (m) => {
+              const p = placeholders.get(m);
+              if (p === undefined) return m;
+              found = true;
+              return p;
+            });
+            if (!found) continue;
+            touched.add(name);
+            compilation.updateAsset(name, new sources.RawSource(replaced));
+          }
+        },
+      );
+      compilation.hooks.processAssets.tap(
+        { name: `${pluginName}:restore`, stage: Compilation.PROCESS_ASSETS_STAGE_OPTIMIZE_SIZE + 1 },
+        () => {
+          for (const name of touched) {
+            const asset = compilation.getAsset(name);
+            if (!asset) continue;
+            const code = asset.source.source().toString();
+            const restored = code.replace(HEX16, (m) => restore.get(m) ?? m);
+            for (const placeholder of restore.keys()) {
+              if (restored.includes(placeholder)) {
+                compilation.errors.push(new this.webpack.WebpackError(`${pluginName}: placeholder ${placeholder} left in ${name}`));
+              }
+            }
+            compilation.updateAsset(name, new sources.RawSource(restored));
+          }
+        },
+      );
+    });
+  }
+}
+
 // The Platform SDK, built from its unbundled modules (D-025). The published
 // `@dashevo/evo-sdk` entry is one file with the 23 MB wasm inlined as base64 gzip (an ~8 MB
 // chunk that webpack's chunk timeout killed on a slow link, with no progress and no retry).
@@ -87,17 +182,14 @@ const nextConfig = {
   assetPrefix: basePath || undefined,
   // Next's default build id is random, and it lands in every page and in chunk hashes.
   generateBuildId: () => commit || 'unversioned',
-  // Minify with Terser, not SWC. SWC's minifier is not deterministic: on the same commit, in the
-  // same pinned image, it has named two local variables of webpack's runtime chunk
-  // (`webpack-<hash>.js`) differently (`a`/`c` swapped), which renames that chunk and changes
-  // every page that loads it, and so the CID. CI's two builds of one commit
-  // (.github/workflows/web-ipfs.yml) disagreed that way four times in eight days, and nothing
-  // else differed. Rebuilt locally, that commit gave the same bytes five times out of five, on
-  // arm64 and on amd64, whatever the CPU limit, so it is not a difference between the two
-  // architectures: the same job can come out either way. Terser is single-threaded JavaScript
-  // that mangles in a fixed order, so one input gives one output on any machine. It costs about
-  // 1% more JavaScript (0.8% gzipped). Next 15 drops the option, so the guard below fails the
-  // build rather than letting an upgrade quietly bring SWC back.
+  // Minify with Terser, not SWC. This came from an earlier reading of the "runtime chunk differs
+  // between two builds of one commit" failure (958d73398) as SWC being non-deterministic. That was
+  // not the cause: the minifier's input differed (StableMinifierInput above), and it still would
+  // with Terser, whose mangler orders names by letter frequency the same way. Terser stays because
+  // it is single-threaded JavaScript that mangles in a fixed order, so one input gives one output
+  // on any machine, and it costs about 1% more JavaScript (0.8% gzipped). Next 15 drops the
+  // option, so the guard below fails the build rather than letting an upgrade quietly bring SWC
+  // back unexamined.
   swcMinify: false,
   images: {
     // Static export cannot use the Next.js image optimizer.
@@ -132,6 +224,7 @@ const nextConfig = {
       config.optimization.moduleIds = false;
       config.plugins.push(new webpack.ids.DeterministicModuleIdsPlugin({ maxLength: 9, failOnConflict: true }));
       config.output.filename = config.output.filename.replace('[chunkhash]', '[contenthash]');
+      config.plugins.push(new StableMinifierInput(webpack));
       if (!config.output.filename.includes('[contenthash]') || config.optimization.realContentHash === false) {
         throw new Error(`reproducible chunk names: unexpected output.filename ${config.output.filename} (Next.js upgrade?)`);
       }
