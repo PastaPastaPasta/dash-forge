@@ -259,6 +259,10 @@ mod tests {
         // Checked at compile time: the constant itself.
         const _: () = assert!(CONSENT >= 42_839_440);
         const _: () = assert!(CONSENT <= 42_839_440 * 110 / 100);
+        const _: () = assert!(TRANSITION >= 73_481_440 + 12_000_000);
+        const _: () = assert!(TRANSITION <= (73_481_440 + 12_000_000) * 110 / 100);
+        const _: () = assert!(WATCH >= 48_109_940 + 12_000_000);
+        const _: () = assert!(WATCH <= (48_109_940 + 12_000_000) * 110 / 100);
         // A PR as the first numbered item of an empty repository: 149.00M.
         assert!(target_create(7 + 9 + 30) >= 149_002_420);
         assert!(target_create(7 + 9 + 30) <= 149_002_420 * 115 / 100);
@@ -270,10 +274,6 @@ mod tests {
         assert!(event(6, false) >= 76_225_420 + 12_000_000);
         assert!(event(6, false) <= (76_225_420 + 12_000_000) * 110 / 100);
         assert!(label_definition(13) >= 50_530_880);
-        const _: () = assert!(TRANSITION >= 73_481_440 + 12_000_000);
-        const _: () = assert!(TRANSITION <= (73_481_440 + 12_000_000) * 110 / 100);
-        const _: () = assert!(WATCH >= 48_109_940 + 12_000_000);
-        const _: () = assert!(WATCH <= (48_109_940 + 12_000_000) * 110 / 100);
     }
 
     /// QW4-046 / QW4-049 / QW4-039: the quotes cover what sakura (Platform 5.0.0-beta.1, QA wave
