@@ -47,19 +47,14 @@
 
 **Coming soon:** editing files in the browser, and browser merges for private repositories (`dg` has them). The [release notes](docs/releases/v0.1.0.md#known-limitations) (not published yet) list what else is not there yet.
 
-## Guides
+## Start here
 
-| Guide | |
-|---|---|
-| [Quick start](docs/guides/quick-start.md) | install → identity → storage → `dg init` → push → web |
-| [Mirror a GitHub repository](docs/guides/mirror-a-github-repo.md) | a copy of a GitHub repository that nobody can take down |
-| [Bring your own storage](docs/guides/bring-your-own-storage.md) | keep packs in R2, B2, S3, MinIO or IPFS |
-| [Collaborating](docs/guides/collaborating.md) | members, issues, pull requests, reviews, merges, releases, webhooks |
-| [Identity and keys](docs/guides/identity-and-keys.md) | limited keys, the browser vault, backups, recovery, trust roots |
-| [What things cost](docs/guides/costs.md) | measured costs, deposits, refunds |
-| [Check that Forge isn't lying to you](docs/guides/verify-forge.md) | proofs, hashes, the Verification card, running your own web app |
-| [FAQ](docs/FAQ.md) · [Error codes](docs/errors.md) | |
-| [Hosted curation](docs/hosted-curation.md) | what dashhq's own site leaves out of its lists, and what that does not change |
+- **[Quick start](docs/guides/quick-start.md):** install, identity, storage, `dg init`, push, web.
+- **[Moving from GitHub or GitLab](docs/guides/moving-from-github.md)** or **[mirror a GitHub repository](docs/guides/mirror-a-github-repo.md):** bring a project over, or keep a copy that nobody can take down.
+- **[Bring your own storage](docs/guides/bring-your-own-storage.md):** keep packs in R2, B2, S3, MinIO or IPFS.
+- **[FAQ](docs/FAQ.md)** and **[error codes](docs/errors.md)**.
+
+Every guide (collaborating, identity and keys, costs, CI, verification and more) is listed in the **[guides index](docs/guides/README.md)**.
 
 ---
 
