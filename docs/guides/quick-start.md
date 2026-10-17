@@ -282,7 +282,24 @@ git config --global dash.costWarnThreshold 0.1
 git config --global dash.costWarnThreshold off
 ```
 
-Everything else is plain git: branches, tags, force-push, `git fetch`, `git clone --filter=blob:none`. jj talks to git remotes and is expected to work, but has not been tested since July 2026; report problems. Shallow clones (`--depth`) are not supported and fail with [E205](../errors.md#e205).
+Everything else is plain git: branches, tags, force-push, `git fetch`, `git clone --filter=blob:none`. Shallow clones (`--depth`) are not supported and fail with [E205](../errors.md#e205).
+
+### jj
+
+jj pushes and fetches through `git-remote-dash` like git does (tested on testnet in October 2026 with jj 0.46, in
+a repository that is not colocated). One step differs: `jj git clone` and `jj git remote add` store the URL with
+its owner in lower case, and an identity id is case-sensitive, so `dash://<identity id>/<name>` then fails with
+[E102](../errors.md#e102). Add the remote with git instead, then fetch with jj:
+
+```sh
+jj git init
+git --git-dir=.jj/repo/store/git remote add origin dash://<identity id>/<name>
+jj git fetch
+```
+
+`jj git remote list` still shows the owner in lower case; jj passes git the URL as stored, so pushes and fetches
+work. An owner given as a DPNS name (`dash://alice/project`) is lower case already and is not affected (not yet
+tested with jj). Report problems in the [issue tracker](https://github.com/PastaPastaPasta/dash-forge/issues).
 
 ### Secrets in a push
 
