@@ -98,7 +98,9 @@ their pending file, so an interrupted run resumes from that tx.
   101 (maturity). Coinbase is detected from each picked input's raw transaction,
   since Insight's UTXO list does not say; immature coinbase inputs are skipped
   and the selection redone. Devnets, whose funding address is a mining payout
-  address, also skip everything under 101 confirmations up front. A
+  address, also skip everything under 101 confirmations up front; any other
+  funding address that receives mining payouts needs that network floor too
+  (`minFundingConfirmations`), or each reselection costs raw-tx fetches. A
   single random output that covers the whole amount is preferred, so concurrent runs rarely
   pick the same input. A rejected broadcast retries with other inputs.
 

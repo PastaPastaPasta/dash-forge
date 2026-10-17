@@ -67,9 +67,13 @@ export class FundingLedger {
     this.utxos = this.utxos.filter((u) => !gone.has(outpointKey(u)));
   }
 
-  /** Add every output of raw tx `bytes` paying `script` (hex): the funding address's change. */
+  /**
+   * Add every output of raw tx `bytes` paying `script` (hex): the funding address's change.
+   * Refuses a coinbase tx: the ledger is spent at any depth, and a coinbase output may be immature.
+   */
   addOutputsOf(bytes, script) {
-    const { txid, outputs } = parseTransactionOutputs(bytes);
+    const { txid, isCoinbase, outputs } = parseTransactionOutputs(bytes);
+    if (isCoinbase) throw new Error(`${txid} is a coinbase transaction; its outputs can be immature, so the ledger cannot hold them`);
     const known = new Set(this.utxos.map(outpointKey));
     for (const o of outputs) {
       if (o.scriptPubKey !== script || known.has(`${txid}:${o.vout}`)) continue;

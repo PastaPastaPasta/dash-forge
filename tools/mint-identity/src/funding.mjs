@@ -210,12 +210,19 @@ export async function fundFromKey(fundingKey, recipients, network, log = () => {
         // maturity are excluded and the selection redone, a bounded number of times.
         let picked;
         let inputs;
+        let skipped = 0;
         for (let reselect = 0; ; reselect++) {
-          picked = selectFundingUtxos(utxos, total, outputs.length, { exclude: tried, minFee: network.minFee * 2, minConfirmations });
+          try {
+            picked = selectFundingUtxos(utxos, total, outputs.length, { exclude: tried, minFee: network.minFee * 2, minConfirmations });
+          } catch (err) {
+            if (skipped === 0) throw err;
+            throw new Error(`${err.message} (${skipped} immature coinbase output(s) excluded)`);
+          }
           inputs = listed === null ? picked.inputs : await Promise.all(picked.inputs.map((u) => verifyUtxo(chain, u)));
           const immature = inputs.filter((u) => u.isCoinbase && u.confirmations < COINBASE_MATURITY_CONFIRMATIONS);
           if (immature.length === 0) break;
           for (const u of immature) tried.add(outpointKey(u));
+          skipped += immature.length;
           log(`fund-from-key: skipping ${immature.length} coinbase output(s) below ${COINBASE_MATURITY_CONFIRMATIONS} confirmations`);
           if (reselect >= MAX_MATURITY_RESELECTS) {
             throw new Error(`Funding address has too many immature coinbase outputs; wait for ${COINBASE_MATURITY_CONFIRMATIONS} confirmations`);

@@ -9,6 +9,7 @@ import { TESTNET, resolveNetwork } from '../src/config.mjs';
 import { fundFromKey, loadFundingKey, selectFundingUtxos, FUNDING_WIF_ENV } from '../src/funding.mjs';
 import { ChainClient, resetInsightHealth } from '../src/chain.mjs';
 import { InsightClient } from '../src/insight.mjs';
+import { FundingLedger } from '../src/utxo-ledger.mjs';
 import { addressToScript, createP2PKHTransaction, parseTransactionOutputs, serializeTransaction, signTransaction, calculateTxId } from '../src/tx.mjs';
 import { generateKeyPair, publicKeyToAddress } from '../src/keys.mjs';
 import { bytesToHex, concatBytes, privateKeyToWif } from '../src/bytes.mjs';
@@ -124,17 +125,53 @@ test('fundFromKey accepts a coinbase output at 101 confirmations', async () => {
   assert.equal(posted.length, 1);
 });
 
+/** Run `fn` with Math.random pinned to 0, so the single-output pick is the first covering UTXO. */
+async function withFirstPick(fn) {
+  const random = Math.random;
+  Math.random = () => 0;
+  try {
+    return await fn();
+  } finally {
+    Math.random = random;
+  }
+}
+
+const reversedTxid = (bytes) => bytesToHex(Uint8Array.from(Buffer.from(parseTransactionOutputs(bytes).txid, 'hex')).reverse());
+
 test('fundFromKey skips an immature coinbase and reselects a spendable output', async () => {
   const key = fundingKey();
   const payment = await paymentTx(key, key.address, 2e8);
   const immature = coinbaseTx(key.address, 50e8);
+  // Both cover 1 DASH alone; the pick is pinned to the first, so the immature one is always tried first.
   const { run, posted } = await fundFrom(key, [
     { bytes: immature, confirmations: 3 },
     { bytes: payment, confirmations: 2 },
   ]);
-  await run();
+  await withFirstPick(run);
   assert.equal(posted.length, 1);
-  const spent = bytesToHex(Uint8Array.from(Buffer.from(parseTransactionOutputs(payment).txid, 'hex')).reverse());
-  assert.ok(posted[0].includes(spent), 'the payment output was spent');
-  assert.ok(!posted[0].includes(bytesToHex(Uint8Array.from(Buffer.from(parseTransactionOutputs(immature).txid, 'hex')).reverse())));
+  assert.ok(posted[0].includes(reversedTxid(payment)), 'the payment output was spent');
+  assert.ok(!posted[0].includes(reversedTxid(immature)));
+});
+
+test('fundFromKey gives up after repeated immature coinbase picks, without broadcasting', async () => {
+  const key = fundingKey();
+  const entries = Array.from({ length: 8 }, (_, h) => ({ bytes: coinbaseTx(key.address, 5e8, h + 1), confirmations: 50 }));
+  const { run, posted } = await fundFrom(key, entries);
+  await assert.rejects(withFirstPick(run), /too many immature coinbase outputs/);
+  assert.equal(posted.length, 0);
+});
+
+test('the cannot-cover error says when immature coinbase outputs were excluded', async () => {
+  const key = fundingKey();
+  const { run } = await fundFrom(key, [{ bytes: coinbaseTx(key.address, 5e8), confirmations: 100 }]);
+  await assert.rejects(run(), /cannot cover.*1 immature coinbase output\(s\) excluded/);
+});
+
+test('the funding ledger refuses a coinbase transaction (bootstrap txids)', async () => {
+  const key = fundingKey();
+  const ledger = new FundingLedger(key.address);
+  const script = bytesToHex(addressToScript(key.address));
+  assert.throws(() => ledger.addOutputsOf(coinbaseTx(key.address, 5e8), script), /coinbase/);
+  ledger.addOutputsOf(await paymentTx(key, key.address, 5e8), script);
+  assert.equal(ledger.utxos.length, 1);
 });
