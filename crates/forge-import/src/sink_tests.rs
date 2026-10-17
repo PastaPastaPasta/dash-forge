@@ -77,6 +77,10 @@ struct State {
     created_again: Vec<String>,
     /// Long-body artifacts stored (forge-v2.md §6.3).
     long_bodies: usize,
+    /// Audience reads that miss an existing parent before it becomes visible, and the
+    /// number of reads made (including the successful one).
+    parent_misses: BTreeMap<String, usize>,
+    parent_reads: BTreeMap<String, usize>,
 }
 
 /// The recorded chain.
@@ -168,6 +172,39 @@ impl Recorded {
 
     fn st(&self) -> std::sync::MutexGuard<'_, State> {
         lock(&self.state)
+    }
+
+    /// The audience check forge-core makes before signing a child: an absent parent refuses
+    /// the write, including when that parent exists but this node has not seen it yet.
+    fn read_parent(&self, id: &str, comment: bool) -> forge_core::Result<()> {
+        let mut st = self.st();
+        *st.parent_reads.entry(id.to_string()).or_default() += 1;
+        let exists = st.items.iter().any(|item| {
+            if comment {
+                item.log
+                    .iter()
+                    .enumerate()
+                    .any(|(n, entry)| entry.starts_with("c ") && doc_id(&item.target.id, n) == id)
+            } else {
+                item.target.id == id
+            }
+        });
+        let misses = st.parent_misses.entry(id.to_string()).or_default();
+        if exists && *misses == 0 {
+            return Ok(());
+        }
+        *misses = misses.saturating_sub(1);
+        let what = if comment {
+            "comment"
+        } else {
+            "issue or pull request"
+        };
+        Err(forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::NOT_FOUND,
+            format!("the {what} {id} could not be read"),
+        )
+        .note("nothing was written")
+        .into())
     }
 
     /// One write on `target_id` (`None`: a create). Waits a simulated time that differs per
@@ -430,6 +467,10 @@ impl Chain for &Recorded {
         anchor: Option<&CommentAnchor>,
         imported: &Imported,
     ) -> forge_core::Result<String> {
+        self.read_parent(target_id, false)?;
+        if let Some(root) = anchor.and_then(|a| a.reply_to.as_deref()) {
+            self.read_parent(root, true)?;
+        }
         let links = anchor.map_or((None, None), |a| (a.reply_to.clone(), a.review_id.clone()));
         let id = self
             .append(target_id, format!("c {}", imported.url))
@@ -447,6 +488,7 @@ impl Chain for &Recorded {
         comment_count: Option<u16>,
         imported: &Imported,
     ) -> forge_core::Result<String> {
+        self.read_parent(patch_id, false)?;
         let id = self.append(patch_id, format!("r {}", imported.url)).await?;
         self.st().counts.insert(imported.url.clone(), comment_count);
         Ok(id)
@@ -459,6 +501,7 @@ impl Chain for &Recorded {
         kind: EventKind,
         value: &str,
     ) -> forge_core::Result<String> {
+        self.read_parent(&target.id, false)?;
         let add = kind == EventKind::LabelAdd;
         let value = value.to_string();
         self.land(Some(&target.id), |st| {
@@ -484,6 +527,7 @@ impl Chain for &Recorded {
         _: Option<&[u8]>,
         closed: Option<&ClosedAs>,
     ) -> forge_core::Result<String> {
+        self.read_parent(&target.id, false)?;
         let mv = *mv;
         let why = closed.map_or(String::new(), |c| {
             format!(
@@ -1415,6 +1459,143 @@ async fn import_again(chain: &Recorded, src: &SrcCollab, lanes: usize) -> Run {
         ..src.clone()
     };
     import(chain, &again, lanes, None).await
+}
+
+/// One parent and one dependent write, so each write path meets the same visibility lag.
+fn parent_source(kind: TargetKind, child: &str) -> SrcCollab {
+    let mut src = source(1);
+    let t = &mut src.targets[0];
+    t.kind = kind;
+    if kind == TargetKind::Issue {
+        t.patch = None;
+    }
+    if child != "comment" {
+        t.comments.clear();
+    }
+    if child != "review" {
+        t.reviews.clear();
+    }
+    if child != "event" {
+        t.labels.clear();
+    }
+    t.draft = child == "transition";
+    src
+}
+
+/// Only the refused child is tried again: all write paths work with either one lane or
+/// several, and a subsequent run finds the documents by provenance and writes nothing.
+#[tokio::test(start_paused = true)]
+async fn known_import_parents_become_visible_and_each_child_lands_once() {
+    for (kind, child) in [
+        (TargetKind::Issue, "comment"),
+        (TargetKind::Patch, "comment"),
+        (TargetKind::Patch, "review"),
+        (TargetKind::Issue, "event"),
+        (TargetKind::Patch, "transition"),
+    ] {
+        for lanes in [1, 8] {
+            let src = parent_source(kind, child);
+            let chain = Recorded::new();
+            chain.st().parent_misses.insert("doc-1".into(), 3);
+            let start = tokio::time::Instant::now();
+            let run = import(&chain, &src, lanes, None).await;
+            run.result.unwrap();
+            assert_eq!(chain.st().parent_reads["doc-1"], 4, "{child}");
+            assert!((Duration::from_secs(35)..Duration::from_secs(36)).contains(&start.elapsed()));
+            assert_eq!(run.counts.item_documents(), 2, "one parent, one child");
+            assert_complete(&chain, &src);
+            let next = import_again(&chain, &src, lanes).await;
+            next.result.unwrap();
+            assert_eq!(next.counts.item_documents(), 0);
+            assert_complete(&chain, &src);
+        }
+    }
+}
+
+/// A permanently unreadable known parent stops with a bounded, actionable error. Resuming
+/// finds the parent rather than creating it again, and settles it before its missing child.
+#[tokio::test(start_paused = true)]
+async fn an_import_parent_that_never_becomes_visible_fails_bounded_and_resumes_once() {
+    let src = parent_source(TargetKind::Patch, "review");
+    let chain = Recorded::new();
+    chain.st().parent_misses.insert("doc-1".into(), usize::MAX);
+    let start = tokio::time::Instant::now();
+    let run = import(&chain, &src, 1, None).await;
+    let err = run.result.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("after 6 parent visibility attempts"),
+        "{err:#}"
+    );
+    assert_eq!(chain.st().parent_reads["doc-1"], 6);
+    assert!((Duration::from_secs(75)..Duration::from_secs(76)).contains(&start.elapsed()));
+    assert_eq!(run.counts.item_documents(), 1, "only the parent landed");
+    assert!(chain.logs()[&1].1.is_empty());
+
+    chain.st().parent_misses.insert("doc-1".into(), 2);
+    let next = import_again(&chain, &src, 1).await;
+    next.result.unwrap();
+    assert_eq!(next.counts.prs, 0, "the earlier run's parent is adopted");
+    assert_eq!(next.counts.reviews, 1);
+    assert_eq!(chain.st().parent_reads["doc-1"], 9);
+    assert_complete(&chain, &src);
+}
+
+/// A reply's freshly imported root is also a known parent. Retrying its audience read must
+/// keep the root and its long-body artifact, then resume without duplicating either comment.
+#[tokio::test(start_paused = true)]
+async fn an_imported_comment_parent_settles_without_rewriting_earlier_children() {
+    for resumed in [false, true] {
+        let mut src = parent_source(TargetKind::Issue, "comment");
+        let root = &mut src.targets[0].comments[0];
+        root.body = "long body ".repeat(1_000);
+        let mut reply = root.clone();
+        reply.imported.url.push_str("-reply");
+        reply.body = "reply ".repeat(2_000);
+        reply.reply_key = Some(root.imported.url.clone());
+        let chain = Recorded::new();
+        if resumed {
+            import(&chain, &src, 1, None).await.result.unwrap();
+        }
+        src.targets[0].comments.push(reply);
+        chain.st().parent_misses.insert(doc_id("doc-1", 0), 2);
+        let run = import(&chain, &src, 1, None).await;
+        run.result.unwrap();
+        assert_eq!(run.counts.comments, if resumed { 1 } else { 2 });
+        assert_eq!(chain.st().parent_reads[&doc_id("doc-1", 0)], 3);
+        assert_eq!(
+            chain.st().long_bodies,
+            2,
+            "the root and reply artifacts are each stored once"
+        );
+        assert_complete(&chain, &src);
+        let next = import_again(&chain, &src, 1).await;
+        next.result.unwrap();
+        assert_eq!(next.counts.item_documents(), 0);
+        assert_complete(&chain, &src);
+    }
+}
+
+/// A parent outside this import's provenance still fails closed on the first check, with
+/// the original error and no child signed or written.
+#[tokio::test(start_paused = true)]
+async fn an_unknown_parent_fails_immediately_without_retrying_or_writing() {
+    let chain = Recorded::new();
+    let chain_ref = &chain;
+    let sink = sink(&chain, false, Budget::new(None), 1);
+    let repo = repo();
+    let imported = imported("issues/1#unknown-parent");
+    let start = tokio::time::Instant::now();
+    let err = sink
+        .parent_write(|| chain_ref.comment(&repo, "unknown", "reply", None, &imported))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "the issue or pull request unknown could not be read"
+    );
+    assert_eq!(chain.st().parent_reads["unknown"], 1);
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert_eq!(chain.st().begun, 0);
 }
 
 /// Sakura's stuck writes, in a lane: a comment unconfirmed but landed (its answer lost), and

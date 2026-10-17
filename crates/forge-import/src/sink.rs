@@ -275,6 +275,10 @@ const ITEM_ATTEMPTS: u32 = 3;
 /// The pause before an item's second attempt; doubled before the third.
 const ITEM_RETRY_DELAY: Duration = Duration::from_secs(20);
 
+/// Pauses (seconds) after a known import parent's pre-write audience check misses it:
+/// six attempts, with 75 s of backoff across nodes that may be a block behind.
+const PARENT_LAG_WAITS: &[u64] = &[5, 10, 20, 20, 20];
+
 /// The longest an item waits, after its pause, for the run's other writes to prove that a
 /// write of it that failed unconfirmed can no longer land ([`NONCE_WINDOW`]).
 const SETTLE_MAX: Duration = Duration::from_secs(300);
@@ -429,6 +433,9 @@ struct Caches {
     /// Each source item looked up this run, by `(tk, source number)`: its copy, or `None`
     /// when it has none (yet).
     known: BTreeMap<(u8, u32), Option<Target>>,
+    /// Confirmed documents this signer imported, created now or found by provenance on a
+    /// resumed run. Only these parents qualify for visibility retries before a child write.
+    parents: BTreeSet<String>,
     /// The first source item stored at a number other than its own ([`Sink::create`]):
     /// numbers diverge from there on, said once.
     diverged: bool,
@@ -975,6 +982,51 @@ impl<'a, C: Chain> Sink<'a, C> {
         };
         trace_cost(&what, credits, before, || self.traced_balance()).await;
         Ok(Some(out))
+    }
+
+    /// Retry only a known import parent's audience refusal, which forge-core returns before
+    /// signing the child. Other errors keep their existing retry / nonce-settling path. The
+    /// caller prepares any long body once, outside this loop, and keeps already-written
+    /// thread ids: neither an earlier child nor its artifact is written again.
+    pub(crate) async fn parent_write<T, F, Fut>(&self, mut write: F) -> forge_core::Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = forge_core::Result<T>>,
+    {
+        let mut attempt = 0;
+        loop {
+            self.stop
+                .check()
+                .map_err(|e| forge_core::Error::Config(e.to_string()))?;
+            let mut e = match write().await {
+                Ok(out) => return Ok(out),
+                Err(e) => e,
+            };
+            let forge_core::Error::User(u) = &mut e else {
+                return Err(e);
+            };
+            let parent = ["the issue or pull request ", "the comment "]
+                .iter()
+                .find_map(|prefix| u.message.strip_prefix(prefix))
+                .and_then(|message| message.strip_suffix(" could not be read"));
+            if u.code != forge_core::user_error::codes::NOT_FOUND
+                || !parent.is_some_and(|id| self.caches().parents.contains(id))
+            {
+                return Err(e);
+            }
+            let Some(&wait) = PARENT_LAG_WAITS.get(attempt) else {
+                u.message = format!(
+                    "{} after {} parent visibility attempts ({} s of backoff); resume the import to try again",
+                    u.message,
+                    attempt + 1,
+                    PARENT_LAG_WAITS.iter().sum::<u64>()
+                );
+                return Err(e);
+            };
+            tracing::warn!("{e}: waiting {wait} s for the imported parent to become readable");
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            attempt += 1;
+        }
     }
 
     /// Whether a write of an item that failed (`pending`: its counter and mark, `None` when
@@ -1816,6 +1868,9 @@ impl<'a, C: Chain> Sink<'a, C> {
             ));
             return Ok(None);
         }
+        if !self.dry_run {
+            self.caches().parents.insert(target.id.clone());
+        }
         Ok(Some(Job {
             index,
             t,
@@ -1909,6 +1964,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                         .count();
                     let count = u16::try_from(count).unwrap_or(u16::MAX);
                     if let Some(id) = self.write_review(t, target, r, count).await? {
+                        self.caches().parents.insert(id.clone());
                         review_ids.push((r.imported.url.clone(), id));
                     }
                 }
@@ -1931,6 +1987,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                         a.review_id = review_id.map(str::to_string);
                     }
                     if let Some(id) = self.write_comment(t, target, c, anchor.as_ref()).await? {
+                        self.caches().parents.insert(id.clone());
                         comment_ids.push((c.imported.url.clone(), id));
                     }
                 }
@@ -2190,7 +2247,11 @@ impl<'a, C: Chain> Sink<'a, C> {
                 Some(Nonces::Community),
                 credits,
                 |c| c.events += 1,
-                || async move { chain.post_event(need(repo)?, target, kind, value).await },
+                || async move {
+                    let repo = need(repo)?;
+                    self.parent_write(|| chain.post_event(repo, target, kind, value))
+                        .await
+                },
             )
             .await?;
         }
@@ -2246,8 +2307,8 @@ impl<'a, C: Chain> Sink<'a, C> {
                 credits,
                 |c| c.transitions += 1,
                 || async move {
-                    chain
-                        .write_transition(need(repo)?, target, &mv, oid, closed)
+                    let repo = need(repo)?;
+                    self.parent_write(|| chain.write_transition(repo, target, &mv, oid, closed))
                         .await
                 },
             )
@@ -2302,11 +2363,15 @@ impl<'a, C: Chain> Sink<'a, C> {
 
     /// The documents already on a thread written by the signer: `(source URL, $id)`.
     fn done_by_me(&self, written: Vec<crate::chain::Written>) -> Vec<(String, String)> {
-        written
+        let done: Vec<_> = written
             .into_iter()
             .filter(|w| self.is_mine(&w.author))
             .filter_map(|w| Some((w.url?, w.id)))
-            .collect()
+            .collect();
+        self.caches()
+            .parents
+            .extend(done.iter().map(|(_, id)| id.clone()));
+        done
     }
 
     /// Write one comment of `t`'s thread (`anchor`: its own, with the reply and review the
@@ -2342,8 +2407,8 @@ impl<'a, C: Chain> Sink<'a, C> {
                 let body = self
                     .field_text(field, Some(&c.imported), &c.body, &c.imported.url)
                     .await?;
-                chain
-                    .comment(need(repo)?, &target.id, &body, anchor, &c.imported)
+                let repo = need(repo)?;
+                self.parent_write(|| chain.comment(repo, &target.id, &body, anchor, &c.imported))
                     .await
             },
         )
@@ -2383,16 +2448,11 @@ impl<'a, C: Chain> Sink<'a, C> {
                         &r.imported.url,
                     )
                     .await?;
-                chain
-                    .review(
-                        need(repo)?,
-                        &target.id,
-                        &r.commit_oid,
-                        &body,
-                        count,
-                        &r.imported,
-                    )
-                    .await
+                let repo = need(repo)?;
+                self.parent_write(|| {
+                    chain.review(repo, &target.id, &r.commit_oid, &body, count, &r.imported)
+                })
+                .await
             },
         )
         .await

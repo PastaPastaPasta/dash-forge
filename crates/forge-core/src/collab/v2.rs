@@ -433,6 +433,33 @@ fn parent_not_found(what: &str, id: &str) -> Error {
     .into()
 }
 
+#[cfg(test)]
+mod parent_not_found_tests {
+    use super::*;
+
+    /// forge-import's sink retries a child write when this refusal names a parent it imported
+    /// (`Sink::parent_write`), recognising it by this exact message: a rewording here must
+    /// change the sink's match too.
+    #[test]
+    fn the_message_is_the_one_the_importer_matches() {
+        for (what, want) in [
+            (
+                "issue or pull request",
+                "the issue or pull request ID1 could not be read",
+            ),
+            ("comment", "the comment ID1 could not be read"),
+        ] {
+            match parent_not_found(what, "ID1") {
+                Error::User(u) => {
+                    assert_eq!(u.code, codes::NOT_FOUND);
+                    assert_eq!(u.message, want);
+                }
+                other => panic!("expected a user error, got {other:?}"),
+            }
+        }
+    }
+}
+
 /// The audience a child is under: the narrowest of its target's (`target`) and every comment of
 /// the thread it replies in (the comment replied to and its root): a reply to a members-only
 /// reply under a public root is members-only (DESIGN §3.3).
