@@ -3,7 +3,7 @@
 #
 #   1. OWNER pushes a base branch e2e/<run>/base to the test repo.
 #   2. CONTRIB `dg repo fork`s the test repo (forkOf; the parent's packs are recorded by
-#      reference, nothing re-uploaded) — resumable, so a later run reuses the fork.
+#      reference, nothing re-uploaded) — scoped to the parent repo, so later runs reuse it.
 #   3. CONTRIB clones its fork (proving the referenced packs read), commits on top of the
 #      base, pushes a feature branch to the fork, and `dg pr create`s from it with no
 #      --head-repo (the fork is found by forkOf).
@@ -22,7 +22,12 @@ harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
-: "${E2E_FORK_NAME:=e2e-cli-fork}"
+# One fork per parent repo name. Set E2E_FORK_NAME when two long repo names share their first
+# 50 characters, or when OWNER changes but the repo name stays (the old fork has another parent).
+if [[ -z "${E2E_FORK_NAME:-}" ]]; then
+  E2E_FORK_NAME="$(printf 'e2e-cli-fork-%s' "$E2E_REPO_NAME" | tr '[:upper:]' '[:lower:]')"
+  E2E_FORK_NAME="${E2E_FORK_NAME:0:63}"
+fi
 FORK="${IDID_CONTRIB}/${E2E_FORK_NAME}"
 FORK_REMOTE="dash://${FORK}"
 BASE="e2e/${RUN_ID}/base"
@@ -34,6 +39,18 @@ LOG="${WORKROOT}/s10"
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
 dg_write() { local id="$1" out="$2"; shift 2; dg_as "$id" --yes --json "$@" >"${out}.json" 2>"${out}.err"; }
 fail_with() { cat "$1.err" "$1.json" >&2 2>/dev/null; is_flake "$1.err" && skip_scenario "$2 flaked"; bad "$2 failed"; finish_scenario; }
+merge_landed() { # merge_landed <merge oid>: wait for the recorded merge and base tip to read back
+  local oid="$1" _attempt
+  # A successful merge may report merge_recorded while its immediate read lags a block.
+  # Confirm it with reads only; never repeat the merge or pay for another write.
+  for _attempt in $(seq 1 8); do
+    dg_read_retry "$ID_OWNER" "$LOG-merged-view.json" "$LOG-merged-view.err" --json pr view "$REPO" "$N" \
+      && [[ "$(jq_py "$LOG-merged-view.json" 'd["state"] + " " + (d["baseTip"] or "")')" == "merged $oid" ]] && return 0
+    sleep 3
+  done
+  echo "merge did not read back as merged at $oid: $(jq_py "$LOG-merged-view.json" 'd.get("state"), d.get("baseTip")' 2>/dev/null)" >&2
+  return 1
+}
 
 step "OWNER pushes the base branch ${BASE}"
 seed_tiny_repo "$SRC" "$BASE" >/dev/null
@@ -126,10 +143,9 @@ check "exactly OWNER's approval counts" test "$ap" -eq 0
 step "OWNER merges (merge commit, push to base, merge transition)"
 if dg_write "$ID_OWNER" "$LOG-merge" pr merge "$REPO" "$N"; then
   cat "$LOG-merge.err" >&2
-  check "reads merged" assert_eq "True" "$(jq_py "$LOG-merge.json" 'd["merged"]')"
   MERGE="$(jq_py "$LOG-merge.json" 'd["mergeOid"]')"
+  check "reads merged with the merge commit on the base" merge_landed "$MERGE"
   check "the steps ran in order" assert_eq "fetch,merge,push,record" "$(jq_py "$LOG-merge.json" '",".join(s["step"] for s in d["steps"])')"
-  check "the merge commit is on the base" assert_eq "True" "$(jq_py "$LOG-merge.json" 'd["mergeOnBase"]')"
   step "the base tip is a merge of the old base and the PR head"
   VER="${WORKROOT}/s10-verify"
   git_dash_retry "$ID_OWNER" "$LOG-vclone" clone -q --no-checkout -b "$BASE" "$E2E_REMOTE" "$VER" || fail_with "$LOG-vclone" "verify clone"

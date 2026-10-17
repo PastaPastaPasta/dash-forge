@@ -111,10 +111,6 @@ out="$(libsh "$H" 'require_mint_funding "or set X"; echo reached' "E2E_MINT_FUND
 echo present >"$TMP/funding.wif"
 out="$(libsh "$H" 'require_mint_funding; echo reached' "E2E_MINT_FUNDING=$TMP/funding.wif")"
 [[ "$out" == *reached* && "$out" == *"rc=0" ]] && pass "a present funding key continues" || fail "present funding: $out"
-out="$(libsh "$H" 'na_unless_devnet "x"; echo reached')"
-[[ "$out" == *reached* ]] && pass "na_unless_devnet continues on a devnet" || fail "na on devnet: $out"
-out="$(libsh "$TMP/h-testnet" 'na_unless_devnet "x"; echo reached' DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1)"
-[[ "$out" == *"N/A"* && "$out" == *"rc=3" && "$out" != *reached* ]] && pass "na_unless_devnet exits 3 on testnet" || fail "na on testnet: $out"
 
 echo "lib.sh na_scenario: the N/A marker"
 out="$(libsh "$TMP/h-testnet" 'na_scenario "x"; echo reached' DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 "E2E_NA_MARKER=$TMP/na-marker")"
@@ -152,6 +148,31 @@ out="$(libsh "$H" "require_not_july '$TMP/jul/RUNNER.identity.json'; echo reache
 [[ "$out" == *reached* ]] && pass "devnet: require_not_july is a no-op" || fail "require_not_july devnet: $out"
 expect_refused "testnet with some other devnet's funding key" "looks like a devnet funding key" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_MINT_FUNDING=/x/newnet-funding.wif -- true
 expect_ok "testnet: an explicit E2E_MINT_FUNDING is honoured" "/q/testnet-funding.wif" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_MINT_FUNDING=/q/testnet-funding.wif -- 'echo "$E2E_MINT_FUNDING"'
+
+echo "lib.sh: GitHub configuration survives Forge XDG isolation"
+H="$TMP/h-gh"; mkdir -p "$H/.config/gh" "$TMP/forge-xdg" "$TMP/gh-xdg/gh" "$TMP/gh-bin"
+printf '{}\n' >"$TMP/gh-xdg/gh/hosts.yml"
+out="$(libsh "$H" 'echo "gh=$GH_CONFIG_DIR"' "XDG_CONFIG_HOME=$TMP/forge-xdg")"
+[[ "$out" == *"gh=$H/.config/gh"* ]] && pass "isolated Forge XDG falls back to the user's gh config" || fail "gh fallback: $out"
+out="$(libsh "$H" 'echo "gh=$GH_CONFIG_DIR"' "XDG_CONFIG_HOME=$TMP/gh-xdg")"
+[[ "$out" == *"gh=$TMP/gh-xdg/gh"* ]] && pass "an existing XDG gh config is respected" || fail "gh XDG: $out"
+out="$(libsh "$H" 'echo "gh=$GH_CONFIG_DIR"' "XDG_CONFIG_HOME=$TMP/forge-xdg" "GH_CONFIG_DIR=$TMP/explicit gh")"
+[[ "$out" == *"gh=$TMP/explicit gh"* ]] && pass "explicit GH_CONFIG_DIR survives and preserves spaces" || fail "gh explicit: $out"
+cat >"$TMP/gh-bin/gh" <<'SH'
+#!/usr/bin/env bash
+# Deliberately emulate token lookup succeeding while API login fails.
+printf 'must-not-appear\n'
+[[ "$*" == 'auth token' || ( "$*" == 'api repos/sindresorhus/is-wsl' && "${GH_TEST_API_OK:-0}" == 1 ) ]]
+SH
+chmod +x "$TMP/gh-bin/gh"
+if command -v timeout >/dev/null || command -v gtimeout >/dev/null; then
+  out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH")"
+  [[ "$out" == *"rc=2" && "$out" != *reached* && "$out" != *must-not-appear* ]] && pass "GitHub API refusal skips without printing credentials" || fail "gh API refusal: $out"
+  out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH" GH_TEST_API_OK=1)"
+  [[ "$out" == *reached* && "$out" == *"rc=0" && "$out" != *must-not-appear* ]] && pass "a usable GitHub repo API login continues without printing credentials" || fail "gh API login: $out"
+else
+  printf '  skip  GitHub API checks require timeout or gtimeout (install coreutils)\n'
+fi
 
 echo "the July list agrees with forge-contracts/scripts/lib/target.mjs"
 want="$(node -e "import('$REPO/forge-contracts/scripts/lib/target.mjs').then(m=>console.log([...m.JULY_POOL_IDS.keys()].sort().join(' ')))")"

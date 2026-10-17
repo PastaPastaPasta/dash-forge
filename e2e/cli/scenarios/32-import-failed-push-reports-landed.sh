@@ -23,9 +23,7 @@ IMPORT="${BIN_DIR}/forge-import"
 [[ -x "$IMPORT" ]] || skip_scenario "forge-import is not built (cargo build -p forge-import)"
 grep -q DASH_FORGE_FAIL_AFTER_REFS "${BIN_DIR}/git-remote-dash" 2>/dev/null \
   || skip_scenario "git-remote-dash is not a test-hooks build (cargo build -p git-remote-dash --features test-hooks)"
-if ! command -v gh >/dev/null || { [[ -z "${GH_TOKEN:-}" ]] && ! gh auth token >/dev/null 2>&1; }; then
-  skip_scenario "no GitHub access (log in with gh or set GH_TOKEN)"
-fi
+require_github
 
 ID="${E2E_IMPORT_IDENTITY:-$ID_OWNER}"
 require_not_july "$ID"

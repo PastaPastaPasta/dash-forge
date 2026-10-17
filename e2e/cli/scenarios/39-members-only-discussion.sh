@@ -41,7 +41,7 @@ esac
 seed_tiny_repo "$SRC" main >/dev/null
 git -C "$SRC" checkout -q -b feature
 printf 'feature %s\n' "$RUN_ID" >"$SRC/feature.txt"
-git -C "$SRC" add -A && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
+git -C "$SRC" add -- feature.txt && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
 git_dash_retry "$ID_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" \
     "refs/heads/main:refs/heads/main" "refs/heads/feature:refs/heads/feature" \
   || { cat "$LOG-push.err" >&2; is_flake "$LOG-push.err" && skip_scenario "push flaked"; bad "push failed"; finish_scenario; }

@@ -130,7 +130,7 @@ jobs:
       - run: echo "forge-runner e2e on $GITHUB_REF at $GITHUB_SHA"
 EOF
 git -C "$SRC" checkout -q -b runner
-git -C "$SRC" add -A && git -C "$SRC" commit -qm "e2e runner workflow ${RUN_ID}"
+git -C "$SRC" add -- .forge/workflows/ci.yml && git -C "$SRC" commit -qm "e2e runner workflow ${RUN_ID}"
 SHA="$(git -C "$SRC" rev-parse HEAD)"
 register_ref "refs/heads/${BASE}"
 register_ref "refs/heads/${BR}"

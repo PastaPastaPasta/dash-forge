@@ -175,7 +175,7 @@ fi
 
 step "3. replication failure: dash.storage=rustfs,dead dash.replicas=2 → push fails, ref unchanged"
 printf 'second commit %s\n' "$RUN_ID" >"$SRC/second.txt"
-git -C "$SRC" add -A && git -C "$SRC" commit -q -m "second ${RUN_ID}"
+git -C "$SRC" add -- second.txt && git -C "$SRC" commit -q -m "second ${RUN_ID}"
 NEW_TIP="$(git -C "$SRC" rev-parse HEAD)"
 git -C "$SRC" config dash.storage "rustfs,dead"
 if DASH_FORGE_STORAGE_CONFIG="$PUSHER_CFG" git_dash "$ID_DEPLOYER" "$LOG-push-fail" \
@@ -210,7 +210,7 @@ SRC5="${WORKROOT}/byo-src5"
 BR5="e2e/${RUN_ID}/byo5"
 seed_tiny_repo "$SRC5" "$BR5" >/dev/null
 printf 'step five %s\n' "$RUN_ID" >"$SRC5/five.txt"
-git -C "$SRC5" add -A && git -C "$SRC5" commit -q -m "five ${RUN_ID}"
+git -C "$SRC5" add -- five.txt && git -C "$SRC5" commit -q -m "five ${RUN_ID}"
 TIP5="$(git -C "$SRC5" rev-parse HEAD)"
 git -C "$SRC5" config dash.storage "rustfs"
 # 5a: store on RustFS only, then stop after the manifest (no ref written).

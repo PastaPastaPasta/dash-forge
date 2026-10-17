@@ -24,7 +24,7 @@ ok "base tip pushed (${A})"
 
 step "rewrite history (amend → non-descendant tip)"
 printf 'rewritten %s\n' "${RUN_ID}" >"$SRC/alpha.txt"
-git -C "$SRC" add -A
+git -C "$SRC" add -- alpha.txt
 git -C "$SRC" commit -q --amend --no-edit
 B="$(git -C "$SRC" rev-parse HEAD)"
 check "amended tip differs from base" bash -c "[[ '$A' != '$B' ]]"

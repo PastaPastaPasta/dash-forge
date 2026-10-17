@@ -75,7 +75,7 @@ if wait_for_role none; then ok "COLLAB is no longer a member"; else skip_scenari
 # Advance the local branch so the next push is a clean fast-forward: the rejection must
 # come from CONSENSUS, not from the client-side non-FF guard.
 printf 'post-revoke change %s\n' "${RUN_ID}" >"$SRC/alpha.txt"
-git -C "$SRC" add -A && git -C "$SRC" commit -q -m "post-revoke ff ${RUN_ID}"
+git -C "$SRC" add -- alpha.txt && git -C "$SRC" commit -q -m "post-revoke ff ${RUN_ID}"
 
 step "COLLAB pushes again (expect CONSENSUS rejection: 40120)"
 # The helper refuses a non-member's push locally before anything is broadcast. This scenario

@@ -95,7 +95,7 @@ fi
 
 step "OWNER pushes under epoch 2"
 printf 'after repair %s\n' "$RUN_ID" >"$SRC/secret-after.txt"
-git -C "$SRC" add -A && git -C "$SRC" commit -q -m "post-repair ${RUN_ID}"
+git -C "$SRC" add -- secret-after.txt && git -C "$SRC" commit -q -m "post-repair ${RUN_ID}"
 TIP2="$(git -C "$SRC" rev-parse HEAD)"
 if git_dash_retry "$ID_OWNER" "$LOG-push2" -C "$SRC" push "$REMOTE" "refs/heads/main:refs/heads/main"; then
   ok "pushed main @ ${TIP2:0:12} under epoch 2"

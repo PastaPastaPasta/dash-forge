@@ -65,7 +65,7 @@ check "the no-op fetch downloads no pack" bash -c "! grep -q 'indexed pack into 
 
 step "git fetch after one new push downloads only the new pack"
 printf 'more %s\n' "$RUN_ID" >"$SRC/alpha.txt"
-git -C "$SRC" commit -qam "budget ${RUN_ID}"
+git -C "$SRC" add -- alpha.txt && git -C "$SRC" commit -qm "budget ${RUN_ID}"
 git_dash_retry "$ID_OWNER" "$LOG-push2" -C "$SRC" push "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}" \
   || { is_flake "$LOG-push2.err" && skip_scenario "push flaked"; bad "second push failed"; finish_scenario; }
 traced_git "$LOG-incr" -C "$CL" fetch origin || { is_flake "$LOG-incr.err" && skip_scenario "fetch flaked"; bad "fetch failed"; finish_scenario; }

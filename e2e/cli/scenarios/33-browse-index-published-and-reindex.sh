@@ -28,9 +28,7 @@ IMPORT="${BIN_DIR}/forge-import"
 [[ -x "$IMPORT" ]] || skip_scenario "forge-import is not built (cargo build -p forge-import)"
 grep -q DASH_FORGE_TEST_MANIFEST_LAG "${BIN_DIR}/git-remote-dash" 2>/dev/null \
   || skip_scenario "git-remote-dash is not a test-hooks build (cargo build -p git-remote-dash --features test-hooks)"
-if ! command -v gh >/dev/null || { [[ -z "${GH_TOKEN:-}" ]] && ! gh auth token >/dev/null 2>&1; }; then
-  skip_scenario "no GitHub access (log in with gh or set GH_TOKEN)"
-fi
+require_github
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
 : "${E2E_S33_SOURCE:=sharkdp/hyperfine}"
 
