@@ -9,8 +9,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 
-import { ROOM_MIN, SETS, contractGroupId, contractId, formatSums, main, parseSums, recordedSet, setSums } from './deploy-v2.mjs';
-import { createFakePlatform } from './lib/fake-platform.mjs';
+import { ROOM_MIN, SETS, b58encode, contractGroupId, contractId, formatSums, main, parseSums, recordedSet, setSums } from './deploy-v2.mjs';
+import { createFakePlatform, fakeIdentityFile } from './lib/fake-platform.mjs';
 
 const MAX = 20480;
 const KEYS = ['forgeCore', 'forgeCollab', 'forgeCommunity', 'forgeMeta'];
@@ -96,6 +96,9 @@ test('a fresh testnet registration records the four contracts, the ledger and th
     assert.equal(c.sourceFile, `forge-contracts/contracts/mainnet/${SCHEMAS[i]}.json`);
     assert.equal(c.sourceSha256, sums[`${SCHEMAS[i]}.json`]);
     assert.equal(c.gitCommit, 'a'.repeat(40));
+    assert.equal(c.gitCommitPushed, true);
+    assert.match(c.transitionSha256, /^[0-9a-f]{64}$/);
+    assert.match(c.documentsHash, /^[0-9a-f]{64}$/);
     assert.equal(c.roomBytes, MAX - c.sizeBytes);
     assert.ok(c.roomBytes >= ROOM_MIN);
     assert.deepEqual(Object.keys(c.provedAt).sort(), ['coreChainLockedHeight', 'epoch', 'height', 'protocolVersion', 'timeMs']);
@@ -127,11 +130,15 @@ test('a fresh testnet registration records the four contracts, the ledger and th
     assert.equal(e.schemaHash, rec.v2[KEYS[i]].schemaHash);
     assert.equal(e.registersGroup, i === 0);
     assert.equal(e.gitCommit, 'a'.repeat(40));
+    assert.equal(e.transitionSha256, rec.v2[KEYS[i]].transitionSha256);
+    assert.equal(e.documentsHash, rec.v2[KEYS[i]].documentsHash);
   });
   // testnet and mainnet use SDK discovery: the recorded (stale) list is not handed to the SDK
   assert.ok(t.fake.state.sdkOptions.every((o) => o.addresses === undefined && o.network === 'testnet'));
   // the report on stdout is JSON
   assert.equal(JSON.parse(t.out.join('')).contractGroupId, group);
+  // the run's lock is gone
+  assert.ok(!existsSync(`${t.testnetFile}.lock`));
 });
 
 test('the record is what freeze-c1-check reads: contract ids, owners, hashes and statuses of all four', async () => {
@@ -552,4 +559,181 @@ test('a reservation the chain passed is named in the nonce refusal', async () =>
   t.fake.externalTransition();
   const reserved = t.read().v2.forgeCore.contractId;
   await assert.rejects(t.run(t.prod()), new RegExp(`reserved forgeCore ${reserved} did land and is not visible yet`));
+});
+
+test('a lagging node: a stale identity nonce is refused, never trusted, and the rerun registers the next one', async () => {
+  // the stale answer after forge-core landed (nonce 0) would reserve forge-collab at forge-core's own id
+  const t = setup();
+  t.fake.lagAfter(1);
+  await assert.rejects(t.run(t.prod()), /forgeCollab: the node reports the deployer's identity nonce as 0, but the record shows nonce 1 signed: the node is behind.*Nothing was broadcast/s);
+  let rec = t.read();
+  assert.equal(t.fake.broadcasts, 1);
+  assert.equal(rec.v2.forgeCore.status, 'registered');
+  assert.equal(rec.v2.forgeCollab, undefined, 'nothing was reserved from the stale nonce');
+  assert.deepEqual(rec.v2.nonceLedger.map((e) => e.identityNonce), ['1']);
+  t.fake.catchUp();
+  await t.run(t.prod());
+  rec = t.read();
+  assert.deepEqual(KEYS.map((k) => rec.v2[k].identityNonce), ['1', '2', '3', '4']);
+  assert.equal(new Set(KEYS.map((k) => rec.v2[k].contractId)).size, 4);
+  // the same after forge-community (nonce 3): forge-meta is never reserved at forge-community's id
+  const t2 = setup();
+  t2.fake.lagAfter(3);
+  await assert.rejects(t2.run(t2.prod()), /forgeMeta: the node reports the deployer's identity nonce as 2, but the record shows nonce 3 signed/);
+  assert.equal(t2.read().v2.forgeMeta, undefined);
+  t2.fake.catchUp();
+  await t2.run(t2.prod());
+  assert.equal(t2.read().v2.forgeMeta.contractId, contractId(t2.fake.ownerId, 4n));
+  // a node that catches up while the run waits is used
+  const t3 = setup();
+  t3.fake.lagAfter(1);
+  const nonce = t3.fake.evo.EvoSDK;
+  let asked = 0;
+  const evo = { ...t3.fake.evo, EvoSDK: class extends nonce { constructor(o) { super(o); const real = this.identities.nonce; this.identities.nonce = async (id) => { if (t3.fake.state.lag && ++asked > 1) t3.fake.catchUp(); return real(id); }; } } };
+  await t3.run(t3.prod(), { evo });
+  assert.deepEqual(KEYS.map((k) => t3.read().v2[k].identityNonce), ['1', '2', '3', '4']);
+});
+
+test('a reservation is completed only with its own contract: another record\'s id, or another schema, is refused', async () => {
+  // the record the stale nonce wrote before the fix: forge-meta reserved at forge-community's nonce
+  const t = setup();
+  await t.run(t.prod());
+  const good = t.read();
+  const bad = structuredClone(good);
+  const community = bad.v2.forgeCommunity;
+  bad.v2.forgeMeta = { ...bad.v2.forgeMeta, contractId: community.contractId, identityNonce: community.identityNonce, status: 'broadcasting' };
+  bad.v2.nonceLedger[3] = { ...bad.v2.nonceLedger[3], contractId: community.contractId, identityNonce: community.identityNonce, status: 'broadcasting' };
+  writeFileSync(t.testnetFile, JSON.stringify(bad, null, 2));
+  const before = t.raw();
+  const broadcasts = t.fake.broadcasts;
+  // (forge-community, reconciled first, is refused: both records claim one id)
+  await assert.rejects(t.run(t.prod()), new RegExp(`forgeCommunity: the record names ${community.contractId}, which v2\\.forgeMeta and the ledger's forgeMeta create at nonce 3 also names: one nonce was reserved for two contracts`));
+  assert.equal(t.raw(), before);
+  // forge-meta reserved at its own nonce, but the contract there is of another schema
+  const other = structuredClone(good);
+  other.v2.forgeMeta = { ...other.v2.forgeMeta, status: 'broadcasting', documentsHash: '0'.repeat(64) };
+  other.v2.nonceLedger[3].status = 'broadcasting';
+  writeFileSync(t.testnetFile, JSON.stringify(other, null, 2));
+  await assert.rejects(t.run(t.prod()), /forgeMeta: \w+ is on chain, but its schema \(\w+…\) is not the reservation's \(000000000000…\): it is not the contract this reservation broadcast/);
+  // a reservation without its own documentsHash, of another schema than the current one, cannot be shown to be it
+  delete other.v2.forgeMeta.documentsHash;
+  other.v2.forgeMeta.schemaHash = '1'.repeat(64);
+  writeFileSync(t.testnetFile, JSON.stringify(other, null, 2));
+  await assert.rejects(t.run(t.prod()), /the reservation records no schema it can be compared with/);
+  // one of the current schema without the field is completed as before
+  other.v2.forgeMeta.schemaHash = good.v2.forgeMeta.schemaHash;
+  writeFileSync(t.testnetFile, JSON.stringify(other, null, 2));
+  await t.run(t.prod());
+  assert.equal(t.read().v2.forgeMeta.status, 'registered');
+  assert.equal(t.fake.broadcasts, broadcasts);
+});
+
+test('the ledger never rewrites a settled entry at the nonce a transition reserves', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  // a ledger that says an update of forge-core at contract nonce 1 landed, which the chain does not show
+  const rec = t.read();
+  rec.v2.forgeCore.schemaHash = '0'.repeat(64);
+  rec.v2.nonceLedger.push({ contractNonce: '1', kind: 'dataContractUpdate', key: 'forgeCore', contractId: rec.v2.forgeCore.contractId, version: 2, status: 'updated', at: 'x' });
+  writeFileSync(t.testnetFile, JSON.stringify(rec, null, 2));
+  const before = t.raw();
+  const broadcasts = t.fake.broadcasts;
+  await assert.rejects(t.run(t.prod('--update', 'core')), /forgeCore: the ledger already holds a updated dataContractUpdate at contractNonce 1; a reservation never rewrites a settled entry/);
+  assert.equal(t.fake.broadcasts, broadcasts);
+  assert.equal(t.raw(), before);
+});
+
+test('--acknowledge-nonce refuses a nonce that created a contract: it was a create, not an external transition', async () => {
+  const t = setup();
+  t.fake.failNext('after');
+  await assert.rejects(t.run(t.prod()), /timed out/);
+  // a record that lost forge-core's reservation: the chain's nonce 1 is unexplained
+  const rec = t.read();
+  delete rec.v2.forgeCore;
+  rec.v2.nonceLedger = [];
+  writeFileSync(t.testnetFile, JSON.stringify(rec, null, 2));
+  const before = t.raw();
+  await assert.rejects(t.run(t.prod()), /--acknowledge-nonce 1 --note/);
+  await assert.rejects(t.run(t.prod('--acknowledge-nonce', '1', '--note', 'a key change')), new RegExp(`--acknowledge-nonce 1: identity nonce 1 created contract ${contractId(t.fake.ownerId, 1n)}.*so it is no external transition`, 's'));
+  assert.equal(t.raw(), before);
+  assert.equal(t.fake.broadcasts, 1);
+});
+
+test('a new deployer after a reset: v2.deployer is its own, the old one archived', async () => {
+  const t = setup();
+  await t.run(t.prod('--deployer-created-height', '100'));
+  const old = t.read().v2.deployer;
+  // Platform resets; the owner mints a new deployer (new id, new asset lock) and abandons the old set
+  const f2 = createFakePlatform({ chainId: 'dash-testnet-52', identityFile: fakeIdentityFile({ identityId: b58encode(Buffer.alloc(32, 5)), txid: 'cd'.repeat(32) }) });
+  const dir2 = mkdtempSync(join(tmpdir(), 'deploy-v2-test-id2-'));
+  dirs.push(dir2);
+  const identity2 = f2.writeIdentity(dir2);
+  await t.run(['--network', 'testnet', '--set', 'mainnet', '--identity', identity2, '--expect-sha256', t.sumsFile, '--force-new', '--abandon-live-set', 'testnet'], { evo: f2.evo });
+  const v2 = t.read().v2;
+  assert.equal(v2.deployer.identityId, f2.ownerId);
+  assert.equal(v2.deployer.assetLockTxid, 'cd'.repeat(32));
+  assert.equal(v2.deployer.createdAtHeight, null, 'the old deployer\'s height is not carried over');
+  assert.deepEqual(without(v2.deployerSuperseded[0], 'supersededAt'), old);
+});
+
+test('rerunning a --force-new that crashed part way registers the rest, without --same-group', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  const tampered = t.read();
+  tampered.v2.forgeCore.schemaHash = '0'.repeat(64);
+  writeFileSync(t.testnetFile, JSON.stringify(tampered, null, 2));
+  const argv = t.prod('--force-new', '--abandon-live-set', 'testnet');
+  // the new forge-core lands, the new forge-collab's broadcast never does
+  const real = t.fake.evo.EvoSDK;
+  let n = 0;
+  const evo = { ...t.fake.evo, EvoSDK: class extends real { constructor(o) { super(o); const b = this.stateTransitions.broadcastAndWait; this.stateTransitions.broadcastAndWait = async (st) => { if (++n === 2) t.fake.failNext('before'); return b(st); }; } } };
+  await assert.rejects(t.run(argv, { evo }), /connection lost/);
+  await t.run(argv);
+  const v2 = t.read().v2;
+  const group = contractGroupId(t.fake.ownerId, 5n);
+  assert.deepEqual(KEYS.map((k) => v2[k].identityNonce), ['5', '6', '7', '8']);
+  assert.ok(KEYS.every((k) => v2[k].contractGroupId === group && v2[k].status === 'registered'));
+  assert.deepEqual(KEYS.map((k) => v2[`${k}Superseded`]?.length), [1, 1, 1, 1]);
+});
+
+test('testnet and mainnet: discovery only, a chain id of the network, a proved chain', async () => {
+  const t = setup();
+  await assert.rejects(t.run(t.prod('--addresses', 'https://1.2.3.4:1443')), /--addresses is for a devnet; testnet uses SDK discovery/);
+  t.fake.state.chainId = 'dash-devnet-sakura';
+  await assert.rejects(t.run(t.prod()), /the node serves chain dash-devnet-sakura, which is not a testnet chain id/);
+  t.fake.state.chainId = 'dash-testnet-51';
+  await assert.rejects(t.run(['--network', 'mainnet', '--set', 'mainnet', '--identity', t.identity, '--expect-sha256', t.sumsFile]), /the node serves chain dash-testnet-51, which is not a mainnet chain id \(\^evo1\$\)/);
+  t.fake.state.proofChainId = '';
+  await assert.rejects(t.run(t.prod()), /could not prove the chain id of testnet \(the proof names no chain id\); testnet registration refused/);
+  t.fake.state.chainId = null;
+  await assert.rejects(t.run(t.prod()), /could not prove the chain id/);
+  t.fake.state.proofChainId = null;
+  t.fake.state.chainId = 'dash-testnet-51';
+  assert.equal(t.fake.broadcasts, 0);
+  assert.deepEqual(t.read(), TESTNET_SEED);
+  // a devnet name is one path segment: it never reaches another network's record
+  await assert.rejects(t.run(['--network', 'devnet', '--devnet-name', 'a/../testnet', '--set', 'mainnet', '--identity', t.identity]), /--devnet-name a\/\.\.\/testnet: lower-case letters, digits and dashes only/);
+  await assert.rejects(t.run(['--network', 'devnet', '--devnet-name', 'Sakura', '--identity', t.identity]), /--devnet-name Sakura/);
+  assert.deepEqual(t.read(), TESTNET_SEED);
+});
+
+test('the registered commit must be on origin, and one run at a time writes a record', async () => {
+  const t = setup();
+  t.git.pushed = () => false;
+  await assert.rejects(t.run(t.prod()), /HEAD aaaaaaaaaaaa is on no branch of origin: push it first/);
+  t.git.pushed = () => { throw new Error('no remote'); };
+  await assert.rejects(t.run(t.prod()), /git cannot report whether HEAD is on origin/);
+  assert.equal(t.fake.broadcasts, 0);
+  assert.ok(!existsSync(`${t.testnetFile}.lock`), 'a refused run leaves no lock');
+  t.git.pushed = () => true;
+  // a lock already there (another run, or a killed one) stops the run before it reads the record
+  writeFileSync(`${t.testnetFile}.lock`, 'pid 1 on elsewhere since 2026-10-20T12:00:00.000Z\n');
+  await assert.rejects(t.run(t.prod()), /testnet\.json\.lock exists \(pid 1 on elsewhere since 2026-10-20T12:00:00\.000Z\): another deploy-v2 run is writing testnet\.json.*delete the lock by hand/s);
+  assert.ok(existsSync(`${t.testnetFile}.lock`), 'another run\'s lock is never removed');
+  // a dry run writes nothing and takes no lock
+  await t.run([...t.prod(), '--dry-run']);
+  rmSync(`${t.testnetFile}.lock`);
+  await t.run(t.prod());
+  assert.equal(t.read().v2.forgeMeta.status, 'registered');
+  assert.ok(!existsSync(`${t.testnetFile}.lock`));
 });

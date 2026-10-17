@@ -27,22 +27,36 @@
 // --record, a scratch record naming the network's own forge-core or contract group is refused, and
 // a recorded contract registered from another schema stops the run, so a scratch run never touches
 // or extends the live deployment. Its DAPI addresses come from --addresses, else the scratch
-// record, else (read only) the network's record.
+// record, else (read only) the network's record. --devnet-name is lower-case letters, digits and
+// dashes; --addresses is for a devnet only (testnet and mainnet use SDK discovery).
 //
 // Registering into the live testnet or mainnet record (CONT-02, CNT-04, CNT-15) refuses, before
 // anything is broadcast, unless: the set's files match git HEAD (what is registered is in git),
-// build.py --check passes, --expect-sha256 <file> (sha256sum lines for the set's files, the sums the
-// owner signed; --print-sha256 prints them, every --dry-run too) matches every file, and every
-// create transition leaves >= 2,000 B under max_state_transition_size (D44); a devnet warns. A
-// preflight pass builds and sizes every transition before the first broadcast. --force-new there
-// also needs --abandon-live-set <network>: it supersedes the contract set every client reads.
+// HEAD is on a branch of origin, build.py --check passes, --expect-sha256 <file> (sha256sum lines
+// for the set's files, the sums the owner signed; --print-sha256 prints them, every --dry-run too)
+// matches every file, every create transition leaves >= 2,000 B under max_state_transition_size
+// (D44), and the chain id is proved (a DPNS proof agreeing with the node's status) and is the
+// network's (`dash-testnet-<n>`, `evo1`); a devnet warns. The set's files are read once, so the
+// sums checked are of the bytes registered. A preflight pass builds and sizes every transition
+// before the first broadcast. --force-new there also needs --abandon-live-set <network>: it
+// supersedes the contract set every client reads.
 // The record gains `network`, `chainId` (a run against another chain stops), per contract
-// `sourceFile`, `sourceSha256`, `gitCommit`, `registeredSchemaHash`, `roomBytes` and `provedAt` (the
-// block metadata of the first proof after confirmation: an upper bound on the registration block),
-// `v2.deployer` and `v2.nonceLedger` (every transition the deployer signed, written before its
-// broadcast). Something else that signed with the deployer's identity nonce stops the next create
-// until it is named: --acknowledge-nonce <n> --note "<what it was>". The contract group must have
-// no admins. --deployer-created-height <n> records the escrowed identity's creation height.
+// `sourceFile`, `sourceSha256`, `gitCommit`, `gitCommitPushed`, `registeredSchemaHash`,
+// `documentsHash` (what a fetched contract's documentSchemas and schemaDefs hash to),
+// `transitionSha256` (the signed transition's bytes), `roomBytes` and `provedAt` (the block
+// metadata of the first proof after confirmation: an upper bound on the registration block),
+// `v2.deployer` (another deployer's block moves to v2.deployerSuperseded) and `v2.nonceLedger`
+// (every transition the deployer signed, written before its broadcast; a settled entry is never
+// rewritten). Something else that signed with the deployer's identity nonce stops the next create
+// until it is named: --acknowledge-nonce <n> --note "<what it was>" (refused for a nonce that
+// created a contract). The contract group must have no admins. --deployer-created-height <n>
+// records the escrowed identity's creation height.
+//
+// A node that reports the deployer's identity nonce below the last one the record shows signed is
+// behind: it is asked again for a while, then the run stops (nothing is reserved from a stale
+// nonce). A reservation found on chain is completed only when no other record names its id and the
+// contract's schema is the reservation's. A run that writes holds `<record>.lock` (created
+// exclusively, removed when the run ends); one left by a killed run is deleted by hand.
 //
 // forge-meta (DESIGN rev 4.1 D44): when <dir> holds forge-meta.json it is registered fourth, after
 // forge-community, like the others: its schema names forge-core's id (FORGE_CORE_CONTRACT_ID), and
@@ -298,6 +312,10 @@ function selfTest(dir = DEFAULT_CONTRACTS_DIR, log = defaultLog) {
   if (!refused({ network: 'testnet', contractsDir: tmpdir() }) || !refused({ network: 'testnet', contractsDir: SETS.mainnet }) || !refused({ network: 'testnet', contractsDir: SETS.devnet })
       || !refused({ network: 'devnet', devnetName: 'sakura', contractsDir: SETS.devnet }) || !refused({ network: 'testnet', set: 'devnet', contractsDir: SETS.mainnet })) {
     throw new Error('a scratch --contracts set without --record was accepted');
+  }
+  if (!CHAIN_IDS.testnet.test('dash-testnet-51') || CHAIN_IDS.testnet.test('dash-devnet-sakura') || !CHAIN_IDS.mainnet.test('evo1') || CHAIN_IDS.mainnet.test('evo10')
+      || !DEVNET_NAME.test('sakura') || DEVNET_NAME.test('a/../testnet')) {
+    throw new Error('the network chain ids or the devnet name pattern misjudged a name');
   }
   log('record self-test: ok (a scratch set writes only its --record)');
   // the sums the owner signs: round trip, and every way they can differ from the files

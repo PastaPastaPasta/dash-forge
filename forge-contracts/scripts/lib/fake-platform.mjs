@@ -9,8 +9,9 @@
 // would), contract groups with owners and admins, a balance that every landed transition spends,
 // and proof metadata with a chain id. A broadcast can be made to fail before it lands or after
 // (the connection dies while the node accepted it), the chain can be reset (another id, empty
-// state), and something else can consume the deployer's nonce. It is not offline-chain.mjs, which
-// models documents.
+// state), something else can consume the deployer's nonce, and the node can lag: answer the
+// deployer's identity nonce from an earlier block. It is not offline-chain.mjs, which models
+// documents.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { b58encode, contractGroupId, contractId } from '../deploy-v2.mjs';
@@ -49,6 +50,8 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     failure: null, // { mode: 'before' | 'after' }
     forceAdmins: null, // when set, the next group registered has these admins
     updateWaitThrows: true, // evo-sdk's wait refuses a contract update's proof ("affected state only")
+    lag: null, // while lagging: { nonce }, the deployer's identity nonce as of an earlier block
+    lagAfter: null, // when set, the node's identity nonce stays at the block before this broadcast lands
     sizeOf: sizeOf ?? ((kind, json) => Math.round(JSON.stringify(json).length * 0.85)),
   };
   if (deployerExists) state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() });
@@ -143,7 +146,7 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
           return me ? { getPublicKeyById: (kid) => (kid === 1 ? { data: PUBLIC_KEY_HEX, disabledAt: null } : undefined) } : undefined;
         },
         balance: async (id) => state.identities.get(id)?.balance,
-        nonce: async (id) => state.identities.get(id)?.nonce,
+        nonce: async (id) => (state.lag && id === ownerId ? state.lag.nonce : state.identities.get(id)?.nonce),
         contractNonce: async (id, contract) => state.identities.get(id)?.contractNonces.get(contract) ?? 0n,
       };
       this.contracts = {
@@ -167,7 +170,9 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
           const failure = state.failure;
           state.failure = null;
           if (failure?.mode === 'before') throw new Error('connection lost before the node accepted the transition');
+          const nonceBefore = deployer()?.nonce ?? 0n;
           land(st);
+          if (state.lagAfter !== null && state.broadcasts >= state.lagAfter) { state.lag = { nonce: nonceBefore }; state.lagAfter = null; }
           if (failure?.mode === 'after') throw new Error('timed out waiting for the transition result');
           if (st.kind === 'update' && state.updateWaitThrows) throw new Error('affected state only: VerifiedDataContract snapshot is not a proof of the update');
         },
@@ -207,6 +212,12 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
       state.memberships.clear();
       state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() });
     },
+    /**
+     * The node lags (as one behind a load-balanced DAPI can): once the n-th broadcast lands, the
+     * deployer's identity nonce reads as of the block before it until catchUp().
+     */
+    lagAfter: (n) => { state.lagAfter = n; },
+    catchUp: () => { state.lag = null; },
     /** The next group registered has these admins. */
     forceAdmins: (ids) => { state.forceAdmins = ids; },
     get broadcasts() { return state.broadcasts; },
