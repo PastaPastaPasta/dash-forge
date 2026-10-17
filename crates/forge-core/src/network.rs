@@ -658,8 +658,11 @@ impl NetworkTarget {
         for (k, v) in &mut vars {
             if *k == ENV_QUORUM_URL {
                 *v = self.quorum_base_url();
-            } else if *k == ENV_DAPI_ADDRESSES {
-                if let Some(addresses) = &self.testnet_dapi_override {
+            } else if *k == ENV_DAPI_ADDRESSES && matches!(self.network, Network::Testnet) {
+                // The list this target resolved (override or deployment): an empty value
+                // would let git-remote-dash fall through to a global `dash.dapiAddresses`
+                // this process never read, and use other seeds than dg.
+                if let Some(addresses) = self.dapi_addresses().ok().filter(|a| !a.is_empty()) {
                     *v = addresses.join(",");
                 }
             }
@@ -1528,6 +1531,25 @@ mod tests {
                 "https://127.0.0.1:2443"
             );
         }
+    }
+
+    #[test]
+    fn testnet_hands_the_child_the_deployment_list_without_an_override() {
+        let target = NetworkTarget::for_network(Network::Testnet).unwrap();
+        let list = target.dapi_addresses().unwrap();
+        assert!(
+            !list.is_empty(),
+            "the testnet deployment records DAPI addresses"
+        );
+        let child = target.env_vars();
+        assert_eq!(
+            child
+                .iter()
+                .find(|(key, _)| *key == ENV_DAPI_ADDRESSES)
+                .unwrap()
+                .1,
+            list.join(",")
+        );
     }
 
     #[test]
