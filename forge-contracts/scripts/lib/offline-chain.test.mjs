@@ -2,10 +2,11 @@
 // the rules that need chain state, so a seed that breaks one fails seed-offline.mjs.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { CONTRACTS, CONTRACT_OF, FUSED_STAR, META_TYPES, MEMBER_ROLES, TRANSITION, VIS, b58encode, contractOn, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { CONTRACTS, CONTRACT_OF, FUSED_STAR, META_TYPES, ROOT, MEMBER_ROLES, TRANSITION, VIS, b58encode, contractOn, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -215,4 +216,23 @@ test('member roles: a reader matches no gate', { skip: !MEMBER_ROLES }, async ()
     await assert.rejects(write(OTHER, 'label', { repoId: R, name: 'x', r }), refusedWith(40127, 'label.ownerRefersTo'));
     await assert.rejects(write(OTHER, 'event', { repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 4, value: 'bug', r }), refusedWith(40127, 'event.ownerRefersTo'));
   }
+});
+
+// The committed four-contract set (contracts/mainnet): forge-meta gets an id, and the moved types
+// are written to it and to no other contract.
+test('a four-contract set routes the moved types to forge-meta', async () => {
+  const chain = new OfflineChain({ contractsDir: join(ROOT, 'contracts', 'mainnet') });
+  assert.deepEqual(Object.keys(chain.ids), ['core', 'collab', 'community', 'meta']);
+  const evo = chain.evo();
+  const write = documentWriter({ sdk: new evo.EvoSDK() }, evo, { ids: chain.ids }, noReconnect, { retries: 0 });
+  const R = idBytes((await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58());
+  for (const type of META_TYPES) assert.equal(contractOn(chain.ids, type), 'meta', type);
+  await write(OWNER, 'topic', { repoId: R, name: 't0', vis: VIS });
+  assert.equal(chain.live('topic').length, 1);
+  // the same type addressed to its three-contract home is refused: forge-core no longer holds it
+  const sdk = new evo.EvoSDK();
+  const doc = new evo.Document({ documentTypeName: 'topic', dataContractId: chain.ids.core, ownerId: OWNER.id });
+  doc.data = { repoId: R, name: 't1', vis: VIS };
+  assert.throws(() => chain.create({ document: doc }), /topic is in forge-meta, not forge-core/);
+  assert.deepEqual(Object.keys((await sdk.contracts.fetch(chain.ids.meta)).getDocumentTypes()).sort(), [...META_TYPES].sort());
 });

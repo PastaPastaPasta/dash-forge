@@ -6,7 +6,7 @@
 // `seed-offline.mjs` can run each one against an in-memory chain (`offline-chain.mjs`) and check
 // every document it writes against RC1 without a network.
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,10 +22,23 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** An identifier's 32 bytes, from its base58 form. */
 export const idBytes = (b58) => b58decode(b58);
 
-/** The RC1 contract JSONs (contracts/forge-{core,collab,community}.json), by contract. */
-export const CONTRACTS = Object.fromEntries(
-  ['core', 'collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8'))]),
-);
+/**
+ * The contract JSONs of a set directory, by contract (`core`, `collab`, `community`, and `meta`
+ * when the directory holds forge-meta.json: the four-contract set of `contracts/mainnet`), and
+ * the contract that holds each document type.
+ */
+export function contractsIn(dir) {
+  const names = ['core', 'collab', 'community', ...(existsSync(join(dir, 'forge-meta.json')) ? ['meta'] : [])];
+  const contracts = Object.fromEntries(names.map((c) => [c, JSON.parse(readFileSync(join(dir, `forge-${c}.json`), 'utf8'))]));
+  const contractOf = Object.fromEntries(
+    Object.entries(contracts).flatMap(([c, json]) => Object.keys(json.documentSchemas).map((t) => [t, c])),
+  );
+  return { contracts, contractOf };
+}
+
+/** The default set: the RC1 contract JSONs (contracts/forge-{core,collab,community}.json), by contract. */
+const DEFAULT_SET = contractsIn(join(ROOT, 'contracts'));
+export const CONTRACTS = DEFAULT_SET.contracts;
 
 /**
  * RC2 C1 (schema/build.py `fused_star`): the star itself sits in the trending window (its
@@ -37,9 +50,7 @@ export const CONTRACTS = Object.fromEntries(
 export const FUSED_STAR = (CONTRACTS.community.documentSchemas.star?.indices ?? []).some((index) => index.timeRange !== undefined);
 
 /** The contract (`core`, `collab`, `community`) that holds each document type. */
-export const CONTRACT_OF = Object.fromEntries(
-  Object.entries(CONTRACTS).flatMap(([c, json]) => Object.keys(json.documentSchemas).map((t) => [t, c])),
-);
+export const CONTRACT_OF = DEFAULT_SET.contractOf;
 
 /**
  * The types forge-meta holds on a four-contract set (DESIGN rev 4.1 D44); a three-contract set
@@ -50,10 +61,11 @@ export const META_TYPES = new Set(['repoKey', 'ban', 'label', 'topic', 'packMirr
 
 /**
  * The contract (`core`, `collab`, `community`, `meta`) that holds `type` on the network whose ids
- * are `ids`: forge-meta for `META_TYPES` when the deployment record has one, else `CONTRACT_OF`.
+ * are `ids`: forge-meta for `META_TYPES` when the deployment record has one, else `contractOf`
+ * (`CONTRACT_OF` by default; a set's own map from `contractsIn`).
  */
-export function contractOn(ids, type) {
-  return ids.meta && META_TYPES.has(type) ? 'meta' : CONTRACT_OF[type];
+export function contractOn(ids, type, contractOf = CONTRACT_OF) {
+  return ids.meta && META_TYPES.has(type) ? 'meta' : contractOf[type];
 }
 
 /** The id, on `net`, of the contract that holds `type`. */

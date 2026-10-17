@@ -156,6 +156,43 @@ dig +short CAA forge.dashhq.org
 
 Expect your records and Cloudflare's. Then confirm Universal SSL still shows **Active** under SSL/TLS → Edge Certificates.
 
+## Pausing the site (operator)
+
+A bug in the web app that corrupts or leaks on write, or a wrong cost, needs "stop writes, keep reading" faster than a code fix. The Pages build has a switch for that, on every network, with no code change. It is the repository variable `PAGES_NOTICE`, read by `.github/workflows/pages.yml` into `NEXT_PUBLIC_PAGES_NOTICE` (`forge-web/lib/pages-notice.ts`).
+
+| `PAGES_NOTICE` | What the site does |
+|---|---|
+| unset or empty | Nothing. |
+| `advisory` | A banner on every page that cannot be dismissed, linking the advisory. Writes stay on. |
+| `paused` | The same banner, and every write is refused before anything is signed or paid: each write button says why, and sign-in, identity creation and top-up refuse too. Reading, cloning and verifying keep working. |
+
+Two more variables shape the banner: `PAGES_NOTICE_TEXT` is the reason, a sentence or two of at most 400 characters (it is also what every write button says, after "Writing is paused:"), and `PAGES_NOTICE_URL` is the advisory's `https://` address (default: the repository's security page, `https://github.com/PastaPastaPasta/dash-forge/security`). Any other mode, a text over 400 characters or a URL that is not `https://` fails the build, so a typo cannot leave the site silently unpaused. The devnet-move notice (`PAGES_DEVNET_NOTICE`) is a separate switch; when `PAGES_NOTICE` is set its banner takes the strip.
+
+To pause (about 3 minutes from start to live):
+
+```sh
+gh variable set PAGES_NOTICE_TEXT --body "A signing bug is being fixed. Nothing was lost."
+gh variable set PAGES_NOTICE_URL --body "https://github.com/PastaPastaPasta/dash-forge/security/advisories/GHSA-xxxx-xxxx-xxxx"
+gh variable set PAGES_NOTICE --body paused
+gh workflow run pages.yml --ref master
+gh run watch
+```
+
+To lift it, delete the variable and run the workflow again:
+
+```sh
+gh variable delete PAGES_NOTICE
+gh variable delete PAGES_NOTICE_TEXT
+gh variable delete PAGES_NOTICE_URL
+gh workflow run pages.yml --ref master
+```
+
+Check the live site afterwards: the banner shows (or is gone), and a write button names the reason (or signs). A tab that was already open learns of the new build within about 12 minutes or when it is focused ("A new version is available", `forge-web/lib/new-build.ts`). It compares the served `forge-manifest.json`'s commit and its `notice` field, so a pause redeployed from the same commit counts as new. Until it reloads, the tab runs the old build, so the pause is not instant for open tabs. Nothing forces them to reload yet.
+
+The switch covers this Pages build only. The IPFS release copies, `dg`, and CI or mirror runners ignore it.
+
+This switch is the lever for a bug in the client, not for a compromised site: a compromised build can ignore its own pause. If forge.dashhq.org itself serves wrong bytes, stop serving it at Cloudflare first (only the zone owner can; no maintenance rule is configured yet), then `gh workflow disable pages.yml`, investigate, fix, re-enable, check the result with `dg verify-app` and announce it. Unpublishing Pages without a replacement leaves nobody a copy to verify against, so do that last.
+
 ## Other static hosts (IPFS gateways, S3, nginx)
 
 The same rules apply:

@@ -375,6 +375,38 @@ mod tests {
         assert!(seen > META_TYPES.len());
     }
 
+    /// The committed four-contract set (`contracts/mainnet/`, what testnet and mainnet register)
+    /// agrees with the client map type for type: every type maps to the file that holds it, and
+    /// forge-meta holds exactly [`META_TYPES`].
+    #[test]
+    fn the_four_contract_map_matches_the_mainnet_set() {
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts/contracts/mainnet"
+        ));
+        let forge = ForgeIds::test_forge_meta();
+        let mut meta_types = Vec::new();
+        for (file, want) in [
+            ("forge-core.json", ForgeContract::Core),
+            ("forge-collab.json", ForgeContract::Collab),
+            ("forge-community.json", ForgeContract::Community),
+            ("forge-meta.json", ForgeContract::Meta),
+        ] {
+            let text = std::fs::read_to_string(dir.join(file)).expect(file);
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            for t in json["documentSchemas"].as_object().unwrap().keys() {
+                assert_eq!(forge.contract_of(t), Some(want), "{file}: {t}");
+                if want == ForgeContract::Meta {
+                    meta_types.push(t.clone());
+                }
+            }
+        }
+        meta_types.sort();
+        let mut want: Vec<String> = META_TYPES.iter().map(|t| (*t).to_owned()).collect();
+        want.sort();
+        assert_eq!(meta_types, want);
+    }
+
     #[test]
     fn the_layout_follows_the_deployment_record() {
         let three = ForgeIds::test_forge();

@@ -13,6 +13,7 @@ import { ShieldAlert } from 'lucide-react'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { servedCid } from '@/lib/build-info'
 import { SITE_HOST } from '@/lib/site'
+import { DOCS } from '@/lib/docs-links'
 
 /**
  * The address to check: this build's site, or, on a copy served by CID from an IPFS gateway (the
@@ -40,20 +41,24 @@ export function ScanOnlyHere({ host: given }: { host?: string }): JSX.Element {
       </p>
       <ul className="list-disc space-y-0.5 pl-10 text-[12px] text-anvil-700 dark:text-anvil-300">
         <li>
-          A lookalike site can show a code that looks the same. Check the address bar first
+          Forge never asks you to scan a code it didn’t show you here. A lookalike site can show a code that looks the same, so
+          check the address bar first
           {here.ipfs && given === undefined ? ', and check this copy’s CID against the release (see “Verify the app” in the guides)' : ''}.
         </li>
         <li>
           An approval gives a key that can sign as you on Forge (an Android wallet’s key works on any Platform app), with no spending
-          limit unless your wallet sets one; today’s wallets don’t.
+          limit or expiry unless your wallet sets one; today’s wallets don’t.
         </li>
         <li>It also gives the encryption key that opens your private and members-only content.</li>
         <li>
-          Disabling the key stops it signing:{' '}
+          If you scanned a code you didn’t trust:{' '}
           <Link href="/settings/keys/" onClick={closeLogin} className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-keys">
-            Settings → Devices &amp; keys → Disable
+            Settings → Devices &amp; keys → Disable all other keys
           </Link>{' '}
-          (needs your recovery phrase or identity file). If you approved a code shown anywhere else, replace your encryption key too.
+          (needs your recovery phrase or identity file), then replace your encryption key.{' '}
+          <a href={DOCS.revokeKeys} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
+            How
+          </a>
         </li>
       </ul>
     </div>

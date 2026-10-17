@@ -1,7 +1,8 @@
 /**
  * The contract layout over both deployment shapes (DESIGN rev 4.1 D44): sakura's three contracts
  * and a four-contract set with forge-meta. Parity: forge-core `layout` tests
- * (`the_layout_follows_the_deployment_record`, `the_four_contract_map_matches_the_layout_build`).
+ * (`the_layout_follows_the_deployment_record`, `the_four_contract_map_matches_the_layout_build`,
+ * `the_four_contract_map_matches_the_mainnet_set`).
  */
 
 import { execFileSync } from 'node:child_process'
@@ -75,6 +76,26 @@ describe('the layout follows the deployment record', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // The committed four-contract set (`build.py --mainnet`, what testnet and mainnet register).
+  it('agrees with the committed mainnet set type for type', () => {
+    const dir = resolve(__dirname, '../../forge-contracts/contracts/mainnet')
+    const metaTypes: string[] = []
+    for (const [file, kind] of [
+      ['forge-core.json', 'core'],
+      ['forge-collab.json', 'collab'],
+      ['forge-community.json', 'community'],
+      ['forge-meta.json', 'meta'],
+    ] as const) {
+      const json = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { documentSchemas: Record<string, unknown> }
+      for (const t of Object.keys(json.documentSchemas)) {
+        expect(writeContractKind(FOUR, t), `${file}: ${t}`).toBe(kind)
+        expect(contractKindOfType(t, FOUR), `${file}: ${t}`).toBe(kind)
+        if (kind === 'meta') metaTypes.push(t)
+      }
+    }
+    expect(metaTypes.sort()).toEqual([...META_TYPES].sort())
   })
 })
 

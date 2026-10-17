@@ -35,6 +35,7 @@ import {
   stateWhat,
   toItems,
   transitionWhat,
+  inboxReachNote,
   visibleItems,
   withHides,
   type Feed,
@@ -542,5 +543,21 @@ describe('hides (maintainer moderation)', () => {
   it('keeps the hides of the threads with the newest hides', () => {
     const hides = withHides(NO_HIDES, feed(), [hideDoc(SPAM, ME), hideDoc('OLD', ME, { $id: 'O', $createdAt: 1 })], true)
     expect(Object.keys(pruneHides(hides, 1).threads)).toEqual([SPAM])
+  })
+})
+
+describe('inboxReachNote (FEAT-05)', () => {
+  it('says notifications need an open Forge tab, and that there is no email or push at launch', () => {
+    const note = inboxReachNote(false)
+    expect(note).toContain('only arrive while a Forge tab is open')
+    expect(note).toContain('every 60 s')
+    expect(note).toContain('no email or push at launch')
+  })
+
+  it('points to Settings when the build has a notification service', () => {
+    const note = inboxReachNote(true)
+    expect(note).not.toContain('only arrive while a Forge tab is open')
+    expect(note).toContain('only email and push reach you; set them up in Settings')
+    expect(note).not.toContain('no email')
   })
 })

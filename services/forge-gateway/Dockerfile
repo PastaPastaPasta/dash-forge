@@ -1,8 +1,11 @@
 # forge-gateway from source: the gateway and the git-remote-dash helper it fetches through, on
 # Debian with git (http-backend) and DejaVu fonts (link-preview cards). Build from the
-# repository root:
+# repository root, naming the commit (the gateway reports it in /readyz):
 #
-#   docker build -f services/forge-gateway/Dockerfile -t forge-gateway .
+#   docker build -f services/forge-gateway/Dockerfile \
+#     --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD) -t forge-gateway .
+#
+# Releases publish this image as ghcr.io/<owner>/forge-gateway (release.yml, `gateway-image`).
 #
 # Self-hosting: services/forge-gateway/docker-compose.yml and docs/hosting/forge-gateway.md.
 # Base images are pinned by digest; bump them deliberately (the same pins as forge-relay).
@@ -38,6 +41,8 @@ COPY forge-contracts/config forge-contracts/config
 # built with --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD).
 ARG DASH_FORGE_BUILD_SHA=unknown
 ENV DASH_FORGE_BUILD_SHA=${DASH_FORGE_BUILD_SHA}
+# The crates come from the network: retry a dropped connection rather than fail the build.
+ENV CARGO_NET_RETRY=10 CARGO_HTTP_TIMEOUT=120
 RUN cargo build --locked --release -p forge-gateway -p git-remote-dash --features forge-core/vendored-openssl \
  && mkdir /out \
  && cp target/release/forge-gateway target/release/git-remote-dash /out/

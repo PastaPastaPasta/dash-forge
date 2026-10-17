@@ -4,7 +4,7 @@
  * Top up the signed-in identity from this browser (QW-012), inside the top-up sheet: the
  * recovery phrase (checked against the identity) gives a deposit address, shown as a QR code
  * and text; the page watches for the payment, locks it and sends the `IdentityTopUp`
- * (`lib/auth/identity-top-up.ts`). Any Dash wallet, or a devnet faucet, can pay the address.
+ * (`lib/auth/identity-top-up.ts`). Any Dash wallet, or a test-network faucet, can pay the address.
  *
  * The words are held in the textarea and a ref only, dropped once the run ends. A deposit this
  * device recorded but did not finish is offered again when the sheet reopens: typing the same
@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { PaymentAddress } from '@/components/ui/payment-address'
 import { Field, Textarea } from '@/components/ui/input'
 import { ErrorBox } from '@/components/auth/protection-fields'
+import { FaucetLinks } from '@/components/faucet-links'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { PHASE_TEXT, connectPlatform, type ConnectPhase } from '@/lib/auth/connect'
 import { invalidMnemonicMessage, isValidMnemonic } from '@/lib/auth/hd'
@@ -37,7 +38,7 @@ const STAGE_TEXT: Readonly<Record<TopUpStage, string>> = {
   checking: 'Checking whether Platform recorded the top-up…',
 }
 
-export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.Element | null {
+export function IdentityTopUpFlow({ faucets }: { faucets: readonly string[] }): JSX.Element | null {
   const { identity, refreshBalance } = useAuth()
   const network = ACTIVE_NETWORK.network
   const words = useRef<HTMLTextAreaElement | null>(null)
@@ -179,11 +180,7 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
               becomes credits on your identity, less a small network fee.
             </p>
             <PaymentAddress address={address} amountDash={MIN_TOP_UP_DUFFS / 1e8} label="Top-up address" />
-            {faucet ? (
-              <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">
-                Get test DASH from the {ACTIVE_NETWORK.key} faucet (paste the address above)
-              </a>
-            ) : null}
+            <FaucetLinks urls={faucets} suffix=" (paste the address above)" />
           </>
         )}
         <div className="flex flex-wrap items-center gap-2 text-dense text-anvil-600 dark:text-anvil-300" aria-live="polite">

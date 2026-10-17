@@ -18,14 +18,15 @@ import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useInboxActions, useInboxStore } from '@/hooks/use-inbox'
+import { NOTIFY_URL } from '@/lib/notify/config'
 import { repoHref } from '@/hooks/use-query-param'
 import {
   INBOX_EMPTY,
   INBOX_FILTERS,
   MAX_REPOS,
   MAX_THREADS,
-  POLL_MS,
   groupThreads,
+  inboxReachNote,
   matchesFilter,
   subsByThread,
   threadReasons,
@@ -125,10 +126,7 @@ export default function NotificationsPage(): JSX.Element {
 
         <p role="note" className="flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-          <span>
-            Local only: this tab checks the chain every {POLL_MS / 1000} s while it is open. There is no email, no push and no
-            sync to your other devices; each browser keeps its own read state.
-          </span>
+          <span data-testid="inbox-reach-note">{inboxReachNote(NOTIFY_URL !== null)}</span>
         </p>
 
         <div role="group" aria-label="Show" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
