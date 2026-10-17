@@ -356,10 +356,10 @@ async fn broadcast(
 fn endpoints_for(ctx: &Ctx, args: &NewArgs) -> Result<CoreEndpoints> {
     let (islock, from) = match &args.islock_rpc {
         Some(v) => (Some(v.clone()), "--islock-rpc"),
+        // An unreadable config.toml is an error, never the default RPC: `islock_rpc = "off"`
+        // must not quietly turn back into a third-party endpoint.
         None => (
-            crate::config::Config::load()
-                .ok()
-                .and_then(|c| c.islock_rpc),
+            crate::config::Config::load()?.islock_rpc,
             "islock_rpc in config.toml",
         ),
     };
