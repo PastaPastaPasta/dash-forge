@@ -495,12 +495,10 @@ async function cmdTransfer(args) {
 async function cmdRestore(args) {
   const file = str(args.identity);
   if (!file) throw new Error('--identity <escrowed identity file> is required');
-  const mainnet = 'mainnet restore is not supported by mint-identity yet (it has no mainnet network)';
-  if (str(args.network) === 'mainnet') throw new Error(mainnet);
   const record = readJson(file);
-  if (record.network === 'mainnet') throw new Error(mainnet);
+  if ([str(args.network), record.network].includes('mainnet')) throw new Error('mainnet restore is not supported by mint-identity yet (it has no mainnet network)');
   const network = networkForRecord(args, record, file);
-  // Written next to the input unless --out says otherwise, and never over an existing file
+  // Written next to the input unless --out says otherwise; an existing file is kept (and must hold this identity)
   const out = resolve(str(args.out) ?? join(dirname(resolve(file)), `${basename(file).replace(/(\.identity)?\.json$/, '')}.restored.identity.json`));
   if (out === resolve(file)) throw new Error('--out must not be the escrowed file itself');
   const kept = existsSync(out) ? readJson(out) : null;

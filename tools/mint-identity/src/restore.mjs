@@ -9,9 +9,9 @@
 // address, the outpoint derives the file's identity id); then Core must still know the mined
 // transaction (else Core was reset too, and a fresh registration is the only path), and Platform
 // must not hold the asset lock already.
-import { createHash } from 'node:crypto';
 import { createRole } from './flow.mjs';
-import { bytesToHex, privateKeyToWif } from './bytes.mjs';
+import { bytesToHex, concatBytes, hexToBytes, privateKeyToWif, reverseBytes } from './bytes.mjs';
+import { hash256 } from './hash.mjs';
 import { assertValidMnemonic } from './mnemonic-arg.mjs';
 import { ChainClient } from './chain.mjs';
 import { InsightError } from './insight.mjs';
@@ -26,7 +26,6 @@ function b58encode(bytes) {
   for (const b of bytes) { if (b === 0) out = `1${out}`; else break; }
   return out;
 }
-const sha256 = (b) => createHash('sha256').update(b).digest();
 
 /**
  * The identity id an asset-lock outpoint creates: base58(sha256(sha256(txid bytes || vout LE))),
@@ -35,9 +34,9 @@ const sha256 = (b) => createHash('sha256').update(b).digest();
  */
 export function identityIdFromOutpoint(txid, vout = 0) {
   if (!/^[0-9a-fA-F]{64}$/.test(String(txid))) throw new Error(`not a transaction id: ${txid}`);
-  const index = Buffer.alloc(4);
-  index.writeUInt32LE(vout);
-  return b58encode(sha256(sha256(Buffer.concat([Buffer.from(txid, 'hex').reverse(), index]))));
+  const index = new Uint8Array(4);
+  new DataView(index.buffer).setUint32(0, vout, true);
+  return b58encode(hash256(concatBytes(reverseBytes(hexToBytes(txid)), index)));
 }
 
 /** The advice every "impossible" refusal ends with. */
@@ -48,12 +47,12 @@ const FRESH = 'A same-id restore is impossible: mint a new deployer and register
  * key, and its asset-lock outpoint must derive its identity id (and `expectId`). Returns the
  * rebuilt role (keys, asset-lock key, txid, identity id). Messages never carry the phrase or a key.
  */
-export function checkEscrow(record, network, { expectId, label = 'RESTORE' } = {}) {
+export function checkEscrow(record, network, { expectId } = {}) {
   if (typeof record?.mnemonic !== 'string' || !record.mnemonic) throw new Error('the identity file holds no mnemonic: it is not an escrowed mint-identity file');
   if (!record.identityId) throw new Error('the identity file has no identityId: it is a pending mint, not a registered identity (finish it with mint.mjs --out <its dir>)');
   if (!/^[0-9a-fA-F]{64}$/.test(String(record.txid ?? ''))) throw new Error('the identity file has no asset-lock txid: the identity cannot be re-created from its asset lock');
   assertValidMnemonic(record.mnemonic, 'the identity file');
-  const role = createRole(label, network, record.mnemonic);
+  const role = createRole('RESTORE', network, record.mnemonic);
   const wrong = (what) => new Error(`the identity file's mnemonic does not rebuild its ${what}: wrong or edited file`);
   if (record.depositAddress && role.depositAddress !== record.depositAddress) throw wrong('deposit address');
   if (record.assetLockKey?.publicKeyHex && bytesToHex(role.assetLockKeyPair.publicKey) !== record.assetLockKey.publicKeyHex.toLowerCase()) throw wrong('asset-lock key');

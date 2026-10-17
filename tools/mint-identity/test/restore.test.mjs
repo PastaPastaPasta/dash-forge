@@ -122,9 +122,9 @@ test('Core reset, an unmined lock, a consumed lock and an unreachable Core are t
   await assert.rejects(p, /Core was reset too/);
   [p] = run({ getTransaction: () => ({ txid: TXID, confirmations: 0, blockheight: undefined }) });
   await assert.rejects(p, /is not mined on Core testnet.*Core was reset/s);
-  [p, s] = run({ getTransaction: () => { throw new InsightError('Failed to get transaction: 503', 503); } });
+  [p] = run({ getTransaction: () => { throw new InsightError('Failed to get transaction: 503', 503); } });
   await assert.rejects(p, /cannot read asset-lock tx .* from Core .*retry/);
-  [p, s] = run({ registerIdentity: () => { throw new Error(`Asset lock transaction ${TXID} output 0 already completely used`); } });
+  [p] = run({ registerIdentity: () => { throw new Error(`Asset lock transaction ${TXID} output 0 already completely used`); } });
   await assert.rejects(p, /already consumed on this chain .*cannot be re-created\. A same-id restore is impossible/s);
   // the SDK's id must agree before anything registers
   [p, s] = run({ identityIdFromLock: () => 'SomethingElse' });

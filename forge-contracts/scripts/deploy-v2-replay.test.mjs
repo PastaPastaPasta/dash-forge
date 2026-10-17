@@ -15,6 +15,7 @@ import { createFakePlatform } from './lib/fake-platform.mjs';
 
 const REPO = resolve(import.meta.dirname, '..', '..');
 const KEYS = ['forgeCore', 'forgeCollab', 'forgeCommunity', 'forgeMeta'];
+const NAMES = ['forge-core', 'forge-collab', 'forge-community', 'forge-meta'];
 const OLD = 'dash-testnet-51';
 const NEW = 'dash-testnet-52';
 const dirs = [];
@@ -103,7 +104,7 @@ test('a Platform reset: the restored deployer replays the set, and every contrac
     { from: OLD, to: NEW, replayed: KEYS, updates: 0, nonces: ['1', '2', '3', '4'], ledgerLength: 4, notReplayed: [] });
   assert.deepEqual(Object.keys(r.provedAt), KEYS);
   // the schemas came from git at the recorded commit (each pass, the production preflight included, reads them)
-  assert.deepEqual([...new Set(t.shown)], ['forge-core', 'forge-collab', 'forge-community', 'forge-meta'].map((n) => `${'a'.repeat(40)}:forge-contracts/contracts/mainnet/${n}.json`));
+  assert.deepEqual([...new Set(t.shown)], NAMES.map((n) => `${'a'.repeat(40)}:forge-contracts/contracts/mainnet/${n}.json`));
 
   // rerunning the replay, or a normal run, sends nothing
   await t.run(t.replay());
@@ -148,7 +149,7 @@ test('the sums checked are the recorded ones: a set changed since registration s
   // the signed sums (of the current files) no longer match what the record says was registered
   await assert.rejects(t.run(t.replay()), /--expect-sha256: forge-core\.json: sha256/);
   const recorded = join(t.dir, 'recorded-sums.txt');
-  writeFileSync(recorded, formatSums(Object.fromEntries(KEYS.map((k, i) => [`${['forge-core', 'forge-collab', 'forge-community', 'forge-meta'][i]}.json`, rec.v2[k].sourceSha256]))));
+  writeFileSync(recorded, formatSums(Object.fromEntries(KEYS.map((k, i) => [`${NAMES[i]}.json`, rec.v2[k].sourceSha256]))));
   // and git at the recorded commit does not hash to them either: refused before signing
   await assert.rejects(t.run(['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--expect-sha256', recorded, '--replay', '--replay-from-chain', OLD]),
     /forgeCore create \(nonce 1\) from a{12}:forge-contracts\/contracts\/mainnet\/forge-core\.json has sha256 .* not the recorded .*not the bytes registered/);
@@ -174,7 +175,7 @@ test('a source edited by one byte is refused before anything is signed, frozen c
   t.git.show = () => { throw new Error('git must not be asked'); };
   const frozen = join(t.registeredRoot, 'testnet');
   mkdirSync(frozen, { recursive: true });
-  for (const n of ['forge-core', 'forge-collab', 'forge-community', 'forge-meta']) cpSync(join(SETS.mainnet, `${n}.json`), join(frozen, `${n}.v1.json`));
+  for (const n of NAMES) cpSync(join(SETS.mainnet, `${n}.json`), join(frozen, `${n}.v1.json`));
   const meta = join(frozen, 'forge-meta.v1.json');
   const good = readFileSync(meta);
   writeFileSync(meta, Buffer.concat([good, Buffer.from(' ')]));
