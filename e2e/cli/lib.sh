@@ -27,6 +27,24 @@ export E2E_REPO_ROOT
 # shellcheck source=config.sh
 source "${E2E_LIB_DIR}/config.sh"
 
+# Keep gh's host configuration reachable when Forge runs with an isolated XDG home.
+# Respect an explicit GH_CONFIG_DIR or an existing XDG gh login; do not copy credentials.
+if [[ -z "${GH_CONFIG_DIR:-}" ]]; then
+  if [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/gh/hosts.yml" ]]; then
+    GH_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/gh"
+  else
+    GH_CONFIG_DIR="$HOME/.config/gh"
+  fi
+fi
+export GH_CONFIG_DIR
+
+# GitHub import scenarios need a usable API login, not merely `gh auth token` (which can
+# succeed via the OS credential store while gh api still asks for login). Discard all output.
+require_github() {
+  command -v gh >/dev/null && _tmo gh api user >/dev/null 2>&1 \
+    || skip_scenario "no GitHub API access (log in with gh, set GH_CONFIG_DIR, or set GH_TOKEN)"
+}
+
 # --- colours (tty only) ------------------------------------------------------
 if [[ -t 1 ]]; then
   C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_RST=$'\033[0m'
@@ -432,12 +450,11 @@ seed_tiny_repo() { # seed_tiny_repo <dir> <branch> [tagname]
   git init -q -b "$branch" "$dir"
   git -C "$dir" config user.email "e2e@dash-forge.test"
   git -C "$dir" config user.name "Dash Forge E2E"
-  git -C "$dir" config commit.gpgsign false
   printf 'Dash Forge e2e round-trip\nrun-id: %s\n' "${RUN_ID}" >"$dir/README.md"
   printf 'alpha %s\n' "${RUN_ID}" >"$dir/alpha.txt"
   mkdir -p "$dir/sub"
   printf 'nested payload %s\n' "${RUN_ID}" >"$dir/sub/beta.txt"
-  git -C "$dir" add -A
+  git -C "$dir" add -- README.md alpha.txt sub/beta.txt
   git -C "$dir" commit -q -m "e2e seed ${RUN_ID}"
   if [[ -n "$tag" ]]; then
     git -C "$dir" tag -a "$tag" -m "e2e tag ${RUN_ID}"

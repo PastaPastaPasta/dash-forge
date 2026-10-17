@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Scenario 36: a push of the default branch publishes its history index (packManifest kind 3:
 # every path's last first-parent change and the exact commit count, docs/design/history-index.md),
-# a later push publishes a delta over it, and `dg repo reindex` backfills a repository pushed
+# a later push chooses a cost-effective full index or delta, and `dg repo reindex` backfills a repository pushed
 # without one.
 #
 #   1. Into a new repo, push `main` (3 commits): one history index manifest, a full one
 #      (`tips` = [tip]), and the push says so (`historyIndex` event: 3 commits).
-#   2. Push one more commit: a delta over the full index (`tips` = [tip, baseTip]), priced in the
-#      push's estimate (its platform line counts 3 manifests).
+#   2. Push one more commit: this tiny base is cheaper as another full index. Paired
+#      column/version artifacts put four manifests in the first push estimate.
 #   3. Into a second new repo, push with DASH_FORGE_NO_BROWSE_INDEX=1 (no browse artifacts):
 #      no history index. `dg repo reindex --git-dir <clone>` publishes a full one (and the
 #      locator), measured spend positive and small; a second reindex finds nothing to do.
@@ -15,7 +15,7 @@
 # Needs an identity with ~1 DASH (E2E_S36_IDENTITY, or minted from the devnet's funding key
 # E2E_MINT_FUNDING under `lockf $E2E_MINT_LOCK`, config.sh). Two small new repos per run.
 # Not in the default set (`run.sh 36`).
-SCENARIO_NAME="36 a push publishes the history index; a later push a delta; reindex backfills"
+SCENARIO_NAME="36 a push publishes the history index; a later push a cost-aware index; reindex backfills"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
@@ -52,7 +52,7 @@ print(sum(1 for x in p if x["kindCode"] == 3))' "$LOG-$2.json"
 }
 commit_in() { # commit_in <dir> <file> <text> <msg>
   printf '%s\n' "$3" >"$1/$2"
-  git -C "$1" add -A && git -C "$1" commit -q -m "$4"
+  git -C "$1" add -- "$2" && git -C "$1" commit -q -m "$4"
 }
 # The push's `<event>` JSON event from its stderr, as "<field>=<value> …" for `fields`.
 event_of() { # event_of <stderr log> <event> <field...>
@@ -85,22 +85,22 @@ if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-1" -C "$SRC" push "dash://$OWNER_ID/$N
 fi
 check "the push published a full history index of 3 commits" assert_eq "commits=3 delta=false" \
   "$(event_of "$LOG-1.err" historyIndex commits delta)"
-check "…and priced it: the platform line counts 3 manifests" assert_eq "manifests=3" \
+check "…and priced it: the platform line counts 4 manifests" assert_eq "manifests=4" \
   "$(event_of "$LOG-1.err" platform manifests)"
 check "one history index manifest" assert_eq "1" "$(history_tips "$OWNER_ID/$NAME" 1s)"
 
-step "2. the next push publishes a delta"
+step "2. the next push chooses a full index for this tiny base"
 commit_in "$SRC" README.md "fourth" "fourth"
 if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-2" -C "$SRC" push "dash://$OWNER_ID/$NAME" main:main; then
   cat "$LOG-2.err" >&2; is_flake "$LOG-2.err" && skip_scenario "push flaked"
   bad "the second push failed"; finish_scenario
 fi
-check "a delta of 4 commits" assert_eq "commits=4 delta=true" "$(event_of "$LOG-2.err" historyIndex commits delta)"
+check "a full index of 4 commits (cheaper than a delta here)" assert_eq "commits=4 delta=false" "$(event_of "$LOG-2.err" historyIndex commits delta)"
 check "two history index manifests" assert_eq "2" "$(history_tips "$OWNER_ID/$NAME" 2s)"
 reindex_json() { dg_as "$ID" --yes --json repo reindex "$1" --git-dir "$2" >"$3.json" 2>"$3.err"; }
 reindex_json "$OWNER_ID/$NAME" "$SRC" "$LOG-2r" || { cat "$LOG-2r.err" >&2; bad "reindex failed"; }
 check "reindex: the history index already covers the tip" assert_eq "covered" \
-  "$(jq_py "$LOG-2r.json" 'd["history"]["status"]')"
+  "$(jq_py "$LOG-2r.json" 'd["history"]')"
 
 step "2b. a fast-forward to commits already stored publishes the index too (review N5)"
 # A side branch pushed first stores the commits; main then moves to them with no new objects.
@@ -137,6 +137,6 @@ check "the spend is small (${spent} credits: a locator, a history index, their m
 check "one history index manifest" assert_eq "1" "$(history_tips "$OWNER_ID/$BARE" 3t)"
 reindex_json "$OWNER_ID/$BARE" "$SRC" "$LOG-3b" || { cat "$LOG-3b.err" >&2; bad "second reindex failed"; }
 check "a second reindex finds nothing to do" assert_eq "indexed covered" \
-  "$(jq_py "$LOG-3b.json" 'd["status"] + " " + d["history"]["status"]')"
+  "$(jq_py "$LOG-3b.json" 'd["status"] + " " + d["history"]')"
 
 finish_scenario

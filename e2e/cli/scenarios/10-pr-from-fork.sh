@@ -54,7 +54,7 @@ if git_dash_retry "$ID_CONTRIB" "$LOG-clone" clone -q --no-checkout "$FORK_REMOT
 else
   fail_with "$LOG-clone" "fork clone"
 fi
-git -C "$WORK" config user.email "contrib@e2e.test"; git -C "$WORK" config user.name "E2E Contrib"; git -C "$WORK" config commit.gpgsign false
+git -C "$WORK" config user.email "contrib@e2e.test"; git -C "$WORK" config user.name "E2E Contrib"
 # The base branch was pushed after the fork was (possibly) created on an earlier run: take
 # it from the parent.
 git_dash_retry "$ID_CONTRIB" "$LOG-fbase" -C "$WORK" fetch -q "$E2E_REMOTE" "+refs/heads/${BASE}:refs/remotes/upstream/base" \

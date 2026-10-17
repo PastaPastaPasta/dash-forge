@@ -80,7 +80,7 @@ fi
 seed_tiny_repo "$SRC" main >/dev/null
 git -C "$SRC" checkout -q -b feature
 printf 'feature %s\n' "$RUN_ID" >"$SRC/feature.txt"
-git -C "$SRC" add -A && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
+git -C "$SRC" add -- feature.txt && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
 FEATURE="$(git -C "$SRC" rev-parse HEAD)"
 if git_dash_retry "$P_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" "refs/heads/main:refs/heads/main" "refs/heads/feature:refs/heads/feature" \
    && collab_accept "$P_MEMBER" "$REPO" "$LOG-add" \
@@ -93,7 +93,7 @@ fi
 ISSUE_TITLE="sealed issue ${RUN_ID}"
 PR_TITLE="sealed pr ${RUN_ID}"
 LABEL="secret-label-${RUN_ID}"
-LABEL="${LABEL:0:120}"
+LABEL="${LABEL:0:30}"
 step "P_OWNER opens an issue and a PR; P_MEMBER comments, labels and approves"
 if dg_as "$P_OWNER" -y --json issue create "$REPO" --title "$ISSUE_TITLE" --body "secret body ${RUN_ID}" >"$LOG-issue.json" 2>"$LOG-issue.err" \
    && dg_as "$P_OWNER" -y --json pr create "$REPO" --head feature --base main --title "$PR_TITLE" --body "pr body ${RUN_ID}" >"$LOG-pr.json" 2>"$LOG-pr.err"; then

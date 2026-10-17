@@ -70,7 +70,7 @@ check "protecting it again writes nothing" assert_eq "unchanged" "$(jq_py "$LOG-
 
 step "COLLAB pushes to main: the helper refuses it (E601, nothing paid)"
 printf 'writer change %s\n' "$RUN_ID" >>"$SRC/alpha.txt"
-git -C "$SRC" commit -qam "writer change ${RUN_ID}"
+git -C "$SRC" add -- alpha.txt && git -C "$SRC" commit -qm "writer change ${RUN_ID}"
 if git_dash "$ID_COLLAB" "$LOG-wpush" -C "$SRC" push "$REMOTE" HEAD:refs/heads/main; then
   bad "a writer's push to protected main was ACCEPTED"
 elif grep -q 'E601' "$LOG-wpush.err" && is_local_precheck "$LOG-wpush.err" && grep -q 'protected ref: maintainers only' "$LOG-wpush.err"; then

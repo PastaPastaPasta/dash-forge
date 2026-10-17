@@ -72,11 +72,11 @@ _retry "$LOG-create.err" _dg_read "$S_OWNER" "$LOG-create.json" "$LOG-create.err
   || fail_with "$LOG-create" "repo create"
 SRC="${WORKROOT}/s21-src"
 rm -rf "$SRC"; git init -q -b "$BASE" "$SRC"
-git -C "$SRC" config user.email owner@e2e.test; git -C "$SRC" config user.name "E2E Owner"; git -C "$SRC" config commit.gpgsign false
+git -C "$SRC" config user.email owner@e2e.test; git -C "$SRC" config user.name "E2E Owner"
 mkdir -p "$SRC/src"
 printf 'fn main() {\n    let name = "world";\n    let greeting = "hello";\n    let punct = "!";\n    let sep = ", ";\n    println!("{greeting}{sep}{name}{punct}");\n}\n' >"$SRC/src/greet.rs"
 printf '# greet (%s)\n' "$RUN_ID" >"$SRC/README.md"
-git -C "$SRC" add -A && git -C "$SRC" commit -q -m "base: greet"
+git -C "$SRC" add -- src/greet.rs README.md && git -C "$SRC" commit -q -m "base: greet"
 BASE1="$(git -C "$SRC" rev-parse HEAD)"
 git_dash_retry "$S_OWNER" "$LOG-push-base" -C "$SRC" push "dash://${REPO}" "refs/heads/${BASE}:refs/heads/${BASE}" || fail_with "$LOG-push-base" "base push"
 ok "base at ${BASE1:0:12}"
@@ -85,11 +85,11 @@ step "CONTRIB forks, commits on ${FEATURE}, opens a draft PR, marks it ready"
 must "$S_CONTRIB" "$LOG-fork" "fork" repo fork "$REPO" --name "$FORKNAME"
 WORK="${WORKROOT}/s21-work"
 git_dash_retry "$S_CONTRIB" "$LOG-clone" clone -q "dash://${FORK}" "$WORK" || fail_with "$LOG-clone" "fork clone"
-git -C "$WORK" config user.email contrib@e2e.test; git -C "$WORK" config user.name "E2E Contrib"; git -C "$WORK" config commit.gpgsign false
+git -C "$WORK" config user.email contrib@e2e.test; git -C "$WORK" config user.name "E2E Contrib"
 git -C "$WORK" checkout -q -b "$FEATURE" "origin/${BASE}"
 sed -i.bak 's/"world"/"forge"/' "$WORK/src/greet.rs" && rm "$WORK/src/greet.rs.bak"
 printf 'fn helper() {}\n' >>"$WORK/src/greet.rs"
-git -C "$WORK" commit -qam "feat: greet the forge"
+git -C "$WORK" add -- src/greet.rs && git -C "$WORK" commit -qm "feat: greet the forge"
 HEAD1="$(git -C "$WORK" rev-parse HEAD)"
 git_dash_retry "$S_CONTRIB" "$LOG-push-f1" -C "$WORK" push "dash://${FORK}" "refs/heads/${FEATURE}:refs/heads/${FEATURE}" || fail_with "$LOG-push-f1" "feature push"
 ( cd "$WORK" && dgw "$S_CONTRIB" "$LOG-pr" pr create "$REPO" --base "$BASE" --head "$FEATURE" --draft --body "Greets the forge." ) || fail_with "$LOG-pr" "pr create --draft"
@@ -146,7 +146,7 @@ git_dash_retry "$S_CONTRIB" "$LOG-pull" -C "$WORK" pull -q --ff-only "dash://${F
 check "the applied commit carries the trailer" assert_contains "$(git -C "$WORK" log -1 --format=%B)" "Forge-Suggestion: ${SUGGEST_ID}"
 check "the suggestion is in the file" assert_contains "$(cat "$WORK/src/greet.rs")" 'fn helper() -> &'"'"'static str { "forge" }'
 printf '// reviewed\n' >>"$WORK/src/greet.rs"
-git -C "$WORK" commit -qam "chore: note the review"
+git -C "$WORK" add -- src/greet.rs && git -C "$WORK" commit -qm "chore: note the review"
 HEAD3="$(git -C "$WORK" rev-parse HEAD)"
 GIT_DASH_JSON=1 git_dash_retry "$S_CONTRIB" "$LOG-push-f2" -C "$WORK" push "dash://${FORK}" "refs/heads/${FEATURE}:refs/heads/${FEATURE}" || fail_with "$LOG-push-f2" "second push"
 check "git push posted the head update" assert_file_contains "$LOG-push-f2.err" '"event":"prSync"'
@@ -174,11 +174,9 @@ view_until "$S_OWNER" "$LOG-v6" "approved on the new head, COLLAB no longer requ
 
 step "checks and commits"
 CHECK_URL="https://ci.example.invalid/${RUN_ID}"
-SEED="${E2E_SEED_CHECK_RUN:-${BIN_DIR}/seed_check_run}"
-[[ -x "$SEED" ]] || SEED="${CARGO_TARGET_DIR:-${E2E_REPO_ROOT}/target}/debug/examples/seed_check_run"
-[[ -x "$SEED" ]] || ( cd "$E2E_REPO_ROOT" && cargo build -q -p forge-core --example seed_check_run >/dev/null 2>&1 )
-"$SEED" \
-  "$S_OWNER" "$(jq_py "$LOG-create.json" 'd["repoId"]')" "$HEAD3" build completed success "$CHECK_URL" >"$LOG-seed.out" 2>"$LOG-seed.err" \
+# Uses the same CheckRuns::report writer as the former seed_check_run example.
+dg_as "$S_OWNER" --yes --json ci report "$REPO" --sha "$HEAD3" --name build \
+  --status completed --conclusion success --details-url "$CHECK_URL" >"$LOG-seed.json" 2>"$LOG-seed.err" \
   || { cat "$LOG-seed.err" >&2; bad "seed a check run"; }
 for i in $(seq 1 8); do
   dg_read_retry "$S_OWNER" "$LOG-checks.json" "$LOG-checks.err" --json pr checks "$REPO" "$N" && [[ "$(jq_py "$LOG-checks.json" 'd["passed"]')" == "1" ]] && break

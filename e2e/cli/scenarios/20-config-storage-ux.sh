@@ -20,9 +20,9 @@
 SCENARIO_NAME="20 config.toml errors (E204), storage remove keychain cleanup, dead-copy clone (E503)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
-na_unless_devnet "records and asserts a devnet in its dg and git config; no testnet port yet"
 
 : "${E2E_UX_IDENTITY:=$ID_OWNER}"
+require_not_july "$E2E_UX_IDENTITY"
 UX_OWNER="$(_idid "$E2E_UX_IDENTITY")"
 [[ -n "$UX_OWNER" ]] || { bad "cannot read the identity id from ${E2E_UX_IDENTITY}"; finish_scenario; }
 LOG="${WORKROOT}/s20"
@@ -43,7 +43,7 @@ iso() { # iso <cmd...> — run in the isolated home, with no signing key (a func
 CONFIG="$ISO/xdg/dash-forge/config.toml"
 
 step "1. D-405: a config.toml syntax error is E204, everywhere"
-printf 'network = "devnet"\ndevnet_name = "%s"\ndefault_identity = \n' "$DASH_FORGE_DEVNET_NAME" >"$CONFIG"
+printf 'network = "%s"\ndevnet_name = "%s"\ndefault_identity = \n' "$DASH_FORGE_NETWORK" "$DASH_FORGE_DEVNET_NAME" >"$CONFIG"
 iso _tmo "$DG" auth status >"$LOG-status.out" 2>"$LOG-status.err"
 check "dg auth status exits 2" assert_eq "2" "$?"
 check "E204" assert_file_contains "$LOG-status.err" "[E204]"

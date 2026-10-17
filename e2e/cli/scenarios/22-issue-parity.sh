@@ -93,7 +93,7 @@ if dg_write "$ID_OWNER" "$LOG-assign" issue assign "$REPO" "$N" me; then
   # checkout's deployment record. Optional: skipped (not failed) when absent.
   CHAIN="${E2E_CHAIN_DOC:-}"
   if [[ -n "$CHAIN" && -f "$CHAIN" ]]; then
-    if FORGE_SRC="$E2E_REPO_ROOT" node "$CHAIN" collab event "[[\"refId\",\"==\",\"$E2E_OWNER_ID\"]]" --limit 100 >"$LOG-addr.json" 2>"$LOG-addr.err"; then
+    if FORGE_SRC="$E2E_REPO_ROOT" node "$CHAIN" community event "[[\"refId\",\"==\",\"$E2E_OWNER_ID\"]]" --limit 100 >"$LOG-addr.json" 2>"$LOG-addr.err"; then
       check "the addressee index finds the assign event" assert_file_contains "$LOG-addr.json" "$EV"
     else
       info "addressee read skipped: $(tail -1 "$LOG-addr.err")"
@@ -114,6 +114,12 @@ check "--search (title words)" until_read "$LOG-f2" "$N in [i['number'] for i in
 check "--search #n" until_read "$LOG-f3" "[i['number'] for i in d['issues']] == [$N]" issue list "$REPO" --search "#$N" --state all
 check "--author" until_read "$LOG-f4" "$N in [i['number'] for i in d['issues']] and all(i['author'] == '$E2E_OWNER_ID' for i in d['issues'])" issue list "$REPO" --author "$E2E_OWNER_ID" --state all --limit 100
 check "--state closed excludes it" until_read "$LOG-f5" "$N not in [i['number'] for i in d['issues']]" issue list "$REPO" --state closed --limit 100
+dg_write "$ID_OWNER" "$LOG-page-create" issue create "$REPO" --title "$TITLE paging" --body "second paging fixture" \
+  || { cat "$LOG-page-create.json" >&2; bad "paging fixture create failed"; finish_scenario; }
+PAGE_N="$(jq_py "$LOG-page-create.json" 'd["number"]')"
+check "both paging fixtures are visible" until_read "$LOG-page-ready" \
+  "$N in [i['number'] for i in d['issues']] and $PAGE_N in [i['number'] for i in d['issues']]" \
+  issue list "$REPO" --state all --limit 100 --search "$TITLE"
 if dg_read_retry "$ID_OWNER" "$LOG-p1.json" "$LOG-p1.err" --json issue list "$REPO" --state all --limit 1 --page 1 \
   && dg_read_retry "$ID_OWNER" "$LOG-p2.json" "$LOG-p2.err" --json issue list "$REPO" --state all --limit 1 --page 2; then
   check "pages are disjoint and counted" python3 -c "

@@ -153,6 +153,27 @@ out="$(libsh "$H" "require_not_july '$TMP/jul/RUNNER.identity.json'; echo reache
 expect_refused "testnet with some other devnet's funding key" "looks like a devnet funding key" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_MINT_FUNDING=/x/newnet-funding.wif -- true
 expect_ok "testnet: an explicit E2E_MINT_FUNDING is honoured" "/q/testnet-funding.wif" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_MINT_FUNDING=/q/testnet-funding.wif -- 'echo "$E2E_MINT_FUNDING"'
 
+echo "lib.sh: GitHub configuration survives Forge XDG isolation"
+H="$TMP/h-gh"; mkdir -p "$H/.config/gh" "$TMP/forge-xdg" "$TMP/gh-xdg/gh" "$TMP/gh-bin"
+printf '{}\n' >"$TMP/gh-xdg/gh/hosts.yml"
+out="$(libsh "$H" 'echo "gh=$GH_CONFIG_DIR"' "XDG_CONFIG_HOME=$TMP/forge-xdg")"
+[[ "$out" == *"gh=$H/.config/gh"* ]] && pass "isolated Forge XDG falls back to the user's gh config" || fail "gh fallback: $out"
+out="$(libsh "$H" 'echo "gh=$GH_CONFIG_DIR"' "XDG_CONFIG_HOME=$TMP/gh-xdg")"
+[[ "$out" == *"gh=$TMP/gh-xdg/gh"* ]] && pass "an existing XDG gh config is respected" || fail "gh XDG: $out"
+out="$(libsh "$H" 'echo "gh=$GH_CONFIG_DIR"' "XDG_CONFIG_HOME=$TMP/forge-xdg" "GH_CONFIG_DIR=$TMP/explicit gh")"
+[[ "$out" == *"gh=$TMP/explicit gh"* ]] && pass "explicit GH_CONFIG_DIR survives and preserves spaces" || fail "gh explicit: $out"
+cat >"$TMP/gh-bin/gh" <<'SH'
+#!/usr/bin/env bash
+# Deliberately emulate token lookup succeeding while API login fails.
+printf 'must-not-appear\n'
+[[ "$*" == 'auth token' || "${GH_TEST_API_OK:-0}" == 1 ]]
+SH
+chmod +x "$TMP/gh-bin/gh"
+out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH")"
+[[ "$out" == *"rc=2" && "$out" != *reached* && "$out" != *must-not-appear* ]] && pass "GitHub API refusal skips without printing credentials" || fail "gh API refusal: $out"
+out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH" GH_TEST_API_OK=1)"
+[[ "$out" == *reached* && "$out" == *"rc=0" && "$out" != *must-not-appear* ]] && pass "a usable GitHub API login continues without printing credentials" || fail "gh API login: $out"
+
 echo "the July list agrees with forge-contracts/scripts/lib/target.mjs"
 want="$(node -e "import('$REPO/forge-contracts/scripts/lib/target.mjs').then(m=>console.log([...m.JULY_POOL_IDS.keys()].sort().join(' ')))")"
 have="$(env -i PATH="$PATH" HOME="$TMP/h-devnet" bash -c 'source "'"$REPO"'/e2e/cli/config.sh"; for i in $JULY_POOL_IDS; do echo "$i"; done' | sort | tr '\n' ' ' | sed 's/ $//')"

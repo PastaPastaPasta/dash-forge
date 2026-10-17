@@ -25,12 +25,11 @@
 SCENARIO_NAME="26 anonymous reads: repo/issue/pr view and list, release download to a directory"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
-na_unless_devnet "records and asserts a devnet in its dg and git config; no testnet port yet"
 
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
 : "${E2E_V2_OWNER:=${IDID_OWNER}}"  # the read fixture is OWNER-owned (make e2e-fixture)
 : "${E2E_V2_NAME:=forge-v2-demo}"
-DEVNET="$DASH_FORGE_DEVNET_NAME"
+NET_ARGS=("${E2E_MINT_NET_ARGS[@]}") # dg and mint use the same network flags
 DEMO="${E2E_V2_OWNER}/${E2E_V2_NAME}"
 LOG="${WORKROOT}/s26"
 S3="http://127.0.0.1:9000"
@@ -51,7 +50,7 @@ anon_once() {
     unset $(compgen -v DASH_FORGE_)
     export DASH_FORGE_NO_KEYCHAIN=1
     [[ ${#extra[@]} -gt 0 ]] && export "${extra[@]}"
-    _tmo "$DG" --network devnet --devnet-name "$DEVNET" "$@" </dev/null ) >"$out" 2>"$err"; rc=$?
+    _tmo "$DG" "${NET_ARGS[@]}" "$@" </dev/null ) >"$out" 2>"$err"; rc=$?
   [[ $rc -ne 0 ]] && cat "$out" >>"$err" 2>/dev/null
   return $rc
 }
@@ -124,14 +123,15 @@ step "the run's identity and repos"
 IDS="${WORKROOT}/s26-ids"
 mkdir -p "$IDS" && chmod 700 "$IDS"
 if [[ -n "${E2E_S26_OWNER:-}" ]]; then
+  require_not_july "$E2E_S26_OWNER"
   cp "$E2E_S26_OWNER" "$IDS/S26.identity.json"
 else
-  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key (set E2E_MINT_FUNDING to a readable WIF file; got '${E2E_MINT_FUNDING:-}'); set E2E_S26_OWNER"
+  require_mint_funding "or set E2E_S26_OWNER"
   [[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
   lock=() lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")
   elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi
-  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DEVNET" --funding fund-from-key \
+  "${lock[@]}" node "$MINT_DIR/mint.mjs" "${E2E_MINT_NET_ARGS[@]}" --funding fund-from-key \
     --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label S26 --amount 0.05 >"$LOG-mint.log" 2>&1 \
     || { tail -5 "$LOG-mint.log" >&2; skip_scenario "minting failed (funding or network)"; }
 fi

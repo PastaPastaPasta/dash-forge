@@ -4,17 +4,27 @@
 #     error (never a silent full clone).
 #   * `git clone --filter=blob:none` -> MUST succeed and write a `.promisor` marker
 #     (lazy blob fetch enabled).
-# Read-only: no pushes, no budget.
+# Seeds one tiny pack on its own run-scoped branch; registers it for cleanup.
 SCENARIO_NAME="07 shallow fails loudly / partial clone works"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 LOG="${WORKROOT}/s07"
+BR="e2e/${RUN_ID}/partial"
+SRC="${WORKROOT}/s07-src"
+step "seed this scenario's history (independent of earlier scenarios)"
+seed_tiny_repo "$SRC" "$BR" >/dev/null
+register_ref "refs/heads/${BR}"
+if ! git_dash_retry "$ID_OWNER" "$LOG-seed" -C "$SRC" push "$E2E_REMOTE" "HEAD:refs/heads/${BR}"; then
+  cat "$LOG-seed.err" >&2
+  is_flake "$LOG-seed.err" && skip_scenario "partial-clone fixture push flaked"
+  bad "could not seed partial-clone history"; finish_scenario
+fi
 
 step "git clone --depth 1  (expect a LOUD failure, not a silent full clone)"
 D1="${WORKROOT}/s07-depth"; rm -rf "$D1"
-if git_dash_retry "$ID_DEPLOYER" "$LOG-depth" clone --depth 1 "$E2E_REMOTE" "$D1"; then
+if git_dash_retry "$ID_DEPLOYER" "$LOG-depth" clone --depth 1 --branch "$BR" "$E2E_REMOTE" "$D1"; then
   bad "shallow clone SUCCEEDED — it must fail loudly (silent full clone is the Design-Freeze bug)"
 else
   echo "----- --depth stderr (captured) -----" >&2
@@ -35,7 +45,7 @@ check "no full worktree was silently produced for --depth" \
 
 step "git clone --filter=blob:none  (expect success + .promisor)"
 PC="${WORKROOT}/s07-partial"; rm -rf "$PC"
-if git_dash_retry "$ID_DEPLOYER" "$LOG-filter" clone --filter=blob:none "$E2E_REMOTE" "$PC"; then
+if git_dash_retry "$ID_DEPLOYER" "$LOG-filter" clone --filter=blob:none --branch "$BR" "$E2E_REMOTE" "$PC"; then
   ok "partial clone completed"
 else
   echo "----- --filter stderr (captured) -----" >&2
