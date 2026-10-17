@@ -21,14 +21,14 @@
 #      public repo of theirs (which would otherwise write it in plaintext)
 #   6. P_OWNER merges the PR (1 approval counted from the sealed review)
 #
-# Needs the devnet's funding key (E2E_MINT_FUNDING, config.sh; default the QA harness's) and
+# Needs the devnet's funding key (E2E_MINT_FUNDING, config.sh; no default) and
 # tools/mint-identity's node modules; skips without them.
 SCENARIO_NAME="19 private repository: sealed issues, PRs, comments, reviews and labels"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-[[ -n "${E2E_P_OWNER:-}" || -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING)"
+[[ -n "${E2E_P_OWNER:-}" || -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key (set E2E_MINT_FUNDING to a readable WIF file; got '${E2E_MINT_FUNDING:-}')"
 [[ -n "${E2E_P_OWNER:-}" || -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
 
 LOG="${WORKROOT}/s19"

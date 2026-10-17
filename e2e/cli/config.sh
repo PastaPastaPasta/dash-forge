@@ -16,17 +16,12 @@
 export DASH_FORGE_NETWORK DASH_FORGE_DEVNET_NAME
 
 # --- minting run-only identities (scenarios 19, 24, 25, 26, 33, 36) -------------
-# The funding key tools/mint-identity spends from, and the lock that serialises mints across
-# every agent sharing that key's UTXOs (as `qa mint` does). Per devnet: the QA harness keeps
-# secrets/<devnet>-funding.wif, and moutai keeps its original lock path. MOUTAI_FUNDING (which
-# the QA harness's env.sh exports) is honoured on moutai only, so it never funds another devnet.
-if [[ "$DASH_FORGE_DEVNET_NAME" == moutai ]]; then
-  : "${E2E_MINT_FUNDING:=${MOUTAI_FUNDING:-/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}}"
-  : "${E2E_MINT_LOCK:=/tmp/qa-mint.lock}"
-else
-  : "${E2E_MINT_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/${DASH_FORGE_DEVNET_NAME}-funding.wif}"
-  : "${E2E_MINT_LOCK:=/tmp/qa-mint-${DASH_FORGE_DEVNET_NAME}.lock}"
-fi
+# The funding key tools/mint-identity spends from (a WIF file you provide: there is no default,
+# and the file must never be committed; `*.wif` is gitignored), and the lock that serialises
+# mints across every agent sharing that key's UTXOs. Scenarios that mint an identity skip with a
+# message naming E2E_MINT_FUNDING when it is unset or unreadable.
+: "${E2E_MINT_FUNDING:=}"
+: "${E2E_MINT_LOCK:=/tmp/qa-mint-${DASH_FORGE_DEVNET_NAME}.lock}"
 export E2E_MINT_FUNDING E2E_MINT_LOCK
 
 # --- fixture identity files --------------------------------------------------
