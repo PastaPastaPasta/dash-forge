@@ -48,6 +48,7 @@ anon_once() {
       GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 NO_COLOR=1 RUST_LOG=error
     # shellcheck disable=SC2046
     unset $(compgen -v DASH_FORGE_)
+    unset GH_CONFIG_DIR
     export DASH_FORGE_NO_KEYCHAIN=1
     [[ ${#extra[@]} -gt 0 ]] && export "${extra[@]}"
     _tmo "$DG" "${NET_ARGS[@]}" "$@" </dev/null ) >"$out" 2>"$err"; rc=$?

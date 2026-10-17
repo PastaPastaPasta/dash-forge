@@ -72,7 +72,7 @@ _retry "$LOG-create.err" _dg_read "$S_OWNER" "$LOG-create.json" "$LOG-create.err
   || fail_with "$LOG-create" "repo create"
 SRC="${WORKROOT}/s21-src"
 rm -rf "$SRC"; git init -q -b "$BASE" "$SRC"
-git -C "$SRC" config user.email owner@e2e.test; git -C "$SRC" config user.name "E2E Owner"
+git -C "$SRC" config user.email owner@e2e.test; git -C "$SRC" config user.name "E2E Owner"; git -C "$SRC" config commit.gpgsign false
 mkdir -p "$SRC/src"
 printf 'fn main() {\n    let name = "world";\n    let greeting = "hello";\n    let punct = "!";\n    let sep = ", ";\n    println!("{greeting}{sep}{name}{punct}");\n}\n' >"$SRC/src/greet.rs"
 printf '# greet (%s)\n' "$RUN_ID" >"$SRC/README.md"
@@ -85,7 +85,7 @@ step "CONTRIB forks, commits on ${FEATURE}, opens a draft PR, marks it ready"
 must "$S_CONTRIB" "$LOG-fork" "fork" repo fork "$REPO" --name "$FORKNAME"
 WORK="${WORKROOT}/s21-work"
 git_dash_retry "$S_CONTRIB" "$LOG-clone" clone -q "dash://${FORK}" "$WORK" || fail_with "$LOG-clone" "fork clone"
-git -C "$WORK" config user.email contrib@e2e.test; git -C "$WORK" config user.name "E2E Contrib"
+git -C "$WORK" config user.email contrib@e2e.test; git -C "$WORK" config user.name "E2E Contrib"; git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" checkout -q -b "$FEATURE" "origin/${BASE}"
 sed -i.bak 's/"world"/"forge"/' "$WORK/src/greet.rs" && rm "$WORK/src/greet.rs.bak"
 printf 'fn helper() {}\n' >>"$WORK/src/greet.rs"
@@ -174,7 +174,7 @@ view_until "$S_OWNER" "$LOG-v6" "approved on the new head, COLLAB no longer requ
 
 step "checks and commits"
 CHECK_URL="https://ci.example.invalid/${RUN_ID}"
-# Uses the same CheckRuns::report writer as the former seed_check_run example.
+# Uses the same CheckRuns::report writer as the seed_check_run example used by forge-web.
 dg_as "$S_OWNER" --yes --json ci report "$REPO" --sha "$HEAD3" --name build \
   --status completed --conclusion success --details-url "$CHECK_URL" >"$LOG-seed.json" 2>"$LOG-seed.err" \
   || { cat "$LOG-seed.err" >&2; bad "seed a check run"; }

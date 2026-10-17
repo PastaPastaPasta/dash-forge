@@ -58,8 +58,8 @@ export HOME="$BASE" XDG_CONFIG_HOME="$BASE/xdg" XDG_STATE_HOME="$BASE/state"
 export GIT_CONFIG_GLOBAL="$BASE/gitconfig" DASH_FORGE_NO_KEYCHAIN=1
 mkdir -p -m 700 "$XDG_CONFIG_HOME/dash-forge"
 : >"$XDG_CONFIG_HOME/dash-forge/.migrated-from-home-config"
-printf '[user]\n\tname = e2e s25\n\temail = s25@dash-forge.test\n[init]\n\tdefaultBranch = main\n' >"$GIT_CONFIG_GLOBAL"
-unset DASH_FORGE_KEY DASH_FORGE_PASSPHRASE
+printf '[user]\n\tname = e2e s25\n\temail = s25@dash-forge.test\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' >"$GIT_CONFIG_GLOBAL"
+unset DASH_FORGE_KEY DASH_FORGE_PASSPHRASE GH_CONFIG_DIR
 PASS="e2e-${RUN_ID}-sealed-passphrase"
 NAME="e2e-sealed-push-${RUN_ID}"
 NAME="$(printf '%s' "${NAME:0:63}" | tr 'A-Z' 'a-z')"

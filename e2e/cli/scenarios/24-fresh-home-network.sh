@@ -31,6 +31,12 @@ NETWORK="$DASH_FORGE_NETWORK"
 DEVNET="$DASH_FORGE_DEVNET_NAME"
 NET_LABEL="${NETWORK}${DEVNET:+-${DEVNET}}"
 NET_ARGS=("${E2E_MINT_NET_ARGS[@]}")
+AUTH_NEW_FIX="dg auth new"
+GIT_NETWORK_FIX="git config --global dash.network"
+if [[ "$NETWORK" == devnet ]]; then
+  AUTH_NEW_FIX="dg auth new --network devnet --devnet-name"
+  GIT_NETWORK_FIX="git config --global dash.network devnet"
+fi
 LOG="${WORKROOT}/s24"
 IDS="${WORKROOT}/s24-ids"
 mkdir -p "$IDS" && chmod 700 "$IDS"
@@ -59,7 +65,7 @@ ok "identity ${OWNER:0:10}…"
 # key or DAPI settings in the environment. `fresh <home> <cmd…>` runs a command there.
 new_home() { # new_home <dir>
   rm -rf "$1"; mkdir -p "$1/home" "$1/xdg" "$1/state"
-  printf '[user]\n\tname = Dash Forge E2E\n\temail = e2e@dash-forge.test\n[init]\n\tdefaultBranch = main\n' >"$1/gitconfig"
+  printf '[user]\n\tname = Dash Forge E2E\n\temail = e2e@dash-forge.test\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' >"$1/gitconfig"
 }
 fresh() { # fresh <home dir> <cmd…>
   local h="$1"; shift
@@ -68,6 +74,7 @@ fresh() { # fresh <home dir> <cmd…>
     # Nothing of the caller's Forge setup leaks in (network, key, storage config, …).
     # shellcheck disable=SC2046
     unset $(compgen -v DASH_FORGE_)
+    unset GH_CONFIG_DIR
     export DASH_FORGE_NO_KEYCHAIN=1 DASH_FORGE_PASSPHRASE="e2e-${RUN_ID}-s24"
     "$@" )
 }
@@ -97,7 +104,7 @@ if [[ "$DEFAULT_DEPLOYED" == False ]]; then
   check "network row: no network chosen yet" \
     assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"detail\"]")" "no network chosen yet"
   check "its fix records a deployed network" \
-    assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"fix\"]")" "dg auth new"
+    assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"fix\"]")" "$AUTH_NEW_FIX"
 else
   check "the embedded default deployment is healthy" assert_eq "True" "$(jq_py "$LOG-doctor0.json" 'd["ok"]')"
   info "default ${DEFAULT_NET} is deployed: the undeployed-default warning does not apply"
@@ -180,6 +187,9 @@ anon_once() { rm -rf "${ANON:?}/${NAME:?}"; run "$LOG-anon.out" "$LOG-anon.err" 
 if _retry "$LOG-anon.err" anon_once; then
   check "anonymous clone has the tip" assert_eq "$C2" "$(git -C "$ANON/${NAME}" rev-parse HEAD)"
   check "and keeps the network" assert_eq "$NETWORK" "$(git -C "$ANON/${NAME}" config --get dash.network)"
+  if [[ "$NETWORK" == devnet ]]; then
+    check "and the devnet name" assert_eq "$DEVNET" "$(git -C "$ANON/${NAME}" config --get dash.devnetName)"
+  fi
 else
   cat "$LOG-anon.err" >&2; bad "anonymous git clone -c …"
 fi
@@ -191,7 +201,7 @@ else
   if [[ "$DEFAULT_DEPLOYED" == False ]]; then
     check "a bare clone with no deployed default fails" test "$bare_rc" -ne 0
     check "with E702" assert_file_contains "$LOG-bare.err" "[E702]"
-    check "whose fix is git config, not dg flags" assert_file_contains "$LOG-bare.err" "git config --global dash.network"
+    check "whose fix is git config, not dg flags" assert_file_contains "$LOG-bare.err" "$GIT_NETWORK_FIX"
     check "and never --devnet-name" assert_not_file_contains "$LOG-bare.err" "--devnet-name"
   else
     check "bare clone uses the deployed default network" assert_eq "0" "$bare_rc"

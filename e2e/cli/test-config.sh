@@ -111,10 +111,6 @@ out="$(libsh "$H" 'require_mint_funding "or set X"; echo reached' "E2E_MINT_FUND
 echo present >"$TMP/funding.wif"
 out="$(libsh "$H" 'require_mint_funding; echo reached' "E2E_MINT_FUNDING=$TMP/funding.wif")"
 [[ "$out" == *reached* && "$out" == *"rc=0" ]] && pass "a present funding key continues" || fail "present funding: $out"
-out="$(libsh "$H" 'na_unless_devnet "x"; echo reached')"
-[[ "$out" == *reached* ]] && pass "na_unless_devnet continues on a devnet" || fail "na on devnet: $out"
-out="$(libsh "$TMP/h-testnet" 'na_unless_devnet "x"; echo reached' DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1)"
-[[ "$out" == *"N/A"* && "$out" == *"rc=3" && "$out" != *reached* ]] && pass "na_unless_devnet exits 3 on testnet" || fail "na on testnet: $out"
 
 echo "lib.sh na_scenario: the N/A marker"
 out="$(libsh "$TMP/h-testnet" 'na_scenario "x"; echo reached' DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 "E2E_NA_MARKER=$TMP/na-marker")"
@@ -166,13 +162,17 @@ cat >"$TMP/gh-bin/gh" <<'SH'
 #!/usr/bin/env bash
 # Deliberately emulate token lookup succeeding while API login fails.
 printf 'must-not-appear\n'
-[[ "$*" == 'auth token' || "${GH_TEST_API_OK:-0}" == 1 ]]
+[[ "$*" == 'auth token' || ( "$*" == 'api repos/sindresorhus/is-wsl' && "${GH_TEST_API_OK:-0}" == 1 ) ]]
 SH
 chmod +x "$TMP/gh-bin/gh"
-out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH")"
-[[ "$out" == *"rc=2" && "$out" != *reached* && "$out" != *must-not-appear* ]] && pass "GitHub API refusal skips without printing credentials" || fail "gh API refusal: $out"
-out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH" GH_TEST_API_OK=1)"
-[[ "$out" == *reached* && "$out" == *"rc=0" && "$out" != *must-not-appear* ]] && pass "a usable GitHub API login continues without printing credentials" || fail "gh API login: $out"
+if command -v timeout >/dev/null || command -v gtimeout >/dev/null; then
+  out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH")"
+  [[ "$out" == *"rc=2" && "$out" != *reached* && "$out" != *must-not-appear* ]] && pass "GitHub API refusal skips without printing credentials" || fail "gh API refusal: $out"
+  out="$(libsh "$H" 'require_github; echo reached' "PATH=$TMP/gh-bin:$PATH" GH_TEST_API_OK=1)"
+  [[ "$out" == *reached* && "$out" == *"rc=0" && "$out" != *must-not-appear* ]] && pass "a usable GitHub repo API login continues without printing credentials" || fail "gh API login: $out"
+else
+  printf '  skip  GitHub API checks require timeout or gtimeout (install coreutils)\n'
+fi
 
 echo "the July list agrees with forge-contracts/scripts/lib/target.mjs"
 want="$(node -e "import('$REPO/forge-contracts/scripts/lib/target.mjs').then(m=>console.log([...m.JULY_POOL_IDS.keys()].sort().join(' ')))")"

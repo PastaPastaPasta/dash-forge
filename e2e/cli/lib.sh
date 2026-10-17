@@ -39,9 +39,10 @@ fi
 export GH_CONFIG_DIR
 
 # GitHub import scenarios need a usable API login, not merely `gh auth token` (which can
-# succeed via the OS credential store while gh api still asks for login). Discard all output.
+# succeed via the OS credential store while gh api still asks for login). A public repo
+# endpoint also works with Actions GITHUB_TOKEN, which cannot read `api user`. Discard output.
 require_github() {
-  command -v gh >/dev/null && _tmo gh api user >/dev/null 2>&1 \
+  command -v gh >/dev/null && _tmo gh api repos/sindresorhus/is-wsl >/dev/null 2>&1 \
     || skip_scenario "no GitHub API access (log in with gh, set GH_CONFIG_DIR, or set GH_TOKEN)"
 }
 
@@ -412,7 +413,6 @@ na_scenario() {
   [[ -z "${E2E_NA_MARKER:-}" ]] || : >"$E2E_NA_MARKER"
   exit 3
 }
-na_unless_devnet() { [[ "$DASH_FORGE_NETWORK" == devnet ]] || na_scenario "not on ${DASH_FORGE_NETWORK}: $*"; }
 
 # require_not_july <identity file>: on testnet, refuse an identity file of the July-era pool (public keys,
 # QA-05). config.sh checks OWNER, COLLAB and CONTRIB; a scenario that takes an identity from an
@@ -450,6 +450,7 @@ seed_tiny_repo() { # seed_tiny_repo <dir> <branch> [tagname]
   git init -q -b "$branch" "$dir"
   git -C "$dir" config user.email "e2e@dash-forge.test"
   git -C "$dir" config user.name "Dash Forge E2E"
+  git -C "$dir" config commit.gpgsign false
   printf 'Dash Forge e2e round-trip\nrun-id: %s\n' "${RUN_ID}" >"$dir/README.md"
   printf 'alpha %s\n' "${RUN_ID}" >"$dir/alpha.txt"
   mkdir -p "$dir/sub"

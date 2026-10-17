@@ -3,7 +3,7 @@
 #
 #   1. OWNER pushes a base branch e2e/<run>/base to the test repo.
 #   2. CONTRIB `dg repo fork`s the test repo (forkOf; the parent's packs are recorded by
-#      reference, nothing re-uploaded) — scoped to this run, so retries reuse the fork.
+#      reference, nothing re-uploaded) — scoped to the parent repo, so later runs reuse it.
 #   3. CONTRIB clones its fork (proving the referenced packs read), commits on top of the
 #      base, pushes a feature branch to the fork, and `dg pr create`s from it with no
 #      --head-repo (the fork is found by forkOf).
@@ -23,7 +23,7 @@ harness_init
 
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 if [[ -z "${E2E_FORK_NAME:-}" ]]; then
-  E2E_FORK_NAME="$(printf 'e2e-cli-fork-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
+  E2E_FORK_NAME="$(printf 'e2e-cli-fork-%s' "$E2E_REPO_NAME" | tr '[:upper:]' '[:lower:]')"
   E2E_FORK_NAME="${E2E_FORK_NAME:0:63}"
 fi
 FORK="${IDID_CONTRIB}/${E2E_FORK_NAME}"
@@ -57,7 +57,7 @@ if git_dash_retry "$ID_CONTRIB" "$LOG-clone" clone -q --no-checkout "$FORK_REMOT
 else
   fail_with "$LOG-clone" "fork clone"
 fi
-git -C "$WORK" config user.email "contrib@e2e.test"; git -C "$WORK" config user.name "E2E Contrib"
+git -C "$WORK" config user.email "contrib@e2e.test"; git -C "$WORK" config user.name "E2E Contrib"; git -C "$WORK" config commit.gpgsign false
 # The base branch was pushed after the fork was (possibly) created on an earlier run: take
 # it from the parent.
 git_dash_retry "$ID_CONTRIB" "$LOG-fbase" -C "$WORK" fetch -q "$E2E_REMOTE" "+refs/heads/${BASE}:refs/remotes/upstream/base" \
