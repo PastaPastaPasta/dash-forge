@@ -61,13 +61,13 @@ export function parsePagesNotice(env: PagesNoticeEnv): PagesNotice | null {
   const rawUrl = env.url?.trim() ?? ''
   let url = DEFAULT_ADVISORY_URL
   if (rawUrl !== '') {
-    let parsed: URL
+    let parsed: URL | null = null
     try {
       parsed = new URL(rawUrl)
     } catch {
-      throw new Error(`invalid NEXT_PUBLIC_PAGES_NOTICE_URL "${env.url}": expected an https address`)
+      // Reported with the non-https case below.
     }
-    if (parsed.protocol !== 'https:') {
+    if (parsed?.protocol !== 'https:') {
       throw new Error(`invalid NEXT_PUBLIC_PAGES_NOTICE_URL "${env.url}": expected an https address`)
     }
     url = parsed.href
