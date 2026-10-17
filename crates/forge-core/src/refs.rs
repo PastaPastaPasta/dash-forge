@@ -399,6 +399,8 @@ pub struct MembersUpdates {
     /// Members-only updates this reader could not open (no key, another epoch, a later envelope,
     /// late, malformed): counted, never folded.
     pub unreadable: usize,
+    /// Unreadable updates outside narrower branches (the members-key path).
+    pub unreadable_members: usize,
     /// The real non-null `newOid` of every members-only update this reader opened, those a
     /// public name won over included (they still name members-only commits): the guard's
     /// decryptable S.
@@ -564,6 +566,7 @@ impl std::fmt::Debug for MembersUpdates {
             .field("names", &self.by_name.len())
             .field("alerts", &self.alerts.len())
             .field("unreadable", &self.unreadable)
+            .field("unreadable_members", &self.unreadable_members)
             .field("opened_new_oids", &self.opened_new_oids.len())
             .field("sealed", &self.sealed.len())
             .field("narrower", &self.narrower.len())
@@ -651,6 +654,9 @@ pub fn members_updates_of(
             let real = header.map(|h| RefOpened::from_opened(&h, open(kind, d)));
             let Some(RefOpened::Readable(real)) = real else {
                 out.unreadable += 1;
+                if !narrower {
+                    out.unreadable_members += 1;
+                }
                 if narrower {
                     if let Some(h) = d.field_bytes32("refNameHash") {
                         let deleted = d
@@ -837,6 +843,10 @@ pub struct MembersView {
     pub alerts: Vec<RefAlert>,
     /// Members-only updates this reader could not open.
     pub unreadable: usize,
+    /// Unreadable updates outside narrower branches (the members-key path).
+    pub unreadable_members: usize,
+    /// Live unreadable narrower generations, as computed by the ref fold.
+    pub unreadable_narrower: BTreeSet<[u8; 32]>,
 }
 
 /// They hold members-only branch names and real commits: `Debug` shows only counts.
@@ -861,6 +871,8 @@ impl std::fmt::Debug for MembersView {
             .field("decryptable_narrower", &self.decryptable_narrower.len())
             .field("alerts", &self.alerts.len())
             .field("unreadable", &self.unreadable)
+            .field("unreadable_members", &self.unreadable_members)
+            .field("unreadable_narrower", &self.unreadable_narrower.len())
             .finish()
     }
 }
@@ -900,6 +912,8 @@ pub fn refs_view(state: &GitState, open: Option<DocOpener<'_>>) -> RefsView {
             decryptable: m.updates.opened_new_oids.into_iter().collect(),
             alerts: m.updates.alerts,
             unreadable: m.updates.unreadable,
+            unreadable_members: m.updates.unreadable_members,
+            unreadable_narrower: m.updates.unreadable_narrower,
         }
     });
     RefsView {

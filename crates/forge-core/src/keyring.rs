@@ -442,6 +442,39 @@ pub struct KeyringIo<'a> {
 }
 
 impl Keyring {
+    /// An offline public-repository reader that knows epoch 0's anchor but holds no epoch keys,
+    /// for other crates' access tests.
+    #[cfg(feature = "test-support")]
+    pub fn keyless_for_tests(repo_id: [u8; 32], reader: [u8; 32], members: Vec<Member>) -> Self {
+        Self {
+            repo_id,
+            visibility: Visibility::Public,
+            reader,
+            members,
+            configs: Vec::new(),
+            wraps: Vec::new(),
+            resolution: EpochResolution::default(),
+            rows: Rows::default(),
+            ctx: OpenContext {
+                anchors: [(
+                    0,
+                    crate::private::doc::AnchorRef {
+                        id: [0; 32],
+                        height: 1,
+                        stated_height: 1,
+                    },
+                )]
+                .into(),
+                ..OpenContext::default()
+            },
+            config: PrivateConfig::default(),
+            unreadable_wraps: Vec::new(),
+            conversion: None,
+            anonymous: false,
+            branches: std::sync::RwLock::default(),
+        }
+    }
+
     /// Read and resolve the keys of `repo` for the identity `reader`, unwrapping its own wraps
     /// with `enc` (its file's `ENCRYPTION` keys). A reader with no keys still loads: it can
     /// see epochs, members and alerts, and every open is `Unreadable(NoKey)`.
