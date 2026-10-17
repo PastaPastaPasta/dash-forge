@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Dash Forge — headless identity-minting CLI for testnet and devnets (spike S0.4).
+// Dash Forge — headless identity-minting CLI for testnet and devnets.
 //
 //   node mint.mjs [--network testnet|devnet --devnet-name moutai] --out <dir> [--label OWNER] [--amount 0.5]
 //                 [--mnemonic-file <path> | --mnemonic -]   (an existing recovery phrase; - reads stdin)
