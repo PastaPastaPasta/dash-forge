@@ -340,7 +340,7 @@ export function RefListContent({
                 return (
                   <div
                     key={ref.refName}
-                    className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 coarse:py-0 dark:border-anvil-850"
+                    className="flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 coarse:py-0 sm:flex-nowrap dark:border-anvil-850"
                     data-testid="members-ref-row"
                     data-ref={shortName}
                   >
@@ -351,42 +351,44 @@ export function RefListContent({
                     >
                       {shortName}
                     </Link>
-                    {narrower !== undefined ? (
-                      <>
-                        <span className="shrink-0 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="narrower-ref-audience">
-                          {narrowerText(narrower.audience, narrower.people)}
+                    <div className="flex w-full flex-wrap items-center gap-3 sm:contents">
+                      {narrower !== undefined ? (
+                        <>
+                          <span className="min-w-0 text-[12px] text-anvil-500 sm:shrink-0 dark:text-anvil-400" data-testid="narrower-ref-audience">
+                            {narrowerText(narrower.audience, narrower.people)}
+                          </span>
+                          <BetaBadge feature="narrowerBranches" />
+                        </>
+                      ) : null}
+                      {isDiverged(ref) ? (
+                        <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution-700 dark:text-caution-400">
+                          diverged
                         </span>
-                        <BetaBadge feature="narrowerBranches" />
-                      </>
-                    ) : null}
-                    {isDiverged(ref) ? (
-                      <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution-700 dark:text-caution-400">
-                        diverged
-                      </span>
-                    ) : null}
-                    {botPusher(ref)}
-                    {tip ? <RefDate key={`date:${tip}`} peeler={peeler} tip={tip} pushedAt={refUpdatedAt(ref)} /> : null}
-                    {tip && kind === 'branches' ? (
-                      <Link
-                        href={repoHref('/repo/compare', addr, { base: home.defaultBranch, head: browseRef || shortName })}
-                        className="hit-area shrink-0 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
-                        aria-label={`Compare ${shortName} with ${home.defaultBranch}`}
-                      >
-                        Compare
-                      </Link>
-                    ) : null}
-                    {tip ? tipChip(tip) : null}
-                    {tip && kind === 'branches' && narrower === undefined ? (
-                      // Published through a members-only pull request: its merge box squashes or publishes with history.
-                      <Link
-                        href={repoHref('/repo/pulls/new', addr, { head: shortName, base: home.defaultBranch })}
-                        className="hit-area shrink-0 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
-                        aria-label={`Publish ${shortName}`}
-                        data-testid="members-ref-publish"
-                      >
-                        Publish…
-                      </Link>
-                    ) : null}
+                      ) : null}
+                      {botPusher(ref)}
+                      {tip ? <RefDate key={`date:${tip}`} peeler={peeler} tip={tip} pushedAt={refUpdatedAt(ref)} /> : null}
+                      {tip && kind === 'branches' ? (
+                        <Link
+                          href={repoHref('/repo/compare', addr, { base: home.defaultBranch, head: browseRef || shortName })}
+                          className="hit-area shrink-0 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
+                          aria-label={`Compare ${shortName} with ${home.defaultBranch}`}
+                        >
+                          Compare
+                        </Link>
+                      ) : null}
+                      {tip ? tipChip(tip) : null}
+                      {tip && kind === 'branches' && narrower === undefined ? (
+                        // Published through a members-only pull request: its merge box squashes or publishes with history.
+                        <Link
+                          href={repoHref('/repo/pulls/new', addr, { head: shortName, base: home.defaultBranch })}
+                          className="hit-area shrink-0 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
+                          aria-label={`Publish ${shortName}`}
+                          data-testid="members-ref-publish"
+                        >
+                          Publish…
+                        </Link>
+                      ) : null}
+                    </div>
                   </div>
                 )
               })}
