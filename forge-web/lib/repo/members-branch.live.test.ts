@@ -32,7 +32,9 @@ import { loadRepoHome } from '../view'
 import { membersWriter } from './members-writes'
 import { writePackManifest } from './push'
 import { readMembersRefs } from './members-branches'
+import { DOC } from './contract'
 import { loadPrivateSession, sdkSessionSource, sessionUnwrapper } from './private-session'
+import { contractOf } from './source'
 
 const env = (k: string): string => process.env[k] ?? ''
 const OWNER = env('P3C_OWNER')
@@ -113,7 +115,7 @@ describe.skipIf(!LIVE)('a members-only branch pushed through the library (sakura
       say(`members-only refUpdate ${written.documentId}: refName absent, newOid ${Buffer.from(ref.newOid).toString('hex')} (the blind)`)
 
       // The member's fold: the branch on its real tip.
-      const ops = await encryptionOps(sdk, 'devnet', auth.identityId, forge.collab)
+      const ops = await encryptionOps(sdk, 'devnet', auth.identityId, contractOf(forge, DOC.repoKey))
       if (ops === null) throw new Error('no encryption ops')
       const lane = await loadPrivateSession({ repo, network: 'devnet', reader: auth.identityId, source: sdkSessionSource(sdk, repo), unwrapper: sessionUnwrapper(ops) })
       let found: string | null = null

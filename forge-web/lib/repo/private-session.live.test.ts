@@ -25,7 +25,9 @@ import { hexToBytes } from '../private'
 import { evoSdkService, queryDocuments } from '../sdk'
 import { loadPrivateHome, loadRepoHome } from '../view'
 import { queryIssues } from './issue-index'
+import { DOC } from './contract'
 import { loadPrivateSession, sdkSessionSource, sessionUnwrapper } from './private-session'
+import { contractOf } from './source'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
 const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
@@ -69,7 +71,7 @@ describe.skipIf(!LIVE)('live private-repo reads (sakura)', () => {
       const enc = owner.identityKeys.find((k) => k.purpose === 'ENCRYPTION') as KeyRecord
       holdForSession('devnet', { identityId: owner.identityId, keyId: -1, wif: encodeWif(new Uint8Array(32).fill(1), 'devnet') })
       await storeEncryptionKey('devnet', owner.identityId, enc.id, hexToBytes(enc.privateKeyHex))
-      const ops = await encryptionOps(sdk, 'devnet', owner.identityId, ids.collab)
+      const ops = await encryptionOps(sdk, 'devnet', owner.identityId, contractOf(ids, DOC.repoKey))
       if (ops === null) throw new Error('no encryption ops')
       const session = await loadPrivateSession({
         repo: home.repo,

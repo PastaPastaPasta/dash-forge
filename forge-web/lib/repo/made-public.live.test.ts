@@ -39,6 +39,7 @@ import { DOC, type RepoRef } from './contract'
 import { invalidateRepoBundles, withBundles } from './made-public'
 import { gateFor, storedPrivateDoc } from './private-content'
 import { loadPrivateSession, sdkSessionSource, sessionUnwrapper } from './private-session'
+import { contractOf } from './source'
 import { writePackManifest } from './push'
 
 const env = (k: string): string => process.env[k] ?? ''
@@ -95,7 +96,7 @@ describe.skipIf(!LIVE)('make-public bundles no honest client writes (sakura)', (
       const enc = raw.identityKeys.find((k) => k.purpose === 'ENCRYPTION') as KeyRecord
       holdForSession('devnet', { identityId: writer.identityId, keyId: -1, wif: encodeWif(new Uint8Array(32).fill(1), 'devnet') })
       await storeEncryptionKey('devnet', writer.identityId, enc.id, hexToBytes(enc.privateKeyHex))
-      const ops = await encryptionOps(sdk, 'devnet', writer.identityId, forge.collab)
+      const ops = await encryptionOps(sdk, 'devnet', writer.identityId, contractOf(forge, DOC.repoKey))
       if (ops === null) throw new Error('no encryption ops')
       const session = await loadPrivateSession({ repo, network: 'devnet', reader: writer.identityId, source: sdkSessionSource(sdk, repo), unwrapper: sessionUnwrapper(ops) })
       const target = await readComment(repo, WRITER_TARGET)

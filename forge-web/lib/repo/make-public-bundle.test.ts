@@ -71,6 +71,7 @@ vi.mock('./push', async (orig) => ({
 }))
 
 import { base58Encode } from '../auth/base58'
+import { encryptionOps, type EncryptionOps } from '../auth/encryption-key'
 import { PACK_KIND } from '../constants'
 import { EpochKeys, bundleWouldPublishMembersOnly, parseBundle, type StoredPrivateDoc } from '../private'
 import type { PlainDocument, WriteAuth } from '../sdk'
@@ -151,6 +152,26 @@ describe('who may make other people’s posts public', () => {
 
   it('a private repo is refused', async () => {
     await expect(planMakePublicBundle(sdk, as(MAINT), { ...REPO, visibility: 'private' }, [{ type: 'comment', id: COMMENT }])).rejects.toThrow(/This repo is private/)
+  })
+})
+
+describe('repoKey schema routing', () => {
+  it.each([
+    { layout: 'three-contract', forge: FORGE, repoKeyContract: 'COLLAB' },
+    { layout: 'four-contract', forge: { ...FORGE, community: 'COMMUNITY', meta: 'META' }, repoKeyContract: 'META' },
+  ])('plans one maintainer-readable comment on a $layout set', async ({ forge, repoKeyContract }) => {
+    // Model encryptionOps fetching the repoKey encryptedFor schema: a wrong contract
+    // cannot unwrap the member's key, so the planner would leave the comment unreadable.
+    vi.mocked(encryptionOps).mockImplementationOnce(async (_sdk, _network, _identity, contract) => {
+      if (contract !== repoKeyContract) throw new Error('this contract has no repoKey schema')
+      return {} as EncryptionOps
+    })
+    const plan = await planMakePublicBundle(sdk, as(MAINT), { ...REPO, forge }, [{ type: 'comment', id: COMMENT }])
+    expect(plan.posts.map((p) => [p.id, p.author, p.text])).toEqual([[COMMENT, ALICE, openedBody]])
+    expect(plan.entries).toBe(1)
+    expect(plan.leftOut).toEqual([])
+    expect(encryptionOps).toHaveBeenLastCalledWith(sdk, 'devnet', MAINT, repoKeyContract)
+    expect(artifacts).toHaveLength(0)
   })
 })
 

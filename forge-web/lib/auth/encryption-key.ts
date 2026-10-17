@@ -516,9 +516,10 @@ export interface UnwrapInput {
 
 /**
  * The encryption operations of (network, identity), or null when this browser holds no
- * encryption key for it. `repoKeyContractId` is the contract holding `repoKey` (forge-collab since
- * RC1): its `encryptedFor` declaration is what a wrap is sealed and opened by. Each call opens the
- * key from the unlocked vault and wipes it after; a locked vault makes the call throw.
+ * encryption key for it. `repoKeyContractId` is the contract holding `repoKey` (forge-meta on
+ * four-contract sets, forge-collab on three-contract sets): its `encryptedFor` declaration is
+ * what a wrap is sealed and opened by. Each call opens the key from the unlocked vault and
+ * wipes it after; a locked vault makes the call throw.
  */
 export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: string, repoKeyContractId: string): Promise<EncryptionOps | null> {
   const keyIds = await storedEncryptionKeyIds(network, identityId)
