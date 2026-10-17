@@ -2,9 +2,9 @@ Rust crates in the Dash Platform SDK WebAssembly module
 ========================================================
 
 wasm_sdk_bg.wasm (npm package @dashevo/wasm-sdk) is the wasm-sdk crate of
-github.com/dashpay/platform, tag v5.0.0-rc.3, compiled to WebAssembly together with the Rust
+github.com/dashpay/platform, tag v5.0.0-rc.4, compiled to WebAssembly together with the Rust
 crates below, grouped by license, each with the license text as the crate ships it.
-Platform tag: v5.0.0-rc.3
+Platform tag: v5.0.0-rc.4
 
 Overview of licenses:
   * MIT License (MIT): 292 crates
@@ -1403,7 +1403,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * drive 5.0.0-rc.3
+  * drive 5.0.0-rc.4
 
 // MIT LICENSE
 //
@@ -1510,7 +1510,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * drive 5.0.0-rc.3
+  * drive 5.0.0-rc.4
 
 // MIT LICENSE
 //
@@ -4465,7 +4465,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dashpay-contract 5.0.0-rc.3
+  * dashpay-contract 5.0.0-rc.4
 
 MIT License
 
@@ -5536,7 +5536,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dapi-grpc 5.0.0-rc.3
+  * dapi-grpc 5.0.0-rc.4
 
 The MIT License (MIT)
 
@@ -5566,25 +5566,25 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dash-platform-queries 5.0.0-rc.3
-  * data-contracts 5.0.0-rc.3
-  * dash-context-provider 5.0.0-rc.3
-  * rs-dapi-client 5.0.0-rc.3
-  * dash-async 5.0.0-rc.3
-  * dash-platform-macros 5.0.0-rc.3
-  * dpp 5.0.0-rc.3
-  * dpp-json-convertible-derive 5.0.0-rc.3
-  * drive-proof-verifier 5.0.0-rc.3
-  * platform-encryption 5.0.0-rc.3
-  * platform-serialization 5.0.0-rc.3
-  * platform-serialization-derive 5.0.0-rc.3
-  * platform-value 5.0.0-rc.3
-  * platform-version 5.0.0-rc.3
-  * platform-versioning 5.0.0-rc.3
-  * dash-sdk 5.0.0-rc.3
-  * rs-sdk-trusted-context-provider 5.0.0-rc.3
-  * wasm-dpp2 5.0.0-rc.3
-  * wasm-sdk 5.0.0-rc.3
+  * dash-platform-queries 5.0.0-rc.4
+  * data-contracts 5.0.0-rc.4
+  * dash-context-provider 5.0.0-rc.4
+  * rs-dapi-client 5.0.0-rc.4
+  * dash-async 5.0.0-rc.4
+  * dash-platform-macros 5.0.0-rc.4
+  * dpp 5.0.0-rc.4
+  * dpp-json-convertible-derive 5.0.0-rc.4
+  * drive-proof-verifier 5.0.0-rc.4
+  * platform-encryption 5.0.0-rc.4
+  * platform-serialization 5.0.0-rc.4
+  * platform-serialization-derive 5.0.0-rc.4
+  * platform-value 5.0.0-rc.4
+  * platform-version 5.0.0-rc.4
+  * platform-versioning 5.0.0-rc.4
+  * dash-sdk 5.0.0-rc.4
+  * rs-sdk-trusted-context-provider 5.0.0-rc.4
+  * wasm-dpp2 5.0.0-rc.4
+  * wasm-sdk 5.0.0-rc.4
 
 The MIT License (MIT)
 
@@ -5614,15 +5614,15 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * app-connect-contract 5.0.0-rc.3
-  * document-history-contract 5.0.0-rc.3
-  * dpns-contract 5.0.0-rc.3
-  * keyword-search-contract 5.0.0-rc.3
-  * masternode-reward-shares-contract 5.0.0-rc.3
-  * moderation-charters-contract 5.0.0-rc.3
-  * token-history-contract 5.0.0-rc.3
-  * wallet-utils-contract 5.0.0-rc.3
-  * withdrawals-contract 5.0.0-rc.3
+  * app-connect-contract 5.0.0-rc.4
+  * document-history-contract 5.0.0-rc.4
+  * dpns-contract 5.0.0-rc.4
+  * keyword-search-contract 5.0.0-rc.4
+  * masternode-reward-shares-contract 5.0.0-rc.4
+  * moderation-charters-contract 5.0.0-rc.4
+  * token-history-contract 5.0.0-rc.4
+  * wallet-utils-contract 5.0.0-rc.4
+  * withdrawals-contract 5.0.0-rc.4
 
 The MIT License (MIT)
 

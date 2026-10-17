@@ -30,13 +30,19 @@ Dash Forge. Each archive contains:
 | `x86_64-unknown-linux-musl` | `.tar.gz` | fully static: Alpine, older distributions, containers |
 | `x86_64-apple-darwin` | `.tar.gz` | Intel Macs; **not signed by Apple**, see [below](#macos-gatekeeper) |
 | `aarch64-apple-darwin` | `.tar.gz` | Apple silicon; **not signed by Apple** |
-| `x86_64-pc-windows-msvc` | `.zip` | Windows 10 and later |
+| `x86_64-pc-windows-msvc` | `.zip` | Windows 10 and later; **experimental**, see [below](#windows) |
 
 Archives are named `dash-forge-<version>-<target>.tar.gz` (`.zip` on Windows). Each
 contains one directory with the same name.
 
 There is no static build for aarch64 Linux yet. On an aarch64 system with glibc older than
 2.35, [build from source](BUILDING.md).
+
+### Windows
+
+The Windows build is **experimental**. Every release builds and packages it, but clone, push and fetch over
+`dash://` have not been tested on Windows. Report what works and what does not in the
+[issue tracker](https://github.com/PastaPastaPasta/dash-forge/issues).
 
 ## Install script (Linux and macOS)
 

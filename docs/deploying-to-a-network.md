@@ -45,7 +45,7 @@ A group-bound key can sign for every member of the group ([Contract group trust]
 
 All of these come first. `deploy-v2.mjs` enforces the ones it can; the rest are on you.
 
-1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.0.0-rc.3 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
+1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.0.0-rc.4 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
 2. **Freeze the schema.** Rules, indexes and config freeze at registration ([§7](#7-after-registration-what-can-still-change)). Decide `config.readonly` (it can only be set at registration; Forge registers writable so later additive updates can land) and every other now-or-never choice, and merge the schema to `master`. The script refuses to register files that differ from git `HEAD`, a `HEAD` that is not on a branch of `origin`, or a committed set that `build.py --check` rejects.
 3. **Rehearse on a scratch set.** Register the same committed JSON under a throwaway deployer and run the live suites against it, on the same network and the same Platform release. A scratch registration is permanent too, so use a different deployer from the real one:
 

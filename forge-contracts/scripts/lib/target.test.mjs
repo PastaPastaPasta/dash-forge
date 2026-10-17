@@ -17,7 +17,7 @@ import {
   productionOverlap,
   refuseMainnet,
   refuseProduction,
-  requireThreeContract,
+  contractIds,
   resolveTarget,
   scratchStampError,
   sdkOptions,
@@ -344,12 +344,17 @@ describe('the production-write policy', () => {
 });
 
 describe('layout', () => {
-  test('a four-contract record is refused by the three-contract tools', () => {
+  test('a record names three contracts, or four with forge-meta (QA-03: the rule suites route either)', () => {
     const four = resolveTarget({ network: 'testnet', record: join(scratchDir, 'scratch-testnet.json') }, opts());
-    assert.throws(() => requireThreeContract(four, 'rc1-live'), /four-contract set.*QA-03.*mv-live/);
+    assert.deepEqual(Object.keys(contractIds(four)), ['core', 'collab', 'community', 'meta']);
     const three = resolveTarget({ network: 'testnet', record: join(scratchDir, 'scratch-testnet-3.json') }, opts());
-    assert.doesNotThrow(() => requireThreeContract(three, 'rc1-live'));
+    assert.deepEqual(Object.keys(contractIds(three)), ['core', 'collab', 'community']);
     assert.equal(three.fourContract, false);
+  });
+  test('a record missing one of the three, or a forge-meta without an id, is refused', () => {
+    assert.throws(() => contractIds({ recordFile: 'r.json', record: { v2: { forgeCore: { contractId: 'C' } } } }), /records no forge-v2 contracts/);
+    const half = { v2: { forgeCore: { contractId: 'C' }, forgeCollab: { contractId: 'L' }, forgeCommunity: { contractId: 'M' }, forgeMeta: {} } };
+    assert.throws(() => contractIds({ recordFile: 'r.json', record: half }), /half-finished deploy/);
   });
 });
 

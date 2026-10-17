@@ -9,7 +9,7 @@ The on-chain model is **forge-v2**: three shared contracts, forge-core, forge-co
 **Goals**
 - Zero backend: Platform is the sole source of truth; every other component is a static asset, a local tool, or an *interchangeable, integrity-irrelevant* daemon anyone can run (relay).
 - Trustless reads: refs/manifests proof-verified from Platform; content verified by SHA-256 + git OIDs. A third party can verify a full clone from Platform data alone.
-- Real git: standard `git` via a remote helper (jj's git backend is expected to work; untested since July 2026); `gh`-shaped CLI.
+- Real git: standard `git` via a remote helper (jj push and fetch work through it; tested on testnet in October 2026, see [quick start](guides/quick-start.md#jj)); `gh`-shaped CLI.
 - Cost as first-class UX: estimates before every write batch, DASH primary / USD secondary; a repository costs ~0.001 DASH to create, and bulky pack bytes can live in storage the user brings.
 - Migration path: one-command GitHub import.
 

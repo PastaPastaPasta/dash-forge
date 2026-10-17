@@ -15,9 +15,16 @@ import { verifyUtxo } from './deposit.mjs';
 
 export const FUNDING_WIF_ENV = 'FORGE_DEVNET_FUNDING_WIF';
 
-// Coinbase outputs are spendable after 100 confirmations, and Insight's UTXO list
-// does not say which outputs are coinbase, so only spend outputs past that depth.
-const MIN_FUNDING_CONFIRMATIONS = 101;
+// Coinbase outputs are spendable after 100 blocks (101 confirmations); any other
+// output after one confirmation. Insight's UTXO list does not say which outputs are
+// coinbase, so selection only requires one confirmation and fundFromKey drops
+// immature coinbase inputs once their raw transactions are read (verifyUtxo).
+// A network can raise the selection floor (`minFundingConfirmations`): devnets
+// fund from a mining payout address, where every output is coinbase.
+export const COINBASE_MATURITY_CONFIRMATIONS = 101;
+const MIN_FUNDING_CONFIRMATIONS = 1;
+// Reselections after finding immature coinbase inputs; bounds the raw-tx fetches.
+const MAX_MATURITY_RESELECTS = 5;
 const MAX_FUNDING_INPUTS = 50;
 const BROADCAST_ATTEMPTS = 3;
 const UTXO_FETCH_ATTEMPTS = 4;
@@ -74,10 +81,17 @@ export function loadFundingKey(network, { keyFile, env = process.env } = {}) {
  * Pick inputs covering `targetDuffs` plus the fee for `outputCount` outputs
  * (+ change). Prefers one random UTXO that covers everything on its own (the
  * funding address may hold 100k+ small outputs; random spreads concurrent runs
- * across inputs), else accumulates the largest. Returns { inputs, fee }.
+ * across inputs), else accumulates the largest. Skips outputs with fewer than
+ * `minConfirmations` confirmations; whether a coinbase output has matured is
+ * checked by the caller. Returns { inputs, fee }.
  */
-export function selectFundingUtxos(utxos, targetDuffs, outputCount, { exclude = new Set(), minFee = 2000 } = {}) {
-  const usable = utxos.filter((u) => u.confirmations >= MIN_FUNDING_CONFIRMATIONS && !exclude.has(outpointKey(u)));
+export function selectFundingUtxos(
+  utxos,
+  targetDuffs,
+  outputCount,
+  { exclude = new Set(), minFee = 2000, minConfirmations = MIN_FUNDING_CONFIRMATIONS } = {}
+) {
+  const usable = utxos.filter((u) => u.confirmations >= minConfirmations && !exclude.has(outpointKey(u)));
   const feeFor = (n) => Math.max(minFee, estimateP2PKHSize(n, outputCount + 1));
 
   const single = usable.filter((u) => u.satoshis >= targetDuffs + feeFor(1));
@@ -92,7 +106,7 @@ export function selectFundingUtxos(utxos, targetDuffs, outputCount, { exclude = 
     if (inputs.length >= MAX_FUNDING_INPUTS) break;
   }
   throw new Error(
-    `Funding address cannot cover ${(targetDuffs / 1e8).toFixed(8)} DASH with ${MAX_FUNDING_INPUTS} mature inputs ` +
+    `Funding address cannot cover ${(targetDuffs / 1e8).toFixed(8)} DASH with ${MAX_FUNDING_INPUTS} spendable inputs ` +
       `(${usable.length} usable UTXOs)`
   );
 }
@@ -190,10 +204,30 @@ export async function fundFromKey(fundingKey, recipients, network, log = () => {
               `${BOOTSTRAP_TXIDS_ENV}=<txid of a recent funding tx from ${fundingKey.address}>`
           );
         }
-        const picked = selectFundingUtxos(utxos, total, outputs.length, { exclude: tried, minFee: network.minFee * 2 });
-        // Insight's amounts are claims: read each input's value from its raw transaction (a
-        // ledger entry came from our own bytes). Under-reported values would become fees.
-        const inputs = listed === null ? picked.inputs : await Promise.all(picked.inputs.map((u) => verifyUtxo(chain, u)));
+        const minConfirmations = network.minFundingConfirmations ?? MIN_FUNDING_CONFIRMATIONS;
+        // Select, then read each pick's raw tx (Insight's amounts are claims: under-reported values
+        // would become fees; a ledger entry came from our own bytes). Coinbase inputs short of
+        // maturity are excluded and the selection redone, a bounded number of times.
+        let picked;
+        let inputs;
+        let skipped = 0;
+        for (let reselect = 0; ; reselect++) {
+          try {
+            picked = selectFundingUtxos(utxos, total, outputs.length, { exclude: tried, minFee: network.minFee * 2, minConfirmations });
+          } catch (err) {
+            if (skipped === 0) throw err;
+            throw new Error(`${err.message} (${skipped} immature coinbase output(s) excluded)`);
+          }
+          inputs = listed === null ? picked.inputs : await Promise.all(picked.inputs.map((u) => verifyUtxo(chain, u)));
+          const immature = inputs.filter((u) => u.isCoinbase && u.confirmations < COINBASE_MATURITY_CONFIRMATIONS);
+          if (immature.length === 0) break;
+          for (const u of immature) tried.add(outpointKey(u));
+          skipped += immature.length;
+          log(`fund-from-key: skipping ${immature.length} coinbase output(s) below ${COINBASE_MATURITY_CONFIRMATIONS} confirmations`);
+          if (reselect >= MAX_MATURITY_RESELECTS) {
+            throw new Error(`Funding address has too many immature coinbase outputs; wait for ${COINBASE_MATURITY_CONFIRMATIONS} confirmations`);
+          }
+        }
         const claimed = picked.inputs.reduce((s, u) => s + u.satoshis, 0);
         if (inputs.reduce((s, u) => s + u.satoshis, 0) !== claimed) {
           throw new Error('the block explorer misreported a funding output value; refusing to sign');

@@ -1428,29 +1428,13 @@ impl Helper {
                     .map(PreparedHistory::cost),
                 history_on_fallback: std::cell::Cell::new(false),
                 stored_a_pack: std::cell::Cell::new(false),
-                funds: {
-                    let signer = conn
-                        .signer
+                funds: Funds::new(
+                    &conn.client,
+                    conn.signer
                         .as_ref()
-                        .expect("the push path loads the signer first");
-                    Funds {
-                        client: &conn.client,
-                        identity: signer.identity.id(),
-                        budgeted_key: signer
-                            .identity
-                            .signing_key_id(&signer.bridge, &self.target.network)
-                            .filter(|id| {
-                                signer
-                                    .identity
-                                    .key_limits(*id)
-                                    .is_some_and(|l| l.total_budget.is_some())
-                            }),
-                        testnet: matches!(
-                            self.target.network,
-                            forge_core::network::Network::Testnet
-                        ),
-                    }
-                },
+                        .expect("the push path loads the signer first"),
+                    &self.target.network,
+                ),
             }),
             _ => None,
         };
@@ -4425,6 +4409,28 @@ struct Funds<'a> {
     testnet: bool,
 }
 
+impl<'a> Funds<'a> {
+    fn new(
+        client: &'a PlatformClient,
+        signer: &Signer,
+        network: &forge_core::network::Network,
+    ) -> Self {
+        let identity = &signer.identity;
+        Self {
+            client,
+            identity: identity.id(),
+            budgeted_key: identity
+                .signing_key_id(&signer.bridge, network)
+                .filter(|id| {
+                    identity
+                        .key_limits(*id)
+                        .is_some_and(|l| l.total_budget.is_some())
+                }),
+            testnet: matches!(network, forge_core::network::Network::Testnet),
+        }
+    }
+}
+
 /// After the cost guard declined a push priced with a due full history index: price the
 /// cheaper delta it carries instead (still readable, at most half the full index), so the
 /// web does not fall behind until someone pays for the full one. False when there is none.
@@ -4486,21 +4492,24 @@ impl PushContext<'_> {
             return Ok(());
         }
         let f = &self.funds;
-        let balance = match f.client.get_balance(&f.identity).await {
-            Ok(b) => Some(b),
-            Err(e) => {
+        let balance = f
+            .client
+            .get_balance(&f.identity)
+            .await
+            .inspect_err(|e| {
                 tracing::debug!(error = %e, "could not read the balance for the affordability check");
-                None
-            }
-        };
+            })
+            .ok();
         let budget_left = match f.budgeted_key {
-            Some(id) => match f.client.key_remaining_budget(&f.identity, id).await {
-                Ok(b) => b,
-                Err(e) => {
+            Some(id) => f
+                .client
+                .key_remaining_budget(&f.identity, id)
+                .await
+                .inspect_err(|e| {
                     tracing::debug!(error = %e, "could not read the key budget for the affordability check");
-                    None
-                }
-            },
+                })
+                .ok()
+                .flatten(),
             None => None,
         };
         policy::check_affordable(

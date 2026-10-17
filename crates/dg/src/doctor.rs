@@ -1332,28 +1332,29 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>, storage_unse
     }
     let mode = confirm.map(|c| c.trim().to_ascii_lowercase());
     // `auto` when unset or empty (`confirm_check` passed the rest).
-    let unset = threshold.is_none();
     let mode = match mode.as_deref() {
         Some("always" | "true" | "yes") => "always",
         Some("never" | "false" | "no") => "never",
         Some("refuse") => "refuse",
         _ => "auto",
     };
+    let unset = threshold.is_none();
     // Unset is the helper's default threshold; `off` turns it off; anything else must parse.
-    let threshold = match threshold.map(parse_cost_warn_threshold) {
+    let threshold = match threshold {
         None => Some(DEFAULT_COST_WARN_THRESHOLD),
-        Some(Ok(Some(_))) => threshold.map(str::trim),
-        Some(Ok(None)) => None,
-        Some(Err(_)) => {
-            return Check::fail(
-                "cost guard",
-                format!(
-                    "dash.costWarnThreshold = {:?} is not a DASH amount or `off`: every push fails",
-                    threshold.unwrap_or_default()
-                ),
-                format!("git config dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
-            )
-        }
+        Some(v) => match parse_cost_warn_threshold(v) {
+            Ok(Some(_)) => Some(v.trim()),
+            Ok(None) => None,
+            Err(_) => {
+                return Check::fail(
+                    "cost guard",
+                    format!(
+                        "dash.costWarnThreshold = {v:?} is not a DASH amount or `off`: every push fails"
+                    ),
+                    format!("git config dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
+                )
+            }
+        },
     };
     match (mode, threshold) {
         ("never", Some(t)) => Check::ok(

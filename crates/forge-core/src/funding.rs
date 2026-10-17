@@ -135,8 +135,7 @@ fn check_islock_rpc_url(url: &str) -> Result<()> {
         ))
     };
     let parsed = reqwest::Url::parse(url).map_err(|e| bad(&e.to_string()))?;
-    let host = parsed.host_str().filter(|h| !h.is_empty());
-    let Some(host) = host else {
+    let Some(host) = parsed.host_str().filter(|h| !h.is_empty()) else {
         return Err(bad("it names no host"));
     };
     let loopback = host.eq_ignore_ascii_case("localhost")

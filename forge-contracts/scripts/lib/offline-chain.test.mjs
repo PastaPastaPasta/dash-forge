@@ -305,3 +305,43 @@ test('a stale role read is re-read once when the member gate refuses', async () 
   await assert.rejects(write(stranger, 'issue', { ...asMember, number: 2, asMember: idBytes(stranger.id) }), refusedWith(40120, 'issue.asMember'));
   assert.equal(chain.live('issue').length, 1);
 });
+
+// What rc1-live.mjs --offline reads and writes beyond the seeds: a replace as the next revision, a
+// delete the schema forbids or a deleteConstraints rule keeps, proved aggregates keyed as a node
+// keys them, a rule that reads the time, and `$revision` for the mainnet set's dense (R-05).
+test('replace, delete, aggregates and the time for rc1-live --offline', async () => {
+  const { chain, write, R, repoId } = await repoChain();
+  const evo = chain.evo();
+  const sdk = new evo.EvoSDK();
+  const i1 = await write(OWNER, 'issue', issue(R, 1));
+  // a replace is the stored document's next revision; a document already read keeps its revision
+  const next = evo.Document.fromObject({ ...i1.toObject(), title: 'edited', $revision: 2n });
+  await sdk.documents.replace({ document: next });
+  assert.equal(chain.live('issue')[0].view.title, 'edited');
+  assert.equal(i1.toObject().$revision, 1n);
+  await assert.rejects(sdk.documents.replace({ document: next }), refusedWith(40103));
+  // a release can not be deleted (10404)
+  const rel = await write(OWNER, 'release', { repoId: R, tagName: 'v1', vis: VIS, delta: 1 });
+  await assert.rejects(sdk.documents.delete({ document: rel }), refusedWith(10404));
+  // grouped counts and sums: absent groups absent, keys in key order, an integer as its byte
+  for (const kind of [3, 1]) await write(OWNER, 'transition', transition(R, { id: i1.id.toBase58(), number: 1 }, kind));
+  const by = (await sdk.documents.countWithProof({ dataContractId: chain.ids.collab, documentTypeName: 'transition', where: [['repoId', '==', repoId], ['kind', 'in', [1, 2, 3]]], groupBy: ['kind'] })).data;
+  assert.deepEqual([...by], [['01', 1n], ['03', 1n]]);
+  const sums = (await sdk.documents.sumWithProof({ dataContractId: chain.ids.collab, documentTypeName: 'transition', where: [['targetId', '==', i1.id.toBase58()]] }, 'delta')).data;
+  assert.deepEqual([...sums], [['', 17n]]);
+  // notFuture reads the time: a run completed far in the future is refused
+  const run = { repoId: R, headOid: Buffer.alloc(20, 1), name: 'b', status: 'completed', conclusion: 'success', startedAt: 1, completedAt: 9_000_000_000_000_000, outcome: 1, vis: VIS };
+  await write(OWNER, 'runner', { repoId: R, memberId: idBytes(OWNER.id) });
+  await assert.rejects(write(OWNER, 'checkRun', run), refusedWith(10422, 'notFuture'));
+});
+
+test('the mainnet set: dense reads $revision (R-05), and the owner\'s own maintainer row stays (R-08)', async () => {
+  const chain = new OfflineChain({ contractsDir: join(ROOT, 'contracts', 'mainnet') });
+  const evo = chain.evo();
+  const sdk = new evo.EvoSDK();
+  const write = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { shape: shapeOfSet(chain.set), retries: 0 });
+  const R = idBytes((await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58());
+  const row = await write(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
+  await assert.rejects(write(OWNER, 'issue', issue(R, 2)), refusedWith(10422, 'dense'));
+  await assert.rejects(sdk.documents.delete({ document: row }), (e) => e.code === 40147 && e.rule === 'ownerRowStays');
+});

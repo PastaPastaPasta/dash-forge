@@ -29,6 +29,7 @@ export async function resolveKnownOutpoint(chain, address, known) {
  * `utxo` with its value and script read from its raw transaction (Insight's or DAPI's bytes,
  * which must hash to `utxo.txid`). The legacy sighash does not commit to input values, so a
  * source that under-reports a value would otherwise turn the difference into miner fees.
+ * Also reports `isCoinbase`, read from the transaction's input (Insight's UTXO list omits it).
  */
 export async function verifyUtxo(chain, utxo) {
   const parsed = parseTransactionOutputs(await chain.getRawTransactionBytes(utxo.txid));
@@ -36,7 +37,7 @@ export async function verifyUtxo(chain, utxo) {
   const out = parsed.outputs[utxo.vout];
   if (!out) throw new Error(`${utxo.txid} has no output ${utxo.vout}`);
   if (out.scriptPubKey !== utxo.scriptPubKey) throw new Error(`${utxo.txid}:${utxo.vout} does not pay the expected script`);
-  return { ...utxo, satoshis: out.satoshis };
+  return { ...utxo, satoshis: out.satoshis, isCoinbase: parsed.isCoinbase };
 }
 
 /**
