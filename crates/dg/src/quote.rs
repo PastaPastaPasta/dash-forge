@@ -271,8 +271,9 @@ mod tests {
     /// ECON-05: proved balance deltas on dash-testnet-51, Platform rc.4, 2026-10-17.
     #[test]
     fn quotes_cover_testnet_first_writes() {
-        assert!(CONSENT >= 42_839_440);
-        assert!(CONSENT <= 42_839_440 * 110 / 100);
+        // Checked at compile time: the constant itself.
+        const _: () = assert!(CONSENT >= 42_839_440);
+        const _: () = assert!(CONSENT <= 42_839_440 * 110 / 100);
         // A PR as the first numbered item of an empty repository: 149.00M.
         assert!(target_create(7 + 9 + 30) >= 149_002_420);
         assert!(comment(9) >= 73_350_140);

@@ -305,10 +305,11 @@ mod tests {
     #[test]
     fn push_bounds_cover_testnet_calibration() {
         use super::push_fees::{MANIFEST_FIRST, MANIFEST_LATER, REF_FIRST};
-        assert!(MANIFEST_FIRST >= 129_455_720);
-        assert!(MANIFEST_FIRST <= 129_455_720 * 110 / 100);
-        assert!(MANIFEST_LATER >= 81_766_040);
-        assert!(REF_FIRST >= 89_178_000);
+        // Checked at compile time: the constants themselves.
+        const _: () = assert!(MANIFEST_FIRST >= 129_455_720);
+        const _: () = assert!(MANIFEST_FIRST <= 129_455_720 * 110 / 100);
+        const _: () = assert!(MANIFEST_LATER >= 81_766_040);
+        const _: () = assert!(REF_FIRST >= 89_178_000);
         assert!(chunks(128) >= 92_651_320);
     }
 
