@@ -27,16 +27,6 @@ ignore = [
     # signatures with a public key (rules/signature.rs); no RSA private-key operation is done.
     { id = "RUSTSEC-2023-0071", reason = "no fix available; only public-key signature verification reaches rsa through pgp" },
 
-    # rustls 0.23.44. The fix is rustls >= 0.23.46, which needs `cargo update -p rustls`.
-    # The Platform SDK bump to rc.3 (PR ci/sdk-rc3-lockstep) carries that lockfile change,
-    # so these are listed here rather than bumped in this PR to avoid a Cargo.lock conflict.
-    # Remove when the rc.3 bump lands.
-    { id = "RUSTSEC-2026-0285", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
-    { id = "RUSTSEC-2026-0346", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
-    { id = "RUSTSEC-2026-0347", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
-    { id = "RUSTSEC-2026-0348", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
-    { id = "RUSTSEC-2026-0349", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
-
     # zip 8.x, extraction only (SUID bits, symlink targets, permissions through symlinks); no 8.x release fixes
     # them. Two users: forge-runner, which only writes archives (ZipWriter; ZipArchive in a test, never
     # extract), and tenderdash-proto-compiler, a build-time dependency of the Platform SDK that extracts the

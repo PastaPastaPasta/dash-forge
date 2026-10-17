@@ -1754,8 +1754,7 @@ export class AuthController {
       if (session === null) throw new Error('sign in first')
       // Without the key this browser signs with, the list could include it.
       if (session.keyId === undefined) throw new WriteAuthError("This tab can't tell which key it signs with, so it can't tell which keys are the others. Sign in again, then retry.")
-      const forge = NETWORKS[this.network].v2
-      if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      if (!NETWORKS[this.network].v2) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
       const { identityId } = session
       // Read now: the list the dialog showed may be old.
       const ids = otherKeysToDisable(await this.identityKeys()).map((r) => r.keyId)

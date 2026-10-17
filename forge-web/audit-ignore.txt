@@ -34,9 +34,3 @@ GHSA-r28c-9q8g-f849  # postcss: previous source map auto-loading, attacker-contr
 GHSA-2v37-7h3g-55p8  # nanoid: custom generator with size 0; postcss uses the default generator
 GHSA-68fv-2mgg-jv7q  # source-map-js: DoS on a crafted indexed source map, build time only
 
-# --- js-yaml 4.3.0 -----------------------------------------------------------------------------
-# Fixed in js-yaml 4.3.2. The rc.3 Platform SDK bump (PR #490, branch ci/sdk-rc3-lockstep) moves
-# forge-web to js-yaml 4.3.2 together with its lockfile, so the bump is not repeated here to
-# avoid a pnpm-lock.yaml conflict. REMOVE THESE TWO LINES WHEN THAT PR LANDS.
-GHSA-5p4m-2wfm-xmqj  # js-yaml quadratic CPU in !!omap resolution
-GHSA-2883-xcg3-v3hh  # js-yaml maxTotalMergeKeys CPU use

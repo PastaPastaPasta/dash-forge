@@ -10,7 +10,9 @@
 #   4. OWNER diverges the base (a clean, unrelated change), so the merge is a real 3-way.
 #   5. `dg pr view` shows the source fork; `dg pr diff` / `dg pr checkout` fetch the head
 #      from the fork.
-#   6. CONTRIB approves its own PR (not a member: does not count); OWNER approves (counts).
+#   6. CONTRIB's approval of its own PR is refused (E201: the author's verdict never counts; a
+#      comment-only review is fine); COLLAB (not a member) approves: recorded, does not count;
+#      OWNER approves (counts).
 #   7. OWNER `dg pr merge`s: fetch both, build a merge commit, push it to the base, post the
 #      merge transition; the PR reads merged and the base tip is a merge whose parents are the old
 #      base and the PR head.
@@ -99,8 +101,19 @@ else
   cat "$LOG-co.err" "$LOG-co.json" >&2; bad "pr checkout failed"
 fi
 
-step "reviews: the author (not a member) approves, then OWNER approves"
-dg_write "$ID_CONTRIB" "$LOG-rev1" pr review "$REPO" "$N" --approve --body "lgtm (author)" || fail_with "$LOG-rev1" "author review"
+step "reviews: the author's own approval is refused, a non-member's approval does not count, OWNER's does"
+# The PR author's own approve or request for changes never counts (as on GitHub), so dg refuses
+# it before signing (E201); a comment-only review is fine.
+if dg_write "$ID_CONTRIB" "$LOG-rev0" pr review "$REPO" "$N" --approve --body "lgtm (author)"; then
+  bad "the author's own approval was accepted"
+else
+  check "the author's own approval is refused (E201)" assert_eq "E201" "$(jq_py "$LOG-rev0.json" 'd["error"]["code"]' 2>/dev/null)"
+  check "…and says it never counts" assert_file_contains "$LOG-rev0.json" "your own approval or request for changes never counts"
+  check "…before anything was signed" assert_file_contains "$LOG-rev0.json" "nothing was written or paid"
+fi
+dg_write "$ID_CONTRIB" "$LOG-rev0c" pr review "$REPO" "$N" --comment --body "comment (author)" || fail_with "$LOG-rev0c" "author comment-only review"
+# COLLAB is not the author, and not a member here (scenario 04 always ends with it revoked, as 09 relies on).
+dg_write "$ID_COLLAB" "$LOG-rev1" pr review "$REPO" "$N" --approve --body "lgtm (non-member)" || fail_with "$LOG-rev1" "non-member review"
 check "the non-member's review is flagged as not counting" assert_eq "False" "$(jq_py "$LOG-rev1.json" 'd["counts"]')"
 dg_write "$ID_OWNER" "$LOG-rev2" pr review "$REPO" "$N" --approve --body "lgtm" || fail_with "$LOG-rev2" "owner review"
 approved() {
