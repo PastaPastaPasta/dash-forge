@@ -265,7 +265,7 @@ git_dash_retry() { # git_dash_retry <identity_file> <logfile> <git args...>
 
 # --- shared remote-branch cleanup registry -----------------------------------
 # Scenarios register any branch/tag they create; run.sh (or the owning scenario)
-# deletes the ones still on the remote via DEPLOYER at the end.
+# deletes the ones still on the remote via OWNER (ID_OWNER) at the end.
 register_ref() { # register_ref <refname e.g. refs/heads/e2e/RUN/foo>
   [[ -n "${WORKROOT:-}" ]] || return 0
   printf '%s\n' "$1" >>"${WORKROOT}/cleanup-refs.txt"
@@ -273,7 +273,7 @@ register_ref() { # register_ref <refname e.g. refs/heads/e2e/RUN/foo>
 
 cleanup_refs() {
   [[ -n "${WORKROOT:-}" && -f "${WORKROOT}/cleanup-refs.txt" ]] || return 0
-  step "cleanup: deleting registered test refs (DEPLOYER)"
+  step "cleanup: deleting registered test refs (OWNER)"
   local scratch="${WORKROOT}/cleanup-repo"
   rm -rf "$scratch"; git init -q "$scratch" 2>/dev/null
   # Only refs the remote still advertises are deleted: a delete of an absent ref is NOT a
