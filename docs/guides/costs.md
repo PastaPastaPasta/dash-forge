@@ -57,15 +57,15 @@ dg cost estimate --backend s3     # the same repository, packs in your own bucke
 
 ```
 Estimate for a first push of the repository at /home/me/qw-cost-plat (HEAD: 336 B, 5 objects) to platform:
-  total:       ~0.01247089 DASH ≈ $0.37  (an upper bound, as `git push` quotes it; later pushes pay less)
-  metadata:    ~0.0062 DASH ≈ $0.19  4 manifests + 1 ref update, on Platform
+  total:       ~0.01359089 DASH ≈ $0.41  (an upper bound, as `git push` quotes it; later pushes pay less)
+  metadata:    ~0.00732 DASH ≈ $0.22  4 manifests + 1 ref update, on Platform
   chunks:      ~0.00627089 DASH ≈ $0.19  pack + browse index + history index on Platform; ~0.00051354 DASH ≈ $0.02 of it is the storage deposit, never refunded (Platform packs are permanent)
 ```
 
 ```
 Estimate for a first push of the repository at /home/me/qw-cost-s3 (HEAD: 334 B, 5 objects) to s3:
-  total:       ~0.00656 DASH ≈ $0.20  (an upper bound, as `git push` quotes it; later pushes pay less)
-  metadata:    ~0.00656 DASH ≈ $0.20  4 manifests + 1 ref update, on Platform
+  total:       ~0.00768 DASH ≈ $0.23  (an upper bound, as `git push` quotes it; later pushes pay less)
+  metadata:    ~0.00768 DASH ≈ $0.23  4 manifests + 1 ref update, on Platform
   pack bytes:  on your own storage (s3), billed by your provider, not by Platform
 ```
 
@@ -79,8 +79,8 @@ dg cost estimate --bytes 1048576
 
 ```
 Estimate for a first push of 1.0 MiB (~2048 objects assumed) to platform:
-  total:       ~0.42939169 DASH ≈ $12.88  (not counting the history index's chunks; later pushes pay less)
-  metadata:    ~0.0062 DASH ≈ $0.19  4 manifests + 1 ref update, on Platform
+  total:       ~0.43051169 DASH ≈ $12.92  (not counting the history index's chunks; later pushes pay less)
+  metadata:    ~0.00732 DASH ≈ $0.22  4 manifests + 1 ref update, on Platform
   chunks:      ~0.42319169 DASH ≈ $12.70  pack + browse index on Platform; ~0.30331908 DASH ≈ $9.10 of it is the storage deposit, never refunded (Platform packs are permanent)
   not priced:  the history index's chunks: their size depends on the repository; `dg cost estimate --path <repository>` prices them
 ```
@@ -93,39 +93,51 @@ A deposit only comes back when the document is deleted. Some documents can never
 
 ## What each action costs
 
-This is the one table of what Forge costs; the other guides link here. Measured on devnet moutai as the signing identity's balance change: Platform 4.2.0-beta.5, on **2026-09-27**, except the rows marked †, measured on the same network before the beta.5 reset (2026-09-24 to 2026-09-26). Mainnet uses the same fee formula. Every figure here was measured on a devnet; they are **to be re-measured on testnet (Platform 5.0.0-rc.4)**, which uses the same fee schedule.
+This is the one table of what Forge costs; the other guides link here. Measured on **testnet, Platform 5.0.0-rc.4** (`dash-testnet-51`, protocol 14, SDK 5.0.0-rc.3), on **2026-10-17**, against the release rehearsal's scratch contracts. Each amount is the signing identity's stable proved balance change. The ECON-05 measurements and sample counts are recorded in `dash-forge-qa/evidence/testnet-rehearsal/econ/CALIBRATION.md` and `measurements.jsonl`.
 
-A write that is the first of its kind somewhere (a repository's first push or first issue, a ref's first update) creates index entries and costs more than the same write later. The ranges below go from later to first.
+A first write can create repository, author, target or identity-contract index state and cost more. The ranges below distinguish later writes from the measured first. **† means a historical devnet benchmark, not rerun on testnet**; large packs, imports, forks, external-storage pushes and key updates retain their named older provenance.
 
 | Action | Cost |
 |---|---|
-| Create a repository | **~0.0027 DASH** for a public one with the default settings: ~0.0016 DASH on bonsia (0.0013 on moutai) for three small documents (`repo`, your `maintainer` membership, the first `config`), plus ~0.0011 DASH because members-only content is turned on from the start (`--no-members-only` skips it; [below](#members-only-and-private-content)). A private one: ~0.0020 DASH (it adds your key and the first anchor) |
-| Push to **your own bucket** | **~0.004–0.0055 DASH** on bonsia: the pack's and its browse index's manifests, the history index's, and one ref update. Measured on bonsia (2026-09-30): 0.0052 DASH for the first push to a repository, ~0.0040 after. (On moutai: 0.0028 and 0.0021) |
-| Push with packs **on Platform** | **~0.004–0.011 DASH** for a tiny push on bonsia: 0.0040 for a tag and 0.0052 for a branch, 0.0102–0.0104 (first) and 0.0088 when it moves the default branch, whose history index is stored as a chunk too (quoted up to 0.012). Plus **~0.33 DASH per MiB** of packed data (`git push` quotes up to 0.39); the storage is permanent. Measured on moutai: 200 KiB 0.070 DASH, 1.5 MiB 0.50 DASH |
-| Push to a **private** repository, packs on Platform | 20 KiB: 0.0112 DASH (first push); a tiny follow-up: 0.0022 DASH; three new branches at once: 0.0078 DASH. The packs are sealed, so they are a little larger |
-| History index (a push that moves the **default branch**) | **one more manifest and, on Platform, a small delta**: ~0.0026–0.006 DASH on Platform for a typical push, and now and then a full index (~0.28 DASH on dashpay/dash; about every 80 pushes there, ~0.009 DASH a push on average). ~0.0016 DASH with your own storage. All upper bounds. See [History index](#history-index) |
-| Each extra branch or tag in a push | ~0.0006–0.0009 DASH (one ref update; the same for a protected branch, public or private). A push that only adds a branch at a commit already stored measured 0.00066 DASH |
-| Each extra storage target (a second bucket) | ~0.00014 DASH a push: the two manifests carry its URIs |
-| Issue | ~0.0006 DASH with a short body in a busy repository, ~0.001 DASH for a repository's first; ~0.0017 DASH with a 4 KB body |
-| Comment | ~0.0005 DASH short, ~0.0007 DASH as a thread's first, ~0.0016 DASH at 4 KB |
-| A body, comment or release notes **over 5,120 bytes** (maintainers and writers; [forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9)) | the document as above, plus the full text as an artifact: quoted at **~0.010 DASH for 20 KB, ~0.021 for 50 KB** on Platform (one manifest and the text's bytes as chunks, permanent), or **~0.0015 DASH** (the manifest alone) on your own storage. Quoted upper bounds, not yet measured |
-| Pull request | ~0.0007–0.0013 DASH |
-| Close, reopen, label, merge event | ~0.0004–0.0006 DASH (a close measured 0.00059 DASH; a merge event 0.00058 DASH on beta.6) |
-| Review | ~0.00035–0.0004 DASH |
-| Release (the document; assets go to your storage) | ~0.0007 DASH |
-| Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH, **in a repository without members-only content**. With it on, both cost more and scale with the member count: [Members-only and private content](#members-only-and-private-content) |
-| Star / unstar | **~0.00046 DASH** (45.5 M credits), or ~0.00057 DASH for a repository's first star (57.1 M), measured on devnet sakura. The price includes the star's Trending count. The web app quotes an upper bound before you star. Unstarring refunds part of it |
-| Counting a star toward **Trending** | **Nothing extra.** The star's price includes it, and there is nothing to turn off: the web app shows no Trending setting on sakura, and `--no-trending` and `trending = false` do nothing there (`dg` says so) |
-| Profile (display name, bio, avatar, links) | **~0.00037 DASH** for a first profile with about 120 bytes of text, as the identity's first forge-community write (devnet sakura, 2026-10-02); an edit ~0.00002 DASH. Deleting it refunds part of the deposit |
-| Webhook † | ~0.0008 DASH; removing it refunds all but ~0.00008 DASH |
-| Fork a repository † | **~0.01 DASH** for a small repository (8 packs, 5 branches: 0.0095 DASH), 0.03 DASH for 36 packs: one small manifest per pack and one ref update per branch. The parent's packs are referenced, never re-uploaded |
-| Mirror a GitHub repository, first run † | depends on its size; the Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost **~0.078 DASH**, and a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. A re-run with nothing new costs **0** |
-| Top up a browser key's budget † | ~0.00002 DASH |
+| Create a public repository, members-only off | **~0.00139 DASH later, 0.00168 first**: repo, owner membership and config (three documents, no branch protection) |
+| Create a public repository, members-only on (default) | **~0.00236 DASH** for the first measured bundle; later-owner bundles ~0.00229 DASH. Includes the initial anchor and owner key share |
+| Create a private repository | **~0.00199 DASH** for the first measured bundle; later-owner bundles ~0.00200 DASH. Includes the owner membership, key share and anchor |
+| Push with packs on Platform | **~0.00714–0.00742 DASH later, 0.00893 first** for four tiny public pushes with browse/history indexes. Exact 128-byte chunks cost 0.00058–0.00093, one manifest 0.00081–0.00129, one existing-name ref update 0.00058–0.00089. Larger packs: **~0.33–0.36 DASH per MiB measured historically†**, quoted at about 0.39; permanent storage |
+| Push to your own bucket † | ~0.0040 DASH later, 0.0052 first on bonsia (2026-09-30); manifests, history index and ref, without Platform pack bytes |
+| Push to a private repository, packs on Platform † | 20 KiB: 0.0112 DASH first; tiny follow-up 0.0022; three new branches 0.0078. Packs are sealed and slightly larger |
+| History index † | Extra manifests and, on Platform, delta chunks; historical upper bounds ~0.0026–0.006 DASH for a typical push, occasional full index ~0.28 on dashpay/dash. See [History index](#history-index) |
+| Each extra new branch or tag | **~0.00066–0.00067 DASH** (one ref update, commit already stored); protected existing-name ref updates ~0.00058–0.00089 |
+| Each extra storage target † | ~0.00014 DASH per push (URI fields in manifests) |
+| Issue | **~0.00070 DASH later, 0.00118 first** with a short body; a 1,000-byte body ~0.00097 DASH and 4,000-byte body ~0.00180 DASH |
+| Comment | **~0.00052 DASH later, 0.00072 first** with a short body; a reply to an existing root ~0.00061 later, 0.00071 first |
+| Body, comment or release notes over 5,120 bytes | The document plus an artifact: quoted upper bounds ~0.010 DASH at 20 KB, ~0.021 at 50 KB on Platform, or a manifest with your own storage. Not measured in this rehearsal; see [forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9) |
+| Pull request | **~0.00081 DASH later, 0.00149 first** for a patch alone in an empty repository. CLI `--draft` writes an extra transition: 0.00147–0.00204 for the bundle |
+| Close, reopen, draft, ready or event-only merge | **~0.00046–0.00056 DASH later, up to 0.00073 first**. A merge that pushes code additionally pays its push |
+| Label or pin event | ~0.00051–0.00057 DASH later; first label event ~0.00076 |
+| Review | ~0.00040 DASH later on the same PR; ~0.00066 for each new PR's first, ~0.00075 including the author's first contract write. Anchored comments ~0.00053 later on the same thread, ~0.00073 first |
+| Label / milestone definition | ~0.00034 DASH later, ~0.00050 first |
+| Release document | ~0.00062 DASH later, ~0.00073 first; assets use your storage |
+| Consent / add a writer | Consent ~0.00031 later, ~0.00043 first; writer grant ~0.00042 later, ~0.00049 first. Removing a writer without sealed content refunds part of the deposit |
+| Star / unstar | **~0.00024–0.00025 DASH** for an established author's star in a populated repo; ~0.00057–0.00059 for an empty repo's first; ~0.00066 including the author's first write. Unstar refunded ~0.00033 in this run |
+| Counting a star toward Trending | Included in the fused star's price. No separate starBeat document exists on this scratch set |
+| Follow / unfollow | ~0.00019 DASH with both trees populated; ~0.00038 for a new target, ~0.00056 first. Unfollow immediately refunded ~0.00012 with another follower, ~0.00023 for the target's last |
+| Watch / unwatch | ~0.00038 DASH later, ~0.00048 for a repo's first; unwatch refunded ~0.00033 |
+| Profile | ~0.00032 DASH create with a short name as the identity's first meta write (~0.00023 after prior meta writes), ~0.000028 same-size edit (three repeats) |
+| Webhook | ~0.00077 DASH later, ~0.00101 first; removal immediately refunded ~0.00067 |
+| Topic | ~0.00066 DASH later; ~0.00078 DASH first (CLI includes a config replacement). Raw documents with reused global names cost ~0.00048 DASH later; fresh names ~0.00062 |
+| Pack mirror | ~0.00048 DASH later, ~0.00064 first with a short URI |
+| Runner registration | ~0.00040 DASH later, ~0.00047 first |
+| Policy / ban | Policy ~0.00027 DASH later, ~0.00035 first; ban ~0.00040 |
+| CI check run | ~0.00072 DASH later, ~0.00122 first (queued check) |
+| Bot push grant | ~0.00028 DASH later, ~0.00044 first. The CLI bot-allow aggregate cost ~0.00218, including its additional artifact writes |
+| Fork a repository † | ~0.01 DASH for 8 packs / 5 branches, ~0.03 for 36 packs on moutai; parent packs referenced, not uploaded |
+| Mirror a GitHub repository, first run † | Historical moutai examples: 0.078 DASH (`dash-faucet`) and 0.112 for a repository with 2 PRs, 15 comments and 7 reviews. No-new-content rerun: 0 |
+| Top up a browser key's budget † | ~0.00002 DASH on moutai |
 | Clone, fetch, browse, read issues, download a zip | **free** |
 
 ### Members-only and private content
 
-New public repositories turn members-only content on, and a private repository is encrypted from the start, so these rows are the ones most repositories pay. Each is **per key share**: the key is wrapped to every member who holds it, one document each. Measured on devnet sakura (`forge-web/lib/view/audience.ts` `ENABLE_ANCHOR_CREDITS` and `ENABLE_WRAP_CREDITS`; `dg`'s `keys::enable_estimate`).
+New public repositories turn members-only content on, and a private repository is encrypted from the start, so these rows are the ones most repositories pay. Each is **per key share**: the key is wrapped to every member who holds it, one document each. The per-key figures below remain historical devnet sakura measurements (`forge-web/lib/view/audience.ts` `ENABLE_ANCHOR_CREDITS` and `ENABLE_WRAP_CREDITS`; `dg`'s `keys::enable_estimate`).
 
 | Action | Cost |
 |---|---|
@@ -145,7 +157,7 @@ Removal is the one that surprises organisations: its cost grows with the number 
 
 **How Trending counts.** Trending on Explore ranks repositories by their **new stargazers in the last week** (or today, which is the UTC day so far: the windows start at 00:00 UTC), read with a proof from the star's weekly window index. Every new star counts. An unstar is refunded, but the star keeps counting in the windows it was in until they pass; starring the same repository again inside one of them counts once. Explore leaves private repositories and an owner's star of their own repository out of Trending when it reads the ranking. No index gives a star's time back, so it can only take the owner's star out of a repository created inside the window (less than a week old): an owner's star of an older repository may count, by one.
 
-Where the numbers come from: the per-write balance changes recorded by the push calibration (2026-09-27/28; its figures are the constants in `forge_core::cost::push_fees`), the web app's measured model (`forge-web/lib/sdk/cost.ts`), the live measurements in the pull requests that built each feature and in [e2e/README.md](../../e2e/README.md), and the contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
+Where the historical numbers come from: the per-write balance changes recorded by the push calibration (2026-09-27/28; its figures are the constants in `forge_core::cost::push_fees`), the web app's measured model (`forge-web/lib/sdk/cost.ts`), the live measurements in the pull requests that built each feature and in [e2e/README.md](../../e2e/README.md), and the contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
 
 ```sh
 dg cost prices
@@ -155,13 +167,13 @@ dg cost prices
 Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):
   repo create                ~0.002 DASH ≈ $0.06
   ref update                 ~0.00092 DASH ≈ $0.03
-  pack manifest              ~0.00112 DASH ≈ $0.03
+  pack manifest              ~0.0014 DASH ≈ $0.04
   pack chunk (14.7 KB)       ~0.00550791 DASH ≈ $0.17
-  issue (~500 B)             ~0.00158658 DASH ≈ $0.05
-  comment (~500 B)           ~0.00122658 DASH ≈ $0.04
+  issue (~500 B)             ~0.00218658 DASH ≈ $0.07
+  comment (~500 B)           ~0.00148658 DASH ≈ $0.04
 ```
 
-These are upper bounds, the prices `dg` and `git push` quote before they sign, not measurements: each is priced as the first of its kind (a repository's first issue, a thread's first comment), at or above the most the table above measured for that write.
+These are prepared calibration upper bounds (the binary must include ECON-05), the prices `dg` and `git push` quote before they sign, not measurements: each is priced as the first of its kind (a repository's first issue, a thread's first comment), at or above the most the table above measured for that write.
 
 **Measured on devnet bonsia** (Platform 4.2.0-beta.7, 2026-09-30), where some writes cost more than on moutai: a repository's first issue 0.0012 DASH and a later one 0.0008; a first push to your own bucket 0.0052 DASH and a later one ~0.0040, the history index's manifests included; a limited key for `dg auth login` ~0.00027 DASH and a CI runner key 0.00043 (quoted 0.0005, one identity update); a CI check run 0.00082–0.00122 DASH (see [CI](ci.md#what-it-costs)).
 
@@ -261,7 +273,8 @@ So on testnet, delete early or not at all: a document you delete after a few wee
 | Ref updates, config, events | No, never (they are the audit trail) |
 | The `repo` document | No |
 | Membership documents (`writer`, `maintainer`) | Yes, by the owner (that is how a collaborator is removed) |
-| Comments, reviews, releases, labels, webhooks, stars, follows, your profile | Yes, by the author |
+| Comments, reviews, labels, webhooks, stars, follows, your profile | Yes, by the author |
+| Release revisions | No on the rehearsal scratch set; unpublish appends another revision |
 
 There is no `dg repo delete`: a repository cannot be deleted.
 

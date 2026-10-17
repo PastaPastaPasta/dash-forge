@@ -130,8 +130,9 @@ pub fn profile(text_bytes: u64) -> u64 {
     forge_core::cost::estimate(text_bytes + 64).total() + PROFILE_INDEX_OVERHEAD
 }
 
-/// A member's `consent` (`dg collab accept`): 30.8M on bonsia, 30.6M on sakura (QW4-049).
-pub const CONSENT: u64 = 33_000_000;
+/// A member's first `consent` (`dg collab accept`): 42.84M on dash-testnet-51,
+/// Platform 5.0.0-rc.4, SDK rc.3 (ECON-05, 2026-10-17); later writes 31.14–31.22M.
+pub const CONSENT: u64 = 45_000_000;
 
 /// A `writer` or `maintainer` document (`dg collab add`), priced as the member's first: 38.9M-
 /// 46.8M on moutai, a triage grant 48.1M on sakura (QW4-049; it was quoted 20M).
@@ -265,6 +266,17 @@ mod tests {
         // about 600 bytes.
         assert!(webhook(600) >= 102_100_000);
         assert!(webhook(600) < 2 * 102_100_000);
+    }
+
+    /// ECON-05: proved balance deltas on dash-testnet-51, Platform rc.4, 2026-10-17.
+    #[test]
+    fn quotes_cover_testnet_first_writes() {
+        assert!(CONSENT >= 42_839_440);
+        assert!(CONSENT <= 42_839_440 * 110 / 100);
+        // A PR as the first numbered item of an empty repository: 149.00M.
+        assert!(target_create(7 + 9 + 30) >= 149_002_420);
+        assert!(comment(9) >= 73_350_140);
+        assert!(event(6, false) >= 76_225_420);
     }
 
     /// QW4-046 / QW4-049 / QW4-039: the quotes cover what sakura (Platform 5.0.0-beta.1, QA wave

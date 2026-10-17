@@ -50,7 +50,7 @@ fn prices_cmd(ctx: &Ctx) {
         json!({
             "mode": "per_operation_estimates",
             "operations": rows,
-            "note": "upper bounds: each write priced as the first of its kind (a repository's first issue, a thread's first comment), from fees measured on devnets moutai and bonsia; for what one identity has actually spent, use `dg cost audit`",
+            "note": "upper bounds: each write priced as the first of its kind (a repository's first issue, a thread's first comment), calibrated on testnet, Platform 5.0.0-rc.4 (2026-10-17); for what one identity has actually spent, use `dg cost audit`",
         }),
         || {
             println!("Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):");
@@ -64,7 +64,7 @@ fn prices_cmd(ctx: &Ctx) {
     );
 }
 
-/// `dg cost prices`' rows: upper bounds from the fees measured on moutai and bonsia
+/// `dg cost prices`' rows: upper bounds calibrated on testnet (ECON-05, 2026-10-17)
 /// (`push_fees`, the importer's calibrated collaboration model); docs/guides/costs.md has the
 /// measured table.
 fn price_table() -> [(&'static str, u64); 6] {

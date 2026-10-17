@@ -116,8 +116,9 @@ pub mod push_fees {
     /// `estimateChunkCredits` pins the same figure.
     pub const CHUNK_OVERHEAD_BYTES: u64 = 130;
     /// A `packManifest`, the first of a push into a repository or ref that has none of its
-    /// kind yet (its index subtrees are created). Measured 109.3-110.2M.
-    pub const MANIFEST_FIRST: u64 = 112_000_000;
+    /// kind yet (its index subtrees are created). ECON-05 measured 129.46M on
+    /// dash-testnet-51, Platform 5.0.0-rc.4, SDK rc.3 (2026-10-17); later 81.07-81.77M.
+    pub const MANIFEST_FIRST: u64 = 140_000_000;
     /// A `packManifest` into a repository that already has one: 85.5-87.4M on bonsia
     /// (drive 4.2.0-beta.7, QA wave 3). What a fork's later manifests pay.
     pub const MANIFEST_LATER: u64 = 90_000_000;
@@ -299,6 +300,17 @@ mod tests {
         estimate_document_storage, BASE_ST_PROCESSING, CREDITS_PER_DASH, PROCESSING_PER_BYTE, SEEK,
         STORAGE_CREDIT_PER_BYTE, STORAGE_PROCESSING_PER_BYTE, WRITE_BASE,
     };
+
+    /// ECON-05: one chunk/manifest/ref at a time on dash-testnet-51, rc.4, 2026-10-17.
+    #[test]
+    fn push_bounds_cover_testnet_calibration() {
+        use super::push_fees::{MANIFEST_FIRST, MANIFEST_LATER, REF_FIRST};
+        assert!(MANIFEST_FIRST >= 129_455_720);
+        assert!(MANIFEST_FIRST <= 129_455_720 * 110 / 100);
+        assert!(MANIFEST_LATER >= 81_766_040);
+        assert!(REF_FIRST >= 89_178_000);
+        assert!(chunks(128) >= 92_651_320);
+    }
 
     /// Two sealed artifacts cost no more than [`sealed_parts_chunks`] of their total, however
     /// the bytes split between them (the forge-import fallback prices a history index so).

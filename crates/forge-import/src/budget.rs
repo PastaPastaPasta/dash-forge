@@ -47,32 +47,26 @@ pub enum CollabDoc {
 }
 
 impl CollabDoc {
-    /// Index storage beyond the document's bytes, credits. Calibrated on moutai from
-    /// per-write balance drops (two clean imports of `PastaPastaPasta/dash-faucet`, and one
-    /// of `backports-validation-script`) and, since beta.6, from whole showcase runs: each
-    /// figure sits at or above what its kind paid, so a run's total estimate comes out over
-    /// what it pays (1.02–1.25x on the recorded runs, never under).
+    /// Index storage beyond the document's bytes, including first-write subtrees.
+    /// ECON-05, dash-testnet-51, Platform 5.0.0-rc.4, SDK rc.3 (2026-10-17):
+    /// each write is an upper bound, including first writes, because `--max-spend`
+    /// checks it before broadcasting. Raw proved deltas: dash-forge-qa/
+    /// evidence/testnet-rehearsal/econ/measurements.jsonl.
     pub fn index_overhead(self) -> u64 {
         match self {
-            // Issues and PRs: measured 58–92M (mean 70–81M). Releases were not measured
-            // separately; they are priced as the largest kind (tag, notes, assets).
-            CollabDoc::Target | CollabDoc::Release => 90_000_000,
-            // Measured 40–55M, mean 43–53M on beta.5; 54M covers the beta.6 dash window.
-            CollabDoc::Comment => 54_000_000,
-            // Measured 18–113M, mean 21–45M on beta.5; the beta.6 dash window needs 50M.
-            CollabDoc::Review => 50_000_000,
-            // Events paid 58.4M each on beta.6 (129 merge events on dips, 29 on docs-platform,
-            // 2026-09-29: 53.2M estimated, 0.91x). The contract grew (forge-collab 19.5 kB,
-            // read on every write) and the event type's indexes (`addressee`, the target's
-            // log) fill up; 56M keeps a merge event 10% over.
-            //
-            // A transition is not measured yet (wipe day, WIPE-PLAN §3 step 8): it is priced as
-            // the close / merge event it replaces. It has three indexes (the target's sum and
-            // count tree, the per-kind count tree, the feed) and its writer reads two totals;
-            // the gate is "≤ 1.15 × the close event", so it is re-measured and raised if over.
-            CollabDoc::Event | CollabDoc::Transition => 56_000_000,
-            // Measured 27–68M, mean 28–36M.
-            CollabDoc::Label => 35_000_000,
+            // First targets include the PR's additional source indexes.
+            CollabDoc::Target => 150_000_000,
+            // The previous release bound already covers the testnet measurements.
+            CollabDoc::Release => 90_000_000,
+            // These samples already had a contract nonce. Reserve the existing 12M
+            // nonce allowance too, so a first contract write is covered by the cap.
+            CollabDoc::Comment => 80_000_000,
+            CollabDoc::Review => 70_000_000,
+            // First label event 76.23M, first close 73.19M (property bytes add more).
+            CollabDoc::Event => 87_000_000,
+            CollabDoc::Transition => 84_000_000,
+            // First label 50.53M, including its forge-meta nonce.
+            CollabDoc::Label => 48_000_000,
         }
     }
 }
@@ -410,8 +404,9 @@ mod tests {
     /// `RUST_LOG=forge_import::cost=debug`, an identity nothing else was using): every
     /// collaboration write's properties size (bytes) and measured balance drop. The Mirror
     /// Action's CI run of the same import paid 0.0781 DASH against a 0.0649 estimate (20%
-    /// under); the estimate must stay an upper bound, 0–15% over. (Its git pushes are priced
-    /// by `forge_core::cost::push_fees`, tested in `gitsync` and `forge_core::cost`.)
+    /// under); the estimate must stay an upper bound. Current testnet first-write bounds can
+    /// exceed these historical aggregate fees, but must stay within twice the old charge.
+    /// (Its git pushes are priced by `forge_core::cost::push_fees`, tested in `gitsync` and `forge_core::cost`.)
     #[test]
     fn estimates_cover_a_recorded_run() {
         const COLLAB: &[(CollabDoc, u64, u64)] = &[
@@ -457,9 +452,33 @@ mod tests {
         #[allow(clippy::cast_precision_loss)] // the ratio for the assertion message only
         let ratio = est as f64 / paid as f64;
         assert!(
-            est >= paid && est <= paid + paid * 15 / 100,
+            est >= paid && est <= paid * 2,
             "collab: estimate {est} vs paid {paid} ({ratio:.3})"
         );
+    }
+
+    /// ECON-05: testnet first writes, including their new subtrees (2026-10-17, rc.4).
+    /// Property sizes use the importer's conservative fixed fields plus the short text.
+    #[test]
+    fn estimates_cover_testnet_first_writes() {
+        for (kind, bytes, paid) in [
+            (CollabDoc::Target, 128, 149_002_420_u64),
+            (CollabDoc::Comment, 128, 73_350_140),
+            (CollabDoc::Comment, 128, 73_350_140 + 12_000_000),
+            (CollabDoc::Review, 128, 75_303_740),
+            (CollabDoc::Event, 120, 76_225_420),
+            (CollabDoc::Event, 120, 76_225_420 + 12_000_000),
+            (CollabDoc::Transition, 90, 73_481_440),
+            (CollabDoc::Transition, 90, 73_481_440 + 12_000_000),
+            (CollabDoc::Label, 73, 50_530_880),
+        ] {
+            let estimate = collab_doc_credits(kind, bytes);
+            assert!(estimate >= paid, "{kind:?}: {estimate} < {paid}");
+            assert!(
+                estimate <= paid * 130 / 100,
+                "{kind:?}: {estimate} vs {paid}"
+            );
+        }
     }
 
     /// The showcase merge repair on moutai beta.6 (2026-09-29, forge-import 01c87ca0, one
@@ -473,7 +492,7 @@ mod tests {
         for (events, paid) in [(129_u64, 7_536_815_200_u64), (29, 1_693_638_900)] {
             let est = event * events;
             assert!(
-                est >= paid && est <= paid + paid * 15 / 100,
+                est >= paid && est <= paid * 2,
                 "{events} events: estimate {est} vs paid {paid}"
             );
         }
@@ -486,7 +505,7 @@ mod tests {
             + 112 * (CollabDoc::Event.index_overhead() - 45_000_000);
         let paid = 25_566_132_540_u64;
         assert!(
-            est >= paid && est <= paid + paid * 15 / 100,
+            est >= paid && est <= paid * 2,
             "dash window: estimate {est} vs paid {paid}"
         );
     }
