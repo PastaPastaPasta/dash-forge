@@ -1,0 +1,118 @@
+{
+  "success": true,
+  "data": [
+    {
+      "proTxHash": "f37de98bcd094e33307c6705204bccdf4d7ad10eb08999c1c9281847b5ef22b0",
+      "address": "68.67.122.3:19999",
+      "addresses": {
+        "platform_p2p": [
+          "68.67.122.3:36656"
+        ],
+        "core_p2p": [
+          "68.67.122.3:19999"
+        ],
+        "platform_https": [
+          "68.67.122.3:1443"
+        ]
+      },
+      "status": "ENABLED",
+      "platformHTTPPort": 1443,
+      "versionCheck": "success",
+      "dapiVersion": "5.0.0-rc.3",
+      "driveVersion": "5.0.0-rc.3"
+    },
+    {
+      "proTxHash": "3979cfb79c4562e819aca69ffae2ea84b9b8f29bd89bdc68be67b88c6f31bf99",
+      "address": "173.199.119.242:19999",
+      "addresses": {
+        "platform_https": [
+          "173.199.119.242:22822"
+        ],
+        "platform_p2p": [
+          "173.199.119.242:22821"
+        ],
+        "core_p2p": [
+          "173.199.119.242:19999"
+        ]
+      },
+      "status": "ENABLED",
+      "platformHTTPPort": 22822,
+      "versionCheck": "success",
+      "dapiVersion": "5.0.0-rc.3",
+      "driveVersion": "5.0.0-rc.3"
+    },
+    {
+      "proTxHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "address": "203.0.113.9:19999",
+      "addresses": {
+        "core_p2p": [
+          "203.0.113.9:19999"
+        ]
+      },
+      "status": "ENABLED",
+      "platformHTTPPort": 1443,
+      "versionCheck": "success",
+      "dapiVersion": "5.0.0-rc.3",
+      "driveVersion": "5.0.0-rc.3"
+    },
+    {
+      "proTxHash": "f58d935608ff003e697de5700f67363493dedc5ef63e83ca668a2acd0ac69919",
+      "address": "206.245.167.63:19999",
+      "addresses": {
+        "platform_p2p": [
+          "206.245.167.63:36656"
+        ],
+        "platform_https": [
+          "206.245.167.63:1443"
+        ],
+        "core_p2p": [
+          "206.245.167.63:19999"
+        ]
+      },
+      "status": "ENABLED",
+      "platformHTTPPort": 1443,
+      "versionCheck": "success",
+      "dapiVersion": "4.1.2",
+      "driveVersion": "4.1.2"
+    },
+    {
+      "proTxHash": "edb952979a9fd4057f12468490cf3cadc923ae99d8c48e063efbddaf5a1447a0",
+      "address": "87.229.22.126:19999",
+      "addresses": {
+        "platform_p2p": [
+          "87.229.22.126:36656"
+        ],
+        "core_p2p": [
+          "87.229.22.126:19999"
+        ],
+        "platform_https": [
+          "87.229.22.126:1443"
+        ]
+      },
+      "status": "ENABLED",
+      "platformHTTPPort": 1443,
+      "versionCheck": "success",
+      "dapiVersion": "4.1.2"
+    },
+    {
+      "proTxHash": "763ca29ff79683e7572451311c9ca4a83cd0df930a7db19416efe5dd825c0b80",
+      "address": "162.35.243.85:19997",
+      "addresses": {
+        "platform_https": [
+          "162.35.243.85:1443"
+        ],
+        "platform_p2p": [
+          "162.35.243.85:36656"
+        ],
+        "core_p2p": [
+          "162.35.243.85:19997"
+        ]
+      },
+      "status": "POSE_BANNED",
+      "platformHTTPPort": 1443,
+      "versionCheck": "fail"
+    }
+  ],
+  "message": "trimmed from https://quorums.testnet.networks.dash.org/masternodes read 2026-10-16 (the 22822 and no-platform_https entries are edited, see refresh-dapi.test.mjs)",
+  "lastUpdated": 1792197579
+}

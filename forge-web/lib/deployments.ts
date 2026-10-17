@@ -45,6 +45,11 @@ export interface DeploymentFile {
   readonly keyExchange?: { readonly contractId?: string | null }
   /** The forge-v2 record `forge-contracts/scripts/deploy-v2.mjs` read-modify-writes. */
   readonly v2?: {
+    /**
+     * The committed contract set a production registration used (`deploy-v2.mjs --set mainnet`):
+     * `forge-contracts/contracts/<set>/`. Absent = the top-level `forge-contracts/contracts/` set.
+     */
+    readonly contractsSet?: string
     readonly forgeCore?: ContractRecord
     readonly forgeCollab?: ContractRecord
     /** Absent on a deployment that predates the three-contract split. */

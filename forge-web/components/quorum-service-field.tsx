@@ -40,7 +40,7 @@ export function QuorumServiceField({ reload = () => window.location.reload() }: 
     }
     setStatus({ kind: 'checking' })
     try {
-      await probeQuorumService(url, ACTIVE_NETWORK.dapiAddresses)
+      await probeQuorumService(url, ACTIVE_NETWORK.dapiAddresses, {}, ACTIVE_NETWORK.chainId ?? null)
     } catch (err) {
       const why = PROBE_FAILURE[err instanceof QuorumProbeError ? err.reason : 'no-answer']
       setStatus({ kind: 'error', message: `${url} ${why}. Nothing was changed.` })

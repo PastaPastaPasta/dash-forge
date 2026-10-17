@@ -9,7 +9,8 @@
 # middleware, no `rewrites`, no Server Action, no `use server`, the image optimizer is off
 # (`images.unoptimized`) and the i18n router is not used. Each advisory below concerns one of
 # those server features. `next dev` is a developer-only server. Upgrading Next 14 -> 15.5.24 or
-# later clears all of them; that major upgrade is tracked separately from this audit job.
+# later clears all of them. That major upgrade is deferred until after the testnet launch (decided
+# 2026-10-17): the export ships no server code, so none of these is reachable in production.
 GHSA-2xp9-vwfh-vxw4  # RCE in the Image Optimization API (AVIF): optimizer is off
 GHSA-p293-qw3h-jr36  # RCE on Windows-hosted Next servers: no Next server is hosted
 GHSA-36qx-fr4f-26g5  # Middleware / Proxy bypass with i18n: no middleware, no i18n

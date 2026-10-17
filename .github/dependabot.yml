@@ -19,6 +19,10 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
     ignore:
+      # Until the testnet launch (G4), decided 2026-10-17: no major upgrades. Pre-1.0 crates whose minor
+      # bump breaks (secp256k1 0.31+, tower-http 0.7+) are held by version below. Revisit after launch.
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
       # Dash Platform SDK family (git dependencies pinned by tag in the root Cargo.toml).
       - dependency-name: dash-sdk
       - dependency-name: dapi-grpc
@@ -34,6 +38,10 @@ updates:
       - dependency-name: 'grovedb*'
       - dependency-name: 'tenderdash-*'
       - dependency-name: 'key-wallet*'
+      - dependency-name: secp256k1
+        versions: ['>=0.31']
+      - dependency-name: tower-http
+        versions: ['>=0.7']
 
   # Standalone contract validator (its own Cargo.lock, same SDK pin as the workspace).
   - package-ecosystem: cargo
@@ -46,6 +54,10 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
     ignore:
+      # Until the testnet launch (G4), decided 2026-10-17: no major upgrades. Pre-1.0 crates whose minor
+      # bump breaks (secp256k1 0.31+, tower-http 0.7+) are held by version below. Revisit after launch.
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
       - dependency-name: dpp
       - dependency-name: 'dash-platform-*'
       - dependency-name: 'dashcore*'
@@ -64,6 +76,10 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
     ignore:
+      # Until the testnet launch (G4), decided 2026-10-17: no major upgrades. Pre-1.0 crates whose minor
+      # bump breaks (secp256k1 0.31+, tower-http 0.7+) are held by version below. Revisit after launch.
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
       - dependency-name: '@dashevo/*'
 
   - package-ecosystem: npm
@@ -76,6 +92,10 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
     ignore:
+      # Until the testnet launch (G4), decided 2026-10-17: no major upgrades. Pre-1.0 crates whose minor
+      # bump breaks (secp256k1 0.31+, tower-http 0.7+) are held by version below. Revisit after launch.
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
       - dependency-name: '@dashevo/*'
 
   - package-ecosystem: npm
@@ -88,6 +108,10 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
     ignore:
+      # Until the testnet launch (G4), decided 2026-10-17: no major upgrades. Pre-1.0 crates whose minor
+      # bump breaks (secp256k1 0.31+, tower-http 0.7+) are held by version below. Revisit after launch.
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
       - dependency-name: '@dashevo/*'
 
   # --- GitHub Actions ---------------------------------------------------------------------
@@ -107,6 +131,13 @@ updates:
 
   # --- Docker -----------------------------------------------------------------------------
   # Base images are pinned by digest in each Dockerfile.
+    ignore:
+      # Until the testnet launch (G4), decided 2026-10-17: no major upgrades. Pre-1.0 crates whose minor
+      # bump breaks (secp256k1 0.31+, tower-http 0.7+) are held by version below. Revisit after launch.
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+
+
   - package-ecosystem: docker
     directories:
       - /crates/forge-relay
@@ -119,3 +150,8 @@ updates:
     groups:
       docker-base-images:
         patterns: ['*']
+    ignore:
+      # Until the testnet launch (G4), decided 2026-10-17: no major upgrades. Pre-1.0 crates whose minor
+      # bump breaks (secp256k1 0.31+, tower-http 0.7+) are held by version below. Revisit after launch.
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']

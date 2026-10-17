@@ -3,8 +3,11 @@
 # 127.0.0.1:8080 of the host: put TLS in front of it (a Cloudflare tunnel, Caddy, nginx), never
 # expose it as plain HTTP.
 #
-# Build the image first from the repository root:
-#   docker build -f services/forge-gateway/Dockerfile -t forge-gateway .
+# The image: a release's, by digest (GATEWAY_IMAGE=ghcr.io/<owner>/forge-gateway@sha256:...
+# in .env; a rollback is the previous digest), or build one from the repository root:
+#   docker build -f services/forge-gateway/Dockerfile \
+#     --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD) -t forge-gateway .
+# (docs/hosting/forge-gateway.md, "Deploy a release".)
 
 services:
   forge-gateway:
