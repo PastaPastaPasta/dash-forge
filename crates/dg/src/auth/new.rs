@@ -675,10 +675,24 @@ fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64)
          block explorer ({}) only if they cannot answer. Neither can take funds or keys.",
         endpoints.insight_host()
     );
-    if ctx.network().devnet_name().is_some() {
-        eprintln!(
-            "Devnet: fund it from the network faucet (or tools/mint-identity fund-from-key)."
-        );
+    if let Some(hint) = faucet_hint(ctx.network()) {
+        eprintln!("{hint}");
+    }
+}
+
+/// Where to get test DASH for the deposit: the testnet faucets (the Dash network's own first,
+/// then the one `faucet.thepasta.org` runs), or "the network's faucet" on a devnet. Nothing on
+/// mainnet, which has no faucet.
+fn faucet_hint(network: &forge_core::network::Network) -> Option<String> {
+    use forge_core::network::Network;
+    match network {
+        Network::Testnet => Some(
+            "Testnet: get free test DASH from https://faucet.testnet.networks.dash.org \
+             (or https://faucet.thepasta.org), and send it to this address."
+                .to_string(),
+        ),
+        Network::Devnet { .. } => Some("Devnet: fund it from the devnet's faucet.".to_string()),
+        Network::Mainnet => None,
     }
 }
 
@@ -946,6 +960,24 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_faucet_hint_names_testnet_faucets_first_and_nothing_on_mainnet() {
+        use forge_core::network::Network;
+        let testnet = faucet_hint(&Network::Testnet).unwrap();
+        let official = testnet.find("faucet.testnet.networks.dash.org").unwrap();
+        let second = testnet.find("faucet.thepasta.org").unwrap();
+        assert!(official < second, "{testnet}");
+        let devnet = faucet_hint(&Network::Devnet {
+            name: "examplenet".into(),
+            dapi_addresses: Vec::new(),
+            quorum_base_url: None,
+        })
+        .unwrap();
+        assert!(devnet.starts_with("Devnet:"), "{devnet}");
+        assert!(!devnet.contains("mint-identity"), "{devnet}");
+        assert_eq!(faucet_hint(&Network::Mainnet), None);
+    }
 
     #[test]
     fn the_price_hint_names_the_platform_storage_rate() {
