@@ -14,26 +14,20 @@ name: Contracts
 # it: forge-meta and the mixed-visibility items of dash-forge-qa design/mixed-visibility/DESIGN.md
 # rev 4.1 §8.3) gets the same checks, and variants.py runs every combination of its items. Last,
 # every seed and verify script runs against an in-memory chain (seed-offline.mjs), and each document
-# it writes is judged the same way.
+# it writes is judged the same way. The job is behind a `changes` gate so `contract-validate` can be a required
+# check (a skipped run satisfies it; a failed gate does not).
 on:
+  # No `paths:` filter on pull_request: `contract-validate` is meant to be a REQUIRED check, and a
+  # workflow that a path filter keeps from starting never reports it, which blocks the merge forever.
+  # The `changes` job applies the path list at job level instead (INFR-V-03).
   pull_request:
-    paths:
-      - 'forge-contracts/contracts/**'
-      - 'forge-contracts/schema/**'
-      - 'forge-contracts/vectors/rc1/**'
-      - 'forge-contracts/scripts/**'
-      - 'forge-contracts/deployments/**'
-      - 'tools/contract-validate/**'
-      - '.github/workflows/contracts.yml'
   push:
     branches: [master]
     paths:
-      - 'forge-contracts/contracts/**'
-      - 'forge-contracts/schema/**'
-      - 'forge-contracts/vectors/rc1/**'
-      - 'forge-contracts/scripts/**'
-      - 'forge-contracts/deployments/**'
+      - 'forge-contracts/**'
       - 'tools/contract-validate/**'
+      # (check-release-network.mjs --self-test parses the web build's network out of it)
+      - 'forge-web/scripts/ipfs-release.sh'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
 
@@ -42,19 +36,79 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Decides whether `contract-validate` runs. Always runs and always reports. On a pull request it diffs
+  # the merge commit against its first parent (the base tip) and matches the paths the workflow-level
+  # `pull_request.paths` filter used to; keep this list and the `push` list above in step. Any other
+  # event (push, workflow_dispatch) always runs. Fails open: if the diff cannot be computed, run.
+  changes:
+    name: changes (contracts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      contracts: ${{ steps.filter.outputs.contracts }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Did this PR touch the contracts, their tools, the release network or this workflow?
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -u
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "contracts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # For pull_request, HEAD is the synthetic merge commit; HEAD^1 is the base tip.
+          if ! files=$(git diff --name-only --no-renames HEAD^1 HEAD); then
+            echo "::warning::could not diff against the base; running contract-validate"
+            echo "contracts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed files:"
+          printf '%s\n' "$files"
+          pattern='^(forge-contracts/|tools/contract-validate/|forge-web/scripts/ipfs-release\.sh$|\.github/workflows/contracts\.yml$)'
+          if printf '%s\n' "$files" | grep -Eq "$pattern"; then
+            echo "contracts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "contracts=false" >> "$GITHUB_OUTPUT"
+            echo "No contract-relevant paths changed; contract-validate is skipped."
+          fi
+
   validate:
     name: contract-validate
+    needs: changes
+    # `!cancelled()` replaces the implicit success() so a FAILED `changes` job runs this job (and fails
+    # it in the first step) instead of skipping it, since a skipped job satisfies a required check.
+    # Not `always()`: that would stop cancel-in-progress from cancelling a superseded build.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.contracts == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-contract-validate
     steps:
+      # A failed `changes` job must not turn into a skipped (= passing) required check.
+      - name: Fail when change detection did not succeed
+        if: needs.changes.result != 'success'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::the changes job ended '$CHANGES_RESULT'; refusing to skip this required check"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The committed schemas and vectors are exactly what forge-contracts/schema/ generates
       - name: Schemas and vectors match their generators
         run: |
           python3 forge-contracts/schema/build.py --check
           python3 forge-contracts/schema/vectors.py --check
+      # build.py --check also compares contracts/registered/<network>/ with the set each network
+      # registered (NETWORK_REGISTRATIONS, empty until the registration commit): its logic, tested
+      - name: Registered-set check logic
+        run: python3 forge-contracts/schema/registered_test.py
       # The registration-only reference checks a contract parse does not run (40121, 40122,
       # 40126, 40131, 40137): the JSON mirror, and its proof that it sees each of them
       - name: Registration where-check
@@ -78,7 +132,9 @@ jobs:
       - name: Build the validator
         run: cargo +1.98.1 build -q --release --locked --manifest-path tools/contract-validate/Cargo.toml
       # registered/<contract>.v1.json are the schemas registered fresh at the v5 re-cut (devnet sakura, 2026-10-01): every
-      # later change to any of the three must stay an in-place update of them (UPDATE-1, roadmap D4)
+      # later change to any of the three must stay an in-place update of them (UPDATE-1, roadmap D4).
+      # (Sakura was re-registered fresh on 2026-10-13 from the then-current schema, so these copies
+      # describe its first registration; they are kept as the devnet baseline, not moved.)
       - name: Validate forge-core, forge-collab and forge-community (each as an update of its registered schema)
         run: |
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors forge-contracts/vectors/rc1 \
@@ -88,6 +144,12 @@ jobs:
             --expect-update forge-contracts/contracts/registered/forge-collab.v1.json \
             forge-contracts/contracts/forge-community.json \
             --expect-update forge-contracts/contracts/registered/forge-community.v1.json
+      # Each production network's contracts only ever change by additive updates of what it registered
+      # (CONT-03): contracts/registered/<network>/ holds the byte copies (freeze-registered.mjs writes
+      # them at the registration commit); the set the network's record names must stay an in-place
+      # update of them. No directory yet (before the registration commit): nothing to check.
+      - name: Validate each registered network's set as an update of its registration
+        run: forge-contracts/scripts/validate-registered.sh "$CARGO_TARGET_DIR/release/contract-validate"
       # The mainnet registration: four contracts, forge-meta last, each keeping >= 2,000 B of room (D44)
       - name: Validate the four-contract mainnet set
         run: |
@@ -159,3 +221,11 @@ jobs:
       # The live probe is `refresh-dapi.mjs --network testnet --check`, run by hand or nightly.
       - name: Seed-list refresher
         run: node --test forge-contracts/scripts/lib/refresh-dapi.test.mjs
+      # The deployment records hold their rules (ids derive from owner and nonce; a named set, its frozen
+      # copy and the nonce ledger agree; a testnet or mainnet record is complete), freeze-registered.mjs
+      # copies byte for byte and never replaces, and release.yml's guard (CLIE-02): a final release needs a
+      # registered forge-v2 set on testnet and a non-devnet web build. No SDK, no network.
+      - name: Deployment records, registered-set freeze and release guard
+        run: |
+          node --test forge-contracts/scripts/lib/deployments.test.mjs forge-contracts/scripts/lib/freeze-registered.test.mjs
+          node forge-contracts/scripts/check-release-network.mjs --self-test

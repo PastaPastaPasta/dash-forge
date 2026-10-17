@@ -30,6 +30,14 @@
 // record, else (read only) the network's record. --devnet-name is lower-case letters, digits and
 // dashes; --addresses is for a devnet only (testnet and mainnet use SDK discovery).
 //
+// A scratch --record on testnet or mainnet (the P2 rehearsal of the committed set) registers
+// permanent contracts on a production chain and spends its deployer's nonces there, so it also
+// needs --scratch-on <network> (the value must equal --network; a dry run included). It is
+// refused when the deployer identity is any identity deployments/<network>.json names (the
+// deployer, a contract's or the group's owner, a superseded deployer, the key-exchange owner),
+// and it prints a loud warning: a scratch rehearsal must never use the production deployer. While
+// the live record names no deployer yet, the identity cannot be checked, which the warning says.
+//
 // Registering into the live testnet or mainnet record (CONT-02, CNT-04, CNT-15) refuses, before
 // anything is broadcast, unless: the set's files match git HEAD (what is registered is in git),
 // HEAD is on a branch of origin, build.py --check passes, --expect-sha256 <file> (sha256sum lines
@@ -352,7 +360,7 @@ function depPath(network, devnetName, deploymentsRoot = DEPLOYMENTS_ROOT) {
   return join(deploymentsRoot, `${network === 'devnet' ? `devnet-${devnetName}` : network}.json`);
 }
 /** A path with its deepest existing directory resolved (symlinks) and folded to lower case (APFS and NTFS fold case). */
-function canonical(path) {
+export function canonical(path) {
   let dir = dirname(path);
   const rest = [basename(path)];
   while (!existsSync(dir) && dirname(dir) !== dir) {
@@ -454,6 +462,28 @@ export function sumsProblems(expected, actual) {
  */
 export function recordedSet(dep) {
   return dep?.v2?.contractsSet ?? (dep?.v2?.forgeMeta ? 'mainnet' : dep?.v2?.forgeCore ? 'devnet' : null);
+}
+/**
+ * Every identity a record names, as a Map of id -> where (`v2.deployer.identityId`): any `ownerId`,
+ * `identityId`, `owner` or `deployer` string, and any group admin, anywhere in it (the deployer, each
+ * contract's and the group's owner, superseded ones, an archived ledger's deployer, the key-exchange owner).
+ */
+export function recordedIdentities(dep) {
+  const found = new Map();
+  const note = (id, where) => { if (typeof id === 'string' && id && !found.has(id)) found.set(id, where); };
+  const walk = (v, path) => {
+    if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}[${i}]`));
+    else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) {
+        const here = path ? `${path}.${k}` : k;
+        if (['ownerId', 'identityId', 'owner', 'deployer'].includes(k)) note(x, here);
+        else if (k === 'admins' && Array.isArray(x)) x.forEach((id, i) => note(id, `${here}[${i}]`));
+        else walk(x, here);
+      }
+    }
+  };
+  walk(dep, '');
+  return found;
 }
 /** A path relative to the repository (posix separators), or absolute when outside it. */
 function repoPath(path) {
@@ -592,7 +622,7 @@ async function deploy(argv, injected, locks) {
   const print = injected.print ?? ((text) => process.stdout.write(text));
   const deploymentsRoot = injected.deploymentsRoot ?? DEPLOYMENTS_ROOT;
   const args = parseArgs(argv);
-  for (const flag of ['contracts', 'record', 'set', 'expect-sha256', 'abandon-live-set', 'deployer-created-height', 'note']) {
+  for (const flag of ['contracts', 'record', 'set', 'expect-sha256', 'abandon-live-set', 'scratch-on', 'deployer-created-height', 'note']) {
     if (args[flag] === true) throw new Error(`--${flag} takes a value`);
   }
   if (args.contracts !== undefined && args.set !== undefined) {
@@ -678,6 +708,20 @@ async function deploy(argv, injected, locks) {
     throw new Error(`${depFile} is a production record; --network devnet never writes it`);
   }
   const production = !scratch && network !== 'devnet';
+  // A scratch registration on testnet or mainnet is a rehearsal on a production network: its contracts
+  // are permanent there and it spends its deployer's nonces on that chain. Say so by name (CONT-V-01
+  // for the registration tool), and use a throwaway deployer (checked below, once the identity is read)
+  const scratchOnProduction = scratch && network !== 'devnet';
+  if (scratchOnProduction && args['scratch-on'] !== network) {
+    throw new Error(
+      `--record ${args.record} registers a SCRATCH set on ${network}, a production network: the contracts are permanent there and the ` +
+        `run spends its deployer's nonces on the ${network} chain. A rehearsal must use its own throwaway deployer identity, never the ` +
+        `production deployer. If that is the intent, re-run with --scratch-on ${network}. Nothing was broadcast.`
+    );
+  }
+  if (!scratchOnProduction && args['scratch-on'] !== undefined) {
+    throw new Error(`--scratch-on ${args['scratch-on']} goes with a scratch --record on testnet or mainnet; this run ${scratch ? 'is on a devnet' : `writes the live ${network} record`}`);
+  }
   // One run at a time writes a record (a dry run writes nothing)
   if (!dryRun) locks.push(takeLock(depFile, { now }));
   const dep = readDep(depFile);
@@ -742,9 +786,18 @@ async function deploy(argv, injected, locks) {
 
   const rec = JSON.parse(readFileSync(resolve(String(args.identity)), 'utf8'));
   const ownerId = rec.identityId;
-  // A rehearsal must not spend the nonces the live deployer's registration is planned on
-  if (scratch && network !== 'devnet' && [live.v2?.deployer?.identityId, live.v2?.forgeCore?.ownerId].includes(ownerId)) {
-    throw new Error(`--record ${args.record}: ${ownerId} is the deployer of deployments/${basename(liveFile)}; a scratch registration on ${network} uses its own deployer identity`);
+  // A rehearsal must not spend the nonces the live deployer's registration is planned on, nor use any
+  // identity the live record names (the deployer, a contract's owner, the group's owner, a superseded
+  // deployer, the key-exchange owner)
+  if (scratchOnProduction) {
+    const named = recordedIdentities(live).get(ownerId);
+    if (named) {
+      throw new Error(`--record ${args.record}: ${ownerId} is recorded in deployments/${basename(liveFile)} (${named}); a scratch registration on ${network} uses its own throwaway deployer identity. Nothing was broadcast.`);
+    }
+    log(`WARNING SCRATCH registration on ${network}: its contracts are permanent on the ${network} chain and ${ownerId}'s nonces are spent there. A scratch rehearsal must NEVER use the production deployer.`);
+    if (!live.v2?.deployer && !live.v2?.forgeCore) {
+      log(`WARNING deployments/${basename(liveFile)} records no deployer yet, so ${ownerId} cannot be checked against the production deployer: confirm it is a throwaway identity that was never the offline-escrow one.`);
+    }
   }
   // One deployer per record (the ledger is that identity's nonces): another one only registers a
   // new set into it (--force-new, which supersedes every recorded contract and archives the ledger)

@@ -10,6 +10,9 @@
 //
 // Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The
 // network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
+// CONT-V-01: on testnet or mainnet it runs against a scratch --deployment record only; the live
+// deployments/<network>.json (or a copy naming its forge-core or group) is written only with
+// --production <network>, for the labelled FORGE-QA fixture or smoke (QA-14). DASH_FORGE_NETWORK alone never does.
 //
 // Four identities, all minted for the run (`qa mint`), never the shared fixtures:
 //   * `--owner` creates the repos;
