@@ -60,13 +60,13 @@ export function dashValueNote(dash: number, network: Network): string {
 }
 
 /**
- * What undoing a relation gives back, beside its button: `unstar up to +0.00012` (QW2-034: a bare
- * "+0.00012 DASH" beside "Starred" read like earnings; its meaning was only in a tooltip). "Up to":
- * the figure is what a delete refunds right after the write, and the refund shrinks as the stored
- * document ages (ECON-02). `refundCredits` is the preview's (negative) credits.
+ * What undoing a relation gives back, beside its button (QW2-034). The figure is a conservative
+ * approximation for a delete soon after creation, not a bound: the refund shrinks as the stored
+ * document ages and can reach zero (ECON-02). `refundCredits` is the preview's negative credits.
+ * The label includes the DASH unit and age qualification so every caller keeps both.
  */
 export function refundLabel(undo: string, refundCredits: number): string {
-  return `${undo} up to +${creditsAsDash(Math.abs(refundCredits))}`
+  return `${undo} refunds about ${creditsAsDash(Math.abs(refundCredits))} DASH if deleted soon; less as it ages`
 }
 
 /**

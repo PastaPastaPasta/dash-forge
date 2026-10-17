@@ -70,7 +70,7 @@ async function snapshotContract(id: string): Promise<DataContract | undefined> {
 export interface StarTerms {
   /** The click also writes a Trending beat (a beat-shaped contract, with Trending on). */
   readonly beats: boolean
-  /** The price includes a beat: written, or the upper bound of a shape not yet known. */
+  /** The price includes a separate beat: written, or the upper bound of an unknown shape. */
   readonly priceBeat: boolean
   /** Appended to the button's price ('' when nothing is promised). */
   readonly trendingNote: string
@@ -87,7 +87,8 @@ export function starTerms(shape: StarShape | null, trending: boolean, beatAllowe
   // Unknown: a star this viewer may beat counts toward Trending either way; only a beat shape has a switch.
   const trendingNote =
     shape === 'fused' || (shape === null && trending && beatAllowedHere) ? ' · counts toward Trending' : beats ? ' · counts toward Trending (turn off in Settings)' : ''
-  return { beats, priceBeat: beats || shape !== 'beat', trendingNote }
+  // ECON-05: the star base now covers the fused shape, including its Trending count.
+  return { beats, priceBeat: beats || shape === null, trendingNote }
 }
 
 /** Forget every cached shape (tests). */

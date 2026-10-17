@@ -1,21 +1,26 @@
 /**
- * Write cost estimates — calibrated against measured forge-v2 costs on devnet moutai.
+ * Write cost estimates — calibrated against measured forge-v2 costs on testnet.
  *
- * evo-sdk 4.2 has no fee estimator for a document transition, so the preview is a model:
+ * The SDK has no fee estimator for a document transition, so the preview is a model:
  *
- *   (steady-state base of the type + first-write surcharges + 27,500 credits per text byte)
+ *   (base of the type + first-write surcharges + 27,500 credits per text byte)
  *   × {@link HEADROOM}
  *
- * - The base is what a document of the type costs when every index subtree it writes into
- *   already exists (a repo's tenth issue).
+ * - The base approximates a document's cost when every index subtree it writes into
+ *   already exists (a repo's tenth issue); the complete preview includes headroom.
  * - A **first write** also creates subtrees: a repo's first issue creates the repo's issue
  *   subtrees, an author's first issue their `$ownerId` subtree, a thread's first comment its
  *   `targetId` subtree. Each adds storage. {@link FirstWrite} names which ones a write may
  *   create; the UI reads that cheaply where it can (`lib/repo/first-write.ts`) and otherwise
- *   leaves it unknown, which counts every surcharge. A preview is an upper bound either way.
+ *   leaves it unknown, which reserves every possible subtree (overlapping watch trees count
+ *   once). A preview is an upper bound either way.
  * - {@link HEADROOM} covers the few percent the same write varies by as the trees grow.
  *
- * Measured on moutai, protocol 14, 2026-09-27 (balance deltas, credits):
+ * ECON-05 calibration: dash-testnet-51, Platform 5.0.0-rc.4, SDK rc.3, 2026-10-17.
+ * Stable proved balance deltas are in dash-forge-qa/evidence/testnet-rehearsal/econ/.
+ * Updated bases cover the measured later writes; first-write surcharges cover new subtrees.
+ *
+ * Historical measurements on moutai, protocol 14, 2026-09-27 (balance deltas, credits):
  *   issue 10 B title: steady 59.0M / 59.1M; + 1,000 B body 86.9M; + 4,000 B 169.1M;
  *     author's first in the repo 69.0M; author's first anywhere (and first forge-collab
  *     write) 90.5M; repo's first 83.2M; repo's and author's first 101.5M.
@@ -74,32 +79,34 @@ export const CREDITS_PER_TEXT_BYTE = 27_500
 export const HEADROOM = 1.06
 
 /**
- * What a document of each type costs with no text in steady state (every index subtree
- * already exists), in credits. Types never measured fall back to {@link DEFAULT_BASE_CREDITS}.
+ * The base allowance for each type with no text in steady state (every index subtree
+ * already exists), in credits; the complete preview includes headroom. Types never measured fall back to {@link DEFAULT_BASE_CREDITS}.
  */
 export const BASE_CREDITS: Readonly<Record<string, number>> = {
-  // forge-core (bonsia, QA wave 3: see the header)
+  // forge-core (ECON-05 testnet calibration; historical provenance in the header)
   repo: 66_000_000,
-  maintainer: 40_000_000,
-  writer: 40_000_000,
-  config: 27_000_000,
-  release: 53_300_000,
-  label: 34_000_000,
+  maintainer: 42_000_000,
+  writer: 43_000_000,
+  config: 31_000_000,
+  // ECON-05: releases 61.68–62M later, 73.26M first (short tag and notes).
+  release: 64_000_000,
+  label: 36_000_000,
   // An update of an existing ref (its name's subtree exists); its byte fields (the oids) are in.
-  refUpdate: 56_000_000,
-  protectedRefUpdate: 56_000_000,
+  refUpdate: 61_000_000,
+  protectedRefUpdate: 60_000_000,
   // Its byte fields (the pack hash) are in; its URIs are text. A chunk's fixed cost is
   // `CHUNK_FEES.flat`; `estimateChunkCredits` prices its bytes too.
-  packManifest: 76_000_000,
+  packManifest: 86_000_000,
+  // ECON-05: mirrors 47.54–47.86M later, 63.53M repo-first (URI bytes add more).
+  packMirror: 50_000_000,
   chunk: 140_000_000,
   // forge-collab
-  issue: 59_000_000,
-  patch: 72_000_000,
+  issue: 71_000_000,
+  patch: 85_000_000,
   comment: 52_000_000,
-  // 43.2M steady on moutai; 51.7M on sakura (Platform 5.0.0-beta.1, QA wave 4: a label removed
-  // in a thread that had events, with RC2's claimed role), which this covers.
-  event: 49_500_000,
-  authorEvent: 41_500_000,
+  // ECON-05: label events up to 51.77M; pin/unpin up to 56.84M.
+  event: 59_000_000,
+  authorEvent: 45_000_000,
   // Bonsia (QA wave 3): 47.3M–56.5M in a thread that has one; a thread's first, and the repo's
   // first of its kind, add their subtrees (74.1M for both, QA wave 2).
   transition: 53_500_000,
@@ -108,23 +115,26 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   policy: 34_000_000,
   // UPDATE-1: a maintainer's ban, with its maintainer reference (47.97M measured on sakura, 2026-10-05).
   ban: 48_000_000,
-  // C-1: the ranked star, steady (the starrer holds stars, the repo has some): 17.8M on moutai,
-  // 19.4M on bonsia (QA wave 2, N-17)
-  star: 18_500_000,
+  // ECON-05: populated-repo stars 23.95–24.59M; a repo's first 57.11–58.53M.
+  star: 26_000_000,
   // 28.3M on moutai; 37.0M on bonsia (QA wave 3) for a follow whose subtrees are not all known.
   follow: 31_000_000,
   starBeat: 15_300_000,
-  watch: 27_400_000,
+  // ECON-05: populated watches up to 37.91M; first repo/author watches up to 48.11M.
+  // The 1.06 headroom covers the populated base; first-write trees are priced below.
+  watch: 36_000_000,
   milestone: 45_000_000,
-  checkRun: 45_000_000,
-  // A member's consent, one unique index and a repo reference: 30.8M on bonsia (QA wave 2, N-17).
-  consent: 29_500_000,
+  checkRun: 76_000_000,
+  // ECON-05: consent 31.14–31.22M later, 42.84M including the first-contract nonce.
+  consent: 33_000_000,
+  // ECON-05: bot push grants 28.27–28.42M later; the repository's first 44.10M.
+  pushGrant: 30_000_000,
   // Bonsia (QA wave 3): a topic 61.7M–62.6M with its name; a webhook 77.2M, its secret and ids
   // being byte fields (`webhookCost` sizes them as text would not).
-  topic: 59_000_000,
+  topic: 63_000_000,
   webhook: 76_000_000,
-  // P1-7, sakura (Platform 5.0.0-beta.1): a profile with ~120 bytes of text 36.8M-37.2M as the
-  // identity's first forge-community write (its nonce, +12M, is CONTRACT_FIRST_CREDITS).
+  // ECON-05: short profile create 31.62M as the member's first forge-meta write.
+  // Its contract nonce is priced separately by CONTRACT_FIRST_CREDITS.
   profile: 24_000_000,
 }
 
@@ -164,21 +174,25 @@ type Surcharge = Readonly<Partial<Record<keyof FirstWrite, number>>>
 /** What each first subtree adds, by type (credits; measured, see the header). */
 export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   issue: { repo: 14_500_000, authorInRepo: 10_500_000, author: 9_500_000 },
-  comment: { target: 11_700_000, author: 10_600_000 },
+  // ECON-05: an existing author's first reply paid 70.53M (later replies 60.83–60.99M).
+  // Reply composers keep target=true to cover the root's additional reply subtree.
+  comment: { target: 18_000_000, author: 10_600_000 },
   event: { target: 8_300_000, repo: 8_000_000 },
   authorEvent: { target: 8_100_000, repo: 7_800_000 },
-  // C-1: the repo's first star builds its ranked value tree (+18.3M); the starrer's first star
-  // their byOwner value tree (+9.2M)
-  star: { repo: 18_500_000, author: 9_400_000 },
+  // ECON-05: fused stars 24.59M populated, 58.53M repo-first, 66.15M author-first.
+  star: { repo: 33_000_000, author: 9_400_000 },
   starBeat: { author: 6_400_000 },
-  watch: { repo: 10_400_000 },
+  // ECON-05: repo-first and author-first each add ~10.4M. They do not stack in the
+  // measured watches: firstWriteCredits takes the larger of these two allowances.
+  watch: { repo: 10_400_000, author: 10_400_000 },
+  pushGrant: { repo: 16_000_000 },
   // `target`: the first follow of an identity builds its byTarget value tree, ranked since C-1
-  // (not re-measured; priced like the ranked star's repo-first tree)
+  // (ECON-05: ~18.4M beyond a populated target's 19.11M).
   follow: { author: 10_200_000, target: 18_500_000 },
   repo: { author: 9_000_000 },
   maintainer: { member: 7_400_000 },
   writer: { member: 7_400_000 },
-  patch: { repo: 34_100_000, author: 9_600_000, sourceRef: 9_800_000 },
+  patch: { repo: 45_000_000, author: 9_600_000, sourceRef: 9_800_000 },
   // A PR's first review builds both of its `patchId` subtrees (bonsia, QA wave 3).
   review: { target: 20_000_000 },
   release: { repo: 10_700_000 },
@@ -186,6 +200,8 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   transition: { target: 11_000_000, repo: 11_000_000 },
   label: { repo: 8_000_000 },
   config: { repo: 8_600_000 },
+  // ECON-05: queued checkRun 121.71M first (including its contract nonce), 71.98M later.
+  checkRun: { repo: 36_000_000 },
   topic: { repo: 10_000_000 },
   webhook: { repo: 20_000_000 },
   // `target`: the first update of this ref name (its `refState` subtree); `repo`: the repo's first
@@ -193,6 +209,7 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   refUpdate: { target: 7_000_000, repo: 23_000_000 },
   protectedRefUpdate: { target: 7_000_000, repo: 23_000_000 },
   packManifest: { repo: 47_000_000 },
+  packMirror: { repo: 16_000_000 },
 }
 
 /**
@@ -236,36 +253,41 @@ const DEFAULT_BASE_CREDITS = 50_000_000
 const DEFAULT_DELETE_CREDITS = -20_000_000
 
 /**
- * What deleting a document gives back, in credits (negative = a refund), measured right after
- * the write. Measured on moutai: unstar 22.0M (32.3M for the repo's last star), unfollow 23.5M
- * (34.1M for the last), revoking a writer 20.8M. The preview shows the smaller refund. It is a
- * ceiling, not a floor (ECON-02): Platform spreads the storage deposit over 2,000 epochs
- * (rs-dpp `FEE_DISTRIBUTION_TABLE`), so a later delete gets back less: within weeks it is nearly
- * all of it on mainnet (the schedule lasts about 50 years), but on testnet (1 h epochs) the deposit
- * is gone after about 83 days. Copy therefore says "refunds up to".
+ * Approximate credits returned if a document is deleted soon after creation (negative = refund).
+ * Values use conservative immediate measurements, not upper or lower bounds. Older documents
+ * return less, possibly zero: Platform spreads the storage deposit over 2,000 epochs
+ * (rs-dpp `FEE_DISTRIBUTION_TABLE`), about 50 years on mainnet or 83 days on testnet.
+ * Copy therefore says "refunds about X if deleted soon; less as it ages".
+ *
+ * ECON-05 testnet fused stars and watches refunded 33.21–33.36M immediately, including
+ * the last star. Use about 32M for all three cases; older C-1 refund amounts no longer
+ * describe the current schema.
  */
-/**
- * Unstarring the repo's last star gives back more (its count tree goes too): 23.3M measured on the
- * C-1 shape, against 12.3M otherwise. A "refunds up to" for a last star, or for a star whose
- * repo's count could not be read, uses this.
- */
-export const LAST_STAR_DELETE_CREDITS = -23_300_000
+export const LAST_STAR_DELETE_CREDITS = -32_000_000
 
 export const DELETE_CREDITS: Readonly<Record<string, number>> = {
-  // C-1 measured 12.3M for an unstar that is not the repo's last (the ranked axis re-keys).
-  star: -12_000_000,
-  watch: -12_000_000,
-  milestone: -25_000_000,
-  follow: -23_000_000,
-  maintainer: -20_800_000,
-  writer: -20_800_000,
-  release: -30_000_000,
-  label: -25_000_000,
-  comment: -25_000_000,
+  // ECON-05: eight immediate unstar/unwatch refunds were 33.21–33.36M.
+  star: -32_000_000,
+  watch: -32_000_000,
+  // ECON-05: milestone deletes refunded 13.75–13.88M.
+  milestone: -13_000_000,
+  // ECON-05: unfollows refunded 11.81M with another follower, 22.75M for the last.
+  follow: -11_000_000,
+  // ECON-05: removing a non-owner maintainer refunded 20.03M.
+  maintainer: -19_000_000,
+  // ECON-05: removing a writer refunded 19.53M with other memberships remaining.
+  writer: -19_000_000,
+  // ECON-05: populated-repo label deletes refunded 13.85–13.89M.
+  label: -13_000_000,
+  // ECON-05: immediate comment deletes refunded 39.46–40.18M.
+  comment: -38_000_000,
   review: -20_000_000,
   // Deleting a webhook revision (its URL and sealed secret) refunded 81.8M on bonsia (QA wave 2,
   // collab); it was promised the 20M default.
-  webhook: -70_000_000,
+  // ECON-05: short webhook removals refunded 67.01–67.04M on testnet.
+  webhook: -65_000_000,
+  // ECON-05: a short profile delete refunded 17.25M.
+  profile: -16_000_000,
 }
 
 /**
@@ -428,7 +450,7 @@ export function pushStorageHint(): string {
 
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
-  /** Estimated credits (an upper bound); negative when the action refunds storage. */
+  /** Charge upper bound, or negative approximate refund for a delete soon after creation. */
   readonly credits: number
   /**
    * The low end, when the charge is known to range far below `credits` (an edit pays only for
@@ -470,11 +492,12 @@ export function textBytes(data: Readonly<Record<string, unknown>>): number {
 /** The first-write surcharge of `documentType` for `first` (an unknown field counts). */
 export function firstWriteCredits(documentType: string, first: FirstWrite = {}): number {
   const table = FIRST_WRITE_CREDITS[documentType] ?? {}
-  let total = first.contract === false ? 0 : CONTRACT_FIRST_CREDITS
+  const total = first.contract === false ? 0 : CONTRACT_FIRST_CREDITS
+  let subtrees = 0
   for (const [k, credits] of Object.entries(table) as [keyof FirstWrite, number][]) {
-    if (first[k] !== false) total += credits
+    if (first[k] !== false) subtrees = documentType === 'watch' ? Math.max(subtrees, credits) : subtrees + credits
   }
-  return total
+  return total + subtrees
 }
 
 /**
@@ -498,8 +521,10 @@ export function admissionFor(documentType: string, bytes: number, credits: numbe
   }
   const text = ADMISSION_PER_TEXT_BYTE * bytes
   return {
-    budget: Math.ceil((measured.budget + text) * ADMISSION_MARGIN),
-    balance: Math.ceil((measured.balance + text) * ADMISSION_MARGIN),
+    // ECON-05: historical admission probes can be below today's actual charge.
+    // Keep their extra headroom, but never admit less than the calibrated preview.
+    budget: Math.max(credits, Math.ceil((measured.budget + text) * ADMISSION_MARGIN)),
+    balance: Math.max(credits, Math.ceil((measured.balance + text) * ADMISSION_MARGIN)),
   }
 }
 

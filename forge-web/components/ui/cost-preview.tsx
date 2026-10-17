@@ -30,7 +30,7 @@ export function CostPreview({
       data-testid="cost-preview"
       title={
         isRefund
-          ? 'The most this can give back, estimated from measured Platform fees. The refund shrinks as the stored data ages; the actual amount is recorded in Settings → Spend.'
+          ? 'Approximate refund if deleted soon after creation; less as it ages, possibly zero. The actual amount is recorded in Settings → Spend.'
           : 'Estimated from measured Platform fees; the actual charge is recorded in Settings → Spend.'
       }
       className={cn(
@@ -39,12 +39,13 @@ export function CostPreview({
         className,
       )}
     >
-      <span className="text-anvil-500 dark:text-anvil-400">{isRefund ? 'Refund up to' : 'Cost'}</span>
+      <span className="text-anvil-500 dark:text-anvil-400">{isRefund ? 'Refund about' : 'Cost'}</span>
       <span className={cn('font-mono font-medium', isRefund ? 'text-verify-700 dark:text-verify-400' : 'text-dash-600 dark:text-dash-400')}>
         {isRefund ? '+' : min !== null ? '' : '~'}
         {min !== null ? `${creditsAsDash(min)}–` : ''}
         {formatDash(dash)} DASH
       </span>
+      {isRefund ? <span className="text-anvil-500 dark:text-anvil-400">if deleted soon; less as it ages</span> : null}
       {usd !== null ? <span className="font-mono text-anvil-500 dark:text-anvil-400">≈ {usd}</span> : null}
     </div>
   )

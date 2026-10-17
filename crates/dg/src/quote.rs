@@ -2,16 +2,11 @@
 //! DASH" for a pull request that cost 0.0013). Each is an upper bound built from the importer's
 //! calibrated per-kind model (`forge_import::budget::collab_doc_credits`) and `git push`'s fees
 //! (`forge_core::cost::push_fees`), with the write priced as the first of its kind in its
-//! repository.
+//! repository. The importer's index overhead already covers first-write subtrees and the
+//! contract nonce; do not add another first-of-kind surcharge here.
 
 use forge_core::cost::push_fees;
 use forge_import::budget::{collab_doc_credits, CollabDoc};
-
-/// What a write that is the first of its kind pays beyond a later one of the same size: its
-/// new index subtrees (a repository's first issue, a thread's first comment). Measured on
-/// devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30): a repository's first issue 120.9M
-/// credits, its second 80.1M (QW-038: the table priced the later one, and was exceeded).
-pub const FIRST_OF_KIND_EXTRA: u64 = 50_000_000;
 
 /// The bytes an `issue` or `patch` stores beyond its text: `repoId`, `number`, the state and
 /// counters, and a patch's source repository id and head oid. Rounded up.
@@ -21,15 +16,16 @@ const TARGET_FIXED_BYTES: u64 = 128;
 /// revision and its flags. Rounded up.
 const RELEASE_FIXED_BYTES: u64 = 64;
 
-/// A `transition` (close, reopen, merge, draft, ready, lock): an issue close charged 74.1M
-/// credits on bonsia (QA wave 2, IP-14), above the 65M an event was quoted at; ~10 % over it.
-pub const TRANSITION: u64 = 82_000_000;
+/// A `transition` (close, reopen, merge, draft, ready, lock): testnet first transitions
+/// charged up to 73.48M (ECON-05, Platform rc.4, 2026-10-17). Reserve another 12M for
+/// the signer's first forge-collab write and a small margin.
+pub const TRANSITION: u64 = 92_000_000;
 
 /// A new issue or pull request carrying `text_bytes` of text (title, body, and a patch's ref
 /// names), priced as its repository's first. Charged on bonsia: an issue 118.7M, a pull
 /// request 130.1M-133.9M (QW2-020).
 pub fn target_create(text_bytes: u64) -> u64 {
-    collab_doc_credits(CollabDoc::Target, text_bytes + TARGET_FIXED_BYTES) + FIRST_OF_KIND_EXTRA
+    collab_doc_credits(CollabDoc::Target, text_bytes + TARGET_FIXED_BYTES)
 }
 
 /// A public `release` revision carrying `text_bytes` of tag, name and notes, and its asset list
@@ -58,12 +54,6 @@ pub fn webhook(bytes: u64) -> u64 {
 /// Rounded up.
 const EVENT_FIXED_BYTES: u64 = 112;
 
-/// What an event that is its thread's first (or its repository feed's) pays beyond a later one:
-/// its `target` and `feed` index subtrees (+8.3M and +8.0M on moutai). Charged on devnet sakura
-/// (Platform 5.0.0-beta.1, QA wave 4): a label added as an issue's first event 67.8M, one
-/// removed later 51.7M.
-const EVENT_FIRST_EXTRA: u64 = 8_000_000;
-
 /// What an event naming an identity or an item in `refId` pays beyond one that names none: the
 /// 32 bytes and its entry in the sparse `addressee (refId)` index, with that addressee's
 /// subtree. Charged on sakura (QW4-039, QW4-049): an assignment 67.3M-67.4M in a thread whose
@@ -75,22 +65,26 @@ pub const ADDRESSEE_EXTRA: u64 = 18_000_000;
 /// priced as its thread's first. An upper bound.
 pub fn event(value_bytes: u64, addressee: bool) -> u64 {
     let addressee = if addressee { ADDRESSEE_EXTRA } else { 0 };
-    collab_doc_credits(CollabDoc::Event, EVENT_FIXED_BYTES + value_bytes)
-        + EVENT_FIRST_EXTRA
-        + addressee
+    collab_doc_credits(CollabDoc::Event, EVENT_FIXED_BYTES + value_bytes) + addressee
 }
 
 /// The bytes a `comment` stores beyond its body: `repoId`, `targetId`, the claimed role `r`,
 /// and a review comment's anchor. Rounded up.
 const COMMENT_FIXED_BYTES: u64 = 96;
 
-/// What a thread's first comment by an author who never commented before pays beyond a later
-/// one: the thread's `targetId` subtree and the author's (+11.7M and +10.6M on moutai).
-const COMMENT_FIRST_EXTRA: u64 = 24_000_000;
-
 /// A `comment` of `body_bytes`, priced as its thread's and its author's first. An upper bound.
 pub fn comment(body_bytes: u64) -> u64 {
-    collab_doc_credits(CollabDoc::Comment, COMMENT_FIXED_BYTES + body_bytes) + COMMENT_FIRST_EXTRA
+    collab_doc_credits(CollabDoc::Comment, COMMENT_FIXED_BYTES + body_bytes)
+}
+
+/// A review's fixed properties: `repoId`, `patchId`, verdict, comment count and role.
+/// Rounded up, in addition to the importer's document system overhead.
+const REVIEW_FIXED_BYTES: u64 = 96;
+
+/// A `review` with `text_bytes` of summary, priced as the PR's and contract's first.
+/// ECON-05 testnet rc.4: review-0 charged 75.30M for a 9-byte summary.
+pub fn review(text_bytes: u64) -> u64 {
+    collab_doc_credits(CollabDoc::Review, REVIEW_FIXED_BYTES + text_bytes)
 }
 
 /// The bytes a `label` or `milestone` definition stores beyond its text: `repoId`, the claimed
@@ -98,16 +92,16 @@ pub fn comment(body_bytes: u64) -> u64 {
 const DEFINITION_FIXED_BYTES: u64 = 64;
 
 /// A `label` definition carrying `text_bytes` of name, colour and description, priced as the
-/// repository's first (+8.0M on moutai): 41.4M on sakura (QW4-049).
+/// repository's first, including its contract nonce: 50.53M on testnet (ECON-05).
 pub fn label_definition(text_bytes: u64) -> u64 {
-    collab_doc_credits(CollabDoc::Label, DEFINITION_FIXED_BYTES + text_bytes) + 8_000_000
+    collab_doc_credits(CollabDoc::Label, DEFINITION_FIXED_BYTES + text_bytes)
 }
 
 /// A `milestone` definition carrying `text_bytes` of title and description, priced as the
-/// repository's first: its type has the label's indexes and a due date (45M steady in the web's
-/// model, never measured apart).
+/// repository's first: its type has the label's indexes and a due date. Keep 10M beyond
+/// the label's first-write bound for its larger shape (45M steady in the web's model).
 pub fn milestone_definition(text_bytes: u64) -> u64 {
-    collab_doc_credits(CollabDoc::Label, DEFINITION_FIXED_BYTES + text_bytes) + 18_000_000
+    collab_doc_credits(CollabDoc::Label, DEFINITION_FIXED_BYTES + text_bytes) + 10_000_000
 }
 
 /// A `topic` document, priced as the repository's first: 61.7M-62.6M on bonsia (QA wave 3),
@@ -130,8 +124,9 @@ pub fn profile(text_bytes: u64) -> u64 {
     forge_core::cost::estimate(text_bytes + 64).total() + PROFILE_INDEX_OVERHEAD
 }
 
-/// A member's `consent` (`dg collab accept`): 30.8M on bonsia, 30.6M on sakura (QW4-049).
-pub const CONSENT: u64 = 33_000_000;
+/// A member's first `consent` (`dg collab accept`): 42.84M on dash-testnet-51,
+/// Platform 5.0.0-rc.4, SDK rc.3 (ECON-05, 2026-10-17); later writes 31.14–31.22M.
+pub const CONSENT: u64 = 45_000_000;
 
 /// A `writer` or `maintainer` document (`dg collab add`), priced as the member's first: 38.9M-
 /// 46.8M on moutai, a triage grant 48.1M on sakura (QW4-049; it was quoted 20M).
@@ -147,8 +142,9 @@ pub const STAR: u64 = 70_000_000;
 pub const STAR_BEAT: u64 = 23_000_000;
 
 /// A `watch`, priced as the repository's first and the watcher's first forge-community write:
-/// 27.6M on moutai, 47.3M on sakura (QW4-049, 2026-10-01).
-pub const WATCH: u64 = 58_000_000;
+/// up to 48.11M on testnet (ECON-05, Platform rc.4, 2026-10-17), plus a 12M contract-nonce
+/// allowance (the measured watches followed consent) and a small margin.
+pub const WATCH: u64 = 64_000_000;
 
 /// The bytes a history-index part is priced at when its size is not known before the push (a
 /// small repository's parts are a few hundred bytes; each is at least one `chunk` when Platform
@@ -265,6 +261,35 @@ mod tests {
         // about 600 bytes.
         assert!(webhook(600) >= 102_100_000);
         assert!(webhook(600) < 2 * 102_100_000);
+    }
+
+    /// ECON-05: proved balance deltas on dash-testnet-51, Platform rc.4, 2026-10-17.
+    #[test]
+    fn quotes_cover_testnet_first_writes() {
+        // Checked at compile time: the constant itself.
+        const _: () = assert!(CONSENT >= 42_839_440);
+        const _: () = assert!(CONSENT <= 42_839_440 * 110 / 100);
+        const _: () = assert!(TRANSITION >= 73_481_440 + 12_000_000);
+        const _: () = assert!(TRANSITION <= (73_481_440 + 12_000_000) * 110 / 100);
+        const _: () = assert!(WATCH >= 48_109_940 + 12_000_000);
+        const _: () = assert!(WATCH <= (48_109_940 + 12_000_000) * 110 / 100);
+        // A PR as the first numbered item of an empty repository: 149.00M.
+        assert!(target_create(7 + 9 + 30) >= 149_002_420);
+        assert!(target_create(7 + 9 + 30) <= 149_002_420 * 115 / 100);
+        // The shared Target overhead also covers a PR's additional source indexes.
+        assert!(target_create(19) >= 117_808_320);
+        assert!(target_create(19) <= 117_808_320 * 140 / 100);
+        assert!(comment(9) >= 73_350_140 + 12_000_000);
+        assert!(comment(9) <= (73_350_140 + 12_000_000) * 110 / 100);
+        assert!(event(6, false) >= 76_225_420 + 12_000_000);
+        assert!(event(6, false) <= (76_225_420 + 12_000_000) * 110 / 100);
+        assert!(label_definition(13) >= 50_530_880);
+        // review-0: `dg pr review --comment --body calibrate`, first contract write.
+        assert!(review(9) >= 75_303_740);
+        assert!(review(9) <= 75_303_740 * 110 / 100);
+        // review-comment-0: `dg pr comment --body calibrate --file README.md --line 1`.
+        assert!(comment(9 + 9) >= 73_027_280);
+        assert!(comment(9 + 9) <= 73_027_280 * 130 / 100);
     }
 
     /// QW4-046 / QW4-049 / QW4-039: the quotes cover what sakura (Platform 5.0.0-beta.1, QA wave

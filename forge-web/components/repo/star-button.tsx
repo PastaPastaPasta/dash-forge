@@ -32,7 +32,7 @@ import { starTerms } from '@/lib/repo/star-shape'
 import { trendingPref } from '@/lib/repo/trending'
 import { firstWriteRead, previewCreate, previewCredits, previewDelete, sumPreviews } from '@/lib/sdk'
 import { LAST_STAR_DELETE_CREDITS } from '@/lib/sdk/cost'
-import { creditsAsDash, priceLabel, refundLabel } from '@/lib/view/format'
+import { priceLabel, refundLabel } from '@/lib/view/format'
 
 export function StarButton({
   repo,
@@ -76,7 +76,7 @@ export function StarButton({
   // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
   const starCost = previewCreate('star', {}, first)
   const cost = priceBeat ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
-  // "Up to" is a ceiling: the repo's last star (or one whose count is unknown) refunds more.
+  // The fused schema's calibrated immediate refund also covers a last or unknown-count star.
   const lastStar = count === null || count + star.delta <= 1
   const refund = lastStar ? previewCredits(LAST_STAR_DELETE_CREDITS) : previewDelete('star')
   // Until the first-write reads answer, the price is the upper bound, and says so (QW-043).
@@ -94,7 +94,7 @@ export function StarButton({
   // Signed in but the current state is not known yet (or could not be read): no action to offer.
   const unknown = signedIn && star.on === null
   const price = starred
-    ? `Unstar · refunds up to ${creditsAsDash(-refund.credits)} DASH`
+    ? refundLabel('Unstar', refund.credits)
     : `Star · ${priceLabel(cost.credits, upperBound)} DASH${trendingNote}`
 
   return (
@@ -125,7 +125,7 @@ export function StarButton({
       {/* The price in view before the one-click write (D-098, style guide rule 2), as Follow shows it. */}
       {signedIn && star.on !== null ? (
         <span className="hidden font-mono text-[11px] text-anvil-500 dark:text-anvil-400 sm:inline" data-testid="star-cost" aria-hidden>
-          {starred ? refundLabel('unstar', refund.credits) : priceLabel(cost.credits, upperBound)} DASH
+          {starred ? refundLabel('unstar', refund.credits) : `${priceLabel(cost.credits, upperBound)} DASH`}
         </span>
       ) : null}
     </span>

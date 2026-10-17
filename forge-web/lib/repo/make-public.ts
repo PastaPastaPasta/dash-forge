@@ -299,8 +299,8 @@ export function gateMakePublic(
 export const FLIP_ESTIMATE_CREDITS = 40_000_000
 /** About what the first public settings cost (dg `CONFIG_ESTIMATE_CREDITS`). */
 export const CONFIG_ESTIMATE_CREDITS = 40_000_000
-/** A repository's first `packManifest` of a kind (forge-core `MANIFEST_FIRST`). */
-export const MANIFEST_FIRST_CREDITS = 112_000_000
+/** A repository's first `packManifest` of a kind (forge-core `MANIFEST_FIRST`; testnet rc.4: 129.46M measured, 2026-10-17). */
+export const MANIFEST_FIRST_CREDITS = 140_000_000
 /** A ref's first update (forge-core `REF_FIRST`). */
 export const REF_FIRST_CREDITS = 92_000_000
 /** A repository's first manifest of a new kind adds its subtree (forge-core `HISTORY_FIRST_EXTRA`). */

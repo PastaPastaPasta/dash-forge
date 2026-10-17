@@ -40,7 +40,7 @@ The fixed cost per document is **not small**. A document pays for its index entr
 | Document | Fixed cost beyond its bytes | Where measured |
 |---|---|---|
 | `chunk` | measured 69M (the network's first chunks, a shallow tree), 98M (the dashpay/dash import, 6,438 chunks in the tree), up to a fitted 110–115M at 2^16 chunks. It grows by about 7M per level of the network-wide chunk tree. The quote allows **140M**, an estimator allowance, not a measured minimum | beta.6 showcase imports; `CHUNK_FLAT` |
-| `packManifest` | first 109–110M, later 85–87M (quoted 112M / 90M) | moutai, bonsia |
+| `packManifest` | first 129.46M, later 81.07–81.77M (quoted 140M / 90M) | testnet, Platform 5.0.0-rc.4, 2026-10-17 |
 | `refUpdate` | first 88–90M, later 57–67M (quoted 92M) | same |
 | issue, comment, review, event | roughly 35–100M, which is 0.0004–0.001 DASH as a whole write | [guides/costs.md](guides/costs.md#what-each-action-costs) |
 
@@ -59,7 +59,7 @@ Mechanics (verified: `fee/epoch/distribution.rs::calculate_storage_fee_refund_am
 
 - The 27,000/byte deposit is **spread across 2,000 epochs** (50 eras × 40 epochs) per a fixed distribution table (`FEE_DISTRIBUTION_TABLE`). On mainnet an epoch is 788,400 s, or 9.125 days (`default_epoch_time_length_s` in `rs-drive-abci/src/config.rs`), so 2,000 epochs last about 50 years; on testnet an epoch is 1 hour, so the schedule lasts about 83 days.
 - On document deletion, **every epoch share from `current_epoch + 1` onward is refunded** to the identity that paid (the document owner). Only the share already consumed by elapsed epochs — plus rounding leftovers — is kept.
-- On mainnet, delete within weeks-to-months of writing → recover the overwhelming majority of the deposit (the elapsed slice of a 50-year schedule). On testnet the same schedule runs in about 83 days (a delete after 1 day gets back about 97 %, after 7 days about 80 %, after 30 days about 36 %, after about 83 days nothing), so UI copy says "refunds up to". The refund lands as identity credits, immediately spendable on the next push.
+- On mainnet, delete within weeks-to-months of writing → recover the overwhelming majority of the deposit (the elapsed slice of a 50-year schedule). On testnet the same schedule runs in about 83 days (a delete after 1 day gets back about 97 %, after 7 days about 80 %, after 30 days about 36 %, after about 83 days nothing), so UI copy says "refunds about X if deleted soon; less as it ages". X approximates an immediate deletion, not an upper or lower bound. The refund lands as identity credits, immediately spendable on the next push.
 - Processing fees (the ~412 credits/byte + bases) are never refunded — that's the true "cost of churn."
 
 Constraints:
