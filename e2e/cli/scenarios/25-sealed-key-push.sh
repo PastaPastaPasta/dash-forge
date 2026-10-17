@@ -36,6 +36,7 @@ jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)
 
 step "this run's identity"
 if [[ -n "${E2E_S25_IDENTITY:-}" ]]; then
+  require_not_july "$E2E_S25_IDENTITY"
   cp "$E2E_S25_IDENTITY" "$IDS/S25.identity.json"
 else
   require_mint_funding "or set E2E_S25_IDENTITY"

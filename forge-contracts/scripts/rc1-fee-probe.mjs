@@ -52,7 +52,7 @@ import { randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION, contractId, loadEvoSdk } from './deploy-v2.mjs';
-import { addressesFor, assertNotJulyIdentity, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
+import { addressesFor, assertNotJulyIdentity, checkFlags, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
 import { PROBES, RC2_DOCS, REVIEW_PROBES, bare, emitted, materialize, probeSchemas, schemaHash } from './lib/rc2-probe.mjs';
 import * as freezeProbe from './lib/freeze-probe.mjs';
 
@@ -87,6 +87,7 @@ if (args.emit !== undefined) {
 if (args.help) usage('rc1-fee-probe.mjs measures what an index feature adds to a write (see the header)', 0);
 let target;
 try {
+  checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'addresses', 'identity', 'state', 'n', 'emit'], bools: ['rc2', 'freeze', 'help'] });
   target = resolveTarget(args);
   refuseProduction(target);
 } catch (e) {
@@ -94,7 +95,8 @@ try {
 }
 if (typeof args.identity !== 'string') usage('--identity <file> is required');
 if (!(N >= 1)) usage('--n must be at least 1');
-const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${FREEZE ? 'freeze' : RC2 ? 'rc2' : 'rc1'}-fee-probe-${target.label}.json`));
+// per devnet name (as before) or `testnet`: a resumed run finds the probe contracts it registered
+const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${FREEZE ? 'freeze' : RC2 ? 'rc2' : 'rc1'}-fee-probe-${target.devnetName ?? target.network}.json`));
 const addresses = addressesFor(target, args);
 
 const load = (name) => JSON.parse(readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8'));

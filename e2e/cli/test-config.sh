@@ -99,7 +99,7 @@ libsh() {
   env -i PATH="$PATH" HOME="$home" "$@" bash -c 'SCENARIO_NAME=t; source "'"$REPO"'/e2e/cli/lib.sh"; '"$snippet" 2>&1
   echo "rc=$?"
 }
-out="$(libsh "$TMP/h-testnet" 'require_mint_funding "or set X"; echo reached' DASH_FORGE_NETWORK=testnet "E2E_MINT_FUNDING=$TMP/no-such-funding.wif" "E2E_IDENTITY_DIR=$TMP/h-testnet/.config/dash-forge/test-identities/testnet-scratch")"
+out="$(libsh "$TMP/h-testnet" 'require_mint_funding "or set X"; echo reached' DASH_FORGE_NETWORK=testnet "E2E_MINT_FUNDING=$TMP/testnet-funding-absent.wif" "E2E_IDENTITY_DIR=$TMP/h-testnet/.config/dash-forge/test-identities/testnet-scratch")"
 [[ "$out" == *"FAIL"* && "$out" == *"no testnet funding key"* && "$out" == *"rc=1" && "$out" != *reached* ]] && pass "testnet: a missing funding key fails the scenario" || fail "testnet missing funding: $out"
 H="$TMP/h-devnet2"; fresh_pool "$H/.config/dash-forge/test-identities/devnet-sakura"
 out="$(libsh "$H" 'require_mint_funding "or set X"; echo reached' "E2E_MINT_FUNDING=$TMP/no-such-funding.wif")"
@@ -111,6 +111,17 @@ out="$(libsh "$H" 'na_unless_devnet "x"; echo reached')"
 [[ "$out" == *reached* ]] && pass "na_unless_devnet continues on a devnet" || fail "na on devnet: $out"
 out="$(libsh "$TMP/h-testnet" 'na_unless_devnet "x"; echo reached' DASH_FORGE_NETWORK=testnet)"
 [[ "$out" == *"N/A"* && "$out" == *"rc=3" && "$out" != *reached* ]] && pass "na_unless_devnet exits 3 on testnet" || fail "na on testnet: $out"
+
+echo "lib.sh require_not_july, and the funding key"
+stub "$TMP/jul" RUNNER "$JULY_FIRST"; stub "$TMP/fresh" RUNNER FreshRunner111111111111111111111111111111111
+out="$(libsh "$TMP/h-testnet" "require_not_july '$TMP/jul/RUNNER.identity.json'; echo reached" DASH_FORGE_NETWORK=testnet)"
+[[ "$out" == *"July-era testnet identity"* && "$out" == *"rc=1" && "$out" != *reached* ]] && pass "testnet: a July identity from an override is refused" || fail "require_not_july july: $out"
+out="$(libsh "$TMP/h-testnet" "require_not_july '$TMP/fresh/RUNNER.identity.json'; echo reached" DASH_FORGE_NETWORK=testnet)"
+[[ "$out" == *reached* && "$out" == *"rc=0" ]] && pass "testnet: a fresh identity from an override passes" || fail "require_not_july fresh: $out"
+out="$(libsh "$H" "require_not_july '$TMP/jul/RUNNER.identity.json'; echo reached")"
+[[ "$out" == *reached* ]] && pass "devnet: require_not_july is a no-op" || fail "require_not_july devnet: $out"
+expect_refused "testnet with some other devnet's funding key" "looks like a devnet funding key" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_MINT_FUNDING=/x/newnet-funding.wif -- true
+expect_ok "TESTNET_FUNDING (the QA harness's variable) names the testnet wallet" "/q/testnet-funding.wif" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet TESTNET_FUNDING=/q/testnet-funding.wif -- 'echo "$E2E_MINT_FUNDING"'
 
 echo "the July list agrees with forge-contracts/scripts/lib/target.mjs"
 want="$(node -e "import('$REPO/forge-contracts/scripts/lib/target.mjs').then(m=>console.log([...m.JULY_POOL_IDS.keys()].sort().join(' ')))")"

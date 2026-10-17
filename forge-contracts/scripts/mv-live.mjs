@@ -108,7 +108,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEvoSdk } from './deploy-v2.mjs';
-import { addressesFor, assertNotJulyIdentity, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
+import { addressesFor, assertNotJulyIdentity, checkFlags, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
@@ -196,7 +196,9 @@ if (args.help) {
 }
 let target;
 try {
+  checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'identities', 'addresses', 'report', 'only', 'n', 'state', 'baseline'], bools: ['live-target', 'self-test', 'help'] });
   target = resolveTarget(args, { liveTargetFlag: true });
+  if (target.liveTarget && target.network === 'mainnet') throw new Error('--live-target runs on testnet (and devnets) only: the smoke subset on mainnet is the mainnet runbook\'s step, not this tool\'s yet');
   if (!target.liveTarget) {
     if (!target.scratch) {
       throw new Error(target.production
@@ -1052,7 +1054,7 @@ try {
       await readBack(I, 'the group-key label read back', META, 'label', fo2);
       await ok(I, 'a forge-core write (ref update) signed by the same key', W, 'refUpdate', { repoId: R, refNameHash: refHash('refs/heads/g'), refName: 'refs/heads/g', newOid: bytes(20, 1), vis: 'public' }, bound);
       // addresses the network's live forge-community: not on testnet or mainnet (QA-14), nor where there is none
-      if (PRODUCTION || !LIVE.community) record({ item: I, label: 'the same key signing for a contract outside the group (the live forge-community)', expect: 'a devnet with a live set', got: `NOT RUN on ${target.label}: it addresses the live forge-community`, pass: true });
+      if (PRODUCTION || !LIVE.community) record({ item: I, label: 'the same key signing for a contract outside the group (the live forge-community)', expect: 'a devnet with a live set', got: `NOT RUN on ${target.label}: it addresses the live forge-community`, pass: true, notRun: true });
       else await no(I, 'the same key signing for a contract outside the group (the live forge-community)', W, 'watch', { repoId: bytes(32) }, [20014], undefined, { ...bound, contract: LIVE.community });
     }
   }
@@ -1581,7 +1583,7 @@ async function feeProbes() {
   }
 }
 
-const passed = results.filter((r) => r.pass && !r.infra).length;
+const passed = results.filter((r) => r.pass && !r.infra && !r.notRun).length;
 const infra = infraCases.length ? `${infraCases.length} case(s) without a verdict: ${infraCases.join('; ')}` : stopped;
 const stats = (v) => {
   const s = [...v].sort((a, b) => a - b);

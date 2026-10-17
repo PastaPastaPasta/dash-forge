@@ -10,6 +10,7 @@ import {
   JULY_POOL_IDS,
   addressesFor,
   assertNotJulyIdentity,
+  checkFlags,
   liveRecordPath,
   refuseProduction,
   requireThreeContract,
@@ -133,6 +134,21 @@ describe('--record', () => {
     assert.equal(group.production, true);
     assert.ok(sharesLiveSet(group.record, group.live));
   });
+  test('a splice that keeps any live contract counts as live', () => {
+    const dep2 = join(dir, 'dep2');
+    mkdirSync(dep2);
+    const live = { network: 'mainnet', ...fourContracts('M2_CORE', 'M2_GROUP') };
+    write(join(dep2, 'mainnet.json'), live);
+    const spliced = { network: 'mainnet', ...fourContracts('S2_CORE', 'S2_GROUP') };
+    spliced.v2.forgeCommunity.contractId = live.v2.forgeCommunity.contractId; // fresh core and group, the live community
+    write(join(scratchDir, 'splice.json'), spliced);
+    const t = resolveTarget({ network: 'mainnet', record: join(scratchDir, 'splice.json') }, { deploymentsDir: dep2 });
+    assert.equal(t.copiesLive, true);
+    assert.equal(t.production, true);
+    // and a fully fresh set is not
+    write(join(scratchDir, 'fresh.json'), { network: 'mainnet', ...(() => { const r = fourContracts('F_CORE', 'F_GROUP'); r.v2.forgeCollab.contractId = 'F_COLLAB'; r.v2.forgeCommunity.contractId = 'F_COMM'; r.v2.forgeMeta.contractId = 'F_META'; return r; })() });
+    assert.equal(resolveTarget({ network: 'mainnet', record: join(scratchDir, 'fresh.json') }, { deploymentsDir: dep2 }).production, false);
+  });
   test('a scratch record on a devnet may be a copy: a devnet is not production', () => {
     write(join(scratchDir, 'sakura-copy.json'), { network: 'devnet', ...threeContracts('SAKURA_CORE', 'SAKURA_GROUP') });
     const t = resolveTarget({ record: join(scratchDir, 'sakura-copy.json') }, opts());
@@ -150,7 +166,7 @@ describe('the production-write policy', () => {
     }
   });
   test('the refusal tells the operator how to run a scratch set', () => {
-    assert.throws(() => refuseProduction(resolveTarget({ network: 'testnet' }, opts())), /deploy-v2\.mjs --network testnet --set mainnet --record <scratch\.json>/);
+    assert.throws(() => refuseProduction(resolveTarget({ network: 'testnet' }, opts())), /deploy-v2\.mjs --network testnet --contracts <dir> --record <scratch\.json>/);
     assert.throws(() => refuseProduction(resolveTarget({ network: 'testnet' }, opts()), 'see --live-target'), /see --live-target$/);
   });
   test('a devnet is never refused', () => {
@@ -209,5 +225,22 @@ describe('the July pool', () => {
       assert.doesNotThrow(() => assertNotJulyIdentity(devnet, id, 'owner.identity.json'));
     }
     assert.doesNotThrow(() => assertNotJulyIdentity(testnet, 'SomeFreshIdentityId', 'owner.identity.json'));
+  });
+});
+
+describe('checkFlags', () => {
+  const spec = { values: ['network', 'record', 'identities'], bools: ['live-target', 'help'] };
+  test('accepts the shapes the tools use', () => {
+    assert.doesNotThrow(() => checkFlags(['--network', 'testnet', '--live-target', '--identities', '/x'], spec));
+    assert.doesNotThrow(() => checkFlags(['--live-target'], spec));
+    assert.doesNotThrow(() => checkFlags([], spec));
+  });
+  test('rejects what the reducer would misread', () => {
+    assert.throws(() => checkFlags(['--network=testnet'], spec), /with a space, not '='/);
+    assert.throws(() => checkFlags(['--live-target', 'false'], spec), /takes no value/);
+    assert.throws(() => checkFlags(['--network'], spec), /takes a value/);
+    assert.throws(() => checkFlags(['--network', '--live-target'], spec), /takes a value/);
+    assert.throws(() => checkFlags(['--bogus', '1'], spec), /unknown option --bogus/);
+    assert.throws(() => checkFlags(['testnet'], spec), /unexpected argument/);
   });
 });

@@ -14,7 +14,7 @@
 import { randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { loadEvoSdk } from './deploy-v2.mjs';
-import { addressesFor, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
+import { addressesFor, checkFlags, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
 const usage = 'usage: rc1-empty-aggregates.mjs [--network devnet|testnet|mainnet] [--devnet-name sakura] [--record <scratch-record.json>] [--addresses <dapi,...>] [--report <file.json>]';
@@ -24,6 +24,7 @@ if (args.help) {
 }
 let target;
 try {
+  checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'addresses', 'report'], bools: ['help'] });
   target = resolveTarget(args);
   refuseProduction(target);
   requireThreeContract(target, 'rc1-empty-aggregates');

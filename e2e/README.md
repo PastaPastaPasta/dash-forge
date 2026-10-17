@@ -15,9 +15,9 @@ CLI suite (`DASH_FORGE_NETWORK=testnet bash e2e/cli/run.sh`; `cli/config.sh` hol
 
 - The owner role is `OWNER` on every network. `E2E_OWNER_ROLE=DEPLOYER` is refused on testnet: DEPLOYER is the July-era identity whose keys are public, and the name of the real deployer.
 - Identities come from `~/.config/dash-forge/test-identities/testnet-scratch/` (OWNER, COLLAB, CONTRIB; `E2E_IDENTITY_DIR` overrides), minted fresh from the QA funding wallet. The directory `~/.config/dash-forge/test-identities/` itself holds the July-era pool and is refused, and so is any identity whose id is one of its nine (`JULY_POOL_IDS` in `config.sh`, kept in step with `forge-contracts/scripts/lib/target.mjs`).
-- Mints are funded from `$DASH_FORGE_QA_DIR/secrets/testnet-funding.wif` (`DASH_FORGE_QA_DIR` defaults to `~/workspace/dash-forge-qa`; `E2E_MINT_FUNDING` overrides, and a devnet funding key is refused). A scenario that mints its own identity (19, 25, 33, 36) FAILS on testnet when the key is missing (`require_mint_funding`); on a devnet it still skips.
+- Mints are funded from `$DASH_FORGE_QA_DIR/secrets/testnet-funding.wif` (`DASH_FORGE_QA_DIR` defaults to `~/workspace/dash-forge-qa`; `E2E_MINT_FUNDING` overrides, and a devnet funding key is refused). A scenario that mints its own identity (19, 25, 33, 36) FAILS on testnet when the key is missing (`require_mint_funding`); on a devnet it still skips. An identity taken from an override (`E2E_S25_IDENTITY`, `E2E_CI_RUNNER`, `E2E_P_OWNER`, ...) is checked against the July ids too (`require_not_july`).
 - Scenarios 20, 24 and 26 record and assert a devnet in their `dg` and git config and are not ported: they report `N/A` on testnet (exit 3), outside the skip count. The other scenarios have not been reviewed line by line for testnet.
-- Skip ceiling (QA-V-04): `run.sh` fails when more than `E2E_MAX_SKIPS` scenarios skip (default 3). A scenario the harness drops because the local S3 store is down (11, 13, 30) counts as a skip.
+- Skip ceiling (QA-V-04): `run.sh` fails when more than `E2E_MAX_SKIPS` scenarios skip (default 3). A scenario the harness drops because the local S3 store is down (11, 13, 30) counts as a skip, so a runner without `make infra-up` uses the whole default budget of 3: bring the store up, or raise `E2E_MAX_SKIPS` knowingly. (The ceiling was 1 before QA-V-04; it now counts those drops.)
 
 Playwright (`E2E_NETWORK=devnet|testnet`, default `devnet`; `E2E_DEVNET` names the devnet and must be unset on testnet):
 
@@ -26,7 +26,7 @@ Playwright (`E2E_NETWORK=devnet|testnet`, default `devnet`; `E2E_DEVNET` names t
 - `idFile()` reads `E2E_IDENTITY_DIR`, else `test-identities/testnet-scratch/`, and refuses the July-era ids and the July pool directory.
 - Write specs on testnet need `E2E_WRITE=1` and identities of your own; none has been run there.
 
-The live tools in `forge-contracts/scripts` take `--network devnet|testnet|mainnet` and `--record <scratch registration>`; `rc1-live`, `rc1-empty-aggregates` and `rc1-fee-probe` refuse the live testnet and mainnet records, and `mv-live` does unless `--live-target` (a smoke subset into repos of its own). See the headers of those scripts and `forge-contracts/scripts/lib/target.mjs`.
+The live tools in `forge-contracts/scripts` take `--network devnet|testnet|mainnet` and `--record <scratch registration>`; `rc1-live`, `rc1-empty-aggregates` and `rc1-fee-probe` refuse the live testnet and mainnet records, and `mv-live` does unless `--live-target` (testnet and devnets; a smoke subset into repos of its own). They reject `--flag=value`, a value on a bare flag and unknown options instead of misreading them. See the headers of those scripts and `forge-contracts/scripts/lib/target.mjs`.
 - `cli/storage-byo.sh`: bring-your-own storage (`make storage-e2e`). A real `git push` / `git clone` whose packs go to the local RustFS (S3) + kubo from `infra/docker-compose.yml`.
 
 | Scenario | Proves |

@@ -60,14 +60,16 @@ export JULY_POOL_IDS
 # The funding key tools/mint-identity spends from, and the lock that serialises mints across
 # every agent sharing that key's UTXOs (as `qa mint` does). The QA harness keeps its secrets in
 # $DASH_FORGE_QA_DIR/secrets/: <devnet>-funding.wif per devnet, testnet-funding.wif for testnet
-# (a faucet.thepasta.org grant; QA-V-05). moutai keeps its original lock path, and MOUTAI_FUNDING
+# (a faucet.thepasta.org grant; QA-V-05; TESTNET_FUNDING, which the harness's env exports, is honoured on testnet only). moutai keeps its original lock path, and MOUTAI_FUNDING
 # (which the QA harness's env.sh exports) is honoured on moutai only, so it never funds another network.
 : "${DASH_FORGE_QA_DIR:=${HOME}/workspace/dash-forge-qa}"
 if [[ "$DASH_FORGE_NETWORK" == testnet ]]; then
-  : "${E2E_MINT_FUNDING:=${DASH_FORGE_QA_DIR}/secrets/testnet-funding.wif}"
+  : "${E2E_MINT_FUNDING:=${TESTNET_FUNDING:-${DASH_FORGE_QA_DIR}/secrets/testnet-funding.wif}}"
   : "${E2E_MINT_LOCK:=/tmp/qa-mint-testnet.lock}"
+  # a QA-harness devnet key (<devnet>-funding.wif) never funds testnet mints
   case "$(basename "$E2E_MINT_FUNDING")" in
-    sakura-funding*|moutai-funding*|bonsia-funding*) _cfg_fatal "E2E_MINT_FUNDING=${E2E_MINT_FUNDING} is a devnet funding key; testnet mints are funded from testnet-funding.wif" ;;
+    testnet-funding*) ;;
+    *-funding.wif|*-funding) _cfg_fatal "E2E_MINT_FUNDING=${E2E_MINT_FUNDING} looks like a devnet funding key; testnet mints are funded from testnet-funding.wif (TESTNET_FUNDING or E2E_MINT_FUNDING name another file)" ;;
   esac
 elif [[ "$DASH_FORGE_DEVNET_NAME" == moutai ]]; then
   : "${E2E_MINT_FUNDING:=${MOUTAI_FUNDING:-${DASH_FORGE_QA_DIR}/secrets/moutai-funding.wif}}"

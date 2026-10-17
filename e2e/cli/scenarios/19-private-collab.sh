@@ -50,6 +50,7 @@ mint() { # mint <label>: a funded identity with an ENCRYPTION key, for this run 
 step "this run's identities"
 if [[ -n "${E2E_P_OWNER:-}" && -n "${E2E_P_MEMBER:-}" ]]; then
   # dedicated identities given by the caller (not the shared pool), e.g. when minting is down
+  require_not_july "$E2E_P_OWNER"; require_not_july "$E2E_P_MEMBER"
   cp "$E2E_P_OWNER" "$IDS/P_OWNER.identity.json" && cp "$E2E_P_MEMBER" "$IDS/P_MEMBER.identity.json"
   P_OWNER="$IDS/P_OWNER.identity.json"; P_MEMBER="$IDS/P_MEMBER.identity.json"
   ID_P_OWNER="$(_idid "$P_OWNER")"; ID_P_MEMBER="$(_idid "$P_MEMBER")"

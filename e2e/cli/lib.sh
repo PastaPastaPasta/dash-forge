@@ -391,6 +391,20 @@ na_scenario() {
 }
 na_unless_devnet() { [[ "$DASH_FORGE_NETWORK" == devnet ]] || na_scenario "not on ${DASH_FORGE_NETWORK}: $*"; }
 
+# require_not_july <identity file>: on testnet, refuse an identity file of the July-era pool (public keys,
+# QA-05). config.sh checks OWNER, COLLAB and CONTRIB; a scenario that takes an identity from an
+# override (E2E_S25_IDENTITY, E2E_CI_RUNNER, ...) calls this on it. A no-op on a devnet.
+require_not_july() {
+  [[ "$DASH_FORGE_NETWORK" == testnet ]] || return 0
+  local id
+  id="$(_idid "$1")"
+  case " $JULY_POOL_IDS " in
+    *" ${id:-none} "*)
+      printf '%sFAIL%s  %s  — %s is the July-era testnet identity %s (public keys, QA-05); mint a fresh one\n' "${C_RED}" "${C_RST}" "${SCENARIO_NAME}" "$1" "$id" >&2
+      exit 1 ;;
+  esac
+}
+
 # require_mint_funding ["hint"]: a scenario that mints its own identity needs the network's funding
 # key (E2E_MINT_FUNDING, config.sh). On testnet a missing key FAILS the scenario: a silent skip there
 # once let a whole suite pass without minting anything (QA-05, QA-V-04). On a devnet it skips, and

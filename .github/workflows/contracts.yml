@@ -255,7 +255,9 @@ jobs:
           bash e2e/cli/test-config.sh
           node --test forge-contracts/scripts/lib/target.test.mjs
           node forge-contracts/scripts/mv-live.mjs --self-test
-          for t in rc1-live mv-live rc1-empty-aggregates rc1-fee-probe; do
-            node forge-contracts/scripts/$t.mjs --network testnet --identities /nonexistent --identity /nonexistent 2>&1 | grep -q 'refusing to run against a live registration' \
-              || { echo "$t did not refuse the live testnet record"; exit 1; }
+          for t in "rc1-live --identities /nonexistent" "mv-live --identities /nonexistent" "rc1-empty-aggregates" "rc1-fee-probe --identity /nonexistent"; do
+            read -r tool rest <<<"$t"
+            # shellcheck disable=SC2086 # the words of one tool's command line
+            out=$(node "forge-contracts/scripts/$tool.mjs" --network testnet $rest 2>&1 || true)
+            grep -q 'refusing to run against a live registration' <<<"$out" || { echo "$tool did not refuse the live testnet record: $out"; exit 1; }
           done

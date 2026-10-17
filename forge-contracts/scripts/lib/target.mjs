@@ -79,15 +79,15 @@ export function canonical(path) {
 export const isUnderDir = (path, dir) => canonical(resolve(path)).startsWith(`${canonical(dir)}${sep}`);
 
 const groupOf = (rec) => rec?.v2?.contractGroupId ?? rec?.v2?.contractGroup?.id ?? rec?.v2?.forgeCore?.contractGroupId;
-/** The ids a record registers that identify its set: forge-core and the contract group. */
+/** Every id that identifies a registered set: its contracts (core, collab, community, meta) and its contract group. */
 export function setIds(rec) {
-  return { core: rec?.v2?.forgeCore?.contractId, group: groupOf(rec) };
+  const v2 = rec?.v2 ?? {};
+  return [v2.forgeCore, v2.forgeCollab, v2.forgeCommunity, v2.forgeMeta].map((c) => c?.contractId).concat(groupOf(rec)).filter(Boolean);
 }
-/** True when `rec` names the same forge-core or contract group as `live`: a copy of the live registration. */
+/** True when `rec` names any contract or the contract group of `live`: a copy of (or a splice with) the live registration. */
 export function sharesLiveSet(rec, live) {
-  const a = setIds(rec);
-  const b = setIds(live);
-  return Boolean((a.core && a.core === b.core) || (a.group && a.group === b.group));
+  const theirs = new Set(setIds(live));
+  return setIds(rec).some((id) => theirs.has(id));
 }
 /** A four-contract record (forge-meta registered): the mainnet-set layout. */
 export const isFourContract = (rec) => Boolean(rec?.v2?.forgeMeta?.contractId);
@@ -163,8 +163,9 @@ export function refuseProduction(target, hint = '') {
     : `${target.liveFile} is the live ${target.network} registration`;
   throw new Error(
     `refusing to run against a live registration: ${what}. Repos, issues, keys and packs written there can never be deleted. ` +
-      'Rule suites run only on a scratch registration: register one with `deploy-v2.mjs --network ' +
-      `${target.network} --set mainnet --record <scratch.json>\` and pass \`--record <scratch.json>\`.${hint ? ` ${hint}` : ''}`,
+      'Rule suites run only on a scratch registration: register one outside deployments/ ' +
+      `(\`python3 forge-contracts/schema/build.py --mainnet --out <dir>\`, then \`deploy-v2.mjs --network ${target.network} --contracts <dir> --record <scratch.json>\`) ` +
+      `and pass \`--record <scratch.json>\`.${hint ? ` ${hint}` : ''}`,
   );
 }
 
@@ -200,6 +201,31 @@ export function requireThreeContract(target, tool) {
     `${target.recordFile} records a four-contract set (forge-meta is registered). ${tool} writes the three-contract RC1 ` +
       'layout and has no routing for the types the mainnet set moves to forge-meta (QA-03, not landed yet). Use mv-live.mjs for a four-contract set.',
   );
+}
+
+/**
+ * Reject what the scripts' inline `--flag value` reducer would silently misread: `--network=testnet`
+ * (read as a flag named `network=testnet`, so the run falls back to devnet), a value for a bare flag
+ * (`--live-target false` is still on), a flag with no value, a positional word and a flag the tool
+ * does not have. `values` take one value, `bools` take none.
+ */
+export function checkFlags(argv, { values = [], bools = [] }) {
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i];
+    if (!t.startsWith('--')) throw new Error(`unexpected argument ${JSON.stringify(t)}`);
+    if (t.includes('=')) throw new Error(`write ${t.split('=')[0]} ${JSON.stringify(t.slice(t.indexOf('=') + 1))} with a space, not '='`);
+    const name = t.slice(2);
+    const next = argv[i + 1];
+    const hasValue = next !== undefined && !next.startsWith('--');
+    if (bools.includes(name)) {
+      if (hasValue) throw new Error(`--${name} takes no value (got ${JSON.stringify(next)})`);
+    } else if (values.includes(name)) {
+      if (!hasValue) throw new Error(`--${name} takes a value`);
+      i++;
+    } else {
+      throw new Error(`unknown option ${t}`);
+    }
+  }
 }
 
 /** Refuse a July-era identity on testnet or mainnet (a devnet never held them). */

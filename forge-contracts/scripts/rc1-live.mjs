@@ -68,7 +68,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadEvoSdk } from './deploy-v2.mjs';
 import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, withRole } from './lib/seed-io.mjs';
-import { addressesFor, assertNotJulyIdentity, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
+import { addressesFor, assertNotJulyIdentity, checkFlags, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
 const usage = 'usage: rc1-live.mjs [--network devnet|testnet|mainnet] [--devnet-name sakura] [--record <scratch-record.json>] --identities <dir> [--addresses <dapi,...>] [--report <file.json>] [--only <group,...>]';
@@ -81,6 +81,7 @@ const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}
 
 let target;
 try {
+  checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'identities', 'addresses', 'report', 'only'], bools: ['help'] });
   target = resolveTarget(args);
   refuseProduction(target);
   requireThreeContract(target, 'rc1-live');
