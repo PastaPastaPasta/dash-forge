@@ -265,9 +265,9 @@ type Pending =
   | { kind: 'edit-comment'; id: string; body: string }
   | { kind: 'delete-comment'; id: string }
   /** The author makes their members-only comment public; `losesFile`: an inline one, whose file name the contract can't keep (DESIGN §4.6). */
-  | { kind: 'make-public'; id: string; quoted: string | null; losesFile: boolean }
+  | { kind: 'make-public'; id: string; quoted: string | null; losesFile: boolean; letter: boolean }
   /** The author makes their members-only PR's title and description public (DESIGN §4.6; its branches stay unnamed). */
-  | { kind: 'make-pull-public'; quoted: string | null }
+  | { kind: 'make-pull-public'; quoted: string | null; letter: boolean }
   /** The author makes their members-only review's text public, as a comment attached to it. */
   | { kind: 'make-review-public'; id: string; text: string; quoted: string | null }
   | { kind: 'resolve'; root: string; resolve: boolean }
@@ -831,7 +831,7 @@ function PullPage({
     (c: CommentView) => {
       void (async () => {
         const keeps = c.anchor === null || (sdk !== null && (await makePublicKeepsFields(sdk, repo, 'comment').catch(() => false)))
-        setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: !keeps })
+        setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: !keeps, letter: c.audience === 'specificPeople' })
       })()
     },
     [setPending, quotedPost, sdk, repo],
@@ -1592,7 +1592,7 @@ function PullPage({
             ) : null}
             {isAuthor && (pull.audience === 'members' || pull.audience === 'specificPeople') && repo.visibility === 'public' ? (
               <MakePublicButton
-                onClick={() => setPending({ kind: 'make-pull-public', quoted: quotedPost(`${pull.title}\n${pull.body}`, pull.author, 'pull request') })}
+                onClick={() => setPending({ kind: 'make-pull-public', quoted: quotedPost(`${pull.title}\n${pull.body}`, pull.author, 'pull request'), letter: pull.audience === 'specificPeople' })}
                 disabled={writeBlocked || guard.disabledReason !== null || longEditBlock(pull.long) !== null}
                 title={longEditBlock(pull.long) ?? undefined}
               />
@@ -2769,11 +2769,11 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
     case 'delete-comment':
       return { title: 'Delete comment', description: 'Part of its storage fee is refunded, and replies stay. The original stays in Platform history, so rotate any secret it held.', label: 'Sign & delete' }
     case 'make-public':
-      return makePublicWords('comment', pending.quoted, pending.losesFile)
+      return makePublicWords('comment', pending.quoted, pending.losesFile, pending.letter)
     case 'make-review-public':
       return makePublicWords('review', pending.quoted)
     case 'make-pull-public':
-      return makePublicWords('pull request', pending.quoted)
+      return makePublicWords('pull request', pending.quoted, false, pending.letter)
     case 'resolve':
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }

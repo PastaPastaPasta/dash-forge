@@ -63,6 +63,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { BetaBadge } from '@/components/ui/beta-badge'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -107,9 +108,12 @@ export function BotPushSection({
   return (
     <div className="space-y-1" data-testid="bot-push">
       {line !== null ? (
-        <p className="text-anvil-700 dark:text-anvil-200" data-testid="bot-push-line">
-          {line}
-        </p>
+        <div className="flex flex-wrap items-baseline gap-x-1.5">
+          <p className="text-anvil-700 dark:text-anvil-200" data-testid="bot-push-line">
+            {line}
+          </p>
+          <BetaBadge feature="botPushGrants" />
+        </div>
       ) : null}
       {s.notes.map((n) => (
         <PushNoteLine key={`${n.kind}:${n.grant.id}`} note={n} bot={handle} {...(onAction && !closed ? { onAction } : {})} />

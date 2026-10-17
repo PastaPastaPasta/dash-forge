@@ -76,7 +76,7 @@ export function PullMerge({
   if (pull.membersPatch?.basePublic === false || (repo.visibility === 'public' && isListedMembersRef(repo.repoId, baseRefName))) {
     return (
       <p className="rounded-lg border border-anvil-200 p-4 text-dense text-anvil-700 dark:border-anvil-800 dark:text-anvil-200" data-testid="merge-members-base">
-        This pull request goes into a members-only branch. Merge it with git or <span className="font-mono">dg pr merge</span>: the web changes public branches only.
+        This pull request goes into a members-only branch. Merge it with git (<span className="font-mono">git merge</span>, <span className="font-mono">git push</span>): Forge can&apos;t mark it merged yet.
       </p>
     )
   }

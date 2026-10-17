@@ -15,11 +15,11 @@ describe('step timing (L-20)', () => {
   it('each step ends when the next starts; null ends the last', () => {
     const step = stepClock('t1')
     step('Connecting')
-    step('Enabling private repos')
+    step('Setting up members-only content')
     expect(measures('forge:t1:')).toEqual(['forge:t1:Connecting'])
     step(null)
     step(null)
-    expect(measures('forge:t1:')).toEqual(['forge:t1:Connecting', 'forge:t1:Enabling private repos'])
+    expect(measures('forge:t1:')).toEqual(['forge:t1:Connecting', 'forge:t1:Setting up members-only content'])
   })
 
   it('times work whether it succeeds or fails, and passes its result through', async () => {

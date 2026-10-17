@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { COPY, MakePublicError, type MakePublicCensus } from '../repo/make-public'
 import { MembersUnsettledError, PrivateMembersError } from '../repo/private-members'
-import { RUN_ERRORS, everythingCounts, notPublishedLine, othersLabel, refChoices, runErrorText, staysPrivateLine, unreadLine, wordsLine } from './make-repo-public'
+import { EVERYTHING_RELEASES, EVERYTHING_TEXT, RUN_ERRORS, everythingCounts, notPublishedLine, othersLabel, refChoices, runErrorText, staysPrivateLine, unreadLine, wordsLine } from './make-repo-public'
 
 const census = (c: Partial<MakePublicCensus> = {}): MakePublicCensus => ({
   issues: 0,
@@ -24,7 +24,7 @@ const census = (c: Partial<MakePublicCensus> = {}): MakePublicCensus => ({
 const r = (name: string) => ({ name, oid: '0'.repeat(40) })
 
 describe('everythingCounts', () => {
-  it('lists the non-zero counts in dg everything_counts order, imported authors last', () => {
+  it('lists the non-zero counts in dg everything_counts order, imported authors last, and not private-era releases (they stay hidden)', () => {
     const check = {
       census: census({ issues: 180, comments: 1, revisions: 2, releases: 3, botRequests: 1, imported: [{ host: 'github.com', author: 'x' }, { host: 'gitlab.com', author: 'y' }, { host: 'github.com', author: 'z' }] }),
       allRefs: [r('refs/heads/main')],
@@ -32,7 +32,7 @@ describe('everythingCounts', () => {
       forced: 1,
     }
     expect(everythingCounts(check)).toBe(
-      '180 issues, 1 comment, 2 earlier edits, 1 live branch or tag, 2 deleted branches, 1 force-push, 3 releases, 1 request sent to bots, imported posts by 3 people from github.com, gitlab.com',
+      '180 issues, 1 comment, 2 earlier edits, 1 live branch or tag, 2 deleted branches, 1 force-push, 1 request sent to bots, imported posts by 3 people from github.com, gitlab.com',
     )
     expect(everythingCounts({ census: null, allRefs: [], deleted: 0, forced: 0 })).toBe('nothing written yet')
   })
@@ -102,3 +102,10 @@ describe('runErrorText (L6)', () => {
   })
 })
 
+
+describe('Everything and releases (MIXE-12)', () => {
+  it('does not list releases among what becomes public, and says private-era ones stay hidden', () => {
+    expect(EVERYTHING_TEXT).not.toMatch(/releases/)
+    expect(EVERYTHING_RELEASES).toBe('Releases made while the repo was private stay hidden.')
+  })
+})

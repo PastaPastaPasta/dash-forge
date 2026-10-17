@@ -62,7 +62,7 @@ jobs:
           python3 forge-contracts/schema/vectors.py --mainnet --out "$RUNNER_TEMP/mainnet-vectors"
           python3 forge-contracts/schema/wherecheck.py "$RUNNER_TEMP/mainnet"
           python3 forge-contracts/schema/wherecheck.py --self-test "$RUNNER_TEMP/mainnet"
-      # The toolchain platform v5.0.0-beta.6 pins (its rust-toolchain.toml)
+      # The toolchain platform v5.0.0-rc.3 pins (its rust-toolchain.toml)
       - name: Install Rust 1.98.1
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

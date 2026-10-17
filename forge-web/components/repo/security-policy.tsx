@@ -112,18 +112,24 @@ export function SecurityPolicyLink({ home, addr, load }: { home: RepoHome; addr:
   )
 }
 
+/** The new-issue hint on a repo where the writer can only post publicly, and where they can choose Members. */
+export const ISSUE_HINT_PUBLIC = 'Issues are public and permanent.'
+export const ISSUE_HINT_MEMBERS = 'Public issues are permanent; choose Members to keep it among members.'
+
 /**
  * The new-issue form's reminder (DESIGN §10): issues are public and permanent, so a vulnerability
  * goes by the policy, or to a maintainer privately when the repo has none. Shown for every
- * public repo. A private repo's issues are readable only by its members, so the sentence would be
+ * public repo; where the writer can choose Members (`membersOffered`: members-only content is on and
+ * they are a member) it says so, since a half-true "public" would hide that choice (MIXE-16).
+ * A private repo's issues are readable only by its members, so the sentence would be
  * false there, and its policy is never read: nothing is shown.
  */
-export function SecurityHint({ home, addr, enabled }: { home: RepoHome; addr: RepoAddress; enabled: boolean }): JSX.Element | null {
+export function SecurityHint({ home, addr, enabled, membersOffered = false }: { home: RepoHome; addr: RepoAddress; enabled: boolean; membersOffered?: boolean }): JSX.Element | null {
   const policy = useSecurityPolicy(home, enabled)
   if (home.repo.visibility === 'private') return null
   return (
     <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="security-hint">
-      Issues are public and permanent.
+      {membersOffered ? ISSUE_HINT_MEMBERS : ISSUE_HINT_PUBLIC}
       {policy === undefined ? null : policy === null ? (
         ' Reporting a vulnerability? Contact a maintainer privately.'
       ) : (

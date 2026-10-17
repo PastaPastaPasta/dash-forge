@@ -429,3 +429,36 @@ describe('failedRows: what the failure banner lists (QW-004)', () => {
     expect(failedRows(deriveTrust(inputs({ quorum: { state: 'single', primary: 'q', reason: 'no-second-source' } })))).toEqual([])
   })
 })
+
+describe('the privacy disclosure (FEAT-08)', () => {
+  it('has none for a repo that seals nothing, and never touches the headline', () => {
+    const open = deriveTrust(inputs({ deployed: true }))
+    expect(open.privacy).toBeNull()
+    const sealed = deriveTrust(inputs({ deployed: true, sealed: 'private' }))
+    expect(sealed.overall).toBe(open.overall)
+    expect(sealed.summary).toBe(open.summary)
+  })
+
+  it('says what a private repo encrypts and what an outsider still sees', () => {
+    const p = deriveTrust(inputs({ deployed: true, sealed: 'private' })).privacy!
+    expect(p).toMatchObject({ kind: 'private', title: 'Private content', label: 'Private' })
+    expect(p.detail).toMatch(/encrypted for the members/); expect(p.note).toMatch(/label names, check-run names/)
+    expect(p.note).toMatch(/who the members are/)
+    expect(p.note).toMatch(/Sizes and timing are visible/)
+  })
+
+  it('says only the Members items are encrypted in a public repo with members-only content', () => {
+    const p = deriveTrust(inputs({ deployed: true, sealed: 'members-only' })).privacy!
+    expect(p).toMatchObject({ kind: 'members-only', title: 'Members-only content', label: 'Members-only' })
+    expect(p.detail).toMatch(/Everything else in this repo is public/)
+    expect(p.note).toMatch(/sizes/)
+  })
+
+  it('says "not deployed" where the network has no Forge contracts, whatever the repo claims', () => {
+    for (const sealed of [undefined, 'private', 'members-only'] as const) {
+      const p = deriveTrust(inputs({ deployed: false, ...(sealed ? { sealed } : {}) })).privacy!
+      expect(p).toMatchObject({ kind: 'not-deployed', label: 'Not deployed' })
+      expect(p.detail).toMatch(/not available on Dash testnet/)
+    }
+  })
+})

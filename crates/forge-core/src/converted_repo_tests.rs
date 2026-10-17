@@ -19,7 +19,8 @@ use std::path::Path;
 
 use super::roundtrip_tests::{commit, git, index_pack};
 use crate::private::convert::{
-    open_vis, published_keys, skip_reason, ConfigStamp, Conversion, PublishedBundle, SkipReason,
+    epoch_key_bundles, history_cutoff, open_vis, published_keys, skip_reason, ConfigStamp,
+    Conversion, PublishedBundle, SkipReason,
 };
 use crate::private::epoch::{ConfigRow, MemberRow, WrapRow};
 use crate::private::{
@@ -84,6 +85,11 @@ struct Converted {
     later_comment: (DocHeader, Vec<u8>),
     /// The owner's make-public bundle (Everything mode only).
     bundle: Option<PublishedBundle>,
+    /// The seal-off epoch the configs state (`E'`).
+    seal_off: u32,
+    /// The epoch keys readers hold by a wrap: `(reader, epoch, key)`; the rest of each chain is
+    /// walked from there.
+    wraps: Vec<([u8; 32], u32, EpochKey)>,
 }
 
 fn config(
@@ -93,7 +99,19 @@ fn config(
     prev: Option<(u32, EpochKey)>,
     id: u8,
 ) -> ConfigRow {
-    let mut header = DocHeader::new(DocKind::Config, OWNER, epoch);
+    config_by(OWNER, epoch, k, height, prev, id)
+}
+
+/// [`config`] written by `author`.
+fn config_by(
+    author: [u8; 32],
+    epoch: u32,
+    k: &EpochKey,
+    height: u64,
+    prev: Option<(u32, EpochKey)>,
+    id: u8,
+) -> ConfigRow {
+    let mut header = DocHeader::new(DocKind::Config, author, epoch);
     header.vis = Visibility::Private;
     let mut f = Fields {
         default_branch: Some("refs/heads/main".into()),
@@ -105,7 +123,7 @@ fn config(
     }
     ConfigRow {
         id: [id; 32],
-        owner: OWNER,
+        owner: author,
         epoch,
         created_at_block_height: height,
         created_at: height * 1000,
@@ -231,6 +249,8 @@ fn build(everything: bool, src: &Path) -> Converted {
         new_comment: (comment.clone(), comment_enc.clone()),
         later_comment: (comment, later),
         bundle,
+        seal_off: 1,
+        wraps: vec![(MEMBER, 1, key(0x31))],
     }
 }
 
@@ -249,22 +269,24 @@ fn keys_of(repo: &Converted, reader: [u8; 32]) -> OpenContext {
 
 /// [`keys_of`]'s resolution.
 fn resolution_of(repo: &Converted, reader: [u8; 32]) -> crate::private::EpochResolution {
-    let wraps: Vec<WrapRow> = (reader == MEMBER)
-        .then(|| WrapRow {
+    let wraps: Vec<WrapRow> = repo
+        .wraps
+        .iter()
+        .filter(|(who, ..)| *who == reader)
+        .map(|(who, epoch, k)| WrapRow {
             id: [0xd1; 32],
             owner: OWNER,
-            member_id: MEMBER,
-            epoch: 1,
+            member_id: *who,
+            epoch: *epoch,
             recipient_key_id: 4,
             key_enabled: true,
-            key: Some(key(0x31)),
+            key: Some(k.clone()),
         })
-        .into_iter()
         .collect();
     let mut resolution = resolve_epochs(&REPO, &reader, &repo.members, &repo.configs, &wraps);
     let conversion =
         Conversion::of(true, &repo.stamps, |e| resolution.anchors.contains_key(&e)).unwrap();
-    assert_eq!(conversion.seal_off_epoch, Some(1));
+    assert_eq!(conversion.seal_off_epoch, Some(repo.seal_off));
     let (published, alerts) = published_keys(
         &REPO,
         &OWNER,
@@ -274,7 +296,7 @@ fn resolution_of(repo: &Converted, reader: [u8; 32]) -> crate::private::EpochRes
     );
     assert!(alerts.is_empty());
     assert!(
-        !published.contains_key(&1),
+        !published.contains_key(&repo.seal_off),
         "the seal-off epoch is never published"
     );
     resolution.add_published(&REPO, &repo.configs, published, alerts);
@@ -514,4 +536,223 @@ fn a_fork_plans_only_the_plaintext_packs() {
     let plan = crate::fork::plan_manifests(&manifests, &BTreeMap::new(), &sealed);
     assert_eq!(plan.len(), 1);
     assert_eq!(plan[0][0].pack_hash, manifests[1].pack_hash);
+}
+
+/// Another maintainer's identity, whose rotation lands between the owner's seal-off rotation and
+/// the flip.
+const MAINT: [u8; 32] = [0xa2; 32];
+
+/// A conversion whose seal-off rotation (epoch 1, the owner's, block 30) was followed by another
+/// maintainer's rotation (epoch 2, block 35) before the flip (the marker, block 40), so the
+/// configs state `E' = 2` while the run's own seal-off epoch is 1. No packs: this fixture is
+/// about documents and keys.
+struct Race {
+    repo: Converted,
+    /// An issue a member wrote under epoch 1 (v0x01, still private), after the owner's seal-off.
+    window: (DocHeader, Vec<u8>),
+}
+
+fn build_race() -> Race {
+    let (k0, k1, k2) = (key(0x30), key(0x31), key(0x32));
+    let (e0, e1, e2) = (
+        EpochKeys::derive(&REPO, 0, &k0),
+        EpochKeys::derive(&REPO, 1, &k1),
+        EpochKeys::derive(&REPO, 2, &k2),
+    );
+    let configs = vec![
+        config(0, &k0, 10, None, 0xc0),
+        config(1, &k1, 30, Some((0, k0.clone())), 0xc1), // the run's seal-off rotation
+        config_by(MAINT, 2, &k2, 35, Some((1, k1.clone())), 0xc2), // the other rotation
+    ];
+    let mut stamps: Vec<ConfigStamp> = configs
+        .iter()
+        .map(|c| ConfigStamp {
+            id: c.id,
+            epoch: Some(c.epoch),
+            private: true,
+            height: c.created_at_block_height,
+        })
+        .collect();
+    stamps.push(ConfigStamp {
+        id: [0xcf; 32],
+        epoch: None,
+        private: false,
+        height: MARKER,
+    });
+
+    let issue_at = |epoch: u32, author, number, height, keys: &EpochKeys, title: &str| {
+        let mut h = DocHeader::new(DocKind::Issue, author, epoch);
+        h.number = Some(number);
+        h.created_at_block_height = Some(height);
+        let enc = doc::seal(
+            keys,
+            &h,
+            &Fields {
+                title: Some(title.into()),
+                ..Fields::default()
+            },
+        )
+        .unwrap();
+        (h, enc)
+    };
+    let pre_seal = issue_at(0, OWNER, 1, 20, &e0, "pre seal-off");
+    let window = issue_at(1, MEMBER, 2, 32, &e1, "after the owner's seal-off");
+    let mut comment = DocHeader::new(DocKind::Comment, MEMBER, 2);
+    comment.vis = Visibility::Public;
+    comment.target_id = Some([0x33; 32]);
+    comment.created_at_block_height = Some(60);
+    let comment_enc = doc::seal_members(
+        &e2,
+        &comment,
+        &Fields {
+            body: Some("after the flip".into()),
+            ..Fields::default()
+        },
+    )
+    .unwrap();
+    let repo = Converted {
+        configs,
+        stamps,
+        members: vec![
+            MemberRow {
+                identity: OWNER,
+                role: Role::Maintainer,
+                created_at: 1,
+            },
+            MemberRow {
+                identity: MAINT,
+                role: Role::Maintainer,
+                created_at: 2,
+            },
+            MemberRow {
+                identity: MEMBER,
+                role: Role::Writer,
+                created_at: 3,
+            },
+        ],
+        packs: Vec::new(),
+        main: String::new(),
+        deleted: String::new(),
+        old_issue: pre_seal,
+        new_comment: (comment.clone(), comment_enc.clone()),
+        later_comment: (comment, comment_enc),
+        bundle: None,
+        seal_off: 2,
+        // the owner holds the current epoch's key, and the chain gives it the earlier ones
+        wraps: vec![(OWNER, 2, k2)],
+    };
+    Race { repo, window }
+}
+
+/// What a run publishes when it records `recorded` as its own seal-off epoch: the owner's keys
+/// below [`history_cutoff`] (as `Keyring::epoch_keys_below` takes them) in bundles, and the
+/// epochs of the 0x06 entries those carry.
+fn owner_bundles(repo: &Converted, recorded: Option<u32>) -> (Vec<PublishedBundle>, Vec<u32>) {
+    let conversion = Conversion::of(true, &repo.stamps, |e| {
+        repo.configs.iter().any(|c| c.epoch == e)
+    })
+    .unwrap();
+    let cutoff = history_cutoff(conversion.seal_off_epoch, recorded).unwrap();
+    let held: BTreeMap<u32, EpochKey> = resolution_of(repo, OWNER)
+        .keys
+        .into_iter()
+        .filter(|(e, _)| *e < cutoff)
+        .collect();
+    let bundles: Vec<PublishedBundle> = epoch_key_bundles(&REPO, &held)
+        .unwrap()
+        .into_iter()
+        .map(|bytes| PublishedBundle {
+            owner: OWNER,
+            bytes,
+        })
+        .collect();
+    let epochs = bundles
+        .iter()
+        .flat_map(|b| bundle::parse(&b.bytes).unwrap().entries)
+        .filter(|e| e.kind == bundle::ENTRY_EPOCH_KEY)
+        .map(|e| e.revision)
+        .collect();
+    (bundles, epochs)
+}
+
+/// A rotation by another maintainer between the owner's seal-off and the flip raises the stated
+/// seal-off epoch, but the run's own seal-off key is never published and nothing written under
+/// it opens for anyone who lacks it.
+#[test]
+fn a_rotation_racing_the_flip_never_publishes_the_runs_seal_off_key() {
+    let Race { mut repo, window } = build_race();
+    let existing = |e: u32| repo.configs.iter().any(|c| c.epoch == e);
+
+    // 1. the stated cutoff moved up
+    let conversion = Conversion::of(true, &repo.stamps, existing).unwrap();
+    assert_eq!(conversion.seal_off_epoch, Some(2));
+    // 2. the run recorded its own seal-off epoch, which is lower
+    assert_eq!(history_cutoff(Some(2), Some(1)), Some(1));
+    // 3. the owner holds all three epochs and publishes those below the cutoff
+    assert_eq!(
+        resolution_of(&repo, OWNER)
+            .keys
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    let (bundles, epochs) = owner_bundles(&repo, Some(1));
+    assert_eq!(epochs, vec![0]);
+
+    // 4. what a reader makes of them
+    let resolution = resolution_of(&repo, OWNER);
+    let (published, alerts) = published_keys(
+        &REPO,
+        &OWNER,
+        &conversion,
+        &resolution.anchors,
+        bundles.as_slice(),
+    );
+    assert!(alerts.is_empty());
+    assert_eq!(published.keys().copied().collect::<Vec<_>>(), vec![0]);
+    repo.bundle = Some(bundles.into_iter().next().unwrap());
+    // a stranger, and a member who holds no wrap for epochs 1 and 2
+    for reader in [STRANGER, MEMBER] {
+        let ctx = keys_of(&repo, reader);
+        assert_eq!(ctx.keys.keys().copied().collect::<Vec<_>>(), vec![0]);
+        assert!(matches!(
+            open(&ctx, &repo.old_issue, "private"),
+            Opened::Readable(f) if f.title.as_deref() == Some("pre seal-off")
+        ));
+        assert_eq!(
+            open(&ctx, &window, "private"),
+            Opened::Unreadable(Unreadable::NoKey),
+            "reader {reader:?}"
+        );
+        assert_eq!(
+            open(&ctx, &repo.new_comment, "public"),
+            Opened::Unreadable(Unreadable::NoKey),
+            "reader {reader:?}"
+        );
+    }
+}
+
+/// With no record of the run's seal-off (another machine resumes it), the cutoff is the stated
+/// one. Pinned until the cutoff is derived from the chain.
+#[test]
+fn a_rotation_racing_the_flip_record_lost_cutoff_is_stated() {
+    let Race { repo, .. } = build_race();
+    assert_eq!(history_cutoff(Some(2), None), Some(2));
+    let (bundles, epochs) = owner_bundles(&repo, None);
+    assert_eq!(epochs, vec![0, 1]);
+    // the reader's rule is "below the stated seal-off epoch", so it honours what the bundle holds
+    let conversion = Conversion::of(true, &repo.stamps, |e| {
+        repo.configs.iter().any(|c| c.epoch == e)
+    })
+    .unwrap();
+    let (published, alerts) = published_keys(
+        &REPO,
+        &OWNER,
+        &conversion,
+        &resolution_of(&repo, OWNER).anchors,
+        bundles.as_slice(),
+    );
+    assert!(alerts.is_empty());
+    assert_eq!(published.keys().copied().collect::<Vec<_>>(), vec![0, 1]);
 }

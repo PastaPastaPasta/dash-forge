@@ -189,9 +189,11 @@ cmd('auth keys add', 'A key added to the identity (a limited key, a browser key 
     'expiresAt': nl(I), 'replacedKeyId': nl(I), 'encryptionKeyId': nl(I), 'encryptionKeyIds': A(I), 'storedAt': S,
     'reply': ANY, 'warning': ANY, **GROUP,
 }, ['status', 'keyId'])
-cmd('auth keys disable', 'A key disabled on the identity.', {
-    'status': E('disabled', 'already_disabled'), 'keyId': I, 'cost': COST,
-}, ['status', 'keyId'])
+cmd('auth keys disable', 'A key (or, with --all-limited, every signing key but the master and the one in use) disabled on the identity.', {
+    'status': E('disabled', 'already_disabled', 'nothing_to_disable'), 'keyId': I, 'keyIds': A(I),
+    'keys': A(O({'keyId': I, 'kind': E('forge-limited', 'wallet-sign-in', 'ci-runner', 'other')}, ['keyId', 'kind'])),
+    'keptKeyId': nl(I), 'updates': I, 'cost': COST,
+}, ['status'])
 cmd('auth keys rotate', 'The encryption key rotated, and the repositories it was re-shared to.', {
     'status': E('added', 'replaced'), 'identityId': S, 'oldKeyIds': A(I), 'newKeyId': I,
     'repos': A(O({'repo': S, 'repoId': S, 'status': E('rotated', 'not_maintainer', 'failed'), 'detail': ANY})),

@@ -41,6 +41,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { Author } from '@/components/author'
+import { BetaBadge } from '@/components/ui/beta-badge'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -91,7 +92,7 @@ export function AgentsSection({
   const viewerRole = identity !== null && signer !== null && role.settled && role.error === null ? role.data : undefined
   const canAsk = (n: AccessNotice): boolean => viewerRole !== undefined && checkAsk(n, viewerRole, target.number, membersOnly, now) === null
   return (
-    <SidebarSection title="Agents" icon={Bot}>
+    <SidebarSection title="Agents" icon={Bot} badge={<BetaBadge feature="agents" />}>
       <ul className="space-y-2" data-testid="agents">
         {bots.map((e) => (
           <AgentRow key={e.id} entry={e} canAsk={canAsk(e.notice)} onAsk={() => setAsking(e)} />

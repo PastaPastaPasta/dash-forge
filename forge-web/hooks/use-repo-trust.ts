@@ -19,11 +19,13 @@ import {
   readGatewaysFor,
   subscribeContentChecks,
   type RepoHome,
+  type Sealed,
   type SelectedRef,
   type TrustInputs,
   type TrustReport,
 } from '@/lib/view'
 import { repoContractIds, repoKey } from '@/lib/repo'
+import { knownMembersKey } from '@/lib/repo/members-key-cache'
 import { useSdk } from '@/hooks/use-sdk'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { useTrustView } from '@/hooks/use-trust-view'
@@ -32,6 +34,18 @@ import { useTrustView } from '@/hooks/use-trust-view'
 function pinnedTip(pinned: string, home: RepoHome): TrustInputs['tip'] {
   const at = pinnedAt(pinned, home.branches, home.tags, home.defaultBranch)
   return at === undefined ? { pinned } : { pinned, at }
+}
+
+/**
+ * What this repo encrypts: everything in a private repo; the Members items of a public one whose
+ * members key is known (the viewer holds a session, saw members-only refs, or the page's config
+ * read met a sealed anchor). A public repo whose key is not known yet shows no disclosure rather
+ * than a guess.
+ */
+export function sealedOf(home: RepoHome): Sealed | undefined {
+  if (home.repo.visibility === 'private') return 'private'
+  const lane = home.lane !== undefined && home.lane.access !== 'none'
+  return lane || home.membersOnlyRefs === true || knownMembersKey(home.repo.repoId) === true ? 'members-only' : undefined
 }
 
 export function useRepoTrust(home: RepoHome, selected: SelectedRef): TrustReport {
@@ -49,6 +63,7 @@ export function useRepoTrust(home: RepoHome, selected: SelectedRef): TrustReport
     () => contentChecks(key),
     () => NO_CONTENT_CHECKS,
   )
+  const sealed = sealedOf(home)
   return deriveTrust({
     network,
     connection,
@@ -59,5 +74,6 @@ export function useRepoTrust(home: RepoHome, selected: SelectedRef): TrustReport
     configuredBackend: home.backend.kind,
     configuredUris: home.backend.uris,
     gateways: readGatewaysFor(key),
+    ...(sealed ? { sealed } : {}),
   })
 }
