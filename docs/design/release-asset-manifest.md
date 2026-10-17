@@ -1,6 +1,6 @@
 # Release asset manifests: unlimited assets per release (proposal for the fresh registration)
 
-**Status:** proposal, for the forge-core registration after the moutai wipe (and mainnet's first registration). Nothing here changes the contracts registered on moutai today. Those stay as they are until the chain goes away.
+**Status:** adopted. The committed forge-core carries `release.assetManifest` (`forge-contracts/contracts/forge-core.json`), and the manifest kind was renumbered from 3 to 4 in the RC1 registration (`forge-web/lib/constants.ts`); the text below is the proposal it was built from, so numbers and kinds in it may differ from the contract. Importer follow-ups are in `BACKLOG.md`.
 
 **Why.** A `release` lists its assets in `assets`, one JSON string of at most 4,096 bytes. An imported asset entry (name, SHA-256, size, one URI) is about 255 bytes, so a release holds about 16. The showcase rebuild on moutai beta.6 (2026-09-28) hit the limit on 7 of its 15 mirrors:
 

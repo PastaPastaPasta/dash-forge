@@ -1,6 +1,6 @@
 # CI: what the next contract registration should change
 
-Status: wishes for the fresh registration after the next moutai wipe (see `dash-forge-qa/design/STATE-COUNTS.md`, which moves `checkRun`, `webhook` and `policy` into a new **forge-community** contract). Nothing here is deployed. Today's clients are built against the current forge-collab `checkRun` and forge-core `runner` (platform-parity-spec §6.2, §6.4). Every contract lookup in `forge_core::ci` and `forge-web/lib/repo/checks.ts` goes through the repo's `ForgeIds` / `repoSource`, so moving `checkRun` to forge-community is a deployment-file change plus one line in `CORE_TYPES` (web).
+Status: wishes written ahead of the fresh registration; the registered set moved `checkRun`, `webhook`, `policy` and `runner` into **forge-community** ([contracts/forge-v2.md](../contracts/forge-v2.md) says what the committed contracts carry). An item below that is not in `forge-contracts/contracts/` was not adopted. Today's clients are built against the current forge-collab `checkRun` and forge-core `runner` (platform-parity-spec §6.2, §6.4). Every contract lookup in `forge_core::ci` and `forge-web/lib/repo/checks.ts` goes through the repo's `ForgeIds` / `repoSource`, so moving `checkRun` to forge-community is a deployment-file change plus one line in `CORE_TYPES` (web).
 
 Each item says whether the protocol can do it (checked against `dashpay/platform` v4.2.0-beta.6) and why it matters.
 
