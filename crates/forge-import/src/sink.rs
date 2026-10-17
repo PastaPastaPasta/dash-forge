@@ -478,8 +478,8 @@ pub struct Sink<'a, C: Chain> {
     /// The signer (copied from the ledger: read on every item).
     signer: Option<String>,
     dry_run: bool,
-    /// The git data a merge commit's ancestry is checked in, when this run has any (see
-    /// [`Sink::merge_proof`]).
+    /// The git data for merge proofs and public releases' peeled tag targets, when this run
+    /// has any (see [`Sink::merge_proof`]).
     mirror: Option<ProofRepo>,
     caches: Mutex<Caches>,
     /// Lanes for the items' dependent writes (1: one write at a time).
@@ -812,7 +812,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         self
     }
 
-    /// Check merge commits against the git data in `proof` (see [`Sink::merge_proof`]).
+    /// Use `proof` for merge checks and public releases' peeled tag targets.
     #[must_use]
     pub fn with_mirror(mut self, proof: Option<ProofRepo>) -> Self {
         self.mirror = proof;
@@ -1683,6 +1683,24 @@ impl<'a, C: Chain> Sink<'a, C> {
             {
                 continue;
             }
+            // A public publish must name its tag's commit on the four-contract set
+            // (`targetOnPublish`). Peel annotated tags, and use the full tag ref so a branch
+            // with the same name cannot stand in for a missing tag. forge-core omits this
+            // field on older contracts that do not declare it.
+            let tag_ref = format!("refs/tags/{}", r.tag_name);
+            let Some(target_oid) = self
+                .mirror
+                .as_ref()
+                .and_then(|mirror| crate::gitsync::local_tip(&mirror.dir, &tag_ref))
+            else {
+                self.ledger().skip(format!(
+                    "release {} not mirrored this run: {tag_ref} cannot be resolved to a commit \
+                     in the local mirror; sync code with --work-dir first, then reuse that \
+                     directory for releases",
+                    r.tag_name
+                ));
+                continue;
+            };
             // Counted and warned for the releases this run writes (a re-run that finds them
             // unchanged says nothing again).
             let unhashed = assets_in.iter().filter(|a| a.sha256.is_empty()).count();
@@ -1705,6 +1723,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                 notes,
                 yanked: Some(false),
                 assets: assets_in,
+                target_oid: Some(target_oid),
                 ..ReleaseInput::default()
             };
             self.write_release(r, &input, assets.len()).await?;

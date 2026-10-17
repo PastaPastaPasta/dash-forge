@@ -647,8 +647,9 @@ pub(crate) fn planned_pushes(classes: Classes, open: Option<&[u64]>) -> Vec<Refs
 /// base branches of the merged PRs are fetched: into the `--work-dir` mirror when a code run
 /// left one there (whole commits, like the mirror's own), or else into a commits-only
 /// repository in a temporary directory, never inside `--work-dir`, so a later code run can
-/// still clone its mirror there. `None` (warned) when no merged PR needs a proof, or nothing
-/// could be fetched.
+/// still clone its mirror there. Releases also reuse an existing work mirror to peel their
+/// tags when no merged PR needs a proof. Returns `None` without either, or (warned) when no
+/// base could be fetched.
 fn proof_repo(
     classes: Classes,
     src: &dyn Source,
@@ -671,7 +672,17 @@ fn proof_repo(
         .filter_map(|t| t.patch.as_ref().map(|p| p.base_ref_name.clone()))
         .collect();
     if bases.is_empty() {
-        return (None, None);
+        let mirror = (work.join("HEAD").exists()
+            && collab
+                .releases
+                .as_ref()
+                .is_some_and(|releases| !releases.is_empty()))
+        .then(|| ProofRepo {
+            dir: work.to_path_buf(),
+            pushed: false,
+            unfetched: BTreeMap::new(),
+        });
+        return (mirror, None);
     }
     let bases: Vec<String> = bases.into_iter().collect();
     // A full mirror takes a full fetch (it must never become a partial clone); anything else
@@ -940,6 +951,32 @@ mod tests {
             &mut warnings,
         );
         assert!(code.is_some_and(|p| p.pushed && p.dir == work));
+        // A releases-only pass still needs that mirror to peel tag targets, even though
+        // there are no merged PR bases to fetch.
+        let releases = crate::model::SrcCollab {
+            releases: Some(vec![crate::model::SrcRelease {
+                tag_name: "v1".into(),
+                name: String::new(),
+                notes: String::new(),
+                assets: Vec::new(),
+                omitted: Vec::new(),
+                source_url: String::new(),
+                published: None,
+            }]),
+            ..Default::default()
+        };
+        let release_classes = Classes::parse("releases").unwrap();
+        let (mirror, guard) = proof_repo(release_classes, &source, &work, &releases, &mut warnings);
+        assert!(mirror.is_some_and(|p| !p.pushed && p.dir == work));
+        assert!(guard.is_none());
+        let absent = tmp.path().join("no-mirror.git");
+        let (mirror, guard) =
+            proof_repo(release_classes, &source, &absent, &releases, &mut warnings);
+        assert!(mirror.is_none() && guard.is_none());
+        assert!(
+            !absent.exists(),
+            "a release pass does not fetch or push code"
+        );
         // With the code run's mirror there, a later issues/PRs run fetches into it (whole
         // commits, never a partial clone) and removes nothing.
         let (proof, guard) = proof_repo(issues_prs, &source, &work, &collab, &mut warnings);
