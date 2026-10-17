@@ -229,3 +229,14 @@ jobs:
         run: |
           node --test forge-contracts/scripts/lib/deployments.test.mjs forge-contracts/scripts/lib/freeze-registered.test.mjs
           node forge-contracts/scripts/check-release-network.mjs --self-test
+      # Offline: which network and record a live tool targets, and the production-write policy
+      # (rc1-live, mv-live, rc1-empty-aggregates and rc1-fee-probe refuse the live testnet and
+      # mainnet records; QA-14), and mv-live's sealing helpers against the committed vectors
+      - name: Live tool targets and production refusals
+        run: |
+          node --test forge-contracts/scripts/lib/target.test.mjs
+          node forge-contracts/scripts/mv-live.mjs --self-test
+          for t in rc1-live mv-live rc1-empty-aggregates rc1-fee-probe; do
+            node forge-contracts/scripts/$t.mjs --network testnet --identities /nonexistent --identity /nonexistent 2>&1 | grep -q 'refusing to run against a live registration' \
+              || { echo "$t did not refuse the live testnet record"; exit 1; }
+          done

@@ -200,7 +200,7 @@ try {
   if (!target.liveTarget) {
     if (!target.scratch) {
       throw new Error(target.production
-        ? `no --record: ${target.liveFile} is the live ${target.network} registration, which this suite refuses (QA-14). Pass --record <scratch-record.json>, or --live-target for the smoke subset`
+        ? `refusing to run against a live registration (no --record): ${target.liveFile} is the live ${target.network} registration, and this suite writes permanent documents (QA-14). Pass --record <scratch-record.json>, or --live-target for the smoke subset`
         : '--record <scratch-record.json> is required');
     }
     refuseProduction(target, 'The smoke subset on the live registration needs --live-target (no --record).');
