@@ -57,8 +57,25 @@ describe('the status of making a repo public', () => {
     expect(sealed.doneCount).toBe(2)
     expect(sealed.lastStepAt).toBe(9_000)
     expect(sealed.record?.refs.map((r) => r.name)).toEqual([MAIN, DEV])
-    // someone rotated after it: the seal-off runs again
-    expect(statusOf(facts({ visibility: 'private', highestEpoch: 4, record: record({ sealOff: 3 }) })).steps.sealOff).toBe('todo')
+    expect(sealed.sealOffPassed).toBe(false)
+    // someone rotated after it: that run can't be finished, only started again
+    const keys = (currentEpoch: number, burned: number[] = []) => ({ currentEpoch, burned: new Set(burned) })
+    const passed = statusOf(facts({ visibility: 'private', highestEpoch: 4, keys: keys(4), record: record({ sealOff: 3 }) }))
+    expect(passed.steps.sealOff).toBe('todo')
+    expect(passed.sealOffPassed).toBe(true)
+    // decided from the keys as the run reads them: a config stating a later epoch alone passes nothing
+    expect(statusOf(facts({ visibility: 'private', highestEpoch: 4, keys: keys(3), record: record({ sealOff: 3 }) })).sealOffPassed).toBe(false)
+    expect(statusOf(facts({ visibility: 'private', highestEpoch: 4, record: record({ sealOff: 3 }) })).sealOffPassed).toBe(false)
+    // a node behind the recorded rotation, or no rotation yet: nothing passed
+    expect(statusOf(facts({ visibility: 'private', highestEpoch: 2, keys: keys(2), record: record({ sealOff: 3 }) })).sealOffPassed).toBe(false)
+    expect(statusOf(facts({ visibility: 'private', highestEpoch: 4, keys: keys(4), record: record() })).sealOffPassed).toBe(false)
+    // a rotation that landed unrecorded counts as the run's: done while current, passed after another
+    const lost = record({ sealOff: null, sealOffFrom: 2 })
+    expect(statusOf(facts({ visibility: 'private', highestEpoch: 3, keys: keys(3), record: lost })).steps.sealOff).toBe('done')
+    expect(statusOf(facts({ visibility: 'private', highestEpoch: 4, keys: keys(4), record: lost })).sealOffPassed).toBe(true)
+    expect(statusOf(facts({ visibility: 'private', highestEpoch: 4, keys: keys(4, [3]), record: lost })).sealOffPassed).toBe(false)
+    // once public, the boundary is the chain's
+    expect(statusOf(facts({ conversion: { sealOffEpoch: 3, markerHeight: null }, highestEpoch: 5, record: record({ sealOff: 3 }) })).sealOffPassed).toBe(false)
   })
 
   it('a repo never private is simply public', () => {

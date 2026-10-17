@@ -124,6 +124,37 @@ impl GitState {
         }
     }
 
+    /// The state with only the ref updates sealed under an epoch below `below` (the seal-off
+    /// epoch of a repository being made public), every config kept: what the private era's refs
+    /// are read from, so a branch or tag written during or after the conversion is never
+    /// published (mixed-visibility DESIGN §4.10). An update stating no epoch is kept, as the web
+    /// keeps it (`sealedBelow` in `make-public-check.ts`): it never opens with a member's keys.
+    #[must_use]
+    pub fn sealed_below(&self, below: u32) -> Self {
+        let keep = |rows: &[FetchedDocument]| -> Vec<FetchedDocument> {
+            rows.iter()
+                .filter(|d| update_epoch(d).is_none_or(|e| e < u64::from(below)))
+                .cloned()
+                .collect()
+        };
+        Self {
+            ref_updates: keep(&self.ref_updates),
+            protected_ref_updates: keep(&self.protected_ref_updates),
+            configs: self.configs.clone(),
+        }
+    }
+
+    /// How many ref updates state epoch `from` or a later one, as stored (an estimate: none is
+    /// opened, so a malformed one counts too).
+    #[must_use]
+    pub fn sealed_from_count(&self, from: u32) -> usize {
+        self.ref_updates
+            .iter()
+            .chain(&self.protected_ref_updates)
+            .filter(|d| update_epoch(d).is_some_and(|e| e >= u64::from(from)))
+            .count()
+    }
+
     /// The well-formed public updates, each with its `protected` flag and `refNameHash`.
     fn updates(&self) -> impl Iterator<Item = (&FetchedDocument, bool, [u8; 32])> {
         [
@@ -263,8 +294,26 @@ pub async fn read_private_refs(
     scope: &DocScope,
     keyring: &crate::keyring::Keyring,
 ) -> Result<Vec<(String, crate::rules::RefState)>> {
+    read_private_refs_below(client, contract, scope, keyring, None).await
+}
+
+/// [`read_private_refs`] over the updates sealed below `below` alone, when given
+/// ([`GitState::sealed_below`]): a private repository's refs as they stood before its seal-off
+/// rotation, what making it public publishes.
+pub async fn read_private_refs_below(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+    keyring: &crate::keyring::Keyring,
+    below: Option<u32>,
+) -> Result<Vec<(String, crate::rules::RefState)>> {
     let configs = &keyring.config().history;
     let state = read_git_state(client, contract, scope, Freshness::Now).await?;
+    // what was sealed at or after the boundary is never read, so it can't stop the read either
+    let state = match below {
+        Some(b) => state.sealed_below(b),
+        None => state,
+    };
     // QW4-012: ref updates newer than every one this reader opens, under a key it was never
     // given (a removed member's clone after a rotation), would leave the refs listed here
     // silently out of date: `git fetch` said "Already up to date". Refused instead (E307).
@@ -961,6 +1010,11 @@ pub fn stale_by_epoch(rows: &[(u64, UpdateSeen)]) -> Option<u32> {
         .map(|(_, epoch)| epoch)
 }
 
+/// The key epoch a sealed ref update states, if any.
+fn update_epoch(d: &FetchedDocument) -> Option<u64> {
+    d.field_u64("epoch")
+}
+
 /// [`stale_by_epoch`] over a private repository's ref updates as `keyring` opens them.
 pub fn newer_unreadable_epoch(state: &GitState, keyring: &crate::keyring::Keyring) -> Option<u32> {
     use crate::private::{DocKind, Opened, Unreadable};
@@ -1443,6 +1497,33 @@ mod tests {
             revision: None,
             fields,
         }
+    }
+
+    /// A repository being made public keeps the ref updates sealed below its seal-off epoch,
+    /// as the web does (`sealedBelow`): at or above it they were written during or after the
+    /// conversion. An update stating no epoch is kept; every config is.
+    #[test]
+    fn the_private_era_is_what_was_sealed_below_the_seal_off() {
+        let at = |id: u32, epoch: Option<u64>| {
+            let mut d = update("refs/heads/main", id, u64::from(id), 0, 1);
+            if let Some(e) = epoch {
+                d.fields.insert("epoch".into(), FieldValue::Integer(e));
+            }
+            d
+        };
+        let state = GitState {
+            ref_updates: vec![at(1, Some(0)), at(2, Some(2)), at(3, Some(3)), at(4, None)],
+            protected_ref_updates: vec![at(5, Some(1)), at(6, Some(4))],
+            configs: vec![at(7, Some(9))],
+        };
+        let kept = state.sealed_below(3);
+        let ids = |rows: &[FetchedDocument]| rows.iter().map(|d| d.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&kept.ref_updates), ["id00001", "id00002", "id00004"]);
+        assert_eq!(ids(&kept.protected_ref_updates), ["id00005"]);
+        assert_eq!(kept.configs.len(), 1);
+        assert_eq!(state.sealed_from_count(3), 2);
+        assert_eq!(state.sealed_from_count(0), 5);
+        assert_eq!(state.sealed_below(0).ref_updates.len(), 1);
     }
 
     /// The fold's input is independent of how the rows were assembled: rows in delta order

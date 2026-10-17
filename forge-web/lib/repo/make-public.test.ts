@@ -17,6 +17,7 @@ import {
   MakePublicError,
   cutoffOf,
   REF_FIRST_CREDITS,
+  withinBoundary,
   defaultCodeRefs,
   deleteMakePublicRecord,
   estimateMakePublic,
@@ -166,7 +167,10 @@ describe("the run's local record", () => {
   it('round-trips, is per network, signer and repo, and one that cannot be read is an error, never "none"', async () => {
     expect(await loadMakePublicRecord('devnet', 'S', 'R')).toBeNull()
     await saveMakePublicRecord('devnet', 'S', 'R', { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, startedAt: 5 })
-    expect(await loadMakePublicRecord('devnet', 'S', 'R')).toEqual({ mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, startedAt: 5 })
+    // a record kept without the rotation's start reads it as none
+    expect(await loadMakePublicRecord('devnet', 'S', 'R')).toEqual({ mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, sealOffFrom: null, startedAt: 5 })
+    await saveMakePublicRecord('devnet', 'S', 'R', { mode: 'codeOnly', refs: [], sealOff: null, sealOffFrom: 2, startedAt: 5 })
+    expect((await loadMakePublicRecord('devnet', 'S', 'R'))?.sealOffFrom).toBe(2)
     expect(await loadMakePublicRecord('devnet', 'S', 'X')).toBeNull()
     expect(await loadMakePublicRecord('testnet', 'S', 'R')).toBeNull()
     // another identity signed in on this browser never continues it
@@ -176,6 +180,8 @@ describe("the run's local record", () => {
     // a record from before the signer was part of the key is ignored
     await idbPut('journal', 'make-public:devnet:R', { mode: 'codeOnly', refs: [], sealOff: 3, startedAt: 5 })
     expect(await loadMakePublicRecord('devnet', 'S', 'R')).toBeNull()
+    await idbPut('journal', 'make-public:devnet:S:R', { mode: 'codeOnly', refs: [], sealOff: null, sealOffFrom: -1, startedAt: 5 })
+    await expect(loadMakePublicRecord('devnet', 'S', 'R')).rejects.toThrow(MakePublicError)
     await idbPut('journal', 'make-public:devnet:S:R', { mode: 'all', refs: 'x' })
     await expect(loadMakePublicRecord('devnet', 'S', 'R')).rejects.toThrow(MakePublicError)
   })
@@ -207,3 +213,16 @@ describe('one cutoff, and the same refs', () => {
   })
 })
 
+describe('a recorded choice and the boundary (dg within_boundary)', () => {
+  it('keeps a ref at its tip before the boundary or an earlier commit of it, drops the rest', async () => {
+    const r = (name: string, oid: string) => ({ name, oid })
+    const all = [r('refs/heads/main', 'b'), r('refs/tags/v1', 't')]
+    // b's history is a, b; c came after the boundary
+    const ancestor = async (x: string, y: string) => x === 'a' && y === 'b'
+    expect(await withinBoundary([r('refs/heads/main', 'a'), r('refs/tags/v1', 't'), r('refs/heads/late', 'z')], all, ancestor)).toEqual({
+      kept: [r('refs/heads/main', 'a'), r('refs/tags/v1', 't')],
+      dropped: ['refs/heads/late'],
+    })
+    expect(await withinBoundary([r('refs/heads/main', 'c')], all, ancestor)).toEqual({ kept: [], dropped: ['refs/heads/main'] })
+  })
+})

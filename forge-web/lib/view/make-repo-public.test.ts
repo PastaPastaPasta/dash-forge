@@ -85,7 +85,7 @@ describe('runErrorText (L6)', () => {
   })
 
   it("keeps the run's own refusals, and a raw reason only without internal words", () => {
-    expect(runErrorText(new MakePublicError(COPY.keyChanged, 'E310'))).toBe(COPY.keyChanged)
+    expect(runErrorText(new MakePublicError(COPY.sealOffPassed('everything'), 'E310'))).toBe(COPY.sealOffPassed('everything'))
     expect(runErrorText(new Error('a node timed out\nat stack'))).toBe("That step didn't finish: a node timed out")
     expect(runErrorText(new Error('a node timed out'), "The check didn't finish")).toBe("The check didn't finish: a node timed out")
     for (const raw of ['key epoch 7 needs burning too', 'the anchor is missing', 'sealed artifact: noKey', 'the lane is closed', 'wrap not found', 'E310 something']) {
@@ -98,7 +98,7 @@ describe('runErrorText (L6)', () => {
   })
 
   it('every fixed message is free of internal words', () => {
-    for (const m of [...Object.values(RUN_ERRORS), COPY.lagging, COPY.keyChanged, COPY.sayRefs]) expect(m).not.toMatch(BANNED)
+    for (const m of [...Object.values(RUN_ERRORS), COPY.lagging, COPY.sealOffPassed('everything'), COPY.sealOffPassed('codeOnly'), COPY.startOver(Date.UTC(2026, 9, 1), 'everything'), COPY.startOver(null, 'codeOnly'), COPY.boundaryKept, COPY.sayRefs]) expect(m).not.toMatch(BANNED)
   })
 })
 

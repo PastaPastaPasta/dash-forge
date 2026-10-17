@@ -62,6 +62,18 @@ pub struct PacksRead {
     pub unfetched: usize,
     /// Fetched, but not opened.
     pub unopened: usize,
+    /// Sealed under the seal-off epoch or a later one: left out, never opened.
+    pub after: usize,
+}
+
+/// Whether stored pack bytes `head` are not sealed under `below` or a later epoch (always, with
+/// no `below`). The web keeps the same packs (`openPrivateEraPacks`).
+#[must_use]
+pub fn sealed_below(head: &[u8], below: Option<u32>) -> bool {
+    match (crate::private::sniff(head), below) {
+        (crate::private::Head::Sealed { epoch }, Some(b)) => epoch < b,
+        _ => true,
+    }
 }
 
 /// The refusal of a network whose contract keeps a repository's visibility as it was created, so
@@ -1357,9 +1369,30 @@ impl<'a> RepoService<'a> {
         .ok()
     }
 
+    /// [`Self::conversion`] with the seal-off epoch taken among anchored epochs only, as readers
+    /// take it ([`Keyring::conversion`]), so a private config stating an epoch that never existed
+    /// can't raise it: what a run making `repo` public publishes below. Loads the published keys
+    /// (cached on this service) for a repository made public; one never private reads only its
+    /// configs.
+    pub async fn anchored_conversion(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Option<crate::private::convert::Conversion>> {
+        if self.conversion(repo).await?.is_none() {
+            return Ok(None);
+        }
+        let client = self.client;
+        Ok(cached_keyring(&self.published, repo, || async move {
+            Keyring::load_anonymous(client, repo).await
+        })
+        .await?
+        .conversion())
+    }
+
     /// Whether PUBLIC `repo` was made public, and its conversion facts (§18), from its config
     /// documents alone (one query: a repository has few). `None` for a repository that never was
-    /// private, and for a private one.
+    /// private, and for a private one. The seal-off epoch counts every stated epoch; a run making
+    /// it public reads [`Self::anchored_conversion`].
     pub async fn conversion(
         &self,
         repo: &RepoRef,
@@ -1980,11 +2013,29 @@ impl<'a> RepoService<'a> {
     /// fast-forward supersession via `prevOid` still resolves, but descend-detection is
     /// deferred to the push-side pipeline that has the object store.
     pub async fn read_refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
+        self.read_refs_below(repo, None).await
+    }
+
+    /// [`Self::read_refs`], and for a PRIVATE `repo` with `below`, from the ref updates sealed
+    /// below that epoch alone ([`crate::refs::GitState::sealed_below`]): the refs a repository
+    /// being made public had before its seal-off rotation (DESIGN §4.10).
+    pub async fn read_refs_below(
+        &self,
+        repo: &RepoRef,
+        below: Option<u32>,
+    ) -> Result<Vec<(String, RefState)>> {
         let (scope, contract) = self.readable(repo).await?;
         if repo.visibility == Visibility::Private {
             let kr = self.keyring(repo).await?;
             kr.require_key(repo)?; // no key at all: say so, rather than list nothing
-            return crate::refs::read_private_refs(self.client, &contract, &scope, &kr).await;
+            return crate::refs::read_private_refs_below(
+                self.client,
+                &contract,
+                &scope,
+                &kr,
+                below,
+            )
+            .await;
         }
         let state = crate::refs::read_git_state(
             self.client,
@@ -1994,6 +2045,20 @@ impl<'a> RepoService<'a> {
         )
         .await?;
         Ok(crate::refs::public_refs(&state))
+    }
+
+    /// How many of PRIVATE `repo`'s ref updates are sealed under epoch `from` or a later one
+    /// ([`crate::refs::GitState::sealed_from_count`]).
+    pub async fn ref_updates_sealed_from(&self, repo: &RepoRef, from: u32) -> Result<usize> {
+        let (scope, contract) = self.readable(repo).await?;
+        Ok(crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Now,
+        )
+        .await?
+        .sealed_from_count(from))
     }
 
     /// PUBLIC `repo`'s git-data history read now ([`crate::refs::read_git_state`]): what
@@ -2965,10 +3030,13 @@ impl<'a> RepoService<'a> {
     /// these are its private-era packs opened with the member's own keys: what making it public
     /// builds its fresh public pack from and scans for secrets (mixed-visibility DESIGN §4.10).
     /// A plaintext pack seen through the private view was pushed after the conversion: public
-    /// already, and left out. What it could not read is counted, never fatal.
+    /// already, and left out; with `below` (the seal-off epoch), so is one sealed under it or a
+    /// later epoch ([`sealed_below`]: written during or after the conversion, never published).
+    /// What it could not read is counted, never fatal.
     pub async fn open_git_packs(
         &self,
         repo: &RepoRef,
+        below: Option<u32>,
         mut each: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<PacksRead> {
         let contract = self.repo_contract(repo).await?;
@@ -2997,6 +3065,10 @@ impl<'a> RepoService<'a> {
                     crate::private::Head::Plain | crate::private::Head::Short
                 )
             {
+                continue;
+            }
+            if !sealed_below(&bytes, below) {
+                out.after += 1;
                 continue;
             }
             match self
@@ -5967,6 +6039,30 @@ fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// With a seal-off epoch, the private era's packs are those sealed below it; a plaintext
+    /// head or one too short to tell is judged as before (the web keeps the same:
+    /// `openPrivateEraPacks`).
+    #[test]
+    fn the_private_eras_packs_are_those_sealed_below_the_seal_off() {
+        use crate::private::{pack, EpochKey, EpochKeys};
+        let sealed = |e: u32| {
+            pack::seal(
+                &EpochKeys::derive(
+                    &[7; 32],
+                    e,
+                    &EpochKey::from_bytes([u8::try_from(e).unwrap(); 32]),
+                ),
+                b"PACK",
+            )
+            .unwrap()
+        };
+        assert!(super::sealed_below(&sealed(2), Some(3)));
+        assert!(!super::sealed_below(&sealed(3), Some(3)));
+        assert!(!super::sealed_below(&sealed(4), Some(3)));
+        assert!(super::sealed_below(&sealed(4), None));
+        assert!(super::sealed_below(b"PACK\0\0\0\x02", Some(0)));
+    }
+
     use super::{
         current_protected_patterns, group_by_hash, live_locator_manifests, locator_pack_space,
         order_copies, plan_push_index, read_push_index_plan, refuse_raced_push, repack_remaining,

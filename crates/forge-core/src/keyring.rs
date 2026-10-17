@@ -756,6 +756,13 @@ impl Keyring {
         .into()
     }
 
+    /// A repository made public (§18): its conversion facts, the seal-off epoch taken among
+    /// anchored epochs only, as readers take it. `None` for one never private, or private now.
+    #[must_use]
+    pub fn conversion(&self) -> Option<crate::private::convert::Conversion> {
+        self.conversion
+    }
+
     /// The resolution: epochs, anchors, alerts, the repair check.
     pub fn resolution(&self) -> &EpochResolution {
         &self.resolution
@@ -2460,8 +2467,12 @@ fn pending_key(kr: &Keyring, me: [u8; 32], epoch: u32) -> Option<EpochKey> {
 }
 
 /// A crash injected for the e2e suite (`DASH_FORGE_TEST_FAULT=<point>`), honoured only in debug
-/// builds: the rotation stops at `point` as if the process died there.
-fn test_fault(point: &str) -> Result<()> {
+/// builds: the step stops at `point` as if the process died there.
+///
+/// # Errors
+///
+/// At `point`, in a debug build with the variable set to it.
+pub fn test_fault(point: &str) -> Result<()> {
     if cfg!(debug_assertions) && std::env::var("DASH_FORGE_TEST_FAULT").is_ok_and(|p| p == point) {
         return Err(Error::Config(format!("test fault injected at {point}")));
     }

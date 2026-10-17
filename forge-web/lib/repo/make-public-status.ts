@@ -25,7 +25,9 @@ import {
   MAKE_PUBLIC_STEPS,
   MAKE_PUBLIC_TOTAL_STEPS,
   loadMakePublicRecord,
+  recordedSealOff,
   refsOfRecord,
+  sealOffPassed,
   unpublishedRefs,
   type MakePublicRecord,
   type MakePublicStatus,
@@ -45,6 +47,11 @@ export interface StatusFacts {
   readonly record: MakePublicRecord | null
   /** The highest key epoch any `config` states (the current one, while private). */
   readonly highestEpoch: number | null
+  /**
+   * The reader's resolution of the keys, when it holds a session: the current epoch and the burned
+   * ones. Whether a recorded run's boundary is passed is decided from it alone, as the run decides.
+   */
+  readonly keys?: { readonly currentEpoch: number | null; readonly burned: ReadonlySet<number> } | null
   /** When the config of the recorded seal-off epoch was written (ms), when known. */
   readonly sealOffAt: number | null
   /** The `repo` document's last change (ms): the flip, once public. */
@@ -63,14 +70,18 @@ export interface StatusFacts {
 
 /** The status a run's facts show (module docs). */
 export function statusOf(f: StatusFacts): MakePublicStatus {
-  const record = f.record === null ? null : { mode: f.record.mode, refs: refsOfRecord(f.record), sealOff: f.record.sealOff }
+  // a seal-off rotation that landed unrecorded counts as the run's (the run finds it again)
+  const seal = f.record === null ? null : recordedSealOff(f.record.sealOff, f.record.sealOffFrom, f.keys?.currentEpoch ?? null, f.keys?.burned)
+  const record = f.record === null ? null : { mode: f.record.mode, refs: refsOfRecord(f.record), sealOff: seal, sealOffAt: f.sealOffAt }
   const mode = f.record?.mode ?? (f.historyBundles.length > 0 ? 'everything' : null)
   const steps = (s: Partial<Record<MakePublicStep, StepState>>, fill: StepState): Record<MakePublicStep, StepState> =>
     Object.fromEntries(MAKE_PUBLIC_STEPS.map((k) => [k, s[k] ?? fill])) as Record<MakePublicStep, StepState>
   const count = (phase: MakePublicStatus['phase'], st: Record<MakePublicStep, StepState>, confirmed: boolean): number =>
     (confirmed ? 1 : 0) + MAKE_PUBLIC_STEPS.filter((k) => st[k] === 'done' || (phase === 'public' && st[k] === 'skipped')).length
   if (f.visibility === 'private') {
-    const sealed = f.record?.sealOff != null && f.record.sealOff === f.highestEpoch
+    const sealed = seal !== null && seal === (f.keys?.currentEpoch ?? f.highestEpoch)
+    // decided from the keys as the run reads them; unknown without a session (the run decides)
+    const passed = f.keys != null && sealOffPassed(seal, f.keys.currentEpoch)
     const st = steps({ sealOff: sealed ? 'done' : 'todo', history: f.record?.mode === 'codeOnly' ? 'skipped' : 'todo' }, 'todo')
     return {
       phase: 'private',
@@ -80,12 +91,13 @@ export function statusOf(f: StatusFacts): MakePublicStatus {
       totalSteps: MAKE_PUBLIC_TOTAL_STEPS,
       lastStepAt: f.record === null ? null : newestAt(f.record.startedAt, sealed ? f.sealOffAt : null),
       record,
+      sealOffPassed: passed,
       mode,
     }
   }
   if (f.conversion === null) {
     // never private: nothing to make public
-    return { phase: 'public', converted: false, steps: steps({}, 'skipped'), doneCount: 0, totalSteps: MAKE_PUBLIC_TOTAL_STEPS, lastStepAt: null, record, mode }
+    return { phase: 'public', converted: false, steps: steps({}, 'skipped'), doneCount: 0, totalSteps: MAKE_PUBLIC_TOTAL_STEPS, lastStepAt: null, record, sealOffPassed: false, mode }
   }
   const config: StepState = f.conversion.markerHeight !== null ? 'done' : 'todo'
   const publicTips = new Map([...f.publicRefs].map(([n, r]) => [n, r.oid]))
@@ -104,6 +116,7 @@ export function statusOf(f: StatusFacts): MakePublicStatus {
     totalSteps: MAKE_PUBLIC_TOTAL_STEPS,
     lastStepAt: newestAt(f.flipAt, f.markerAt, ...[...f.publicRefs.values()].map((r) => r.at), ...f.historyBundles),
     record,
+    sealOffPassed: false,
     mode,
   }
 }
@@ -134,8 +147,12 @@ export async function readMakePublicStatus(sdk: EvoSDK, repo: RepoRef, network: 
   const rows = await readAllRows(sdk, visibility === 'public' ? publicViewOf(repo) : privateViewOf(repo), DOC.config)
   const epochs = rows.map((d) => numberOf(d, 'epoch')).filter((e): e is number => e !== null)
   const highestEpoch = epochs.length === 0 ? null : Math.max(...epochs)
-  const sealOffAt = record?.sealOff == null ? null : (rows.filter((d) => numberOf(d, 'epoch') === record.sealOff).map((d) => numberOf(d, '$createdAt') ?? 0)[0] ?? null)
-  const base = { record, highestEpoch, sealOffAt, viewer, owner: repo.ownerId }
+  const session = repo.session
+  const keys = session === undefined ? null : { currentEpoch: session.resolution.currentEpoch, burned: session.resolution.burned }
+  // the run's seal-off epoch, one that landed unrecorded found again
+  const seal = record === null ? null : recordedSealOff(record.sealOff, record.sealOffFrom, keys?.currentEpoch ?? null, keys?.burned)
+  const sealOffAt = seal === null ? null : (rows.filter((d) => numberOf(d, 'epoch') === seal).map((d) => numberOf(d, '$createdAt') ?? 0)[0] ?? null)
+  const base = { record, highestEpoch, keys, sealOffAt, viewer, owner: repo.ownerId }
   const none = { flipAt: null, markerAt: null, publicRefs: new Map(), membersOnly: new Set<string>(), historyBundles: [] }
   if (visibility === 'private') return statusOf({ ...base, ...none, visibility, conversion: null })
   const pub = publicViewOf(repo)

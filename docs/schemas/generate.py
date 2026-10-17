@@ -300,6 +300,11 @@ cmd('repo make-public', 'A private repository made public, or (with --check) wha
                A(O({'step': E('sealOff', 'flip', 'config', 'code', 'notify', 'history'), 'status': E('written', 'done', 'owner'),
                     'epoch': ANY, 'refs': SA}, ['step', 'status']))),
     'notPublished': D('Refs left out: members pushed members-only commits to them after the repository was made public.', SA),
+    'startOver': D('With --start-over, the recorded run it replaced: its key change (`replacedSealOffEpoch`, `blockHeight`) '
+                   'and the branch and tag updates written since (`refUpdatesSince`); null otherwise.',
+                   nl(O({'replacedSealOffEpoch': I, 'blockHeight': ANY, 'refUpdatesSince': I}, ['replacedSealOffEpoch', 'refUpdatesSince']))),
+    'boundaryKept': D('The repository states another boundary than this run\'s own key change: this computer kept its record, '
+                      'so the history it publishes stops at the lower one.', B),
     'cost': COST,
 }, ['status', 'repo'])
 cmd('repo members status', 'Whether members-only content is on, and who has no key yet.', {

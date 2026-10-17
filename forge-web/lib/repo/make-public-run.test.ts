@@ -10,7 +10,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { EPOCH_BUNDLE_NOTE, EpochKeys, epochKeyBundles, parseBundle, resolveEpochs, sealDoc, type ConfigRow, type Conversion } from '../private'
-import { MakePublicError, type MakePublicCheck, type MakePublicProgress, type MakePublicRecord, type MakePublicRef } from './make-public'
+import { COPY, MakePublicError, type MakePublicCheck, type MakePublicProgress, type MakePublicRecord, type MakePublicRef } from './make-public'
 import type { Inspection } from './make-public-check'
 import type { WorkStore } from './make-public-objects'
 import { rawKeysBelow, runMakePublicWith, type MakePublicChoice, type MakePublicIo } from './make-public-run'
@@ -64,6 +64,14 @@ class FakeChain {
   log: string[] = []
   /** What another maintainer does right after this run's rotation. */
   afterRotate: (() => void) | null = null
+  /** The next rotation lands, then its answer is lost (a timeout, a closed tab). */
+  loseAnswer = false
+  /** How many more key reads show the epoch before the current one (a node behind). */
+  lagReads = 0
+  /** Burned epochs (chain links only). */
+  burned: number[] = []
+  /** What lands right before the flip, after the key was read for it. */
+  beforeFlip: (() => void) | null = null
   blockers: MakePublicError[] = []
 
   io(me: string): MakePublicIo {
@@ -75,7 +83,11 @@ class FakeChain {
       readVisibility: async () => this.visibility,
       readConversion: async () => this.conversion,
       ownerBundles: async () => new Set(this.bundles),
-      keys: async () => ({ maintainer: this.maintainers.has(me), currentEpoch: this.currentEpoch }),
+      keys: async () => {
+        const behind = this.lagReads > 0 && this.currentEpoch !== null
+        if (behind) this.lagReads--
+        return { maintainer: this.maintainers.has(me), currentEpoch: behind ? (this.currentEpoch as number) - 1 : this.currentEpoch, burned: [...this.burned] }
+      },
       inspect: async (o): Promise<Inspection> => {
         this.log.push(`inspect:${o.conversion === null ? 'private' : 'public'}${o.chosen ? ':chosen' : ''}${o.below !== undefined ? `:below${o.below}` : ''}`)
         const check = this.checks.shift() ?? checkOf()
@@ -86,9 +98,16 @@ class FakeChain {
         this.currentEpoch = (this.currentEpoch ?? -1) + 1
         const epoch = this.currentEpoch
         this.afterRotate?.()
+        if (this.loseAnswer) {
+          this.loseAnswer = false
+          throw new Error('the anchor was posted, then the wait for it timed out')
+        }
         return epoch
       },
-      canFlip: async () => true,
+      canFlip: async () => {
+        this.beforeFlip?.()
+        return true
+      },
       flip: async (b) => {
         this.log.push(`flip:${b}`)
         this.visibility = 'public'
@@ -125,6 +144,7 @@ class FakeChain {
 }
 
 const WORDS = 'make carol/ledger public'
+const START = 'start over making carol/ledger public'
 const choice = (over: Partial<MakePublicChoice> = {}): MakePublicChoice => ({ mode: 'codeOnly', allowSecrets: [], confirmation: WORDS, repoLabel: 'carol/ledger', ...over })
 const steps = (): { events: MakePublicProgress[]; on: (p: MakePublicProgress) => void } => {
   const events: MakePublicProgress[] = []
@@ -208,7 +228,7 @@ describe('a run from the start (the owner)', () => {
     expect(chain.record).toBeNull()
   })
 
-  it('never rotates twice for one run: a recorded seal-off epoch that is still current is kept, a stale one is not', async () => {
+  it('never rotates twice for one run: a recorded seal-off epoch that is still current is kept, a passed one stops the run', async () => {
     const chain = new FakeChain()
     chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 1 }
     // an old record alone never stands in for the typed words
@@ -219,8 +239,9 @@ describe('a run from the start (the owner)', () => {
     expect(chain.log).toContain('flip:main')
     const again = new FakeChain()
     again.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 1, startedAt: 1 }
-    await runMakePublicWith(again.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
-    expect(again.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    expect(await codeOf(runMakePublicWith(again.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined))).toBe('E310')
+    expect(again.log).toEqual([])
+    expect(again.record?.sealOff).toBe(1)
   })
 
   it('stops before the flip when someone else changed the key after the seal-off (E310), keeping its record', async () => {
@@ -353,11 +374,11 @@ describe('one cutoff for the whole run (M1)', () => {
     chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 1 }
     await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
     expect(chain.log[0]).toBe('inspect:private:chosen:below2')
-    // a stale one is not (the run rotates again, and that rotation is the cutoff)
+    // one started again on purpose has no cutoff until its own rotation makes it
     const again = new FakeChain()
     again.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 1, startedAt: 1 }
-    await runMakePublicWith(again.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
-    expect(again.log[0]).toBe('inspect:private:chosen')
+    await runMakePublicWith(again.io(OWNER), choice({ startOver: true, confirmation: START }), () => undefined)
+    expect(again.log[0]).toBe('inspect:private')
   })
 
   it('once public, the lower of the stated and the recorded seal-off epochs', async () => {
@@ -367,6 +388,218 @@ describe('one cutoff for the whole run (M1)', () => {
     chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 4, startedAt: 1 }
     await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
     expect(chain.log[0]).toBe('inspect:public:chosen:below2')
+  })
+})
+
+describe('the seal-off boundary across a concurrent key rotation', () => {
+  /** A run that seals off at 3 while another maintainer rotates to 4 right after it. */
+  async function afterConcurrentRotation(mode: 'codeOnly' | 'everything' = 'everything'): Promise<FakeChain> {
+    const chain = new FakeChain()
+    chain.history = [new Uint8Array([1])]
+    chain.afterRotate = () => {
+      chain.currentEpoch = (chain.currentEpoch ?? 0) + 1
+      chain.afterRotate = null
+    }
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ mode }), () => undefined))).toBe('E310')
+    expect([chain.record?.sealOff, chain.currentEpoch, chain.visibility]).toEqual([3, 4, 'private'])
+    return chain
+  }
+
+  it('Finish after a concurrent rotation keeps the original boundary: it stops, never rotating again nor flipping', async () => {
+    const chain = await afterConcurrentRotation()
+    const e = await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', confirmation: '', resume: true }), () => undefined).catch((x: unknown) => x as MakePublicError)
+    expect(e).toBeInstanceOf(MakePublicError)
+    expect((e as MakePublicError).code).toBe('E310')
+    expect((e as MakePublicError).message).toContain('start again')
+    // run again with the typed words, it still stops
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), () => undefined))).toBe('E310')
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    expect(chain.log).not.toContain('flip:main')
+    expect(chain.log).not.toContain('bundle')
+    expect(chain.record?.sealOff).toBe(3)
+    expect(chain.conversion).toBeNull()
+  })
+
+  it('only a new run started on purpose continues: the typed words, then its own seal-off as the boundary', async () => {
+    const chain = await afterConcurrentRotation()
+    // starting again is never a resume: its own words are asked, the usual ones don't do, and
+    // what it adds is said
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', confirmation: '', resume: true, startOver: true }), () => undefined))).toBe('E802')
+    const e = await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', startOver: true }), () => undefined).catch((x: unknown) => x as MakePublicError)
+    expect([(e as MakePublicError).code, (e as MakePublicError).message]).toEqual(['E802', `${COPY.startOver(null, 'everything')} Type "${START}" to continue.`])
+    expect(chain.record?.sealOff).toBe(3)
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', startOver: true, confirmation: START }), () => undefined)
+    expect(out.finished).toBe(true)
+    expect(chain.log.filter((l) => !l.startsWith('inspect'))).toEqual(['rotate', 'rotate', 'flip:main', 'config', 'code:refs/heads/dev,refs/heads/main|have:0', 'keys-below:5', 'bundle'])
+  })
+
+  it('two clients resuming: a maintainer elsewhere is refused while private, the owner here stops, and starting again needs a passed run', async () => {
+    const chain = await afterConcurrentRotation('codeOnly')
+    // the maintainer's browser has no record of the owner's run
+    const here = chain.record
+    chain.record = null
+    expect(await codeOf(runMakePublicWith(chain.io(MAINT), choice({ confirmation: '', resume: true }), () => undefined))).toBe('E601')
+    chain.record = here
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined))).toBe('E310')
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    // a run that can still be finished is never started again
+    const current = new FakeChain()
+    current.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 1 }
+    expect(await codeOf(runMakePublicWith(current.io(OWNER), choice({ startOver: true, confirmation: START }), () => undefined))).toBe('E201')
+    // nor one made public already
+    current.visibility = 'public'
+    current.conversion = { sealOffEpoch: 2, markerHeight: 50 }
+    expect(await codeOf(runMakePublicWith(current.io(OWNER), choice({ startOver: true, confirmation: START }), () => undefined))).toBe('E201')
+    expect(current.log).toEqual([])
+  })
+
+  it('an interrupted run after a second rotation never moves its boundary', async () => {
+    const chain = new FakeChain()
+    // interrupted right after its seal-off at 3, then two rotations by others
+    chain.record = { mode: 'everything', refs: [[MAIN.name, MAIN.oid], [DEV.name, DEV.oid]], sealOff: 3, startedAt: 1 }
+    chain.currentEpoch = 5
+    for (let i = 0; i < 2; i++) {
+      expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', confirmation: '', resume: true }), () => undefined))).toBe('E310')
+    }
+    expect(chain.log).toEqual([])
+    expect([chain.record?.sealOff, chain.currentEpoch, chain.visibility]).toEqual([3, 5, 'private'])
+  })
+
+  it('a client resuming from the chain alone reads the original boundary', async () => {
+    // a concurrent rotation, then Finish: never flipped, so the chain states no later boundary
+    const rotated = await afterConcurrentRotation()
+    await runMakePublicWith(rotated.io(OWNER), choice({ mode: 'everything', confirmation: '', resume: true }), () => undefined).catch(() => undefined)
+    expect(rotated.conversion).toBeNull()
+    // a run sealed off at 3 and flipped, stopped before the history
+    const chain = new FakeChain()
+    chain.history = [new Uint8Array([1])]
+    const abort = new AbortController()
+    await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), (p) => p.step === 'flip' && p.state === 'done' && abort.abort(), abort.signal).catch(() => undefined)
+    expect(chain.conversion?.sealOffEpoch).toBe(3)
+    // members rotate after the flip; another browser, with no record, finishes it
+    chain.currentEpoch = 6
+    chain.record = null
+    // a maintainer without the owner's history started can't choose Everything (E601)
+    expect(await codeOf(runMakePublicWith(chain.io(MAINT), choice({ mode: 'everything' }), () => undefined))).toBe('E601')
+    chain.log.length = 0
+    const owner = await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), () => undefined)
+    expect(owner.finished).toBe(true)
+    expect(chain.log.filter((l) => l.startsWith('keys-below'))).toEqual(['keys-below:3'])
+  })
+})
+
+describe('a seal-off rotation that landed but was never recorded', () => {
+  it('is found again: the resume never rotates a second time, and it is the boundary', async () => {
+    const chain = new FakeChain()
+    chain.history = [new Uint8Array([1])]
+    chain.loseAnswer = true
+    await expect(runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), () => undefined)).rejects.toThrow('timed out')
+    // the epoch it began from was kept before it was signed
+    expect([chain.record?.sealOff, chain.record?.sealOffFrom, chain.currentEpoch]).toEqual([null, 2, 3])
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', confirmation: '', resume: true }), () => undefined)
+    expect(out.finished).toBe(true)
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    expect(chain.log).toContain('keys-below:3')
+  })
+
+  it('a node behind it is waited for: the resume still never rotates a second time', async () => {
+    const chain = new FakeChain()
+    chain.loseAnswer = true
+    await runMakePublicWith(chain.io(OWNER), choice(), () => undefined).catch(() => undefined)
+    // the first reads still show the epoch the rotation began from
+    chain.lagReads = 2
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(out.finished).toBe(true)
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    expect(chain.conversion?.sealOffEpoch).toBe(3)
+  })
+
+  it('found only after a check made before it: the run stops, publishes nothing, and the next run checks below it', async () => {
+    const chain = new FakeChain()
+    chain.loseAnswer = true
+    await runMakePublicWith(chain.io(OWNER), choice(), () => undefined).catch(() => undefined)
+    // a node behind answers every read of the start (past the wait); a member pushed to main
+    // under the run's own key change, and the owner names it again
+    chain.lagReads = 7
+    const late = { name: MAIN.name, oid: 'c'.repeat(40) }
+    chain.checks = [checkOf({ codeRefs: [late] })]
+    const e = await runMakePublicWith(chain.io(OWNER), choice({ refs: ['main'] }), () => undefined).catch((x: unknown) => x as MakePublicError)
+    expect([(e as MakePublicError).code, (e as MakePublicError).message]).toEqual(['E310', COPY.runAgain])
+    expect(chain.log.filter((l) => l === 'rotate' || l.startsWith('flip') || l.startsWith('code'))).toEqual(['rotate'])
+    expect([chain.record?.sealOff, chain.visibility]).toEqual([3, 'private'])
+    expect(chain.publicRefs.size).toBe(0)
+    // the resume checks below the boundary it found
+    chain.log.length = 0
+    await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(chain.log[0]).toBe('inspect:private:chosen:below3')
+  })
+
+  it('a record whose rotation may have landed is never set aside by starting again', async () => {
+    const chain = new FakeChain()
+    chain.loseAnswer = true
+    await runMakePublicWith(chain.io(OWNER), choice(), () => undefined).catch(() => undefined)
+    chain.currentEpoch = 2
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ startOver: true, confirmation: START }), () => undefined))).toBe('E201')
+    expect(chain.record?.sealOffFrom).toBe(2)
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+  })
+
+  it('then another rotation: the run stops at its own boundary, never rotating again', async () => {
+    const chain = new FakeChain()
+    chain.loseAnswer = true
+    await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), () => undefined).catch(() => undefined)
+    chain.currentEpoch = 4
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', confirmation: '', resume: true }), () => undefined))).toBe('E310')
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    expect(chain.visibility).toBe('private')
+  })
+
+  it("a burned epoch carries nothing: the first one after it is the run's", async () => {
+    const chain = new FakeChain()
+    chain.loseAnswer = true
+    await runMakePublicWith(chain.io(OWNER), choice(), () => undefined).catch(() => undefined)
+    // the rotation burned 3 and anchored 4
+    chain.currentEpoch = 4
+    chain.burned = [3]
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(out.finished).toBe(true)
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    expect(chain.conversion?.sealOffEpoch).toBe(4)
+  })
+
+  it('not anchored yet (the key still reads the epoch it began from): the rotation is resumed, then checked below', async () => {
+    const chain = new FakeChain()
+    chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: null, sealOffFrom: 2, startedAt: 1 }
+    // its check ran before the boundary was known: the run stops once it is
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined))).toBe('E310')
+    expect(chain.record?.sealOff).toBe(3)
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(out.finished).toBe(true)
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
+    expect(chain.log).toContain('inspect:private:chosen:below3')
+  })
+})
+
+describe('the boundary the repo states after the flip', () => {
+  it("is not the run's own: the history stops at the run's, and the record is kept", async () => {
+    const chain = new FakeChain()
+    chain.history = [new Uint8Array([1])]
+    // a rotation lands right before the flip, after the key was read for it
+    chain.beforeFlip = () => {
+      chain.currentEpoch = (chain.currentEpoch ?? 0) + 1
+    }
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), () => undefined)
+    expect(chain.conversion?.sealOffEpoch).toBe(4)
+    expect(out).toMatchObject({ finished: true, boundaryKept: true })
+    expect(chain.log).toContain('keys-below:3')
+    expect(chain.record?.sealOff).toBe(3)
+  })
+
+  it("is the run's own: the record is forgotten", async () => {
+    const chain = new FakeChain()
+    const out = await runMakePublicWith(chain.io(OWNER), choice(), () => undefined)
+    expect(out.boundaryKept).toBeUndefined()
+    expect(chain.record).toBeNull()
   })
 })
 

@@ -7,7 +7,10 @@
  *    that is still current is kept, and one a node doesn't show yet stops the run (Platform hasn't
  *    caught up) rather than rotating again. The key is read again (up to about 10 s for a node
  *    behind) and the run stops if someone else rotated meanwhile; with Everything the check runs
- *    again over what is now final, and the gate stops the run before the flip;
+ *    again over what is now final, and the gate stops the run before the flip. A recorded seal-off
+ *    epoch is the run's boundary for good: once another rotation follows it, the run can't be
+ *    finished (flipping then would state a later boundary, which every other client reads), and
+ *    only a new run the owner starts on purpose ({@link MakePublicChoice.startOver}) continues;
  * 3. the flip (the owner): the `repo` with `visibility: "public"` and its default branch;
  * 4. the first public settings, unless they exist (any maintainer);
  * 5. the code: one fresh public pack of the refs not public yet, never a branch members pushed to
@@ -44,6 +47,7 @@ import {
   COPY,
   MAKE_PUBLIC_WORDS,
   MakePublicError,
+  START_OVER_WORDS,
   cutoffOf,
   deleteMakePublicRecord,
   gateMakePublic,
@@ -52,7 +56,9 @@ import {
   recordRefs,
   refsOfRecord,
   sameRefs,
+  recordedSealOff,
   saveMakePublicRecord,
+  sealOffPassed,
   unpublishedRefs,
   type MakePublicMode,
   type MakePublicProgress,
@@ -99,6 +105,12 @@ export interface MakePublicChoice {
    * Without it a run that publishes anything new needs the words, a record or not.
    */
   readonly resume?: boolean
+  /**
+   * Start a new run in place of the one this browser recorded, which can't be finished: the repo's
+   * key changed after its own key change (dg `--start-over`). Only while the repo is private; what
+   * members wrote since becomes public too, so the typed words are asked.
+   */
+  readonly startOver?: boolean
   /** Where the code pack goes (the merge's storage choice, `useMergeUpload`); default: Platform. */
   readonly upload?: UploadPack
   /** Told each phase of the check the run makes again before it signs (it can take minutes). */
@@ -113,12 +125,19 @@ export interface MakePublicOutcome {
   readonly notPublished: string[]
   /** Credits spent, from the balance before and after (absent when it couldn't be read). */
   readonly spentCredits?: number
+  /**
+   * The repo states another boundary than this run's own key change: this browser keeps its record,
+   * so the history it publishes stops at the lower one.
+   */
+  readonly boundaryKept?: boolean
 }
 
 /** The signer's standing in the private view's keys. */
 export interface KeyStanding {
   readonly maintainer: boolean
   readonly currentEpoch: number | null
+  /** Burned epochs (chain links only: nothing is sealed under them). */
+  readonly burned?: readonly number[]
 }
 
 /** The chain as a run reaches it (see {@link sdkMakePublicIo}). */
@@ -130,7 +149,7 @@ export interface MakePublicIo {
   readonly repoId: string
   readonly repoName: string
   readVisibility(): Promise<'public' | 'private'>
-  /** The conversion facts read now (null unless public and once private). */
+  /** The conversion facts read now (null unless public and once private), the seal-off epoch among anchored epochs only. */
   readConversion(): Promise<Conversion | null>
   /** The `packHash`es (hex) of every make-public bundle (kind 7) the owner recorded, history or not. */
   ownerBundles(): Promise<Set<string>>
@@ -189,10 +208,11 @@ async function recordedHistory(io: MakePublicIo, cutoff: number | undefined): Pr
 
 /**
  * Why the key epoch read now (`current`) is not this run's seal-off epoch: a node behind (lower,
- * or none yet: never rotate again then), or another maintainer's rotation (higher).
+ * or none yet: never rotate again then), or another rotation after it (higher: the run's boundary
+ * is passed, and the run can't be finished).
  */
-function epochMismatch(current: number | null, sealOff: number): MakePublicError {
-  return new MakePublicError(lagging(current, sealOff) ? COPY.lagging : COPY.keyChanged, 'E310')
+function epochMismatch(current: number | null, sealOff: number, mode: MakePublicMode): MakePublicError {
+  return new MakePublicError(lagging(current, sealOff) ? COPY.lagging : COPY.sealOffPassed(mode), 'E310')
 }
 
 /** Whether a node shows a key epoch below `sealOff` (or none): it hasn't caught up with this run's rotation. */
@@ -225,18 +245,34 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   const flipped = conversion !== null
   let standing = await io.keys()
   if (!isOwner && !standing.maintainer) throw new MakePublicError(COPY.notOwner, 'E601')
-  const saved = await io.loadRecord()
-  const savedSeal = saved?.sealOff ?? null
-  // A recorded seal-off epoch above the one a node shows: the node hasn't caught up with this
-  // run's own rotation. Wait a little, then stop: rotating again would seal off twice.
-  if (!flipped && savedSeal !== null) {
-    standing = await keysShowing(io, standing, savedSeal)
-    if (lagging(standing.currentEpoch, savedSeal)) throw new MakePublicError(COPY.lagging, 'E310')
+  const startOver = choice.startOver === true
+  if (startOver && flipped) throw new MakePublicError(COPY.startOverPublic, 'E201')
+  const loaded = await io.loadRecord()
+  // A seal-off rotation that landed but was never recorded is found again: only ever earlier.
+  // (it shows as `from + 1`: a node behind is waited for a few seconds first)
+  if (loaded !== null && loaded.sealOff === null && loaded.sealOffFrom != null) standing = await keysShowing(io, standing, loaded.sealOffFrom + 1)
+  const recordedSeal = loaded === null ? null : recordedSealOff(loaded.sealOff, loaded.sealOffFrom, standing.currentEpoch, standing.burned)
+  // While private, a recorded seal-off epoch is the run's boundary for good. Above the one a node
+  // shows: the node hasn't caught up with this run's own rotation, so wait a little, then stop
+  // (rotating again would seal off twice). Below it: another rotation followed, and the run can't
+  // be finished; only starting again on purpose sets the record aside. (Anyone but the owner is
+  // refused below, before any step.)
+  let replaced = false
+  if (!flipped && recordedSeal !== null && isOwner) {
+    standing = await keysShowing(io, standing, recordedSeal)
+    if (lagging(standing.currentEpoch, recordedSeal)) throw new MakePublicError(COPY.lagging, 'E310')
+    const passed = sealOffPassed(recordedSeal, standing.currentEpoch)
+    if (!startOver && passed) throw new MakePublicError(COPY.sealOffPassed(loaded?.mode ?? mode), 'E310')
+    replaced = startOver && passed
   }
+  // only a record whose boundary is passed is set aside: one whose rotation may have landed never is
+  if (startOver && !replaced) throw new MakePublicError(COPY.startOverUnfinished, 'E201')
+  const saved = startOver || loaded === null ? null : { ...loaded, sealOff: recordedSeal }
+  const savedSeal = saved?.sealOff ?? null
   // One cutoff for the whole run: what was sealed under it or later is never published. Once
   // public, the lower of the stated and the recorded seal-off epochs; while private, the recorded
-  // one while it is still current (the rotation is kept), else none yet (the rotation makes it).
-  const cutoff = flipped ? cutoffOf(conversion.sealOffEpoch, savedSeal) : savedSeal !== null && savedSeal === standing.currentEpoch ? savedSeal : undefined
+  // one (current, as read above), else none yet (the rotation makes it).
+  const cutoff = flipped ? cutoffOf(conversion.sealOffEpoch, savedSeal) : (savedSeal ?? undefined)
   // a run that started Everything (some history published) finishes as Everything
   const historyNow = flipped ? await recordedHistory(io, cutoff) : new Set<string>()
   const historyStarted = historyNow.size > 0
@@ -270,34 +306,58 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
     const refusal = gateMakePublic(inspection.check, mode, choice.allowSecrets)
     if (refusal !== null) throw refusal
   }
-  // the words, unless this continues the run this browser recorded, with its refs (dg `--resume`)
+  // the words, unless this continues the run this browser recorded, with its refs (dg `--resume`);
+  // starting again has its own words, never skipped
   const resuming = choice.resume === true && savedHere
-  if (newPublication && !resuming && !confirms(choice.confirmation, io.repoName, choice.repoLabel)) {
+  if (replaced) {
+    if (choice.repoLabel === undefined || choice.confirmation !== START_OVER_WORDS(choice.repoLabel)) {
+      throw new MakePublicError(`${COPY.startOver(null, mode)} ${COPY.words(START_OVER_WORDS(choice.repoLabel ?? `<owner>/${io.repoName}`))}`, 'E802')
+    }
+  } else if (newPublication && !resuming && !confirms(choice.confirmation, io.repoName, choice.repoLabel)) {
     throw new MakePublicError(COPY.words(MAKE_PUBLIC_WORDS(choice.repoLabel ?? `<owner>/${io.repoName}`)), 'E802')
   }
   stop()
   const startBalance = await io.balance()
-  let record: MakePublicRecord = { mode, refs: recordRefs(wanted), sealOff: saved?.sealOff ?? null, startedAt: saved?.startedAt ?? Date.now() }
+  let record: MakePublicRecord = {
+    mode,
+    refs: recordRefs(wanted),
+    sealOff: saved?.sealOff ?? null,
+    sealOffFrom: saved?.sealOffFrom ?? null,
+    startedAt: saved?.startedAt ?? Date.now(),
+  }
   await io.saveRecord(record)
   // 2. seal off, 3. flip
   if (flipped) {
     report('sealOff', 'done')
     report('flip', 'done')
   } else {
-    if (record.sealOff !== null && record.sealOff === standing.currentEpoch) {
+    // Never a second rotation: a recorded one is read again just below, and one that landed
+    // unrecorded is found again. The epoch it starts from is kept before it is signed.
+    const resumed = record.sealOff === null && record.sealOffFrom != null
+    const at = await keysShowing(io, await io.keys(), record.sealOff ?? (record.sealOffFrom != null ? record.sealOffFrom + 1 : 0))
+    const found = recordedSealOff(record.sealOff, record.sealOffFrom, at.currentEpoch, at.burned)
+    if (found !== null) {
+      record = { ...record, sealOff: found }
+      await io.saveRecord(record)
       report('sealOff', 'done')
     } else {
+      record = { ...record, sealOffFrom: at.currentEpoch }
+      await io.saveRecord(record)
       report('sealOff', 'running')
       const epoch = await io.rotate()
       record = { ...record, sealOff: epoch }
       await io.saveRecord(record)
       report('sealOff', 'done')
     }
+    // The check ran before the run knew its boundary (a rotation that landed unrecorded, found
+    // only now): what it chose may hold refs written at or after it. The next run checks below it.
+    // A fresh run's own rotation comes after its check (dg `checked_before_boundary`).
+    if (record.sealOff !== (cutoff ?? null) && (resumed || cutoff !== undefined)) throw new MakePublicError(COPY.runAgain, 'E310')
     stop()
     const sealOff = record.sealOff as number
     // a node a block behind may not show the rotation yet
     const now = await keysShowing(io, await io.keys(), sealOff)
-    if (now.currentEpoch !== sealOff) throw epochMismatch(now.currentEpoch, sealOff)
+    if (now.currentEpoch !== sealOff) throw epochMismatch(now.currentEpoch, sealOff, mode)
     if (mode === 'everything') {
       // What Everything publishes is final now (everything below the seal-off rotation): check
       // it again, since members may have written or pushed since the first check.
@@ -312,14 +372,18 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
     report('flip', 'running')
     // the second check can take minutes: the key is read again right before the point of no return
     const atFlip = (await io.keys()).currentEpoch
-    if (atFlip !== sealOff) throw epochMismatch(atFlip, sealOff)
+    if (atFlip !== sealOff) throw epochMismatch(atFlip, sealOff, mode)
     if (!(await io.canFlip())) throw new MakePublicError(COPY.frozen, 'E103')
     await io.flip(inspection.check.defaultBranch)
     report('flip', 'done')
   }
   stop()
-  // 4. the first public settings
-  if ((await io.readConversion())?.markerHeight == null) {
+  // 4. the first public settings. The boundary the repo states is not this run's own (a key
+  // change landed right before the flip, or the record is not the run's): the history published
+  // here still stops at the lower one, and the record is kept so a later run here does too.
+  const stated = await io.readConversion()
+  const boundaryKept = record.sealOff !== null && stated !== null && stated.sealOffEpoch !== record.sealOff
+  if (stated?.markerHeight == null) {
     report('config', 'running')
     await io.writeConfig(inspection.config ?? DEFAULT_CONFIG)
   }
@@ -365,8 +429,13 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
     report('history', 'skipped')
   }
   const endBalance = await io.balance()
-  if (finished) await io.deleteRecord()
-  return { finished, notPublished, ...(startBalance !== null && endBalance !== null ? { spentCredits: Math.max(0, startBalance - endBalance) } : {}) }
+  if (finished && !boundaryKept) await io.deleteRecord()
+  return {
+    finished,
+    notPublished,
+    ...(startBalance !== null && endBalance !== null ? { spentCredits: Math.max(0, startBalance - endBalance) } : {}),
+    ...(boundaryKept ? { boundaryKept } : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -473,9 +542,9 @@ export function sdkMakePublicIo(c: PrivateWriteContext, opts: { readonly upload?
     repoId: repo.repoId,
     repoName: repo.name,
     readVisibility: () => readVisibility(sdk, repo),
-    readConversion: () => readConversion(sdk, repo),
+    readConversion: () => fresh((s) => readConversion(sdk, repo, (e) => s.resolution.anchors.has(e))),
     ownerBundles: () => readOwnerBundles(sdk, repo),
-    keys: () => fresh(async (s) => ({ maintainer: isMaintainer(s, auth.identityId), currentEpoch: s.resolution.currentEpoch })),
+    keys: () => fresh(async (s) => ({ maintainer: isMaintainer(s, auth.identityId), currentEpoch: s.resolution.currentEpoch, burned: [...s.resolution.burned] })),
     inspect: (o) =>
       fresh((s) =>
         inspect(c, s, {

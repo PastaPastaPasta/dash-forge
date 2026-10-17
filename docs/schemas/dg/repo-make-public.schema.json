@@ -151,6 +151,34 @@
       },
       "description": "Refs left out: members pushed members-only commits to them after the repository was made public."
     },
+    "startOver": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "replacedSealOffEpoch": {
+              "type": "integer"
+            },
+            "blockHeight": {},
+            "refUpdatesSince": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "replacedSealOffEpoch",
+            "refUpdatesSince"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "With --start-over, the recorded run it replaced: its key change (`replacedSealOffEpoch`, `blockHeight`) and the branch and tag updates written since (`refUpdatesSince`); null otherwise."
+    },
+    "boundaryKept": {
+      "type": "boolean",
+      "description": "The repository states another boundary than this run's own key change: this computer kept its record, so the history it publishes stops at the lower one."
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     }

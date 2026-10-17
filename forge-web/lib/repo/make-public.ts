@@ -133,7 +133,12 @@ export interface MakePublicStatus {
   /** The newest conversion write seen (ms): the flip, the first public settings, a public ref, a history bundle. */
   readonly lastStepAt: number | null
   /** This browser's record of a run under way. */
-  readonly record: { readonly mode: MakePublicMode; readonly refs: readonly MakePublicRef[]; readonly sealOff: number | null } | null
+  readonly record: { readonly mode: MakePublicMode; readonly refs: readonly MakePublicRef[]; readonly sealOff: number | null; readonly sealOffAt?: number | null } | null
+  /**
+   * The repo's key changed after the recorded run's own key change while it is still private: that
+   * run can't be finished (its boundary would move), only started again on purpose.
+   */
+  readonly sealOffPassed: boolean
   /** The record's mode, else Everything when the owner published history, else unknown. */
   readonly mode: MakePublicMode | null
 }
@@ -147,6 +152,9 @@ export interface MakePublicProgress {
 
 /** The words the owner types to confirm (step 1). */
 export const MAKE_PUBLIC_WORDS = (repoLabel: string): string => `make ${repoLabel} public`
+
+/** The words the owner types to start a run again in place of one that can't be finished. */
+export const START_OVER_WORDS = (repoLabel: string): string => `start over making ${repoLabel} public`
 
 /** The 7 steps of §4.10 (the confirmation and the six signed ones). */
 export const MAKE_PUBLIC_TOTAL_STEPS = 7
@@ -184,7 +192,18 @@ export const COPY = {
   historyStarted: "This repo is being made public with everything: its history is published already, so Code only can't follow. Finish it with Everything.",
   sayRefs: "This browser has no record of the run that made it public: choose the branches and tags the owner chose.",
   noMode: 'Choose what becomes public: Code only or Everything.',
-  keyChanged: "The repo's key changed while this ran: another maintainer changed it. The repo is still private. Run it again to continue.",
+  sealOffPassed: (mode: MakePublicMode) =>
+    mode === 'codeOnly'
+      ? "The repo's key changed after this run's own key change, so finishing it would let a later Everything publish what members wrote since, which is meant to stay members-only. The repo is still private. To include that, start again."
+      : "The repo's key changed after this run's own key change, so finishing it would publish what members wrote since, which is meant to stay members-only. The repo is still private. To include that, start again.",
+  startOver: (at: number | null, mode: MakePublicMode) =>
+    `This starts over: the earlier run's key change${at === null ? '' : ` (${new Date(at).toISOString().slice(0, 10)})`} no longer marks where publishing stops. ${mode === 'codeOnly' ? 'With Code only, what members wrote since stays members-only for now, but a later Everything would make it public.' : 'With Everything, what members wrote since then becomes public too.'}`,
+  boundaryKept:
+    "The repo's settings state another boundary than this run's own key change. The history published from this browser stops at the lower one, so this browser keeps its record of the run.",
+  startOverUnfinished: 'This run can still be finished: choose Finish instead of starting again.',
+  runAgain: "This run found its own key change only after its check. The repo is still private. Run it again to check what becomes public below it.",
+  changedSince: (ref: string) => `Not published: ${ref} changed after this run's key change.`,
+  startOverPublic: 'This repo is public already, so its run can only be finished, not started again.',
   lagging: "Platform hasn't caught up yet; try again in a minute. The repo is still private.",
   stillPrivate: 'The repo is still private. Fix this, then continue.',
   words: (words: string) => `Type "${words}" to continue.`,
@@ -357,6 +376,11 @@ export interface MakePublicRecord {
   readonly refs: readonly (readonly [string, string])[]
   /** The epoch the seal-off rotation created, once it ran. */
   readonly sealOff: number | null
+  /**
+   * The current epoch when the seal-off rotation began, kept before it is signed: a rotation that
+   * landed but whose answer was lost is found again ({@link recordedSealOff}), never made twice.
+   */
+  readonly sealOffFrom?: number | null
   readonly startedAt: number
 }
 
@@ -375,10 +399,17 @@ export async function loadMakePublicRecord(network: Network, signer: string, rep
   const o = r as Partial<MakePublicRecord>
   const okMode = o.mode === 'codeOnly' || o.mode === 'everything'
   const okRefs = Array.isArray(o.refs) && o.refs.every((x) => Array.isArray(x) && x.length === 2 && typeof x[0] === 'string' && typeof x[1] === 'string')
-  const okSeal = o.sealOff === null || (typeof o.sealOff === 'number' && Number.isInteger(o.sealOff) && o.sealOff >= 0)
+  const epochOk = (e: unknown): boolean => e === null || e === undefined || (typeof e === 'number' && Number.isInteger(e) && e >= 0)
+  const okSeal = (o.sealOff === null || (typeof o.sealOff === 'number' && Number.isInteger(o.sealOff) && o.sealOff >= 0)) && epochOk(o.sealOffFrom)
   // copy-lint-ignore: a corrupt local record, reported as is
   if (!okMode || !okRefs || !okSeal) throw new MakePublicError("This browser's record of making this repo public can't be read. If no run is under way, clear the site's storage.", 'E201')
-  return { mode: o.mode as MakePublicMode, refs: o.refs as MakePublicRecord['refs'], sealOff: o.sealOff ?? null, startedAt: typeof o.startedAt === 'number' ? o.startedAt : 0 }
+  return {
+    mode: o.mode as MakePublicMode,
+    refs: o.refs as MakePublicRecord['refs'],
+    sealOff: o.sealOff ?? null,
+    sealOffFrom: o.sealOffFrom ?? null,
+    startedAt: typeof o.startedAt === 'number' ? o.startedAt : 0,
+  }
 }
 
 /** Keep `record` (replacing an earlier one whole). */
@@ -404,6 +435,49 @@ export function sameRefs(a: readonly MakePublicRef[], b: readonly MakePublicRef[
   const key = (r: MakePublicRef): string => `${r.name}\0${r.oid.toLowerCase()}`
   const set = new Set(a.map(key))
   return set.size === new Set(b.map(key)).size && b.every((r) => set.has(key(r)))
+}
+
+/**
+ * The run's seal-off epoch (dg `recorded_seal_off`): the one recorded, else, when a rotation
+ * began from epoch `from` and its answer was lost, the first epoch after `from` that isn't burned,
+ * once the key read now (`current`) shows one: the run's own rotation, or an earlier boundary.
+ * Null while none shows (the rotation is made, or resumed with the same key).
+ */
+export function recordedSealOff(sealOff: number | null, from: number | null | undefined, current: number | null, burned: ReadonlySet<number> | readonly number[] = []): number | null {
+  if (sealOff !== null) return sealOff
+  if (from === null || from === undefined || current === null) return null
+  const skip = new Set(burned)
+  for (let e = from + 1; e <= current; e++) if (!skip.has(e)) return e
+  return null
+}
+
+/**
+ * Whether another rotation followed the recorded seal-off epoch `recorded` (the key epoch read now
+ * is `current`): that run's boundary is passed, so it can't be finished, only started again.
+ */
+export function sealOffPassed(recorded: number | null, current: number | null): boolean {
+  return recorded !== null && current !== null && current > recorded
+}
+
+/**
+ * The refs of `chosen` (an earlier choice, with the tips it recorded) that `allRefs` (the refs as
+ * they were before the run's boundary) still holds at that tip or a later one, and the names of
+ * the rest (dg `within_boundary`): a recorded tip written at or after the boundary is never
+ * published.
+ */
+export async function withinBoundary(
+  chosen: readonly MakePublicRef[],
+  allRefs: readonly MakePublicRef[],
+  isAncestor: (ancestor: string, tip: string) => Promise<boolean>,
+): Promise<{ kept: MakePublicRef[]; dropped: string[] }> {
+  const kept: MakePublicRef[] = []
+  const dropped: string[] = []
+  for (const r of chosen) {
+    const now = allRefs.find((a) => a.name === r.name)
+    if (now !== undefined && (now.oid === r.oid || (await isAncestor(r.oid, now.oid)))) kept.push(r)
+    else dropped.push(r.name)
+  }
+  return { kept, dropped }
 }
 
 /** The lowest of the seal-off epochs known, or undefined when none is: one cutoff for a whole run. */
