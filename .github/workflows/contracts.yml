@@ -145,3 +145,10 @@ jobs:
         run: |
           node forge-contracts/scripts/deploy-v2.mjs --self-test
           node forge-contracts/scripts/deploy-v2.mjs --self-test --contracts forge-contracts/contracts/mainnet
+      # The deploy script end to end against an in-memory platform (lib/fake-platform.mjs): the
+      # four-contract registration and its record, resume after a crash, the nonce ledger, the set,
+      # network and chain refusals, the testnet/mainnet preconditions and --force-new guard; and
+      # the snapshot script's record and target rules. No SDK, no network, no key.
+      - name: Deploy script offline tests
+        run: |
+          node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs
