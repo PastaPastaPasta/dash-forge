@@ -728,7 +728,7 @@ dependencies = [
  "merlin",
  "pairing",
  "rand 0.8.8",
- "rand_chacha",
+ "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
  "serde_bare",
@@ -1518,7 +1518,7 @@ dependencies = [
  "hex",
  "hex_lit",
  "rustversion",
- "secp256k1",
+ "secp256k1 0.30.0",
  "serde",
  "thiserror 2.0.20",
  "tracing",
@@ -2367,7 +2367,7 @@ dependencies = [
  "reqwest",
  "rpassword",
  "rs-sdk-trusted-context-provider",
- "secp256k1",
+ "secp256k1 0.33.1",
  "serde",
  "serde_json",
  "sha1",
@@ -2445,7 +2445,7 @@ dependencies = [
  "rand 0.8.8",
  "reqwest",
  "rusqlite",
- "secp256k1",
+ "secp256k1 0.33.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3764,7 +3764,7 @@ dependencies = [
  "dashcore_hashes",
  "getrandom 0.2.17",
  "hex",
- "secp256k1",
+ "secp256k1 0.30.0",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4695,7 +4695,7 @@ dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",
  "hmac 0.12.1",
- "secp256k1",
+ "secp256k1 0.30.0",
  "sha2 0.10.9",
  "thiserror 1.0.69",
 ]
@@ -5092,8 +5092,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
  "libc",
- "rand_chacha",
+ "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
+dependencies = [
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -5118,12 +5128,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_chacha"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.9.5",
+]
+
+[[package]]
 name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom 0.2.17",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
+dependencies = [
+ "getrandom 0.3.4",
 ]
 
 [[package]]
@@ -5559,8 +5588,18 @@ checksum = "b50c5943d326858130af85e049f2661ba3c78b26589b8ab98e65e80ae44a1252"
 dependencies = [
  "bitcoin_hashes",
  "rand 0.8.8",
- "secp256k1-sys",
+ "secp256k1-sys 0.10.1",
  "serde",
+]
+
+[[package]]
+name = "secp256k1"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7f404a8dab7a7a5a631e741d8699aa9c8e1d689fc26ccf897c7187565490b69"
+dependencies = [
+ "rand 0.9.5",
+ "secp256k1-sys 0.14.1",
 ]
 
 [[package]]
@@ -5568,6 +5607,15 @@ name = "secp256k1-sys"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4387882333d3aa8cb20530a17c69a3752e97837832f34f6dccc760e715001d9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "secp256k1-sys"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b2992d4a3cd244539a7d5d0966aadbe5ca7fb868a5d7e38c29499b9e709bbd"
 dependencies = [
  "cc",
 ]
@@ -6217,7 +6265,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

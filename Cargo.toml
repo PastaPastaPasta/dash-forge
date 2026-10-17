@@ -71,7 +71,7 @@ platform-encryption = { git = "https://github.com/dashpay/platform.git", tag = "
 # `json-conversion`: parse the generated contracts and run document-property validation). It is
 # the package the SDK re-exports, so it unifies to one copy; no normal build depends on it.
 dpp = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-rc.3", default-features = false }
-secp256k1 = { version = "0.30", features = ["std"] }
+secp256k1 = { version = "0.33", features = ["std"] }
 
 # Workspace-wide lints. CI runs `cargo clippy --all-targets -- -D warnings`, which
 # promotes every `warn` below to a hard error. Kept pragmatic: `all` + a selected
