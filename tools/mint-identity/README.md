@@ -224,6 +224,39 @@ including an ENCRYPTION key. Exits non-zero if any check fails.
 node mint.mjs transfer --from <file> --to <file> [--amount 0.2]
 ```
 
+### Restore an identity after a Platform reset
+
+```bash
+node mint.mjs restore --identity <escrowed DEPLOYER.identity.json> [--network testnet] [--expect-id <id>] [--out <file>]
+```
+
+Re-creates the identity of an escrowed file after a **Platform** reset that kept
+**Core** (the only kind of testnet reset so far): it registers the file's keys from
+its original asset-lock transaction (`txid`, output 0), which the new Platform chain
+never consumed. An identity id is derived from the asset-lock outpoint alone, so the
+identity comes back with the **same id**, and so do the contracts it registers at the
+same nonces (`forge-contracts/scripts/deploy-v2.mjs --replay`; docs/contracts/forge-v2.md
+§8). Nothing is funded: the lock's credits pay again.
+
+Before any network call it checks that the file's mnemonic rebuilds its deposit
+address, asset-lock key and every identity key, and that the outpoint derives the
+file's `identityId` (and `--expect-id`). The lock is always proven by its block (a
+`ChainAssetLockProof`), on testnet too: an old InstantSend lock was signed by a quorum
+that has rotated out, and Platform refuses it. The network comes from the file
+(`--network` must agree); mainnet is refused (mint-identity has no mainnet config).
+
+- **Already restored** (the identity is on chain with the file's keys): exits 0 and
+  registers nothing.
+- **Refused** (exit 1), each saying that a same-id restore is impossible and a new
+  deployer and a new contract set are the way: Core no longer knows the transaction, or
+  it is not mined (Core was reset too, or this is another network); the identity exists
+  with other keys, or Platform reports the asset lock already used (something else
+  spent it on this chain).
+
+It writes `<name>.restored.identity.json` next to the input (or `--out`; 0600, never
+over an existing file, which is left as is when it holds the same identity) and prints
+the id, balance and asset-lock height, never the mnemonic or a key.
+
 ## Faucet & CAP proof-of-work (testnet)
 
 The faucet (`faucet.thepasta.org`) gates requests behind a **CAP** (`cap.js`)
@@ -304,7 +337,8 @@ src/chain.mjs       Insight first, DAPI Core on an Insight outage
 src/deposit.mjs     find a deposit UTXO (Insight, or the known outpoint via DAPI)
 src/utxo-ledger.mjs funding-key UTXO ledger + lock file (spend without Insight)
 src/islock.mjs      InstantSend lock retrieval via JSON-RPC (getislocks)
-src/lock.mjs        asset-lock proof data: instant (testnet) or chain (devnets)
+src/lock.mjs        asset-lock proof data: instant (testnet) or chain (devnets, restores)
+src/restore.mjs     restore: same-id re-creation of an escrowed identity from its asset lock
 src/platform.mjs    evo-sdk connect / register / topUp / balance / describe
 src/backup.mjs      bridge-format identity JSON writer (0600)
 src/flow.mjs        mint primitives shared by the subcommands
