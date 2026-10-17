@@ -98,6 +98,7 @@ const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}
 // --offline: the in-memory chain (lib/rc1-offline.mjs), never a network
 let OFF = null;
 let target;
+let IDS;
 try {
   checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'identities', 'addresses', 'report', 'only', 'contracts', 'out'], bools: ['help', 'offline'] });
   if (args.offline) {
@@ -113,12 +114,12 @@ try {
     refuseProduction(target);
     if (typeof args.identities !== 'string') throw new Error('--identities <dir> is required');
   }
+  // The forge-v2 contracts the record names: three, or four with forge-meta (the mainnet set, QA-03)
+  IDS = contractIds(target);
 } catch (e) {
   console.error(`rc1-live: ${e.message}\n${usage}`);
   process.exit(2);
 }
-// The forge-v2 contracts the record names: three, or four with forge-meta (the mainnet set, QA-03)
-const IDS = contractIds(target);
 if (target.scratch) log(`scratch registration ${target.recordFile} on ${target.label}`);
 const addresses = OFF ? undefined : addressesFor(target, args);
 

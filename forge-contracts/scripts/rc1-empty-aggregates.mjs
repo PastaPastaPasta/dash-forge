@@ -31,6 +31,7 @@ if (args.help) {
 }
 let target;
 let OFF = null;
+let IDS;
 try {
   checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'addresses', 'report', 'contracts'], bools: ['help', 'offline'] });
   if (args.offline) {
@@ -45,11 +46,11 @@ try {
     target = resolveTarget(args);
     refuseProduction(target);
   }
+  IDS = contractIds(target);
 } catch (e) {
   console.error(`rc1-empty-aggregates: ${e.message}\n${usage}`);
   process.exit(2);
 }
-const IDS = contractIds(target);
 const addresses = OFF ? undefined : addressesFor(target, args);
 
 const evo = OFF ? OFF.evo : await loadEvoSdk();
