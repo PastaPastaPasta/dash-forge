@@ -337,6 +337,9 @@ function lagging(e, type) {
   return TOTAL_READING_RULES.has(`${type}:${rule}`);
 }
 
+/** The member gate's refusals: 40120 (no document the gate refers to) and 40127 (a writer row whose `role` is not the claimed one); forge-web's `GATE_REFUSED_CODE` / `WHERE_MISMATCH_CODE`. */
+const MEMBER_GATE_REFUSED = new Set([40120, 40127]);
+
 /** How long a lagging node (`lagging`) gets to catch up: about one block. */
 const LAG_PAUSE_MS = 4000;
 
@@ -391,7 +394,7 @@ async function prepareRetry(e, attempt, label, reconnect, { retries, pauseMs, ty
  * landed, and a repeat of it is refused (as already present, or first by a rule such as `dense`
  * or c1..c6, which the chain judges before that).
  */
-export function documentWriter(box, evo, net, reconnect, { shape, retries = 3, pauseMs = 15000 } = {}) {
+export function documentWriter(box, evo, net, reconnect, { shape, retries = 3, pauseMs = 15000, roleLagMs = LAG_PAUSE_MS } = {}) {
   /** The role `who` holds in the repo, as the `writer.role` code, or null for a maintainer or a non-member (forge-web `readRoleOracle`). */
   const roleIn = async (who, repoId) => {
     const row = async (type) => {
@@ -408,12 +411,32 @@ export function documentWriter(box, evo, net, reconnect, { shape, retries = 3, p
   };
   return async (who, type, data) => {
     const version = box.sdk.version();
-    const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractIdOf(net, type), ownerId: who.id });
-    const document = evo.Document.fromObject({ ...base.toObject(), ...(await shapeData(shape, type, data, who, roleIn)) }, version);
+    /** Whether building the document read the signer's role (`mRole`): only then can a stale read be the refusal's cause. */
+    let readRole = false;
+    const build = async () => {
+      readRole = false;
+      const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractIdOf(net, type), ownerId: who.id });
+      const asked = async (...a) => { readRole = true; return roleIn(...a); };
+      return evo.Document.fromObject({ ...base.toObject(), ...(await shapeData(shape, type, data, who, asked)) }, version);
+    };
+    let document = await build();
+    let rebuilt = false;
     for (let attempt = 0; ; attempt++) {
       try {
         return await box.sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
       } catch (e) {
+        // The member gate refused (40120 / 40127) a document built from a role read that a lagging
+        // node may have answered stale (a writer row not yet visible just after enrolment, so
+        // `mRole` was left out): read the role afresh and rebuild once, as forge-web drops its
+        // cached membership on the same refusals (`role-claim.ts`). Nothing landed, so the new
+        // document's fresh `$id` is fine. A refusal that stands again is the real verdict.
+        if (readRole && !rebuilt && MEMBER_GATE_REFUSED.has(codeOf(e))) {
+          rebuilt = true;
+          log(`${type}: re-reading the signer's role after the member gate refused (${codeOf(e)})`);
+          await sleep(roleLagMs);
+          document = await build();
+          continue;
+        }
         if (attempt > 0 && document.id) {
           const landed = await box.sdk.documents
             .query({ dataContractId: contractIdOf(net, type), documentTypeName: type, where: [['$id', '==', document.id.toBase58()]], limit: 1 })
@@ -561,18 +584,22 @@ export const EVENT = {
   labelAdd: 4, assign: 6, threadResolve: 11, reviewRequest: 13, reviewDismiss: 15, headUpdate: 16, milestoneSet: 17, pin: 19,
 };
 
+/** The types that lost `vis` on the mainnet set (R-11); the clients drop it from exactly these. */
+const R11_NO_VIS = new Set(['topic', 'webhook']);
+
 /**
  * `data` as the contract that holds `type` wants it, for a signer `who`: what the contract
  * declares decides, as the clients' writers do (forge-core `Collab::content_fields`, forge-web
- * `lib/repo/mainnet-fields.ts`), so a three-contract set writes what it always did.
+ * `lib/repo/mainnet-fields.ts`), so each set gets the shapes its own contracts declare.
  *   * RC2 roles: a `writer` enrolment is role 1 (writer), and a role-gated write (a type declaring
  *     `r`) claims `r` 1, what a maintainer, an author, a runner or a role-1 writer sends (every seed
  *     identity is one of those). A value `data` names is kept.
  *   * mainnet L2: an issue, PR, comment or review that carries `asMember` and declares `mRole`
  *     restates the signer's `writer` role as `mRole`; a maintainer's operand checks no role, so it
  *     leaves `mRole` out. (`aud` is the seeds' public repos' nothing: it follows a sealed `enc`.)
- *   * mainnet R-11: a type that no longer declares `vis` proves a public repo by its reference
- *     alone, and one carrying `vis` is refused (a `topic`), so `vis` is dropped.
+ *   * mainnet R-11: `topic` and `webhook` no longer declare `vis` (a public repo is proved by the
+ *     reference alone) and one carrying it is refused, so `vis` is dropped from those two. Any other
+ *     type passing an undeclared `vis` is a seed mistake and still reaches the contract's refusal.
  * `roleIn(who, repoId)` reads the signer's role in the repo (`writer.role`, null for a maintainer).
  */
 export async function shapeData(shape, type, data, who, roleIn) {
@@ -583,7 +610,7 @@ export async function shapeData(shape, type, data, who, roleIn) {
     const role = await roleIn(who, out.repoId instanceof Uint8Array ? b58encode(out.repoId) : out.repoId);
     if (role !== null) out = { ...out, mRole: role };
   }
-  if ('vis' in out && !shape.declares(type, 'vis')) {
+  if ('vis' in out && R11_NO_VIS.has(type) && !shape.declares(type, 'vis')) {
     const { vis: _vis, ...rest } = out;
     out = rest;
   }

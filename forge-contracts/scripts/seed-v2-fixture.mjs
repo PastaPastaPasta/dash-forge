@@ -394,9 +394,10 @@ export async function main(argv, injected) {
   await create('ref:main:2', MAINTAINER, 'protectedRefUpdate', ref('refs/heads/main', commits.c2, commits.c1));
   await create('ref:feature', COLLAB, 'refUpdate', ref('refs/heads/feature/greeting', commits.c3));
   await create('ref:tag', OWNER, 'refUpdate', ref(`refs/tags/${RELEASE_TAG}`, commits.c1));
-  // A publish counts +1 toward the tag's one live release (`oneLive`). Where the contract declares
-  // `release.targetOid` (mainnet), a public publish records the tag's tip as the writer read it
-  // (`targetOnPublish`), the commit the tag's refUpdate above names.
+  // A publish counts +1 toward the tag's one live release (`oneLive`). Wherever the contract declares
+  // `release.targetOid` (the devnet forge-core declares it optional, mainnet requires it on a public
+  // publish: `targetOnPublish`), a public publish records the tag's tip as the writer read it, the
+  // commit the tag's refUpdate above names, as the real clients do.
   await create('release', OWNER, 'release', {
     repoId: R, tagName: RELEASE_TAG, name: RELEASE_TAG, notes: 'The first tagged commit of the fixture.', assets: '[]', vis: VIS, delta: 1,
     ...(shape.declares('release', 'targetOid') ? { targetOid: oid(commits.c1) } : {}),

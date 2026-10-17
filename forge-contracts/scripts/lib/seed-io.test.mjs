@@ -62,6 +62,9 @@ test('shapeData: the roles and vis follow the declaring contract; mRole only whe
   // a three-contract set declares no mRole: asMember is untouched and no role is read
   assert.deepEqual(await shapeData(SHAPES.devnet, 'issue', { repoId, asMember: repoId }, who, noRole), { repoId, asMember: repoId, });
   assert.deepEqual(await shapeData(SHAPES.mainnet, 'topic', { repoId, name: 'x', vis: 'public' }, who, noRole), { repoId, name: 'x' });
+  // only the R-11 types (topic, webhook) lose vis; any other type's undeclared vis is left to the contract's refusal
+  assert.deepEqual(await shapeData(SHAPES.mainnet, 'webhook', { repoId, vis: 'public' }, who, noRole), { repoId });
+  assert.deepEqual(await shapeData(SHAPES.mainnet, 'consent', { repoId, vis: 'public' }, who, noRole), { repoId, vis: 'public' });
   assert.equal('r' in (await shapeData(SHAPES.mainnet, 'chunk', { repoId }, who, noRole)), false);
   const asWriter = await shapeData(SHAPES.mainnet, 'comment', { repoId, asMember: repoId }, who, async () => 1);
   assert.equal(asWriter.mRole, 1);

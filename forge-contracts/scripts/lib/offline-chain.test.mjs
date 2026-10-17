@@ -270,3 +270,38 @@ test('a four-contract set: identifier lookups, no topic vis, and asMember with t
   // a non-member's asMember is refused by the chain, not papered over
   await assert.rejects(write(person('stranger'), 'issue', asMember(person('stranger'))), refusedWith(40120, 'issue.asMember'));
 });
+
+// A lagging node just after an enrolment answers the role read without the writer row: `mRole` is
+// left out, the member gate refuses (40120), and the write reads the role afresh and rebuilds once.
+test('a stale role read is re-read once when the member gate refuses', async () => {
+  const chain = new OfflineChain({ contractsDir: join(ROOT, 'contracts', 'mainnet') });
+  const evo = chain.evo();
+  const sdk = new evo.EvoSDK();
+  const shape = shapeOfSet(chain.set);
+  const plain = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { shape, retries: 0 });
+  const R = idBytes((await plain(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58());
+  await plain(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
+  await plain(OTHER, 'consent', { repoId: R });
+  await plain(OWNER, 'writer', membership(R, OWNER.id, OTHER.id));
+  const asMember = { repoId: R, number: 1, tk: 0, title: 't', vis: VIS, asMember: idBytes(OTHER.id) };
+
+  let writerReads = 0;
+  const lagging = {
+    version: () => sdk.version(),
+    documents: {
+      ...sdk.documents,
+      query: async (q) => (q.documentTypeName === 'writer' && ++writerReads === 1 ? new Map() : sdk.documents.query(q)),
+    },
+  };
+  const write = documentWriter({ sdk: lagging }, evo, { ids: chain.ids }, noReconnect, { shape, retries: 0, roleLagMs: 0 });
+  await write(OTHER, 'issue', asMember);
+  assert.equal(writerReads, 2, 'the role was read, then read again after the refusal');
+  assert.equal(chain.live('issue').length, 1);
+  assert.equal(chain.live('issue')[0].view.mRole, 1);
+
+  // a refusal that stands (a non-member) is retried once at most, then thrown
+  writerReads = -100;
+  const stranger = person('stranger');
+  await assert.rejects(write(stranger, 'issue', { ...asMember, number: 2, asMember: idBytes(stranger.id) }), refusedWith(40120, 'issue.asMember'));
+  assert.equal(chain.live('issue').length, 1);
+});

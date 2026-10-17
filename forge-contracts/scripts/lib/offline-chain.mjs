@@ -26,7 +26,10 @@ const SYSTEM_IDS = new Set(['$id', '$ownerId']);
  * four-contract set's `type: "identifier"`.
  */
 const identifierSchema = (s) => s?.contentMediaType === IDENTIFIER || s?.type === 'identifier';
-/** A byte-array property that is not an identifier: RC1 `byteArray`, or the mainnet set's `type: "bytes"`. */
+/**
+ * A byte-array property: RC1 `byteArray` (identifiers carry it too, so callers test `identifierSchema`
+ * first), or the mainnet set's `type: "bytes"`.
+ */
 const bytesSchema = (s) => s?.byteArray === true || s?.type === 'bytes';
 
 /** The default set: the three devnet contracts (`contracts/forge-*.json`). */
