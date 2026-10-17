@@ -443,8 +443,10 @@ pub struct KeyringIo<'a> {
 
 impl Keyring {
     /// An offline public-repository reader that knows epoch 0's anchor but holds no epoch keys,
-    /// for other crates' access tests.
-    #[cfg(feature = "test-support")]
+    /// for other crates' access tests. It holds no key material, so it is not feature-gated: a
+    /// featured dev-dependency would unify forge-core's `test-support` (rs-dpp) into the shipped
+    /// dependency graph the license notices read.
+    #[doc(hidden)]
     pub fn keyless_for_tests(repo_id: [u8; 32], reader: [u8; 32], members: Vec<Member>) -> Self {
         Self {
             repo_id,

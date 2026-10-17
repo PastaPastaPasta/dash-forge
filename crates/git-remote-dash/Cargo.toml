@@ -30,7 +30,6 @@ zeroize = "1"
 test-hooks = ["forge-core/test-hooks"]
 
 [dev-dependencies]
-forge-core = { path = "../forge-core", features = ["test-support"] }
 tempfile = "3"
 
 # `cargo binstall` fetches the prebuilt release archive instead of compiling; the same
