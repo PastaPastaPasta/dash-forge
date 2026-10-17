@@ -34,17 +34,17 @@ When the balance runs out, writes fail with [`E401`](../errors.md#e401). Reads k
 
 ## Deposits and burns
 
-Every byte you store on Platform costs about **27,700 credits**. On top of that, every document pays a fixed fee of about **0.0006–0.0009 DASH** for its index entries, whatever its size. Most of a large write is a **deposit**:
+Every byte you store on Platform costs about **27,700 credits**. On top of that, a document's fixed index overhead varies by type and by which index trees already exist: small testnet writes cost about **0.0002–0.0015 DASH** before adding large text or binary payloads. Most of a large write is a **deposit**:
 
 | Part | Credits | Comes back? |
 |---|---|---|
 | Storage deposit | 27,000 per byte | **Yes**, mostly, if the document is deleted (see [Refunds](#refunds)) |
 | Processing | ~400–700 per byte | No, it is burned |
-| Per document (its index entries) | ~58,000,000–92,000,000 | No |
+| Per document (its index entries) | Varies by type and first-write subtrees | The refundable portion of deleted index storage can come back |
 
 The per-document fee is why a small write costs about 0.001 DASH, not the few hundred thousand credits its bytes alone would cost.
 
-Rule of thumb for packs on Platform: **1 MiB ≈ 0.33–0.36 DASH** measured, about 0.0046–0.0050 DASH for each 14.7 KB chunk document; `dg` and `git push` quote ~0.39 DASH/MiB, an upper bound. About 75–85% of it is the deposit.
+Historical rule of thumb for packs on Platform †: **1 MiB ≈ 0.33–0.36 DASH** measured on devnet moutai, about 0.0046–0.0050 DASH for each 14.7 KB chunk document; `dg` and `git push` quote ~0.39 DASH/MiB, an upper bound. About 75–85% of it is the deposit.
 
 A chunk costs a little more the more chunks the whole network holds: every chunk of every repository sits in one tree, and adding one rewrites the chunks on its path to the root (about 7M credits per level, ~1.4% of a chunk). The quote allows for a network of up to about 65,000 chunks (~1 GB of packs on Platform). The dashpay/dash import on moutai (19,107 chunks, 2026-09-28) paid about 98M credits per chunk beyond its bytes, where the old quote allowed 94M, so its estimate came in 0.6% under the charge. The quote now allows 140M.
 
@@ -93,7 +93,7 @@ A deposit only comes back when the document is deleted. Some documents can never
 
 ## What each action costs
 
-This is the one table of what Forge costs; the other guides link here. Measured on **testnet, Platform 5.0.0-rc.4** (`dash-testnet-51`, protocol 14, SDK 5.0.0-rc.3), on **2026-10-17**, against the release rehearsal's scratch contracts. Each amount is the signing identity's stable proved balance change. The ECON-05 measurements and sample counts are recorded in `dash-forge-qa/evidence/testnet-rehearsal/econ/CALIBRATION.md` and `measurements.jsonl`.
+This is the one table of what Forge costs; the other guides link here. Measured on **testnet, Platform 5.0.0-rc.4** (`dash-testnet-51`, protocol 14, SDK 5.0.0-rc.3), on **2026-10-17**, against isolated contracts with the release schemas. Each amount is the signing identity's stable proved balance change. The ECON-05 measurements and sample counts are recorded in `dash-forge-qa/evidence/testnet-rehearsal/econ/CALIBRATION.md` and `measurements.jsonl`.
 
 A first write can create repository, author, target or identity-contract index state and cost more. The ranges below distinguish later writes from the measured first. **† means a historical devnet benchmark, not rerun on testnet**; large packs, imports, forks, external-storage pushes and key updates retain their named older provenance.
 
@@ -110,7 +110,7 @@ A first write can create repository, author, target or identity-contract index s
 | Each extra storage target † | ~0.00014 DASH per push (URI fields in manifests) |
 | Issue | **~0.00070 DASH later, 0.00118 first** with a short body; a 1,000-byte body ~0.00097 DASH and 4,000-byte body ~0.00180 DASH |
 | Comment | **~0.00052 DASH later, 0.00072 first** with a short body; a reply to an existing root ~0.00061 later, 0.00071 first |
-| Body, comment or release notes over 5,120 bytes | The document plus an artifact: quoted upper bounds ~0.010 DASH at 20 KB, ~0.021 at 50 KB on Platform, or a manifest with your own storage. Not measured in this rehearsal; see [forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9) |
+| Body, comment or release notes over 5,120 bytes | The document plus an artifact: quoted upper bounds ~0.010 DASH at 20 KB, ~0.021 at 50 KB on Platform, or a manifest with your own storage. Historical artifact estimates; see [forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9) |
 | Pull request | **~0.00081 DASH later, 0.00149 first** for a patch alone in an empty repository. CLI `--draft` writes an extra transition: 0.00147–0.00204 for the bundle |
 | Close, reopen, draft, ready or event-only merge | **~0.00046–0.00056 DASH later, up to 0.00073 first**. A merge that pushes code additionally pays its push |
 | Label or pin event | ~0.00051–0.00057 DASH later; first label event ~0.00076 |
@@ -119,7 +119,7 @@ A first write can create repository, author, target or identity-contract index s
 | Release document | ~0.00062 DASH later, ~0.00073 first; assets use your storage |
 | Consent / add a writer | Consent ~0.00031 later, ~0.00043 first; writer grant ~0.00042 later, ~0.00049 first. Removing a writer without sealed content refunds part of the deposit |
 | Star / unstar | **~0.00024–0.00025 DASH** for an established author's star in a populated repo; ~0.00057–0.00059 for an empty repo's first; ~0.00066 including the author's first write. Unstar refunded ~0.00033 in this run |
-| Counting a star toward Trending | Included in the fused star's price. No separate starBeat document exists on this scratch set |
+| Counting a star toward Trending | Included in the fused star's price. No separate starBeat document is written by the current contracts |
 | Follow / unfollow | ~0.00019 DASH with both trees populated; ~0.00038 for a new target, ~0.00056 first. Unfollow immediately refunded ~0.00012 with another follower, ~0.00023 for the target's last |
 | Watch / unwatch | ~0.00038 DASH later, ~0.00048 for a repo's first; unwatch refunded ~0.00033 |
 | Profile | ~0.00032 DASH create with a short name as the identity's first meta write (~0.00023 after prior meta writes), ~0.000028 same-size edit (three repeats) |
@@ -169,11 +169,11 @@ Per-operation cost reference (upper bounds; see `dg cost audit` for what you've 
   ref update                 ~0.00092 DASH ≈ $0.03
   pack manifest              ~0.0014 DASH ≈ $0.04
   pack chunk (14.7 KB)       ~0.00550791 DASH ≈ $0.17
-  issue (~500 B)             ~0.00218658 DASH ≈ $0.07
-  comment (~500 B)           ~0.00148658 DASH ≈ $0.04
+  issue (~500 B)             ~0.00168658 DASH ≈ $0.05
+  comment (~500 B)           ~0.00098658 DASH ≈ $0.03
 ```
 
-These are prepared calibration upper bounds (the binary must include ECON-05), the prices `dg` and `git push` quote before they sign, not measurements: each is priced as the first of its kind (a repository's first issue, a thread's first comment), at or above the most the table above measured for that write.
+These are the upper bounds `dg` and `git push` quote before signing: each is priced as the first of its kind (a repository's first issue, a thread's first comment), at or above the most the table above measured for that write.
 
 **Measured on devnet bonsia** (Platform 4.2.0-beta.7, 2026-09-30), where some writes cost more than on moutai: a repository's first issue 0.0012 DASH and a later one 0.0008; a first push to your own bucket 0.0052 DASH and a later one ~0.0040, the history index's manifests included; a limited key for `dg auth login` ~0.00027 DASH and a CI runner key 0.00043 (quoted 0.0005, one identity update); a CI check run 0.00082–0.00122 DASH (see [CI](ci.md#what-it-costs)).
 
@@ -262,7 +262,7 @@ When a document is deleted, Platform refunds the part of its storage deposit tha
 | Testnet | 1 hour | **about 83 days** | 1 day / 7 days / 14 days / 30 days / 60 days | 97 % / 80 % / 64 % / 36 % / 7 % (nothing after about 83 days) |
 | Devnets | set per devnet | 2,000 of its epochs | depends on the devnet | depends on the devnet |
 
-So on testnet, delete early or not at all: a document you delete after a few weeks returns only part of its deposit, and after about 83 days none. That is why the web app words every delete as "refunds **up to** X": X is what Platform would return right after the write, and the real refund is that much or less. The percentages come from Platform's fee distribution table (`FEE_DISTRIBUTION_TABLE` in rs-dpp), not from a Forge measurement.
+On testnet, a document deleted after a few weeks returns only part of its deposit, and after about 83 days none. The web app says "refunds **about** X if deleted soon; less as it ages": X is a conservative approximation from immediate-delete measurements, not an upper or lower bound. An older document may refund zero. The percentages come from Platform's fee distribution table (`FEE_DISTRIBUTION_TABLE` in rs-dpp), not from a Forge measurement.
 
 **What can be deleted, and so refunded:**
 
@@ -274,7 +274,7 @@ So on testnet, delete early or not at all: a document you delete after a few wee
 | The `repo` document | No |
 | Membership documents (`writer`, `maintainer`) | Yes, by the owner (that is how a collaborator is removed) |
 | Comments, reviews, labels, webhooks, stars, follows, your profile | Yes, by the author |
-| Release revisions | No on the rehearsal scratch set; unpublish appends another revision |
+| Release revisions | No. Release revisions are permanent; unpublish appends another revision |
 
 There is no `dg repo delete`: a repository cannot be deleted.
 
@@ -285,7 +285,7 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 ## Seeing costs before you pay
 
 - **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` before you write (in a repository it quotes a first push of it to `--backend platform`, `s3`, `ipfs`, `https` or `mixed`) and `dg cost prices` / `dg cost audit` to see the reference table or what you've already spent. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
-- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.4x on a tiny first push and 1.7x on a small later one. It asks before spending more than 0.05 DASH by default, and before storing more than 1 MiB on Platform when `dash.storage` is unset (Platform packs are permanent). To change that:
+- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.6x on a tiny first push and 1.85x on a small later one. It asks before spending more than 0.05 DASH by default, and before storing more than 1 MiB on Platform when `dash.storage` is unset (Platform packs are permanent). To change that:
   ```sh
   git config --global dash.costWarnThreshold 0.1    # ask above 0.1 DASH (default 0.05; `off` disables the threshold)
   git config --global dash.confirm auto             # auto | always | never | refuse
