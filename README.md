@@ -60,8 +60,6 @@ Every guide (collaborating, identity and keys, costs, CI, verification and more)
 
 ## For developers
 
-Original design brief: `../INIT.md`; reconciliation notes: [docs/init-reconciliation.md](docs/init-reconciliation.md).
-
 ### The product suite
 
 | Component | What it is |
@@ -97,7 +95,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 ### Document index
 
 1. [Platform constraints & research findings](docs/research/platform-constraints.md) — verified limits/fees that shape the design.
-2. [INIT.md reconciliation](docs/init-reconciliation.md) — what was adopted from the original brief; constraint-forced deviations, flagged for review.
+2. [Design brief reconciliation](docs/init-reconciliation.md) — what was adopted from the original design brief; constraint-forced deviations, flagged for review.
 3. [System architecture](docs/architecture.md) — components, contract topology, membership access control, storage backends, data flows, economics.
 4. [forge-v2 contracts](docs/contracts/forge-v2.md) — the shared contracts on Dash Platform v5: types, gates, client rules, costs, deployment.
 5. PRDs still describing the shipped design:
@@ -120,13 +118,6 @@ The web app at **https://forge.dashhq.org** (GitHub Pages) runs on devnet sakura
 Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 
 Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`.
-
-### Reference material (local workspace)
-
-- `../INIT.md` — original design path & PRDs (authoritative product intent).
-- `../platform` — Dash Platform monorepo (source of all cited limits/fees).
-- `../yappr` — reference zero-backend Platform app (SDK/auth/write patterns to reuse).
-- `../mainnet-bridge` / `../platform-identity-faucet` — bridge.thepasta.org and faucet.thepasta.org sources (identity/funding for users and e2e tests).
 
 ## Contributing, security and license
 
