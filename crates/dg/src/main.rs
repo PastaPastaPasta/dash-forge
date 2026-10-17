@@ -1,7 +1,7 @@
 //! `dg` — the gh-shaped Dash Forge CLI.
 //!
-//! The command surface deliberately mirrors `gh` (see
-//! `docs/archive/forge-v1/prd/02-git-remote-helper-cli.md` §B). Every command supports the global `--json` flag for machine-readable output, plus
+//! The command surface deliberately mirrors `gh` (see `docs/design/ux-dx-spec.md` §7). Every
+//! command supports the global `--json` flag for machine-readable output, plus
 //! `--network`, `--yes`, and an `--identity <file>` override. Cost-bearing commands print a
 //! DASH (primary) / USD (secondary) estimate and prompt unless `--yes`.
 

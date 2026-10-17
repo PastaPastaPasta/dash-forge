@@ -48,6 +48,7 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     broadcasts: 0,
     sdkOptions: [],
     failure: null, // { mode: 'before' | 'after' }
+    failAt: null, // { at, mode }: the at-th broadcast (counted from the start) fails so
     forceAdmins: null, // when set, the next group registered has these admins
     updateWaitThrows: true, // evo-sdk's wait refuses a contract update's proof ("affected state only")
     lag: null, // while lagging: { nonce }, the deployer's identity nonce as of an earlier block
@@ -97,7 +98,11 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     me.balance -= BigInt(st.toBytes().length) * COST_PER_BYTE;
     state.height += 1n;
     if (st.kind === 'create') {
-      if (transition.nonce !== me.nonce + 1n) throw new Error(`invalid identity nonce ${transition.nonce}, expected ${me.nonce + 1n}`);
+      // A node accepts a nonce up to MAX_MISSING_IDENTITY_REVISIONS (24) past the identity's (rs-dpp
+      // validate_identity_nonce_update); the skipped ones stay usable later, which this fake does not model
+      if (transition.nonce <= me.nonce || transition.nonce - me.nonce > 24n) {
+        throw new Error(`invalid identity nonce ${transition.nonce}: the identity's is ${me.nonce} (a create takes one up to 24 past it)`);
+      }
       if (json.id !== contractId(ownerId, transition.nonce)) throw new Error('contract id does not derive from the owner and nonce');
       if (transition.group) {
         state.groups.set(contractGroupId(ownerId, transition.nonce), {
@@ -167,8 +172,9 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
       this.stateTransitions = {
         broadcastAndWait: async (st) => {
           state.broadcasts += 1;
-          const failure = state.failure;
+          let failure = state.failure;
           state.failure = null;
+          if (state.failAt?.at === state.broadcasts) { failure = state.failAt; state.failAt = null; }
           if (failure?.mode === 'before') throw new Error('connection lost before the node accepted the transition');
           const nonceBefore = deployer()?.nonce ?? 0n;
           land(st);
@@ -202,16 +208,24 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     },
     /** The next broadcast fails: 'before' (never lands) or 'after' (lands, then the caller sees an error). */
     failNext: (mode) => { state.failure = { mode }; },
+    /** The n-th broadcast from now fails ('before' or 'after', as failNext). */
+    failIn: (n, mode) => { state.failAt = { at: state.broadcasts + n, mode }; },
     /** Something other than deploy-v2 signs with the deployer: its identity nonce moves. */
     externalTransition: (count = 1) => { deployer().nonce += BigInt(count); },
-    /** Platform resets: another chain id, no contracts, groups or nonces; the deployer is minted again. */
-    reset: (newChainId) => {
+    /**
+     * Platform resets: another chain id, no contracts, groups or nonces. The deployer is minted again
+     * (as `mint.mjs restore` does from its original asset lock) unless `deployer: false`.
+     */
+    reset: (newChainId, { deployer: restored = true } = {}) => {
       state.chainId = newChainId;
       state.contracts.clear();
       state.groups.clear();
       state.memberships.clear();
-      state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() });
+      state.identities.clear();
+      if (restored) state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() });
     },
+    /** The deployer identity is re-created on the current chain (a fresh nonce). */
+    restoreDeployer: () => { state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() }); },
     /**
      * The node lags (as one behind a load-balanced DAPI can): once the n-th broadcast lands, the
      * deployer's identity nonce reads as of the block before it until catchUp().

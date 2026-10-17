@@ -7,6 +7,9 @@
 //
 // Needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The network defaults to
 // DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
+// CONT-V-01: on testnet or mainnet it runs against a scratch --deployment record only; the live
+// deployments/<network>.json (or a copy naming its forge-core or group) is written only with
+// --production <network>, for the labelled FORGE-QA fixture or smoke (QA-14). DASH_FORGE_NETWORK alone never does.
 //
 // Three identities minted for the run (never the shared fixtures): OWNER creates two scratch
 // repos; MEMBER is enrolled as a runner of the first, then revoked; MEMBER and THIRD beat it
@@ -23,7 +26,7 @@
 //      the seeded order: MEMBER and THIRD beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  FUSED_STAR, VIS, checkOutcome, contractOn, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
+  VIS, checkOutcome, contractOn, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -35,7 +38,7 @@ const MOVED = {
 export async function main(argv, injected) {
   const a = parseArgs(argv);
   if (!a.owner || !a.member || !a.third) throw new Error('usage: --owner <A> --member <B> --third <C>');
-  const { net, evo, write: create, read, retry } = await openSession(a, injected);
+  const { net, evo, write: create, read, retry, shape } = await openSession(a, injected);
   const { ids } = net;
   const OWNER = loadIdentity(evo, a.owner, 'OWNER');
   const MEMBER = loadIdentity(evo, a.member, 'MEMBER');
@@ -121,9 +124,9 @@ export async function main(argv, injected) {
   check('count on topic.byName counts the tagged repo', counted);
 
   // 7. ranked trending with `oldest`: two beats on the first repo, one on the second
-  const beatType = FUSED_STAR ? 'star' : 'starBeat';
+  const beatType = shape.fusedStar ? 'star' : 'starBeat';
   for (const [w, id] of [[MEMBER, R], [THIRD, R], [MEMBER, idBytes(repo2Id)]]) {
-    await create(w, beatType, FUSED_STAR ? { repoId: id } : { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
+    await create(w, beatType, shape.fusedStar ? { repoId: id } : { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
   }
   // The scratch repos' rows of the ranking, in ranked order: [repoId, count].
   let mine = [];

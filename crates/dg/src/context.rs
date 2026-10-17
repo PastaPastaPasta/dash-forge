@@ -63,6 +63,15 @@ fn follows_repo_network(cmd: &crate::Command) -> bool {
     )
 }
 
+/// One stderr line when the resolved network's deployment is retired, at most once per
+/// process (CLIE-08).
+fn warn_if_retired(network: &Network) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    if let Some(notice) = forge_core::network::retired_notice(network) {
+        WARNED.call_once(|| eprintln!("warning: {notice}"));
+    }
+}
+
 /// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
 fn prompt_blocker(yes: bool, json: bool, stdin_tty: bool) -> Option<&'static str> {
     if yes {
@@ -339,6 +348,11 @@ impl Ctx {
                  config dash.network, config.toml or DASH_FORGE_NETWORK)"
             )
         })?;
+
+        // `dg doctor` shows this as a row of its own.
+        if !matches!(cli.command, crate::Command::Doctor { .. }) {
+            warn_if_retired(&target.network);
+        }
 
         if cli
             .identity

@@ -43,7 +43,7 @@ workarounds = ["chrono"]
 
 # Our own workspace crates are covered by LICENSE-MIT and LICENSE-APACHE, shipped beside the
 # notice. They are left out of it by name (render.jq, from generate.sh), not through
-# `private.ignore`, which needs `publish = false` in each crate.
+# `private.ignore`, so a crate that lacks `publish = false` cannot slip into the notice.
 
 # ---------------------------------------------------------------------------------------------
 # Crates whose manifest declares no license field. Crate-specific tables must come last.

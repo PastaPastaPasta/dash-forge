@@ -83,6 +83,7 @@ Host the Dash Forge repo itself on mainnet Forge: `dg repo create dash-forge` (o
 ## 8. Rollback / incident
 
 - Contracts are immutable in their gates and cannot be deleted — there is no "undo register." A bad registration means registering a *new* pair (`--force-new`) and shipping clients that read it; repositories created under the old pair stay there, unread. So **rehearse on sakura (and testnet once it runs protocol 14) and dry-run on mainnet first**.
+- A **Platform reset that keeps Core** is not a bad registration: the escrowed deployer and the committed record re-register the same ids (`mint.mjs restore`, then `deploy-v2.mjs --replay`; docs/contracts/forge-v2.md §8, "Same-id restore after a Platform reset"). Keep the deployer file's asset-lock `txid` and the record's ledger complete for that.
 - A client bug ships via a normal client release (Pages redeploy / new `dg` binary) — no on-chain action.
 - External-backend outage: `dg reseed --from-local` from any clone restores a lost copy at its recorded address (given write access to that storage); a member can record copies at a new address with `dg reseed --profile` or `dg repack --profile`. Refs/manifests on Platform are unaffected.
 

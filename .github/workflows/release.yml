@@ -21,6 +21,12 @@ name: Release
 #   * pull_request, and push to master, touching crates/Cargo/the pipeline: always a dry
 #     run (master's also seeds the build cache).
 #
+# Before building, `plan` runs forge-contracts/scripts/check-release-network.mjs: a final
+# release (a publishing run of a version with no `-`) is refused unless testnet and the web
+# build's network (forge-web/scripts/ipfs-release.sh) have a registered forge-v2 set in
+# forge-contracts/deployments/, and the web build is not on a devnet. Pre-releases and dry
+# runs get the same findings as warnings.
+#
 # Least privilege: the workflow default is `contents: read`, and every build, test and
 # checksum job runs with only that. `publish` gets `contents: write` (create the release),
 # `id-token: write` (Sigstore OIDC) and `attestations: write`; it checks out no code and runs no
@@ -49,6 +55,11 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+      # CLIE-V-02: the release network guard reads these (the registration commit, the web build's network),
+      # so master dry-runs after they change. Not on pull_request: the six-target dry run is an hour of runners.
+      - 'forge-contracts/deployments/**'
+      - 'forge-web/scripts/ipfs-release.sh'
+      - 'forge-contracts/scripts/check-release-network.mjs'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -155,6 +166,16 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "### Release plan: \`$version\` (publish: $publish)" >> "$GITHUB_STEP_SUMMARY"
+
+      # CLIE-02, TEST-V-03: a final release (publishing a version with no `-`) is refused unless testnet,
+      # the default network of every binary, and the network the web build reads have a registered
+      # forge-v2 set, and the web build is not on a devnet. Anything else gets the findings as warnings.
+      # Runs before any build, so a refused final tag costs minutes. It publishes, signs and tags nothing.
+      - name: Refuse a final release whose network has no Forge deployment
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          PUBLISH: ${{ steps.v.outputs.publish }}
+        run: node forge-contracts/scripts/check-release-network.mjs --version "$VERSION" --publish "$PUBLISH"
 
       # The "Networks" block and the link to docs/releases/v<version>.md that `publish` appends to
       # the generated notes. Written here, where the tagged commit is checked out, so `publish`

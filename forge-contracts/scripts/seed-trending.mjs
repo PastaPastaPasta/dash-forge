@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 // seed-trending.mjs — the data forge-web/e2e/trending.spec.ts ranks: three new repos starred by
 // three identities so that Trending has a known shape (3, 2 and 1 new stargazers). Each star
-// comes with its trending beat (with RC2's fused star, FUSED_STAR, the star is the beat), and
+// comes with its trending beat (with RC2's fused star, `shape.fusedStar`, the star is the beat), and
 // the `$createdAt` of every beat is bracketed by the clock around its write.
 //
 //   node forge-contracts/scripts/seed-trending.mjs --out <seed.json> --owner <D.identity.json> \
 //        --identity <A.identity.json> --identity <B.identity.json> --identity <C.identity.json> \
 //        [--network devnet --devnet-name sakura] [--deployment <file>]
 //
-// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The
+// Writes RC1 documents, in the form the deployed contracts declare (the three-contract devnet set, or the
+// four-contract mainnet set: lib/seed-io.mjs `shapeData`); needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The
 // network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
+// CONT-V-01: on testnet or mainnet it runs against a scratch --deployment record only; the live
+// deployments/<network>.json (or a copy naming its forge-core or group) is written only with
+// --production <network>, for the labelled FORGE-QA fixture or smoke (QA-14). DASH_FORGE_NETWORK alone never does.
 //
 // Four identities, all minted for the run (`qa mint`), never the shared fixtures:
 //   * `--owner` creates the repos;
@@ -22,14 +26,15 @@
 // per identity and repo, ever).
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-import { FUSED_STAR, VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
+import { VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
 
 export async function main(argv, injected) {
   const opt = parseArgs(argv, ['identity']);
   if (!opt.out || !opt.owner || opt.identity.length !== 3) {
     throw new Error('usage: --out <seed.json> --owner <D> --identity <A> --identity <B> --identity <C> (the owner makes the repos and never stars them)');
   }
-  const { evo, write, read } = await openSession(opt, injected);
+  const { evo, write, read, shape } = await openSession(opt, injected);
+  const fused = shape.fusedStar;
   const D = loadIdentity(evo, opt.owner, 'D');
   const [A, B, C] = opt.identity.map((f, i) => loadIdentity(evo, f, 'ABC'[i]));
   if (new Set([D, A, B, C].map((w) => w.id)).size !== 4) throw new Error('the owner and the three stargazers must be four different identities');
@@ -47,10 +52,10 @@ export async function main(argv, injected) {
     if (state.beats.some((b) => b.repoId === repoId && b.owner === w.id)) return;
     const own = (type) => read.owns(w, type, repoId);
     const before = Date.now();
-    const beatType = FUSED_STAR ? 'star' : 'starBeat';
-    if (!FUSED_STAR && !(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
+    const beatType = fused ? 'star' : 'starBeat';
+    if (!fused && !(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
     if (await own(beatType)) log(`the beat of ${w.id.slice(0, 6)} on ${repoId.slice(0, 6)} landed in an earlier run: its time is taken as now`);
-    else if (FUSED_STAR) await write(w, 'star', { repoId: idBytes(repoId) });
+    else if (fused) await write(w, 'star', { repoId: idBytes(repoId) });
     else await write(w, 'starBeat', { repoId: idBytes(repoId), vis: VIS, repoOwner: idBytes(D.id) });
     if (!(await until(() => own(beatType)))) throw new Error(`the beat of ${w.id} on ${repoId} did not land`);
     const after = Date.now();

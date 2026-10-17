@@ -2,7 +2,7 @@
 
 > **Historical.** Spike results for forge-v1 (a global registry contract plus one contract per repository, with token access control), run on testnet in July 2026. forge-v1 was removed on 2026-09-26 with no backwards compatibility; the token-ACL and contract-topology decisions below no longer apply. The current design is [forge-v2](../../contracts/forge-v2.md).
 
-All nine Phase-0 spikes executed against live testnet / real backends. Per-spike detail lived in `spikes/S0.*/RESULTS.md` (the spike code is no longer in the tree; it is in git history under the `archive/spikes` tag); this is the consolidated record and the input to Design Freeze #1. **Headline: GO.** Every load-bearing assumption held or was corrected without a structural redesign.
+All nine Phase-0 spikes executed against live testnet / real backends. Per-spike detail lived in `spikes/S0.*/RESULTS.md` (the spike code is no longer in the tree; it is in git history; commit `36543f658` is the last one that has it); this is the consolidated record and the input to Design Freeze #1. **Headline: GO.** Every load-bearing assumption held or was corrected without a structural redesign.
 
 ## Results at a glance
 

@@ -20,7 +20,8 @@ the RC2 items of `design/v5/PLAN.md` §3 on top, each behind a flag in FLAGS, an
 the new core).
 
 --check     write nothing; exit 1 when either committed set (contracts/ and contracts/mainnet/) or the
-            registered v1 schemas differ from a fresh build (CI). Run it alone: no --mainnet/--out.
+            registered v1 schemas (contracts/registered/, and registered/<network>/ for each
+            NETWORK_REGISTRATIONS entry) differ from a fresh build (CI). Run it alone: no --mainnet/--out.
 --off/--on  turn flags off (or on) for a variant: nothing is written unless --out names a directory,
             so the committed contracts always match FLAGS. A registration-time decision (a fee
             probe that turns an RC2 item off) is made by flipping its default in FLAGS and
@@ -153,6 +154,17 @@ FLAGS = dict(
 # The UPDATE-1 items: every one off is the registered v1 set (registered/*.v1.json).
 UPDATE1_FLAGS = ('release_target_oid', 'config_moved_to', 'pack_mirror', 'transition_closed_by_pr', 'profile_key_proofs',
                  'profile_bot', 'author_retarget', 'policy_code_owners', 'repo_ban')
+# Each production network's registration (CONT-03): the committed set it registered, and the flags added after
+# it. `contracts/registered/<network>/<name>.v1.json` is a byte copy of what that network registered
+# (`freeze-registered.mjs` writes it at the registration commit, P4) and the build with the `since` flags off
+# must reproduce it, so an edit to an earlier flag cannot silently change what an update is validated against
+# (`--check`). 'set' is 'mainnet' (the four-contract set, MAINNET_BUILT on) or 'devnet' (the three-contract set).
+# A post-registration flag must be added to that network's `since` in the SAME PR that adds the flag, or
+# `--check` fails (the same discipline as UPDATE1_FLAGS above). `since` can only name flags that were OFF at
+# registration; a flag that was on and is later turned off cannot be expressed (--check fails loudly). Empty until
+# the registration commit adds
+#   'testnet': {'set': 'mainnet', 'since': ()}
+NETWORK_REGISTRATIONS = {}
 # ---- Mainnet-only (a fresh registration may add them; an update never can: rules, references and
 # required fields on existing types are frozen, forge-v2.md §9). Off in every devnet build; the mainnet
 # registration turns them on with --mainnet. Each is documented in docs/contracts/forge-v2.md §9.1.
@@ -1510,6 +1522,53 @@ def over_budget(contracts, size):
     return TRANSITION_LIMIT - st < ROOM_MIN if META in contracts else n > CEILING
 
 
+def stale_registered(registered_root, registrations):
+    """The frozen registered schemas that no longer match what builds them, as (path, reason).
+
+    The legacy three, `registered/<name>.v1.json`, must equal the build with every UPDATE-1 item off:
+    devnet sakura registered them on 2026-10-01 (it was re-registered fresh from the then-current schema
+    on 2026-10-13 with the same ids, so these copies describe its first registration, not its second;
+    the CI gate still validates the devnet set as an update of them, and they are not moved).
+    For each production network in `registrations` (CONT-03), `registered/<network>/<name>.v1.json` must
+    equal the set it registered, with the flags added since (`since`) off. A directory with no entry,
+    or an entry with no directory, is stale: what a network registered is frozen in the same commit that
+    names it."""
+    stale = []
+    v1 = build(flags_from(','.join(UPDATE1_FLAGS)))
+    for n in NAMES:
+        p = os.path.join(registered_root, f'{n}.v1.json')
+        if not os.path.exists(p) or open(p).read() != dumps(v1[n]):
+            stale.append((p, 'is not the build with every UPDATE-1 flag off'))
+    dirs = sorted(d for d in os.listdir(registered_root) if os.path.isdir(os.path.join(registered_root, d))) \
+        if os.path.isdir(registered_root) else []
+    for d in dirs:
+        if d not in registrations:
+            stale.append((os.path.join(registered_root, d),
+                          f'exists but NETWORK_REGISTRATIONS has no {d} entry (build.py)'))
+    for network, reg in registrations.items():
+        net_dir = os.path.join(registered_root, network)
+        if not os.path.isdir(net_dir):
+            stale.append((net_dir, f'is missing: NETWORK_REGISTRATIONS names {network} but nothing is frozen'))
+            continue
+        since = ','.join(reg.get('since', ()))
+        if reg['set'] == 'mainnet':
+            built = build(mainnet_flags(off=since))
+        elif reg['set'] == 'devnet':
+            built = build(flags_from(off=since))
+        else:
+            sys.exit(f"NETWORK_REGISTRATIONS[{network!r}]: unknown set {reg['set']!r} (mainnet or devnet)")
+        want = {f'{n}.v1.json': dumps(c) for n, c in built.items()}
+        for f, text in want.items():
+            p = os.path.join(net_dir, f)
+            if not os.path.exists(p) or open(p).read() != text:
+                stale.append((p, f"is not the {reg['set']} set {network} registered"
+                                 f"{' without ' + since if since else ''}"))
+        for f in sorted(os.listdir(net_dir)):
+            if f not in want:
+                stale.append((os.path.join(net_dir, f), f'is not a contract of the {reg["set"]} set'))
+    return stale
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--check', action='store_true')
@@ -1564,15 +1623,11 @@ def main():
                     p = os.path.join(MAINNET_DIR, f)
                     stale.append(p)
                     print(f'stale: {os.path.relpath(p)} (not part of the --mainnet build)')
-        # The registered v1 schemas are frozen copies of what devnet sakura registered on
-        # 2026-10-01; the build with every UPDATE-1 item off must still reproduce them, so an edit
-        # to an earlier flag cannot silently change what an update is validated against.
-        v1 = build(flags_from(','.join(UPDATE1_FLAGS)))
-        for n in NAMES:
-            p = os.path.join(REGISTERED, f'{n}.v1.json')
-            if not os.path.exists(p) or open(p).read() != dumps(v1[n]):
-                stale.append(p)
-                print(f'differs: {os.path.relpath(p)} is not the build with every UPDATE-1 flag off')
+        # The registered schemas are frozen copies of what each network registered: the legacy three
+        # (devnet sakura, 2026-10-01) and registered/<network>/ for each production network.
+        for p, why in stale_registered(REGISTERED, NETWORK_REGISTRATIONS):
+            stale.append(p)
+            print(f'differs: {os.path.relpath(p)} {why}')
         sys.exit(1 if stale else 0)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)

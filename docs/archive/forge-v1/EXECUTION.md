@@ -57,7 +57,7 @@ Economics: repo-v1 ~1.18 DASH, registry 0.68 DASH — update economics.md create
 Next-session start: (1) add a chunk-query read helper to platform.rs + finish PlatformBackend.get live-tested; (2) build repo-v1 instantiation in forge-core (contract create from template + initial config/listing) — pull faucet grant for DEPLOYER first (repo-v1 with 2 tokens+15 types+count-trees likely ≥1 DASH); (3) wire git-remote-dash helper end-to-end; (4) M1 round-trip on testnet. All forge-core primitives are built, reviewed, and (write path) live-proven — M1 is integration.
 
 Economics note: registry 0.68 DASH, S0.7 token contract ~0.24 — repo-v1 (2 tokens + 15 types + count-trees) likely ≥1 DASH to instantiate. Pull faucet grants as needed; delete-to-refund test repos.
-Reusable JS platform patterns (for reference / evo-sdk web): the spikes' `S0.1/lib.mjs` (nonce/broadcast) and `S0.7/lib.mjs` (key+signer, fromJSON contract), now only in git history (tag `archive/spikes`), tools/mint-identity/src/platform.mjs.
+Reusable JS platform patterns (for reference / evo-sdk web): the spikes' `S0.1/lib.mjs` (nonce/broadcast) and `S0.7/lib.mjs` (key+signer, fromJSON contract), now only in git history (commit `36543f658`), tools/mint-identity/src/platform.mjs.
 
 ## Stage 3 — dg + relay → M2
 - [ ] dg full surface · [ ] forge-relay + CI consumer · [ ] M2 gate + dogfood

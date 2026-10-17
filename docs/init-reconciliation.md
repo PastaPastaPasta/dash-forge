@@ -44,7 +44,7 @@ An independent review (with empirical git experiments) found and the docs now in
 
 ## Design Freeze #1 (spike findings — all 9 Phase-0 spikes executed on live testnet)
 
-Full record and numbers: [research/spike-results.md](archive/forge-v1/spike-results.md). **Headline: GO** — every load-bearing assumption held or was corrected without a structural redesign. The corrections below are folded into the docs in the same commit:
+Full record and numbers: [archive/forge-v1/spike-results.md](archive/forge-v1/spike-results.md). **Headline: GO** — every load-bearing assumption held or was corrected without a structural redesign. The corrections below are folded into the docs in the same commit:
 
 1. **No non-`byteArray` arrays** (S0.6, protocol v12): every list field (`topics`, `links`, `protectedPatterns`, all `uris`, `release.assets`, `webhook.events`, `packManifest.tips`/`supersedes`) is re-encoded as **JSON-in-string or packed byteArray**, never a native array. None were indexed → query design unaffected. (`data-contracts §0`, field schemas.)
 2. **Index sort direction is `asc`-only** in stored contracts; `$createdAt desc` markers are query-time reverse traversal, not stored properties. (`data-contracts §0`.)

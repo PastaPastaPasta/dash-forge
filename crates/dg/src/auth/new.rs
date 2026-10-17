@@ -67,6 +67,11 @@ pub struct NewArgs {
     /// Fallback block explorer (Insight API base URL), asked only when DAPI cannot answer.
     #[arg(long, value_name = "URL")]
     pub explorer: Option<String>,
+    /// JSON-RPC (`getislocks`) to ask for an InstantSend proof of the asset lock, or `off` to
+    /// prove with a chain lock only. Default: `islock_rpc` in config.toml, else the network's
+    /// (testnet: the third-party https://trpc.digitalcash.dev, which sees the asset-lock txid).
+    #[arg(long, value_name = "URL")]
+    pub islock_rpc: Option<String>,
     /// Resume an interrupted creation (asks for the words again).
     #[arg(long)]
     pub resume: bool,
@@ -345,6 +350,33 @@ async fn broadcast(
         .context("broadcasting the asset lock")
 }
 
+/// The funding endpoints for this run: the network's, with the explorer from `--explorer` and
+/// the InstantSend RPC from `--islock-rpc`, else `islock_rpc` in config.toml.
+/// A value that is not an https URL (or `off`) is a usage error, before anything is done.
+fn endpoints_for(ctx: &Ctx, args: &NewArgs) -> Result<CoreEndpoints> {
+    let (islock, from) = match &args.islock_rpc {
+        Some(v) => (Some(v.clone()), "--islock-rpc"),
+        // An unreadable config.toml is an error, never the default RPC: `islock_rpc = "off"`
+        // must not quietly turn back into a third-party endpoint.
+        None => (
+            crate::config::Config::load()?.islock_rpc,
+            "islock_rpc in config.toml",
+        ),
+    };
+    CoreEndpoints::for_network(ctx.network(), args.explorer.as_deref())
+        .with_islock_rpc(islock.as_deref())
+        .map_err(|e| crate::errors::usage(format!("{from}: {e}")))
+}
+
+/// Whether Platform refused an InstantSend proof in a way a chain-lock proof of the same
+/// asset lock fixes: the lock's signature is invalid, or too old for its quorum (DPP's
+/// `InvalidInstantAssetLockProofSignatureError`: "… Please try chain asset lock proof
+/// instead."). Seen on testnet when a resumed creation reuses an old asset lock.
+fn instant_proof_refused(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    e.contains("instant lock proof signature") || e.contains("try chain asset lock proof")
+}
+
 /// Wait until the lock is provable: InstantSend where available, else a chain lock.
 async fn prove(
     ctx: &Ctx,
@@ -370,6 +402,18 @@ async fn prove(
             "  no InstantSend lock; proving with a chain lock instead",
         );
     }
+    prove_chain(ctx, client, insight, lock, start).await
+}
+
+/// Wait until the lock is mined and Platform has chain-locked it, `start` being when this
+/// proof began (the wait is bounded by [`PROOF_WAIT`] from there).
+async fn prove_chain(
+    ctx: &Ctx,
+    client: &PlatformClient,
+    insight: &Insight,
+    lock: &SignedAssetLock,
+    start: Instant,
+) -> Result<LockProof> {
     let mut height = None;
     let mut last_clh = 0;
     say(
@@ -435,10 +479,7 @@ fn duffs_to_dash(duffs: u64) -> f64 {
 
 /// `--restart`: drop the unfinished journal, asking first if its address may hold funds.
 async fn discard(ctx: &Ctx, args: &NewArgs, j: &Journal) -> Result<()> {
-    let insight = Insight::new(&CoreEndpoints::for_network(
-        ctx.network(),
-        args.explorer.as_deref(),
-    ));
+    let insight = Insight::new(&endpoints_for(ctx, args)?);
     // Neither source answering is "unknown", not "empty": ask. DAPI's history also misses an
     // unconfirmed payment, so a zero is only trusted when the explorer agrees.
     let held = match ctx.connect().await {
@@ -704,7 +745,7 @@ async fn fund_and_lock(
     keys: &NewIdentityKeys,
     j: &mut Journal,
 ) -> Result<(SignedAssetLock, LockProof)> {
-    let endpoints = CoreEndpoints::for_network(ctx.network(), args.explorer.as_deref());
+    let endpoints = endpoints_for(ctx, args)?;
     let insight = Insight::new(&endpoints);
     let lock = if let (Some(txid), Some(raw)) = (&j.lock_txid, &j.lock_raw) {
         SignedAssetLock {
@@ -776,7 +817,8 @@ async fn register(
     client: &PlatformClient,
     args: &NewArgs,
     keys: &NewIdentityKeys,
-    proof: &LockProof,
+    lock: &SignedAssetLock,
+    proof: &mut LockProof,
     identity_id: &str,
     spec: &LimitedKeySpec,
     checked: &GroupCheck,
@@ -838,10 +880,31 @@ async fn register(
     // Stored before the identity exists: an interruption never leaves a key nobody holds.
     let stored = store::store(&network, identity_id, &text, insecure)?;
     say(ctx, "  registering the identity…");
-    client
-        .create_identity(keys, proof, &limited, spec)
-        .await
-        .context("registering the identity")?;
+    let created = client.create_identity(keys, proof, &limited, spec).await;
+    if let Err(e) = created {
+        // An InstantSend proof Platform will not take (a stale lock on a resume, as much as a
+        // fresh one) is not the end: the same asset lock proves with a chain lock. Chain locks
+        // need no InstantSend source, so this also works when the RPC is down.
+        if !(matches!(proof, LockProof::Instant { .. }) && instant_proof_refused(&e.to_string())) {
+            return Err(anyhow::Error::from(e).context("registering the identity"));
+        }
+        say(
+            ctx,
+            "  Platform refused the InstantSend proof; proving with a chain lock instead",
+        );
+        let insight = Insight::new(&endpoints_for(ctx, args)?);
+        let chain = prove_chain(ctx, client, &insight, lock, Instant::now()).await?;
+        if identity_id_for(&chain)? != identity_id {
+            anyhow::bail!(
+                "the chain-lock proof names a different identity than the InstantSend one"
+            );
+        }
+        *proof = chain;
+        client
+            .create_identity(keys, proof, &limited, spec)
+            .await
+            .context("registering the identity")?;
+    }
     super::verify_key(
         client,
         identity_id,
@@ -867,6 +930,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     }
     check_backup_file(&args.backup, !args.resume)?;
     deposit_duffs(args.amount)?;
+    endpoints_for(ctx, args)?;
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
     if let Some(label) = &args.name {
         let (valid, contested) = identity::dpns_label_kind(label);
@@ -883,7 +947,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
 
     let backup_pass = backup_passphrase(args)?;
     let (keys, mut j) = start_or_resume(ctx, &client, args, backup_pass.as_ref()).await?;
-    let (lock, proof) = fund_and_lock(ctx, &client, args, &keys, &mut j).await?;
+    let (lock, mut proof) = fund_and_lock(ctx, &client, args, &keys, &mut j).await?;
     let identity_id = identity_id_for(&proof)?;
     j.identity_id = Some(identity_id.clone());
     save_journal(&j)?;
@@ -893,7 +957,8 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
         &client,
         args,
         &keys,
-        &proof,
+        &lock,
+        &mut proof,
         &identity_id,
         &spec,
         &checked,
@@ -1063,6 +1128,25 @@ mod tests {
                     .to_string();
                 assert!(err.contains("nowhere safe"), "{here:?}: {err}");
             }
+        }
+    }
+
+    /// TEST-10: the Platform refusals a chain-lock proof of the same asset lock fixes.
+    #[test]
+    fn a_refused_instantsend_proof_falls_back_to_a_chain_lock() {
+        assert!(instant_proof_refused(
+            "state transition broadcast error: Instant lock proof signature is invalid or \
+             wasn't created recently. Please try chain asset lock proof instead."
+        ));
+        assert!(instant_proof_refused(
+            "... TRY CHAIN ASSET LOCK PROOF INSTEAD"
+        ));
+        for other in [
+            "Insufficient identity balance",
+            "connection reset by peer",
+            "asset lock transaction output already used",
+        ] {
+            assert!(!instant_proof_refused(other), "{other}");
         }
     }
 
