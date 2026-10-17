@@ -40,11 +40,11 @@ Before 1.0, a minor release may still raise `schemaVersion`, so pin the `dg` ver
 
 A release works with the forge-v2 contracts registered on each network, and their ids are built into the binaries and the web app. They come from [`forge-contracts/deployments/`](../forge-contracts/deployments):
 
-- `<network>.json`, one file per network (`devnet-sakura.json`, `testnet.json`, `mainnet.json`, and so on): the contract ids, the contract group and its owner, the DAPI addresses and the quorum key endpoint. A file without a `v2` section means Forge is not deployed there, and a file marked `retired` is a network Forge has left;
+- `<network>.json`, one file per network (`testnet.json`, `mainnet.json`, `devnet-<name>.json`, and so on): the contract ids, the contract group and its owner, the DAPI addresses and the quorum key endpoint. A file without a `v2` section means Forge is not deployed there, and a file marked `retired` is a network Forge has left;
 - `contracts/<network>.json`: a snapshot of the registered contracts, which the web app bundles;
 - `fixtures/<network>.json`: the seeded test data the end-to-end suites read.
 
-A release works on the networks that have a live deployment in that directory at the time it is tagged. Tools from an older release do not know about a later registration. So a devnet reset, a move to a new devnet, or a re-registration of the contracts can require a new release. That happened when Forge moved to devnet sakura: tools built for the previous devnet do not work there ([Dash Forge moved to devnet sakura](archive/devnet-move.md)). On a network without a deployment, every tool stops with a "not deployed" error ([E702](errors.md#e702)) and never falls back to another network's contracts.
+A release works on the networks that have a live deployment in that directory at the time it is tagged. Tools from an older release do not know about a later registration. So a devnet reset, a move to a new devnet, or a re-registration of the contracts can require a new release. That happened when Forge moved between devnets: tools built for the previous devnet do not work on the next ([Networks](networks.md#history)). On a network without a deployment, every tool stops with a "not deployed" error ([E702](errors.md#e702)) and never falls back to another network's contracts.
 
 ## How a release is cut
 

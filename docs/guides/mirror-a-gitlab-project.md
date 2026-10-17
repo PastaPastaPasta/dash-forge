@@ -28,7 +28,7 @@ You need:
   - GitLab.com plans to limit anonymous API use to 60 requests an hour. Use a token for anything but a quick look.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), set with `dg storage use <profile> --global`, so pack bytes do not go on Platform.
 
-> **Network.** Forge runs on devnet sakura (`--network devnet --devnet-name sakura`). See [Which network](README.md#which-network).
+> **Network.** Forge runs on testnet, the default of every tool here. See [Which network](README.md#which-network).
 
 ---
 
@@ -38,7 +38,7 @@ Name the project as `gitlab.com/<group>/<project>` or by its URL. A project on y
 
 ```sh
 export GITLAB_TOKEN=glpat-…        # read_api
-export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=sakura   # forge-import does not read dg's saved network
+export DASH_FORGE_NETWORK=testnet   # forge-import does not read dg's saved network (testnet is its default)
 forge-import gitlab.com/acme/widget --dry-run
 forge-import team/app --gitlab-url https://git.example.org --dry-run
 forge-import team/app --gitlab-url https://example.org/gitlab --dry-run   # a relative URL root
@@ -79,7 +79,20 @@ GitLab's own push mirroring cannot target Forge: it accepts only `http://`, `htt
 
 Both jobs run only on protected refs. That is where the protected key is available, and an unprotected branch's pipeline must never reach it.
 
-Add to the project's `.gitlab-ci.yml`, pinning a Dash Forge commit you have reviewed (the commit in the URL and `FORGE_SOURCE_REF` must agree). No release is published yet; once one is, you can pin its tag in the URL and set `FORGE_VERSION` to its version instead:
+Add to the project's `.gitlab-ci.yml`, pinning a Dash Forge release tag in the URL and its version in `FORGE_VERSION`:
+
+```yaml
+include:
+  - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.2.0/integrations/gitlab/dash-forge-mirror.yml
+
+variables:
+  FORGE_REPO: dash://<owner identity id>/<repo name>
+  FORGE_VERSION: "0.2.0"
+  FORGE_IMPORT: "true"
+  FORGE_COST_CAP: "0.05"
+```
+
+To run code that is not in a release, pin a commit you have reviewed instead (the commit in the URL and `FORGE_SOURCE_REF` must agree) and leave `FORGE_VERSION` empty:
 
 ```yaml
 include:
@@ -87,10 +100,8 @@ include:
 
 variables:
   FORGE_REPO: dash://<owner identity id>/<repo name>
-  FORGE_VERSION: ""                              # no release is published yet: build from the commit
+  FORGE_VERSION: ""
   FORGE_SOURCE_REF: <40-character commit>        # the same commit as in the URL
-  FORGE_IMPORT: "true"
-  FORGE_COST_CAP: "0.05"
 ```
 
 Then, in **Settings > CI/CD > Variables**:

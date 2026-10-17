@@ -56,7 +56,7 @@ node forge-contracts/scripts/deploy-v2.mjs --identity <deployer-mainnet.identity
 - Until `mainnet.json` has a registered `v2` pair, every client reports "not deployed" on mainnet. That is the expected pre-deploy state; clients never fall back to another network's ids.
 - `forge-core` embeds every `forge-contracts/deployments/*.json` at build time (`crates/forge-core/build.rs`), so committing `mainnet.json` is the whole Rust change. Rebuild and confirm with `dg doctor --network mainnet`: the `contracts` check names forge-core and forge-collab and `forge-contracts/deployments/mainnet.json` as the source, and verifies both are enrolled in the group.
 - forge-web: add `mainnet` to `forge-web/lib/deployments.ts` (the `deployments bundle` unit test fails until you do), then build with `NEXT_PUBLIC_NETWORK=mainnet`; the SDK uses `EvoSDK.mainnetTrusted()`. See [BUILDING.md § Networks](BUILDING.md#networks).
-- Once mainnet is live, consider making it the CLI's default network (today the default is testnet, which has no forge-v2 deployment yet).
+- Once mainnet is live, consider making it the CLI's default network (today the default is testnet, where Forge runs).
 
 ## 4. Schema changes after registration
 
@@ -64,7 +64,7 @@ Protocol 14 lets the owner update the contracts only within its update rules: ne
 
 ## 5. Deploy forge-web to production
 
-- The static export deploys to GitHub Pages (`.github/workflows/pages.yml`, from master), built for devnet sakura (`NEXT_PUBLIC_NETWORK=devnet`, `NEXT_PUBLIC_DEVNET_NAME=sakura`, from the `PAGES_NETWORK` / `PAGES_DEVNET_NAME` repository variables; bonsia from the 2026-09-30 cut-over until it was retired). For mainnet, either switch the Pages build to `NEXT_PUBLIC_NETWORK=mainnet` or host a second mainnet instance.
+- The static export deploys to GitHub Pages (`.github/workflows/pages.yml`, from master), built for the network its `PAGES_NETWORK` / `PAGES_DEVNET_NAME` repository variables name (testnet at the launch; before it, a devnet). For mainnet, either switch the Pages build to `NEXT_PUBLIC_NETWORK=mainnet` or host a second mainnet instance.
 - Optional: publish an IPFS snapshot of `out/` for a censorship-resistant mirror (`ipfs add -r out/` via a pinning service) — the app is fully static and self-verifying.
 
 ## 6. Production smoke suite (post-deploy + weekly)

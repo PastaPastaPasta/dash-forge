@@ -133,10 +133,9 @@ The patch stays active until you remove it. Confirm which source is in use with
 
 ### Protocol versions (SDK v4.2)
 
-The pinned SDK (`v5.0.0-beta.1` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.0.0-beta.1` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
-protocol 13 (testnet, mainnet) and protocol 14 (devnets such as sakura). Neither client pins
-a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a
-devnet) and raises it from the metadata of the first **proof-verified** response. So
+The pinned SDK (`v5.0.0-rc.3` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.0.0-rc.3` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
+protocol 13 (mainnet until Platform v5 activates there) and protocol 14 (testnet, since epoch 19652, block 623038, 2026-10-15 21:45Z, and devnets). Neither client pins
+a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a devnet) and raises it from the metadata of the first **proof-verified** response. So
 `Sdk::version()` / `sdk.version()` gives the network's version only after a proved query
 has succeeded. `dg doctor` issues one and then prints the protocol version.
 
@@ -175,18 +174,20 @@ complete readers (`query_all_documents` / `queryAllDocuments`):
 
 ## Networks
 
-Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**
-such as `sakura`. The CLI tools default to testnet, but Forge targets devnet sakura (Platform
-protocol 14, v5.0.0-beta.6), where its RC2 contracts are registered. Testnet and mainnet run protocol 13; forge-v2 is
-registered on testnet once protocol 14 reaches it, and on mainnet after protocol 14
-activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
-`--network devnet --devnet-name sakura` (or just `--devnet-name sakura`), or record it once
-with `dg auth login --network devnet --devnet-name sakura`, which saves the network in
-`~/.config/dash-forge/config.toml`.
+Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**.
+Testnet is the default of the CLI tools and the network Forge runs on: Dash Platform v5
+(protocol 14) activated there on 2026-10-15 (chain id `dash-testnet-51`), and forge-v2 is
+registered there (`testnet.json`'s `v2` record; the ids are TODO(P4-registration)). Mainnet runs
+protocol 13 until protocol 14 activates there ([mainnet-runbook.md](mainnet-runbook.md)). A
+devnet is a development network: pass `--network devnet --devnet-name <name>` (or just
+`--devnet-name <name>`), or record it once with
+`dg auth login --network devnet --devnet-name <name>`, which saves the network in
+`~/.config/dash-forge/config.toml`. Without a network flag, `dg auth new` and `dg auth login`
+record testnet.
 
 **Devnet sakura** (Platform 5.0.0-beta.6 since its third Platform reset on 2026-10-13, chain id `dash-devnet-sakura`) replaced bonsia on
-2026-10-01, and the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the Pages and e2e workflows,
-`ipfs-release.sh`) target it. `devnet-sakura.json` records its chain id, 13 DAPI addresses and
+2026-10-01 and is Forge's developer network: it is where the contracts were developed and where
+the end-to-end suites run (Makefile `DEVNET`, `E2E_DEVNET`, the e2e workflows). `devnet-sakura.json` records its chain id, 13 DAPI addresses and
 quorum service (`https://quorums.sakura.networks.dash.org`), so `--devnet-name sakura` works
 for every tool, and its `v2` record holds the RC2 contracts, registered there again on 2026-10-08, with the same ids, after the second reset. A devnet's chain id is not derived from its name (bonsia's was
 `dash-devnet-bonsia-g1`, sakura's has no suffix): the deployment file records it.
@@ -265,9 +266,8 @@ NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura pnpm build  # forge-we
 ```
 
 The web header shows a network badge on every network except mainnet (the production build
-at forge.dashhq.org is built from master by `pages.yml`, for the devnet the `PAGES_DEVNET_NAME`
-repository variable names (default sakura; bonsia from 2026-09-30 until it was retired), and
-shows "devnet"). On a network with no
+at forge.dashhq.org is built from master by `pages.yml`, for the network its `PAGES_NETWORK` (and,
+for a devnet, `PAGES_DEVNET_NAME`) repository variables name; on testnet it shows "testnet"). On a network with no
 forge-v2 deployment, the badge is amber and the pages that need the contracts show a "not
 deployed" state instead of querying.
 

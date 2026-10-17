@@ -39,7 +39,7 @@ The list is [`forge-contracts/config/curation.json`](../forge-contracts/config/c
 }
 ```
 
-- The keys under `networks` are the build's network key: `testnet`, `devnet-sakura` or `mainnet`. A build reads only its own network's entry.
+- The keys under `networks` are the build's network key: `testnet`, `devnet-<name>` or `mainnet`. A build reads only its own network's entry.
 - `id` is a base58 Platform identifier: a `repo` document id for `hiddenRepos`, an identity id for `hiddenIdentities`.
 - `added` is a `YYYY-MM-DD` date. `note` is a short public reason or a ticket reference, up to 200 characters. The file is public in the repository and in its history, so do not put personal data in it.
 - A malformed entry fails the build and the unit tests (`forge-web/lib/view/curation.test.ts`), so a typo cannot reach the site.

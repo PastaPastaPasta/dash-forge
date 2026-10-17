@@ -29,8 +29,8 @@ check-web:
 		echo "== web: skipped (no forge-web/package.json yet) =="; \
 	fi
 
-## dev-web: run the web app's dev server on http://localhost:3000, reading devnet sakura
-## (forge-web/.env.development). Installs the locked dependencies first (quick when nothing changed).
+## dev-web: run the web app's dev server on http://localhost:3000, reading the network set in
+## forge-web/.env.development. Installs the locked dependencies first (quick when nothing changed).
 dev-web:
 	@cd forge-web && pnpm install --frozen-lockfile && pnpm dev
 

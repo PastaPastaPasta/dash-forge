@@ -13,7 +13,7 @@ pnpm dev                     # http://localhost:3000
 
 Or `make dev-web` from the repository root. The first page load takes a while: the SDK is about 23 MB of WebAssembly.
 
-`pnpm dev` reads `.env.development`, which points the app at devnet sakura, where Forge is deployed. Without it the app targets testnet, which has no Forge deployment and shows "not deployed" on every page. To try another network, override the variables in `.env.development.local` (git ignores it):
+`pnpm dev` reads `.env.development`, which sets the network the dev server reads. With no network variable the app targets testnet, where Forge is deployed. To try another network, override the variables in `.env.development.local` (git ignores it):
 
 | Variable | What it sets |
 |---|---|
@@ -24,9 +24,9 @@ Or `make dev-web` from the repository root. The first page load takes a while: t
 
 Contract ids always come from `forge-contracts/deployments/`, so a network with no file there has nothing to read.
 
-## Sign in on sakura
+## Sign in on testnet
 
-Writing needs an identity with credits. In the app, choose **Sign in → Create a new identity**: you write down 12 words, then fund the deposit address it shows from the [sakura faucet](https://faucet.sakura.networks.dash.org). If you already use `dg`, `dg auth new --devnet-name sakura` creates one from the terminal, and **Sign in → Import an identity file or recovery phrase** brings it into the browser.
+Writing needs an identity with credits. In the app, choose **Sign in → Create a new identity**: you write down 12 words, then fund the deposit address it shows from the [testnet faucet](https://faucet.testnet.networks.dash.org). If you already use `dg`, `dg auth new` creates one from the terminal, and **Sign in → Import an identity file or recovery phrase** brings it into the browser.
 
 Use your own identities and repositories for anything you try. The shared read fixture (`forge-v2-demo` and its neighbours) is what the end-to-end tests read, so leave it as it is.
 

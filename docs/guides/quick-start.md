@@ -1,6 +1,6 @@
 # Quick start
 
-This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **devnet sakura**, where Dash is free, so you can try everything without spending real money.
+This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **Dash testnet**, where DASH is free, so you can try everything without spending real money.
 
 You will:
 
@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is waiting for the network to confirm your identity (or, if you build from source, the first build).
 
-> **Which network?** The commands target devnet **sakura**, a test network, which forge.dashhq.org also uses. The fees below were measured on sakura where they say so (2026-10-01), else on the retired devnet bonsia; [Costs](costs.md) has both. Testnet and mainnet have no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
+> **Which network?** The commands target **testnet**, a test network, which forge.dashhq.org also uses. It is the default of `dg` and `git-remote-dash`, so none of the commands below needs a network flag. The fees below were measured on a devnet (the date is given where it is known); [Costs](costs.md) has them. Mainnet has no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
 
 ---
 
@@ -39,9 +39,9 @@ cargo install --locked --path crates/git-remote-dash
 
 `cargo install` puts both binaries in `~/.cargo/bin`, which rustup already added to your `PATH`.
 
-### Prebuilt binaries (Linux and macOS), once a release is published
+### Prebuilt binaries (Linux and macOS)
 
-No release is published yet, so this script stops with a message that points back to the build above. When one is, this one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
+This one line installs the latest release's checksum-verified binaries into `~/.local/bin`. If no release is published yet, the script stops with a message that points back to the build above:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
@@ -67,30 +67,30 @@ A Dash Platform **identity** is your account on Forge. It holds your keys and yo
 **Forge never funds or creates identities for you.** Create one from the terminal:
 
 ```sh
-dg auth new --network devnet --devnet-name sakura
+dg auth new
 ```
 
 1. `dg` shows a **12-word recovery phrase**. Write the words down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet sakura use the faucet at <https://faucet.sakura.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: the faucet's 10 test DASH all become credits (a balance of about 9.998 DASH), where the sample below sent 0.05.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash testnet wallet, or get free test DASH from the testnet faucet at <https://faucet.testnet.networks.dash.org> (a second one, <https://faucet.thepasta.org>, is run by the project owner, not by Forge: it gives 1 test DASH a request, with a soft limit of about 3 an hour). A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: a faucet's whole payout becomes credits, where the sample below sent 0.05.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
-✓ identity ExampLeidentityExampLeidentityExampLeidentEx created on devnet-sakura
+✓ identity ExampLeidentityExampLeidentityExampLeidentEx created on testnet
   key #5: limited, 0.25 DASH budget, only on Dash Forge, expires in 180 day(s)
-  stored in macOS Keychain (dash-forge/devnet-sakura/ExampLeidentityExampLeidentityExampLeidentEx)
+  stored in macOS Keychain (dash-forge/testnet/ExampLeidentityExampLeidentityExampLeidentEx)
   balance 0.0499 DASH
 ```
 
-On a devnet the deposit is proven with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
+The deposit is proven with an InstantSend lock where the network offers one (testnet does), which takes seconds, else with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
 
 > **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
 - **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
-- **With the Dash bridge**: <https://bridge.thepasta.org/?network=devnet-sakura>, then **Download Key Backup**, once the bridge offers devnet sakura (it lists moutai today).
+- **With the Dash bridge**: <https://bridge.thepasta.org/?network=testnet>, then **Download Key Backup**. The bridge is run by the project owner, not by Forge.
 
-To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). With today's wallets that works only in Dash Wallet iOS on devnet; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
+To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). With today's wallets that needs a testnet build of Dash Wallet that includes DashConnect; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 
 ---
 
@@ -99,24 +99,24 @@ To sign the *browser* in with an identity you already have, the web app also off
 `dg auth new` signs you in. With an identity you already have (a bridge `dash-identity-<id>.json`, or the 12 words), sign in once per computer:
 
 ```sh
-dg auth login --network devnet --devnet-name sakura ~/Downloads/dash-identity-<id>.json
-# or: dg auth login --network devnet --devnet-name sakura --mnemonic
+dg auth login ~/Downloads/dash-identity-<id>.json
+# or: dg auth login --mnemonic
 ```
 
 ```
-Registering a limited key for this computer on ExampLeidentityExampLeidentityExampLeidentEx (devnet-sakura):
+Registering a limited key for this computer on ExampLeidentityExampLeidentityExampLeidentEx (testnet):
   it can spend at most 0.25 DASH, only on Dash Forge, until it expires in 180 day(s)
   one identity update, ~0.0005 DASH; the master key signs once and is not stored
 Register the key? [y/N] y
-✓ signed in as ExampLeidentityExampLeidentityExampLeidentEx on devnet-sakura
+✓ signed in as ExampLeidentityExampLeidentityExampLeidentEx on testnet
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
   with encryption key #4: private repositories you are a member of open with it
-  stored in macOS Keychain (dash-forge/devnet-sakura/ExampLeidentityExampLeidentityExampLeidentEx)
+  stored in macOS Keychain (dash-forge/testnet/ExampLeidentityExampLeidentityExampLeidentEx)
   balance 0.0494 DASH
   the identity file is no longer needed here; keep it (or the words) offline
 ```
 
-The prompt defaults to no, so pressing Enter alone declines: type `y`. The quote is an upper bound: on devnet sakura the update was charged about 0.00047 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
+The prompt defaults to no, so pressing Enter alone declines: type `y`. The quote is an upper bound: on a devnet the update was charged about 0.00047 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
 
 The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key, with your identity's encryption key beside it for private repositories (never the master key). Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
@@ -174,14 +174,14 @@ dg init                   # = dg repo create --push, for this directory
 ```
 
 ```
-Creating Exam…/my-project on devnet-sakura
+Creating Exam…/my-project on testnet
   repo + maintainer + config     ~0.002 DASH
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)
 Proceed? [Y/n] y
 ✓ created  https://forge.dashhq.org/Exam…/my-project
 ✓ remote 'origin' → dash://Exam…/my-project
-✓ git config dash.storage=r2-main, dash.network=devnet, dash.devnetName=sakura
+✓ git config dash.storage=r2-main
 dash: Exam…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
 dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0066 DASH
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
@@ -199,9 +199,9 @@ branch 'main' set up to track 'origin/main'.
 Open it: https://forge.dashhq.org/Exam…/my-project
 ```
 
-(The charges are the ones measured on devnet sakura on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
+(The charges are the ones measured on a devnet on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on sakura, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH**, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
 
 What it does, in order:
 
@@ -210,7 +210,7 @@ What it does, in order:
 - **Creates the repository**, named after the directory unless you pass `--name` (`dg repo create <name>`). Its first config records where the packs live, so readers and the web app know where to look. It also protects the default branch and every tag: only maintainers can push to the default branch or create and move tags, and writers propose changes with pull requests. Pass `--no-protect` to leave both open, or change it later with `dg repo protect`.
 - **Turns on members-only content**, so members can post comments, reviews and issues only members can read, while everyone can still see that something was posted, by whom and when. It sets up your key for the repository (about 0.0011 DASH). Pass `--no-members-only` to skip it; a maintainer can turn it on later with `dg repo members enable` ([Members-only content](../security/audiences.md#turn-on-members-only-content)). If your identity file has no encryption key, the plan says it stays off and how to add one. If setting it up fails, the repository is still created, and `dg` warns and prints the fix: `dg repo members enable <owner>/<repo>`. Imports, mirrors and forks don't turn it on.
 - **Adds the remote** `origin` (`--remote <name>` for another). If `origin` already points somewhere else it stops ([E206](../errors.md#e206)) rather than changing it.
-- **Writes this repository's git config**: `dash.storage` (and `dash.replicas` with `--replicas`), plus `dash.network` / `dash.devnetName` when `git push` would otherwise pick a different network than `dg`. From now on a plain `git push` goes to the same place.
+- **Writes this repository's git config**: `dash.storage` (and `dash.replicas` with `--replicas`), plus `dash.network` / `dash.devnetName` when `git push` would otherwise pick a different network than `dg` (not on testnet, which is the default). From now on a plain `git push` goes to the same place.
 - **Pushes the current branch** with `-u`, unless the branch already tracks another remote: an existing GitHub `origin` stays the upstream when the Forge remote is `--remote forge`. A repository with no commits yet is created and configured, and the push is skipped.
 
 It is safe to run again: an existing repository is reused (nothing written), a matching remote is left alone, and an up-to-date branch pushes nothing. `--yes` skips the question (and the push's cost guard); `--json` prints one object with `repoId`, `remoteUrl`, `webUrl`, `storage`, the pushed branch and commit, and the costs.
@@ -241,10 +241,10 @@ dg storage use r2-main                 # this repository's packs go to r2-main
 git push -u origin main
 ```
 
-Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key. On a computer where `dg` has recorded no network, name it in the clone, which keeps it in the clone's git config:
+Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key. Testnet is the default network, so `git clone dash://<owner>/<repo>` works as it is. The network can also be named in the clone, which keeps it in the clone's git config (a devnet needs `-c dash.network=devnet -c dash.devnetName=<name>`):
 
 ```sh
-git clone -c dash.network=devnet -c dash.devnetName=sakura dash://<owner>/<repo>
+git clone -c dash.network=testnet dash://<owner>/<repo>
 ```
 
 The repository page's **Clone** box shows this command, with the network filled in.

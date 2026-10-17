@@ -56,11 +56,12 @@ After **Dash Platform v5** activates on mainnet and the project owner registers 
 
 | Network | Status |
 |---|---|
-| **Devnet sakura** | **Live.** forge.dashhq.org runs here. The CLI defaults to testnet, so select sakura with `--network devnet --devnet-name sakura`. |
-| **Testnet** | Not deployed yet. Forge is registered there once testnet runs Dash Platform v5. |
+| **Testnet** | **Live.** forge.dashhq.org runs here, and the CLI defaults to it: no network flag is needed. |
 | **Mainnet** | Not deployed yet. After Dash Platform v5 activates, the owner registers Forge's contracts ([runbook](mainnet-runbook.md)). |
 
-Forge has left the earlier devnets: bonsia was retired, and moutai was upgraded in place. [Networks](networks.md) has their history.
+Forge has left the devnets it ran on before testnet. [Networks](networks.md) has their history.
+
+<!-- TODO(owner-approved-text): "Testnet: what can go wrong" (the durability statement) goes here as its own question. -->
 
 An earlier version of Forge (forge-v1, one contract per repository) ran on testnet. It was removed on 2026-09-26 with no backwards compatibility, so its repositories cannot be read or migrated.
 
@@ -68,7 +69,7 @@ An earlier version of Forge (forge-v1, one contract per repository) ran on testn
 
 ## Can I have private repositories?
 
-Yes, on devnet sakura: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
+Yes: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
 
 ## How does this relate to GitHub?
 

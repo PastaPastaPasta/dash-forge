@@ -215,7 +215,7 @@ Everyone can still see, for a branch for fewer people: what they see for a membe
 
 ## What it costs
 
-Measured on devnet sakura:
+Measured on a devnet:
 
 | Action | Cost |
 |---|---|

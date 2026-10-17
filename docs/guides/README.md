@@ -37,10 +37,10 @@ These guides describe what is on `master` today. Features that are specified but
 - in the web app: choosing Members for a new issue or comment, turning members-only content on, the members-only rows non-members see, **View as public**, and Settings → Environments (`dg` has the rest);
 - members-only pull requests, branches and releases, Specific people, and making other people's posts public.
 
-Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at Forge's key-exchange contract on sakura (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Dash Wallet sign-in is built, for testnet. It needs a Dash Wallet build that includes DashConnect, which no store release has yet: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
-The guides use **devnet sakura**, a test network, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too. Fees quoted as measured on bonsia or moutai are from those retired devnets. Testnet and mainnet have no Forge deployment yet. [Networks](../networks.md) has the details and the history.
+The guides use **Dash testnet**, a test network, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too, and `dg` and `git-remote-dash` default to it, so no network flag is needed. Fees quoted as measured on a devnet are from devnets, and testnet's fees follow the same schedule. Mainnet has no Forge deployment yet. [Networks](../networks.md) has the details and the history.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

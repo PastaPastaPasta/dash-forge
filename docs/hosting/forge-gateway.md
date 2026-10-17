@@ -16,7 +16,7 @@ dashhq runs one for forge.dashhq.org. Anyone can run their own from the same ima
 10. [Logs](#logs)
 11. [Backups and upgrades](#backups-and-upgrades) (and [Deploy a release](#deploy-a-release))
 12. [Show it in the web app](#show-it-in-the-web-app)
-13. [Measured on sakura](#measured-on-sakura)
+13. [Measured on a devnet](#measured-on-a-devnet)
 14. [Billing (later)](#billing-later)
 15. [Privacy notice (draft)](#privacy-notice-draft)
 16. [Checklist for dashhq](#checklist-for-dashhq)
@@ -77,8 +77,7 @@ Then, in `services/forge-gateway/`, write a `.env` and start it:
 
 ```sh
 cat > .env <<'EOF'
-DASH_FORGE_NETWORK=devnet
-DASH_FORGE_DEVNET_NAME=sakura
+DASH_FORGE_NETWORK=testnet
 GATEWAY_PUBLIC_URL=https://git-forge.dashhq.org
 GATEWAY_WEB_URL=https://forge.dashhq.org
 GATEWAY_ALL_PUBLIC=true
@@ -103,7 +102,7 @@ Every setting is a flag (`forge-gateway --help`) and an environment variable. Em
 | Variable | Default | Meaning |
 |---|---|---|
 | `DASH_FORGE_NETWORK` | `testnet` | `testnet`, `mainnet` or `devnet` (or `devnet-<name>`). |
-| `DASH_FORGE_DEVNET_NAME` | none | The devnet's name (`sakura`). |
+| `DASH_FORGE_DEVNET_NAME` | none | The devnet's name; required with `devnet`, ignored otherwise. |
 | `DASH_FORGE_DAPI_ADDRESSES` | the deployment file's | DAPI nodes, comma-separated. |
 | `DASH_FORGE_QUORUM_URL` | the network's | Where quorum keys come from (the trust anchor every proof is checked against; see [verify-forge](../guides/verify-forge.md#the-one-trusted-input-quorum-keys)). |
 
@@ -348,7 +347,7 @@ For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads t
 
 Delete the variable and deploy again to hide the HTTPS line. A value that is not an `https://` or `http://` URL, or that carries a query, a fragment or credentials, is ignored, and the row stays hidden. Set it only once the gateway answers: the clone box doesn't check that the gateway is up before it shows the row.
 
-## Measured on sakura
+## Measured on a devnet
 
 See the PR that added the gateway for the run's numbers (cold and warm clones of the dash mirror and of dips through a local gateway, HEAD checked against Platform). The prototype measured 299 s for the first proof-verified mirror of dash and 16 s for each later plain clone.
 

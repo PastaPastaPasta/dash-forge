@@ -109,7 +109,7 @@ Only maintainers change environments. Anyone else, writers included, is refused 
 error: change production: only maintainers can change environments      [E601]
 ```
 
-Each change saves the whole environment again, encrypted for the people its audience covers then, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.0025 DASH (one chunk and one record on Dash Platform, measured on devnet sakura), and asks you to confirm.
+Each change saves the whole environment again, encrypted for the people its audience covers then, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.0025 DASH (one chunk and one record on Dash Platform, measured on a devnet), and asks you to confirm.
 
 Forge counts a change only when its author is a current maintainer. A change by anyone else is ignored by every reader, `dg env run` included, even though Platform lets a writer store it. That includes a former maintainer's changes, from the moment they stop being one. When such a change claims to replace an environment's latest version, `dg env ls`, `get`, `run` and `export` keep using the latest version by a maintainer and say so in one line, naming the ignored change:
 

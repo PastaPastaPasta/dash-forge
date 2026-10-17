@@ -1,10 +1,10 @@
 # Installing Dash Forge
 
-> **No release is published yet.** Until one is, build from source:
-> [Build from source](#build-from-source) below has the commands. The prebuilt binaries
-> and the install script described here work once a release exists; until then the script
-> stops and points back to the source build. Forge runs on devnet sakura only; it is not on
-> testnet or mainnet yet. The version policy is in [VERSIONING.md](VERSIONING.md).
+> Forge runs on Dash testnet, the default network of every tool; it is not on mainnet yet. The
+> prebuilt binaries and the install script described here come from a published release. If the
+> release you ask for is not published, the script stops and points back to
+> [Build from source](#build-from-source) below. The version policy is in
+> [VERSIONING.md](VERSIONING.md).
 
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
 ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use
@@ -69,7 +69,7 @@ The script never runs `sudo`. You can control it with these environment variable
 
 | Variable | Default | Effect |
 |---|---|---|
-| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.1.0`; needed for a pre-release such as `0.1.0-rc.1`, which "latest" never picks |
+| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.2.0`; needed for a pre-release such as `0.2.0-rc.1`, which "latest" never picks |
 | `DASH_FORGE_INSTALL_DIR` | `~/.local/bin` | where the binaries go |
 | `DASH_FORGE_BINARIES` | `dg git-remote-dash` | add `forge-relay` / `forge-import` / `forge-runner` if you want them |
 | `DASH_FORGE_COMPLETIONS` | `0` | `1` installs bash, zsh and fish completions under `~/.local/share` and `~/.config/fish` |
@@ -86,7 +86,7 @@ curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/i
 Then check the install:
 
 ```sh
-dg --version      # dg 0.1.0 (<commit> <target>)
+dg --version      # dg 0.2.0 (<commit> <target>)
 dg doctor         # git, git-remote-dash (same version as dg), network, identity
 ```
 
