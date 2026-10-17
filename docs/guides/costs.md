@@ -109,7 +109,7 @@ A first write can create repository, author, target or identity-contract index s
 | Each extra new branch or tag | **~0.00066–0.00067 DASH** (one ref update, commit already stored); protected existing-name ref updates ~0.00058–0.00089 |
 | Each extra storage target † | ~0.00014 DASH per push (URI fields in manifests) |
 | Issue | **~0.00070 DASH later, 0.00118 first** with a short body; a 1,000-byte body ~0.00097 DASH and 4,000-byte body ~0.00180 DASH |
-| Comment | **~0.00052 DASH later, 0.00072 first** with a short body; a reply to an existing root ~0.00061 later, 0.00071 first |
+| Comment | **~0.00052 DASH later, 0.00072 first** with a short body; a reply to an existing root ~0.00061 later, 0.00071 first. Immediate deletion refunded ~0.00039–0.00040; preview about 0.00038 DASH if deleted soon, less as it ages |
 | Body, comment or release notes over 5,120 bytes | The document plus an artifact: quoted upper bounds ~0.010 DASH at 20 KB, ~0.021 at 50 KB on Platform, or a manifest with your own storage. Historical artifact estimates; see [forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9) |
 | Pull request | **~0.00081 DASH later, 0.00149 first** for a patch alone in an empty repository. CLI `--draft` writes an extra transition: 0.00147–0.00204 for the bundle |
 | Close, reopen, draft, ready or event-only merge | **~0.00046–0.00056 DASH later, up to 0.00073 first**. A merge that pushes code additionally pays its push |
@@ -118,10 +118,10 @@ A first write can create repository, author, target or identity-contract index s
 | Label / milestone definition | ~0.00034 DASH later, ~0.00050 first |
 | Release document | ~0.00062 DASH later, ~0.00073 first; assets use your storage |
 | Consent / add a writer | Consent ~0.00031 later, ~0.00043 first; writer grant ~0.00042 later, ~0.00049 first. Removing a writer without sealed content refunds part of the deposit |
-| Star / unstar | **~0.00024–0.00025 DASH** for an established author's star in a populated repo; ~0.00057–0.00059 for an empty repo's first; ~0.00066 including the author's first write. Unstar refunded ~0.00033 in this run |
+| Star / unstar | **~0.00024–0.00025 DASH** for an established author's star in a populated repo; ~0.00057–0.00059 for an empty repo's first; ~0.00066 including the author's first write. Unstar immediately refunded ~0.00033; the preview says about 0.00032 DASH if deleted soon, less as it ages |
 | Counting a star toward Trending | Included in the fused star's price. No separate starBeat document is written by the current contracts |
 | Follow / unfollow | ~0.00019 DASH with both trees populated; ~0.00038 for a new target, ~0.00056 first. Unfollow immediately refunded ~0.00012 with another follower, ~0.00023 for the target's last |
-| Watch / unwatch | ~0.00038 DASH later, ~0.00048 for a repo's first; unwatch refunded ~0.00033 |
+| Watch / unwatch | ~0.00038 DASH later, ~0.00048 for a repo's first; unwatch immediately refunded ~0.00033; preview about 0.00032 DASH if deleted soon, less as it ages |
 | Profile | ~0.00032 DASH create with a short name as the identity's first meta write (~0.00023 after prior meta writes), ~0.000028 same-size edit (three repeats) |
 | Webhook | ~0.00077 DASH later, ~0.00101 first; removal immediately refunded ~0.00067 |
 | Topic | ~0.00066 DASH later; ~0.00078 DASH first (CLI includes a config replacement). Raw documents with reused global names cost ~0.00048 DASH later; fresh names ~0.00062 |

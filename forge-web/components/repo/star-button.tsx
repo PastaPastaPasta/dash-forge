@@ -76,7 +76,7 @@ export function StarButton({
   // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
   const starCost = previewCreate('star', {}, first)
   const cost = priceBeat ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
-  // Immediate refunds vary: the repo's last star (or one whose count is unknown) refunds more.
+  // The fused schema's calibrated immediate refund also covers a last or unknown-count star.
   const lastStar = count === null || count + star.delta <= 1
   const refund = lastStar ? previewCredits(LAST_STAR_DELETE_CREDITS) : previewDelete('star')
   // Until the first-write reads answer, the price is the upper bound, and says so (QW-043).

@@ -259,16 +259,16 @@ const DEFAULT_DELETE_CREDITS = -20_000_000
  * (rs-dpp `FEE_DISTRIBUTION_TABLE`), about 50 years on mainnet or 83 days on testnet.
  * Copy therefore says "refunds about X if deleted soon; less as it ages".
  *
- * Unstarring the repo's last star can return more (its count tree goes too): 23.3M measured on
- * the C-1 shape, against 12.3M otherwise. A last star, or one whose repo's count could not be
- * read, uses this approximate immediate refund.
+ * ECON-05 testnet fused stars and watches refunded 33.21–33.36M immediately, including
+ * the last star. Use about 32M for all three cases; older C-1 refund amounts no longer
+ * describe the current schema.
  */
-export const LAST_STAR_DELETE_CREDITS = -23_300_000
+export const LAST_STAR_DELETE_CREDITS = -32_000_000
 
 export const DELETE_CREDITS: Readonly<Record<string, number>> = {
-  // C-1 measured 12.3M for an unstar that is not the repo's last (the ranked axis re-keys).
-  star: -12_000_000,
-  watch: -12_000_000,
+  // ECON-05: eight immediate unstar/unwatch refunds were 33.21–33.36M.
+  star: -32_000_000,
+  watch: -32_000_000,
   // ECON-05: milestone deletes refunded 13.75–13.88M.
   milestone: -13_000_000,
   // ECON-05: unfollows refunded 11.81M with another follower, 22.75M for the last.
@@ -279,7 +279,8 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
   writer: -19_000_000,
   // ECON-05: populated-repo label deletes refunded 13.85–13.89M.
   label: -13_000_000,
-  comment: -25_000_000,
+  // ECON-05: immediate comment deletes refunded 39.46–40.18M.
+  comment: -38_000_000,
   review: -20_000_000,
   // Deleting a webhook revision (its URL and sealed secret) refunded 81.8M on bonsia (QA wave 2,
   // collab); it was promised the 20M default.

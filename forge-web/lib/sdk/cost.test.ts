@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   PUSH_COST_DASH,
+  LAST_STAR_DELETE_CREDITS,
   STEADY,
   estimateChunkCredits,
   estimateCreateCredits,
@@ -137,9 +138,9 @@ describe('cost preview (D-011)', () => {
     expect(create({})).toBeGreaterThanOrEqual(166_290_800)
   })
 
-  it('previews an unstar and an unfollow as refunds no larger than measured (12.3M for the ranked star, 23.5M)', () => {
+  it('previews current-schema unstar and unfollow refunds conservatively', () => {
     expect(previewDelete('star').credits).toBeLessThan(0)
-    expect(-previewDelete('star').credits).toBeLessThanOrEqual(12_251_828)
+    expect(-previewDelete('star').credits).toBeLessThanOrEqual(33_210_733)
     expect(-previewDelete('follow').credits).toBeLessThanOrEqual(23_461_140)
   })
 })
@@ -355,6 +356,15 @@ describe('testnet ECON-05 calibration', () => {
 
 // Immediate testnet refunds; an older document can refund less as its deposit ages.
 describe('testnet ECON-05 refund previews', () => {
+  it('keeps about figures within 10% of immediate fused-star/watch and comment refunds', () => {
+    for (const [type, measured] of [['star', 33_210_733], ['watch', 33_354_593], ['comment', 39_459_678]] as const) {
+      expect(-previewDelete(type).credits).toBeGreaterThanOrEqual(measured * 0.9)
+      expect(-previewDelete(type).credits).toBeLessThanOrEqual(measured)
+    }
+    expect(-LAST_STAR_DELETE_CREDITS).toBeGreaterThanOrEqual(33_210_733 * 0.9)
+    expect(-LAST_STAR_DELETE_CREDITS).toBeLessThanOrEqual(33_210_733)
+  })
+
   it.each([
     ['star', 33_210_733],
     ['watch', 33_354_593],
