@@ -48,7 +48,7 @@ Measured on devnet bonsia: creating a repository costs about **0.0016 DASH**. A 
 
 ## What happened to devnet bonsia?
 
-It was retired, and everything on it is gone. Forge moved to devnet sakura (Dash Platform v5), where its contracts were registered again on 2026-10-01. An installed `dg` built for 4.2.0-beta.7 does not work on sakura. Your git clone and your storage bucket are untouched. See [Dash Forge moved to devnet sakura](guides/devnet-move.md) for what is lost and kept and how to re-push.
+Retired; everything on it is gone. See the [archived devnet move notes](archive/devnet-move.md).
 
 ## When is it on mainnet?
 

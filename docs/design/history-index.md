@@ -1,6 +1,6 @@
 # History index: last-change column, exact commit count, and path versions
 
-Status: v1 (the column and the count) shipped in #146. v2 (per-path version lists for Blame and History) is implemented on branch `feat/history-index-v2-path-versions`; see [v2: per-path version lists](#v2-per-path-version-lists).
+Status: v1 (the column and the count) shipped in #146. v2 (per-path version lists for Blame and History) shipped (merged to master); see [v2: per-path version lists](#v2-per-path-version-lists).
 
 ## Problem
 

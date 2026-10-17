@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish = false
 description = "forge-runner — run a Dash Forge repo's .forge/workflows with nektos/act and report check runs."
 
 [[bin]]

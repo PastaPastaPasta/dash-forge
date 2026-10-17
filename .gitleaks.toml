@@ -71,7 +71,8 @@ paths = [
     '''forge-web/lib/view/quorum-check\.test\.ts''',
     # OpenPGP key ids / fingerprints (public) in the signature-badge tests.
     '''forge-web/components/repo/signature-badge\.test\.tsx''',
-    # Token ids are public Platform identifiers, not credentials.
+    # Token ids are public Platform identifiers, not credentials. (spikes/ left the tree; the rule
+    # stays for history scans.)
     '''spikes/S0\.7-token-acl/.*''',
     # A doc comment naming the `key =` field, and a CLI test that passes the literal
     # `allow-secret=` option value; neither holds a credential.

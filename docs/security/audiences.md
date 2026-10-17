@@ -88,7 +88,7 @@ For any other repository, a maintainer turns it on once:
 dg repo members enable <owner>/<repo>
 ```
 
-Before anything is signed it asks "Turn on members-only content?", says what members will be able to do and that everyone can still see that something was posted, by whom and when, and shows the cost of setting up keys for the current members (each later removal costs about the same again). It also warns that people using older Forge builds will see fewer things until they update ([below](#older-forge-builds)).
+Before anything is signed it asks "Turn on members-only content?", says what members will be able to do and that everyone can still see that something was posted, by whom and when, and shows the cost of setting up keys for the current members (each later removal costs about the same again). It also warns that people using older Forge builds will see fewer things until they update ([archived notes](../archive/older-forge-builds.md)).
 
 It shares the members key with every current member who has an encryption key, and lists those who don't have one yet. `dg repo members status <owner>/<repo>` says whether it is on, whether you can read it, and who is still waiting for the key. A member who asks for members-only content in a repository where it is off is told to ask a maintainer ([E312](#e312)).
 
@@ -281,18 +281,7 @@ The same holds for code: the checks before a push stop a member from publishing 
 
 ## Older Forge builds
 
-People using older Forge builds see fewer things until they update. Nothing leaks and nothing breaks:
-
-- members-only items are left out without saying why, and counts that include them are not labelled;
-- a members-only issue opened by its number reads as "not found" (an older `dg` says E102);
-- an older web app may describe members-only items as "encrypted by someone who is not a member". That is wrong. Update;
-- a message to specific people is a placeholder in builds older than this one, even for the people it was sent to;
-- an older build does not count a members-only review's approval, so it may refuse a merge an up-to-date build allows ([E804](../errors.md#e804)). Never the reverse. **Update to see and count members-only reviews.**
-
-Change members only with an up-to-date Forge (`dg` or the web app), so the key follows every change:
-
-- a member added by an older build has no key yet, and sees [E311](#e311). Nothing shares it automatically: a maintainer chooses **Repair** on the repository page or runs `dg repo keys repair`;
-- a member removed by an older build can still read new members-only content until the key changes. `dg repo keys status` flags it, and `dg repo keys repair` changes the key.
+Moved to the [archive](../archive/older-forge-builds.md): testnet starts with current builds only.
 
 ## Errors
 

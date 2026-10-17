@@ -105,7 +105,6 @@ crates/
   forge-import/      # importer (Forgejo-semantics mapping)
 forge-contracts/     # forge-v2 contract JSON (forge-core, forge-collab), deploy-v2 + fixture scripts, deployments/, vectors/
 forge-web/           # Next.js static app (pnpm)
-spikes/              # Phase 0 throwaway prototypes
 ```
 
 ### Quality gates

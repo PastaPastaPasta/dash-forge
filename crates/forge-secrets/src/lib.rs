@@ -1,8 +1,7 @@
 //! Likely secrets in files about to be published: one rule set for every Forge client.
 //!
 //! The push helper (`git-remote-dash`) runs it over the files a public push publishes for the
-//! first time; the web editor and the publish dialog are to run the same rules later
-//! (mixed-visibility design §4.5). This crate is **pure**: no I/O, no clock, no randomness.
+//! first time (mixed-visibility design §4.5). This crate is **pure**: no I/O, no clock, no randomness.
 //! Give it a path and the file's bytes ([`scan_file`]), or a path and the git blob id of a file
 //! that was not read ([`scan_unread`]), and it returns the same findings everywhere. A
 //! TypeScript port must reproduce the conformance vectors in

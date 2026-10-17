@@ -47,26 +47,18 @@
 
 **Coming soon:** editing files in the browser, and browser merges for private repositories (`dg` has them). The [release notes](docs/releases/v0.1.0.md#known-limitations) (not published yet) list what else is not there yet.
 
-## Guides
+## Start here
 
-| Guide | |
-|---|---|
-| [Quick start](docs/guides/quick-start.md) | install → identity → storage → `dg init` → push → web |
-| [Mirror a GitHub repository](docs/guides/mirror-a-github-repo.md) | a copy of a GitHub repository that nobody can take down |
-| [Bring your own storage](docs/guides/bring-your-own-storage.md) | keep packs in R2, B2, S3, MinIO or IPFS |
-| [Collaborating](docs/guides/collaborating.md) | members, issues, pull requests, reviews, merges, releases, webhooks |
-| [Identity and keys](docs/guides/identity-and-keys.md) | limited keys, the browser vault, backups, recovery, trust roots |
-| [What things cost](docs/guides/costs.md) | measured costs, deposits, refunds |
-| [Dash Forge moved to devnet sakura](docs/guides/devnet-move.md) | what the move from bonsia lost and kept, and how to re-push on sakura |
-| [Check that Forge isn't lying to you](docs/guides/verify-forge.md) | proofs, hashes, the Verification card, running your own web app |
-| [FAQ](docs/FAQ.md) · [Error codes](docs/errors.md) | |
-| [Hosted curation](docs/hosted-curation.md) | what dashhq's own site leaves out of its lists, and what that does not change |
+- **[Quick start](docs/guides/quick-start.md):** install, identity, storage, `dg init`, push, web.
+- **[Moving from GitHub or GitLab](docs/guides/moving-from-github.md)** or **[mirror a GitHub repository](docs/guides/mirror-a-github-repo.md):** bring a project over, or keep a copy that nobody can take down.
+- **[Bring your own storage](docs/guides/bring-your-own-storage.md):** keep packs in R2, B2, S3, MinIO or IPFS.
+- **[FAQ](docs/FAQ.md)** and **[error codes](docs/errors.md)**.
+
+Every guide (collaborating, identity and keys, costs, CI, verification and more) is listed in the **[guides index](docs/guides/README.md)**.
 
 ---
 
 ## For developers
-
-Original design brief: `../INIT.md`; reconciliation notes: [docs/init-reconciliation.md](docs/init-reconciliation.md).
 
 ### The product suite
 
@@ -75,7 +67,7 @@ Original design brief: `../INIT.md`; reconciliation notes: [docs/init-reconcilia
 | **forge protocol** | Data contracts. forge-v2 (Dash Platform v5): three shared contracts, forge-core, forge-collab and forge-community, in one contract group. Access control is membership documents checked at consensus ([forge-v2.md](docs/contracts/forge-v2.md)). |
 | **git-remote-dash** | Git remote helper (Rust). `git clone dash://<owner>/project` and `git push` just work. jj-compatible. |
 | **dg** | `gh`-replacement CLI (Rust, same workspace): `auth` (identities, limited keys on the OS keychain, DPNS names), `init`, repos, forks, stars, issues, labels, PRs with real merges, releases with assets, members, storage profiles, webhooks, `import`, cost estimates, repack, reseed, doctor. |
-| **forge web** | Static SPA (TypeScript, wasm SDK, in-browser repo materialization) deployable to IPFS. Built: browsing, commit and PR diffs, issues, opening PRs, inline review comments and verdicts, forks, merges from the browser (fast-forward, squash, and merge commits when the two sides changed different paths; the merge's pack goes to your storage, or to Platform if you allow it), releases, members, the storage wizard, limited-key sign-in with an encrypted vault, in-browser identity creation, Dash Wallet sign-in, Explore and notifications. Not yet: rebase merges, a browser merge when both sides changed the same file (use `dg pr merge`), editing files in the browser, and searching file contents — see [PRD 03](docs/prd/03-web-app.md). |
+| **forge web** | Static SPA (TypeScript, wasm SDK, in-browser repo materialization) deployable to IPFS. Built: browsing, commit and PR diffs, issues, opening PRs, inline review comments and verdicts, forks, merges from the browser (fast-forward, squash, and merge commits when the two sides changed different paths; the merge's pack goes to your storage, or to Platform if you allow it), releases, members, the storage wizard, limited-key sign-in with an encrypted vault, in-browser identity creation, Dash Wallet sign-in, Explore and notifications. Not yet: rebase merges, a browser merge when both sides changed the same file (use `dg pr merge`), editing files in the browser, and searching file contents. |
 | **forge relay** | Interchangeable Rust daemon, run by users, bridging Platform events to GitHub-shaped webhooks (CI/notifications), with chain-encrypted secrets and a durable retry queue. Trust = availability only. |
 | **forge import** | One-command GitHub migration and incremental mirror (code, issues, PRs, releases, labels) with a spending cap; the engine behind `dg import` and the [Mirror Action](action/README.md). |
 
@@ -103,27 +95,21 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 ### Document index
 
 1. [Platform constraints & research findings](docs/research/platform-constraints.md) — verified limits/fees that shape the design.
-2. [INIT.md reconciliation](docs/init-reconciliation.md) — what was adopted from the original brief; constraint-forced deviations, flagged for review.
+2. [Design brief reconciliation](docs/init-reconciliation.md) — what was adopted from the original design brief; constraint-forced deviations, flagged for review.
 3. [System architecture](docs/architecture.md) — components, contract topology, membership access control, storage backends, data flows, economics.
-4. [forge-v2 contracts](docs/contracts/forge-v2.md) — the shared contracts on Dash Platform v5: types, gates, client rules, costs, deployment. [Data contracts design](docs/contracts/data-contracts.md) is the historical forge-v1 design (registry + per-repo contracts), no longer implemented.
-5. PRDs:
-   - [01 Product overview & personas](docs/prd/01-product-overview.md)
-   - [02 git-remote-dash & dg](docs/prd/02-git-remote-helper-cli.md)
-   - [03 forge web](docs/prd/03-web-app.md)
+4. [forge-v2 contracts](docs/contracts/forge-v2.md) — the shared contracts on Dash Platform v5: types, gates, client rules, costs, deployment.
+5. PRDs still describing the shipped design:
    - [04 Storage backends](docs/prd/04-storage-adapters.md)
    - [05 forge relay](docs/prd/05-forge-relay.md)
-   - [06 forge import](docs/prd/06-forge-import.md)
 6. [Economics & fee minimization](docs/economics.md) — compression pipeline, deposit-vs-burn cost model, repack/refund GC.
 7. [Style guide](docs/design/style-guide.md) — visual system + engineering conventions.
-8. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
+8. [Archive](docs/archive/README.md) — the forge-v1 design, plans, spike results and build log, and the earlier devnet notes. Historical; nothing there describes the current system.
 9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — devnet identities and funds, the nightly suites, mainnet smoke.
-10. [Spike results & Design Freeze #1](docs/research/spike-results.md) — the 9 de-risking spikes (GO verdict), run for forge-v1.
-11. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides. [Installing prebuilt binaries](docs/INSTALL.md) — install.sh, checksums + attestations, cargo binstall, cutting a release.
-12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what the forge-v1 implementation established (historical).
-13. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
-14. [Error codes](docs/errors.md) — every `dg` / `git-remote-dash` error code, its exit code and fix.
-15. [Product roadmap](docs/roadmap.md) — verified state, owner decisions, phased plan and execution tracker.
-16. [UX/DX specification](docs/design/ux-dx-spec.md) — launch journeys, identity, storage onboarding, cost, trust, CLI conventions; its §11 P0 backlog is the launch checklist.
+10. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides. [Installing prebuilt binaries](docs/INSTALL.md) — install.sh, checksums + attestations, cargo binstall, cutting a release.
+11. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
+12. [Error codes](docs/errors.md) — every `dg` / `git-remote-dash` error code, its exit code and fix.
+13. [Product roadmap](docs/roadmap.md) — verified state, owner decisions, phased plan and execution tracker.
+14. [UX/DX specification](docs/design/ux-dx-spec.md) — launch journeys, identity, storage onboarding, cost, trust, CLI conventions; its §11 P0 backlog is the launch checklist.
 
 ### Verification
 
@@ -132,13 +118,6 @@ The web app at **https://forge.dashhq.org** (GitHub Pages) runs on devnet sakura
 Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 
 Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`.
-
-### Reference material (local workspace)
-
-- `../INIT.md` — original design path & PRDs (authoritative product intent).
-- `../platform` — Dash Platform monorepo (source of all cited limits/fees).
-- `../yappr` — reference zero-backend Platform app (SDK/auth/write patterns to reuse).
-- `../mainnet-bridge` / `../platform-identity-faucet` — bridge.thepasta.org and faucet.thepasta.org sources (identity/funding for users and e2e tests).
 
 ## Contributing, security and license
 

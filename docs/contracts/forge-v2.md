@@ -10,7 +10,7 @@ Three shared data contracts, **forge-core**, **forge-collab** and **forge-commun
 
 ## 1. Why shared contracts
 
-Contract registration is priced per contract (a base fee plus a fee per document type, per index and per token). A design where each repository is its own contract therefore pays that fee for every repository and every fork, whatever its size. That was forge-v1: a global registry contract plus one contract per repository, with access control by WRITE/MAINTAIN tokens, at about 1.18 DASH a repository. It was removed on 2026-09-26 with no backwards compatibility; [data-contracts.md](data-contracts.md) keeps its design for the record.
+Contract registration is priced per contract (a base fee plus a fee per document type, per index and per token). A design where each repository is its own contract therefore pays that fee for every repository and every fork, whatever its size. That was forge-v1: a global registry contract plus one contract per repository, with access control by WRITE/MAINTAIN tokens, at about 1.18 DASH a repository. It was removed on 2026-09-26 with no backwards compatibility; [data-contracts.md](../archive/forge-v1/data-contracts.md) keeps its design for the record.
 
 Protocol 14 can express per-repository access control inside a shared contract:
 

@@ -19,10 +19,6 @@
 //!   pin through an IPFS Pinning Service API; read via gateway `…/ipfs/<CID>` + Range.
 //! - [`platform`] — [`platform::PlatformBackend`], pack bytes as pipelined `chunk` docs
 //!   through the Platform [`WriteEngine`](crate::platform::WriteEngine).
-//! - [`gitmirror`] — [`gitmirror::GitMirrorBackend`], an existing git hoster as a byte
-//!   *source* (fetch + rebuild by tips; `git push --mirror` to write). CLI-only —
-//!   coverage-by-tips, not whole-pack-hash — so it is resolved outside the hash-checked
-//!   reader.
 //!
 //! Reads of a manifest's copies go through [`crate::storage::PackReader`], which races them
 //! with bounded time and bytes and checks each against the manifest hash.
@@ -32,7 +28,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 pub mod cid;
-pub mod gitmirror;
 pub mod https;
 pub mod ipfs;
 pub mod platform;
@@ -42,7 +37,6 @@ pub mod sigv4;
 #[cfg(test)]
 mod live_tests;
 
-pub use gitmirror::{GitMirrorBackend, GITMIRROR_SCHEME};
 pub use https::HttpsBackend;
 pub use ipfs::IpfsBackend;
 pub use platform::{

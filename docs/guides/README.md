@@ -19,7 +19,6 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [If Forge tells you to revoke keys](revoke-keys.md) | disable every signing key of your identity but the one in use at once, from the terminal (`dg auth keys disable --all-limited`) or the web app (Devices & keys), and sign in again |
 | [What things cost](costs.md) | know what each action costs (measured), what comes back, and how to see it before you pay |
 | [Check that Forge isn't lying to you](verify-forge.md) | read the Verification card, verify proofs and hashes yourself, and run your own copy of the web app |
-| [Dash Forge moved to devnet sakura](devnet-move.md) | know what the move from bonsia lost (repos, issues, stars, identities, keys) and kept (your clone, your bucket), and how to re-push on sakura with `dg` |
 | [Verify the app you loaded](verify-the-app.md) | pin a release's IPFS build of the web app, rebuild its CID from the tag, and compare it with the GitHub release and the Forge release on chain |
 
 Also:
