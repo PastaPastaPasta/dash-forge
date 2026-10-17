@@ -26,6 +26,9 @@ export function AppFooter(): JSX.Element {
           <Link href="/networks/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Networks
           </Link>
+          <Link href="/licenses/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+            Third-party licenses
+          </Link>
         </div>
       </div>
     </footer>

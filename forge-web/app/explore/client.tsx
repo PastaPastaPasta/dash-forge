@@ -583,7 +583,7 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (text: st
       }}
     >
       <label htmlFor="explore-search" className="sr-only">
-        Search repos by name
+        Search repositories by the start of their name
       </label>
       <div className="relative flex-1">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
@@ -592,7 +592,7 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (text: st
           type="search"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Repo name, e.g. ripgrep"
+          placeholder="Search repositories by the start of their name"
           autoComplete="off"
           spellCheck={false}
           className="h-9 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-2 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"

@@ -11,9 +11,16 @@ name: Deploy forge-web to Pages
 # every page) or `moving` (a banner that stays, and writes are paused: the window before the build
 # for the new devnet). `moving` only applies to a build for a devnet whose deployment file is marked
 # `retired` (lib/devnet-notice.ts), so leaving it set cannot pause writes on the devnet Forge moved
-# to (sakura). Changing the variable takes effect on the next deploy
+# to (sakura). PAGES_DEVNET_MOVE_TO (`testnet`, `mainnet` or `devnet-<name>`) names where an
+# `upcoming` move goes. Changing the variable takes effect on the next deploy
 # (run this workflow on master, or push to master); any other value fails the build. A tab opened before
 # the deploy keeps running the old build until it is reloaded, so it will not show the notice yet.
+#
+# The operator's switch works on every network (docs/hosting.md, "Pausing the site"): the
+# repository variable PAGES_NOTICE is unset (nothing), `advisory` (a banner that cannot be
+# dismissed, linking the advisory) or `paused` (the banner, and every write refused before anything
+# is signed). PAGES_NOTICE_TEXT is the reason shown, PAGES_NOTICE_URL the advisory's https address.
+# Set them, then run this workflow by workflow_dispatch; a typo fails the build.
 #
 # The optional services are switched on the same way, and stay hidden while their variable is
 # unset (docs/hosting/forge-gateway.md, docs/hosting/forge-notify.md): PAGES_GATEWAY_URL (and
@@ -66,6 +73,10 @@ jobs:
           NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'sakura') || '' }}
           # Unset (below) when the variable is: no notice.
           NEXT_PUBLIC_DEVNET_NOTICE: ${{ vars.PAGES_DEVNET_NOTICE }}
+          NEXT_PUBLIC_DEVNET_MOVE_TO: ${{ vars.PAGES_DEVNET_MOVE_TO }}
+          NEXT_PUBLIC_PAGES_NOTICE: ${{ vars.PAGES_NOTICE }}
+          NEXT_PUBLIC_PAGES_NOTICE_TEXT: ${{ vars.PAGES_NOTICE_TEXT }}
+          NEXT_PUBLIC_PAGES_NOTICE_URL: ${{ vars.PAGES_NOTICE_URL }}
           # Unset (below) when the variable is: no HTTPS clone row, no email and push settings.
           NEXT_PUBLIC_GATEWAY_URL: ${{ vars.PAGES_GATEWAY_URL }}
           NEXT_PUBLIC_GATEWAY_LABEL: ${{ vars.PAGES_GATEWAY_LABEL }}
@@ -74,9 +85,10 @@ jobs:
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         # An unset repository variable arrives as an empty string, which Next would inline as "".
         # Unset those instead, so the bytes match a rebuild that leaves them out
-        # (docs/guides/verify-the-app.md).
+        # (docs/guides/verify-the-app.md). That includes NEXT_PUBLIC_DEVNET_NAME, empty on every
+        # network but a devnet.
         run: |
-          for v in NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL; do
+          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL; do
             [ -n "${!v}" ] || unset "$v"
           done
           pnpm build
@@ -90,6 +102,16 @@ jobs:
           grep -q '^Contact: ' out/.well-known/security.txt || { echo "::error::security.txt has no Contact field"; exit 1; }
           grep -q '^Expires: ' out/.well-known/security.txt || { echo "::error::security.txt has no Expires field"; exit 1; }
           grep -q '"\.well-known/security\.txt"' out/forge-manifest.json || { echo "::error::forge-manifest.json does not list .well-known/security.txt"; exit 1; }
+      # The third-party license notices (scripts/third-party-licenses.mjs, run by `pnpm build`,
+      # which fails on a gap) must reach the Pages artifact: the OpenPGP.js LGPL notice and the
+      # GPL and LGPL texts are served from here.
+      - name: Check the export publishes the license notices
+        run: |
+          for f in third-party-licenses.txt wasm-sdk-licenses.txt licenses/index.html licenses/LGPL-3.0.txt licenses/GPL-3.0.txt; do
+            test -s "out/$f" || { echo "::error::out/$f is missing from the export"; exit 1; }
+            grep -q "\"$f\"" out/forge-manifest.json || { echo "::error::forge-manifest.json does not list $f"; exit 1; }
+          done
+          grep -q 'OpenPGP.js' out/third-party-licenses.txt || { echo "::error::third-party-licenses.txt has no OpenPGP.js notice"; exit 1; }
       # `pnpm build` wrote out/forge-manifest.json: every file of this build with its SHA-256
       # (the previous builds' chunks merged in below are not in it). The attest job signs it.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

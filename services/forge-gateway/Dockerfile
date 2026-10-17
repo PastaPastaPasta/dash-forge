@@ -1,8 +1,11 @@
 # forge-gateway from source: the gateway and the git-remote-dash helper it fetches through, on
 # Debian with git (http-backend) and DejaVu fonts (link-preview cards). Build from the
-# repository root:
+# repository root, naming the commit (the gateway reports it in /readyz):
 #
-#   docker build -f services/forge-gateway/Dockerfile -t forge-gateway .
+#   docker build -f services/forge-gateway/Dockerfile \
+#     --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD) -t forge-gateway .
+#
+# Releases publish this image as ghcr.io/<owner>/forge-gateway (release.yml, `gateway-image`).
 #
 # Self-hosting: services/forge-gateway/docker-compose.yml and docs/hosting/forge-gateway.md.
 # Base images are pinned by digest; bump them deliberately (the same pins as forge-relay).
@@ -38,11 +41,27 @@ COPY forge-contracts/config forge-contracts/config
 # built with --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD).
 ARG DASH_FORGE_BUILD_SHA=unknown
 ENV DASH_FORGE_BUILD_SHA=${DASH_FORGE_BUILD_SHA}
+# The crates come from the network: retry a dropped connection rather than fail the build.
+ENV CARGO_NET_RETRY=10 CARGO_HTTP_TIMEOUT=120
 RUN cargo build --locked --release -p forge-gateway -p git-remote-dash --features forge-core/vendored-openssl \
  && mkdir /out \
  && cp target/release/forge-gateway target/release/git-remote-dash /out/
 
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+# The license notices for /usr/share/doc/dash-forge: the project's own and a third-party notice
+# for every crate in the lockfile (build-support/licenses, the same files the release archives
+# carry), made with the pinned cargo-about. `cargo fetch` first: the notice covers every target's
+# crates, not only the ones this build compiled. This build links glibc, not musl, so musl's
+# COPYRIGHT is dropped; OpenSSL's stays (the release build vendors it).
+COPY LICENSE-MIT LICENSE-APACHE ./
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends jq \
+ && rm -rf /var/lib/apt/lists/* \
+ && build-support/licenses/install-cargo-about.sh /usr/local/bin \
+ && cargo fetch --locked \
+ && build-support/licenses/generate.sh /out-licenses \
+ && rm /out-licenses/licenses/MUSL-COPYRIGHT
+
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 # git: `git http-backend` serves the mirrors and `git fetch` drives git-remote-dash.
 # fonts-dejavu-core: the text of the /og cards. curl: the container health check.
 RUN apt-get update \
@@ -51,6 +70,7 @@ RUN apt-get update \
  && useradd --system --uid 10002 --no-create-home --shell /usr/sbin/nologin gateway \
  && install -d -o 10002 -g 10002 -m 0700 /data
 COPY --from=builder /out/ /usr/local/bin/
+COPY --from=builder /out-licenses/ /usr/share/doc/dash-forge/
 # Mirrors, manifests and the Platform read cache. Disposable: a lost volume is rebuilt from
 # Platform on the next request (docs/hosting/forge-gateway.md, "Backups").
 ENV GATEWAY_DATA_DIR=/data \

@@ -34,6 +34,7 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['private', '/private/', (page) => page.getByRole('heading', { name: 'Private repositories', exact: true })],
   ['networks', '/networks/', (page) => page.getByRole('heading', { name: 'All networks' })],
+  ['licenses', '/licenses/', (page) => page.getByRole('heading', { name: 'Third-party licenses', exact: true })],
   ['login', '/login/', (page) => page.getByRole('main')],
   ['new', '/new/', (page) => page.getByRole('main')],
   ['notifications', '/notifications/', (page) => page.getByRole('main')],

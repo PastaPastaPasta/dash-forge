@@ -9,7 +9,8 @@
 # middleware, no `rewrites`, no Server Action, no `use server`, the image optimizer is off
 # (`images.unoptimized`) and the i18n router is not used. Each advisory below concerns one of
 # those server features. `next dev` is a developer-only server. Upgrading Next 14 -> 15.5.24 or
-# later clears all of them; that major upgrade is tracked separately from this audit job.
+# later clears all of them. That major upgrade is deferred until after the testnet launch (decided
+# 2026-10-17): the export ships no server code, so none of these is reachable in production.
 GHSA-2xp9-vwfh-vxw4  # RCE in the Image Optimization API (AVIF): optimizer is off
 GHSA-p293-qw3h-jr36  # RCE on Windows-hosted Next servers: no Next server is hosted
 GHSA-36qx-fr4f-26g5  # Middleware / Proxy bypass with i18n: no middleware, no i18n
@@ -34,9 +35,3 @@ GHSA-r28c-9q8g-f849  # postcss: previous source map auto-loading, attacker-contr
 GHSA-2v37-7h3g-55p8  # nanoid: custom generator with size 0; postcss uses the default generator
 GHSA-68fv-2mgg-jv7q  # source-map-js: DoS on a crafted indexed source map, build time only
 
-# --- js-yaml 4.3.0 -----------------------------------------------------------------------------
-# Fixed in js-yaml 4.3.2. The rc.3 Platform SDK bump (PR #490, branch ci/sdk-rc3-lockstep) moves
-# forge-web to js-yaml 4.3.2 together with its lockfile, so the bump is not repeated here to
-# avoid a pnpm-lock.yaml conflict. REMOVE THESE TWO LINES WHEN THAT PR LANDS.
-GHSA-5p4m-2wfm-xmqj  # js-yaml quadratic CPU in !!omap resolution
-GHSA-2883-xcg3-v3hh  # js-yaml maxTotalMergeKeys CPU use

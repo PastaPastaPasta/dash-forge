@@ -4,13 +4,14 @@
 #   1. OWNER opens an issue, then edits its title and body     -> `dg issue edit`, reads back
 #   2. a re-run of the same edit writes nothing                 -> status "unchanged", 0 credits
 #   3. CONTRIB (not the author) tries to edit it                -> E601 before signing
-#   4. OWNER defines a label, lists it, applies it and a second -> `dg label create|list`,
-#      one, removes the second                                     `dg issue label add|remove`
+#   4. OWNER defines two labels (`issue label add` refuses a label the repo does not define,
+#      E102), lists the first, applies both, removes the second -> `dg label create|list`,
+#                                                                    `dg issue label add|remove`
 #   5. OWNER assigns and unassigns itself                        -> `dg issue assign|unassign`;
 #      the assign event carries refId = the assignee, so the sparse `event.addressee (refId)`
 #      index finds it (read raw from Platform by the Node SDK when available)
 #   6. `dg issue list` filters: --label, --assignee me, --author, --search, --state, --page
-#   7. OWNER deletes the label                                   -> `dg label delete`
+#   7. OWNER deletes both labels                                 -> `dg label delete`
 #
 # Everything is written by OWNER (a maintainer of the suite repo) except the refused edit.
 SCENARIO_NAME="22 issue parity (edit, labels, assignees, list filters and paging)"
@@ -22,6 +23,7 @@ REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 LOG="${WORKROOT}/s22"
 TITLE="e2e ${RUN_ID} parity"
 LABEL="e2e-${RUN_ID: -8}"
+LABEL2="${LABEL}-extra"
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
 dg_write() { # dg_write <identity> <log-prefix> <dg args...>
   local id="$1" out="$2"; shift 2
@@ -70,9 +72,12 @@ if dg_write "$ID_OWNER" "$LOG-ldef" label create "$REPO" "$LABEL" --color "#1d76
 else
   cat "$LOG-ldef.json" >&2; bad "label create failed"
 fi
-if dg_write "$ID_OWNER" "$LOG-ladd" issue label "$REPO" "$N" add "$LABEL" e2e-extra; then
+# `dg issue label add` refuses a label the repository does not define (E102): define the second too.
+dg_write "$ID_OWNER" "$LOG-ldef2" label create "$REPO" "$LABEL2" --color "#d93f0b" --description "e2e scenario 22" \
+  || { cat "$LOG-ldef2.json" >&2; bad "second label create failed"; }
+if dg_write "$ID_OWNER" "$LOG-ladd" issue label "$REPO" "$N" add "$LABEL" "$LABEL2"; then
   check "two label events" assert_eq "2" "$(jq_py "$LOG-ladd.json" 'len(d["eventIds"])')"
-  dg_write "$ID_OWNER" "$LOG-lrm" issue label "$REPO" "$N" remove e2e-extra || { cat "$LOG-lrm.json" >&2; bad "label remove failed"; }
+  dg_write "$ID_OWNER" "$LOG-lrm" issue label "$REPO" "$N" remove "$LABEL2" || { cat "$LOG-lrm.json" >&2; bad "label remove failed"; }
   check "labels fold to just $LABEL" until_read "$LOG-lv" "d['labels'] == ['$LABEL']" issue view "$REPO" "$N"
 else
   cat "$LOG-ladd.json" >&2; bad "label add failed"
@@ -122,12 +127,13 @@ else
   bad "paged list failed"
 fi
 
-step "OWNER deletes the label"
+step "OWNER deletes the labels"
 if dg_write "$ID_OWNER" "$LOG-ldel" label delete "$REPO" "$LABEL"; then
   check "definition deleted" assert_eq "1" "$(jq_py "$LOG-ldel.json" 'd["deletedDocuments"]')"
   check "label no longer listed" until_read "$LOG-ll2" "'$LABEL' not in [l['name'] for l in d['labels']]" label list "$REPO"
 else
   cat "$LOG-ldel.json" >&2; bad "label delete failed"
 fi
+dg_write "$ID_OWNER" "$LOG-ldel2" label delete "$REPO" "$LABEL2" || { cat "$LOG-ldel2.json" >&2; bad "second label delete failed"; }
 
 finish_scenario

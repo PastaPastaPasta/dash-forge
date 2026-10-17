@@ -28,14 +28,18 @@ export function CostPreview({
   return (
     <div
       data-testid="cost-preview"
-      title="Estimated from measured Platform fees; the actual charge is recorded in Settings → Spend."
+      title={
+        isRefund
+          ? 'The most this can give back, estimated from measured Platform fees. The refund shrinks as the stored data ages; the actual amount is recorded in Settings → Spend.'
+          : 'Estimated from measured Platform fees; the actual charge is recorded in Settings → Spend.'
+      }
       className={cn(
         'flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 text-dense',
         isRefund ? 'border-verify/30 bg-verify/5' : 'border-anvil-200 bg-anvil-50 dark:border-anvil-750 dark:bg-anvil-850',
         className,
       )}
     >
-      <span className="text-anvil-500 dark:text-anvil-400">{isRefund ? 'Refund est.' : 'Cost'}</span>
+      <span className="text-anvil-500 dark:text-anvil-400">{isRefund ? 'Refund up to' : 'Cost'}</span>
       <span className={cn('font-mono font-medium', isRefund ? 'text-verify-700 dark:text-verify-400' : 'text-dash-600 dark:text-dash-400')}>
         {isRefund ? '+' : min !== null ? '' : '~'}
         {min !== null ? `${creditsAsDash(min)}–` : ''}

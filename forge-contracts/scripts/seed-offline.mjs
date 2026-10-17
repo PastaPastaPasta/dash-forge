@@ -2,7 +2,7 @@
 // seed-offline.mjs — run every seed and verify script against an in-memory chain
 // (lib/offline-chain.mjs), with no network and no SDK install, and check what they write.
 //
-//   node forge-contracts/scripts/seed-offline.mjs [--out <dir>]
+//   node forge-contracts/scripts/seed-offline.mjs [--out <dir>] [--contracts <dir>]
 //
 // Each script runs with synthetic identities. The seeds then run a second time, and that
 // rerun must write nothing (they are idempotent). The run fails when:
@@ -19,15 +19,21 @@
 // README.md), one file per contract, for `contract-validate --vectors <dir>`, which judges the
 // JSON schema, maxBytes and every other rule with rs-dpp. A document the script expected to be
 // refused for such a rule is exported as a refuse vector with that reason.
+//
+// --contracts <dir> runs the same scripts against another contract set: forge-contracts/contracts/
+// mainnet, the four-contract set testnet registers (the chain gets a forge-meta id and the scripts
+// write the moved types there). The scripts still write RC1 (devnet) document shapes, so a run on
+// that set is expected to fail on mainnet-only rules until they are ported (WS-D); the failure list
+// is the port's worklist. Without the flag the three devnet contracts run, as CI does.
 
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
 import { OfflineChain, vectorDoc } from './lib/offline-chain.mjs';
-import { CONTRACT_OF, b58encode, isConsensusCode, parseArgs, runIfMain } from './lib/seed-io.mjs';
+import { b58encode, isConsensusCode, parseArgs, runIfMain } from './lib/seed-io.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -60,13 +66,19 @@ async function quietly(fn) {
 export async function main(argv) {
   const a = parseArgs(argv);
   const tmp = mkdtempSync(join(tmpdir(), 'seed-offline-'));
-  const chain = new OfflineChain();
+  const chain = new OfflineChain({ contractsDir: a.contracts ? resolve(a.contracts) : undefined });
   const evo = chain.evo();
   const deployment = join(tmp, 'devnet-offline.json');
   writeFileSync(deployment, JSON.stringify({
     network: 'devnet',
     devnetName: 'offline',
-    v2: { forgeCore: { contractId: chain.ids.core }, forgeCollab: { contractId: chain.ids.collab }, forgeCommunity: { contractId: chain.ids.community } },
+    v2: {
+      forgeCore: { contractId: chain.ids.core },
+      forgeCollab: { contractId: chain.ids.collab },
+      forgeCommunity: { contractId: chain.ids.community },
+      // a four-contract set: the scripts write the moved types to forge-meta (seed-io `contractOn`)
+      ...(chain.ids.meta ? { forgeMeta: { contractId: chain.ids.meta } } : {}),
+    },
   }));
   const net = ['--network', 'devnet', '--devnet-name', 'offline', '--deployment', deployment];
   const ids = join(tmp, 'identities');
@@ -114,7 +126,7 @@ export async function main(argv) {
   }
 
   if (a.out) {
-    const cases = { core: [], collab: [], community: [] };
+    const cases = Object.fromEntries(Object.keys(chain.set.contracts).map((c) => [c, []]));
     const seen = new Map();
     for (const r of chain.records) {
       // A refusal for a rule rs-dpp judges becomes a refuse vector; a chain-state refusal (a
@@ -122,14 +134,14 @@ export async function main(argv) {
       const refused = r.why && !isConsensusCode(r.why);
       const n = (seen.get(`${r.script} ${r.type}`) ?? 0) + 1;
       seen.set(`${r.script} ${r.type}`, n);
-      cases[CONTRACT_OF[r.type]].push({
+      cases[chain.set.contractOf[r.type]].push({
         item: r.script,
         name: `${r.script} ${r.type} #${n}`,
         type: r.type,
         expect: refused ? 'refused' : 'ok',
         ...(refused ? { why: r.why } : {}),
         owner: r.owner,
-        doc: vectorDoc(r.type, r.data),
+        doc: vectorDoc(r.type, r.data, chain.set),
       });
     }
     mkdirSync(a.out, { recursive: true });
@@ -144,7 +156,7 @@ export async function main(argv) {
     console.error(`\n${problems.length} problems:\n  ${problems.join('\n  ')}`);
     return 1;
   }
-  console.error('every seed and verify script writes RC1 documents the chain-state rules accept');
+  console.error(`every seed and verify script writes documents the chain-state rules of ${a.contracts ?? 'the devnet set'} accept`);
   return 0;
 }
 

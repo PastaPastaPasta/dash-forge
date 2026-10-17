@@ -4988,20 +4988,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../forge-contracts"
         ));
-        let built = tempfile::tempdir().expect("temp dir");
-        let out = std::process::Command::new("python3")
-            .arg(root.join("schema/build.py"))
-            .args(["--mainnet", "--out"])
-            .arg(built.path())
-            .output()
-            .expect("python3 runs build.py");
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        // both sets are committed (`build.py --check` keeps them equal to a fresh build)
         let committed = root.join("contracts");
-        for (dir, mainnet) in [(committed.as_path(), false), (built.path(), true)] {
+        let mainnet_set = committed.join("mainnet");
+        for (dir, mainnet) in [(committed.as_path(), false), (mainnet_set.as_path(), true)] {
             let (core, collab, community) = (
                 parsed(dir, "forge-core"),
                 parsed(dir, "forge-collab"),

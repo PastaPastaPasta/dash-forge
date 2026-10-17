@@ -23,9 +23,10 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { PaymentAddress } from '@/components/ui/payment-address'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { StepFailed, Waiting } from '@/components/auth/step-status'
-import { faucetUrl } from '@/components/top-up-sheet'
+import { FaucetLinks } from '@/components/faucet-links'
+import { faucetUrls } from '@/lib/faucets'
 import { ACTIVE_NETWORK, NotDeployedError } from '@/lib/constants'
-import { pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
+import { pushCostPhrase, pushStorageHint, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 import { isAbort } from '@/lib/sdk/facade'
 import { PHASE_TEXT, STEP_MS, connectPlatform, loadSdkLibrary, type ConnectPhase } from '@/lib/auth/connect'
@@ -444,21 +445,19 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     )
   }
 
-  const faucet = faucetUrl()
   return (
     <div className="space-y-3" data-testid="fund-step">
       <p className="text-dense">
         Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span> ({SUGGESTED_DEPOSIT_DASH} suggested) to this address from any Dash wallet. It becomes your
         Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue, {pushCostPhrase()}.
       </p>
+      <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="push-storage-hint">
+        {pushStorageHint()}
+      </p>
       {/* Copy, and a wallet link for paying from this same phone (QW3-008). */}
       {address ? <PaymentAddress address={address} amountDash={SUGGESTED_DEPOSIT_DASH} label="Deposit address" /> : null}
       {address ? <span data-testid="deposit-address" className="sr-only">{address}</span> : null}
-      {faucet ? (
-        <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">
-          Get test DASH from the {ACTIVE_NETWORK.key} faucet
-        </a>
-      ) : null}
+      <FaucetLinks urls={faucetUrls()} />
       <div className="flex items-center gap-2 text-dense text-anvil-600 dark:text-anvil-300" aria-live="polite">
         {running ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
         <span data-testid="create-stage">{stage ?? STAGE_TEXT['waiting-deposit']}</span>

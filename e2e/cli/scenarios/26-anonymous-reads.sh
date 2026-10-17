@@ -77,7 +77,9 @@ fi
 if anon "$LOG-iv.json" "$LOG-iv.err" -- --json issue view "$DEMO" 3; then
   KINDS="$(jq_py "$LOG-iv.json" '" ".join(e["kind"] for e in d["events"])')"
   check "issue view --json: #3's label event" assert_contains "$KINDS" "labelAdd"
-  check "issue view --json: #3's close event" assert_contains "$KINDS" "close"
+  # A close is a state `transition` (kind 1, ISSUE_CLOSE), not an `event`: it is in `transitions`.
+  check "issue view --json: #3's close transition" \
+    assert_eq "1" "$(jq_py "$LOG-iv.json" 'sum(1 for t in d["transitions"] if t["kind"] == 1)')"
 else
   cat "$LOG-iv.err" >&2; bad "anonymous dg issue view --json"
 fi
@@ -149,8 +151,8 @@ if dg_as "$W" --yes --json repo create "$PNAME" --no-protect --private --storage
   check "refused (exit 3)" assert_eq "3" "$rc"
   check "E301" assert_eq "E301" "$(jq_py "$LOG-priv.json" 'd["error"]["code"]')"
   check "says the repo is private" assert_contains "$(jq_py "$LOG-priv.json" 'd["error"]["message"]')" "is private"
-  check "its fix line names DASH_FORGE_KEY=<file> (not [redacted]>)" \
-    assert_contains "$(jq_py "$LOG-priv.json" '" ".join(d["error"]["fix"])')" "DASH_FORGE_KEY=<file>"
+  check "its fix line names DASH_FORGE_KEY=<identity file> (not [redacted]>)" \
+    assert_contains "$(jq_py "$LOG-priv.json" '" ".join(d["error"]["fix"])')" "DASH_FORGE_KEY=<identity file>"
 else
   cat "$LOG-pcreate.err" "$LOG-pcreate.json" >&2
   is_flake "$LOG-pcreate.err" && skip_scenario "private repo create flaked"
@@ -203,6 +205,12 @@ A1="${WORKROOT}/s26-tool-${RUN_ID}.tar.gz"; A2="${WORKROOT}/s26-notes-${RUN_ID}.
 head -c 12000 /dev/urandom | gzip -c >"$A1"
 printf 'release notes %s\n' "$RUN_ID" >"$A2"
 TAG="v0.0.1-${RUN_ID}"
+# A release is published for a tag the repo has (E102 otherwise): push one to the run's own repo.
+if ! push_release_tag "$W" "dash://${WID}/${NAME}" "$TAG" "$LOG-tag"; then
+  cat "$LOG-tag.err" >&2
+  is_flake "$LOG-tag.err" && skip_scenario "tag push flaked"
+  bad "tag push failed"; finish_scenario
+fi
 if DASH_FORGE_STORAGE_CONFIG="$CFG" dg_as "$W" --yes release create "${WID}/${NAME}" --tag "$TAG" \
     --asset "$A1" --asset "$A2" --storage rustfs >"$LOG-rel.out" 2>"$LOG-rel.err"; then
   check "L-35: one profile is \"1 copy\", not \"2 cop(ies)\"" assert_file_contains "$LOG-rel.err" "→ 1 copy"

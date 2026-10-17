@@ -157,7 +157,7 @@ export function profileCost(stored: Profile | null, next: ProfileFields, first?:
   return Object.keys(changes).length === 0 ? null : previewReplace(DOC.profile, changes)
 }
 
-/** What deleting a profile refunds at least. */
+/** What deleting a profile refunds, at most (the refund shrinks as the document ages). */
 export function profileDeleteRefund(): CostPreview {
   return previewDelete(DOC.profile)
 }

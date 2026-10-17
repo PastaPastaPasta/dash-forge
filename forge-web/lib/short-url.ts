@@ -48,6 +48,9 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   // The IPFS variant reads `/ipfs/<cid>/` and `/ipns/<name>/` as its base path (scripts/ipfs-base.cjs).
   'ipfs',
   'ipns',
+  // `/licenses` (the page, and public/licenses/: the GPL and LGPL texts); `third-party-licenses.txt`
+  // and `wasm-sdk-licenses.txt` are written into the export by scripts/third-party-licenses.mjs.
+  'licenses',
   'login',
   'manifest.webmanifest',
   'mirror',
@@ -62,7 +65,9 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   'robots.txt',
   'settings',
   'start',
+  'third-party-licenses.txt',
   'u',
+  'wasm-sdk-licenses.txt',
 ]
 
 /** A GitHub owner or repo segment the alias accepts (GitHub's own characters). */

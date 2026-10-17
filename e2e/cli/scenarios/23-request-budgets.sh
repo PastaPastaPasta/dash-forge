@@ -4,7 +4,10 @@
 # Every DAPI request the CLI makes is logged by rs-dapi-client at trace level ("calling
 # <method> with …"); this counts them.
 #   1. `dg pr list` on the read-only forge-v2-demo fixture: <= 10 requests cold (empty cache)
-#      and <= 6 warm. It was ~9 per PR (D-500).
+#      and <= 7 warm. It was ~9 per PR (D-500). Warm is repo, config history, identity, patch,
+#      transition (with its sub-queries), plus two reads every command now makes: the
+#      repository-moved check (`config`, newest 10; 2b2706a09, UPDATE-1) and the standing bans
+#      (`ban`; ef0fdf245). The budget was 6 before those two.
 #   2. `git fetch` with nothing new: <= 4 requests and no pack downloaded.
 #   3. After a push adds one pack, `git fetch` downloads exactly that pack (not every pack).
 SCENARIO_NAME="23 request budgets: pr list, no-op fetch, incremental fetch"
@@ -36,7 +39,10 @@ step "dg pr list on ${DEMO}: cold, then warm"
 traced_dg "$LOG-prl-cold" pr list "$DEMO" --state all || { is_flake "$LOG-prl-cold.err" && skip_scenario "pr list flaked"; bad "pr list failed"; finish_scenario; }
 within "pr list cold" "$(requests "$LOG-prl-cold.err")" 10
 traced_dg "$LOG-prl-warm" pr list "$DEMO" --state all || { is_flake "$LOG-prl-warm.err" && skip_scenario "pr list flaked"; bad "pr list failed"; finish_scenario; }
-within "pr list warm" "$(requests "$LOG-prl-warm.err")" 6
+# 7, not 6 (b66b333fb): the bans read (ef0fdf245, 2026-10-06) added one request to every list,
+# on top of the moved-to read (2b2706a09, 2026-10-05) that already used the slack. Both are
+# intended reads (a banned author's thread collapses; a moved repository says where it went).
+within "pr list warm" "$(requests "$LOG-prl-warm.err")" 7
 check "warm and cold list the same PRs" diff -q "$LOG-prl-cold.out" "$LOG-prl-warm.out"
 # Networks without composite queries (protocol 13) read one by one: the same answer.
 DASH_FORGE_NO_COMPOSITE=1 traced_dg "$LOG-prl-plain" pr list "$DEMO" --state all \

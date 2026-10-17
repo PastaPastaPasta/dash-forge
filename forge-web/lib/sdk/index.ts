@@ -59,6 +59,7 @@ export {
   PUSH_COST_DASH,
   dashRange,
   pushCostPhrase,
+  pushStorageHint,
   STEADY,
   EXISTING,
   type FirstWrite,

@@ -107,13 +107,90 @@ export function grpcWebMessage(body: Uint8Array): Uint8Array {
   return message
 }
 
+/** The `v0` body (field 1) of a `GetCurrentQuorumsInfoResponse`. */
+function responseV0(message: Uint8Array): Uint8Array {
+  const v0 = protoFields(message).find((f) => f.no === 1 && f.bytes !== undefined)?.bytes
+  if (v0 === undefined) throw new Error('response has no v0 body')
+  return v0
+}
+
+/**
+ * The `ResponseMetadata` a Platform answer carries (dapi-grpc `platform.proto`, field 5 of
+ * `GetCurrentQuorumsInfoResponseV0`). A field the node did not send is undefined: proto3 does
+ * not distinguish "absent" from zero on the wire, and a zero here means nothing useful.
+ */
+export interface ResponseMetadata {
+  /** Platform block height (field 1). */
+  readonly height?: number
+  /** Core chain-locked height (field 2). */
+  readonly coreChainLockedHeight?: number
+  readonly epoch?: number
+  /** The block's time in ms since the epoch (field 4); fits a JS number. */
+  readonly timeMs?: number
+  /** The Platform protocol version the node runs (field 5). */
+  readonly protocolVersion?: number
+  /** The chain id, `dash-testnet-51` style (field 6). */
+  readonly chainId?: string
+}
+
+/** The metadata of a `GetCurrentQuorumsInfoResponse`, or null when the node sent none. */
+export function decodeResponseMetadata(message: Uint8Array): ResponseMetadata | null {
+  const bytes = protoFields(responseV0(message)).find((f) => f.no === 5 && f.bytes !== undefined)?.bytes
+  if (bytes === undefined) return null
+  const fields = protoFields(bytes)
+  const int = (no: number): number | undefined => {
+    const v = fields.find((f) => f.no === no && f.wire === 0)?.int
+    return v === undefined || v === 0 ? undefined : v
+  }
+  const chain = fields.find((f) => f.no === 6 && f.bytes !== undefined)?.bytes
+  return {
+    height: int(1),
+    coreChainLockedHeight: int(2),
+    epoch: int(3),
+    timeMs: int(4),
+    protocolVersion: int(5),
+    chainId: chain === undefined || chain.length === 0 ? undefined : new TextDecoder().decode(chain),
+  }
+}
+
+/** Forge needs contract groups and the other protocol-14 rules: an older node answers from a different network state. */
+export const MIN_PLATFORM_PROTOCOL = 14
+
+/**
+ * How old a node's latest block may be before its answer is not taken: the SDK's own
+ * `DEFAULT_METADATA_TIME_TOLERANCE_MS` (rs-sdk `sdk.rs`, 31 minutes), so a node this check
+ * accepts is one the SDK would accept too. A seed stuck on an old block is exactly what fails it.
+ */
+export const DAPI_METADATA_MAX_AGE_MS = 31 * 60_000
+
+/**
+ * Why a node's answer is not a fair second opinion, or null when it is (or carries no metadata,
+ * which is taken as before): it runs an older protocol, its latest block is older than
+ * {@link DAPI_METADATA_MAX_AGE_MS} (it has stopped following the chain), or it reports another
+ * chain than the one this network is known to be (`chainId`, when the deployment records one).
+ * A block time ahead of `now` is not held against the node: that is this device's clock
+ * (`lib/sdk/clock-skew.ts` reports it).
+ */
+export function metadataFault(meta: ResponseMetadata | null, now: number, chainId: string | null | undefined): string | null {
+  if (meta === null) return null
+  if (meta.protocolVersion !== undefined && meta.protocolVersion < MIN_PLATFORM_PROTOCOL) {
+    return `node runs protocol ${meta.protocolVersion}, below ${MIN_PLATFORM_PROTOCOL}`
+  }
+  if (meta.timeMs !== undefined && now - meta.timeMs > DAPI_METADATA_MAX_AGE_MS) {
+    return `node's latest block is ${Math.round((now - meta.timeMs) / 60_000)} minutes old`
+  }
+  if (chainId && meta.chainId !== undefined && meta.chainId !== chainId) {
+    return `node reports chain ${meta.chainId}, not ${chainId}`
+  }
+  return null
+}
+
 /**
  * Decode a `GetCurrentQuorumsInfoResponse`: `v0` (field 1) → repeated `validator_sets`
  * (field 3), each `{1: quorum_hash, 2: core_height, 4: threshold_public_key}`.
  */
 export function decodeCurrentQuorumsInfo(message: Uint8Array): QuorumKey[] {
-  const v0 = protoFields(message).find((f) => f.no === 1 && f.bytes !== undefined)?.bytes
-  if (v0 === undefined) throw new Error('response has no v0 body')
+  const v0 = responseV0(message)
   const out: QuorumKey[] = []
   for (const set of protoFields(v0)) {
     if (set.no !== 3 || set.bytes === undefined) continue
@@ -195,6 +272,8 @@ export interface CrossCheckDeps {
   readonly timeoutMs?: number
   /** Pauses before each re-read of both lists after they disagreed on which quorums exist. */
   readonly rotationRetriesMs?: readonly number[]
+  /** The clock a DAPI answer's block time is held against (tests pin it). */
+  readonly now?: () => number
 }
 
 /**
@@ -213,7 +292,7 @@ async function fetchServiceKeys(endpoint: string, deps: Required<Pick<CrossCheck
   return parseQuorumService(await resp.json())
 }
 
-async function fetchDapiKeys(address: string, deps: Required<CrossCheckDeps>): Promise<QuorumKey[]> {
+async function fetchDapiKeys(address: string, deps: Required<CrossCheckDeps>, chainId: string | null | undefined): Promise<QuorumKey[]> {
   const resp = await deps.fetch(`${address.replace(/\/+$/, '')}/org.dash.platform.dapi.v0.Platform/getCurrentQuorumsInfo`, {
     method: 'POST',
     headers: { 'content-type': 'application/grpc-web+proto', 'x-grpc-web': '1' },
@@ -223,7 +302,12 @@ async function fetchDapiKeys(address: string, deps: Required<CrossCheckDeps>): P
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   const status = resp.headers.get('grpc-status')
   if (status !== null && status !== '0') throw new Error(`grpc-status ${status}`)
-  const keys = decodeCurrentQuorumsInfo(grpcWebMessage(new Uint8Array(await resp.arrayBuffer())))
+  const message = grpcWebMessage(new Uint8Array(await resp.arrayBuffer()))
+  // A node that has stopped following the chain (or runs an older protocol) lists the quorums of
+  // its own stale state: asking it would read as a disagreement, or as another network (TEST-04).
+  const fault = metadataFault(decodeResponseMetadata(message), deps.now(), chainId)
+  if (fault !== null) throw new Error(fault)
+  const keys = decodeCurrentQuorumsInfo(message)
   if (keys.length === 0) throw new Error('no validator sets')
   return keys
 }
@@ -241,10 +325,11 @@ function shuffled<T>(items: readonly T[], random: () => number): T[] {
 async function secondSource(
   addresses: readonly string[],
   deps: Required<CrossCheckDeps>,
+  chainId: string | null | undefined,
 ): Promise<{ host: string; keys: QuorumKey[] } | null> {
   for (const address of shuffled(addresses, deps.random).slice(0, DAPI_TRIES)) {
     try {
-      return { host: urlHost(address), keys: await fetchDapiKeys(address, deps) }
+      return { host: urlHost(address), keys: await fetchDapiKeys(address, deps, chainId) }
     } catch {
       /* next node */
     }
@@ -272,13 +357,15 @@ export class QuorumProbeError extends Error {
 export async function probeQuorumService(
   endpoint: string,
   dapiAddresses: readonly string[],
-  deps: Pick<CrossCheckDeps, 'fetch' | 'timeoutMs' | 'random'> = {},
+  deps: Pick<CrossCheckDeps, 'fetch' | 'timeoutMs' | 'random' | 'now'> = {},
+  chainId: string | null = null,
 ): Promise<void> {
   const full: Required<CrossCheckDeps> = {
     fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
     random: deps.random ?? Math.random,
     timeoutMs: deps.timeoutMs ?? 8000,
     rotationRetriesMs: [],
+    now: deps.now ?? Date.now,
   }
   let keys: QuorumKey[]
   try {
@@ -287,7 +374,7 @@ export async function probeQuorumService(
     throw new QuorumProbeError('no-answer')
   }
   if (keys.length === 0) throw new QuorumProbeError('no-answer')
-  const second = dapiAddresses.length > 0 ? await secondSource(dapiAddresses, full) : null
+  const second = dapiAddresses.length > 0 ? await secondSource(dapiAddresses, full, chainId) : null
   if (second === null) return
   const verdict = compareQuorumKeys(keys, second.keys)
   if (verdict.kind === 'mismatch') throw new QuorumProbeError('keys-differ')
@@ -301,6 +388,7 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
     random: deps.random ?? Math.random,
     timeoutMs: deps.timeoutMs ?? 6000,
     rotationRetriesMs: deps.rotationRetriesMs ?? ROTATION_RETRIES_MS,
+    now: deps.now ?? Date.now,
   }
   const endpoint = quorumEndpoint(config)
   if (endpoint === '') return { state: 'unavailable', reason: 'no quorum key endpoint is configured' }
@@ -315,7 +403,7 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
       return { state: 'unavailable', reason: `${primary} did not answer (${e instanceof Error ? e.message : String(e)})` }
     }
     if (config.dapiAddresses.length === 0) return { state: 'single', primary, reason: 'no-second-source' }
-    const second = await secondSource(config.dapiAddresses, full)
+    const second = await secondSource(config.dapiAddresses, full, config.chainId)
     if (second === null) return { state: 'single', primary, reason: 'second-unreachable' }
     const verdict = compareQuorumKeys(first, second.keys)
     if (verdict.kind === 'agree') return { state: 'agreed', primary, secondary: second.host, overlap: verdict.overlap }

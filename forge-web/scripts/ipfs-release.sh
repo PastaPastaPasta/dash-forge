@@ -28,7 +28,9 @@ PNPM_VERSION='11.9.0'
 PNPM_INTEGRITY='sha512-vWgtXQP+Ul73yf1ngMaITR51asTJyf4AxTh4KCQxDc+Q493E9Tg18G3669UIXkGFXgvLs7YN4qxburieUDbwOw=='
 KUBO_IMAGE='ipfs/kubo:v0.43.1@sha256:b293923d66e490e70ced64df42ea7a6cf7eac2740e3fb29101df18070fa7be48'
 # The network a release build reads. Part of the output, so it is fixed per commit: change it
-# here (for mainnet), never per run.
+# here (for mainnet), never per run. RELEASE_DEVNET_NAME is empty off a devnet, and then no
+# NEXT_PUBLIC_DEVNET_NAME is passed at all: Next inlines an empty variable as "", which would
+# change the bytes against a rebuild that leaves it out.
 RELEASE_NETWORK='devnet'
 RELEASE_DEVNET_NAME='sakura'
 # UnixFS import: the throwaway repository is initialised with IPIP-499's unixfs-v1-2025 profile
@@ -57,7 +59,7 @@ container_build() {
     SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     FORGE_BUILD_COMMIT="$FORGE_BUILD_COMMIT" \
     NEXT_PUBLIC_NETWORK="$RELEASE_NETWORK" \
-    NEXT_PUBLIC_DEVNET_NAME="$RELEASE_DEVNET_NAME" \
+    ${RELEASE_DEVNET_NAME:+"NEXT_PUBLIC_DEVNET_NAME=$RELEASE_DEVNET_NAME"} \
     sh -c 'pnpm install --frozen-lockfile && pnpm run build:ipfs' >&2
   tar -C out --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${SOURCE_DATE_EPOCH}" -cf - .
 }

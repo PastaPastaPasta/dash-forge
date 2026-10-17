@@ -21,7 +21,7 @@ import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ACTIVE_NETWORK, networkName, type NetworkConfig } from '@/lib/constants'
-import { CURRENT_DEVNET, DEVNET_MOVE_DOC } from '@/lib/devnet-notice'
+import { DEVNET_MOVE_DOC, FORGE_HOME } from '@/lib/devnet-notice'
 
 export function ContractsMissingState({
   detail,
@@ -45,14 +45,14 @@ export function ContractsMissingState({
       </span>
       <h2 className="text-prose font-medium text-anvil-900 dark:text-anvil-50">
         {moved
-          ? 'Dash Forge moved to a new devnet'
+          ? 'Dash Forge moved to a new network'
           : devnet
             ? `Dash Forge isn't deployed on ${where} right now`
             : `This build's contracts were not found on ${where}`}
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
         {moved
-          ? `${where[0]!.toUpperCase()}${where.slice(1)} was retired. Dash Forge now runs on devnet ${CURRENT_DEVNET}. Set up mirrors again with the /mirror wizard and re-push your repos from your clones. This page works again once the ${CURRENT_DEVNET} build is published.`
+          ? `${where[0]!.toUpperCase()}${where.slice(1)} was retired. Dash Forge now runs on ${FORGE_HOME.label}. Set up mirrors again with the /mirror wizard and re-push your repos from your clones. This page works again once the ${FORGE_HOME.label} build is published.`
           : devnet
             ? `${where[0]!.toUpperCase()}${where.slice(1)} is a test network, and it was probably reset. This page works again once Dash Forge is redeployed there.`
             : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}

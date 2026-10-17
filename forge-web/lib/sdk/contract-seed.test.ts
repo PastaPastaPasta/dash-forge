@@ -8,13 +8,22 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
-import { DEPLOYMENTS } from '../deployments'
+import { DEPLOYMENTS, forgeV2Ids, type DeploymentFile } from '../deployments'
 import { SNAPSHOT_KEYS, loadContractSnapshots } from './contract-seed'
 import { snapshotIds } from '../../../forge-contracts/scripts/snapshot-contracts.mjs'
 
 const SNAPSHOT_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'deployments', 'contracts')
-const FORGE_CORE = JSON.parse(readFileSync(resolve(process.cwd(), '..', 'forge-contracts', 'contracts', 'forge-core.json'), 'utf8')) as {
-  documentSchemas?: Record<string, unknown>
+const CONTRACTS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'contracts')
+
+/**
+ * The forge-core schema the deployment registered: the committed set its record names
+ * (`contracts/mainnet/` for a four-contract production registration, whose forge-core lacks the
+ * types that moved to forge-meta), else the top-level three-contract file.
+ */
+function forgeCoreSchema(deployment: DeploymentFile | undefined): { documentSchemas?: Record<string, unknown> } {
+  const set = deployment?.v2?.contractsSet ?? (deployment?.v2?.forgeMeta ? 'mainnet' : null)
+  const file = set === null ? 'forge-core.json' : `${set}/forge-core.json`
+  return JSON.parse(readFileSync(resolve(CONTRACTS_DIR, file), 'utf8')) as { documentSchemas?: Record<string, unknown> }
 }
 
 type Evo = typeof import('@dashevo/evo-sdk')
@@ -34,6 +43,16 @@ describe('contract snapshots', () => {
     expect([...SNAPSHOT_KEYS].sort()).toEqual(files)
   })
 
+  // CONT-13 / WEB-09: a live deployment with no bundled snapshot makes every first page load fetch
+  // its contracts. This fails the testnet registration PR until its snapshot is committed and wired.
+  it('has a snapshot for every deployment that is live', () => {
+    for (const [key, file] of Object.entries(DEPLOYMENTS)) {
+      if (forgeV2Ids(file) && !file.retired) {
+        expect(SNAPSHOT_KEYS, `${key} is live but has no contract snapshot: run forge-contracts/scripts/snapshot-contracts.mjs`).toContain(key)
+      }
+    }
+  })
+
   for (const key of SNAPSHOT_KEYS) {
     it(`${key}: holds the deployment's contracts, decodable at their recorded version`, async () => {
       const deployment = DEPLOYMENTS[key]
@@ -44,9 +63,9 @@ describe('contract snapshots', () => {
         const contract = evo.DataContract.fromBase64(snapshot.bytes, false, snapshot.platformVersion)
         expect(contract.id.toBase58()).toBe(id)
         expect(contract.version).toBe(snapshot.version)
-        // The forge-core snapshot is the schema in forge-contracts/contracts.
+        // The forge-core snapshot is the schema of the set the deployment registered.
         if (id === deployment?.v2?.forgeCore?.contractId) {
-          expect(Object.keys(contract.schemas).sort()).toEqual(Object.keys(FORGE_CORE.documentSchemas ?? {}).sort())
+          expect(Object.keys(contract.schemas).sort()).toEqual(Object.keys(forgeCoreSchema(deployment).documentSchemas ?? {}).sort())
         }
       }
     })

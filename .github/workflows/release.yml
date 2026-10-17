@@ -2,13 +2,16 @@ name: Release
 
 # Builds the prebuilt binaries users install instead of compiling the Platform SDK tree:
 #   dg, git-remote-dash, forge-relay, forge-import, forge-runner (not on Windows: it drives
-#   act and Linux containers), dg's shell completions, README, INSTALL
+#   act and Linux containers), dg's shell completions, README, INSTALL, the project's licenses
+#   and the third-party license notices (build-support/licenses)
 # for six targets, packaged as dash-forge-<version>-<target>.{tar.gz,zip}, listed in
 # SHA256SUMS, and covered by GitHub build-provenance attestations (Sigstore, keyless; no
 # signing key to leak or rotate). install.sh and `cargo binstall` both consume these names.
 # With them: the web app's reproducible IPFS build (web-ipfs.yml), as forge-web-<version>.car,
 # forge-web-<version>.cid and forge-web-<version>.manifest.json (every file's SHA-256, for
 # `dg verify-app`), in SHA256SUMS too, and its CID in the release notes.
+# Two container images are pushed to ghcr.io after the release: forge-relay (from the musl
+# archive) and forge-gateway (built from the tagged source, services/forge-gateway/Dockerfile).
 #
 # Triggers:
 #   * push of a tag `v<semver>`: build, attest, and publish a GitHub Release.
@@ -19,10 +22,12 @@ name: Release
 #     run (master's also seeds the build cache).
 #
 # Least privilege: the workflow default is `contents: read`, and every build, test and
-# checksum job runs with only that. `publish` alone gets `contents: write` (create the
-# release), `id-token: write` (Sigstore OIDC) and `attestations: write`; it runs only when
-# actually publishing, checks out no code and runs no build tooling — it downloads the
-# archives and SHA256SUMS, re-verifies them, attests and uploads them.
+# checksum job runs with only that. `publish` gets `contents: write` (create the release),
+# `id-token: write` (Sigstore OIDC) and `attestations: write`; it checks out no code and runs no
+# build tooling — it downloads the archives and SHA256SUMS, re-verifies them, attests and
+# uploads them. The image pushes get `packages: write` (and the gateway push `id-token` and
+# `attestations` to attest its image). All of these run only when actually publishing, behind
+# the `release` environment.
 #
 # Apple code signing / notarization is deliberately out of scope for now; docs/INSTALL.md
 # says so and explains Gatekeeper.
@@ -40,6 +45,7 @@ on:
       - 'install.sh'
       - 'build-support/**'
       - 'crates/**'
+      - 'services/forge-gateway/Dockerfile'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -49,6 +55,13 @@ on:
         description: Build and package only; do not attest or publish a release
         type: boolean
         default: true
+      skip_ipfs:
+        description: >-
+          EMERGENCY ONLY: do not build the web app's IPFS CAR, so a failing or flaky web build
+          cannot hold back a binary fix. The release then has no forge-web-* assets and its
+          notes say so (docs/INSTALL.md, "Emergency release without the web CAR"). Leave off.
+        type: boolean
+        default: false
   # A dry run on PRs that change what the release-only legs (musl, Windows, macOS) depend on:
   # dependencies, the toolchain, build scripts and this packaging. A PR that only changes crate
   # source doesn't trigger it: the six-platform build costs about an hour of runner time
@@ -61,6 +74,7 @@ on:
       - '.github/workflows/web-ipfs.yml'
       - 'install.sh'
       - 'build-support/**'
+      - 'services/forge-gateway/Dockerfile'
       - 'crates/*/Cargo.toml'
       - 'crates/*/build.rs'
       - 'Cargo.toml'
@@ -142,9 +156,70 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "### Release plan: \`$version\` (publish: $publish)" >> "$GITHUB_STEP_SUMMARY"
 
+      # The "Networks" block and the link to docs/releases/v<version>.md that `publish` appends to
+      # the generated notes. Written here, where the tagged commit is checked out, so `publish`
+      # (which checks out no code) only appends a file; dry runs write it too, to exercise it.
+      - name: Release notes extras
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          build-support/release-notes-extra.test.sh
+          mkdir -p notes-extra
+          build-support/release-notes-extra.sh "$VERSION" "$GITHUB_REPOSITORY" "$REF_NAME" > notes-extra/release-notes-extra.md
+          { echo '### Release notes extras'; echo; cat notes-extra/release-notes-extra.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes-extra
+          path: notes-extra/release-notes-extra.md
+          if-no-files-found: error
+          retention-days: 7
+
+  # The license notices every archive and image carries (build-support/licenses): the project's
+  # own licenses and a third-party notice listing every Rust crate in the lockfile, for all six
+  # targets, with OpenSSL's and musl's licenses beside it. Made once, from Cargo.lock, so the
+  # archives of one release agree; each build job downloads it. cargo-about is a pinned prebuilt
+  # binary (install-cargo-about.sh checks its SHA-256). Generation fails on a license that is not
+  # in build-support/licenses/about.toml, so a new dependency's license is read before it ships.
+  licenses:
+    name: license notices
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test the packaging scripts
+        run: build-support/licenses/selftest.sh
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain || rustup toolchain install
+          cargo --version
+      - name: Install cargo-about
+        run: |
+          set -euo pipefail
+          build-support/licenses/install-cargo-about.sh "${RUNNER_TEMP}/bin"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+      # Every target's dependencies (no --target): generate.sh then runs offline.
+      - name: Fetch the dependency sources
+        run: cargo fetch --locked
+      - name: Generate the notices
+        run: |
+          set -euo pipefail
+          build-support/licenses/generate.sh "${RUNNER_TEMP}/license-notices"
+          ls -lR "${RUNNER_TEMP}/license-notices"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: license-notices
+          path: ${{ runner.temp }}/license-notices
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     name: build ${{ matrix.target }}
-    needs: plan
+    needs: [plan, licenses]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -191,6 +266,12 @@ jobs:
       # aws-lc-sys (rustls' crypto provider) needs NASM for x86_64 Windows; use the
       # prebuilt objects it ships instead of installing NASM on the runner.
       AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '1' || '' }}
+      # Crates come from the network (index.crates.io, the Platform git dependency): retry a
+      # dropped connection instead of failing the leg (the musl container once failed with
+      # "Could not connect to index.crates.io", run 37850252173, and a tag run cannot afford it).
+      CARGO_NET_RETRY: '10'
+      CARGO_HTTP_TIMEOUT: '120'
+      RUSTUP_MAX_RETRIES: '10'
     steps:
       - name: Install Alpine build dependencies
         if: matrix.container != ''
@@ -316,6 +397,11 @@ jobs:
               ;;
           esac
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: license-notices
+          path: license-notices
+
       - name: Package
         id: pkg
         run: |
@@ -334,6 +420,9 @@ jobs:
           "$dg" completions powershell > "$stage/completions/_dg.ps1"
           cp README.md "$stage/README.md"
           cp docs/INSTALL.md "$stage/INSTALL.md"
+          # The project's licenses and the third-party notices (build-support/licenses; OpenSSL's
+          # on Linux, musl's on the musl build). The SHA256SUMS job fails an archive without them.
+          sh build-support/licenses/stage.sh "$TARGET" license-notices "$stage"
 
           cd "${RUNNER_TEMP}/stage"
           if [ "$RUNNER_OS" = Windows ]; then
@@ -417,8 +506,13 @@ jobs:
   # The web app's reproducible IPFS build (web-ipfs.yml): built from this commit on an x86_64
   # and an arm64 runner in pinned images; the two CIDs must match. Its CAR and CID are released
   # with the binaries. Nothing is pinned anywhere: users pin it themselves.
+  #
+  # Skipped only by a workflow_dispatch with skip_ipfs=true (the emergency release, so that a
+  # failing web build cannot hold back a binary fix). Every other trigger runs it, and
+  # `checksums` below treats a skip any other way as a failure.
   web-ipfs:
     name: web app (IPFS)
+    if: ${{ !inputs.skip_ipfs }}
     uses: ./.github/workflows/web-ipfs.yml
 
   # Read-only: gathers the archives, writes SHA256SUMS and the size/digest summary. Runs on
@@ -426,23 +520,44 @@ jobs:
   checksums:
     name: SHA256SUMS
     needs: [plan, build, install-check, web-ipfs]
+    # A skipped web-ipfs would skip this job too, so say when that is fine: only when asked for
+    # (skip_ipfs). A failed or cancelled build, install check or web build still stops it.
+    if: >-
+      ${{ !cancelled()
+      && needs.plan.result == 'success'
+      && needs.build.result == 'success'
+      && needs.install-check.result == 'success'
+      && (needs.web-ipfs.result == 'success' || (needs.web-ipfs.result == 'skipped' && inputs.skip_ipfs == true)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       VERSION: ${{ needs.plan.outputs.version }}
+      WEB_IPFS: ${{ needs.web-ipfs.result }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: build-support/licenses
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.web-ipfs.result == 'success'
         with:
           name: web-ipfs
           path: web-ipfs
+      - name: Emergency release without the web CAR
+        if: needs.web-ipfs.result != 'success'
+        run: |
+          echo "::warning::skip_ipfs: the web app's IPFS build was skipped; this run has no forge-web-* assets"
+          echo "### No web app CAR (skip_ipfs)" >> "$GITHUB_STEP_SUMMARY"
+          echo "The web app's IPFS build was skipped on request, so \`SHA256SUMS\` lists the binaries only and a release made from this run says so." >> "$GITHUB_STEP_SUMMARY"
       # The web app's CAR, CID and manifest, named for the release, go into SHA256SUMS (and so
       # under the attestation) with the archives.
       - name: Web app CAR, CID and manifest
+        if: needs.web-ipfs.result == 'success'
         run: |
           set -euo pipefail
           mkdir -p dist-web
@@ -451,11 +566,24 @@ jobs:
           cp web-ipfs/forge-web.manifest.json "dist-web/forge-web-${VERSION}.manifest.json"
           cp dist-web/* dist/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: needs.web-ipfs.result == 'success'
         with:
           name: dist-web-ipfs
           path: dist-web/
           if-no-files-found: error
           retention-days: 7
+      # No release, dry run or not, goes out with an archive that lacks the project's licenses or
+      # the third-party notices (or, on Linux, OpenSSL's; on musl, musl's).
+      - name: Every archive carries its license files
+        run: |
+          set -euo pipefail
+          for archive in dist/dash-forge-"${VERSION}"-*; do
+            base=$(basename "$archive")
+            target=${base#"dash-forge-${VERSION}-"}
+            target=${target%%.tar.gz}
+            target=${target%%.zip}
+            sh build-support/licenses/verify-archive.sh "$archive" "$target"
+          done
       - name: SHA256SUMS
         run: |
           set -euo pipefail
@@ -463,7 +591,13 @@ jobs:
           expected=6
           count=$(find . -maxdepth 1 -name "dash-forge-${VERSION}-*" | wc -l)
           [ "$count" -eq "$expected" ] || { echo "::error::expected $expected archives, found $count"; ls -l; exit 1; }
-          sha256sum dash-forge-* "forge-web-${VERSION}.car" "forge-web-${VERSION}.cid" "forge-web-${VERSION}.manifest.json" > SHA256SUMS
+          if [ "$WEB_IPFS" = success ]; then
+            sha256sum dash-forge-* "forge-web-${VERSION}.car" "forge-web-${VERSION}.cid" "forge-web-${VERSION}.manifest.json" > SHA256SUMS
+          else
+            # skip_ipfs (the job's condition lets nothing else through): the binaries alone.
+            [ -z "$(find . -maxdepth 1 -name 'forge-web-*')" ] || { echo "::error::forge-web-* files present without a web build"; exit 1; }
+            sha256sum dash-forge-* > SHA256SUMS
+          fi
           cat SHA256SUMS
           {
             echo "### Artifacts (\`$VERSION\`)"
@@ -490,10 +624,15 @@ jobs:
   # (crates/forge-relay/Dockerfile.release: distroless/static + the binary). Every run builds
   # and smoke-tests it with read-only permissions; `relay-image-push` below, which exists only
   # when publishing, pushes it. It needs the checksum job so a pushed image always holds a
-  # binary whose archive passed SHA256SUMS.
+  # binary whose archive passed SHA256SUMS. (The gateway image, further down, is built from
+  # source instead: the gateway is not in the archives.)
   relay-image:
     name: forge-relay image
     needs: [plan, checksums]
+    # Explicit: an `if:` without a status function means success() of EVERY upstream job, so a
+    # skip_ipfs run (web-ipfs skipped on purpose) would skip this and everything after it.
+    # checksums itself only succeeds on the allowed paths.
+    if: ${{ !cancelled() && needs.checksums.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -520,13 +659,23 @@ jobs:
           (cd dist && grep " ${name}.tar.gz\$" ../sums/SHA256SUMS | sha256sum --check --strict -)
           ctx="${RUNNER_TEMP}/relay-image"
           mkdir -p "$ctx"
-          tar -xzf "dist/${name}.tar.gz" -C "$ctx" --strip-components=1 "${name}/forge-relay"
+          # The binary and the license files the archive carries (Dockerfile.release puts those
+          # under /usr/share/doc/dash-forge).
+          tar -xzf "dist/${name}.tar.gz" -C "$ctx" --strip-components=1 \
+            "${name}/forge-relay" "${name}/LICENSE-MIT" "${name}/LICENSE-APACHE" \
+            "${name}/THIRD-PARTY-LICENSES" "${name}/licenses"
           cp crates/forge-relay/Dockerfile.release "$ctx/Dockerfile"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/forge-relay"
           docker build --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${VERSION}" \
             -t "${image}:${VERSION}" "$ctx"
           docker run --rm --entrypoint /usr/local/bin/forge-relay "${image}:${VERSION}" --version
+          # The image has no shell, so look for the license files by copying them out.
+          cid=$(docker create "${image}:${VERSION}")
+          for f in LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES licenses/OPENSSL-LICENSE licenses/MUSL-COPYRIGHT; do
+            docker cp "${cid}:/usr/share/doc/dash-forge/${f}" - >/dev/null || { docker rm "$cid" >/dev/null; echo "::error::the image has no /usr/share/doc/dash-forge/${f}"; exit 1; }
+          done
+          docker rm "$cid" >/dev/null
           mkdir -p image
           docker save "${image}:${VERSION}" | gzip > image/forge-relay-image.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -538,12 +687,12 @@ jobs:
 
   # Publishing only, and only after the release itself was published: push the image built
   # above to ghcr.io/<owner>/forge-relay:<version> and, for a non-pre-release, :latest. Behind
-  # the same `release` environment gate as `publish`. The only job with `packages: write`; it
-  # checks out no code.
+  # the same `release` environment gate as `publish`. With `gateway-image-push`, one of the two
+  # jobs with `packages: write`; neither checks out code.
   relay-image-push:
     name: push forge-relay image
     needs: [plan, relay-image, publish]
-    if: needs.plan.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' && needs.relay-image.result == 'success' && needs.publish.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
@@ -574,13 +723,125 @@ jobs:
           esac
           docker logout ghcr.io
 
-  # The only job with write permissions, and it exists only when publishing. It checks out
-  # no code and runs no build tooling: it re-verifies the downloaded archives against
-  # SHA256SUMS, attests them, and creates the release.
+  # The forge-gateway container image (services/forge-gateway/Dockerfile), built from this
+  # commit's source: unlike the relay, the gateway is not one of the release archives' binaries
+  # (it needs git and fonts around it, so it ships only as an image). The Dockerfile pins its
+  # base images by digest, builds with --locked, and takes DASH_FORGE_BUILD_SHA, which the
+  # gateway reports in /readyz (`version.buildSha`), so a running gateway names its commit.
+  # Every run builds and smoke-tests it with read-only permissions (a dry run exercises exactly
+  # what a release pushes); `gateway-image-push` below, which exists only when publishing,
+  # pushes it. It compiles the Platform SDK tree from scratch, so it runs beside `build`, not
+  # after it. No notify image: forge-notify is not hosted (docs/hosting/forge-notify.md).
+  gateway-image:
+    name: forge-gateway image
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/forge-gateway"
+          docker build -f services/forge-gateway/Dockerfile \
+            --build-arg "DASH_FORGE_BUILD_SHA=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t "${image}:${VERSION}" .
+      - name: Smoke-test the image
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/forge-gateway:${VERSION}"
+          # Both binaries start, and the helper names this commit and the gateway carries it
+          # (the full id: /readyz reports it as `version.buildSha`).
+          docker run --rm --entrypoint git-remote-dash "$image" --version | tee helper-version.txt
+          grep -q "${GITHUB_SHA:0:12}" helper-version.txt || { echo "::error::git-remote-dash --version does not name ${GITHUB_SHA:0:12}"; exit 1; }
+          docker run --rm --entrypoint forge-gateway "$image" --help > /dev/null
+          docker run --rm --entrypoint grep "$image" -aqF "$GITHUB_SHA" /usr/local/bin/forge-gateway \
+            || { echo "::error::forge-gateway was not built with DASH_FORGE_BUILD_SHA=$GITHUB_SHA"; exit 1; }
+          mkdir -p image
+          docker save "$image" | gzip > image/forge-gateway-image.tar.gz
+          echo "| \`forge-gateway:${VERSION}\` | $(( $(wc -c < image/forge-gateway-image.tar.gz) / 1024 / 1024 )) MiB (compressed save) |" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-gateway-image
+          path: image/forge-gateway-image.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishing only, and only after the release itself was published: push the image built
+  # above to ghcr.io/<owner>/forge-gateway:<version> and, for a non-pre-release, :latest, and
+  # attest its build provenance (Sigstore, keyless, stored with the image in the registry:
+  # `gh attestation verify oci://ghcr.io/<owner>/forge-gateway:<version> --repo <owner>/<repo>`).
+  # Behind the same `release` environment gate as `publish`. Checks out no code. Deploy by the
+  # digest this job prints (docs/hosting/forge-gateway.md, "Deploy a release").
+  gateway-image-push:
+    name: push forge-gateway image
+    needs: [plan, gateway-image, publish]
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' && needs.gateway-image.result == 'success' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+      packages: write # push the image to ghcr.io
+      id-token: write # Sigstore OIDC token for the provenance attestation
+      attestations: write # store the attestation in this repository
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: forge-gateway-image
+          path: image
+      - name: Push to ghcr.io
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/forge-gateway"
+          gunzip -c image/forge-gateway-image.tar.gz | docker load
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker push "${IMAGE}:${VERSION}"
+          # The registry's digest of what was just pushed (not parsed from push's progress output).
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::no digest for ${IMAGE}:${VERSION}: $digest"; exit 1; }
+          # A pre-release does not move :latest.
+          case "$VERSION" in
+            *-*) ;;
+            *) docker tag "${IMAGE}:${VERSION}" "${IMAGE}:latest"; docker push "${IMAGE}:latest" ;;
+          esac
+          echo "name=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### forge-gateway image (\`$VERSION\`)"
+            echo
+            echo "Deploy by digest: \`GATEWAY_IMAGE=${IMAGE}@${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true # stores it next to the image, with the login above
+      - name: Log out of ghcr.io
+        if: always()
+        run: docker logout ghcr.io
+
+  # Runs only when publishing. It checks out no code and runs no build tooling: it re-verifies
+  # the downloaded archives against SHA256SUMS, attests them, and creates the release.
   publish:
     name: attest + publish
     needs: [plan, checksums]
-    if: needs.plan.outputs.publish == 'true'
+    # Explicit for the same reason as relay-image: checksums succeeding is the gate.
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' && needs.checksums.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Gate for publishing. Its protection (required reviewers, a `v*` deployment tag rule)
@@ -602,6 +863,12 @@ jobs:
         with:
           name: sha256sums
           path: dist
+      # The notes' "Networks" block and release-notes link (made by `plan`, from the tagged commit).
+      # Not an asset: it goes in the notes only, in a directory of its own.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes-extra
+          path: notes-extra
       - name: Re-verify the archives against SHA256SUMS
         working-directory: dist
         run: |
@@ -633,8 +900,6 @@ jobs:
           set -euo pipefail
           prerelease=false
           case "$VERSION" in *-*) prerelease=true ;; esac
-          # Verified against SHA256SUMS above, like every asset.
-          cid=$(cat "dist/forge-web-${VERSION}.cid")
           cat > "${RUNNER_TEMP}/notes.md" <<EOF
           ## Install
 
@@ -653,6 +918,13 @@ jobs:
 
           macOS binaries are not signed or notarized by Apple yet; see
           [docs/INSTALL.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/INSTALL.md#macos-gatekeeper).
+          EOF
+          # The web app's CAR is part of the release unless a maintainer skipped its build
+          # (skip_ipfs, an emergency binary release): then the notes say it is missing.
+          if [ -f "dist/forge-web-${VERSION}.cid" ]; then
+            # Verified against SHA256SUMS above, like every asset.
+            cid=$(cat "dist/forge-web-${VERSION}.cid")
+            cat >> "${RUNNER_TEMP}/notes.md" <<EOF
 
           ## Web app on IPFS
 
@@ -670,11 +942,26 @@ jobs:
           tag, see
           [docs/guides/verify-the-app.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/guides/verify-the-app.md).
           EOF
+          else
+            cat >> "${RUNNER_TEMP}/notes.md" <<EOF
+
+          ## Web app on IPFS
+
+          **Not part of this release.** It was published without the web app's IPFS build (an
+          emergency release of the binaries; \`skip_ipfs\`), so there is no CAR, CID or manifest
+          for this tag, and \`dg verify-app\` has nothing to check against. Use the web app
+          from a later release.
+          EOF
+          fi
+          # Which networks the binaries have contracts for, and the hand-written release notes.
+          { echo; cat notes-extra/release-notes-extra.md; } >> "${RUNNER_TEMP}/notes.md"
           # Draft first, upload, then publish: the release never appears with missing assets.
           # Idempotent, so a failed run can simply be re-run: reuse an existing draft.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --verify-tag --draft --prerelease="$prerelease" \
               --title "Dash Forge ${TAG}" --notes-file "${RUNNER_TEMP}/notes.md" --generate-notes
           fi
+          # (forge-web-* is absent when the web build was skipped: nothing to match.)
+          shopt -s nullglob
           gh release upload "$TAG" dist/dash-forge-* dist/forge-web-* dist/SHA256SUMS --clobber
           gh release edit "$TAG" --draft=false
