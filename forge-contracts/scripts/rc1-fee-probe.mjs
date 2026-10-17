@@ -294,9 +294,10 @@ if (RC2) {
 for (const [key, withFeatures] of [['A', true], ['B', false]]) await register(key, probe(withFeatures));
 
 const docs = {
-  chunk: () => ({ repoId: randomBytes(32), packHash: randomBytes(32), seq: 0, d0: randomBytes(4900), d1: randomBytes(4900), d2: randomBytes(4900) }),
+  // `r`: the RC2 role byte, required on chunk and checkRun since RC2 (1 = a writer's)
+  chunk: () => ({ repoId: randomBytes(32), packHash: randomBytes(32), seq: 0, d0: randomBytes(4900), d1: randomBytes(4900), d2: randomBytes(4900), r: 1 }),
   star: () => ({ repoId: randomBytes(32) }),
-  checkRun: () => ({ repoId: randomBytes(32), headOid: randomBytes(20), name: 'build', status: 'completed', conclusion: 'success', startedAt: Date.now() - 60000, completedAt: Date.now(), outcome: 1, vis: 'public' }),
+  checkRun: () => ({ repoId: randomBytes(32), headOid: randomBytes(20), name: 'build', status: 'completed', conclusion: 'success', startedAt: Date.now() - 60000, completedAt: Date.now(), outcome: 1, vis: 'public', r: 1 }),
 };
 const out = {};
 for (const type of Object.keys(docs)) {
