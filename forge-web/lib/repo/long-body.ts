@@ -61,10 +61,10 @@ function provenanceBytes(imported: unknown): number {
 
 /**
  * What storing a long body's artifact costs beyond its document, as the CLI quotes it (forge-core
- * `cost::push_fees::long_body`): the manifest priced as the repo's first of its kind (112M + 40M),
+ * `cost::push_fees::long_body`): the manifest priced as the repo's first of its kind (140M + 40M),
  * and the text's bytes (sealed, in a private repo) as Platform chunks. An upper bound.
  */
-export const LONG_BODY_MANIFEST_CREDITS = 152_000_000
+export const LONG_BODY_MANIFEST_CREDITS = 180_000_000
 
 /** {@link LONG_BODY_MANIFEST_CREDITS} and the chunks of `bytes` of text in `repo`. */
 export function longBodyCredits(repo: RepoRef, bytes: number): number {

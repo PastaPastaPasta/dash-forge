@@ -76,8 +76,8 @@ describe("a repo's creation is listed under the repo (QW-054)", () => {
 })
 
 describe('a refund beside its button names what gives it back (QW2-034)', () => {
-  it('reads "unstar up to +0.00012", not a bare "+0.00012" (ECON-02: a refund is a ceiling)', () => {
-    expect(refundLabel('unstar', -12_000_000)).toBe('unstar up to +0.00012')
-    expect(refundLabel('unfollow', -23_000_000)).toBe('unfollow up to +0.00023')
+  it('names the approximate refund and qualifies it by age (ECON-02)', () => {
+    expect(refundLabel('unstar', -12_000_000)).toBe('unstar refunds about 0.00012 DASH if deleted soon; less as it ages')
+    expect(refundLabel('unfollow', -23_000_000)).toBe('unfollow refunds about 0.00023 DASH if deleted soon; less as it ages')
   })
 })

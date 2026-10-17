@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { estimateChunkCredits } from '../sdk/cost'
 import type { RepoRef } from './contract'
 import { longBodyStoredText, longBodyTrailer, parseLongBody, refitLongBodyField } from '../rules/long-body'
 
@@ -79,6 +80,8 @@ describe('long bodies, written (forge-v2.md §6.3)', () => {
     expect(new TextEncoder().encode(est).length).toBeLessThanOrEqual(5120)
     expect(parseLongBody(est).kind).toBe('continued')
     expect(longBodyCredits(pub, 20_000)).toBeGreaterThan(LONG_BODY_MANIFEST_CREDITS)
+    // forge-core push_fees::long_body: calibrated first manifest plus its kind subtree.
+    expect(longBodyCredits(pub, 20_000) - estimateChunkCredits(20_000)).toBe(180_000_000)
     expect(longBodyCredits(priv, 20_000)).toBeGreaterThan(longBodyCredits(pub, 20_000))
   })
 

@@ -319,13 +319,29 @@ const TESTNET_MEASURED: typeof MEASURED = [
   ['raw-topic-unique-0', 'topic', {"name": "cal-econ0"}, { ...S }, 61_574_520],
   ['raw-topic-unique-3', 'topic', {"name": "cal-econ3"}, { ...S }, 62_311_740],
   ['raw-draft-0', 'transition', {}, { ...S, repo: true, target: true }, 73_481_440],
-  ['raw-merge-3', 'transition', {}, { ...S }, 56_376_320],
+  // These merges write different targets; each builds that target's first transition trees.
+  ['raw-merge-1 (target first)', 'transition', {}, { ...S, target: true }, 56_271_120],
+  ['raw-merge-2 (target first)', 'transition', {}, { ...S, target: true }, 56_335_980],
+  ['raw-merge-3 (target first)', 'transition', {}, { ...S, target: true }, 56_376_320],
+  ['merge-policy-cleared-3 (steady)', 'transition', {}, { ...S }, 47_422_820],
   ['policy-0', 'policy', {"mergeMethods": ["any"]}, { ...S }, 34_888_040],
   ['raw-pr-0', 'patch', {"title": "econ-pr","body": "calibrate","baseRefName": "refs/heads/main","sourceRefName": "refs/heads/econ","vis": "public"}, { ...S, repo: true, author: true, sourceRef: true, contract: true }, 149_002_420],
   ['raw-pr-3', 'patch', {"title": "econ-pr","body": "calibrate","baseRefName": "refs/heads/main","sourceRefName": "refs/heads/econ","vis": "public"}, { ...S }, 81_510_300],
 ]
 
 describe('testnet ECON-05 calibration', () => {
+  it('counts overlapping watch subtrees once and retains the contract nonce', () => {
+    const repoFirst = estimateCreateCredits('watch', {}, { ...S, repo: true })
+    const authorFirst = estimateCreateCredits('watch', {}, { ...S, author: true })
+    const both = estimateCreateCredits('watch', {}, { ...S, repo: true, author: true })
+    expect(both).toBe(repoFirst)
+    expect(both).toBe(authorFirst)
+    expect(both).toBeGreaterThanOrEqual(48_109_940)
+    // The measured watches followed consent; model a watch as the first contract write too.
+    expect(estimateCreateCredits('watch')).toBeGreaterThanOrEqual(48_109_940 + 12_000_000)
+    expect(estimateCreateCredits('watch')).toBeLessThanOrEqual((48_109_940 + 12_000_000) * 1.1)
+  })
+
   it.each(TESTNET_MEASURED)('%s: bounds the charge with known first-write trees', (_key, type, data, first, actual) => {
     const estimate = estimateCreateCredits(type, data, first)
     expect(estimate).toBeGreaterThanOrEqual(actual)
@@ -351,7 +367,7 @@ describe('testnet ECON-05 refund previews', () => {
     ['webhook', 67_008_654],
     ['milestone', 13_748_776],
     ['profile', 17_234_709],
-  ])('%s promises no more than the smallest observed immediate refund', (type, refunded) => {
+  ])('%s uses a conservative approximation of an immediate refund', (type, refunded) => {
     expect(-previewDelete(type as string).credits).toBeLessThanOrEqual(refunded as number)
   })
 })

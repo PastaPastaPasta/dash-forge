@@ -14,7 +14,6 @@ use forge_import::budget::{collab_doc_credits, CollabDoc};
 use crate::context::Ctx;
 // `dg cost` shows exact amounts, so its rows add up to its totals.
 use crate::fmt::{cost_json, cost_line_exact, REPO_CREATE_ESTIMATE_CREDITS};
-use crate::quote::FIRST_OF_KIND_EXTRA;
 use crate::{Backend, CostCommand};
 
 /// Dispatch a `cost` subcommand.
@@ -76,13 +75,10 @@ fn price_table() -> [(&'static str, u64); 6] {
             "pack chunk (14.7 KB)",
             push_fees::chunks(DOC_PAYLOAD_MAX as u64),
         ),
-        (
-            "issue (~500 B)",
-            collab_doc_credits(CollabDoc::Target, 500) + FIRST_OF_KIND_EXTRA,
-        ),
+        ("issue (~500 B)", collab_doc_credits(CollabDoc::Target, 500)),
         (
             "comment (~500 B)",
-            collab_doc_credits(CollabDoc::Comment, 500) + FIRST_OF_KIND_EXTRA,
+            collab_doc_credits(CollabDoc::Comment, 500),
         ),
     ]
 }
@@ -949,7 +945,8 @@ mod estimate_tests {
                 .1
         };
         assert!(row("issue") >= 120_878_000);
-        assert!(row("comment") >= collab_doc_credits(CollabDoc::Comment, 500));
+        assert_eq!(row("issue"), collab_doc_credits(CollabDoc::Target, 500));
+        assert_eq!(row("comment"), collab_doc_credits(CollabDoc::Comment, 500));
     }
 }
 

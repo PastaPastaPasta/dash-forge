@@ -52,6 +52,13 @@ impl CollabDoc {
     /// each write is an upper bound, including first writes, because `--max-spend`
     /// checks it before broadcasting. Raw proved deltas: dash-forge-qa/
     /// evidence/testnet-rehearsal/econ/measurements.jsonl.
+    ///
+    /// Deliberately reserve first-write costs for every document. A later issue/comment
+    /// still can be the signer's first contract write or create an author/target subtree;
+    /// repo/thread counts alone cannot prove those trees exist. Tightening this needs
+    /// proved subtree/nonce state shared by planning, resumed runs and concurrent writes.
+    /// Until then, repeated writes overestimate spend (historical aggregate tests allow 2x)
+    /// rather than weakening the `--max-spend` guarantee.
     pub fn index_overhead(self) -> u64 {
         match self {
             // First targets include the PR's additional source indexes.

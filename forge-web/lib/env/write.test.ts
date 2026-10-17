@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 import { getPublicKey } from '@noble/secp256k1'
 
+import { estimateChunkCredits } from '../sdk/cost'
 import { base58Encode } from '../auth/base58'
 import type { LetterReader, OwnerKey } from '../private'
 import type { Membership, Role } from '../rules/v2'
@@ -22,7 +23,12 @@ import { MemberChangeFailed, planMemberChange, runMemberChange, type MemberChang
 import { notUpdatedLine, outcomeLine, pinLine, planHeadline } from './plan-view'
 import { membersAfter } from './regroup'
 import { resolvePeople } from './view'
-import { EnvSaveError, MAX_SEALED, baseOf, draftSnapshot, newEnvId, prepareSave, recipientsOf, storeSave, type EnvSaver, type PersonKey } from './write'
+import { EnvSaveError, MAX_SEALED, snapshotCredits, postKeyLetterCredits, POST_KEY_LETTER_BYTES, baseOf, draftSnapshot, newEnvId, prepareSave, recipientsOf, storeSave, type EnvSaver, type PersonKey } from './write'
+
+it('covers the measured first manifest in snapshots and bot letters', () => {
+  expect(snapshotCredits(1024) - estimateChunkCredits(1024)).toBeGreaterThanOrEqual(129_455_720)
+  expect(postKeyLetterCredits() - estimateChunkCredits(POST_KEY_LETTER_BYTES)).toBeGreaterThanOrEqual(129_455_720)
+})
 
 const repoIdBytes = new Uint8Array(32).fill(0x11)
 const secret = (b: number) => new Uint8Array(32).fill(b)

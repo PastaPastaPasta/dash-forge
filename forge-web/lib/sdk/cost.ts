@@ -3,16 +3,17 @@
  *
  * The SDK has no fee estimator for a document transition, so the preview is a model:
  *
- *   (steady-state base of the type + first-write surcharges + 27,500 credits per text byte)
+ *   (base of the type + first-write surcharges + 27,500 credits per text byte)
  *   × {@link HEADROOM}
  *
- * - The base is what a document of the type costs when every index subtree it writes into
- *   already exists (a repo's tenth issue).
+ * - The base approximates a document's cost when every index subtree it writes into
+ *   already exists (a repo's tenth issue); the complete preview includes headroom.
  * - A **first write** also creates subtrees: a repo's first issue creates the repo's issue
  *   subtrees, an author's first issue their `$ownerId` subtree, a thread's first comment its
  *   `targetId` subtree. Each adds storage. {@link FirstWrite} names which ones a write may
  *   create; the UI reads that cheaply where it can (`lib/repo/first-write.ts`) and otherwise
- *   leaves it unknown, which counts every surcharge. A preview is an upper bound either way.
+ *   leaves it unknown, which reserves every possible subtree (overlapping watch trees count
+ *   once). A preview is an upper bound either way.
  * - {@link HEADROOM} covers the few percent the same write varies by as the trees grow.
  *
  * ECON-05 calibration: dash-testnet-51, Platform 5.0.0-rc.4, SDK rc.3, 2026-10-17.
@@ -78,8 +79,8 @@ export const CREDITS_PER_TEXT_BYTE = 27_500
 export const HEADROOM = 1.06
 
 /**
- * What a document of each type costs with no text in steady state (every index subtree
- * already exists), in credits. Types never measured fall back to {@link DEFAULT_BASE_CREDITS}.
+ * The base allowance for each type with no text in steady state (every index subtree
+ * already exists), in credits; the complete preview includes headroom. Types never measured fall back to {@link DEFAULT_BASE_CREDITS}.
  */
 export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // forge-core (ECON-05 testnet calibration; historical provenance in the header)
@@ -119,8 +120,9 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // 28.3M on moutai; 37.0M on bonsia (QA wave 3) for a follow whose subtrees are not all known.
   follow: 31_000_000,
   starBeat: 15_300_000,
-  // ECON-05: a repository's first watch 48.06M; includes its +10.4M subtree below.
-  watch: 40_000_000,
+  // ECON-05: populated watches up to 37.91M; first repo/author watches up to 48.11M.
+  // The 1.06 headroom covers the populated base; first-write trees are priced below.
+  watch: 36_000_000,
   milestone: 45_000_000,
   checkRun: 76_000_000,
   // ECON-05: consent 31.14–31.22M later, 42.84M including the first-contract nonce.
@@ -180,10 +182,12 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   // ECON-05: fused stars 24.59M populated, 58.53M repo-first, 66.15M author-first.
   star: { repo: 33_000_000, author: 9_400_000 },
   starBeat: { author: 6_400_000 },
+  // ECON-05: repo-first and author-first each add ~10.4M. They do not stack in the
+  // measured watches: firstWriteCredits takes the larger of these two allowances.
   watch: { repo: 10_400_000, author: 10_400_000 },
   pushGrant: { repo: 16_000_000 },
   // `target`: the first follow of an identity builds its byTarget value tree, ranked since C-1
-  // (not re-measured; priced like the ranked star's repo-first tree)
+  // (ECON-05: ~18.4M beyond a populated target's 19.11M).
   follow: { author: 10_200_000, target: 18_500_000 },
   repo: { author: 9_000_000 },
   maintainer: { member: 7_400_000 },
@@ -249,18 +253,15 @@ const DEFAULT_BASE_CREDITS = 50_000_000
 const DEFAULT_DELETE_CREDITS = -20_000_000
 
 /**
- * What deleting a document gives back, in credits (negative = a refund), measured right after
- * the write. Measured on moutai: unstar 22.0M (32.3M for the repo's last star), unfollow 23.5M
- * (34.1M for the last), revoking a writer 20.8M. The preview shows the smaller refund. It is a
- * ceiling, not a floor (ECON-02): Platform spreads the storage deposit over 2,000 epochs
- * (rs-dpp `FEE_DISTRIBUTION_TABLE`), so a later delete gets back less: within weeks it is nearly
- * all of it on mainnet (the schedule lasts about 50 years), but on testnet (1 h epochs) the deposit
- * is gone after about 83 days. Copy therefore says "refunds up to".
- */
-/**
- * Unstarring the repo's last star gives back more (its count tree goes too): 23.3M measured on the
- * C-1 shape, against 12.3M otherwise. A "refunds up to" for a last star, or for a star whose
- * repo's count could not be read, uses this.
+ * Approximate credits returned if a document is deleted soon after creation (negative = refund).
+ * Values use conservative immediate measurements, not upper or lower bounds. Older documents
+ * return less, possibly zero: Platform spreads the storage deposit over 2,000 epochs
+ * (rs-dpp `FEE_DISTRIBUTION_TABLE`), about 50 years on mainnet or 83 days on testnet.
+ * Copy therefore says "refunds about X if deleted soon; less as it ages".
+ *
+ * Unstarring the repo's last star can return more (its count tree goes too): 23.3M measured on
+ * the C-1 shape, against 12.3M otherwise. A last star, or one whose repo's count could not be
+ * read, uses this approximate immediate refund.
  */
 export const LAST_STAR_DELETE_CREDITS = -23_300_000
 
@@ -276,7 +277,6 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
   maintainer: -19_000_000,
   // ECON-05: removing a writer refunded 19.53M with other memberships remaining.
   writer: -19_000_000,
-  release: -30_000_000,
   // ECON-05: populated-repo label deletes refunded 13.85–13.89M.
   label: -13_000_000,
   comment: -25_000_000,
@@ -449,7 +449,7 @@ export function pushStorageHint(): string {
 
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
-  /** Estimated credits (an upper bound); negative when the action refunds storage. */
+  /** Charge upper bound, or negative approximate refund for a delete soon after creation. */
   readonly credits: number
   /**
    * The low end, when the charge is known to range far below `credits` (an edit pays only for
@@ -491,11 +491,12 @@ export function textBytes(data: Readonly<Record<string, unknown>>): number {
 /** The first-write surcharge of `documentType` for `first` (an unknown field counts). */
 export function firstWriteCredits(documentType: string, first: FirstWrite = {}): number {
   const table = FIRST_WRITE_CREDITS[documentType] ?? {}
-  let total = first.contract === false ? 0 : CONTRACT_FIRST_CREDITS
+  const total = first.contract === false ? 0 : CONTRACT_FIRST_CREDITS
+  let subtrees = 0
   for (const [k, credits] of Object.entries(table) as [keyof FirstWrite, number][]) {
-    if (first[k] !== false) total += credits
+    if (first[k] !== false) subtrees = documentType === 'watch' ? Math.max(subtrees, credits) : subtrees + credits
   }
-  return total
+  return total + subtrees
 }
 
 /**
