@@ -6,7 +6,9 @@
 #     `long_version`, over forge_core::network::deployment): retired networks are left out, and
 #     a network shows its contract group only when its forge-v2 record is complete (the group
 #     recorded and every contract registered, V2Record::ids), else "not deployed".
-#   * a link to the hand-written docs/releases/v<version>.md, when that file exists.
+#   * a link to the hand-written docs/releases/v<version>.md, when that file exists. A
+#     pre-release (1.2.0-rc.1) falls back to the page of the release it leads up to
+#     (docs/releases/v1.2.0.md) when it has none of its own.
 #
 #   build-support/release-notes-extra.sh VERSION REPO REF [ROOT]
 #
@@ -62,12 +64,18 @@ ${rows%?}
 \`\`\`
 NOTES
 
+page=""
 if [ -f "$root/docs/releases/v${version}.md" ]; then
+  page="v${version}.md"
+elif [ "${version#*-}" != "$version" ] && [ -f "$root/docs/releases/v${version%%-*}.md" ]; then
+  page="v${version%%-*}.md"
+fi
+if [ -n "$page" ]; then
   cat <<NOTES
 
 ## Release notes
 
 What is in this release, its known limitations and how to upgrade:
-[docs/releases/v${version}.md](https://github.com/${repo}/blob/${ref}/docs/releases/v${version}.md).
+[docs/releases/${page}](https://github.com/${repo}/blob/${ref}/docs/releases/${page}).
 NOTES
 fi

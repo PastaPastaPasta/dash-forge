@@ -47,9 +47,19 @@ printf '%s\n' "$out" | grep -q 'docs/releases/' && fail "linked a release page t
 echo "# v0.1.0" > "$tmp/docs/releases/v0.1.0.md"
 out=$("$here/release-notes-extra.sh" 0.1.0 owner/repo v0.1.0 "$tmp")
 printf '%s\n' "$out" | grep -q '(https://github.com/owner/repo/blob/v0.1.0/docs/releases/v0.1.0.md)' || fail "no link to docs/releases/v0.1.0.md"
-# A dry-run version has no page.
-out=$("$here/release-notes-extra.sh" 0.1.0-dev.abc owner/repo master "$tmp")
-printf '%s\n' "$out" | grep -q 'docs/releases/' && fail "a dev version links a release page"
+# A pre-release links its own page if it has one, else the page of the release it leads up to.
+out=$("$here/release-notes-extra.sh" 0.1.0-rc.1 owner/repo v0.1.0-rc.1 "$tmp")
+printf '%s\n' "$out" | grep -q '(https://github.com/owner/repo/blob/v0.1.0-rc.1/docs/releases/v0.1.0.md)' || fail "rc did not fall back to v0.1.0.md"
+echo "# v0.1.0-rc.1" > "$tmp/docs/releases/v0.1.0-rc.1.md"
+out=$("$here/release-notes-extra.sh" 0.1.0-rc.1 owner/repo v0.1.0-rc.1 "$tmp")
+printf '%s\n' "$out" | grep -q 'docs/releases/v0.1.0-rc.1.md)' || fail "rc did not link its own page"
+printf '%s\n' "$out" | grep -q 'docs/releases/v0.1.0.md' && fail "rc linked two pages"
+rm "$tmp/docs/releases/v0.1.0-rc.1.md"
+# A release with no page, and a dry-run version whose base release has none, link nothing.
+out=$("$here/release-notes-extra.sh" 0.2.0 owner/repo v0.2.0 "$tmp")
+printf '%s\n' "$out" | grep -q 'docs/releases/' && fail "linked a page for 0.2.0, which has none"
+out=$("$here/release-notes-extra.sh" 0.2.0-dev.abc owner/repo master "$tmp")
+printf '%s\n' "$out" | grep -q 'docs/releases/' && fail "a dev version of 0.2.0 links a page"
 
 # Malformed JSON is an error, not a silently missing network.
 echo '{' > "$d/devnet-broken.json"

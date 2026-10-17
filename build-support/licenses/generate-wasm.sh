@@ -37,7 +37,11 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 (cd "$platform" && cargo-about generate --frozen --fail -m packages/wasm-sdk/Cargo.toml \
   --target wasm32-unknown-unknown -c "$root/build-support/licenses/about.toml" \
-  -o "$tmp/body.txt" "$root/build-support/licenses/about-wasm.hbs")
+  --format json -o "$tmp/crates.json")
+# shellcheck source=build-support/licenses/common.sh
+. "$here/common.sh"
+# The Platform workspace's own crates are Platform's, so third-party here: none are left out.
+check_no_placeholders "$tmp/crates.json" '[]'
 
 {
   echo "Rust crates in the Dash Platform SDK WebAssembly module"
@@ -48,8 +52,6 @@ trap 'rm -rf "$tmp"' EXIT
   echo "crates below, grouped by license, each with the license text as the crate ships it."
   echo "Platform tag: ${tag}"
   echo
-  echo "Overview of licenses:"
-  # Some crates ship CRLF license files; the notice is LF throughout.
-  tr -d '\r' < "$tmp/body.txt"
+  render_notice "$tmp/crates.json" '[]'
 } > "$out"
 echo "generate-wasm: wrote $out (platform ${tag})"

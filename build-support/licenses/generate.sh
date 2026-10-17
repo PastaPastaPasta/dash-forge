@@ -5,7 +5,7 @@
 #
 # Run from anywhere inside the repository, with cargo and cargo-about
 # (install-cargo-about.sh) on PATH and the dependency sources already fetched (`cargo fetch
-# --locked`): it runs offline, so the output depends on Cargo.lock, about.toml and about.hbs
+# --locked`): it runs offline, so the output depends on Cargo.lock, about.toml and render.jq
 # and nothing else. OUTDIR gets:
 #
 #   LICENSE-MIT, LICENSE-APACHE   the project's own licenses
@@ -14,8 +14,9 @@
 #   licenses/MUSL-COPYRIGHT       musl libc's license (the musl build links it statically)
 #
 # stage.sh copies the right subset into each archive. It fails, rather than shipping a gap,
-# when a crate's license is not accepted by about.toml or is unreadable, when a crate ships a
-# NOTICE file (Apache-2.0 section 4(d): its text has to be passed on), or when openssl-src
+# when a crate's license is not accepted by about.toml or is unreadable, when a crate that ships
+# a license file would get placeholder text because cargo-about did not match it (it must be
+# clarified in about.toml), when a crate ships a NOTICE file (Apache-2.0 section 4(d): its text has to be passed on), or when openssl-src
 # (the vendored OpenSSL) is missing from the lockfile's sources.
 set -eu
 
@@ -36,18 +37,40 @@ about() {
   cargo-about generate --frozen --fail --workspace -c build-support/licenses/about.toml "$@"
 }
 about --format json -o "$tmp/crates.json"
-about -o "$tmp/third-party.txt" build-support/licenses/about.hbs
-# Some crates ship CRLF license files; the notice is LF throughout.
-tr -d '\r' < "$tmp/third-party.txt" > "$out/THIRD-PARTY-LICENSES"
+# shellcheck source=build-support/licenses/common.sh
+. "$here/common.sh"
+
+# The workspace's own crates are left out by name; LICENSE-MIT and LICENSE-APACHE cover them.
+ours=$(cargo metadata --frozen --no-deps --format-version 1 | jq --compact-output '[.packages[].name]')
+check_no_placeholders "$tmp/crates.json" "$ours"
+{
+  cat <<'HEADER'
+Dash Forge: third-party software licenses
+=========================================
+
+The Dash Forge binaries (dg, git-remote-dash, forge-relay, forge-import and forge-runner)
+include the open-source software listed below. Dash Forge itself is licensed under either of
+the MIT license (LICENSE-MIT) or the Apache License 2.0 (LICENSE-APACHE), at your option.
+
+This file lists the Rust crates in the Dash Forge workspace's dependency tree for all the
+release platforms (Linux, macOS and Windows), including those of the hosted services built from
+the same lockfile, grouped by license, with each license's text as the crate ships it.
+Where a crate offers a choice of licenses, the license named here is the one it is used under.
+The licenses of the native components built into some builds (OpenSSL on Linux, musl libc in
+the musl build) are in the licenses/ directory beside this file, where there is one.
+
+HEADER
+  render_notice "$tmp/crates.json" "$ours"
+} > "$out/THIRD-PARTY-LICENSES"
 
 # A NOTICE file in a crate we ship must be reproduced; none exists today, so refuse to ship
-# without it when one appears (the template cannot include files cargo-about does not read).
+# without it when one appears (the renderer cannot include files cargo-about does not read).
 notices=$(jq -r '.crates[].package.manifest_path' "$tmp/crates.json" | sort -u | while read -r m; do
   for f in "$(dirname "$m")"/NOTICE*; do [ -f "$f" ] && printf '%s\n' "$f"; done
 done || true)
 if [ -n "$notices" ]; then
   echo "generate: these crates ship NOTICE files, which Apache-2.0 section 4(d) requires us to pass on;" >&2
-  echo "extend about.hbs/generate.sh to include them:" >&2
+  echo "extend render.jq/generate.sh to include them:" >&2
   printf '%s\n' "$notices" >&2
   exit 1
 fi

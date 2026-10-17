@@ -42,14 +42,16 @@ RUN cargo build --locked --release -p forge-relay --features forge-core/vendored
 # The license notices for /usr/share/doc/dash-forge: the project's own and a third-party notice
 # for every crate in the lockfile (build-support/licenses, the same files the release archives
 # carry), made with the pinned cargo-about. `cargo fetch` first: the notice covers every target's
-# crates, not only the ones this build compiled.
+# crates, not only the ones this build compiled. This build links glibc, not musl, so musl's
+# COPYRIGHT is dropped; OpenSSL's stays (the release build vendors it).
 COPY LICENSE-MIT LICENSE-APACHE ./
 RUN apt-get update \
  && apt-get install -y --no-install-recommends jq \
  && rm -rf /var/lib/apt/lists/* \
  && build-support/licenses/install-cargo-about.sh /usr/local/bin \
  && cargo fetch --locked \
- && build-support/licenses/generate.sh /out-licenses
+ && build-support/licenses/generate.sh /out-licenses \
+ && rm /out-licenses/licenses/MUSL-COPYRIGHT
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 RUN apt-get update \

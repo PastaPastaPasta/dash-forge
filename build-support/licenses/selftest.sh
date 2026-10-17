@@ -78,4 +78,31 @@ expect_fail "$here/stage.sh" x86_64-apple-darwin "$notices" "$tmp/empty-stage"
 rm "$notices/THIRD-PARTY-LICENSES"
 expect_fail "$here/stage.sh" x86_64-apple-darwin "$notices" "$tmp/missing-stage"
 
+# render.jq / common.sh over a small cargo-about JSON: the workspace's own crates are left out by
+# name, a license used only by them disappears, and a placeholder text is refused for a crate that
+# ships a license file but tolerated for one that ships none.
+. "$here/common.sh"
+mkdir -p "$tmp/crates/has-file" "$tmp/crates/no-file"
+echo "MIT text" > "$tmp/crates/has-file/LICENSE.md"
+cat > "$tmp/crates.json" <<JSON
+{"licenses": [
+  {"id": "MIT", "name": "MIT License", "text": "Copyright (c) 2020 Real Holder",
+   "used_by": [{"crate": {"name": "dg", "version": "0.1.0", "repository": null, "manifest_path": "$tmp/x/Cargo.toml"}},
+               {"crate": {"name": "left-pad", "version": "1.0.0", "repository": "https://example.com/lp", "manifest_path": "$tmp/y/Cargo.toml"}}]},
+  {"id": "Apache-2.0", "name": "Apache License 2.0", "text": "Apache text [yyyy] [name of copyright owner]",
+   "used_by": [{"crate": {"name": "forge-core", "version": "0.1.0", "repository": null, "manifest_path": "$tmp/x/Cargo.toml"}}]},
+  {"id": "ISC", "name": "ISC License", "text": "Copyright (c) <year> <copyright holders>",
+   "used_by": [{"crate": {"name": "no-file", "version": "2.0.0", "repository": null, "manifest_path": "$tmp/crates/no-file/Cargo.toml"}}]}
+]}
+JSON
+out=$(render_notice "$tmp/crates.json" '["dg","forge-core"]')
+printf '%s\n' "$out" | grep -q '^  \* left-pad 1.0.0 (https://example.com/lp)$' || fail "render: left-pad is missing"
+printf '%s\n' "$out" | grep -q 'dg 0.1.0' && fail "render: a workspace crate is listed"
+printf '%s\n' "$out" | grep -q 'Apache License 2.0' && fail "render: a license only workspace crates use is listed"
+printf '%s\n' "$out" | grep -q '^  \* MIT License (MIT): 1 crate$' || fail "render: the overview counts the workspace crate"
+expect_ok check_no_placeholders "$tmp/crates.json" '["dg","forge-core"]'
+# The same placeholder text on a crate that ships a license file is refused.
+sed "s#$tmp/crates/no-file/Cargo.toml#$tmp/crates/has-file/Cargo.toml#" "$tmp/crates.json" > "$tmp/crates2.json"
+expect_fail check_no_placeholders "$tmp/crates2.json" '["dg","forge-core"]'
+
 echo "selftest: ok"
