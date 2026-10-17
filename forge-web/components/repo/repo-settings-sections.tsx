@@ -178,7 +178,7 @@ function SealedNote({ command }: { command: string }): JSX.Element {
       <span className="min-w-0">
         This repo is private, so its config is encrypted, and this browser can&apos;t encrypt it yet. Use the CLI, which does:{' '}
         <code className="font-mono text-[12px] [overflow-wrap:anywhere]">{command}</code>
-        {/* TODO(private-web): write sealed configs once the web holds epoch keys (PR #51's private session) (tracked: release-audit HYGI-21). */}
+        {/* TODO(private-web): write sealed configs once the web holds epoch keys (PR #51's private session) (tracked: #532). */}
       </span>
     </div>
   )
