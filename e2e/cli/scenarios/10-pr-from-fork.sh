@@ -3,7 +3,7 @@
 #
 #   1. OWNER pushes a base branch e2e/<run>/base to the test repo.
 #   2. CONTRIB `dg repo fork`s the test repo (forkOf; the parent's packs are recorded by
-#      reference, nothing re-uploaded) — resumable, so a later run reuses the fork.
+#      reference, nothing re-uploaded) — scoped to this run, so retries reuse the fork.
 #   3. CONTRIB clones its fork (proving the referenced packs read), commits on top of the
 #      base, pushes a feature branch to the fork, and `dg pr create`s from it with no
 #      --head-repo (the fork is found by forkOf).
@@ -22,7 +22,10 @@ harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
-: "${E2E_FORK_NAME:=e2e-cli-fork}"
+if [[ -z "${E2E_FORK_NAME:-}" ]]; then
+  E2E_FORK_NAME="$(printf 'e2e-cli-fork-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
+  E2E_FORK_NAME="${E2E_FORK_NAME:0:63}"
+fi
 FORK="${IDID_CONTRIB}/${E2E_FORK_NAME}"
 FORK_REMOTE="dash://${FORK}"
 BASE="e2e/${RUN_ID}/base"
