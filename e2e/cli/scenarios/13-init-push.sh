@@ -68,7 +68,7 @@ fi
 REMOTE="dash://${E2E_OWNER_ID}/${NAME}"
 # A retry after a flaky push finds the repo made by the first attempt ("✓ exists").
 check "prints the created line with the web URL" \
-  grep -qE "✓ (created|exists) +https://forge\.dashhq\.org/repo\?owner=${E2E_OWNER_ID}&name=${NAME}" "$LOG-init.out"
+  grep -qE "✓ (created|exists) +https://forge\.dashhq\.org/${E2E_OWNER_ID}/${NAME}" "$LOG-init.out"
 check "prints the remote line" assert_file_contains "$LOG-init.out" "✓ remote 'origin' → ${REMOTE}"
 check "helper progress reached the terminal" assert_file_contains "$LOG-init.err" "(1 verified)"
 check "remote origin = ${REMOTE}" assert_eq "$REMOTE" "$(git -C "$SRC" remote get-url origin)"
@@ -97,7 +97,8 @@ if _retry "$LOG-init2.err" _init "$LOG-init2" --json; then
   check "create cost 0" assert_eq "0" "$(jq_py "$LOG-init2.out" 'd["cost"]["credits"]')"
   check "a re-run turns nothing on" assert_eq "None" "$(jq_py "$LOG-init2.out" 'd.get("membersOnly")')"
   check "--json names the pushed commit" assert_eq "$TIP" "$(jq_py "$LOG-init2.out" 'd["push"]["oid"]')"
-  check "--json carries the web URL" assert_contains "$(jq_py "$LOG-init2.out" 'd["webUrl"]')" "name=${NAME}"
+  check "--json carries the web URL (a public repo's short URL)" \
+    assert_eq "https://forge.dashhq.org/${E2E_OWNER_ID}/${NAME}" "$(jq_py "$LOG-init2.out" 'd["webUrl"]')"
 else
   cat "$LOG-init2.out" "$LOG-init2.err" >&2; bad "second dg init failed"
 fi

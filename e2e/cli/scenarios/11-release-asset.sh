@@ -2,7 +2,8 @@
 # Scenario 11: a release with an asset on the maintainer's own storage (local RustFS).
 #
 #   1. COLLAB (not a maintainer) tries to publish: refused before anything is uploaded (E601).
-#   2. OWNER publishes release e2e-<run> with one asset: the file goes to RustFS (SigV4),
+#   2. OWNER pushes the tag e2e-<run> (a release needs an existing tag) and publishes release
+#      e2e-<run> with one asset: the file goes to RustFS (SigV4),
 #      is re-read and verified, and the release records {name, sha256, sizeBytes, uris}.
 #   3. `dg release list` shows it, published by OWNER, with the recorded sha256.
 #   4. A reader who has not configured that host is refused with E503: a loopback URL from a
@@ -72,6 +73,16 @@ if DASH_FORGE_STORAGE_CONFIG="$CFG" dg_as "$ID_COLLAB" --yes --json release crea
 else
   check "E601" assert_eq "E601" "$(jq_py "$LOG-deny.json" 'd["error"]["code"]')"
   check "names the maintainer role" assert_file_contains "$LOG-deny.json" "maintainer"
+fi
+
+step "OWNER pushes the tag ${TAG} (a release is published for a tag the repo has: E102 otherwise)"
+if push_release_tag "$ID_OWNER" "$E2E_REMOTE" "$TAG" "$LOG-tag"; then
+  register_ref "refs/tags/${TAG}"
+  ok "tag pushed"
+else
+  cat "$LOG-tag.err" >&2
+  is_flake "$LOG-tag.err" && skip_scenario "tag push flaked"
+  bad "tag push failed"; finish_scenario
 fi
 
 step "OWNER publishes ${TAG} with an asset on RustFS"

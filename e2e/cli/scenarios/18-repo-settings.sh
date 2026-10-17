@@ -100,7 +100,7 @@ HEAD_OID="$(git -C "$SRC" rev-parse HEAD)"
 N="$(jq_py "$LOG-pr.json" 'd["number"]')"
 if dg_write "$ID_COLLAB" "$LOG-wmerge" pr merge "$REPO" "$N"; then
   bad "a writer merged into protected main"
-elif refused_with E601 "$LOG-wmerge" && grep -q 'before fetching' "$LOG-wmerge.json" "$LOG-wmerge.err" 2>/dev/null; then
+elif refused_with E601 "$LOG-wmerge" && grep -q 'checked before anything was pushed or paid' "$LOG-wmerge.json" "$LOG-wmerge.err" 2>/dev/null; then
   ok "writer's merge refused before any git work (E601)"
 else
   cat "$LOG-wmerge.err" "$LOG-wmerge.json" >&2; is_flake "$LOG-wmerge.err" && skip_scenario "writer merge flaked"
@@ -142,7 +142,7 @@ for _ in $(seq 1 8); do
   sleep 3
 done
 check "policy show: 2 approvals, maintainers only, ff+squash" test "$shown" -eq 0
-check "policy show says it is a client rule" grep -q 'nothing at consensus requires approvals' "$LOG-pshow.json"
+check "policy show says it is a client rule" grep -q 'Forge apps enforce the branch policy, not Platform' "$LOG-pshow.json"
 
 step "dg enforces the policy on merges (a client rule): E804 for the writer, --override-policy for the maintainer"
 FEATURE2="e2e/${RUN_ID}/feature2"
@@ -154,7 +154,7 @@ git_dash_retry "$ID_COLLAB" "$LOG-f2push" -C "$SRC" push "$REMOTE" "HEAD:refs/he
 N2="$(jq_py "$LOG-pr2.json" 'd["number"]')"
 dg_write "$ID_COLLAB" "$LOG-pmerge" pr merge "$REPO" "$N2"
 check "writer's merge with 0 of 2 approvals is refused (E804)" refused_with E804 "$LOG-pmerge"
-check "the refusal says consensus does not enforce it" grep -q 'consensus does not enforce it' "$LOG-pmerge.json"
+check "the refusal says Platform does not enforce it" grep -q 'Forge apps enforce the branch policy, not Platform' "$LOG-pmerge.json"
 dg_write "$ID_COLLAB" "$LOG-pover" pr merge "$REPO" "$N2" --override-policy
 check "a writer cannot override the policy (E601)" refused_with E601 "$LOG-pover"
 dg_write "$ID_OWNER" "$LOG-omerge2" pr merge "$REPO" "$N2" --override-policy || fail_with "$LOG-omerge2" "maintainer override merge"
