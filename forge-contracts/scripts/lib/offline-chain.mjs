@@ -16,21 +16,27 @@
 
 import { createHash } from 'node:crypto';
 
-import { CONTRACTS as contracts, CONTRACT_OF, b58decode, b58encode, expectedRefusal, isConsensusCode } from './seed-io.mjs';
+import { CONTRACTS, CONTRACT_OF, b58decode, b58encode, contractsIn, expectedRefusal, isConsensusCode } from './seed-io.mjs';
 
 const IDENTIFIER = 'application/x.dash.dpp.identifier';
 const SYSTEM_IDS = new Set(['$id', '$ownerId']);
 
-const schemaOf = (type) => contracts[CONTRACT_OF[type]].documentSchemas[type];
+/** The default set: the three devnet contracts (`contracts/forge-*.json`). */
+const DEFAULT_SET = { contracts: CONTRACTS, contractOf: CONTRACT_OF };
 
-/** A property schema with its `$ref` into the contract's `schemaDefs` resolved. */
-function resolveRef(type, s) {
-  const ref = s?.$ref;
-  if (!ref) return s;
-  return contracts[CONTRACT_OF[type]].schemaDefs[ref.replace('#/$defs/', '')];
+/** The schema lookups over one contract set (`{ contracts, contractOf }`, see `contractsIn`). */
+function lookups({ contracts, contractOf }) {
+  const schemaOf = (type) => contracts[contractOf[type]].documentSchemas[type];
+  /** A property schema with its `$ref` into the contract's `schemaDefs` resolved. */
+  const resolveRef = (type, s) => {
+    const ref = s?.$ref;
+    if (!ref) return s;
+    return contracts[contractOf[type]].schemaDefs[ref.replace('#/$defs/', '')];
+  };
+  const propSchema = (type, prop) => resolveRef(type, schemaOf(type).properties?.[prop]);
+  const isIdentifier = (type, prop) => SYSTEM_IDS.has(prop) || propSchema(type, prop)?.contentMediaType === IDENTIFIER;
+  return { schemaOf, resolveRef, propSchema, isIdentifier };
 }
-const propSchema = (type, prop) => resolveRef(type, schemaOf(type).properties?.[prop]);
-const isIdentifier = (type, prop) => SYSTEM_IDS.has(prop) || propSchema(type, prop)?.contentMediaType === IDENTIFIER;
 
 /** Bytes as lowercase hex, so identifiers and hashes compare as plain strings. */
 function normalize(v) {
@@ -43,8 +49,12 @@ const hexOfId = (b58) => b58decode(b58).toString('hex');
 const get = (view, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), view);
 const compare = (p, q) => (p < q ? -1 : p > q ? 1 : 0);
 
-/** A document's data in the rc1 vector notation: identifiers as base58 `$id`, other bytes as `$hex`. */
-export function vectorDoc(type, data) {
+/**
+ * A document's data in the rc1 vector notation: identifiers as base58 `$id`, other bytes as `$hex`.
+ * `set` is the contract set the type is in (the default devnet set, or `chain.set`).
+ */
+export function vectorDoc(type, data, set = DEFAULT_SET) {
+  const { resolveRef, propSchema } = lookups(set);
   const enc = (schema, v) => {
     if (v instanceof Uint8Array) {
       return schema?.contentMediaType === IDENTIFIER ? { $id: b58encode(v) } : { $hex: Buffer.from(v).toString('hex') };
@@ -65,9 +75,16 @@ class Refusal extends Error {
 }
 
 export class OfflineChain {
-  constructor() {
+  /**
+   * `contractsDir` names the set the chain runs: the three devnet contracts by default, or a
+   * directory such as `contracts/mainnet` (four, with an id for forge-meta).
+   */
+  constructor({ contractsDir } = {}) {
+    /** The contracts the chain holds, `{ contracts, contractOf }`. */
+    this.set = contractsDir ? contractsIn(contractsDir) : DEFAULT_SET;
+    this.lookup = lookups(this.set);
     /** The contract ids a deployment file names, by contract. */
-    this.ids = Object.fromEntries(Object.keys(contracts).map((c) => [c, b58encode(createHash('sha256').update(`offline contract ${c}`).digest())]));
+    this.ids = Object.fromEntries(Object.keys(this.set.contracts).map((c) => [c, b58encode(createHash('sha256').update(`offline contract ${c}`).digest())]));
     this.docs = [];
     this.records = [];
     this.script = 'unnamed';
@@ -88,7 +105,8 @@ export class OfflineChain {
   /** The type, checked to live in the contract the caller named. */
   typeIn(contractId, type) {
     const contract = this.contractName(contractId);
-    if (CONTRACT_OF[type] !== contract) throw new Error(`${type} is in forge-${CONTRACT_OF[type]}, not forge-${contract}`);
+    const home = this.set.contractOf[type];
+    if (home !== contract) throw new Error(`${type} is in forge-${home}, not forge-${contract}`);
     return type;
   }
 
@@ -116,7 +134,16 @@ export class OfflineChain {
         : t.view.$id === value,
     );
     if (found.length === 0) return 40120;
-    const agrees = (t) => Object.entries(ref.where ?? {}).every(([k, e]) => get(t.view, k) === get(view, e));
+    // A `where` entry is a property of the referring document (a path), or on a four-contract set
+    // a literal test on the found document's: { const }, { in: [..] } or { greaterThanOrEqual }.
+    const holds = (v, e) => {
+      if (typeof e === 'string') return v === get(view, e);
+      if ('const' in e) return v === e.const;
+      if ('in' in e) return e.in.includes(v);
+      if ('greaterThanOrEqual' in e) return v >= (typeof e.greaterThanOrEqual === 'string' ? get(view, e.greaterThanOrEqual) : e.greaterThanOrEqual);
+      throw new Error(`offline chain: where ${JSON.stringify(e)} is not modelled`);
+    };
+    const agrees = (t) => Object.entries(ref.where ?? {}).every(([k, e]) => holds(get(t.view, k), e));
     return found.some(agrees) ? null : 40127;
   }
 
@@ -173,7 +200,7 @@ export class OfflineChain {
    */
   judge(doc) {
     const { type, view } = doc;
-    const schema = schemaOf(type);
+    const schema = this.lookup.schemaOf(type);
     const pool = (t) => [...this.live(t), ...(t === type ? [doc] : [])];
     for (const [rule, expr] of Object.entries(schema.propertyConstraints ?? {}).sort(([p], [q]) => (p < q ? -1 : p > q ? 1 : 0))) {
       const text = JSON.stringify(expr);
@@ -181,7 +208,7 @@ export class OfflineChain {
       if (!this.evaluate(expr, view, pool)) return new Refusal(10422, rule, `${type} breaks ${rule}`);
     }
     const props = Object.entries(schema.properties ?? {})
-      .map(([prop, raw]) => [prop, resolveRef(type, raw)])
+      .map(([prop, raw]) => [prop, this.lookup.resolveRef(type, raw)])
       .filter(([prop]) => view[prop] !== undefined);
     for (const [prop, s] of props) {
       if (s.distinctFrom && view[prop] === get(view, s.distinctFrom)) return new Refusal(10419, `${type}.${prop}`, `must differ from ${s.distinctFrom}`);
@@ -241,7 +268,7 @@ export class OfflineChain {
     const json = () => {
       const out = { $id: doc.id, $ownerId: doc.owner, $createdAt: doc.view.$createdAt };
       for (const [k, v] of Object.entries(doc.data)) {
-        out[k] = v instanceof Uint8Array ? (isIdentifier(doc.type, k) ? b58encode(v) : Buffer.from(v).toString('base64')) : v;
+        out[k] = v instanceof Uint8Array ? (this.lookup.isIdentifier(doc.type, k) ? b58encode(v) : Buffer.from(v).toString('base64')) : v;
       }
       return out;
     };
@@ -251,8 +278,8 @@ export class OfflineChain {
   select({ dataContractId, documentTypeName, where = [], orderBy = [], startAfter, limit }) {
     const type = this.typeIn(dataContractId, documentTypeName);
     const operand = (f, v) => {
-      if (isIdentifier(type, f)) return hexOfId(v);
-      if (propSchema(type, f)?.byteArray) return Buffer.from(v, 'base64').toString('hex');
+      if (this.lookup.isIdentifier(type, f)) return hexOfId(v);
+      if (this.lookup.propSchema(type, f)?.byteArray) return Buffer.from(v, 'base64').toString('hex');
       return v;
     };
     let rows = this.live(type).filter((d) =>
@@ -296,7 +323,7 @@ export class OfflineChain {
         const id = document.id?.toBase58?.() ?? document.id;
         const doc = chain.docs.find((d) => d.id === id && !d.deleted);
         if (!doc) throw new Error(`offline chain: no document ${id} to delete`);
-        if (schemaOf(doc.type).canBeDeleted === false) throw new Error(`offline chain: a ${doc.type} cannot be deleted`);
+        if (chain.lookup.schemaOf(doc.type).canBeDeleted === false) throw new Error(`offline chain: a ${doc.type} cannot be deleted`);
         doc.deleted = true;
       },
       ranked: async ({ dataContractId, documentTypeName, groupBy }) => {
@@ -318,7 +345,7 @@ export class OfflineChain {
         return documents;
       }
       get contracts() {
-        return { fetch: async (id) => ({ version: 1, getDocumentTypes: () => contracts[chain.contractName(id)].documentSchemas }) };
+        return { fetch: async (id) => ({ version: 1, getDocumentTypes: () => chain.set.contracts[chain.contractName(id)].documentSchemas }) };
       }
     }
     class IdentityPublicKey {}

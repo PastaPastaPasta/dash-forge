@@ -6,6 +6,10 @@ same bytes: plus forge-meta, DESIGN rev 4.1 D44).
   python3 forge-contracts/schema/build.py [--check] [--off flag,flag] [--on flag,flag] [--out <dir>]
                                           [--mainnet] [--validate <contract-validate>] [--gate <b7gate>]
 
+Two sets are committed and both are generated: the three devnet contracts in forge-contracts/contracts/
+and the four-contract set testnet (then mainnet) registers in forge-contracts/contracts/mainnet/.
+Edit FLAGS / MAINNET_FLAGS (or a base schema), re-run this script and then `--mainnet`, commit both.
+
 `base/` holds the three schemas registered-to-be before RC1 (the #154 build: the `refersTo`
 grammar with WIPE-DECISIONS D-2..D-5 applied), with checkRun's set-once fields written as
 Platform v5 conditional `immutable` entries (RC2 item M1: v5 refuses `immutableAllowSetting`).
@@ -15,15 +19,17 @@ the RC2 items of `design/v5/PLAN.md` §3 on top, each behind a flag in FLAGS, an
 `contracts/registered/forge-core.v1.json` (RC1 and RC2 register fresh, so the registered core is
 the new core).
 
---check     write nothing; exit 1 when the committed contracts differ from a fresh build (CI).
+--check     write nothing; exit 1 when either committed set (contracts/ and contracts/mainnet/) or the
+            registered v1 schemas differ from a fresh build (CI). Run it alone: no --mainnet/--out.
 --off/--on  turn flags off (or on) for a variant: nothing is written unless --out names a directory,
             so the committed contracts always match FLAGS. A registration-time decision (a fee
             probe that turns an RC2 item off) is made by flipping its default in FLAGS and
             regenerating, never by registering an --out variant.
 --out       write the three files (four with `layout_meta`) to this directory instead of
-            forge-contracts/contracts.
+            forge-contracts/contracts (or contracts/mainnet with --mainnet).
 --mainnet   turn on every built MAINNET_FLAGS item (the four-contract layout and the mixed-visibility
-            items of DESIGN rev 4.1 §8.3 included): the fresh mainnet registration. Needs --out.
+            items of DESIGN rev 4.1 §8.3 included): the fresh mainnet registration. Writes
+            forge-contracts/contracts/mainnet/ (or --out <dir>).
 --validate  run tools/contract-validate (rs-dpp v5.0.0-rc.3) on the result and print each
             contract's serialized size and create-transition size against the D-12 budget and
             the 20,480-byte transition limit. forge-contracts/schema/variants.py does this for
@@ -49,6 +55,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONTRACTS = os.path.join(os.path.dirname(HERE), 'contracts')
 # The schemas each network registered (version 1); an in-place update is validated against them.
 REGISTERED = os.path.join(CONTRACTS, 'registered')
+# The four-contract set testnet (then mainnet) registers; `--mainnet` writes it, `--check` compares it.
+MAINNET_DIR = os.path.join(CONTRACTS, 'mainnet')
 NAMES = ('forge-core', 'forge-collab', 'forge-community')
 # The fourth contract (MAINNET_FLAGS `layout_meta`, DESIGN rev 4.1 D44), registered after the three
 META = 'forge-meta'
@@ -1502,18 +1510,31 @@ def main():
     ap.add_argument('--validate', metavar='CONTRACT_VALIDATE')
     ap.add_argument('--off', default='')
     ap.add_argument('--on', default='')
-    ap.add_argument('--out', help='write the three files here instead of forge-contracts/contracts')
+    ap.add_argument('--out', help='write the files here instead of forge-contracts/contracts '
+                                  '(forge-contracts/contracts/mainnet with --mainnet)')
     ap.add_argument('--mainnet', action='store_true',
-                    help='turn the built MAINNET_FLAGS on (a fresh registration only; needs --out)')
+                    help='turn the built MAINNET_FLAGS on and write forge-contracts/contracts/mainnet '
+                         '(the four-contract set a production network registers)')
     a = ap.parse_args()
+    if a.check and (a.mainnet or a.out):
+        sys.exit('--check compares the committed builds: run it alone')
     on = a.on
     if a.mainnet:
         on = ','.join(filter(None, [on, *MAINNET_BUILT]))
-    variant = bool(a.off or on)
+    # a variant is the user's own --off/--on; --mainnet alone is the committed four-contract build
+    variant = bool(a.off or a.on)
     contracts = build(flags_from(a.off, on))
-    if META in contracts and not a.out:
-        sys.exit('the four-contract layout is a fresh registration: write it with --out <dir>')
-    targets = {n: os.path.join(a.out or CONTRACTS, f'{n}.json') for n in contracts}
+    if a.out:
+        out_dir = a.out
+    elif a.mainnet and not variant:
+        out_dir = MAINNET_DIR
+    elif not a.mainnet and not variant:
+        out_dir = CONTRACTS
+    else:
+        out_dir = None
+    if META in contracts and not out_dir:
+        sys.exit('the four-contract layout is written to contracts/mainnet/ (build.py --mainnet) or --out <dir>')
+    targets = {n: os.path.join(out_dir or CONTRACTS, f'{n}.json') for n in contracts}
     texts = {k: dumps(contracts[k]) for k in targets}
     if a.check and variant:
         sys.exit('--check compares the full build: use it without --off/--on')
@@ -1526,6 +1547,19 @@ def main():
             print(f'stale: {os.path.relpath(meta)} (forge-meta is built with --mainnet --out <dir> only)')
         for p in stale:
             print(f'stale: {os.path.relpath(p)} (re-run forge-contracts/schema/build.py)')
+        # the four-contract set: exactly what `build.py --mainnet` writes, and nothing else in the directory
+        four = build(flags_from('', ','.join(MAINNET_BUILT)))
+        for n, c in four.items():
+            p = os.path.join(MAINNET_DIR, f'{n}.json')
+            if not os.path.exists(p) or open(p).read() != dumps(c):
+                stale.append(p)
+                print(f'stale: {os.path.relpath(p)} (re-run build.py --mainnet)')
+        if os.path.isdir(MAINNET_DIR):
+            for f in sorted(os.listdir(MAINNET_DIR)):
+                if f.endswith('.json') and f[:-len('.json')] not in four:
+                    p = os.path.join(MAINNET_DIR, f)
+                    stale.append(p)
+                    print(f'stale: {os.path.relpath(p)} (not part of the --mainnet build)')
         # The registered v1 schemas are frozen copies of what devnet sakura registered on
         # 2026-10-01; the build with every UPDATE-1 item off must still reproduce them, so an edit
         # to an earlier flag cannot silently change what an update is validated against.
@@ -1536,9 +1570,8 @@ def main():
                 stale.append(p)
                 print(f'differs: {os.path.relpath(p)} is not the build with every UPDATE-1 flag off')
         sys.exit(1 if stale else 0)
-    if a.out or not variant:
-        if a.out:
-            os.makedirs(a.out, exist_ok=True)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
         for k, p in targets.items():
             open(p, 'w').write(texts[k])
     failed = False

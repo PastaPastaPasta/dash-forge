@@ -3137,19 +3137,11 @@ mod tests {
     /// rules.
     #[test]
     fn every_mainnet_rule_has_an_explanation() {
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../forge-contracts");
-        let dir = tempfile::tempdir().expect("temp dir");
-        let out = std::process::Command::new("python3")
-            .arg(format!("{root}/schema/build.py"))
-            .args(["--mainnet", "--out"])
-            .arg(dir.path())
-            .output()
-            .expect("python3 runs build.py");
-        assert!(
-            out.status.success(),
-            "build.py --mainnet: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        // the committed four-contract set (`build.py --check` keeps it equal to a fresh build)
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts/contracts/mainnet"
+        ));
         let mut names = std::collections::BTreeSet::new();
         for name in [
             "forge-core",
@@ -3157,7 +3149,7 @@ mod tests {
             "forge-community",
             "forge-meta",
         ] {
-            let text = std::fs::read_to_string(dir.path().join(format!("{name}.json"))).unwrap();
+            let text = std::fs::read_to_string(dir.join(format!("{name}.json"))).unwrap();
             let json: serde_json::Value = serde_json::from_str(&text).unwrap();
             let schemas = json.get("documentSchemas").unwrap_or(&json);
             for (ty, schema) in schemas.as_object().unwrap() {

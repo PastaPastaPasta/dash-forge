@@ -1,15 +1,13 @@
 /**
  * The mainnet fields (mixed-visibility phase M-B part 2), against both contract shapes: the
- * committed three-contract set (what sakura registered: none of the fields) and a fresh
- * `build.py --mainnet` build. On the first a writer writes exactly what it wrote before; on the
+ * committed three-contract set (what sakura registered: none of the fields) and the committed
+ * `build.py --mainnet` set (`forge-contracts/contracts/mainnet`). On the first a writer writes exactly what it wrote before; on the
  * second it writes each field, and what it writes is judged by the mainnet contracts offline
  * (`lib/sdk/rc1-validate.ts` with `contractsDir`). Parity: forge-core `rules::aud` and the
  * `Collab` writers; the pure rules are pinned by the `aud__*` vectors (`lib/rules/conformance.test.ts`).
  */
 
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -61,8 +59,8 @@ import { roleClaim } from './role-claim'
 import { LetterRefusedError } from './letter-writes'
 import { OWNER_ROW_STAYS, eventWrite, refuseOwnVerdict, refuseOwnerRow, requirePublicFor } from './writes'
 
-const MAINNET = mkdtempSync(join(tmpdir(), 'forge-mainnet-'))
-execFileSync('python3', [resolve(process.cwd(), '..', 'forge-contracts', 'schema', 'build.py'), '--mainnet', '--out', MAINNET])
+// the committed four-contract set (`build.py --check` keeps it equal to a fresh `--mainnet` build)
+const MAINNET = resolve(process.cwd(), '..', 'forge-contracts', 'contracts', 'mainnet')
 
 const id = (b: number): Uint8Array => new Uint8Array(32).fill(b)
 const b58 = (u: Uint8Array): string => base58Encode(u)
