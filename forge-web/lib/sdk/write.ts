@@ -88,7 +88,7 @@ interface StateTransitionsFacadeLike {
 /**
  * The subset of evo-sdk's `PutSettings` the result wait takes. Never `waitTimeoutMs`: rs-sdk
  * runs it through `tokio::time::timeout`, which panics in the browser ("time not implemented
- * on this platform", `docs/research/spike-results.md`); the overall deadline is a JS race.
+ * on this platform", `docs/archive/forge-v1/spike-results.md`); the overall deadline is a JS race.
  */
 interface WaitSettings {
   readonly retries?: number

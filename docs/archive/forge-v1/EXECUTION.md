@@ -1,10 +1,10 @@
 # Dash Forge — Execution Tracker
 
-> **Historical.** This is the build log of forge-v1 (a global registry contract plus one contract per repository, with WRITE/MAINTAIN token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility: the registry, the `repo-v1` template, the token ACLs and the testnet deployments named below no longer exist in the code. The current plan is [docs/roadmap.md](docs/roadmap.md); the current design is [forge-v2](docs/contracts/forge-v2.md). The log below is kept as written.
+> **Historical.** This is the build log of forge-v1 (a global registry contract plus one contract per repository, with WRITE/MAINTAIN token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility: the registry, the `repo-v1` template, the token ACLs and the testnet deployments named below no longer exist in the code. The current plan is [docs/roadmap.md](../../roadmap.md); the current design is [forge-v2](../../contracts/forge-v2.md). The log below is kept as written.
 
 Session-continuity anchor. Docs in `docs/` are the spec; this file tracks build state. Update every session.
 
-> **2026-09-24:** this log records the July build. "Complete" below means *demonstrated on testnet*, not *usable by real users*. Forward planning now lives in [docs/roadmap.md](docs/roadmap.md).
+> **2026-09-24:** this log records the July build. "Complete" below means *demonstrated on testnet*, not *usable by real users*. Forward planning now lives in [docs/roadmap.md](../../roadmap.md).
 
 **Locked decisions**: testnet-complete (mainnet = runbook only) · GitHub `PastaPastaPasta/dash-forge` (private until Stage 4) · storage e2e docker-only (MinIO/kubo/static-http; Storacha+Pinata mock-tested) · import acceptance on medium repo (dashpay/dips-scale).
 
@@ -57,7 +57,7 @@ Economics: repo-v1 ~1.18 DASH, registry 0.68 DASH — update economics.md create
 Next-session start: (1) add a chunk-query read helper to platform.rs + finish PlatformBackend.get live-tested; (2) build repo-v1 instantiation in forge-core (contract create from template + initial config/listing) — pull faucet grant for DEPLOYER first (repo-v1 with 2 tokens+15 types+count-trees likely ≥1 DASH); (3) wire git-remote-dash helper end-to-end; (4) M1 round-trip on testnet. All forge-core primitives are built, reviewed, and (write path) live-proven — M1 is integration.
 
 Economics note: registry 0.68 DASH, S0.7 token contract ~0.24 — repo-v1 (2 tokens + 15 types + count-trees) likely ≥1 DASH to instantiate. Pull faucet grants as needed; delete-to-refund test repos.
-Reusable JS platform patterns (for reference / evo-sdk web): spikes/S0.1/lib.mjs (nonce/broadcast), S0.7/lib.mjs (key+signer, fromJSON contract), tools/mint-identity/src/platform.mjs.
+Reusable JS platform patterns (for reference / evo-sdk web): the spikes' `S0.1/lib.mjs` (nonce/broadcast) and `S0.7/lib.mjs` (key+signer, fromJSON contract), now only in git history (tag `archive/spikes`), tools/mint-identity/src/platform.mjs.
 
 ## Stage 3 — dg + relay → M2
 - [ ] dg full surface · [ ] forge-relay + CI consumer · [ ] M2 gate + dogfood

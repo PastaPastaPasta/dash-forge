@@ -1,6 +1,6 @@
 # PRD 01 — Dash Forge Product Overview
 
-> **Historical.** Written for forge-v1 (a global registry contract plus one contract per repository, with WRITE/MAINTAIN token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility. Access control is still enforced at consensus, now by `maintainer`/`writer` membership documents in the shared [forge-v2](../contracts/forge-v2.md) contracts; current planning is in [roadmap.md](../roadmap.md).
+> **Historical.** Written for forge-v1 (a global registry contract plus one contract per repository, with WRITE/MAINTAIN token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility. Access control is still enforced at consensus, now by `maintainer`/`writer` membership documents in the shared [forge-v2](../../../contracts/forge-v2.md) contracts; current planning is in [roadmap.md](../../../roadmap.md).
 
 ## Vision
 

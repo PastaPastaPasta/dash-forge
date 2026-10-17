@@ -24,10 +24,10 @@
 | D2 | Mutable `ref` docs ("revision-tracked") + separate `reflog` type | Documents are **replaceable only by their creator** — maintainer B can never update a `ref` doc maintainer A created, tokens notwithstanding | Merged into one **append-only `refUpdate`** type (= ref state *and* reflog). Current ref = newest refUpdate for the name; consensus token-gating means existence ⇒ authorized. `protectedRefUpdate` (MAINTAIN-gated) covers protected refs. |
 | D3 | `patch` creation costs 1 WRITE | Token-gating patches **blocks drive-by outside contributions** (the fork-and-PR flow) | Flagged as open question in PRD 01/03: options are un-gated patch docs (platform fees as spam floor), or fork-side patches + WRITE-gated acceptance. Docs currently spec **un-gated patch creation**, MAINTAIN-gated merge events. |
 | D4 | Repo contract template "<50KB total" | `estimated_contract_max_serialized_size = 16 KiB` per contract | Template validated against 16 KiB in Phase 0 (S0.6); fallback is two contracts per repo (core + collab), still cheap. |
-| D5 | Indexes "by (labels), (author)" etc. | Indexed strings ≤ 63 chars; index key ≤ 255 bytes; array-membership indexing constrained; **100 docs/query max** | Index designs in data-contracts.md conform (hashes for long names, bounded label strings, cursor pagination everywhere). |
+| D5 | Indexes "by (labels), (author)" etc. | Indexed strings ≤ 63 chars; index key ≤ 255 bytes; array-membership indexing constrained; **100 docs/query max** | Index designs in archive/forge-v1/data-contracts.md conform (hashes for long names, bounded label strings, cursor pagination everywhere). |
 | D6 | — (not addressed) | No document push subscriptions on Platform | Relay subscribes to **blocks/ST stream and polls document queries**; web polls with cursors. |
 
-## v3 contract-design refinements (consistency pass; see data-contracts.md)
+## v3 contract-design refinements (consistency pass; see archive/forge-v1/data-contracts.md)
 
 - **Protected refs made enforceable**: `protectedPatterns` moved from the registry listing into an append-only, non-deletable, MAINTAIN-gated `config` doc type in the repo contract — protection is now evaluable as-of any past update's consensus time, and MAINTAIN collaborators (not just the listing owner) can manage settings. Consensus enforces the MAINTAIN spend on `protectedRefUpdate`; a normative client rule makes plain refUpdates against protected names inert.
 - **Rewind attack closed**: `refUpdate`/`protectedRefUpdate`/`event`/`config` are **non-deletable** (a deletable ref tip let its author silently rewind a branch with nothing to audit). Refunds stay on the big-byte types (`chunk`/`packManifest`), whose **deletes are token-gated** — a frozen ex-collaborator can no longer delete their uploads (platform verifies `tokenCost` supports create/replace/delete/transfer).
@@ -44,7 +44,7 @@ An independent review (with empirical git experiments) found and the docs now in
 
 ## Design Freeze #1 (spike findings — all 9 Phase-0 spikes executed on live testnet)
 
-Full record and numbers: [research/spike-results.md](research/spike-results.md). **Headline: GO** — every load-bearing assumption held or was corrected without a structural redesign. The corrections below are folded into the docs in the same commit:
+Full record and numbers: [research/spike-results.md](archive/forge-v1/spike-results.md). **Headline: GO** — every load-bearing assumption held or was corrected without a structural redesign. The corrections below are folded into the docs in the same commit:
 
 1. **No non-`byteArray` arrays** (S0.6, protocol v12): every list field (`topics`, `links`, `protectedPatterns`, all `uris`, `release.assets`, `webhook.events`, `packManifest.tips`/`supersedes`) is re-encoded as **JSON-in-string or packed byteArray**, never a native array. None were indexed → query design unaffected. (`data-contracts §0`, field schemas.)
 2. **Index sort direction is `asc`-only** in stored contracts; `$createdAt desc` markers are query-time reverse traversal, not stored properties. (`data-contracts §0`.)
