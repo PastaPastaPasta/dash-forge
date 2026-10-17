@@ -126,6 +126,15 @@ function fakeNavigator(): unknown {
 
 const kept = (): Promise<ResumeRecord | undefined> => idbGet<ResumeRecord>('vault', SESSION_KEY)
 
+/**
+ * How long a condition may take to come true. vi.waitFor's default is 1 s, and sealing or
+ * opening the kept session (PRF key derivation and AES) plus the background chain check can
+ * take longer than that on a loaded CI runner (CI run 38464560706 failed at 1012 ms). The
+ * conditions still have to hold; only the patience is longer, and it ends well before each
+ * test's own 30 s timeout. A condition that is already true returns on the first poll.
+ */
+const WAIT = { timeout: 15_000, interval: 20 }
+
 /** Store, keep (a limited key), and drop the page's memory: what a reload leaves behind. */
 async function unlockKeepAndReload(): Promise<void> {
   await storeInVault(NET, SECRET, PASSKEY)
@@ -273,7 +282,7 @@ describe('every lock wipes it', () => {
     off()
     expect(locked).toHaveBeenCalledOnce()
     expect(unlockedSecret(NET, ID)).toBeNull()
-    await vi.waitFor(async () => expect(await kept()).toBeUndefined())
+    await vi.waitFor(async () => expect(await kept()).toBeUndefined(), WAIT)
   }, 30_000)
 
   it('a keep that races a lock does not survive it', async () => {
@@ -386,7 +395,7 @@ describe('the controller', () => {
   async function signIn(): Promise<AuthController> {
     const c = make()
     await c.adoptLimitedKey(ID, { keyId: 5, wif: WIF, limits } as never, PASSKEY)
-    await vi.waitFor(async () => expect(await kept()).toBeDefined())
+    await vi.waitFor(async () => expect(await kept()).toBeDefined(), WAIT)
     return c
   }
 
@@ -411,7 +420,7 @@ describe('the controller', () => {
     // The hint's balance is from when the session was kept, many writes ago perhaps.
     expect(next.getState().session?.balance).toBe((10n ** 11n).toString())
     expect(next.getState().session?.balanceReadAt).toBeUndefined()
-    await vi.waitFor(() => expect(next.getState().session?.balanceReadAt).toBeTypeOf('number'))
+    await vi.waitFor(() => expect(next.getState().session?.balanceReadAt).toBeTypeOf('number'), WAIT)
     // A refresh stamps the time it started reading, and takes the balance it read.
     chainBalance = 10n ** 11n - 5000n
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -466,7 +475,7 @@ describe('the controller', () => {
     const c = make()
     keys = [{ ...limitedKey(5, WIF), contractBounds: { toJSON: () => ({ $type: 'singleContract', id: FORGE.core }) } }]
     await c.adoptLimitedKey(ID, { keyId: 5, wif: WIF, limits } as never, PASSKEY)
-    await vi.waitFor(async () => expect(await kept()).toBeDefined())
+    await vi.waitFor(async () => expect(await kept()).toBeDefined(), WAIT)
     releaseUnlocked()
     const next = make()
     await next.resume()
@@ -494,7 +503,7 @@ describe('the controller', () => {
     keys[0]!.disabledAt = 1n
     const next = make()
     await next.resume()
-    await vi.waitFor(() => expect(next.getState().session).toBeNull())
+    await vi.waitFor(() => expect(next.getState().session).toBeNull(), WAIT)
     expect(next.getState().notice).toMatch(/no longer usable/)
     expect(await kept()).toBeUndefined()
   }, 30_000)
@@ -549,13 +558,13 @@ describe('the controller', () => {
     // No lock anywhere: the marker did not move, the key-6 copy is still kept, and B switched.
     expect(window.localStorage.getItem(LOCKED_AT_KEY)).toBe(marker)
     expect((await kept())?.keyId).toBe(6)
-    await vi.waitFor(() => expect(tabB.getState().session?.keyId).toBe(6))
+    await vi.waitFor(() => expect(tabB.getState().session?.keyId).toBe(6), WAIT)
   }, 60_000)
 
   it('a SAVED event from the renewing tab makes a stale tab switch keys (H3)', async () => {
     const tabB = await staleTabAfterRenewal()
     applyOtherTabEvent(SAVED_AT_KEY)
-    await vi.waitFor(() => expect(tabB.getState().session?.keyId).toBe(6))
+    await vi.waitFor(() => expect(tabB.getState().session?.keyId).toBe(6), WAIT)
     expect((await kept())?.keyId).toBe(6)
   }, 60_000)
 
@@ -576,7 +585,7 @@ describe('the controller', () => {
     releaseUnlocked()
     const s = await c.unlock(ID, 'passkey')
     expect(s.keyId).toBe(6)
-    await vi.waitFor(async () => expect((await kept())?.keyId).toBe(6))
+    await vi.waitFor(async () => expect((await kept())?.keyId).toBe(6), WAIT)
     releaseUnlocked()
     const next = make()
     expect(await next.resume()).toBe(true)
@@ -587,7 +596,7 @@ describe('the controller', () => {
     const c = make()
     keys = [{ ...limitedKey(5, WIF), contractBounds: { toJSON: () => ({ $type: 'singleContract', id: FORGE.core }) } }]
     await c.adoptLimitedKey(ID, { keyId: 5, wif: WIF, limits } as never, PASSKEY)
-    await vi.waitFor(async () => expect(await kept()).toBeDefined())
+    await vi.waitFor(async () => expect(await kept()).toBeDefined(), WAIT)
     const rec = (await kept())!
     const hint = rec.hint as { session: { grants: unknown }; scopes: { main: unknown } }
     await idbPut('vault', SESSION_KEY, {
@@ -597,7 +606,7 @@ describe('the controller', () => {
     releaseUnlocked()
     const next = make()
     await next.resume()
-    await vi.waitFor(() => expect(next.getState().session?.grants).toEqual({ core: true, collab: false, community: false, meta: true }))
+    await vi.waitFor(() => expect(next.getState().session?.grants).toEqual({ core: true, collab: false, community: false, meta: true }), WAIT)
   }, 30_000)
 
   it('a discarded instance (React StrictMode double construct) holds no listener', async () => {
@@ -609,7 +618,7 @@ describe('the controller', () => {
     releaseUnlocked()
     const real = make()
     applyOtherTabEvent(SAVED_AT_KEY)
-    await vi.waitFor(() => expect(real.getState().session?.identityId).toBe(ID))
+    await vi.waitFor(() => expect(real.getState().session?.identityId).toBe(ID), WAIT)
     expect(discarded.getState().session).toBeNull()
   }, 30_000)
 
@@ -656,7 +665,7 @@ describe('the controller', () => {
     const s = await tab.unlockMore('passkey')
     expect(s.keyId).toBe(6)
     expect(await tab.pendingRenewal(ID)).toBeNull()
-    await vi.waitFor(async () => expect((await kept())?.keyId).toBe(6))
+    await vi.waitFor(async () => expect((await kept())?.keyId).toBe(6), WAIT)
   }, 60_000)
 
   it('a signing-only tab: renew and revoke touch nothing (grants, storage, encryption blobs stay)', async () => {
