@@ -185,8 +185,9 @@ describe('where a deposit watch starts', () => {
     const { watchFrom } = await import('./asset-lock')
     const core = new DapiCore(EP.dapi)
     expect(await watchFrom(core, 88_000)).toBe(88_000 - 6)
-    // Started an hour ago: 24 blocks at 2.5 minutes, plus the 50-block margin, from tip 88_900.
-    expect(await watchFrom(core, { startedAt: Date.now() - 3_600_000 })).toBe(88_900 - 24 - 50)
+    // Started 59 minutes ago: 24 blocks at 2.5 minutes (rounded up), plus the 50-block margin, from
+    // tip 88_900. Not exactly an hour: the milliseconds the test takes would round up to 25.
+    expect(await watchFrom(core, { startedAt: Date.now() - 3_540_000 })).toBe(88_900 - 24 - 50)
     // Long ago: at most about a week.
     expect(await watchFrom(core, { startedAt: 0 })).toBe(88_900 - 4032)
   })
