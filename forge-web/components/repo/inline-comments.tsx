@@ -25,7 +25,7 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import { shownHunk } from '@/lib/view/diff-hunk'
 import { DiffHunkLines } from '@/components/repo/diff-hunk-view'
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { CheckCircle2, EyeOff, FileDiff, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 import { Author } from '@/components/author'
 import { banWords, reasonWords } from '@/components/repo/moderation'
@@ -34,6 +34,7 @@ import type { HiddenItems } from '@/lib/rules/moderation'
 import { commentFirsts, postComment, type AnchorInput, type PostContext, type RepoRef } from '@/lib/repo'
 import type { DraftComment } from '@/lib/repo'
 import { plural, type CommentView } from '@/lib/view'
+import { UnsentDrafts } from '@/lib/view/unsent-drafts'
 import { anchorLabel, extendSelection, lineKey, placeThreads, rangeKeys, type InlineThread, type LineSelection } from '@/lib/view/inline-threads'
 import { insertSuggestion, type SuggestionAnchor } from '@/lib/view/suggest-block'
 import { useAuth } from '@/contexts/auth-context'
@@ -136,6 +137,11 @@ export interface PendingReview {
 /** Whether the viewer is a member and the PR locked: a member's comment on a locked PR proves membership (RC1). */
 const PostContextOf = createContext<PostContext | undefined>(undefined)
 
+/** The diff composers' unsent text and open replies, kept above the diff (#560); see {@link UnsentDrafts}. */
+const UnsentOf = createContext<UnsentDrafts | null>(null)
+/** Stands in for a missing store (a thread shown outside the diff): it holds nothing anyone reads. */
+const INERT_DRAFTS = new UnsentDrafts()
+
 export function InlineCommentsProvider({
   repo,
   post,
@@ -181,6 +187,12 @@ export function InlineCommentsProvider({
   const paths = useMemo(() => changedPaths, [pathsKey])
   const [shownLines, setShownLines] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
   const [selection, setSelection] = useState<LineSelection | null>(null)
+  const [unsent] = useState(() => new UnsentDrafts())
+  // The unsent line comment belongs to the open selection: another line (or none) drops it.
+  const selectionKey = selection === null ? null : unsentKeyOf(pullId, selection)
+  useEffect(() => {
+    unsent.retain(LINE_DRAFTS, selectionKey)
+  }, [unsent, selectionKey])
 
   // A path whose lines have ever been reported: its patch loaded, so a line missing from it
   // is really gone (outdated). An unreported path (collapsed, a placeholder, not paged in yet)
@@ -248,7 +260,11 @@ export function InlineCommentsProvider({
     () => ({
       canComment: writeBlock === null,
       start: (path, side, line, extend = false) => {
-        if (writeBlock === null) setSelection((prev) => extendSelection(prev, path, side, line, extend))
+        if (writeBlock !== null) return
+        const next = extendSelection(selection, path, side, line, extend)
+        // A selection that grows keeps what was typed.
+        if (extend && selection !== null) unsent.move(unsentKeyOf(pullId, selection), unsentKeyOf(pullId, next))
+        setSelection(next)
       },
       mark: (path, side, line) => {
         if (selection !== null && selection.path === path && selection.side === side && line >= selection.startLine && line <= selection.line) return 'selected'
@@ -274,6 +290,7 @@ export function InlineCommentsProvider({
               <Composer
                 repo={repo}
                 pullId={pullId}
+                unsent={{ store: unsent, key: unsentKeyOf(pullId, selection) }}
                 anchor={{ path, line: selection.line, ...(selection.startLine !== selection.line ? { startLine: selection.startLine } : {}), side, commitOid: headOid }}
                 label={`Your comment on ${path} ${range} (${side === 1 ? 'new' : 'old'})`}
                 pending={pending}
@@ -291,12 +308,13 @@ export function InlineCommentsProvider({
     }),
     // threadProps is rebuilt from the listed values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [placed, selection, ranges, pendingAt, pending, repo, pullId, headOid, onPosted, report, writeBlock, actions, suggestions],
+    [placed, selection, ranges, pendingAt, pending, repo, pullId, headOid, onPosted, report, writeBlock, actions, suggestions, unsent],
   )
 
   return (
     <InlineAudienceOf.Provider value={audience}>
     <PostContextOf.Provider value={post}>
+    <UnsentOf.Provider value={unsent}>
     <InlineCommentsContext.Provider value={value}>
       {placed.fileLevel.length > 0 ? (
         <details open className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="file-comments">
@@ -363,6 +381,7 @@ export function InlineCommentsProvider({
       ) : null}
       {children}
     </InlineCommentsContext.Provider>
+    </UnsentOf.Provider>
     </PostContextOf.Provider>
     </InlineAudienceOf.Provider>
   )
@@ -406,7 +425,14 @@ function AnchoredThread({ thread, ...rest }: ThreadProps & { thread: InlineThrea
 }
 
 function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestions }: ThreadProps & { thread: InlineThread }): JSX.Element {
-  const [replying, setReplying] = useState(false)
+  // An open reply lives in the provider, so it survives the diff being rebuilt (Split/Unified,
+  // phone width), and a post that finishes after that closes the live one.
+  const drafts = useContext(UnsentOf)
+  const replyKey = `reply|${pullId}|${thread.root.id}`
+  useUnsentVersion(drafts)
+  const [localReplying, setLocalReplying] = useState(false)
+  const replying = drafts !== null ? drafts.isOpen(replyKey) : localReplying
+  const setReplying = (on: boolean): void => (drafts !== null ? drafts.setOpen(replyKey, on) : setLocalReplying(on))
   const resolved = actions?.resolved.has(thread.root.id) ?? false
   const [expanded, setExpanded] = useState(false)
   // A thread holding a suggestion's run stays open: its steps (maybe a storage question) show here.
@@ -438,6 +464,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
               parent={[thread.root, ...thread.replies].some((c) => c.audience === 'members') ? 'members' : 'public'}
               letters={letterThreadOf([thread.root])}
               label="Reply"
+              {...(drafts !== null ? { unsent: { store: drafts, key: replyKey } } : {})}
               onDone={(id) => {
                 setReplying(false)
                 onPosted(id)
@@ -710,6 +737,19 @@ function PendingComment({
   )
 }
 
+const LINE_DRAFTS = 'line|'
+
+/** Which composer an unsent text belongs to: the PR and the selected lines. */
+function unsentKeyOf(pullId: string, sel: LineSelection): string {
+  return `${LINE_DRAFTS}${pullId}|${lineKey(sel.path, sel.side, sel.line)}|${sel.startLine}`
+}
+
+/** Re-render when `store` changes (a composer rebuilt mid-post hears how the post ended). */
+function useUnsentVersion(store: UnsentDrafts | null): void {
+  const s = store ?? INERT_DRAFTS
+  useSyncExternalStore(s.subscribe, s.version, s.version)
+}
+
 function Composer({
   repo,
   pullId,
@@ -720,11 +760,14 @@ function Composer({
   label,
   pending,
   suggestions,
+  unsent,
   onDone,
   onCancel,
 }: {
   repo: RepoRef
   pullId: string
+  /** Keeps the text (and tab) across a remount of the diff (a line comment or a reply). */
+  unsent?: { store: UnsentDrafts; key: string }
   anchor?: AnchorInput
   replyTo?: string
   /** The thread's audience (a reply): a members-only thread's reply is members-only. Absent: the PR's. */
@@ -744,7 +787,11 @@ function Composer({
   const guard = useWriteGuard()
   const draft = useIntent()
   const post = useContext(PostContextOf)
-  const [body, setBody] = useState('')
+  useUnsentVersion(unsent?.store ?? null)
+  const [restoredTab] = useState(() => unsent?.store.read(unsent.key)?.tab ?? 'write')
+  const [localBody, setLocalBody] = useState('')
+  const body = unsent !== undefined ? unsent.store.read(unsent.key)?.body ?? '' : localBody
+  const setBody = (next: string): void => (unsent !== undefined ? unsent.store.write(unsent.key, { body: next }) : setLocalBody(next))
   // Who it is for (DESIGN §10): the thread's or the PR's audience, or Members when picked.
   const who = useContext(InlineAudienceOf)
   const audience = useComposerAudience(who?.home ?? null, {
@@ -757,8 +804,14 @@ function Composer({
   // A public comment or reply that repeats members-only text asks first (product H8).
   const quoteGate = useQuoteGate()
   const publicText = (): string | null => publicTextOf(body, audience.audience)
-  const [posting, setPosting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // With a store, whether a post is in flight (and how one ended) outlives this composer: a
+  // rebuilt one starts disabled, not empty-handed, and cannot post the same text twice.
+  const [localPosting, setLocalPosting] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+  const posting = unsent !== undefined ? unsent.store.isSending(unsent.key) : localPosting
+  const error = unsent !== undefined ? unsent.store.error(unsent.key) ?? null : localError
+  const setPosting = (on: boolean): void => (unsent !== undefined ? unsent.store.setSending(unsent.key, on) : setLocalPosting(on))
+  const setError = (message: string | null): void => (unsent !== undefined ? unsent.store.setError(unsent.key, message) : setLocalError(message))
   // Which subtrees this comment would create, read once the viewer starts typing, so the price
   // shown before "Add comment" is as tight as the conversation composer's (L-38, D-011). A reply
   // may be its root's first, which opens the `reply` subtree no surcharge measures: keep the
@@ -861,6 +914,8 @@ function Composer({
         autoFocus
         textareaRef={field}
         suggestion={preview}
+        initialTab={restoredTab}
+        {...(unsent !== undefined ? { onTabChange: (tab: 'write' | 'preview') => unsent.store.write(unsent.key, { tab }) } : {})}
         hint={null}
         onSubmit={() => {
           // What the main button would do, and only when it is enabled.
@@ -889,7 +944,15 @@ function Composer({
         <CostPreview cost={cost} />
         <div className="flex flex-wrap items-center gap-2">
           {who !== null ? <AudienceChip home={who.home} state={audience} testId="inline-audience-chip" /> : null}
-          <Button size="sm" variant="ghost" onClick={onCancel} disabled={posting}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              unsent?.store.clear(unsent.key)
+              onCancel()
+            }}
+            disabled={posting}
+          >
             Cancel
           </Button>
           <Button

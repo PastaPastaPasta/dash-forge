@@ -129,6 +129,8 @@ export function MarkdownEditor({
   suggestion = null,
   hint = EDITOR_HINT,
   onSubmit,
+  initialTab = 'write',
+  onTabChange,
 }: {
   id: string
   label: string
@@ -147,8 +149,16 @@ export function MarkdownEditor({
   hint?: string | null
   /** Cmd+Enter (Ctrl+Enter) in the field: the composer's main action, as on GitHub. */
   onSubmit?: () => void
+  /** The tab the field opens on (a composer that remounts restores it). */
+  initialTab?: 'write' | 'preview'
+  /** Told when the viewer switches tab. */
+  onTabChange?: (tab: 'write' | 'preview') => void
 }): JSX.Element {
-  const [tab, setTab] = useState<'write' | 'preview'>('write')
+  const [tab, setTabState] = useState<'write' | 'preview'>(initialTab)
+  const setTab = (next: 'write' | 'preview'): void => {
+    setTabState(next)
+    onTabChange?.(next)
+  }
   const tabClass = (on: boolean) =>
     cn(
       'rounded-t px-3 py-1.5 text-dense font-medium coarse:min-h-11',
