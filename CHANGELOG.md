@@ -8,10 +8,29 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+## [0.2.0] - TODO(release date)
+
+The testnet launch, and the first release anyone can install. It targets Dash testnet (Dash Platform v5.0.0-rc.3, protocol 14), which is now the default network of every tool; devnet sakura stays a developer network. Version 0.1.0 was tagged on 2026-10-04 and never published: there is no GitHub release, no binaries and no web build for it, so this release supersedes it. See the [release notes](docs/releases/v0.2.0.md) for networks, installation, upgrading from devnet builds and known limitations.
+
+Forge's contracts are registered on testnet in one contract group: TODO(P4-registration: contract group and contract ids; they are recorded in `forge-contracts/deployments/testnet.json`).
+
 Members-only content in public repositories, Environments and the secret scan. People using older Forge builds see fewer things until they update: they leave members-only items out, and they don't count a members-only review's approval, so they may refuse a merge an up-to-date build allows. **Update to see and count members-only reviews.** [Who can read what](docs/security/audiences.md) explains the audiences, what stays public and what can still leak.
+
+### Security
+
+- `dg repo make-public` and the web app's **Make public** published history only below the run's own seal-off, and re-check the key before the flip (PR #488).
+- Untrusted bytes are bounded: pack, locator and flat-index parsing run in linear time with a cap on each read's output, external pack reads are capped and time-limited, and the web app bounds pack decoding and scopes its chunk cache to one repository.
+- `git push` to a public repository refuses likely secrets (E807). Private config directories are created owner-only, `dg release download` saves assets only under a plain file name and never over an existing file, and `forge-relay` hardens its webhook targets and never forwards members-only content.
+- Releases are built with SHA-pinned actions, `cargo-deny`, `pnpm audit` and gitleaks in CI, with third-party licence notices in every archive, image and the web app.
 
 ### Added
 
+- **Testnet.** Testnet is the default network and Forge's contracts are registered there. The web app links the testnet faucets from the top-up sheet, shows a network badge, and has an operator switch (`PAGES_NOTICE`) that pauses writes and shows an advisory on any network. `dg auth new` prints the testnet faucets next to the deposit address.
+- **Mixed visibility.** Public and private content in one repository: members-only issues, comments, reviews, branches and pull requests, messages to specific people and role groups, repositories made public by their owner, and a Bot role with push grants. The four-contract layout (forge-core, forge-collab, forge-community and forge-meta) and the Read, Triage, Write and Maintain roles come with it. [Who can read what](docs/security/audiences.md) explains it.
+- **Services you can run.** `forge-gateway`, read-only git over HTTPS with badges, feeds and link previews (with a release image), and `forge-notify`, optional email and Web Push notifications. `forge-relay` gained chat, push and email sinks and a watch mode.
+- **Safer repositories.** The default branch and every tag are protected by default, code owners and maintainer bans are enforced, `--force-with-lease` works, a required check that a paths filter skips passes as skipped, and `dg pr revert`, release provenance, signed tags and `dg release verify` are new.
+- **Verification.** `dg verify-app` checks a deployed web build against its manifest and signing workflow, the quorum service can be chosen in Settings and with `--quorum-url`, and the web app's IPFS build is deterministic, so a tag always gives the same CID.
+- **Easier to use.** `dg --json` output is versioned and checked against JSON Schemas, help text is plain language with a lint in CI, and the web app has Devices & keys, comment drafts that survive a reload, bulk close and label, Compare & pull request, a landing page that leads with mirroring, and DPNS username registration.
 - **Members-only content in public repositories.** A maintainer turns it on once with `dg repo members enable` (it shows the cost first: about 0.004 DASH for 5 members), and `dg repo members status` shows who has the key. Members can then post issues, comments and reviews only members can read: maintainers, writers, triage members and readers, including members added later. Removed members keep what they could already read. CI runners are not members. Everyone can still see that something was posted, by whom, when and how large, and a review's verdict.
 - **Members-only discussion from `dg`** in public repositories with members-only content turned on: `--members` on `dg issue create`, `dg issue comment`, `dg pr comment` and `dg pr review`. Members read it in `dg issue view/list` and `dg pr view/list`; everyone else sees "#3 · members-only issue by @alice · open" and "3 members-only comments hidden". Every item in `--json` carries `"audience"` and `"readable"`. A members-only text longer than its field is stored encrypted (by maintainers and writers), and a members-only pending review is kept encrypted on disk.
 - **Readers on public repositories.** `dg collab add --role reader` works on public repositories: a reader follows the members-only discussion without pushing or merging.
@@ -26,13 +45,19 @@ Members-only content in public repositories, Environments and the secret scan. P
 
 ### Changed
 
+- **The default network is testnet** everywhere: the Mirror Action, the Check Action and the GitLab template default to `network: testnet` with no devnet name, and install release `0.2.0`. The release's reproducible web build reads testnet. Devnet sakura is documented as an optional developer network; the guides, README and error text lead with testnet.
+- Dash Platform pins moved to 5.0.0-rc.3, the version testnet runs.
 - `dg repo view` counts git packs only: `packCount` and `packBytes` (and the `packs:` line) no longer include browse indexes, history indexes, release-asset lists or long bodies. `dg storage status` still lists every artifact.
 - Notifications and `forge-relay` webhooks never carry members-only text: they say that something happened, by whom and where. An encrypted comment or review from someone who is not a member is not shown and notifies nobody.
 
+### Known limitations
+
+See [Known limitations](docs/releases/v0.2.0.md#known-limitations) in the release notes.
+
 ## [0.1.0] - 2026-10-04
 
-The first release. It targets devnet sakura (Dash Platform v5.0.0-beta.1, protocol 14) only;
-testnet and mainnet are not supported yet. See the [release notes](docs/releases/v0.1.0.md)
+Tagged on 2026-10-04 and never published: no GitHub release, binaries or web build exist for it, and 0.2.0 supersedes it. It targets devnet sakura (Dash Platform v5.0.0-beta.1, protocol 14) only;
+testnet and mainnet are not supported. See the [release notes](docs/releases/v0.1.0.md)
 for networks, installation, verification and known limitations.
 
 ### Added
@@ -92,5 +117,6 @@ for networks, installation, verification and known limitations.
 
 See [Known limitations](docs/releases/v0.1.0.md#known-limitations) in the release notes.
 
-[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.1.0
