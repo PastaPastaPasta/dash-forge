@@ -8,7 +8,7 @@ import { defineConfig, devices } from '@playwright/test'
  * request-interception control. The build targets a forge-v2 **devnet** (`E2E_DEVNET`,
  * default `sakura`), so the specs exercise real on-chain data: the read fixture that
  * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds there (e2e/helpers.ts `DEMO`).
- * Testnet has no forge-v2 deployment, so a testnet build has nothing to read.
+ * The read fixture lives on the devnet, not on testnet, so a testnet build has no fixture to read.
  *
  * The WASM SDK loads lazily post-paint and connects to the devnet's DAPI, so data pages
  * need a generous timeout; the per-test timeout is bumped accordingly.

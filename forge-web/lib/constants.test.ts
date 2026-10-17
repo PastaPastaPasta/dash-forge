@@ -77,6 +77,7 @@ describe('resolveNetworks', () => {
       community: file.v2.forgeCommunity?.contractId ?? file.v2.forgeCollab.contractId,
       group: file.v2.contractGroupId,
     })
+    // TODO(P4-registration): testnet has a forge-v2 record once the registration PR lands; that PR rewrites this assertion (CLIE-11).
     expect(networks.testnet.v2).toBeNull()
   })
 

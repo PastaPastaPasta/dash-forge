@@ -66,7 +66,7 @@ describe('DevnetNoticeBanner', () => {
     )
     const link = b.querySelector('a')!
     expect(link.getAttribute('href')).toBe(DEVNET_MOVE_DOC)
-    expect(DEVNET_MOVE_DOC).toMatch(/docs\/guides\/devnet-move\.md$/)
+    expect(DEVNET_MOVE_DOC).toMatch(/docs\/archive\/devnet-move\.md$/)
   })
 
   it('upcoming: the dismiss button is a labelled, focusable button that hides it and remembers that', () => {
@@ -91,7 +91,7 @@ describe('DevnetNoticeBanner', () => {
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
     expect(b.getAttribute('data-notice')).toBe('moving')
-    expect(b.textContent).toContain('Dash Forge moved to devnet sakura (Platform v5); bonsia was retired.')
+    expect(b.textContent).toContain('Dash Forge moved to testnet (Platform v5); bonsia was retired.')
     expect(b.textContent).toContain('Writing is paused')
     expect(dismissButton()).toBeNull()
     expect(b.querySelector('a')!.getAttribute('href')).toBe(DEVNET_MOVE_DOC)

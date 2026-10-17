@@ -28,7 +28,7 @@ import { PAGES_NOTICE, pagesWritesPausedReason, type PagesNotice } from './pages
 
 export type DevnetNotice = 'upcoming' | 'moving'
 
-/** A network Forge lives on or is moving to, as copy names it: `devnet sakura`, `testnet`. */
+/** A network Forge lives on or is moving to, as copy names it: `devnet <name>`, `testnet`. */
 export interface ForgeHome {
   readonly label: string
   /** The Platform it runs, when the copy names it (`Platform v5`). */
@@ -37,10 +37,9 @@ export interface ForgeHome {
 
 /**
  * Where Forge lives now, the network a retired devnet's `moving` banner and the "contracts
- * missing" state send people to. Still devnet sakura; the testnet switch changes it here, in the
- * same commit that marks `devnet-sakura.json` retired.
+ * missing" state send people to: testnet, since the testnet launch (it was devnet sakura before).
  */
-export const FORGE_HOME: ForgeHome = { label: 'devnet sakura', platform: 'Platform v5' }
+export const FORGE_HOME: ForgeHome = { label: 'testnet', platform: 'Platform v5' }
 
 /** Where the banner and the "moving" state send people: what is lost, what is kept, what to do. */
 export const DEVNET_MOVE_DOC = DOCS.devnetMove
