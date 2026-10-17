@@ -94,6 +94,9 @@ export function devnetConfig(devnetName) {
     addressPrefix: 140,
     wifPrefix: 239,
     minFee: 1000,
+    // A devnet funding address is its miner's payout address, so every output is coinbase:
+    // skip anything under maturity up front rather than fetching each raw tx to find out.
+    minFundingConfirmations: 101,
     dustThreshold: 546,
     platformHrp: 'tdash',
     faucetBaseUrl: undefined,

@@ -254,8 +254,11 @@ export function parseTransactionOutputs(bytes) {
   const txType = view.getUint32(0, true) >>> 16;
   i = 4;
   const vinCount = compact();
+  // A coinbase tx has exactly one input, spending the null outpoint (txid all zeros, vout 0xffffffff).
+  let isCoinbase = false;
   for (let n = 0; n < vinCount; n++) {
     need(36);
+    if (vinCount === 1) isCoinbase = bytes.subarray(i, i + 32).every((b) => b === 0) && view.getUint32(i + 32, true) === 0xffffffff;
     i += 36;
     const scriptLen = compact();
     need(scriptLen + 4);
@@ -274,5 +277,5 @@ export function parseTransactionOutputs(bytes) {
     outputs.push({ vout: n, satoshis, scriptPubKey: Array.from(script, (b) => b.toString(16).padStart(2, '0')).join('') });
   }
   const txid = Array.from(reverseBytes(hash256(bytes)), (b) => b.toString(16).padStart(2, '0')).join('');
-  return { txid, txType, outputs };
+  return { txid, txType, isCoinbase, outputs };
 }
