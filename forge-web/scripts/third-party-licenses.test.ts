@@ -3,7 +3,7 @@
  * fails on a license it has not been told about, and names OpenPGP.js's source.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -21,14 +21,31 @@ function pkg(root: string, name: string, version: string, files: Record<string, 
   return dir
 }
 
+/** A `next` package directory with the files the notice reads from it. */
+function nextDir(root: string, coreJs = '3.38.1'): string {
+  const dir = pkg(root, 'next', '14.2.25', { 'license.md': 'Next license' })
+  mkdirSync(join(dir, 'dist/build/polyfills'), { recursive: true })
+  writeFileSync(join(dir, 'dist/build/polyfills/polyfill-nomodule.js'), `/* https://github.com/zloirock/core-js/blob/v${coreJs}/LICENSE */`)
+  mkdirSync(join(dir, 'dist/compiled/buffer'), { recursive: true })
+  writeFileSync(join(dir, 'dist/compiled/buffer/LICENSE'), 'The MIT License (MIT)\n\nCopyright (c) Feross Aboukhadijeh, and other contributors.\n')
+  return dir
+}
+
 /** The shape of `pnpm licenses list --prod --json`. */
 const entry = (name: string, version: string, dir: string, extra: Record<string, unknown> = {}) => ({ name, versions: [version], paths: [dir], ...extra })
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'licenses-'))
   const list: Record<string, ReturnType<typeof entry>[]> = {
-    MIT: [entry('left-pad', '1.3.0', pkg(root, 'left-pad', '1.3.0', { LICENSE: 'MIT text for left-pad\r\n\r\n' }), { homepage: 'https://example.com/left-pad' })],
+    MIT: [
+      entry('left-pad', '1.3.0', pkg(root, 'left-pad', '1.3.0', { LICENSE: 'MIT text for left-pad\r\n\r\n' }), { homepage: 'https://example.com/left-pad' }),
+      // Next.js: its vendored core-js (named by the polyfills chunk's banner) and buffer polyfill.
+      entry('next', '14.2.25', nextDir(root)),
+      entry('@next/env', '14.2.25', pkg(root, '@next/env', '14.2.25', {})),
+      entry('client-only', '0.0.1', pkg(root, 'client-only', '0.0.1', {})),
+    ],
     'LGPL-3.0+': [entry('openpgp', '6.3.2', pkg(root, 'openpgp', '6.3.2', { LICENSE: 'LGPL text' }, { repository: { url: 'git+https://github.com/openpgpjs/openpgpjs.git' } }))],
+    'Apache-2.0': [entry('@swc/counter', '0.1.3', pkg(root, '@swc/counter', '0.1.3', {}))],
     Unknown: [
       entry('@dashevo/evo-sdk', '5.0.0-rc.3', pkg(root, '@dashevo/evo-sdk', '5.0.0-rc.3', {})),
       entry('@dashevo/wasm-sdk', '5.0.0-rc.3', pkg(root, '@dashevo/wasm-sdk', '5.0.0-rc.3', {})),
@@ -76,7 +93,7 @@ describe('renderNotices', () => {
   it('lists the packages in name order whatever order pnpm gave them', () => {
     const { root, list } = fixture()
     list.MIT!.push(entry('a-first', '0.1.0', pkg(root, 'a-first', '0.1.0', { LICENSE: 'A text' })))
-    expect(packagesOf(list).map((p) => p.name)).toEqual(['@dashevo/evo-sdk', '@dashevo/wasm-sdk', 'a-first', 'left-pad', 'openpgp'])
+    expect(packagesOf(list).map((p) => p.name)).toEqual(['@dashevo/evo-sdk', '@dashevo/wasm-sdk', '@next/env', '@swc/counter', 'a-first', 'client-only', 'left-pad', 'next', 'openpgp'])
   })
 
   it('refuses a license that has not been read', () => {
@@ -85,16 +102,45 @@ describe('renderNotices', () => {
     expect(() => renderNotices(list)).toThrow(/copyleft-thing@1\.0\.0: license "GPL-3\.0" is not allowed/)
   })
 
-  it('refuses a package with no license text unless its declared MIT or Apache-2.0 can stand in', () => {
+  it('reproduces the upstream license, with its real holder, for packages that ship none', () => {
+    const text = renderNotices(fixture().list)
+    expect(text).toContain('@next/env 14.2.25 (MIT)')
+    expect(text).toContain('Copyright (c) 2024 Vercel, Inc.')
+    expect(text).toContain('@swc/counter 0.1.3 (Apache-2.0)')
+    expect(text).toContain('Copyright 2024 SWC contributors.')
+    expect(text).toContain('client-only 0.0.1 (MIT)')
+    expect(text).toContain('Copyright (c) Facebook, Inc. and its affiliates.')
+    // No holder is made up from a package.json.
+    expect(text).not.toContain('declared license')
+    expect(text).not.toContain("the package's authors")
+  })
+
+  it('refuses a package with no license text that is not clarified', () => {
     const { root, list } = fixture()
     list.MIT!.push(entry('no-file', '1.0.0', pkg(root, 'no-file', '1.0.0', {}, { author: 'Jane Doe <jane@example.com>' })))
-    const text = renderNotices(list)
-    expect(text).toContain('no-file 1.0.0 (MIT)')
-    expect(text).toContain('Copyright (c) Jane Doe\n')
-    expect(text).not.toContain('jane@example.com')
+    expect(() => renderNotices(list)).toThrow(/no-file@1\.0\.0: ships no license file/)
+  })
 
-    list.ISC = [entry('isc-no-file', '1.0.0', pkg(root, 'isc-no-file', '1.0.0', {}))]
-    expect(() => renderNotices(list)).toThrow(/isc-no-file@1\.0\.0: ships no license file/)
+  it('refuses a clarified text whose file changed', () => {
+    const { list } = fixture()
+    const dir = mkdtempSync(join(tmpdir(), 'third-party-'))
+    cpSync(join(WEB, 'scripts/third-party'), dir, { recursive: true })
+    writeFileSync(join(dir, 'next-LICENSE.md'), 'something else')
+    expect(() => renderNotices(list, { thirdPartyDir: dir })).toThrow(/next-LICENSE\.md is [0-9a-f]{64}, not the checksum/)
+  })
+
+  it('adds the core-js and buffer polyfills Next.js compiles into the client code', () => {
+    const text = renderNotices(fixture().list)
+    expect(text).toContain("core-js 3.38.1 (MIT), compiled into Next.js's client code")
+    expect(text).toContain('Copyright (c) 2014-2024 Denis Pushkarev')
+    expect(text).toContain("buffer (MIT), compiled into Next.js's client code")
+    expect(text).toContain('Copyright (c) Feross Aboukhadijeh, and other contributors.')
+  })
+
+  it('refuses a core-js version whose license was not read', () => {
+    const { root, list } = fixture()
+    list.MIT![1] = entry('next', '14.2.99', nextDir(root, '3.99.0'))
+    expect(() => renderNotices(list)).toThrow(/bundles core-js 3\.99\.0, whose license was not read/)
   })
 
   it('fails when the Platform SDK moves to a release line whose license was not read', () => {

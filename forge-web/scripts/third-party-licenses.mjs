@@ -3,7 +3,7 @@
  * Write `third-party-licenses.txt` into a static export: the license notice of every package in
  * the app's production npm dependency tree, with the license text each package ships, a written
  * source offer for OpenPGP.js (LGPL-3.0-or-later), and the notice for the Dash Platform SDK
- * (MIT; its npm packages declare no license). The site serves it at its root, and links it from
+ * (MIT; its npm packages declare no license), and the polyfills Next.js vendors. The site serves it at its root, and links it from
  * the footer and from `/licenses/` (app/licenses/page.tsx), which also serves the full GPL-3.0
  * and LGPL-3.0 texts (public/licenses/).
  *
@@ -20,6 +20,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -48,17 +49,55 @@ export const ALLOWED = new Set([
   'Python-2.0',
 ])
 
+const platformText = (v) => `https://github.com/dashpay/platform/blob/v${v}/LICENSE.md`
+
 /**
- * Packages that declare no license, and the Platform repository's license they carry. The
- * @dashevo SDK packages are built from github.com/dashpay/platform, whose LICENSE.md is the MIT
- * license ("Copyright (c) 2017-2021 Dash Core Group, Inc."); a copy is kept in
- * scripts/third-party/. `versions` is the release line the license was read for: another line
- * fails the build until LICENSE.md at its tag has been read again.
+ * Packages that declare no license, or a license without shipping its text, and the upstream
+ * repository's real LICENSE they carry. Each text is kept in scripts/third-party/ and checked
+ * against `checksum` (SHA-256), so a changed file fails the build rather than going stale.
+ * `versions` is the release line the license was read for: another line fails the build until
+ * the LICENSE at its tag has been read again.
+ *
+ *   - @dashevo/evo-sdk, @dashevo/wasm-sdk: built from github.com/dashpay/platform, whose
+ *     LICENSE.md is MIT ("Copyright (c) 2017-2021 Dash Core Group, Inc."). The npm packages
+ *     declare no license.
+ *   - @next/env: part of vercel/next.js, tag v14.2.25 (license.md: MIT, Vercel, Inc.).
+ *   - @swc/counter: swc-project/pkgs, packages/counter/LICENSE.txt (Apache-2.0).
+ *   - client-only: a marker package with no repository of its own; its package.json says MIT and
+ *     points at facebook/react, whose LICENSE (tag v18.3.1) is reproduced.
  */
 export const CLARIFIED = {
-  '@dashevo/evo-sdk': { license: 'MIT', versions: /^5\.0\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', source: (v) => `https://github.com/dashpay/platform/blob/v${v}/LICENSE.md` },
-  '@dashevo/wasm-sdk': { license: 'MIT', versions: /^5\.0\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', source: (v) => `https://github.com/dashpay/platform/blob/v${v}/LICENSE.md` },
+  '@dashevo/evo-sdk': { license: 'MIT', versions: /^5\.0\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', checksum: 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3', source: platformText },
+  '@dashevo/wasm-sdk': { license: 'MIT', versions: /^5\.0\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', checksum: 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3', source: platformText },
+  '@next/env': { license: 'MIT', versions: /^14\.2\./, textFile: 'next-LICENSE.md', checksum: 'e4f76a7a19ef2989dd79339bd3abf8afcf1d6f065e5a10c76c19415ffd727eb3', source: () => 'https://github.com/vercel/next.js/blob/v14.2.25/license.md' },
+  '@swc/counter': { license: 'Apache-2.0', versions: /^0\.1\./, textFile: 'swc-counter-LICENSE.txt', checksum: 'd96eba1f1881334d50ffc144276dfa98e147a415e7c591ecdfcb81680361dc91', source: () => 'https://github.com/swc-project/pkgs/blob/main/packages/counter/LICENSE.txt' },
+  'client-only': { license: 'MIT', versions: /^0\.0\./, textFile: 'react-LICENSE', checksum: '52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85', source: () => 'https://github.com/facebook/react/blob/v18.3.1/LICENSE' },
 }
+
+/**
+ * Code Next.js vendors into the client bundle without a package of its own, so `pnpm licenses`
+ * does not list it: core-js (the polyfills chunk; the MIT text is kept here for the version the
+ * chunk names) and the buffer polyfill (feross's, compiled into next/dist, with its LICENSE).
+ * Read from the installed `next` package, and refused when Next moves to a core-js whose license
+ * has not been read.
+ */
+export const BUNDLED_IN_NEXT = [
+  {
+    name: 'core-js',
+    license: 'MIT',
+    source: 'https://github.com/zloirock/core-js',
+    // The polyfills chunk's own banner links the license of the version it holds.
+    version: (nextDir) => /core-js\/blob\/v(\d+\.\d+\.\d+)\/LICENSE/.exec(readFileSync(join(nextDir, 'dist/build/polyfills/polyfill-nomodule.js'), 'utf8'))?.[1] ?? null,
+    pinned: { versions: /^3\.38\.1$/, textFile: 'core-js-LICENSE', checksum: '51aff0fa92ac49e01ce6ba0fed992b0a34f8afe15203dd5f38c43f9e88b0167b', tag: 'v3.38.1' },
+  },
+  {
+    name: 'buffer',
+    license: 'MIT',
+    source: 'https://github.com/feross/buffer',
+    version: () => null,
+    textIn: 'dist/compiled/buffer/LICENSE',
+  },
+]
 
 /** License files a package ships at its top level. */
 const LICENSE_FILE = /^(?:licen[cs]e|copying|notice|unlicense)(?:[-._].*)?$/i
@@ -108,41 +147,12 @@ export function licenseTexts(dir) {
     .filter((t) => t.text !== '')
 }
 
-const MIT_TEXT = (holder) => `MIT License
-
-Copyright (c) ${holder}
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.`
-
-/**
- * For a package that declares MIT or Apache-2.0 in its package.json and ships no license file:
- * the standard text of that license, with the copyright holder its package.json names (else "the
- * package's authors"), and a line saying so. Null for any other license: those need a human to
- * read them.
- */
-export function declaredLicense(license, dir, thirdPartyDir) {
-  const { author } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-  const holder = (typeof author === 'string' ? author : author?.name) ?? null
-  const note = `(The package ships no license file. This is its declared license, ${license}${holder ? `, with the copyright holder its package.json names` : ''}.)`
-  if (license === 'MIT') return `${note}\n\n${MIT_TEXT(holder ? holder.replace(/\s*<[^>]*>/, '') : "the package's authors")}`
-  if (license === 'Apache-2.0') return `${note}\n\nCopyright ${holder ? holder.replace(/\s*<[^>]*>/, '') : "the package's authors"}\n\n${normalize(readFileSync(join(thirdPartyDir, 'Apache-2.0.txt'), 'utf8'))}`
-  return null
+/** The text of a file kept in scripts/third-party/, refused if it is not the one that was read. */
+export function pinnedText(dir, file, checksum) {
+  const raw = readFileSync(join(dir, file))
+  const actual = createHash('sha256').update(raw).digest('hex')
+  if (actual !== checksum) throw new Error(`scripts/third-party/${file} is ${actual}, not the checksum ${checksum} it was read at; read the upstream license again and update third-party-licenses.mjs`)
+  return normalize(raw.toString('utf8'))
 }
 
 /** The package's own `repository` as an https URL, for the source pointer; null when it has none. */
@@ -229,27 +239,42 @@ export function renderNotices(list, opts = {}) {
     let source = p.homepage ?? repositoryOf(p.dir)
     if (clarified) {
       if (!clarified.versions.test(p.version)) {
-        throw new Error(`${p.name}@${p.version}: its license was read for another release line; read LICENSE.md at v${p.version} of github.com/dashpay/platform and update CLARIFIED`)
+        throw new Error(`${p.name}@${p.version}: its license was read for another release line; read the upstream LICENSE for this version and update CLARIFIED`)
       }
       license = clarified.license
-      texts = [{ file: `LICENSE.md of ${clarified.source(p.version)}`, text: normalize(readFileSync(join(thirdPartyDir, clarified.textFile), 'utf8')) }]
+      texts = [{ file: `LICENSE of ${clarified.source(p.version)}`, text: pinnedText(thirdPartyDir, clarified.textFile, clarified.checksum) }]
       source = clarified.source(p.version)
     } else {
       if (!ALLOWED.has(p.license)) throw new Error(`${p.name}@${p.version}: license "${p.license}" is not allowed; read it and add it to ALLOWED in third-party-licenses.mjs if it is acceptable`)
       texts = licenseTexts(p.dir)
-      if (texts.length === 0) {
-        const text = declaredLicense(p.license, p.dir, thirdPartyDir)
-        if (text === null) throw new Error(`${p.name}@${p.version}: ships no license file; read its repository's license and add it to CLARIFIED`)
-        texts = [{ file: 'declared license', text }]
-      }
+      if (texts.length === 0) throw new Error(`${p.name}@${p.version}: ships no license file; read its repository's LICENSE and add it to CLARIFIED, pinned by checksum`)
     }
     const head = `${p.name} ${p.version} (${license})${source ? `\n${source}` : ''}`
     sections.push(`${head}\n\n${texts.map((t) => (texts.length > 1 ? `[${t.file}]\n\n${t.text}` : t.text)).join('\n\n')}`)
   }
 
+  // Next.js's vendored core-js and buffer polyfills.
+  const next = packages.find((p) => p.name === 'next')
+  if (!next) throw new Error('next is not in the production tree; update third-party-licenses.mjs (its vendored polyfills)')
+  for (const b of BUNDLED_IN_NEXT) {
+    let version = b.version(next.dir)
+    let text
+    if (b.pinned) {
+      if (version === null || !b.pinned.versions.test(version)) {
+        throw new Error(`next@${next.version} bundles ${b.name} ${version ?? '(unknown version)'}, whose license was not read; read it at its tag and update BUNDLED_IN_NEXT`)
+      }
+      text = pinnedText(thirdPartyDir, b.pinned.textFile, b.pinned.checksum)
+    } else {
+      const file = join(next.dir, b.textIn)
+      if (!existsSync(file)) throw new Error(`next@${next.version} no longer ships ${b.textIn}; read where its ${b.name} polyfill comes from and update BUNDLED_IN_NEXT`)
+      text = normalize(readFileSync(file, 'utf8'))
+    }
+    sections.push(`${b.name}${version ? ` ${version}` : ''} (${b.license}), compiled into Next.js's client code\n${b.source}\n\n${text}`)
+  }
+
   const rule = '='.repeat(80)
   const dash = '-'.repeat(80)
-  const licenses = [...new Set(packages.map((p) => CLARIFIED[p.name]?.license ?? p.license))].sort()
+  const licenses = [...new Set([...packages.map((p) => CLARIFIED[p.name]?.license ?? p.license), ...BUNDLED_IN_NEXT.map((b) => b.license)])].sort()
   const header = `Dash Forge web app: third-party software licenses
 ${rule}
 
@@ -258,7 +283,7 @@ Forge itself is licensed under either the MIT license or the Apache License 2.0,
 (${REPO_URL}).
 
 It is generated at build time from the application's production dependency tree
-(forge-web/pnpm-lock.yaml), so it lists ${packages.length} packages, under these licenses:
+(forge-web/pnpm-lock.yaml), so it lists ${packages.length + BUNDLED_IN_NEXT.length} packages, under these licenses:
 ${licenses.map((l) => `  ${l}`).join('\n')}
 It errs on the side of listing: it can name a package the bundle does not contain, such as an
 optional peer dependency of the framework.
