@@ -1269,8 +1269,9 @@ function PullPage({
         await p.run()
         if (pull.sourceRefName !== null) setBranchWrite({ ref: pull.sourceRefName, head: pull.headOid, to: p.kind === 'delete-branch' ? 'deleted' : 'restored' })
         sourceState.reload()
-        // The branch list moved (a same-repo branch is read from the repo home).
-        reloadHome?.()
+        // The branch list moved (a same-repo branch is read from the repo home). Keep the
+        // session so the page's BranchWrite survives until a read shows the write.
+        reloadHome?.({ keepSession: true })
         return
       case 'define-label':
         await defineLabel(sdk, signer, repo, { name: p.name, color: p.color, description: p.description, intent: `${intent}:def` })
@@ -2149,6 +2150,7 @@ function PullPage({
                   branchAhead: sync?.kind === 'ahead' ? { branch: shortBranch(pull.sourceRefName ?? ''), tip: sync.tip } : null,
                   checkSourceBranch,
                   onBranchDeleted: () => {
+                    // Runs before onMerged refreshes the page/home; the fork needs its own read.
                     if (pull.sourceRefName !== null) setBranchWrite({ ref: pull.sourceRefName, head: pull.headOid, to: 'deleted' })
                     sourceState.reload()
                   },

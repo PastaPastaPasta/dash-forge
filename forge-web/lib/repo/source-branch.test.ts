@@ -44,6 +44,23 @@ describe('branchShown: a branch this page just deleted or restored shows so unti
     expect(branchShown({ kind: 'ahead', tip: T }, restored, ref, H)).toEqual({ kind: 'ahead', tip: T })
   })
 
+  it('keeps a confirmed merge deletion through lagging reads until a read agrees (R2-RC4-01)', () => {
+    // These may come from the same-repo home or a fork's sourceState, including a reload.
+    for (const read of [null, headSync(H, null), headSync(H, resolved(H.toUpperCase()))]) {
+      expect(branchShown(read, deleted, ref, H)).toEqual({ kind: 'deleted' })
+      expect(branchWriteSeen(read, deleted, H)).toBe(false)
+    }
+    const fresh = headSync(H, { state: 'unborn' })
+    expect(branchWriteSeen(fresh, deleted, H)).toBe(true)
+    expect(branchShown(fresh, null, ref, H)).toEqual({ kind: 'deleted' })
+  })
+
+  it('shows a later re-push at a new tip even while deletion has not been read back (R2-RC4-01)', () => {
+    const pushed = headSync(H, resolved(T))
+    expect(branchWriteSeen(pushed, deleted, H)).toBe(false)
+    expect(branchShown(pushed, deleted, ref, H)).toEqual({ kind: 'ahead', tip: T })
+  })
+
   it('ignores a write for another branch or another head', () => {
     expect(branchShown({ kind: 'in-sync' }, deleted, 'refs/heads/other', H)).toEqual({ kind: 'in-sync' })
     expect(branchShown({ kind: 'in-sync' }, deleted, ref, T)).toEqual({ kind: 'in-sync' })

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PullView, RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
+import { branchShown, headSync, type BranchWrite } from '@/lib/repo/source-branch'
 import { PullMerge } from './pull-merge'
 
 // ---- the merge's collaborators: a merge that lands at once, a check that says "merge" -------
@@ -338,11 +339,11 @@ describe('--no-ff where a fast-forward is possible (QW-069)', () => {
 
 describe('a source branch past the PR head (QW3-013)', () => {
   const mergeCheck = async (): Promise<{ check: string; conflictPaths: string[]; packEstimate: { bytes: number; objectCount: number } }> => ({ check: 'fast-forward', conflictPaths: [], packEstimate: { bytes: 900, objectCount: 3 } })
-  const render = async (extras: import('./pull-merge').MergeExtras, onMerged: () => void = () => undefined): Promise<void> => {
+  const render = async (extras: import('./pull-merge').MergeExtras, onMerged: () => void = () => undefined, sourceId = 'FORK'): Promise<void> => {
     checks.mockReset()
     checks.mockImplementation(mergeCheck)
     await act(async () =>
-      root.render(<PullMerge recheckMembers={async () => null} repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={onMerged} extras={{ deleteBranch: null, ...extras }} />),
+      root.render(<PullMerge recheckMembers={async () => null} repo={repo} home={homeAt(BASE)} pull={{ ...pullOf(false), sourceId }} canMerge isMaintainer checkout="dg pr checkout …" onMerged={onMerged} extras={{ deleteBranch: null, ...extras }} />),
     )
     await act(async () => undefined)
   }
@@ -376,6 +377,38 @@ describe('a source branch past the PR head (QW3-013)', () => {
     await act(async () => undefined)
     expect(run).toHaveBeenCalledTimes(1)
     expect(onBranchDeleted).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['R', 'FORK'])('records source deletion before refreshing the merged PR (source repo %s, R2-RC4-01)', async (sourceId) => {
+    let finishDelete = (): void => undefined
+    const pending = new Promise<void>((resolve) => { finishDelete = resolve })
+    const ref = 'refs/heads/feature'
+    let wrote: BranchWrite | null = null
+    const onBranchDeleted = vi.fn(() => { wrote = { ref, head: HEAD, to: 'deleted' } })
+    // A post-merge read can still show the old tip, from the home or the fork's sourceState.
+    const stale = headSync(HEAD, { state: 'resolved', oid: HEAD, author: 'me', createdAt: 1 })
+    const observed: unknown[] = []
+    const onMerged = vi.fn(() => { observed.push(branchShown(stale, wrote, ref, HEAD)) })
+    await render({ deleteBranch: { label: 'feature', run: () => pending }, onBranchDeleted }, onMerged, sourceId)
+    await act(async () => submit().click())
+    // Do not start a refresh that can replace the page while deletion is still landing.
+    expect(onMerged).not.toHaveBeenCalled()
+    expect(onBranchDeleted).not.toHaveBeenCalled()
+    await act(async () => finishDelete())
+    expect(onBranchDeleted).toHaveBeenCalledTimes(1)
+    expect(onMerged).toHaveBeenCalledTimes(1)
+    expect(observed).toEqual([{ kind: 'deleted' }])
+    expect(host.querySelector('[data-testid="branch-deleted"]')?.textContent).toBe('Deleted feature.')
+  })
+
+  it('refreshes the landed merge when source deletion fails, without recording a deletion', async () => {
+    const onBranchDeleted = vi.fn()
+    const onMerged = vi.fn()
+    await render({ deleteBranch: { label: 'feature', run: async () => { throw new Error('branch moved') } }, onBranchDeleted }, onMerged)
+    await act(async () => submit().click())
+    expect(onMerged).toHaveBeenCalledTimes(1)
+    expect(onBranchDeleted).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('The merge stands; deleting feature failed: branch moved')
   })
 })
 
