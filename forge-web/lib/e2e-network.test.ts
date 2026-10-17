@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import {
   JULY_POOL_IDS,
+  assertWriteGate,
   buildEnv,
   deploymentFilePath,
   dgEnv,
@@ -13,6 +14,8 @@ import {
   noFixtureReason,
   resolveE2ETarget,
   sdkOptions,
+  skipsWithoutFixture,
+  skipsWithoutRegistration,
 } from '../e2e/network'
 
 const DEVNET = resolveE2ETarget({})
@@ -56,7 +59,62 @@ describe('what a network selects', () => {
     // testnet discovers its nodes: the recorded list is not passed
     expect(sdkOptions(['https://a:1443'], TESTNET)).toEqual({ network: 'testnet', trusted: true })
     expect(dgEnv(DEVNET)).toEqual({ DASH_FORGE_NETWORK: 'devnet', DASH_FORGE_DEVNET_NAME: 'sakura' })
-    expect(dgEnv(TESTNET)).toEqual({ DASH_FORGE_NETWORK: 'testnet', DASH_FORGE_DEVNET_NAME: '' })
+    expect(dgEnv(TESTNET, { E2E_LIVE_TARGET: '1' })).toEqual({ DASH_FORGE_NETWORK: 'testnet', DASH_FORGE_DEVNET_NAME: '' })
+  })
+})
+
+describe('the testnet write gate (QA-14)', () => {
+  it('refuses E2E_WRITE on testnet without E2E_LIVE_TARGET=1', () => {
+    expect(() => assertWriteGate(TESTNET, { E2E_WRITE: '1' })).toThrow(/QA-14.*E2E_LIVE_TARGET=1/)
+    expect(() => assertWriteGate(TESTNET, { E2E_WRITE: '1', E2E_LIVE_TARGET: '0' })).toThrow(/E2E_LIVE_TARGET=1/)
+    expect(() => assertWriteGate(TESTNET, { E2E_WRITE: 'true', E2E_LIVE_TARGET: 'yes' })).toThrow(/E2E_LIVE_TARGET=1/)
+  })
+
+  it('treats any non-empty E2E_WRITE as a write run (c1-collab reads it as truthy)', () => {
+    expect(() => assertWriteGate(TESTNET, { E2E_WRITE: '0' })).toThrow(/E2E_LIVE_TARGET=1/)
+  })
+
+  it('lets a read run, a gated write run and every devnet run through', () => {
+    expect(() => assertWriteGate(TESTNET, {})).not.toThrow()
+    expect(() => assertWriteGate(TESTNET, { E2E_WRITE: '' })).not.toThrow()
+    expect(() => assertWriteGate(TESTNET, { E2E_WRITE: '1', E2E_LIVE_TARGET: '1' })).not.toThrow()
+    expect(() => assertWriteGate(DEVNET, { E2E_WRITE: '1' })).not.toThrow()
+  })
+
+  it('dgEnv asks again on testnet, so no dg-spawning spec runs ungated', () => {
+    expect(() => dgEnv(TESTNET, {})).toThrow(/QA-14/)
+    expect(() => dgEnv(TESTNET, { E2E_LIVE_TARGET: '1' })).not.toThrow()
+    expect(() => dgEnv(DEVNET, {})).not.toThrow()
+  })
+
+  it('every spec that spawns dg is behind E2E_WRITE and the dgEnv gate', () => {
+    const dir = resolve(__dirname, '../e2e')
+    const spawning = readdirSync(dir).filter((f) => f.endsWith('.spec.ts') && /\bdgEnv\(/.test(readFileSync(join(dir, f), 'utf8')))
+    // the review, fork, ref, settings and storage specs of the PR's list, at least
+    expect(spawning).toEqual(expect.arrayContaining(['fork-sync.spec.ts', 'ref-admin.spec.ts', 'repo-settings.spec.ts', 'review-ia.spec.ts', 'review-pending.spec.ts', 'review-round-trip-web.spec.ts', 'review-suggestions.spec.ts']))
+    for (const f of spawning) {
+      const src = readFileSync(join(dir, f), 'utf8')
+      expect(src, `${f} spawns dg without an E2E_WRITE skip`).toMatch(/test\.skip\(process\.env\['E2E_WRITE'\] !== '1'/)
+      expect(src, `${f} takes its dg environment from helpers/network, which gate on testnet`).toMatch(/\bdgEnv\b[^\n]*from '\.\/helpers'/)
+    }
+  })
+})
+
+describe('what skips without a fixture or a registration', () => {
+  it('only testnet skips; a devnet without them fails loudly (UNSEEDED)', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'e2e-network-empty-'))
+    try {
+      mkdirSync(join(empty, 'forge-contracts/deployments/fixtures'), { recursive: true })
+      expect(skipsWithoutFixture(TESTNET, empty, {})).toBe(true)
+      expect(skipsWithoutFixture(DEVNET, empty, {})).toBe(false)
+      writeFileSync(join(empty, 'forge-contracts/deployments/fixtures/testnet.json'), '{}')
+      expect(skipsWithoutFixture(TESTNET, empty, {})).toBe(false)
+    } finally {
+      rmSync(empty, { recursive: true, force: true })
+    }
+    expect(skipsWithoutRegistration(false, TESTNET)).toBe(true)
+    expect(skipsWithoutRegistration(true, TESTNET)).toBe(false)
+    expect(skipsWithoutRegistration(false, DEVNET)).toBe(false)
   })
 })
 

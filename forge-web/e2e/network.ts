@@ -13,7 +13,11 @@
  * with the reason below; the specs that read nothing from the fixture run.
  *
  * Testnet is production: a spec that signs needs identities from `E2E_IDENTITY_DIR`, never the
- * July-era pool (QA-05), and never the real deployer.
+ * July-era pool (QA-05), and never the real deployer. A write spec (`E2E_WRITE`) writes documents
+ * that can never be deleted, and QA-14 keeps rule suites off the live registration, so a testnet
+ * run with `E2E_WRITE` set is refused unless `E2E_LIVE_TARGET=1` says the operator means to write
+ * there ({@link assertWriteGate}, checked when this module loads, so every spec and the config
+ * are covered; {@link dgEnv} asks again before a spec spawns `dg`).
  *
  * This module imports no Playwright code: playwright.config.ts and the vitest live tests load it too.
  */
@@ -52,7 +56,22 @@ export function resolveE2ETarget(env: Readonly<Record<string, string | undefined
   return { network, devnet, name: `devnet-${devnet}` }
 }
 
+/**
+ * Refuse a write run on testnet without `E2E_LIVE_TARGET=1` (QA-14). Any non-empty `E2E_WRITE` counts
+ * as a write run: the specs read it as `=== '1'` and as `!!`, and neither may slip through.
+ */
+export function assertWriteGate(target: E2ETarget, env: Readonly<Record<string, string | undefined>> = process.env): void {
+  if (target.network !== 'testnet' || !env['E2E_WRITE']) return
+  if (env['E2E_LIVE_TARGET'] !== '1') {
+    throw new Error(
+      'E2E_WRITE=' + env['E2E_WRITE'] + ' with E2E_NETWORK=testnet: the write specs create repositories, issues, pull requests and keys on the live testnet registration, ' +
+        'and Platform documents can never be deleted (QA-14: rule suites run on scratch registrations only). Set E2E_LIVE_TARGET=1 to write there knowingly.',
+    )
+  }
+}
+
 const TARGET = resolveE2ETarget()
+assertWriteGate(TARGET)
 
 export const E2E_NETWORK: E2ENetwork = TARGET.network
 /** The devnet under test; '' on testnet. Keep the default in step with playwright.config.ts (both use resolveE2ETarget). */
@@ -98,10 +117,21 @@ export function sdkOptions(addresses: readonly string[] | undefined, target: E2E
 }
 
 /** `dg` / `git-remote-dash` environment for the network under test. */
-export function dgEnv(target: E2ETarget = TARGET): Record<string, string> {
-  return target.network === 'testnet'
-    ? { DASH_FORGE_NETWORK: 'testnet', DASH_FORGE_DEVNET_NAME: '' }
-    : { DASH_FORGE_NETWORK: 'devnet', DASH_FORGE_DEVNET_NAME: target.devnet }
+export function dgEnv(target: E2ETarget = TARGET, env: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> {
+  if (target.network !== 'testnet') return { DASH_FORGE_NETWORK: 'devnet', DASH_FORGE_DEVNET_NAME: target.devnet }
+  // Every spec that spawns dg writes (the CLI suite's QA-14 gate, config.sh, applies to the specs too)
+  assertWriteGate(target, { ...env, E2E_WRITE: env['E2E_WRITE'] || 'dg' })
+  return { DASH_FORGE_NETWORK: 'testnet', DASH_FORGE_DEVNET_NAME: '' }
+}
+
+/** Whether a spec that reads the fixture skips: only on testnet, before the registration commits `fixtures/testnet.json`. A devnet without one must fail loudly (UNSEEDED), not skip. */
+export function skipsWithoutFixture(target: E2ETarget = TARGET, root: string = REPO_ROOT, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  return target.network === 'testnet' && !hasFixture(target, root, env)
+}
+
+/** Whether a spec that reads the registration skips: only on testnet, before the record carries a forge-v2 registration. */
+export function skipsWithoutRegistration(registered: boolean, target: E2ETarget = TARGET): boolean {
+  return target.network === 'testnet' && !registered
 }
 
 /**

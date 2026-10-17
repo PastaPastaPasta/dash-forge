@@ -12,9 +12,10 @@ import {
   JULY_POOL_IDS,
   deploymentFilePath,
   dgEnv,
-  hasFixture,
   noFixtureReason,
   sdkOptions,
+  skipsWithoutFixture,
+  skipsWithoutRegistration,
 } from './network'
 import { E2E_DEVNET, loadSeedPulls, seedRepo, type SeedPulls } from './seed-summary'
 export { E2E_DEVNET, E2E_NETWORK, dgEnv, loadSeedPulls, type SeedPulls }
@@ -32,7 +33,7 @@ const UNSEEDED = `no-seed-summary-for-${E2E_TARGET_NAME}`
  * that uses them without it. A no-op on a devnet with a committed fixture.
  */
 export function skipWithoutFixture(): void {
-  test.skip(!hasFixture(), noFixtureReason())
+  test.skip(skipsWithoutFixture(), noFixtureReason())
 }
 
 /**
@@ -93,7 +94,7 @@ export function hasRegistration(): boolean {
 
 /** Skip the spec file until the network's deployment record carries a forge-v2 registration (testnet before the registration PR). */
 export function skipWithoutRegistration(): void {
-  test.skip(!hasRegistration(), `forge-contracts/deployments/${E2E_TARGET_NAME}.json records no forge-v2 registration yet`)
+  test.skip(skipsWithoutRegistration(hasRegistration()), `forge-contracts/deployments/${E2E_TARGET_NAME}.json records no forge-v2 registration yet`)
 }
 
 /**

@@ -16,6 +16,10 @@
 # `harness_ensure_repo`, resumably) rather than hard-coded.
 #
 # testnet rules (all enforced here, before any scenario runs):
+#   - The suite writes repos, branches and packs that can never be deleted (QA-14: rule suites run
+#     on scratch registrations, the live set only through mv-live --live-target). It refuses
+#     DASH_FORGE_NETWORK=testnet unless E2E_LIVE_TARGET=1 says the operator means to write to the
+#     live registration.
 #   - The owner role is OWNER on every network. DEPLOYER is the July-era testnet identity whose keys
 #     are public (SECU-03) and the name of the real deployer; E2E_OWNER_ROLE=DEPLOYER is refused.
 #   - Identities come from a per-network directory: E2E_IDENTITY_DIR, default
@@ -109,6 +113,7 @@ export IDID_OWNER IDID_COLLAB IDID_CONTRIB
 
 # --- testnet refusals (QA-05, QA-V-05, HYGI-12) --------------------------------
 if [[ "$DASH_FORGE_NETWORK" == testnet ]]; then
+  [[ "${E2E_LIVE_TARGET:-}" == 1 ]] || _cfg_fatal "DASH_FORGE_NETWORK=testnet writes repos, branches and packs to the live testnet registration, which can never be deleted (QA-14: rule suites run on scratch registrations only). Set E2E_LIVE_TARGET=1 to run against it knowingly"
   [[ "$E2E_OWNER_ROLE" != DEPLOYER ]] || _cfg_fatal "E2E_OWNER_ROLE=DEPLOYER on testnet: DEPLOYER is the July-era identity with public keys (SECU-03) and the real deployer's role name; the owner role is OWNER"
   _real_idroot="$(cd "$_idroot" 2>/dev/null && pwd -P || echo "$_idroot")"
   _real_dir="$(cd "$E2E_IDENTITY_DIR" 2>/dev/null && pwd -P || echo "$E2E_IDENTITY_DIR")"

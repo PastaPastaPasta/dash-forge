@@ -383,10 +383,12 @@ skip_scenario() {
 }
 
 # na_scenario "reason": the scenario does not apply on this network (a ported check that does not
-# exist yet). Exit 3: run.sh lists it as N/A, outside the skip ceiling, so a gap is visible without
-# being counted as a flaky skip.
+# exist yet). Exit 3 and a marker file (E2E_NA_MARKER, set per scenario by run.sh): run.sh lists it
+# as N/A, outside the skip ceiling, only when the marker exists. An exit 3 from anything else (a
+# dg command's own code leaking out of a scenario) is a FAIL.
 na_scenario() {
   printf '%sN/A%s   %s  — %s\n' "${C_DIM}" "${C_RST}" "${SCENARIO_NAME}" "$*" >&2
+  [[ -z "${E2E_NA_MARKER:-}" ]] || : >"$E2E_NA_MARKER"
   exit 3
 }
 na_unless_devnet() { [[ "$DASH_FORGE_NETWORK" == devnet ]] || na_scenario "not on ${DASH_FORGE_NETWORK}: $*"; }
