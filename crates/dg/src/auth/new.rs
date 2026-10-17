@@ -866,8 +866,7 @@ async fn register(
     // Stored before the identity exists: an interruption never leaves a key nobody holds.
     let stored = store::store(&network, identity_id, &text, insecure)?;
     say(ctx, "  registering the identity…");
-    let created = client.create_identity(keys, proof, &limited, spec).await;
-    if let Err(e) = created {
+    if let Err(e) = client.create_identity(keys, proof, &limited, spec).await {
         // An InstantSend proof Platform will not take (a stale lock on a resume, as much as a
         // fresh one) is not the end: the same asset lock proves with a chain lock. Chain locks
         // need no InstantSend source, so this also works when the RPC is down.
