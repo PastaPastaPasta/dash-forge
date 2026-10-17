@@ -23,7 +23,7 @@
 #      public repo of theirs (which would otherwise write it in plaintext)
 #   6. P_OWNER merges the PR (1 approval counted from the sealed review)
 #
-# Needs the network's funding key (E2E_MINT_FUNDING, config.sh; default the QA harness's) and
+# Needs the network's funding key (E2E_MINT_FUNDING, config.sh; no default) and
 # tools/mint-identity's node modules; skips without them (FAILS on testnet without the key).
 SCENARIO_NAME="19 private repository: sealed issues, PRs, comments, reviews and labels"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"

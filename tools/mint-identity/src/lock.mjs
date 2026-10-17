@@ -51,11 +51,23 @@ export async function waitForPlatformChainLock(network, height, { timeoutMs = CH
 }
 
 /**
- * Wait until `txid` is locked the way `network` proves locks. Returns the
- * lock data platform.buildAssetLockProof takes (outputIndex 0, the credit output).
+ * How a lock on `network` is proven: the network's own way, or always a chain-lock proof when
+ * `proof` is 'chain'. A restore re-creates an identity from an old asset lock, whose InstantSend
+ * lock was signed by a quorum that has long rotated out (Platform refuses it: "Instant lock proof
+ * signature is invalid or wasn't created recently"), so it proves the lock by its block instead.
  */
-export async function obtainAssetLock(network, { txid, transactionBytes, log = () => {} }) {
-  if (network.lockProof === 'instant') {
+export function lockProofFor(network, { proof } = {}) {
+  if (proof !== undefined && proof !== 'chain') throw new Error(`unknown lock proof "${proof}" (only 'chain' can be forced)`);
+  return proof ?? network.lockProof;
+}
+
+/**
+ * Wait until `txid` is locked the way `network` proves locks (or by its block, with
+ * `proof: 'chain'`). Returns the lock data platform.buildAssetLockProof takes (outputIndex 0, the
+ * credit output).
+ */
+export async function obtainAssetLock(network, { txid, transactionBytes, log = () => {}, proof }) {
+  if (lockProofFor(network, { proof }) === 'instant') {
     log('Waiting for InstantSend lock (can take 30-90s)...');
     try {
       const instantLockBytes = await waitForInstantSendLock(network.rpcUrl, txid, { timeoutMs: ISLOCK_TIMEOUT_MS, log });

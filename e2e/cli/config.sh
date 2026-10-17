@@ -27,10 +27,10 @@
 #     directly in ~/.config/dash-forge/test-identities/: that directory is refused, and so is any identity
 #     whose id is one of the nine July ids (JULY_POOL_IDS; kept in step with
 #     forge-contracts/scripts/lib/target.mjs, checked by e2e/cli/test-config.sh).
-#   - Mints (scenarios 19, 25, 33, 36, ...) are funded from the QA funding wallet,
-#     $DASH_FORGE_QA_DIR/secrets/testnet-funding.wif (E2E_MINT_FUNDING overrides; a devnet funding key is
-#     refused). A minting scenario FAILS when the file is missing (`require_mint_funding`, lib.sh)
-#     instead of skipping silently; on a devnet it still skips.
+#   - Mints (scenarios 19, 25, 33, 36, ...) are funded from the testnet funding wallet you name in
+#     E2E_MINT_FUNDING (required on every network, no default: HYGI-12; a devnet funding key, a file
+#     named <devnet>-funding.wif, is refused). A minting scenario FAILS when the file is missing
+#     (`require_mint_funding`, lib.sh) instead of skipping silently; on a devnet it still skips.
 
 # --- network -----------------------------------------------------------------
 _cfg_fatal() { printf 'e2e config: %s\n' "$*" >&2; exit 1; }
@@ -61,28 +61,23 @@ JULY_POOL_IDS="8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB 8igVywVvFTf8aNoaLfS9
 export JULY_POOL_IDS
 
 # --- minting run-only identities (scenarios 19, 24, 25, 26, 33, 36) -------------
-# The funding key tools/mint-identity spends from, and the lock that serialises mints across
-# every agent sharing that key's UTXOs (as `qa mint` does). The QA harness keeps its secrets in
-# $DASH_FORGE_QA_DIR/secrets/: <devnet>-funding.wif per devnet, testnet-funding.wif for testnet
-# (a faucet.thepasta.org grant; QA-V-05; TESTNET_FUNDING, which the harness's env exports, is honoured on testnet only). moutai keeps its original lock path, and MOUTAI_FUNDING
-# (which the QA harness's env.sh exports) is honoured on moutai only, so it never funds another network.
-: "${DASH_FORGE_QA_DIR:=${HOME}/workspace/dash-forge-qa}"
+# The funding key tools/mint-identity spends from (a WIF file you provide, on every network: there is
+# no default, HYGI-12, and the file must never be committed; `*.wif` is gitignored), and the lock that
+# serialises mints across every agent sharing that key's UTXOs. A scenario that mints an identity
+# names E2E_MINT_FUNDING in its message when it is unset or unreadable: it skips on a devnet and FAILS
+# on testnet (`require_mint_funding`, lib.sh).
+: "${E2E_MINT_FUNDING:=}"
 if [[ "$DASH_FORGE_NETWORK" == testnet ]]; then
-  : "${E2E_MINT_FUNDING:=${TESTNET_FUNDING:-${DASH_FORGE_QA_DIR}/secrets/testnet-funding.wif}}"
   : "${E2E_MINT_LOCK:=/tmp/qa-mint-testnet.lock}"
-  # a QA-harness devnet key (<devnet>-funding.wif) never funds testnet mints
-  case "$(basename "$E2E_MINT_FUNDING")" in
+  # a devnet funding key (<devnet>-funding.wif) never funds testnet mints
+  case "$(basename "${E2E_MINT_FUNDING:-none}")" in
     testnet-funding*) ;;
-    *-funding.wif|*-funding) _cfg_fatal "E2E_MINT_FUNDING=${E2E_MINT_FUNDING} looks like a devnet funding key; testnet mints are funded from testnet-funding.wif (TESTNET_FUNDING or E2E_MINT_FUNDING name another file)" ;;
+    *-funding.wif|*-funding) _cfg_fatal "E2E_MINT_FUNDING=${E2E_MINT_FUNDING} looks like a devnet funding key; testnet mints are funded from a testnet wallet (a file named testnet-funding.wif, or another name)" ;;
   esac
-elif [[ "$DASH_FORGE_DEVNET_NAME" == moutai ]]; then
-  : "${E2E_MINT_FUNDING:=${MOUTAI_FUNDING:-${DASH_FORGE_QA_DIR}/secrets/moutai-funding.wif}}"
-  : "${E2E_MINT_LOCK:=/tmp/qa-mint.lock}"
 else
-  : "${E2E_MINT_FUNDING:=${DASH_FORGE_QA_DIR}/secrets/${DASH_FORGE_DEVNET_NAME}-funding.wif}"
   : "${E2E_MINT_LOCK:=/tmp/qa-mint-${DASH_FORGE_DEVNET_NAME}.lock}"
 fi
-export E2E_MINT_FUNDING E2E_MINT_LOCK DASH_FORGE_QA_DIR
+export E2E_MINT_FUNDING E2E_MINT_LOCK
 
 # --- fixture identity files --------------------------------------------------
 # Per-network directory: `make devnet-identities` provisions devnet-<name> (e.g. devnet-sakura);

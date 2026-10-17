@@ -1,6 +1,6 @@
 /**
  * The inbox and members-only content in a public repo (DESIGN D14), with the document shapes
- * spike S2 wrote live on sakura (`spikes/mixed-visibility/s2/seal-fixture.mjs`): `vis: "public"`,
+ * spike S2 wrote live on sakura (a throwaway script kept in the QA repo, not in this tree): `vis: "public"`,
  * a v0x03 or v0x04 `enc`, `epoch` 0, and `asMember` on a member's write. S2 saw the shipped inbox
  * say "X commented" for a stranger's sealed comment; these pin the fix.
  */

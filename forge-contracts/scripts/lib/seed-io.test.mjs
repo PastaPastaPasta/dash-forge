@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { CONTRACTS, CONTRACT_OF, META_TYPES, ROOT, assertWriteTarget, contractOn, contractsIn, resolveNetwork } from './seed-io.mjs';
+import { CONTRACTS, CONTRACT_OF, META_TYPES, ROOT, assertWriteTarget, contractOn, contractsIn, resolveNetwork, shapeData, shapeOfSet } from './seed-io.mjs';
 
 const typesOf = (dir, file) => Object.keys(JSON.parse(readFileSync(join(dir, file), 'utf8')).documentSchemas);
 
@@ -36,6 +36,41 @@ test('the committed mainnet set is four contracts, forge-meta last', () => {
 test('a three-contract record keeps the moved types in their old homes', () => {
   const ids = { core: 'c', collab: 'l', community: 'm' };
   for (const t of META_TYPES) assert.equal(contractOn(ids, t), CONTRACT_OF[t], t);
+});
+
+// ---- the shape of a loaded set decides the fields a write carries (DESIGN MB1) ----
+const SHAPES = { devnet: shapeOfSet(contractsIn(join(ROOT, 'contracts'))), mainnet: shapeOfSet(contractsIn(join(ROOT, 'contracts', 'mainnet'))) };
+const noRole = async () => { throw new Error('no role read expected'); };
+
+test('the shapes tell the sets apart', () => {
+  assert.equal(SHAPES.devnet.declares('chunk', 'r'), true);
+  assert.equal(SHAPES.mainnet.declares('chunk', 'r'), false);
+  assert.equal(SHAPES.devnet.declares('topic', 'vis'), true);
+  assert.equal(SHAPES.mainnet.declares('topic', 'vis'), false);
+  assert.equal(SHAPES.devnet.declares('issue', 'mRole'), false);
+  assert.equal(SHAPES.mainnet.declares('issue', 'mRole'), true);
+  assert.equal(SHAPES.mainnet.declares('release', 'targetOid'), true);
+  for (const shape of Object.values(SHAPES)) assert.deepEqual([shape.fusedStar, shape.memberRoles, shape.has('starBeat')], [true, true, false]);
+  assert.deepEqual(SHAPES.mainnet.uniqueIndices('maintainer'), [['repoId', 'memberId']]);
+});
+
+test('shapeData: the roles and vis follow the declaring contract; mRole only where declared', async () => {
+  const who = { id: 'W' };
+  const repoId = new Uint8Array(32).fill(3);
+  assert.deepEqual(await shapeData(SHAPES.devnet, 'writer', { repoId }, who, noRole), { repoId, role: 1 });
+  assert.deepEqual(await shapeData(SHAPES.devnet, 'topic', { repoId, name: 'x', vis: 'public' }, who, noRole), { repoId, name: 'x', vis: 'public' });
+  // a three-contract set declares no mRole: asMember is untouched and no role is read
+  assert.deepEqual(await shapeData(SHAPES.devnet, 'issue', { repoId, asMember: repoId }, who, noRole), { repoId, asMember: repoId, });
+  assert.deepEqual(await shapeData(SHAPES.mainnet, 'topic', { repoId, name: 'x', vis: 'public' }, who, noRole), { repoId, name: 'x' });
+  // only the R-11 types (topic, webhook) lose vis; any other type's undeclared vis is left to the contract's refusal
+  assert.deepEqual(await shapeData(SHAPES.mainnet, 'webhook', { repoId, vis: 'public' }, who, noRole), { repoId });
+  assert.deepEqual(await shapeData(SHAPES.mainnet, 'consent', { repoId, vis: 'public' }, who, noRole), { repoId, vis: 'public' });
+  assert.equal('r' in (await shapeData(SHAPES.mainnet, 'chunk', { repoId }, who, noRole)), false);
+  const asWriter = await shapeData(SHAPES.mainnet, 'comment', { repoId, asMember: repoId }, who, async () => 1);
+  assert.equal(asWriter.mRole, 1);
+  assert.equal('mRole' in (await shapeData(SHAPES.mainnet, 'comment', { repoId, asMember: repoId }, who, async () => null)), false);
+  assert.equal('mRole' in (await shapeData(SHAPES.mainnet, 'comment', { repoId }, who, noRole)), false);
+  assert.equal((await shapeData(SHAPES.mainnet, 'comment', { repoId, asMember: repoId, mRole: 2 }, who, noRole)).mRole, 2);
 });
 
 // ---- CONT-V-01: no write to the live testnet or mainnet set unless told so by name ----

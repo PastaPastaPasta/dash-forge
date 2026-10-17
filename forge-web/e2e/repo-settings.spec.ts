@@ -62,7 +62,9 @@ function dg(who: string, ...args: string[]): Record<string, unknown> {
 
 /** git as `who` in the scratch repo; its exit status and combined output. */
 function git(who: string, args: string[], extra: Record<string, string> = {}): { ok: boolean; out: string } {
-  const r = spawnSync('git', args, { env: { ...env(who), RUST_LOG: 'warn', ...extra }, cwd: SRC, encoding: 'utf8', timeout: 240_000 })
+  // an unattended push accepts the price: the helper's cost guard would otherwise ask (or refuse)
+  const argv = args[0] === 'push' ? ['-c', 'dash.confirm=never', ...args] : args
+  const r = spawnSync('git', argv, { env: { ...env(who), RUST_LOG: 'warn', ...extra }, cwd: SRC, encoding: 'utf8', timeout: 240_000 })
   return { ok: r.status === 0, out: `${r.stdout}${r.stderr}` }
 }
 

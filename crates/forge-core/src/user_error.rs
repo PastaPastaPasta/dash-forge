@@ -1707,18 +1707,19 @@ fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
 }
 
 /// E702 as well: this build records forge-v2 contracts for `network`, but the network does not
-/// have them. On a devnet that means it was reset and Forge is not deployed again yet; anywhere
-/// else, that the embedded deployment record is wrong. Running it again cannot help.
+/// have them. A devnet was reset and Forge is not deployed again yet. Testnet or mainnet may
+/// have been reset too (a reset removes every contract), or this build targets another network
+/// (CNT-06: not "misconfigured"). Running it again cannot help.
 fn contracts_missing(ctx: &ErrorContext<'_>, network: &str, detail: &str) -> UserError {
     let (note, fix) = if network.starts_with("devnet ") {
         (
-            "a devnet is reset from time to time, which removes every contract on it; retrying will not help",
-            "the network may have been reset: update dg and git-remote-dash to a release made after Forge was deployed on it again",
+            "a devnet is reset from time to time, which removes every contract on it; retrying will not help".to_string(),
+            "the network may have been reset: update dg and git-remote-dash to a release made after Forge was deployed on it again".to_string(),
         )
     } else {
         (
-            "this build's deployment record names contracts the network does not have; retrying will not help",
-            "update dg and git-remote-dash: this build's contract ids are wrong for this network",
+            format!("{network} may have been reset (or this build targets another network); a reset removes every contract on it, and retrying will not help"),
+            format!("update dg and git-remote-dash to a release made after Forge was deployed on {network} again (a reset also removes repositories, identities and names created before it)"),
         )
     };
     let u = UserError::new(
@@ -2876,16 +2877,31 @@ mod tests {
             "{git:?}"
         );
         assert!(!git.fix.iter().any(|f| f.contains("--network")), "{git:?}");
-        // Mainnet: a misconfigured build, not a reset.
-        let main = core_chain(
-            CoreError::ContractsMissing {
-                network: "mainnet".into(),
-                detail: "contract X: Platform proved it absent".into(),
-            },
-            &ErrorContext::default(),
-        );
-        assert_eq!(main.message, "forge contracts not found on mainnet");
-        assert!(!main.fix[0].contains("reset"), "{main:?}");
+        // Testnet and mainnet: a reset is possible too, or the build targets another network;
+        // never "misconfigured" or "wrong ids".
+        for network in ["testnet", "mainnet"] {
+            let main = core_chain(
+                CoreError::ContractsMissing {
+                    network: network.into(),
+                    detail: "contract X: Platform proved it absent".into(),
+                },
+                &ErrorContext::default(),
+            );
+            assert_eq!(
+                main.message,
+                format!("forge contracts not found on {network}")
+            );
+            let note = main.note.as_deref().unwrap_or_default();
+            assert!(
+                note.starts_with(&format!(
+                    "{network} may have been reset (or this build targets another network)"
+                )),
+                "{main:?}"
+            );
+            assert!(main.fix[0].contains("deployed on"), "{main:?}");
+            assert!(!format!("{main:?}").contains("misconfigured"), "{main:?}");
+            assert!(!format!("{main:?}").contains("ids are wrong"), "{main:?}");
+        }
     }
 
     #[test]

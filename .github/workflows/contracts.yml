@@ -203,6 +203,16 @@ jobs:
             forge-contracts/contracts/forge-core.json \
             forge-contracts/contracts/forge-collab.json \
             forge-contracts/contracts/forge-community.json
+      # The same scripts against the four-contract mainnet set (the one testnet registers): they
+      # feature-detect what the loaded contracts declare (asMember with mRole, no topic vis, a
+      # release's targetOid, forge-meta routing), write each document on a first run and nothing
+      # on the rerun, and rs-dpp judges every document they wrote
+      - name: Seed scripts write mainnet-set documents
+        run: |
+          node forge-contracts/scripts/seed-offline.mjs --contracts forge-contracts/contracts/mainnet \
+            --out "$RUNNER_TEMP/seed-vectors-mainnet"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/seed-vectors-mainnet" \
+            forge-contracts/contracts/mainnet/forge-{core,collab,community,meta}.json
       # Offline: the deploy script's id derivation matches the validator's known answer, and every
       # schema it registers loads with forge-core's id substituted (no SDK, no network)
       - name: Deploy script self-test
@@ -211,11 +221,12 @@ jobs:
           node forge-contracts/scripts/deploy-v2.mjs --self-test --contracts forge-contracts/contracts/mainnet
       # The deploy script end to end against an in-memory platform (lib/fake-platform.mjs): the
       # four-contract registration and its record, resume after a crash, the nonce ledger, the set,
-      # network and chain refusals, the testnet/mainnet preconditions and --force-new guard; and
+      # network and chain refusals, the testnet/mainnet preconditions and --force-new guard, the
+      # same-id restore (--replay) after a Platform reset; and
       # the snapshot script's record and target rules. No SDK, no network, no key.
       - name: Deploy script offline tests
         run: |
-          node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs
+          node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/deploy-v2-replay.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs
       # Offline: the seed-list refresher (M-DAPI, CONT-12) against a captured /masternodes body:
       # only protocol-14 nodes, the stale-node rules, and the shape of every recorded seed list.
       # The live probe is `refresh-dapi.mjs --network testnet --check`, run by hand or nightly.
@@ -232,7 +243,7 @@ jobs:
       # Offline: which network and record a live tool targets, and the production-write policy
       # (rc1-live, mv-live, rc1-empty-aggregates and rc1-fee-probe refuse the live testnet record,
       # a --record without the scratch stamp, and mainnet altogether; QA-14), mv-live's sealing helpers against the committed vectors, and the CLI
-      # suite's testnet rules (no DEPLOYER, no July pool, the testnet funding wallet; QA-05)
+      # suite's testnet rules (no DEPLOYER, no July pool, an explicit funding key; QA-05, HYGI-12)
       - name: Live tool targets and production refusals
         run: |
           shellcheck -x -P e2e/cli e2e/cli/config.sh e2e/cli/test-config.sh e2e/cli/run.sh

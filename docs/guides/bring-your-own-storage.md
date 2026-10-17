@@ -450,18 +450,27 @@ The web app does not need `Content-Range` in `Access-Control-Expose-Headers` (it
 
 ## Cost guard
 
-Every push prints its Platform estimate. You can also make it stop and ask:
+Every push prints its Platform estimate, and the guard is on by default: a push estimated above **0.05 DASH** asks first. Settings (all optional):
 
 ```sh
-git config dash.costWarnThreshold 0.05   # DASH (dg doctor --fix sets this)
-git config dash.confirm auto             # auto (default): ask only above the threshold
+git config dash.costWarnThreshold 0.05   # DASH; unset = 0.05. `off` turns the threshold off.
+                                         # 0 asks before every paid push.
+git config dash.confirm auto             # auto (default): ask above the threshold, and before
+                                         #   storing more than 1 MiB of packs on Platform when
+                                         #   dash.storage is unset
                                          # always: ask before every paid push
                                          # never: print and go
                                          # refuse: never ask; above the threshold, fail
                                          #   (for unattended callers, e.g. forge-import)
 ```
 
-Git owns the helper's stdin and stdout, so the question goes to `/dev/tty`. Without a terminal (CI, GUI clients), a push that needs confirmation fails with a message telling you to use `git -c dash.confirm=never push …` or to raise the threshold. It never assumes yes.
+A repository with no `dash.storage` stores its packs on Platform, permanently (they cannot be deleted). So even a push under the threshold asks before it stores more than 1 MiB there, until you choose storage (`dg storage add`, then `dg storage use`) or set `dash.storage platform` to say Platform is what you want.
+
+Git owns the helper's stdin and stdout, so the question goes to `/dev/tty`. Without a terminal (CI, GUI clients), a push that needs confirmation fails with [E801](../errors.md#e801), telling you to use `git -c dash.confirm=never push …`, to add storage, or to raise the threshold. It never assumes yes.
+
+Before it uploads, a push that is not a dry run also checks that the identity's balance and the signing key's remaining budget cover its estimate. If not, it stops with [E401](../errors.md#e401) or [E402](../errors.md#e402) and nothing is paid.
+
+A push resumed after an interruption quotes only the chunks it still has to upload (`dash: resuming: 12 of 40 chunks already stored`); the threshold and the funds check use that remaining amount.
 
 ## Reading: gateways and fallbacks
 

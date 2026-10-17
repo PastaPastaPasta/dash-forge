@@ -1,9 +1,10 @@
 {
   "name": "@dash-forge/mint-identity",
   "version": "0.1.0",
-  "description": "Headless Dash Platform identity-minting CLI for testnet and devnets (spike S0.4)",
+  "description": "Headless Dash Platform identity-minting CLI for testnet and devnets",
   "type": "module",
   "private": true,
+  "license": "MIT OR Apache-2.0",
   "bin": {
     "mint-identity": "./mint.mjs"
   },

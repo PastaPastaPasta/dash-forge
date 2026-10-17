@@ -45,7 +45,7 @@ Delivery only. Every notice is a hint that links back to forge-web, which reads 
 | Disk | 1 GiB for the SQLite store (about 2 KiB per subscriber plus pending digests) | 5 GiB volume |
 | Network out | HTTPS to the network's DAPI nodes (port 1443); SMTP submission to your provider (587 or 465); HTTPS to the browsers' push services | as is |
 | Network in | HTTPS only, through a TLS proxy | Cloudflare tunnel |
-| Domain | One hostname for the API, and a mail domain you can set DNS records on | `notify.forge.dashhq.org` (suggested), mail from `notify@forge.dashhq.org` |
+| Domain | One hostname for the API, and a mail domain you can set DNS records on | `notify-forge.dashhq.org` (suggested), mail from `notify@forge.dashhq.org` |
 | SMTP | A transactional mail provider (Postmark, Amazon SES, Mailgun, Resend, …) or your own MTA | the owner's choice |
 | Contact | An address for abuse and privacy requests | the owner's choice |
 
@@ -83,7 +83,7 @@ Write `.env` next to `docker-compose.yml` (every variable is under [Settings](#s
 ```sh
 FORGE_NOTIFY_NETWORK=devnet
 FORGE_NOTIFY_DEVNET_NAME=sakura
-FORGE_NOTIFY_PUBLIC_URL=https://notify.forge.dashhq.org
+FORGE_NOTIFY_PUBLIC_URL=https://notify-forge.dashhq.org
 FORGE_NOTIFY_WEB_URL=https://forge.dashhq.org
 FORGE_NOTIFY_PRIVACY_URL=https://forge.dashhq.org/privacy/notify/
 FORGE_NOTIFY_CONTACT=privacy@dashhq.org
@@ -148,7 +148,7 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 
 The service speaks plain HTTP on the host's loopback. Put TLS in front of it:
 
-- **Cloudflare tunnel (dashhq).** Add a public hostname `notify.forge.dashhq.org` → `http://localhost:8080` to the tunnel. Cloudflare sets `CF-Connecting-IP` and overwrites any value a client sends, so keep `FORGE_NOTIFY_TRUST_PROXY=cloudflare`. No inbound port is opened.
+- **Cloudflare tunnel (dashhq).** Add a public hostname `notify-forge.dashhq.org` → `http://localhost:8080` to the tunnel. Cloudflare sets `CF-Connecting-IP` and overwrites any value a client sends, so keep `FORGE_NOTIFY_TRUST_PROXY=cloudflare`. No inbound port is opened. Keep the hostname one level under the zone: Cloudflare's free certificate does not cover a deeper name such as `notify.forge.dashhq.org` (see [forge-gateway](forge-gateway.md#dns-and-tls)).
 - **Caddy or nginx.** An `A`/`AAAA` record for the hostname, a certificate (Caddy gets one by itself), and `reverse_proxy 127.0.0.1:8080`, with `FORGE_NOTIFY_TRUST_PROXY=forwarded`. The service reads only the last `X-Forwarded-For` entry, the one your proxy appends; earlier entries come from the client.
 
 If the host can be reached without the proxy, set `FORGE_NOTIFY_TRUST_PROXY=none`. Otherwise anyone can pick their own rate-limit key.
@@ -199,8 +199,8 @@ Browsers may call `/v1/*` only from `FORGE_NOTIFY_ALLOWED_ORIGINS`. Every respon
 `services/forge-notify/examples/request.rs` signs a request from an identity file, which helps with scripting and checking a deployment:
 
 ```sh
-cargo run -p forge-notify --example request -- --url https://notify.forge.dashhq.org \
-  --operator notify.forge.dashhq.org --identity-file alice.identity.json --key 1 --action account.get
+cargo run -p forge-notify --example request -- --url https://notify-forge.dashhq.org \
+  --operator notify-forge.dashhq.org --identity-file alice.identity.json --key 1 --action account.get
 ```
 
 ## What is sent, and when
@@ -244,7 +244,7 @@ A subscriber needs a Platform identity, which costs credits to create. That is t
 - **Health:** `GET /healthz` (process up) and `GET /readyz` (store and watcher up). The image has a Docker `HEALTHCHECK` on `/healthz`.
 - **Metrics:** `GET /metrics` returns gauges: `forge_notify_subscribers`, `forge_notify_emails_verified`, `forge_notify_emails_paused`, `forge_notify_push_subscriptions`, `forge_notify_followed_repos`, `forge_notify_digest_items`, `forge_notify_sent_today` and `forge_notify_ready`. These are counts only. To keep them private, block `/metrics` at the proxy and scrape over the host network.
 - **Alert on:** `/readyz` failing for 5 minutes; `forge_notify_sent_today` near `FORGE_NOTIFY_DAILY_SEND_BUDGET`; a rise in `forge_notify_emails_paused`; the log lines `the daily send budget is used up`, `mail failed` or `addressed poll failed` repeating.
-- An outside uptime check (for example, Cloudflare health checks or Uptime Kuma) on `https://notify.forge.dashhq.org/healthz`.
+- An outside uptime check (for example, Cloudflare health checks or Uptime Kuma) on `https://notify-forge.dashhq.org/healthz`.
 
 ## Logs
 
@@ -269,7 +269,7 @@ Client addresses are used in memory for rate limiting and are not logged. Keep `
 The web app shows **Settings → Notifications → Email and push** only when its build names a service:
 
 ```sh
-NEXT_PUBLIC_NOTIFY_URL=https://notify.forge.dashhq.org pnpm build
+NEXT_PUBLIC_NOTIFY_URL=https://notify-forge.dashhq.org pnpm build
 ```
 
 For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads it from the repository variable `PAGES_NOTIFY_URL` (Settings → Secrets and variables → Actions → Variables). Set it, then deploy: **Actions → Deploy forge-web to Pages → Run workflow** on master (or push to master). Delete it and deploy again to hide the section. A value that is not an `https://` URL (other than a loopback `http://` test service) is ignored.
@@ -327,14 +327,14 @@ The MVP is free, within the rate limits above. Billing is designed but not built
 
 ## Checklist for dashhq
 
-1. **Choose the hostname:** `notify.forge.dashhq.org` (or another), plus a mail sending domain, for example `forge.dashhq.org`.
+1. **Choose the hostname:** `notify-forge.dashhq.org` (or another), plus a mail sending domain, for example `forge.dashhq.org`.
 2. **Choose an SMTP provider** and verify the sending domain there. Add the SPF, DKIM, DMARC and bounce records it gives you.
 3. **Host:** an LXC or VM on the home Proxmox with Docker, 1 vCPU, 512 MiB RAM and 5 GiB of disk.
 4. **Secrets:** run `forge-notify keys` once and store `data_key` and `vapid_private_key` in the password manager. Put the SMTP password in `secrets/smtp_password`.
-5. **Cloudflare tunnel:** route `notify.forge.dashhq.org` to `http://localhost:8080`.
+5. **Cloudflare tunnel:** route `notify-forge.dashhq.org` to `http://localhost:8080`.
 6. **`.env`:** as in [Run it](#run-it), with the privacy notice URL and contact.
 7. **Publish the privacy notice** (the draft above, completed) at the URL in `FORGE_NOTIFY_PRIVACY_URL`.
-8. **Web app:** set the repository variable `PAGES_NOTIFY_URL` to `https://notify.forge.dashhq.org` and deploy ([Show it in the web app](#show-it-in-the-web-app)).
+8. **Web app:** set the repository variable `PAGES_NOTIFY_URL` to `https://notify-forge.dashhq.org` and deploy ([Show it in the web app](#show-it-in-the-web-app)).
 9. **Backups:** a daily `sqlite3 .backup` of the volume, stored apart from the data key.
 10. **Monitoring:** an uptime check on `/healthz`, and the alerts in [Monitoring](#monitoring).
 11. **Smoke test:** sign up from the web app, confirm the mail, send a test from Settings, turn on push in a browser, @mention yourself from a second identity, and unsubscribe from the mail's link.

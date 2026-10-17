@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish = false
 description = "git remote helper for dash:// URLs (git remote-dash)."
 
 [[bin]]

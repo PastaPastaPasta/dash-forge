@@ -525,6 +525,26 @@ pub fn suggested_v2_network() -> Option<Network> {
         .map(Network::from_key)
 }
 
+/// The notice for a network whose embedded deployment is retired (CLIE-08): a `config.toml`
+/// written by `dg auth new --network devnet …`, or a clone pinned to `dash.network`, keeps a
+/// tool on a network that is gone. Names the live network's flags. `None` for a live one.
+pub fn retired_notice(network: &Network) -> Option<String> {
+    let key = network.key();
+    let retired = deployment(&key).ok().flatten().is_some_and(|d| d.retired);
+    retired.then(|| {
+        let live = suggested_v2_network().map_or_else(
+            || "a live network".to_string(),
+            |n| format!("`{}`", n.dg_flags()),
+        );
+        format!(
+            "{key} is retired: that network no longer exists, so nothing stored there can be \
+             reached. Use {live}: `dg auth login <identity file>` with those flags records it, \
+             and `git config --unset dash.network` (and `dash.devnetName`) in a clone made \
+             there"
+        )
+    })
+}
+
 /// The embedded deployment for `key`, or `None` when no file exists for it.
 pub fn deployment(key: &str) -> Result<Option<Deployment>> {
     let Some((_, raw)) = EMBEDDED_DEPLOYMENTS.iter().find(|(k, _)| *k == key) else {
@@ -1306,6 +1326,19 @@ mod tests {
         let file = deployment("devnet-sakura").unwrap().unwrap();
         assert!(!file.retired);
         assert_eq!(t.v2, file.v2);
+    }
+
+    #[test]
+    fn a_retired_network_gets_a_notice_naming_the_live_one() {
+        let moutai = Network::from_key("devnet-moutai");
+        let notice = retired_notice(&moutai).expect("moutai is retired");
+        assert!(notice.starts_with("devnet-moutai is retired"), "{notice}");
+        let live = suggested_v2_network().expect("a live network is deployed");
+        assert!(notice.contains(&live.dg_flags()), "{notice}");
+        assert!(!notice.contains("--devnet-name moutai"), "{notice}");
+        // Live networks get none.
+        assert!(retired_notice(&Network::Testnet).is_none());
+        assert!(retired_notice(&Network::from_key("devnet-sakura")).is_none());
     }
 
     #[test]
