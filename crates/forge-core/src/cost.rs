@@ -78,9 +78,10 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
 ///
 /// Every figure is at or above what the calibration paid, so the estimate is an upper bound:
 /// 1.08-1.16x the charge on a first import of 5 MiB or more, 1.08-1.27x on a 1-3 MiB one (the
-/// beta.6 showcase), up to 1.4x on a tiny first push (more on a young network, see
+/// beta.6 showcase), up to 1.6x on a tiny first push (more on a young network, see
 /// [`push_fees::CHUNK_FLAT`]),
-/// up to about 1.7x on a small later one.
+/// up to about 1.85x on a small later one. The tiny-push ratios grew when ECON-05 raised the
+/// first-write bounds to the testnet contracts' charges (Platform rc.4, 2026-10-17).
 pub mod push_fees {
     /// Credits per byte of a `chunk` document's signed transition (storage, its processing,
     /// and the chunk's own index entries growing with it). Measured 27,450-27,650.
@@ -366,8 +367,8 @@ mod tests {
     /// L-11 / D-311 / D-700: every push recorded on moutai (drive 4.2.0-beta.5, 2026-09-27/28,
     /// an identity nothing else spent from) with what it paid: the sum of its writes'
     /// balance deltas, or its balance change rounded up. The estimate must be an upper bound;
-    /// within +40% of the charge on a push into a new repository or ref (the case the
-    /// first-write fees price), within +80% on a later one (existing index subtrees pay less).
+    /// within +60% of the charge on a push into a new repository or ref (the case the
+    /// first-write fees price), within +85% on a later one (existing index subtrees pay less).
     /// These landed on a young chunk tree, so the flat's depth allowance ([`CHUNK_TREE_LEVELS`])
     /// is mostly headroom here.
     #[test]
@@ -406,7 +407,7 @@ mod tests {
             .total();
             #[allow(clippy::cast_precision_loss)]
             let ratio = est as f64 / paid as f64;
-            let cap = if first { 1.6 } else { 1.8 };
+            let cap = if first { 1.6 } else { 1.85 };
             if est < paid || ratio > cap {
                 problems.push(format!(
                     "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3}, cap {cap})"
