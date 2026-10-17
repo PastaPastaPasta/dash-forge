@@ -10,7 +10,7 @@ import { base58Encode } from '../auth/base58'
 import { EpochKeys, PostKey, bytesToHex, type PostKeyLetter } from '../private'
 import { postKeyLetterCredits } from '../env/write'
 import { botsOf } from '../rules/roles'
-import { missingPostKeys, postKeyLettersCost, postKeysToasts, sendPostKeys, type PostKeyIo } from './bot-keys'
+import { missingPostKeys, postKeyChecks, postKeyLettersCost, postKeysToasts, sendPostKeys, type PostKeyIo } from './bot-keys'
 
 const id = (b: number): string => base58Encode(new Uint8Array(32).fill(b))
 const REPO = new Uint8Array(32).fill(0x11)
@@ -23,7 +23,7 @@ async function keys(epoch = 3): Promise<EpochKeys> {
 }
 
 /** A fake I/O: every bot but {@link KEYLESS} has an encryption key; `failAt` makes that store throw. */
-function fakeIo(opts: { failAt?: string; sent?: PostKeyLetter[]; sender?: boolean } = {}) {
+function fakeIo(opts: { failAt?: string; sent?: PostKeyLetter[]; sender?: boolean; peers?: string[] } = {}) {
   const sealed: { bot: string; letter: PostKeyLetter }[] = []
   const stored: string[] = []
   const io: PostKeyIo = {
@@ -40,6 +40,7 @@ function fakeIo(opts: { failAt?: string; sent?: PostKeyLetter[]; sender?: boolea
       stored.push(bot)
     },
     sentLetters: async () => (opts.sent ?? []).map((l) => ({ epoch: l.epoch, key: new Uint8Array(l.key) })),
+    peerLetterWriters: async () => opts.peers ?? [],
   }
   return { io, sealed, stored }
 }
@@ -95,6 +96,23 @@ describe("sending bots their keys for members-only posts", () => {
     const { io } = fakeIo({ sent })
     expect(await missingPostKeys(io, k, [BOT, OTHER])).toEqual([OTHER])
     expect(await missingPostKeys(io, k, [])).toEqual([])
+  })
+
+  it('the banner claims a missing key only when no letter on chain could have given it', async () => {
+    const k = await keys()
+    const MAINT = id(0xa2)
+    const maintainers = new Set([MAINT, id(0xa1)])
+    // another maintainer stored a letter since the key was stated (their letters can't be opened here): no claim
+    const byPeer = fakeIo({ peers: [MAINT] })
+    expect(await postKeyChecks(byPeer.io, k, [BOT], maintainers)).toEqual({ missing: [], unknown: [BOT] })
+    // nobody stored one: the key really is missing
+    expect(await postKeyChecks(fakeIo().io, k, [BOT, OTHER], maintainers)).toEqual({ missing: [BOT, OTHER], unknown: [] })
+    // the signer's own letter gave it: nothing to say, with or without peers
+    const own = fakeIo({ sent: [{ epoch: 3, key: await postKeyOf(k, BOT) }], peers: [MAINT] })
+    expect(await postKeyChecks(own.io, k, [BOT], maintainers)).toEqual({ missing: [], unknown: [] })
+    // a letter from someone who is not a maintainer (a bot only takes a maintainer's) does not hide the warning
+    expect(await postKeyChecks(fakeIo({ peers: [id(0xc3)] }).io, k, [BOT], maintainers)).toEqual({ missing: [BOT], unknown: [] })
+    expect(await postKeyChecks(fakeIo().io, k, [], maintainers)).toEqual({ missing: [], unknown: [] })
   })
 
   it('costs one chunk and one manifest per letter', () => {

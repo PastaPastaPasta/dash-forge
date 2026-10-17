@@ -257,7 +257,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
               {following ? 'Following' : 'Follow'}
               {identity !== null && follow.on !== null ? (
                 <span className="ml-1 font-mono text-[11px]" data-testid="follow-cost" aria-hidden>
-                  {following ? refundLabel('unfollow', unfollowRefund.credits) : priceLabel(followCost.credits, !firstWriteRead(first))} DASH
+                  {following ? refundLabel('unfollow', unfollowRefund.credits) : `${priceLabel(followCost.credits, !firstWriteRead(first))} DASH`}
                 </span>
               ) : null}
             </Button>

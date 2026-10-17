@@ -20,6 +20,7 @@ import {
   defaultCodeRefs,
   deleteMakePublicRecord,
   estimateMakePublic,
+  estimatePush,
   gateMakePublic,
   leftOutRefs,
   loadMakePublicRecord,
@@ -129,6 +130,11 @@ describe('the gate before anything is signed (dg gate)', () => {
 })
 
 describe('the estimate (dg estimate)', () => {
+  it('covers both measured first manifests before pricing refs and chunks', () => {
+    // ECON-05 testnet: 129.46M per first manifest; a push stores pack and browse manifests.
+    expect(estimatePush(1, 1, 0).metadata).toBeGreaterThanOrEqual(2 * 129_455_720)
+  })
+
   const size = { bytes: 50_000, objects: 120 }
   const push = MANIFEST_FIRST_CREDITS * 2 + REF_FIRST_CREDITS * 3
   const storage = estimateChunkCredits(50_000) + estimateChunkCredits(locatorBytes(120))

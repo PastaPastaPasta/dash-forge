@@ -95,11 +95,19 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   const recent = page.getByTestId('explore-recent-repos')
   await expect(recent.locator('a[href*="/repo"]').first()).toBeVisible({ timeout: 60_000 })
   const firstPage = await recent.locator('a[href*="/repo"]').count()
-  expect(firstPage).toBe(24)
+  // A full first page is REPO_PAGE (24, lib/view/discovery.ts) cards, with "Load more" while repos
+  // remain. A network with fewer repos (a scratch registration holds only its own) fills less of
+  // it and offers no more, so what it protects is the page size and the paging, not a fixture size.
+  expect(firstPage).toBeGreaterThan(0)
+  expect(firstPage).toBeLessThanOrEqual(24)
   const more = recent.getByRole('button', { name: 'Load more repos' })
-  await expect(more).toBeVisible()
-  await more.click()
-  await expect.poll(() => recent.locator('a[href*="/repo"]').count(), { timeout: 60_000 }).toBeGreaterThan(firstPage)
+  if (firstPage < 24) {
+    await expect(more).toHaveCount(0)
+  } else {
+    await expect(more).toBeVisible()
+    await more.click()
+    await expect.poll(() => recent.locator('a[href*="/repo"]').count(), { timeout: 60_000 }).toBeGreaterThan(firstPage)
+  }
   await shot(page, 'g14-explore-sections')
 
   // Request budget, derived from the page's shape rather than from the devnet's size: Featured is

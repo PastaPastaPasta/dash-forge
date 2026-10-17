@@ -231,8 +231,14 @@ test('p5. the fixed in-app links navigate without a document load', async () => 
     await page.waitForURL(url, { timeout: 30_000 })
   }
   await clickTo(() => page.getByRole('banner').getByRole('link', { name: /explore/i }).click(), /\/explore\/$/)
-  await clickTo(() => page.getByRole('contentinfo').getByRole('link', { name: /^new/i }).click(), /\/new\/$/)
-  await clickTo(() => page.getByRole('contentinfo').getByRole('link', { name: /explore/i }).click(), /\/explore\/$/)
+  // The header's New menu (the footer no longer links New or Explore), then the footer's links:
+  // `components/app-footer.tsx` declares them.
+  await clickTo(async () => {
+    await page.getByRole('banner').getByRole('button', { name: /^new/i }).click({ timeout: 10_000 })
+    await page.getByRole('navigation', { name: 'New' }).getByRole('link', { name: /^repository/i }).click({ timeout: 10_000 })
+  }, /\/new\/$/)
+  await clickTo(() => page.getByRole('contentinfo').getByRole('link', { name: /^getting started/i }).click({ timeout: 10_000 }), /\/start\/$/)
+  await clickTo(() => page.getByRole('contentinfo').getByRole('link', { name: /^networks$/i }).click({ timeout: 10_000 }), /\/networks\/$/)
   await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
   documents.length = 0
   await waitForRepoResolved(page)

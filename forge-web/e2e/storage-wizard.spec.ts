@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { EMPTY, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, stateFile, unlock, skipWithoutFixture } from './helpers'
+import { EMPTY, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, stateFile, unlock, skipWithoutFixture } from './helpers'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
 skipWithoutFixture()
@@ -64,15 +64,23 @@ test('s1. MinIO passes every browser check, and the profile is sealed in the vau
   // it would be recorded on chain, so the row fails and says why (uploads refuse it too).
   const publicRow = page.getByTestId('probe-public')
   await expect(publicRow).toHaveAttribute('data-state', 'fail')
-  await expect(publicRow).toContainText(/Readable from here, but 127\.0\.0\.1:9000 is only reachable from this machine/)
+  await expect(publicRow).toContainText(/Readable from here, but 127\.0\.0\.1:9000 is only reachable from your own network/)
   await expect(page.getByTestId('cors-fix')).toHaveCount(0)
   await shot(page, 'a-02-minio-tested')
   await page.getByRole('button', { name: /save profile/i }).click()
   await expect(page.getByTestId('profile-list')).toContainText('minio-e2e')
   await expect(page.getByTestId('profile-list')).toContainText('failed some checks')
 
-  // Default policy: this profile, one copy.
+  // Default policy: this profile, one copy. The first profile saved is already the default, so
+  // "Save default" is rightly disabled until the policy changes: check that no-op state, change the
+  // replication (Platform as fallback), save it, then restore the one-place policy.
   await page.getByRole('checkbox', { name: 'minio-e2e' }).first().check()
+  await page.getByRole('radio', { name: /one place/i }).check()
+  await expect(page.getByTestId('default-policy-status')).toContainText('This is your saved default.')
+  await expect(page.getByRole('button', { name: /save default/i })).toBeDisabled()
+  await page.getByRole('radio', { name: /platform as fallback/i }).check()
+  await page.getByRole('button', { name: /save default/i }).click()
+  await expect(page.getByText('Saved.')).toBeVisible()
   await page.getByRole('radio', { name: /one place/i }).check()
   await page.getByRole('button', { name: /save default/i }).click()
   await expect(page.getByText('Saved.')).toBeVisible()
@@ -80,27 +88,28 @@ test('s1. MinIO passes every browser check, and the profile is sealed in the vau
   await page.context().storageState({ path: stateFile('MAINTAINER'), indexedDB: true })
 
   // Secrets never reach localStorage; IndexedDB holds only ciphertext.
-  const stores = await page.evaluate(async () => {
-    const ls = JSON.stringify(Object.entries(localStorage))
-    const idb = await new Promise<string>((resolve) => {
-      const req = indexedDB.open('dash-forge')
-      req.onsuccess = () => {
-        const tx = req.result.transaction('vault', 'readonly')
-        const all = tx.objectStore('vault').getAll()
-        all.onsuccess = () => resolve(JSON.stringify(all.result, (_k, v: unknown) => (v instanceof Uint8Array ? `<${v.length} bytes>` : v)))
-      }
-    })
-    return { ls, idb }
-  })
+  // (Playwright's own IndexedDB snapshot: an in-page open/getAll has no timeout, and can wait forever.)
+  const stores = {
+    ls: JSON.stringify(await page.evaluate(() => Object.entries(localStorage))),
+    idb: JSON.stringify((await page.context().storageState({ indexedDB: true })).origins),
+  }
   for (const s of [stores.ls, stores.idb]) {
     expect(s).not.toContain('minioadmin')
     expect(s).not.toContain('forge-byo')
   }
 
-  // A reload locks the vault; the settings come back after unlocking.
+  // A reload keeps only the spend-capped signing key: `unlock` resumes that, but the storage
+  // credentials open again only with the full unlock of this tab's vault (storage-wizard.tsx).
   await page.reload({ waitUntil: 'domcontentloaded' })
   await unlock(page)
-  await expect(page.getByTestId('profile-list')).toContainText('minio-e2e', { timeout: 30_000 })
+  const storageUnlock = page.getByTestId('storage-unlock')
+  const profiles = page.getByTestId('profile-list')
+  await expect(storageUnlock.or(profiles)).toBeVisible({ timeout: 30_000 })
+  if (await storageUnlock.isVisible()) {
+    await storageUnlock.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+    await storageUnlock.getByRole('button', { name: 'Unlock', exact: true }).click()
+  }
+  await expect(profiles).toContainText('minio-e2e', { timeout: 30_000 })
   await shot(page, 'a-03-profile-saved')
 })
 

@@ -21,8 +21,8 @@ import { currentOf, snapshotOf, stateOf, type EnvBook, type EnvManifest } from '
 
 /** The largest sealed snapshot one save writes: one Platform chunk (forge-core `MAX_SEALED`). */
 export const MAX_SEALED = CHUNK_PAYLOAD_MAX
-/** A `packManifest`'s storage, as `dg` quotes it (forge-core `cost::push_fees::MANIFEST_FIRST`). */
-export const MANIFEST_CREDITS = 112_000_000
+/** A `packManifest`'s storage, as `dg` quotes it (forge-core `cost::push_fees::MANIFEST_FIRST`; testnet rc.4: 129.46M measured, 2026-10-17). */
+export const MANIFEST_CREDITS = 140_000_000
 
 /** The upper bound a snapshot of `sealedLen` bytes costs: one chunk and one manifest (forge-core `snapshot_credits`). */
 export function snapshotCredits(sealedLen: number): number {

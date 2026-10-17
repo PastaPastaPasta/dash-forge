@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-// The build under test targets devnet moutai, whose deployment file names the forge contracts.
 vi.hoisted(() => {
   process.env['NEXT_PUBLIC_NETWORK'] = 'devnet'
   process.env['NEXT_PUBLIC_DEVNET_NAME'] = 'moutai'
@@ -9,143 +8,231 @@ vi.hoisted(() => {
 vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmProgress: () => () => undefined }))
 
 import { NETWORKS } from '../constants'
-import { isContractMissingError } from './contract-missing'
-import { EvoSdkService, type Connection } from './service'
+import { ContractReadRefusedError, isContractMissingError } from './contract-missing'
+import { CONTRACT_REFUSAL_WAITS_MS, EvoSdkService, RECOVER_GAP_MS, type Connection } from './service'
 import { isUnreachableError } from './unreachable'
 
-/**
- * What forge.dashhq.org showed after devnet moutai was reset to beta.6 (2026-09-28): a document
- * read against a bundled forge-core snapshot whose contract the network no longer has.
- */
-const RESET_DEVNET_ERROR =
+const REFUSAL_MESSAGE =
   'transport error: grpc error: code: \'Client specified an invalid argument\', message: "contract not found error: contract not found when querying from value with contract info"'
 
-/** A wasm-sdk `WasmSdkError` as it reaches JS: a plain object, not an `Error`. */
-function wasmError(message: string, name = 'DapiClientError'): unknown {
-  return { name, kind: 7, code: -1, isRetriable: false, message }
-}
+/** A wasm-sdk error as it reaches JS: a plain object, not an Error. */
+const REFUSAL = { name: 'DapiClientError', kind: 7, code: -1, isRetriable: false, message: REFUSAL_MESSAGE }
+const refuse = async (): Promise<unknown> => { throw REFUSAL }
+const RETRY_BUDGET = CONTRACT_REFUSAL_WAITS_MS.reduce((sum, ms) => sum + ms, 0)
+
+const services: EvoSdkService[] = []
+beforeEach(() => vi.useFakeTimers())
+afterEach(() => {
+  services.splice(0).forEach((service) => service.cleanup())
+  vi.useRealTimers()
+})
 
 describe('isContractMissingError', () => {
-  it('matches the error the reset devnet returned', () => {
-    expect(isContractMissingError(new Error(RESET_DEVNET_ERROR))).toBe(true)
-    expect(isContractMissingError(wasmError(RESET_DEVNET_ERROR))).toBe(true)
-    expect(isContractMissingError(RESET_DEVNET_ERROR)).toBe(true)
-  })
-
-  it("matches Drive's other wording and wasm-sdk's own not-found", () => {
-    expect(isContractMissingError(new Error('grpc error: code: InvalidArgument, message: "contract not found error: contract not found for a document query"'))).toBe(true)
-    expect(isContractMissingError(wasmError('Data contract not found', 'NotFound'))).toBe(true)
+  it('recognizes Drive refusals and SDK not-found reports without establishing proved absence', () => {
+    for (const error of [new Error(REFUSAL_MESSAGE), REFUSAL, REFUSAL_MESSAGE, 'contract not found error: contract not found for a document query', 'Data contract not found']) {
+      expect(isContractMissingError(error)).toBe(true)
+    }
   })
 
   it('does not match other failures', () => {
-    expect(isContractMissingError(new Error('transport error: grpc error: code: Unavailable'))).toBe(false)
-    expect(isContractMissingError(wasmError('Document type not found: issue', 'NotFound'))).toBe(false)
-    expect(isContractMissingError(wasmError('Identity not found', 'NotFound'))).toBe(false)
-    expect(isContractMissingError(new Error('Required document not found: abc'))).toBe(false)
-    expect(isContractMissingError(null)).toBe(false)
+    for (const error of ['transport error: grpc error: code: Unavailable', 'Document type not found: issue', 'Identity not found', 'Required document not found: abc', null]) {
+      expect(isContractMissingError(error)).toBe(false)
+    }
   })
 
-  it('is an answer, not an outage: never "Platform unreachable" despite the transport wording', () => {
-    expect(isUnreachableError(new Error(RESET_DEVNET_ERROR))).toBe(false)
+  it('keeps refusals distinct from outages, including the retryable error shown to users', () => {
+    expect(isUnreachableError(REFUSAL)).toBe(false)
+    expect(isUnreachableError(new ContractReadRefusedError(REFUSAL))).toBe(false)
     expect(isUnreachableError(new Error('transport error: tcp connect error'))).toBe(true)
   })
 })
 
-describe('EvoSdkService: the forge contracts are not on the network', () => {
+describe('EvoSdkService: missing-contract read retries and proved absence', () => {
   const forge = NETWORKS.devnet.v2!
   const OTHER = 'CErHv5FHjnXJ1Zv6TNmtWirzELYbz8H7rinvn4UtQFZQ'
 
-  async function flush(): Promise<void> {
-    for (let i = 0; i < 20; i++) await Promise.resolve()
-  }
-
-  /**
-   * A service connected to an SDK whose every document read fails with `error`, and whose
-   * contract fetch (the confirmation) answers `fetched` (undefined: proved absent).
-   */
-  async function connected(
-    error: unknown,
-    fetched: () => Promise<unknown> = async () => undefined,
-  ): Promise<{ service: EvoSdkService; sdk: EvoSDK; notified: () => number; confirms: () => number }> {
-    const fail = vi.fn(async () => {
-      throw error
-    })
-    const fetch = vi.fn(fetched)
+  async function connected({ proof = async () => undefined, seeded = false }: { proof?: () => Promise<unknown>; seeded?: boolean } = {}) {
+    const query = vi.fn(refuse)
+    const fetch = vi.fn(proof)
+    const create = vi.fn(refuse)
+    const free = vi.fn()
     const raw = {
-      documents: { query: fail, queryWithProof: fail },
+      documents: { query, queryWithProof: query, create },
       contracts: { getLatestVersions: vi.fn(async () => new Map()), fetch },
-      wasm: { free: vi.fn() },
+      wasm: { free },
       version: () => 14,
     } as unknown as EvoSDK
-    const service = new EvoSdkService(async (): Promise<Connection> => ({ sdk: raw, seeded: new Map() }))
+    const connector = vi.fn(async (): Promise<Connection> => ({ sdk: raw, seeded: new Map(seeded ? [[forge.core, 1]] : []) }))
+    const service = new EvoSdkService(connector)
+    services.push(service)
     await service.initialize({ network: 'devnet', contractIds: [] })
-    let n = 0
-    service.subscribe(() => n++)
-    return { service, sdk: service.getSdk(), notified: () => n, confirms: () => fetch.mock.calls.length }
+    const notified = vi.fn()
+    service.subscribe(notified)
+    return { service, sdk: service.getSdk(), query, fetch, connector, notified, create, free }
   }
 
   const readCore = (sdk: EvoSDK) => sdk.documents.query({ dataContractId: forge.core, documentTypeName: 'repo' } as never)
 
-  it('one failed read of forge-core, confirmed absent, reports it app-wide, once, with the raw error kept', async () => {
-    const { service, sdk, notified, confirms } = await connected(wasmError(RESET_DEVNET_ERROR))
+  async function readError(sdk: EvoSDK): Promise<unknown> {
+    const result = readCore(sdk).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(RETRY_BUDGET)
+    return result
+  }
+
+  function expectRetryable(error: unknown): void {
+    expect(error).toBeInstanceOf(ContractReadRefusedError)
+    expect(error).toMatchObject({ message: 'A node is behind; try again.', isRetriable: true, cause: REFUSAL })
+    expect((error as Error).message).not.toMatch(/reset|update|reload|newer build/i)
+  }
+
+  it('one refusal followed by success returns data on the same SDK without an absence check', async () => {
+    const { service, sdk, query, fetch, connector } = await connected()
+    const data = new Map([['repo', { name: 'recovered' }]])
+    query.mockRejectedValueOnce(REFUSAL).mockResolvedValueOnce(data)
+    const result = readCore(sdk)
+    await vi.advanceTimersByTimeAsync(CONTRACT_REFUSAL_WAITS_MS[0]!)
+    expect(await result).toBe(data)
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(connector).toHaveBeenCalledOnce()
+    expect(service.generation).toBe(1)
     expect(service.contractsMissing).toBeNull()
-    await expect(readCore(sdk)).rejects.toBeDefined()
-    await flush()
-    expect(confirms()).toBe(1)
-    expect(service.contractsMissing).toBe(RESET_DEVNET_ERROR)
-    expect(notified()).toBe(1)
-    // Later failures (every other widget's read) neither check nor notify again.
-    await expect(sdk.documents.query({ dataContractId: forge.collab, documentTypeName: 'issue' } as never)).rejects.toBeDefined()
-    await flush()
-    expect(confirms()).toBe(1)
-    expect(notified()).toBe(1)
-    // A network switch or cleanup forgets it.
+  })
+
+  it('exhausted refusals followed by proved presence stay retryable', async () => {
+    const { service, sdk, query, fetch, connector } = await connected({ proof: async () => ({ id: forge.core }), seeded: true })
+    expectRetryable(await readError(sdk))
+    expect(query).toHaveBeenCalledTimes(1 + CONTRACT_REFUSAL_WAITS_MS.length)
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(fetch).toHaveBeenCalledWith(forge.core)
+    expect(connector).toHaveBeenCalledOnce()
+    expect(service.contractsMissing).toBeNull()
+  })
+
+  it.each([
+    { label: 'another unproved refusal', error: REFUSAL },
+    { label: 'a transport failure', error: new Error('transport error: tcp connect error') },
+    { label: 'a rejected proof', error: new Error('invalid proof: root hash mismatch') },
+  ])('a confirmation with $label never establishes absence', async ({ error }) => {
+    const { service, sdk, fetch } = await connected({ proof: async () => { throw error } })
+    expectRetryable(await readError(sdk))
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(service.contractsMissing).toBeNull()
+  })
+
+  it('only proved None after bounded retries enters contracts-missing, once', async () => {
+    const { service, sdk, query, fetch, notified } = await connected({ seeded: true })
+    const error = await readError(sdk)
+    expect(error).not.toBeInstanceOf(ContractReadRefusedError)
+    expect((error as Error).message).toContain('Platform proved')
+    expect(query).toHaveBeenCalledTimes(4)
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(fetch).toHaveBeenCalledWith(forge.core)
+    expect(service.contractsMissing).toBe(`Platform proved contract ${forge.core} absent: ${REFUSAL_MESSAGE}`)
+    expect(notified).toHaveBeenCalledOnce()
+    // Later reads reject after their first refusal without spending the retry backoff.
+    await expect(readCore(sdk)).rejects.toThrow(service.contractsMissing!)
+    expect(query).toHaveBeenCalledTimes(5)
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(notified).toHaveBeenCalledOnce()
     service.cleanup()
     expect(service.contractsMissing).toBeNull()
   })
 
-  it('a confirmation refused the same way counts; concurrent failures share one confirmation', async () => {
-    const { service, sdk, confirms } = await connected(wasmError(RESET_DEVNET_ERROR), async () => {
-      throw wasmError(RESET_DEVNET_ERROR)
-    })
-    await Promise.allSettled([readCore(sdk), readCore(sdk), readCore(sdk)])
-    await flush()
-    expect(confirms()).toBe(1)
-    expect(service.contractsMissing).toBe(RESET_DEVNET_ERROR)
+  it('a read already in backoff stops before its next SDK call when another read proves absence', async () => {
+    let finish: (value: unknown) => void = () => undefined
+    const proof = new Promise((resolve) => { finish = resolve })
+    const { service, sdk, query, fetch } = await connected({ proof: () => proof })
+    const first = readCore(sdk).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(RETRY_BUDGET)
+    expect(fetch).toHaveBeenCalledOnce()
+    const second = readCore(sdk).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(query).toHaveBeenCalledTimes(5)
+    finish(undefined)
+    await first
+    await vi.advanceTimersByTimeAsync(CONTRACT_REFUSAL_WAITS_MS[0]!)
+    expect(await second).toMatchObject({ message: service.contractsMissing, cause: REFUSAL })
+    expect(query).toHaveBeenCalledTimes(5)
+    expect(fetch).toHaveBeenCalledOnce()
   })
 
-  it('one node that is behind (the contract fetches after all) does not blank the app', async () => {
-    const { service, sdk, confirms } = await connected(wasmError(RESET_DEVNET_ERROR), async () => ({ id: forge.core }))
-    await expect(readCore(sdk)).rejects.toBeDefined()
-    await flush()
-    expect(confirms()).toBe(1)
+  it('parallel exhausted reads share one in-flight proof check', async () => {
+    let finish: (value: unknown) => void = () => undefined
+    const proof = new Promise((resolve) => { finish = resolve })
+    const { service, sdk, fetch, notified } = await connected({ proof: () => proof })
+    const results = Promise.allSettled([readCore(sdk), readCore(sdk), readCore(sdk)])
+    await vi.advanceTimersByTimeAsync(RETRY_BUDGET)
+    expect(fetch).toHaveBeenCalledOnce()
     expect(service.contractsMissing).toBeNull()
-    // …and the next failure right after does not check again (no request storm).
-    await expect(readCore(sdk)).rejects.toBeDefined()
-    await flush()
-    expect(confirms()).toBe(1)
-    // Nor does a confirmation that could not reach Platform.
-    const offline = await connected(wasmError(RESET_DEVNET_ERROR), async () => {
-      throw new Error('transport error: tcp connect error')
-    })
-    await expect(readCore(offline.sdk)).rejects.toBeDefined()
-    await flush()
-    expect(offline.service.contractsMissing).toBeNull()
+    finish(undefined)
+    await results
+    expect(service.contractsMissing).toContain('Platform proved')
+    expect(notified).toHaveBeenCalledOnce()
   })
 
-  it("another contract's absence (a repo's, the wallet key exchange) stays that view's error", async () => {
-    const { service, sdk, confirms } = await connected(wasmError(RESET_DEVNET_ERROR))
-    await expect(sdk.documents.query({ dataContractId: OTHER, documentTypeName: 'loginKeyResponse' } as never)).rejects.toBeDefined()
-    await flush()
-    expect(confirms()).toBe(0)
+  it('inconclusive proof checks have a cooldown, without preventing manual read retries', async () => {
+    const { sdk, fetch, query } = await connected({ proof: async () => ({ id: forge.core }) })
+    expectRetryable(await readError(sdk))
+    expectRetryable(await readError(sdk))
+    expect(query).toHaveBeenCalledTimes(8)
+    expect(fetch).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(RECOVER_GAP_MS)
+    await readError(sdk)
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('cleanup discards a proof result and retains its connection until the fetch finishes', async () => {
+    let finish: (value: unknown) => void = () => undefined
+    const pending = new Promise((resolve) => { finish = resolve })
+    const { service, sdk, fetch, free } = await connected({ proof: () => pending })
+    const result = readCore(sdk).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(RETRY_BUDGET)
+    expect(fetch).toHaveBeenCalledOnce()
+    service.cleanup()
+    expect(free).not.toHaveBeenCalled()
+    finish(undefined)
+    await result
+    expect(free).toHaveBeenCalledOnce()
     expect(service.contractsMissing).toBeNull()
   })
 
-  it('an outage on a forge contract is not "contracts missing"', async () => {
-    const { service, sdk, confirms } = await connected(new Error('transport error: grpc error: code: Unavailable'))
-    await expect(readCore(sdk)).rejects.toBeDefined()
-    await flush()
-    expect(confirms()).toBe(0)
+  it('a network switch during backoff stops the old read before another SDK call', async () => {
+    const { service, sdk, query, fetch } = await connected()
+    const result = readCore(sdk).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(0)
+    await service.initialize({ network: 'mainnet', contractIds: [] })
+    await vi.advanceTimersByTimeAsync(RETRY_BUDGET)
+    await result
+    expect(query).toHaveBeenCalledOnce()
+    expect(fetch).not.toHaveBeenCalled()
     expect(service.contractsMissing).toBeNull()
+  })
+
+  it("another contract's refusal stays retryable without changing the app-wide state", async () => {
+    const { service, sdk, query, fetch } = await connected()
+    const result = sdk.documents.query({ dataContractId: OTHER, documentTypeName: 'loginKeyResponse' } as never).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(RETRY_BUDGET)
+    expectRetryable(await result)
+    expect(query).toHaveBeenCalledTimes(4)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(service.contractsMissing).toBeNull()
+  })
+
+  it('other read failures are not retried as missing contracts', async () => {
+    const { sdk, query, fetch } = await connected()
+    const error = new Error('transport error: grpc error: code: Unavailable')
+    query.mockRejectedValue(error)
+    await expect(readCore(sdk)).rejects.toBe(error)
+    expect(query).toHaveBeenCalledOnce()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('writes keep their existing policy and are never retried by this read path', async () => {
+    const { sdk, create, query, fetch } = await connected()
+    await expect(sdk.documents.create({} as never)).rejects.toBe(REFUSAL)
+    expect(create).toHaveBeenCalledOnce()
+    expect(query).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
   })
 })

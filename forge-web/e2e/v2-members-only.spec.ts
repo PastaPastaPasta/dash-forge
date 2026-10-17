@@ -145,9 +145,11 @@ test("outsider: the member's members-only comment is a placeholder, and nothing 
   const html = await page.content()
   expect(html).not.toContain(MARKER)
   await expect(page.getByText(/encrypted by someone who is not a member/)).toHaveCount(0)
-  // The outsider's composer is public, with no picker.
+  // The outsider's composer is public. A signed-in outsider with an encryption key can also address
+  // a message to specific people (letters, lib/view/audience.ts), so the chip is a button that opens
+  // the picker. The checks that none of the sealed text is anywhere on the page stand as before.
   await expect(page.getByTestId('audience-chip')).toHaveText(/Public/)
-  await expect(page.getByTestId('audience-chip')).toHaveJSProperty('tagName', 'SPAN')
+  await expect(page.getByTestId('audience-chip')).toHaveJSProperty('tagName', 'BUTTON')
   outsiderThread = steady(await page.getByTestId('thread-conversation').innerText())
   expect(await runAxe(page, 'issue with placeholders (outsider)')).toEqual([])
   await page.context().close()

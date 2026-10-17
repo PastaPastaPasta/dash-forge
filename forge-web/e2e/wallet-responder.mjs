@@ -87,10 +87,13 @@ function derived(login, identityId) {
   return { authPriv, authData: hash160(secp.getPublicKey(authPriv, true)), encPriv, encPub: secp.getPublicKey(encPriv, true) }
 }
 
+// `devnet` is the devnet's name, or '' on testnet (the e2e convention: network.ts E2E_DEVNET).
 async function connect(devnet) {
   const evo = await import(node('@dashevo/evo-sdk/dist/evo-sdk.module.js'))
-  const dep = JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/devnet-${devnet}.json`), 'utf8'))
-  const sdk = new evo.EvoSDK({ network: 'devnet', devnetName: devnet, addresses: dep.dapiAddresses ?? dep.v2.devnet.addresses, trusted: true, settings: { timeoutMs: 60000, retries: 3 } })
+  const testnet = devnet === ''
+  const dep = JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/${testnet ? 'testnet' : `devnet-${devnet}`}.json`), 'utf8'))
+  const network = testnet ? { network: 'testnet' } : { network: 'devnet', devnetName: devnet, addresses: dep.dapiAddresses ?? dep.v2.devnet.addresses }
+  const sdk = new evo.EvoSDK({ ...network, trusted: true, settings: { timeoutMs: 60000, retries: 3 } })
   await sdk.connect()
   return { evo, sdk, dep }
 }

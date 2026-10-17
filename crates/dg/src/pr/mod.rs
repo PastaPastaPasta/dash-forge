@@ -199,16 +199,12 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     }
 }
 
-/// What a write is estimated from (review-parity §6, measured on moutai; steady state). A
-/// target's first comment or event also creates its index subtrees: allow 10–25M more.
+/// Shared estimates still used by make-public and metadata edits. Comments use the
+/// calibrated first-write quote; the author-event and replace allowances remain unchanged.
 #[derive(Debug, Clone, Copy)]
 pub enum Est {
-    /// A `comment`: 47.3M + 27.5k per text byte.
+    /// A `comment`, including first-write subtrees and contract nonce.
     Comment,
-    /// A `review`: 34.9M + 27.5k per text byte.
-    Review,
-    /// A member `event`, with its `refId`/`oid`/`value`: 65M + 27.5k per value byte.
-    Event,
     /// An `authorEvent`: 72M + 27.5k per value byte.
     AuthorEvent,
     /// A `patch` replace: 17M + 27.5k per changed byte.
@@ -221,20 +217,20 @@ pub const REF_UPDATE_CREDITS: u64 = forge_core::cost::push_fees::REF_FIRST;
 
 /// Credits for one write of `kind` carrying `text_bytes` of text.
 pub fn estimate(kind: Est, text_bytes: usize) -> u64 {
-    let base: u64 = match kind {
-        Est::Comment => 47_300_000,
-        Est::Review => 34_900_000,
-        Est::Event => 65_000_000,
-        Est::AuthorEvent => 72_000_000,
-        Est::Replace => 17_000_000,
-    };
-    base + 27_500 * u64::try_from(text_bytes).unwrap_or(u64::MAX / 27_500)
+    let bytes = u64::try_from(text_bytes).unwrap_or(u64::MAX / 27_500);
+    match kind {
+        Est::Comment => crate::quote::comment(bytes),
+        Est::AuthorEvent => 72_000_000 + 27_500 * bytes,
+        Est::Replace => 17_000_000 + 27_500 * bytes,
+    }
 }
 
 /// The estimate for an event of `route` with a `value` of `value_bytes`.
 pub fn event_estimate(route: forge_core::collab::v2::StateRoute, value_bytes: usize) -> u64 {
     match route {
-        forge_core::collab::v2::StateRoute::Member => estimate(Est::Event, value_bytes),
+        forge_core::collab::v2::StateRoute::Member => {
+            crate::quote::event(value_bytes as u64, false)
+        }
         forge_core::collab::v2::StateRoute::Author => estimate(Est::AuthorEvent, value_bytes),
     }
 }
@@ -5740,11 +5736,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn estimates_follow_the_measured_model() {
-        assert_eq!(estimate(Est::Comment, 0), 47_300_000);
-        assert_eq!(estimate(Est::Review, 300), 34_900_000 + 300 * 27_500);
-        // Review-parity §4.1: a 300-byte summary and 6 × 150-byte comments ≈ 0.0035 DASH.
-        let total = estimate(Est::Review, 300) + 6 * estimate(Est::Comment, 150);
-        assert!((340_000_000..360_000_000).contains(&total), "{total}");
+    fn estimates_follow_the_calibrated_quotes() {
+        // The old 340–360M range used steady-state moutai bases. The calibrated quote
+        // reserves first-write subtrees and a nonce on each document, including when
+        // a review bundle will share them: this 300-byte review + six comments is ~636M.
+        let total = crate::quote::review(300) + 6 * estimate(Est::Comment, 150);
+        assert!((600_000_000..650_000_000).contains(&total), "{total}");
+        assert_eq!(estimate(Est::Comment, 18), crate::quote::comment(18));
+        assert!(estimate(Est::Comment, 18) >= 73_027_280);
+        // All member-route consumers (resolve, dismiss, review-request, head update)
+        // inherit the event's first-write and contract-nonce allowance.
+        assert_eq!(
+            event_estimate(forge_core::collab::v2::StateRoute::Member, 6),
+            crate::quote::event(6, false)
+        );
+        assert!(
+            event_estimate(forge_core::collab::v2::StateRoute::Member, 6)
+                >= 76_225_420 + 12_000_000
+        );
     }
 }

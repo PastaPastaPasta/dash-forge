@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   PUSH_COST_DASH,
+  LAST_STAR_DELETE_CREDITS,
   STEADY,
   estimateChunkCredits,
   estimateCreateCredits,
@@ -106,10 +107,11 @@ const MEASURED: ReadonlyArray<readonly [string, string, Record<string, unknown>,
 const over = (est: number, actual: number): number => est / actual - 1
 
 describe('cost preview (D-011)', () => {
-  it.each(MEASURED)('%s: an upper bound within +30 %% when the page knows the subtrees', (_l, type, data, first, actual) => {
+  it.each(MEASURED)('%s: still covers the historical charge when the page knows the subtrees', (_l, type, data, first, actual) => {
     const est = estimateCreateCredits(type, data, first)
     expect(over(est, actual)).toBeGreaterThanOrEqual(0)
-    expect(over(est, actual)).toBeLessThanOrEqual(0.3)
+    // ECON-05 reprices current schemas. Old star/event schemas were substantially cheaper.
+    if (type !== 'star' && type !== 'event') expect(over(est, actual)).toBeLessThanOrEqual(0.3)
   })
 
   it.each(MEASURED)('%s: still an upper bound when nothing is known', (_l, type, data, _first, actual) => {
@@ -127,16 +129,18 @@ describe('cost preview (D-011)', () => {
     expect(over(create(S), 132_684_960)).toBeGreaterThanOrEqual(0)
     expect(over(create(S), 132_684_960)).toBeLessThanOrEqual(0.3)
     expect(create({})).toBeGreaterThanOrEqual(159_654_180)
-    expect(over(create({}), 159_654_180)).toBeLessThanOrEqual(0.3)
+    // ECON-05: the current testnet first bundle is 168.08M; the older schema was cheaper.
+    expect(over(create({}), 168_077_700)).toBeLessThanOrEqual(0.3)
+    expect(create(S)).toBeGreaterThanOrEqual(139_158_660)
     // The fresh forge-core of the beta.6 reset (documentsCountable, ranked forkOf) measured
     // 136.9M for a returning owner and 166.3M for a first repo (dg, moutai, 2026-09-28).
     expect(create(S)).toBeGreaterThanOrEqual(136_941_620)
     expect(create({})).toBeGreaterThanOrEqual(166_290_800)
   })
 
-  it('previews an unstar and an unfollow as refunds no larger than measured (12.3M for the ranked star, 23.5M)', () => {
+  it('previews current-schema unstar and unfollow refunds conservatively', () => {
     expect(previewDelete('star').credits).toBeLessThan(0)
-    expect(-previewDelete('star').credits).toBeLessThanOrEqual(12_251_828)
+    expect(-previewDelete('star').credits).toBeLessThanOrEqual(33_210_733)
     expect(-previewDelete('follow').credits).toBeLessThanOrEqual(23_461_140)
   })
 })
@@ -255,5 +259,125 @@ describe('events that name an addressee (QW4-039)', () => {
     const named = withAddressee(plain)
     expect(named.admit.budget - plain.admit.budget).toBe(named.credits - plain.credits)
     expect(named.admit.balance - plain.admit.balance).toBe(named.credits - plain.credits)
+  })
+})
+
+// ECON-05: dash-testnet-51, Platform 5.0.0-rc.4, SDK rc.3, 2026-10-17.
+// Exact write keys and proved balances: dash-forge-qa/evidence/testnet-rehearsal/econ/measurements.jsonl.
+const TESTNET_MEASURED: typeof MEASURED = [
+  ['raw-repo-0', 'repo', {"name": "econ-raw-0","visibility": "public","defaultBranch": "main","description": "calibrate"}, { ...S, author: true, contract: true }, 81_849_220],
+  ['raw-repo-3', 'repo', {"name": "econ-raw-3","visibility": "public","defaultBranch": "main","description": "calibrate"}, { ...S }, 60_241_880],
+  ['raw-maintainer-0', 'maintainer', {}, { ...S, member: true }, 48_168_800],
+  ['raw-maintainer-3', 'maintainer', {}, { ...S }, 40_920_060],
+  ['writer-0', 'writer', {}, { ...S, member: true }, 48_877_240],
+  ['writer-3', 'writer', {}, { ...S }, 41_650_160],
+  ['raw-config-1', 'config', {"defaultBranch": "main","vis": "public"}, { ...S, repo: true }, 38_045_720],
+  ['config-3', 'config', {"defaultBranch": "cal3"}, { ...S }, 29_494_940],
+  ['consent-0', 'consent', {}, { ...S, contract: true }, 42_839_440],
+  ['consent-3', 'consent', {}, { ...S }, 31_215_860],
+  ['issue-0', 'issue', {"title": "econ-issue","body": "calibrate"}, { ...S, repo: true, authorInRepo: true, author: true, contract: true }, 117_808_320],
+  ['issue-3', 'issue', {"title": "econ-issue","body": "calibrate"}, { ...S }, 69_855_300],
+  ['comment-0', 'comment', {"body": "calibrate"}, { ...S, target: true, author: true }, 72_014_300],
+  ['comment-3', 'comment', {"body": "calibrate"}, { ...S }, 51_890_900],
+  ['close-0', 'transition', {}, { ...S, target: true, repo: true }, 73_186_060],
+  ['reopen-3', 'transition', {}, { ...S }, 46_214_080],
+  ['label-event-0', 'event', {"value": "label0"}, { ...S, target: true, repo: true }, 76_225_420],
+  ['label-event-3', 'event', {"value": "label3"}, { ...S }, 51_769_020],
+  ['pin-1', 'event', {}, { ...S }, 56_838_320],
+  ['label-0', 'label', {"name": "label0","color": "#123456"}, { ...S, repo: true, contract: true }, 50_530_880],
+  ['label-3', 'label', {"name": "label3","color": "#123456"}, { ...S }, 34_455_940],
+  ['check-run-0', 'checkRun', {"name": "econ-calibrate","status": "queued","vis": "public"}, { ...S, repo: true, contract: true }, 121_714_760],
+  ['check-run-3', 'checkRun', {"name": "econ-calibrate","status": "queued","vis": "public"}, { ...S }, 71_981_000],
+  ['manifest-0', 'packManifest', {}, { ...S, repo: true }, 129_455_720],
+  ['manifest-2', 'packManifest', {}, { ...S }, 81_766_040],
+  ['ref-0', 'refUpdate', {"refName": "refs/heads/calibrate","vis": "public"}, { ...S, target: true, repo: true }, 89_178_000],
+  ['ref-3', 'refUpdate', {"refName": "refs/heads/calibrate","vis": "public"}, { ...S }, 58_498_440],
+  ['protected-ref-0', 'protectedRefUpdate', {"refName": "refs/heads/protected","vis": "public"}, { ...S, target: true, repo: true }, 88_638_020],
+  ['protected-ref-3', 'protectedRefUpdate', {"refName": "refs/heads/protected","vis": "public"}, { ...S }, 57_844_660],
+  ['star-0', 'star', {}, { ...S, repo: true, author: true, contract: true }, 66_149_800],
+  ['star-populated-member-3', 'star', {}, { ...S }, 24_593_920],
+  ['watch-0', 'watch', {}, { ...S, repo: true }, 48_060_980],
+  ['watch-populated-stranger-3', 'watch', {}, { ...S }, 37_908_400],
+  ['pack-mirror-0', 'packMirror', {"uris": ["https://econ.example.invalid/pack"]}, { ...S, repo: true }, 63_533_420],
+  ['pack-mirror-3', 'packMirror', {"uris": ["https://econ.example.invalid/pack"]}, { ...S }, 47_864_040],
+  ['runner-0', 'runner', {}, { ...S }, 47_334_320],
+  ['profile-0', 'profile', {"displayName": "econ-0"}, { ...S, contract: true }, 31_619_780],
+  ['profile-stranger-after-meta', 'profile', {"displayName": "econ-4"}, { ...S }, 23_029_920],
+  ['push-grant-0', 'pushGrant', {"prefix": "refs/heads/bot/econ0/"}, { ...S, repo: true }, 44_099_020],
+  ['push-grant-3', 'pushGrant', {"prefix": "refs/heads/bot/econ3/"}, { ...S }, 28_268_880],
+  ['author-event-0', 'authorEvent', {"value": "refs/heads/econ0"}, { ...S, target: true, repo: true }, 58_728_080],
+  ['author-event-3', 'authorEvent', {"value": "refs/heads/econ3"}, { ...S }, 43_064_220],
+  ['raw-review-0', 'review', {"body": "calibrate"}, { ...S, target: true }, 65_549_200],
+  ['raw-review-3', 'review', {"body": "calibrate"}, { ...S }, 39_941_500],
+  ['review-0', 'review', {"body": "calibrate"}, { ...S, target: true, contract: true }, 75_303_740],
+  ['review-3', 'review', {"body": "calibrate"}, { ...S, target: true }, 66_668_100],
+  ['raw-review-comment-0', 'comment', {"body": "calibrate","path": "README.md"}, { ...S, target: true, author: true }, 73_350_140],
+  ['raw-review-comment-3', 'comment', {"body": "calibrate","path": "README.md"}, { ...S }, 53_056_320],
+  ['reply-0', 'comment', {"body": "calibrate"}, { ...S, target: true }, 70_528_180],
+  ['reply-3', 'comment', {"body": "calibrate"}, { ...S, target: true }, 60_830_560],
+  ['release-0', 'release', {"tagName": "econ0","notes": "calibrate"}, { ...S, repo: true }, 73_262_500],
+  ['release-3', 'release', {"tagName": "econ3","notes": "calibrate"}, { ...S }, 61_877_260],
+  ['raw-topic-unique-0', 'topic', {"name": "cal-econ0"}, { ...S }, 61_574_520],
+  ['raw-topic-unique-3', 'topic', {"name": "cal-econ3"}, { ...S }, 62_311_740],
+  ['raw-draft-0', 'transition', {}, { ...S, repo: true, target: true }, 73_481_440],
+  // These merges write different targets; each builds that target's first transition trees.
+  ['raw-merge-1 (target first)', 'transition', {}, { ...S, target: true }, 56_271_120],
+  ['raw-merge-2 (target first)', 'transition', {}, { ...S, target: true }, 56_335_980],
+  ['raw-merge-3 (target first)', 'transition', {}, { ...S, target: true }, 56_376_320],
+  ['merge-policy-cleared-3 (steady)', 'transition', {}, { ...S }, 47_422_820],
+  ['policy-0', 'policy', {"mergeMethods": ["any"]}, { ...S }, 34_888_040],
+  ['raw-pr-0', 'patch', {"title": "econ-pr","body": "calibrate","baseRefName": "refs/heads/main","sourceRefName": "refs/heads/econ","vis": "public"}, { ...S, repo: true, author: true, sourceRef: true, contract: true }, 149_002_420],
+  ['raw-pr-3', 'patch', {"title": "econ-pr","body": "calibrate","baseRefName": "refs/heads/main","sourceRefName": "refs/heads/econ","vis": "public"}, { ...S }, 81_510_300],
+]
+
+describe('testnet ECON-05 calibration', () => {
+  it('counts overlapping watch subtrees once and retains the contract nonce', () => {
+    const repoFirst = estimateCreateCredits('watch', {}, { ...S, repo: true })
+    const authorFirst = estimateCreateCredits('watch', {}, { ...S, author: true })
+    const both = estimateCreateCredits('watch', {}, { ...S, repo: true, author: true })
+    expect(both).toBe(repoFirst)
+    expect(both).toBe(authorFirst)
+    expect(both).toBeGreaterThanOrEqual(48_109_940)
+    // The measured watches followed consent; model a watch as the first contract write too.
+    expect(estimateCreateCredits('watch')).toBeGreaterThanOrEqual(48_109_940 + 12_000_000)
+    expect(estimateCreateCredits('watch')).toBeLessThanOrEqual((48_109_940 + 12_000_000) * 1.1)
+  })
+
+  it.each(TESTNET_MEASURED)('%s: bounds the charge with known first-write trees', (_key, type, data, first, actual) => {
+    const estimate = estimateCreateCredits(type, data, first)
+    expect(estimate).toBeGreaterThanOrEqual(actual)
+    expect(estimate).toBeLessThanOrEqual(actual * 1.3)
+    expect(estimateCreateCredits(type, data)).toBeGreaterThanOrEqual(actual)
+    const { admit } = previewCreate(type, data, first)
+    expect(admit.budget).toBeGreaterThanOrEqual(estimate)
+    expect(admit.balance).toBeGreaterThanOrEqual(estimate)
+  })
+})
+
+// Immediate testnet refunds; an older document can refund less as its deposit ages.
+describe('testnet ECON-05 refund previews', () => {
+  it('keeps about figures within 10% of immediate fused-star/watch and comment refunds', () => {
+    for (const [type, measured] of [['star', 33_210_733], ['watch', 33_354_593], ['comment', 39_459_678]] as const) {
+      expect(-previewDelete(type).credits).toBeGreaterThanOrEqual(measured * 0.9)
+      expect(-previewDelete(type).credits).toBeLessThanOrEqual(measured)
+    }
+    expect(-LAST_STAR_DELETE_CREDITS).toBeGreaterThanOrEqual(33_210_733 * 0.9)
+    expect(-LAST_STAR_DELETE_CREDITS).toBeLessThanOrEqual(33_210_733)
+  })
+
+  it.each([
+    ['star', 33_210_733],
+    ['watch', 33_354_593],
+    ['follow', 11_805_728],
+    ['maintainer', 20_009_087],
+    ['writer', 19_526_126],
+    ['label', 13_742_908],
+    ['comment', 39_459_678],
+    ['review', 22_695_548],
+    ['webhook', 67_008_654],
+    ['milestone', 13_748_776],
+    ['profile', 17_234_709],
+  ])('%s uses a conservative approximation of an immediate refund', (type, refunded) => {
+    expect(-previewDelete(type as string).credits).toBeLessThanOrEqual(refunded as number)
   })
 })

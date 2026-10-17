@@ -128,6 +128,18 @@ describe('members-only branches on the branches page', () => {
     await act(async () => root.render(<RefListContent home={{ ...h, branches: [...h.branches, narrow] } as unknown as RepoHome} addr={addr} kind="branches" />))
     const row = el.querySelector('[data-testid="members-ref-row"][data-ref="sec/embargo"]')
     expect(row?.querySelector('[data-testid="narrower-ref-audience"]')?.textContent).toBe('Maintainers only · visible to 3 people')
+    // On phones the controls occupy their own wrapping row, leaving the name beside only the lock.
+    expect(row?.classList.contains('flex-wrap')).toBe(true)
+    expect(row?.classList.contains('sm:flex-nowrap')).toBe(true)
+    const name = row?.querySelector<HTMLAnchorElement>('a')
+    expect(name?.textContent).toBe('sec/embargo')
+    expect(name?.getAttribute('href')).toContain('ref=sec%2Fembargo')
+    expect(name?.className).toContain('min-w-0 flex-1 truncate')
+    const controls = row?.querySelector('[data-testid="narrower-ref-audience"]')?.parentElement
+    expect(controls?.className).toContain('flex w-full flex-wrap')
+    expect(controls?.className).toContain('sm:contents')
+    expect(controls?.querySelector('a[aria-label="Compare sec/embargo with main"]')).not.toBeNull()
+    expect(controls?.querySelector('[data-testid="narrower-ref-audience"]')?.classList.contains('shrink-0')).toBe(false)
     expect(row?.querySelector('[data-testid="members-ref-publish"]')).toBeNull()
     // the members-only branch keeps its Publish…
     expect(el.querySelector('[data-testid="members-ref-row"][data-ref="sec/fix"] [data-testid="members-ref-publish"]')).not.toBeNull()

@@ -14,7 +14,6 @@ use forge_import::budget::{collab_doc_credits, CollabDoc};
 use crate::context::Ctx;
 // `dg cost` shows exact amounts, so its rows add up to its totals.
 use crate::fmt::{cost_json, cost_line_exact, REPO_CREATE_ESTIMATE_CREDITS};
-use crate::quote::FIRST_OF_KIND_EXTRA;
 use crate::{Backend, CostCommand};
 
 /// Dispatch a `cost` subcommand.
@@ -50,7 +49,7 @@ fn prices_cmd(ctx: &Ctx) {
         json!({
             "mode": "per_operation_estimates",
             "operations": rows,
-            "note": "upper bounds: each write priced as the first of its kind (a repository's first issue, a thread's first comment), from fees measured on devnets moutai and bonsia; for what one identity has actually spent, use `dg cost audit`",
+            "note": "upper bounds: each write priced as the first of its kind (a repository's first issue, a thread's first comment), calibrated on testnet, Platform 5.0.0-rc.4 (2026-10-17); for what one identity has actually spent, use `dg cost audit`",
         }),
         || {
             println!("Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):");
@@ -64,7 +63,7 @@ fn prices_cmd(ctx: &Ctx) {
     );
 }
 
-/// `dg cost prices`' rows: upper bounds from the fees measured on moutai and bonsia
+/// `dg cost prices`' rows: upper bounds calibrated on testnet (ECON-05, 2026-10-17)
 /// (`push_fees`, the importer's calibrated collaboration model); docs/guides/costs.md has the
 /// measured table.
 fn price_table() -> [(&'static str, u64); 6] {
@@ -76,13 +75,10 @@ fn price_table() -> [(&'static str, u64); 6] {
             "pack chunk (14.7 KB)",
             push_fees::chunks(DOC_PAYLOAD_MAX as u64),
         ),
-        (
-            "issue (~500 B)",
-            collab_doc_credits(CollabDoc::Target, 500) + FIRST_OF_KIND_EXTRA,
-        ),
+        ("issue (~500 B)", collab_doc_credits(CollabDoc::Target, 500)),
         (
             "comment (~500 B)",
-            collab_doc_credits(CollabDoc::Comment, 500) + FIRST_OF_KIND_EXTRA,
+            collab_doc_credits(CollabDoc::Comment, 500),
         ),
     ]
 }
@@ -949,7 +945,8 @@ mod estimate_tests {
                 .1
         };
         assert!(row("issue") >= 120_878_000);
-        assert!(row("comment") >= collab_doc_credits(CollabDoc::Comment, 500));
+        assert_eq!(row("issue"), collab_doc_credits(CollabDoc::Target, 500));
+        assert_eq!(row("comment"), collab_doc_credits(CollabDoc::Comment, 500));
     }
 }
 

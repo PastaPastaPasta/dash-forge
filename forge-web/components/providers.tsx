@@ -4,7 +4,7 @@ import { ThemeProvider } from 'next-themes'
 import { useEffect, type ReactNode } from 'react'
 import { AuthProvider } from '@/contexts/auth-context'
 import { InboxPoller } from '@/hooks/use-inbox'
-import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
+import { dapiReadAddresses, DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { installDapiFetchGate } from '@/lib/sdk/budget'
 import { stopPrehydrationCatcher } from '@/lib/prehydration'
 import { installHashLinkHistory } from '@/lib/hash-links'
@@ -12,7 +12,7 @@ import { installSamePageLinks } from '@/hooks/use-route'
 
 // Before any component runs: every DAPI request of this page, including the Core-over-DAPI
 // calls sign-in makes before the SDK connects, goes through the shared request budget.
-installDapiFetchGate(NETWORKS[DEFAULT_NETWORK].dapiAddresses)
+installDapiFetchGate(dapiReadAddresses(NETWORKS[DEFAULT_NETWORK]))
 
 /**
  * App-wide client providers. The theme follows the OS (`prefers-color-scheme`) until the user

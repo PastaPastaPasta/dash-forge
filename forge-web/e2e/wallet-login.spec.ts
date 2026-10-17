@@ -3,7 +3,8 @@ import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers'
+import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers'
+import { deploymentFilePath } from './network'
 
 /**
  * Sign in with a mobile Dash wallet, live on a devnet (real spend), with a scripted wallet
@@ -11,7 +12,7 @@ import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers
  *
  *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test wallet-login.spec.ts
  *
- * m1. Desktop: on a devnet the wallet tile comes after Create and Import, and the request says
+ * m1. Desktop: on a devnet the wallet tile comes after Create, Import and dg, and the request says
  *     plainly that Dash Wallet answers on testnet only. The sheet shows a dash-key QR (its text is
  *     in the caption) and a countdown, and no deep link. The wallet approves (legacy key-exchange contract); the page shows QR #2
  *     (dash-st); the wallet registers the key; the page shows the identity, the "no spending
@@ -25,16 +26,23 @@ import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers
  * RELAY's keys that this run adds are disabled at the end.
  */
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=sakura E2E_WRITE=1')
+test.skip(process.env['E2E_WRITE'] !== '1', 'live writes: set E2E_DEVNET=sakura E2E_WRITE=1 (testnet: E2E_NETWORK=testnet E2E_WRITE=1 E2E_LIVE_TARGET=1)')
 test.skip(!existsSync(idFile('RELAY')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 15 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
+/** The wallet-login QR's URI: `n=t` on testnet, `n=d` on a devnet. */
+const KEY_URI = new RegExp(`^dash-key:[1-9A-HJ-NP-Za-km-z]+\\?n=${E2E_NETWORK === 'testnet' ? 't' : 'd'}&v=1$`)
+/**
+ * The sign-in tiles in order. Dash Wallet answers on testnet only, so there its tile comes first;
+ * on a devnet it comes last, after the dg tile.
+ */
+const TILE_ORDER = E2E_NETWORK === 'testnet' ? ['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'] : ['tile-create', 'tile-import', 'tile-dg', 'tile-wallet']
 const CHAIN_KEY = randomBytes(32).toString('hex')
 type Responder = typeof import('./wallet-responder.mjs')
 const responder = (): Promise<Responder> => import(pathToFileURL(join(__dirname, 'wallet-responder.mjs')).href)
 const DEPLOYMENT = (): Promise<{ default: { v2: { forgeCore: { contractId: string }; forgeCollab: { contractId: string }; forgeCommunity: { contractId: string } } } }> =>
-  import(pathToFileURL(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`)).href, { with: { type: 'json' } })
+  import(pathToFileURL(deploymentFilePath(undefined, ROOT)).href, { with: { type: 'json' } })
 
 /** The URI a QR on the page encodes (the Qr component prints it as its caption). */
 async function shownUri(page: Page, scheme: 'dash-key' | 'dash-st'): Promise<string> {
@@ -47,7 +55,7 @@ async function shownUri(page: Page, scheme: 'dash-key' | 'dash-st'): Promise<str
 async function walletAnswers(page: Page, contractId: string, label: string): Promise<void> {
   const wallet = await responder()
   const uri = await shownUri(page, 'dash-key')
-  expect(uri).toMatch(/^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=1$/)
+  expect(uri).toMatch(KEY_URI)
   const approved = await wallet.approve({ uri, identityFile: idFile('RELAY'), chainKeyHex: CHAIN_KEY, devnet: E2E_DEVNET })
   expect(approved.contractId).toBe(contractId)
   if (!approved.registered) {
@@ -66,13 +74,13 @@ test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for 
     await page.getByRole('button', { name: /^sign in$/i }).first().click()
     const wallet = page.getByTestId('tile-wallet')
     await expect(wallet).toBeVisible({ timeout: 60_000 })
-    // Not the first option on a devnet: no released wallet answers here.
+    // Not the first option on a devnet: no released wallet answers here (the dg tile sits before it).
     const order = await page.locator('[data-testid^="tile-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
-    expect(order.slice(0, 3)).toEqual(['tile-create', 'tile-import', 'tile-wallet'])
-    await expect(wallet).toContainText(/testnet/i)
+    expect(order.slice(0, TILE_ORDER.length)).toEqual(TILE_ORDER)
+    if (E2E_NETWORK !== 'testnet') await expect(wallet).toContainText(/testnet/i)
     await wallet.click()
     await expect(page.getByTestId('request-countdown')).toContainText('Expires in')
-    await expect(page.getByTestId('wallet-support')).toContainText(/arrives when Forge is on testnet/i)
+    await expect(page.getByTestId('wallet-support')).toContainText(E2E_NETWORK === 'testnet' ? /testnet development build/i : /arrives when Forge is on testnet/i)
     await expect(page.getByTestId('wallet-deep-link')).toHaveCount(0)
     await expect(page.getByText(/pairing|shows code/i)).toHaveCount(0)
     await shot(page, 'wallet-login-01-request')
@@ -125,7 +133,7 @@ test('m2. phone: "Open in DashPay (Dash Wallet)" instead of a QR', async ({ brow
   await page.getByTestId('tile-wallet').click({ timeout: 60_000 })
   const link = page.getByTestId('wallet-deep-link')
   await expect(link).toBeVisible({ timeout: 60_000 })
-  expect(await link.getAttribute('href')).toMatch(/^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=1$/)
+  expect(await link.getAttribute('href')).toMatch(KEY_URI)
   await expect(link).toHaveText(/open in dashpay \(dash wallet\)/i)
   await expect(page.getByRole('img', { name: /wallet login request/i })).toHaveCount(0)
   await expect(page.getByText(/wallet on another device/i)).toBeVisible()

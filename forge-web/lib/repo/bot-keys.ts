@@ -79,6 +79,12 @@ export interface PostKeyIo {
   store(sealed: Uint8Array, bot: string): Promise<void>
   /** The `postKey` letters this signer sent in the repository (its own kind-10 letters it can open). */
   sentLetters(): Promise<PostKeyLetter[]>
+  /**
+   * The writer of each key letter (kind 10) any other identity stored in the repository since the
+   * current key was first stated: what is on chain about letters this signer cannot open. A letter
+   * does not name its bot, so this shows that someone else sent letters, never to whom.
+   */
+  peerLetterWriters(): Promise<string[]>
 }
 
 /**
@@ -144,6 +150,26 @@ export async function missingPostKeys(io: PostKeyIo, keys: EpochKeys, bots: read
   return out
 }
 
+/**
+ * The bots the banner may say have no key for their members-only posts, and the bots it can't tell
+ * about. A bot is `missing` only when no letter on chain could have given it the key: none of this
+ * signer's own gives it, and no other maintainer has stored a key letter since the key was stated.
+ * It is `unknown` when one of the signer's own does not, but another maintainer's letter may have
+ * (a letter does not name its bot, and only its recipients can open it): no claim is made about it.
+ * `maintainers`: the identities whose key letters a bot takes (only a current maintainer's).
+ */
+export async function postKeyChecks(
+  io: PostKeyIo,
+  keys: EpochKeys,
+  bots: readonly string[],
+  maintainers: ReadonlySet<string>,
+): Promise<{ readonly missing: string[]; readonly unknown: string[] }> {
+  const own = await missingPostKeys(io, keys, bots)
+  if (own.length === 0) return { missing: [], unknown: [] }
+  const peers = (await io.peerLetterWriters()).filter((w) => w !== io.me && maintainers.has(w))
+  return peers.length === 0 ? { missing: own, unknown: [] } : { missing: [], unknown: own }
+}
+
 /** A key letter is fetched for its post key this many at once. */
 const FETCH_WINDOW = 4
 
@@ -164,6 +190,9 @@ export function sdkPostKeyIo(
   const core = repo.forge.core
   const repoId = decodeIdentifier(repo.repoId)
   const meId = decodeIdentifier(me)
+  // a letter written before the current key was stated is for an earlier key
+  const inCurrentKey = (m: { readonly createdAtBlockHeight?: number }): boolean =>
+    since === undefined || m.createdAtBlockHeight === undefined || m.createdAtBlockHeight >= since
   const usable = (keys: readonly EncKeyLike[] | null): EncKeyLike | null => usableEncryptionKey(keys ?? [], core)
   return {
     me,
@@ -197,10 +226,12 @@ export function sdkPostKeyIo(
         `${intent}:${bot}:${packHash}`,
       )
     },
+    peerLetterWriters: async () =>
+      (await readManifestsOfKind(sdk, repo, PACK_KIND.KEY_LETTER))
+        .filter((m) => m.uploader !== me && inCurrentKey(m))
+        .map((m) => m.uploader),
     sentLetters: async () => {
-      const own = (await readManifestsOfKind(sdk, repo, PACK_KIND.KEY_LETTER)).filter(
-        (m) => m.uploader === me && (since === undefined || m.createdAtBlockHeight === undefined || m.createdAtBlockHeight >= since),
-      )
+      const own = (await readManifestsOfKind(sdk, repo, PACK_KIND.KEY_LETTER)).filter((m) => m.uploader === me && inCurrentKey(m))
       if (own.length === 0) return []
       const fetched = await mapPooled(own, FETCH_WINDOW, async (m) => ({ m, bytes: await loadStoredArtifactBytes(sdk, repo, m).catch(() => null) }))
       const ownerKeys = ownerKeysOf((await fetchIdentityKeys(sdk, me)) ?? [])

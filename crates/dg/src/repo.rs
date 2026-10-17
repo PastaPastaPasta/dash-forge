@@ -1267,11 +1267,15 @@ mod tests {
     /// now agree within a few percent, and still cover the charge.
     #[test]
     fn a_fork_quote_agrees_with_the_web_dialog() {
-        let near = |dg: u64, web: u64| dg >= web && dg * 100 <= web * 106;
-        // dips on sakura (2 manifests, 5 branches): the web quoted 0.007687 (dg 0.00902).
-        assert!(near(fork_estimate(&[1, 1], 5), 768_700_000));
-        // dash (1 manifest, 606 refs): the web quoted 0.411803 (dg 0.56073).
-        assert!(near(fork_estimate(&[1], 606), 41_180_300_000));
+        let near = |dg: u64, web: u64| dg.max(web) * 100 <= dg.min(web) * 106;
+        // Reprice the historical web fixtures with ECON-05's base increases (x1.06):
+        // maintainer +2M, config +4M, each manifest +10M, each ref +5M.
+        // The two upper bounds may differ in either direction within their margins.
+        let web = |old: u64, manifests: u64, refs: u64| {
+            old + (6_000_000 + manifests * 10_000_000 + refs * 5_000_000) * 106 / 100
+        };
+        assert!(near(fork_estimate(&[1, 1], 5), web(768_700_000, 2, 5)));
+        assert!(near(fork_estimate(&[1], 606), web(41_180_300_000, 1, 606)));
         // The web's default-branch-only fork of dips (2 manifests, 1 ref) charged 0.004979.
         assert!(fork_estimate(&[1, 1], 1) >= 497_900_000);
     }

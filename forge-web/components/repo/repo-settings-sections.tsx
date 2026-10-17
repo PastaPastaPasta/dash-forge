@@ -91,6 +91,8 @@ import { EnforcedBy } from '@/components/ui/enforced-by'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { MakeRepoPublic } from '@/components/repo/make-repo-public'
+import { madePublic } from '@/components/repo/conversion-status'
+import { readMakePublicStatus } from '@/lib/repo/make-public-status'
 import { shortId } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------------------------
@@ -270,7 +272,7 @@ export function GeneralSettings({
   return (
     <Section id="general" title="General" icon={<Settings2 className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="space-y-5 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-        <VisibilityRow visibility={home.repo.visibility} />
+        <VisibilityRow home={home} />
         <div className="border-t border-anvil-100 pt-4 dark:border-anvil-850">
           <Field label="Default branch" htmlFor="default-branch" hint="What a clone checks out and what the repo page opens on.">
             <div className="flex flex-wrap items-center gap-2">
@@ -323,7 +325,18 @@ export function GeneralSettings({
  * The repo's visibility, read-only (QW2-063): GitHub lists it in Settings. It is set when the repo
  * is created; a public repo stays public, and a private one may be made public once (Danger zone).
  */
-export function VisibilityRow({ visibility }: { visibility: 'public' | 'private' }): JSX.Element {
+export function VisibilityRow({ home }: { home: RepoHome }): JSX.Element {
+  const { visibility } = home.repo
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
+  const converted = madePublic(home)
+  // Reuse the Danger zone's reader. No viewer record: describe published history, not a
+  // locally chosen mode whose history step may not have landed yet.
+  const status = useAsync(
+    () => readMakePublicStatus(sdk!, home.repo, network, null),
+    [ready, network, repoKey(home.repo), visibility, converted],
+    { enabled: converted && ready && sdk !== null },
+  )
+  const mode = status.data?.converted === true ? (status.data.mode === 'everything' ? 'Everything' : 'Code only') : null
   const isPrivate = visibility === 'private'
   const Icon = isPrivate ? Lock : Globe
   return (
@@ -332,12 +345,18 @@ export function VisibilityRow({ visibility }: { visibility: 'public' | 'private'
       <p className="mt-1 flex items-center gap-1.5 text-dense text-anvil-800 dark:text-anvil-100">
         <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <span className="font-medium">{isPrivate ? 'Private' : 'Public'}</span>
-        <span className="text-anvil-500 dark:text-anvil-400">{isPrivate ? '· set when the repo was created' : '· set when the repo was created, and permanent'}</span>
+        <span className="text-anvil-500 dark:text-anvil-400">
+          {isPrivate
+            ? '· set when the repo was created'
+            : converted
+              ? ` — made public from Private${mode === null ? '' : ` (${mode})`}`
+              : '· set when the repo was created, and permanent'}
+        </span>
       </p>
       <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
         {isPrivate
           ? 'Code, ref names, issues, pull requests, comments and reviews are encrypted to members. That the repo exists, its name, owner, description, members and how many issues and pull requests it has are public.'
-          : 'Anyone can read its code, issues and pull requests. To keep code private, create a private repo and push it there.'}
+          : "Public items are readable by everyone. Members-only items, letters and members-only branches keep their audience. A public repo can't become private again."}
       </p>
     </div>
   )

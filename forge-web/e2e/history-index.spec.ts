@@ -12,7 +12,8 @@ test.beforeEach(quorumGuard)
  *
  * `E2E_HISTORY_REPO` must name a repo whose default branch's tip a history index covers (a push
  * with this build, or `dg repo reindex`); default: the dashpay/dash showcase mirror, backfilled
- * with `dg repo reindex`. `E2E_HISTORY_MAX_DAPI` sets the cold home's request budget (default
+ * with `dg repo reindex`; on a network without that mirror (testnet, a fresh devnet) set it to a
+ * repo of your own. `E2E_HISTORY_MAX_DAPI` sets the cold home's request budget (default
  * {@link MAX_DAPI}).
  *
  * Asserted, cold (a fresh browser context: no session cache, no stored index):
@@ -29,6 +30,10 @@ test.beforeEach(quorumGuard)
  *    `E2E_BLAME_MAX_DAPI` requests. Offline on dashpay/dash 3ba0805c (history-replay.test.ts):
  *    357 chunk queries walking, 16 with the index; the live baseline was 121 s and 427 requests.
  *  - hi-3: the first History page of {@link HISTORY_PATH} comes from the index (no walk).
+ *
+ * "No walk" is at most one read-ahead block per path segment, not zero: Blame and a file's History
+ * check the index's version list against the tip's tree before serving it (`listedAt` in
+ * lib/view/path-history.ts, `pathEntryAt` in lib/view/blame.ts), and reading that tree is a block.
  */
 
 const [OWNER, NAME] = (process.env['E2E_HISTORY_REPO'] ?? 'unofficial-dashpay-dash-mirror/dash').split('/') as [string, string]
@@ -47,6 +52,9 @@ const HISTORY_PATH = process.env['E2E_HISTORY_PATH'] ?? 'src/validation.cpp'
 const MAX_BLAME_DAPI = Number(process.env['E2E_BLAME_MAX_DAPI'] ?? 50)
 /** A cold History page's requests: the page's own plus ~3. */
 const MAX_LOG_DAPI = Number(process.env['E2E_LOG_MAX_DAPI'] ?? 35)
+
+/** The read-ahead blocks the index's own check of `path` may make: one per path segment (a tree each). */
+const checkBlocks = (path: string): number => path.split('/').filter((s) => s !== '').length
 
 /** Count the history walk's read-ahead blocks (a `chunk` read of 17-19 seqs): the index removes them. */
 function walkBlocks(page: Page): { readonly n: number } {
@@ -70,7 +78,8 @@ async function settledColumn(page: Page): Promise<void> {
 }
 
 test.describe('history index (live)', () => {
-  test.skip(E2E_DEVNET !== 'moutai', 'the history-indexed repo lives on moutai')
+  // The default repo is moutai's mirror; elsewhere (testnet, sakura) only a repo named in E2E_HISTORY_REPO runs it
+  test.skip(process.env['E2E_HISTORY_REPO'] === undefined && E2E_DEVNET !== 'moutai', 'set E2E_HISTORY_REPO to a history-indexed repo on this network')
 
   test('hi-1. the home column and count come from the index: real commits on every row, an exact count, no walk', async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } })
@@ -126,7 +135,7 @@ test.describe('history index (live)', () => {
     const budget = JSON.stringify(Object.fromEntries(counts))
     test.info().annotations.push({ type: 'dapi', description: `${total} DAPI requests in ${ms} ms ${budget}` })
     await shot(page, 'hi-03-blame-from-history-index')
-    expect(blocks.n, 'history walk read-ahead blocks').toBe(0)
+    expect(blocks.n, 'history walk read-ahead blocks (beyond the index check of the path)').toBeLessThanOrEqual(checkBlocks(BLAME_PATH))
     expect(total, budget).toBeLessThanOrEqual(MAX_BLAME_DAPI)
     expect(errors, errors.join('\n')).toEqual([])
     await context.close()
@@ -149,7 +158,7 @@ test.describe('history index (live)', () => {
     const budget = JSON.stringify(Object.fromEntries(counts))
     test.info().annotations.push({ type: 'dapi', description: `${total} DAPI requests ${budget}` })
     await shot(page, 'hi-04-history-from-history-index')
-    expect(blocks.n, 'history walk read-ahead blocks').toBe(0)
+    expect(blocks.n, 'history walk read-ahead blocks (beyond the index check of the path)').toBeLessThanOrEqual(checkBlocks(HISTORY_PATH))
     expect(total, budget).toBeLessThanOrEqual(MAX_LOG_DAPI)
     expect(errors, errors.join('\n')).toEqual([])
     await context.close()

@@ -84,9 +84,12 @@ async function member(
   await unlock(page)
   await expect(page.getByTestId('encryption-key-panel')).toBeVisible({ timeout: 60_000 })
   const stored = page.getByTestId('encryption-key-stored')
-  await unlockEncryption(page, stored.or(page.locator('#enc-file')))
-  await expect(stored.or(page.locator('#enc-file')).first()).toBeVisible({ timeout: 60_000 })
+  // Without a stored key the panel opens on Recovery phrase: `#enc-file` mounts on the Identity file tab.
+  const fileTab = page.getByTestId('encryption-key-panel').getByRole('tab', { name: 'Identity file', exact: true })
+  await unlockEncryption(page, stored.or(fileTab))
+  await expect(stored.or(fileTab).first()).toBeVisible({ timeout: 60_000 })
   if (!(await stored.isVisible())) {
+    await fileTab.click()
     await page.setInputFiles('#enc-file', idFile(name))
     await expect(page.getByTestId('encryption-key-stored')).toBeVisible({ timeout: 60_000 })
   }
@@ -99,10 +102,11 @@ async function member(
     await unlockEncryption(page, decrypted.or(page.getByTestId('private-repo').filter({ hasText: /You're not one/ })))
   }
   // The repo's Settings has no inline unlock after a page load: unlock on the repo home, then
-  // open Settings in-app (a hard navigation would lock the tab's encryption key again).
+  // open Settings in-app (a hard navigation would lock the tab's encryption key again). A writer's
+  // tab for the same page is called Members.
   const settings = async (): Promise<void> => {
     await go(url(''))
-    await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^settings/i }).click()
+    await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^(settings|members)/i }).click()
     await expect(page.locator('#member-id')).toBeVisible({ timeout: 90_000 })
   }
   return { page, go, settings, close: () => context.close() }
@@ -153,7 +157,7 @@ test('1. OWNER creates a private repo in the browser: four facts, key and sealed
   await expect(page.getByTestId('private-no-key')).toHaveCount(0)
   await shot(page, '01-new-private')
   await page.getByRole('button', { name: /^create repository$/i }).click()
-  await expect(page.getByRole('dialog')).toContainText('members keep whatever they could already read')
+  await expect(page.getByRole('dialog')).toContainText(/members keep whatever they could already read/i)
   await shot(page, '02-create-confirm')
   await page.getByRole('button', { name: /sign & create/i }).click()
   // The page drops `created=1` from the bar once it has read it: match the route, not the param.
@@ -214,8 +218,9 @@ test('4. OWNER adds CONTRIB as a writer; CONTRIB reads the code and the issue', 
   const owner = await member(browser, 'OWNER')
   await owner.settings()
   await owner.page.locator('#member-id').fill(CONTRIB)
-  await expect(owner.page.getByRole('button', { name: /^add$/i })).toBeEnabled({ timeout: 60_000 })
-  await owner.page.getByRole('button', { name: /^add$/i }).click()
+  // The member form's Add comes first; a pending-invitation row below it has an Add of its own.
+  await expect(owner.page.getByRole('button', { name: /^add$/i }).first()).toBeEnabled({ timeout: 60_000 })
+  await owner.page.getByRole('button', { name: /^add$/i }).first().click()
   await owner.page.getByRole('button', { name: /sign & add/i }).click()
   await expect(owner.page.getByRole('dialog').getByText(/confirmed on platform/i)).toBeVisible({ timeout: 300_000 })
   await shot(owner.page, '07-member-added')
@@ -235,7 +240,7 @@ test('4. OWNER adds CONTRIB as a writer; CONTRIB reads the code and the issue', 
 test('5. OWNER removes CONTRIB: the warning, then delete → rotation to epoch 1', async ({ browser }) => {
   const { page, settings, close } = await member(browser, 'OWNER')
   await settings()
-  const row = page.getByTestId('private-members').locator('div', { hasText: /writer/ }).filter({ has: page.getByRole('button', { name: /remove/i }) }).last()
+  const row = page.getByTestId('private-members').locator('div').filter({ has: page.getByTestId('role-badge').filter({ hasText: /^Write$/i }) }).filter({ has: page.getByRole('button', { name: /remove/i }) }).last()
   await row.getByRole('button', { name: /remove/i }).click()
   await expect(page.getByRole('dialog')).toContainText(/rotates the repo key/)
   await page.getByRole('button', { name: /sign & remove/i }).click()

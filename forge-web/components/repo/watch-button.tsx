@@ -14,7 +14,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
 import { watchRelation, type RepoRef } from '@/lib/repo'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { creditsAsDash } from '@/lib/view/format'
+import { creditsAsDash, refundLabel } from '@/lib/view/format'
 
 export function WatchButton({ repo }: { repo: RepoRef }): JSX.Element | null {
   const { sdk, ready, network } = useSdk()
@@ -33,7 +33,7 @@ export function WatchButton({ repo }: { repo: RepoRef }): JSX.Element | null {
   if (repo.visibility === 'private' && !watching) return null
   const cost = previewCreate('watch', {})
   const refund = previewDelete('watch')
-  const price = watching ? `Unwatch · refunds up to ${creditsAsDash(-refund.credits)} DASH` : `Watch · ~${creditsAsDash(cost.credits)} DASH`
+  const price = watching ? refundLabel('Unwatch', refund.credits) : `Watch · ~${creditsAsDash(cost.credits)} DASH`
   return (
     <span className="inline-flex items-center gap-2">
       {watch.error ? (

@@ -1636,8 +1636,8 @@ function PullPage({
             </div>
           </div>
         ) : (
-          <div className="flex items-start gap-3">
-            <h1 ref={titleRef} tabIndex={-1} className="min-w-0 flex-1 break-words text-2xl outline-none">
+          <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+            <h1 ref={titleRef} tabIndex={-1} className="min-w-0 basis-full break-words text-2xl outline-none sm:flex-1">
               {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="pull-number">{numberLabel(pull.number, shownUpstreamNumber(pull, repo, thread.members))}</span>
             </h1>
             {isAuthor ? (

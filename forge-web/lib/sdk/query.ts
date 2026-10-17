@@ -321,7 +321,7 @@ async function readDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<PlainDo
  * BROWSER-BUG FIX (found by the Playwright suite, invisible to node/jsdom): the explicit
  * `documents.queryWithProof(...)` facade in evo-sdk 4.0.0 **rejects in a real browser with a
  * wasm-bindgen object** (carries `__wbg_ptr`, not a JS `Error`), breaking every live read.
- * Per S0.3 the connection is `testnetTrusted()`/`mainnetTrusted()`, and a **trusted** connect
+ * Per S0.3 the connection uses `new EvoSDK({ network, trusted: true, ... })`, and a trusted connect
  * prefetches the quorum keys and **proof-verifies every plain `.query()` internally** — so the
  * explicit `*WithProof` variant is both redundant and buggy in-browser. This delegates to the
  * plain `.query()` (still trust-minimized, proofs on), which returns cleanly in the browser.

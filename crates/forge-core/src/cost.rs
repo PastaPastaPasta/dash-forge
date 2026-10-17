@@ -78,9 +78,10 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
 ///
 /// Every figure is at or above what the calibration paid, so the estimate is an upper bound:
 /// 1.08-1.16x the charge on a first import of 5 MiB or more, 1.08-1.27x on a 1-3 MiB one (the
-/// beta.6 showcase), up to 1.4x on a tiny first push (more on a young network, see
+/// beta.6 showcase), up to 1.6x on a tiny first push (more on a young network, see
 /// [`push_fees::CHUNK_FLAT`]),
-/// up to about 1.7x on a small later one.
+/// up to about 1.85x on a small later one. The tiny-push ratios grew when ECON-05 raised the
+/// first-write bounds to the testnet contracts' charges (Platform rc.4, 2026-10-17).
 pub mod push_fees {
     /// Credits per byte of a `chunk` document's signed transition (storage, its processing,
     /// and the chunk's own index entries growing with it). Measured 27,450-27,650.
@@ -116,8 +117,9 @@ pub mod push_fees {
     /// `estimateChunkCredits` pins the same figure.
     pub const CHUNK_OVERHEAD_BYTES: u64 = 130;
     /// A `packManifest`, the first of a push into a repository or ref that has none of its
-    /// kind yet (its index subtrees are created). Measured 109.3-110.2M.
-    pub const MANIFEST_FIRST: u64 = 112_000_000;
+    /// kind yet (its index subtrees are created). ECON-05 measured 129.46M on
+    /// dash-testnet-51, Platform 5.0.0-rc.4, SDK rc.3 (2026-10-17); later 81.07-81.77M.
+    pub const MANIFEST_FIRST: u64 = 140_000_000;
     /// A `packManifest` into a repository that already has one: 85.5-87.4M on bonsia
     /// (drive 4.2.0-beta.7, QA wave 3). What a fork's later manifests pay.
     pub const MANIFEST_LATER: u64 = 90_000_000;
@@ -300,6 +302,18 @@ mod tests {
         STORAGE_CREDIT_PER_BYTE, STORAGE_PROCESSING_PER_BYTE, WRITE_BASE,
     };
 
+    /// ECON-05: one chunk/manifest/ref at a time on dash-testnet-51, rc.4, 2026-10-17.
+    #[test]
+    fn push_bounds_cover_testnet_calibration() {
+        use super::push_fees::{MANIFEST_FIRST, MANIFEST_LATER, REF_FIRST};
+        // Checked at compile time: the constants themselves.
+        const _: () = assert!(MANIFEST_FIRST >= 129_455_720);
+        const _: () = assert!(MANIFEST_FIRST <= 129_455_720 * 110 / 100);
+        const _: () = assert!(MANIFEST_LATER >= 81_766_040);
+        const _: () = assert!(REF_FIRST >= 89_178_000);
+        assert!(chunks(128) >= 92_651_320);
+    }
+
     /// Two sealed artifacts cost no more than [`sealed_parts_chunks`] of their total, however
     /// the bytes split between them (the forge-import fallback prices a history index so).
     #[test]
@@ -353,8 +367,8 @@ mod tests {
     /// L-11 / D-311 / D-700: every push recorded on moutai (drive 4.2.0-beta.5, 2026-09-27/28,
     /// an identity nothing else spent from) with what it paid: the sum of its writes'
     /// balance deltas, or its balance change rounded up. The estimate must be an upper bound;
-    /// within +40% of the charge on a push into a new repository or ref (the case the
-    /// first-write fees price), within +70% on a later one (existing index subtrees pay less).
+    /// within +60% of the charge on a push into a new repository or ref (the case the
+    /// first-write fees price), within +85% on a later one (existing index subtrees pay less).
     /// These landed on a young chunk tree, so the flat's depth allowance ([`CHUNK_TREE_LEVELS`])
     /// is mostly headroom here.
     #[test]
@@ -380,6 +394,11 @@ mod tests {
             (205_126, 4, 1, 0, true, false, 7_025_000_000, true),   // 200 KiB, new repo
             (1_536_767, 3, 1, 0, true, false, 50_125_000_000, false), // 1.5 MiB (105 chunks)
         ];
+        // The ceilings are looser than the beta.5 data alone would need: ECON-05 raised the
+        // first-write bounds to cover the testnet contracts (Platform rc.4, 2026-10-17), whose
+        // first writes cost more than these beta.5 pushes did. Covering what was paid stays
+        // strict. Every run is checked, so one failure shows them all.
+        let mut problems = Vec::new();
         for &(bytes, objects, refs, targets, platform, sealed, paid, first) in RUNS {
             let est = estimate_push(&PushShape {
                 sealed,
@@ -388,12 +407,14 @@ mod tests {
             .total();
             #[allow(clippy::cast_precision_loss)]
             let ratio = est as f64 / paid as f64;
-            let cap = if first { 1.4 } else { 1.7 };
-            assert!(
-                est >= paid && ratio <= cap,
-                "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3})"
-            );
+            let cap = if first { 1.6 } else { 1.85 };
+            if est < paid || ratio > cap {
+                problems.push(format!(
+                    "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3}, cap {cap})"
+                ));
+            }
         }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
         // A new ref at a stored commit (no pack): paid 65,783,120; a first protected ref
         // update 87,714,300; the first of a private push's refs 90,039,140.
         for paid in [65_783_120, 87_714_300, 90_039_140] {

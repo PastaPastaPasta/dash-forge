@@ -52,14 +52,17 @@ test('the owner never gets the plain Add or Remove on a private repo', async ({ 
   await noPlainPath(page)
 })
 
-test('signed out: the Collaborators section of a private repo offers no Add or Remove', async ({ browser }) => {
+test('signed out: the settings of a private repo show its private-repo state, with no Members and no Add or Remove', async ({ browser }) => {
   test.skip(repoName === null, 'no private-smoke repo on this devnet')
   const page = await (await browser.newContext()).newPage()
   await page.goto(`/repo/settings/?owner=${OWNER}&name=${repoName}`, { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
-  const members = page.getByRole('region', { name: 'Members' })
-  await expect(members).toBeVisible({ timeout: 90_000 })
-  await expect(members.getByRole('button', { name: /^(add|remove)$/i })).toHaveCount(0)
+  // A signed-out reader, an outsider or a bot gets the private-repo state in place of the whole
+  // settings page (components/repo/settings-content.tsx), so there is no Members region to find.
+  await expect(page.getByTestId('private-repo')).toBeVisible({ timeout: 90_000 })
+  await expect(page.getByTestId('private-signed-out')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Members' })).toHaveCount(0)
+  await expect(page.locator('main').getByRole('button', { name: /^(add|remove)$/i })).toHaveCount(0)
 })
 
 async function noPlainPath(page: Page): Promise<void> {

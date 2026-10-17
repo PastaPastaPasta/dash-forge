@@ -105,6 +105,11 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByRole('button', { name: /create this browser's key/i }).click()
+  // The sheet does not unlock by itself: it says the words belong to a key it already holds, and
+  // the user chooses "Unlock it instead" (or Replace, which this test must not).
+  const offer = page.getByTestId('import-already-stored')
+  await expect(offer).toContainText('These words belong to an identity this browser already holds a key for', { timeout: 60_000 })
+  await offer.getByRole('button', { name: 'Unlock it instead' }).click()
   await expect(page.getByText('This browser holds a key for')).toBeVisible({ timeout: 60_000 })
   expect(writes).toEqual([])
   expect((await sdk.identities.fetch(identityId)).publicKeys.length).toBe(after)

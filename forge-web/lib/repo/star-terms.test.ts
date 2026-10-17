@@ -15,8 +15,8 @@ describe('starTerms', () => {
     const t = starTerms('fused', true, true)
     expect(t.trendingNote).toBe(' · counts toward Trending')
     expect(t.beats).toBe(false)
-    // Priced as an upper bound until the fused shape is re-measured.
-    expect(t.priceBeat).toBe(true)
+    // ECON-05 calibrated the fused star itself; it writes and prices no separate beat.
+    expect(t.priceBeat).toBe(false)
   })
 
   it('fused, signed out (no beat allowed for an empty viewer): same label', () => {
