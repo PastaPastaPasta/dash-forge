@@ -23,6 +23,8 @@ export const DOCS = {
   devnetMove: `${GUIDES}/devnet-move.md`,
   /** Which mixed-visibility features are beta, and the limits that apply to all of them (the Beta badge's link). */
   knownLimitations: `${GUIDES}/collaborating.md#known-limitations`,
+  /** What to do when a key may be compromised (disable all other keys, replace the encryption key). */
+  revokeKeys: `${GUIDES}/revoke-keys.md`,
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
   /** What the hosted site hides from discovery and what that does and does not mean (not protocol moderation). */
