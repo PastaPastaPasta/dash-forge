@@ -45,7 +45,7 @@ export interface NetworkConfig {
   readonly devnetName: string | null
   /** Deployment key / display label: `testnet`, `mainnet`, or `devnet-<name>`. */
   readonly key: string
-  /** Devnet DAPI endpoints (`https://host:port`); empty = discovered by the SDK. */
+  /** Recorded DAPI endpoints (`https://host:port`). Testnet/devnet use these for reads (empty = SDK discovery); mainnet uses them only to cross-check quorum keys. */
   readonly dapiAddresses: readonly string[]
   /** Devnet quorum service URL; null = `https://quorums.<name>.networks.dash.org`. */
   readonly quorumBaseUrl: string | null
@@ -207,6 +207,11 @@ export const DEFAULT_NETWORK: Network = RESOLVED.active
 
 /** Per-network config (the active network's carries any build-time overrides). */
 export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = RESOLVED.networks
+
+/** SDK bootstrap and fetch-gate failover nodes. Mainnet retains the SDK's built-in seeds. */
+export function dapiReadAddresses(config: NetworkConfig): readonly string[] {
+  return config.network === 'mainnet' ? [] : config.dapiAddresses
+}
 
 /**
  * Where a trusted evo-sdk connection fetches the quorum public keys every proof is checked

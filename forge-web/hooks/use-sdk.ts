@@ -52,8 +52,8 @@ const getContractsMissing = (): string | null => evoSdkService.contractsMissing
 const SERVER_STATUS: SdkStatus = { phase: 'idle' }
 
 /**
- * The raw error of the read that found this build's forge contracts absent from the network (a
- * devnet reset), or null. The app shell shows one state for it instead of every view's error.
+ * Evidence that a fresh proof-verified fetch found this build's Forge contract absent, or null.
+ * Unproved refusals stay retryable in the view; only proved absence replaces the app's pages.
  */
 export function useContractsMissing(): string | null {
   return useSyncExternalStore(subscribe, getContractsMissing, () => null)
