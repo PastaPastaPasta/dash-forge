@@ -1,7 +1,8 @@
 /**
  * "The contracts this build reads are not on the network": a devnet was reset, or a build names
  * contracts its network never had. Platform answers a read that names a missing contract with
- * an error, not an empty result, and a retry can never succeed.
+ * an error, not an empty result. An unproved refusal can also come from a node that is behind;
+ * the service corroborates it before reporting contracts missing app-wide.
  *
  * wasm-sdk 4.2.0-beta.7 gives this no code of its own. Drive's refusal reaches JS as a
  * `WasmSdkError` of kind `DapiClientError` with `code` -1, and its gRPC status
@@ -18,7 +19,7 @@ import { errorMessage } from '../utils'
 
 const CONTRACT_MISSING = /contract not found (?:error|when querying|for a document query)|\bdata contract not found\b/i
 
-/** Whether `e` says the contract a read named does not exist on the network. */
+/** Whether `e` reports a missing contract (not necessarily a proved network-wide absence). */
 export function isContractMissingError(e: unknown): boolean {
   return CONTRACT_MISSING.test(errorMessage(e, ''))
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 // The build under test targets devnet moutai, whose deployment file names the forge contracts.
@@ -8,9 +8,14 @@ vi.hoisted(() => {
 })
 vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmProgress: () => () => undefined }))
 
+vi.mock('../constants', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../constants')>()
+  return { ...actual, NETWORKS: { ...actual.NETWORKS, get devnet() { return actual.NETWORKS.devnet } } }
+})
+
 import { NETWORKS } from '../constants'
 import { isContractMissingError } from './contract-missing'
-import { EvoSdkService, type Connection } from './service'
+import { EvoSdkService, MAX_CONTRACT_MISSING_NODES, type Carry, type Connection, type EvoSdkConfig } from './service'
 import { isUnreachableError } from './unreachable'
 
 /**
@@ -52,6 +57,11 @@ describe('isContractMissingError', () => {
 })
 
 describe('EvoSdkService: the forge contracts are not on the network', () => {
+  const services: EvoSdkService[] = []
+  afterEach(() => {
+    services.splice(0).forEach((service) => service.cleanup())
+    vi.restoreAllMocks()
+  })
   const forge = NETWORKS.devnet.v2!
   const OTHER = 'CErHv5FHjnXJ1Zv6TNmtWirzELYbz8H7rinvn4UtQFZQ'
 
@@ -66,7 +76,8 @@ describe('EvoSdkService: the forge contracts are not on the network', () => {
   async function connected(
     error: unknown,
     fetched: () => Promise<unknown> = async () => undefined,
-  ): Promise<{ service: EvoSdkService; sdk: EvoSDK; notified: () => number; confirms: () => number }> {
+    probeFetched: () => Promise<unknown> = fetched,
+  ) {
     const fail = vi.fn(async () => {
       throw error
     })
@@ -77,22 +88,33 @@ describe('EvoSdkService: the forge contracts are not on the network', () => {
       wasm: { free: vi.fn() },
       version: () => 14,
     } as unknown as EvoSDK
-    const service = new EvoSdkService(async (): Promise<Connection> => ({ sdk: raw, seeded: new Map() }))
+    const probes: string[] = []
+    const freed = vi.fn()
+    const connector = async (_config: EvoSdkConfig, _carry: Carry, _signal: AbortSignal, address?: string): Promise<Connection> => {
+      if (address === undefined) return { sdk: raw, seeded: new Map() }
+      probes.push(address)
+      return {
+        sdk: { contracts: { fetch: probeFetched }, wasm: { free: freed } } as unknown as EvoSDK,
+        seeded: new Map(),
+      }
+    }
+    const service = new EvoSdkService(connector)
+    services.push(service)
     await service.initialize({ network: 'devnet', contractIds: [] })
     let n = 0
     service.subscribe(() => n++)
-    return { service, sdk: service.getSdk(), notified: () => n, confirms: () => fetch.mock.calls.length }
+    return { service, sdk: service.getSdk(), notified: () => n, confirms: () => fetch.mock.calls.length, probes, freed }
   }
 
   const readCore = (sdk: EvoSDK) => sdk.documents.query({ dataContractId: forge.core, documentTypeName: 'repo' } as never)
 
-  it('one failed read of forge-core, confirmed absent, reports it app-wide, once, with the raw error kept', async () => {
+  it('one failed read of forge-core, confirmed absent, reports the proved absence app-wide, once', async () => {
     const { service, sdk, notified, confirms } = await connected(wasmError(RESET_DEVNET_ERROR))
     expect(service.contractsMissing).toBeNull()
     await expect(readCore(sdk)).rejects.toBeDefined()
     await flush()
     expect(confirms()).toBe(1)
-    expect(service.contractsMissing).toBe(RESET_DEVNET_ERROR)
+    expect(service.contractsMissing).toBe(`Platform proved contract ${forge.core} absent: ${RESET_DEVNET_ERROR}`)
     expect(notified()).toBe(1)
     // Later failures (every other widget's read) neither check nor notify again.
     await expect(sdk.documents.query({ dataContractId: forge.collab, documentTypeName: 'issue' } as never)).rejects.toBeDefined()
@@ -104,14 +126,18 @@ describe('EvoSdkService: the forge contracts are not on the network', () => {
     expect(service.contractsMissing).toBeNull()
   })
 
-  it('a confirmation refused the same way counts; concurrent failures share one confirmation', async () => {
-    const { service, sdk, confirms } = await connected(wasmError(RESET_DEVNET_ERROR), async () => {
+  it('corroborates refusals on bounded distinct endpoints; concurrent failures share one check', async () => {
+    const { service, sdk, confirms, probes, freed } = await connected(wasmError(RESET_DEVNET_ERROR), async () => {
       throw wasmError(RESET_DEVNET_ERROR)
     })
     await Promise.allSettled([readCore(sdk), readCore(sdk), readCore(sdk)])
     await flush()
     expect(confirms()).toBe(1)
-    expect(service.contractsMissing).toBe(RESET_DEVNET_ERROR)
+    expect(probes).toEqual([...new Set(NETWORKS.devnet.dapiAddresses)].slice(0, MAX_CONTRACT_MISSING_NODES))
+    expect(probes).toHaveLength(MAX_CONTRACT_MISSING_NODES)
+    expect(freed).toHaveBeenCalledTimes(probes.length)
+    expect(service.contractsMissing).toBe(`${probes.length} nodes answered that contract ${forge.core} does not exist (unproved refusals): ${RESET_DEVNET_ERROR}`)
+    expect(service.generation).toBe(1)
   })
 
   it('one node that is behind (the contract fetches after all) does not blank the app', async () => {
@@ -131,6 +157,60 @@ describe('EvoSdkService: the forge contracts are not on the network', () => {
     await expect(readCore(offline.sdk)).rejects.toBeDefined()
     await flush()
     expect(offline.service.contractsMissing).toBeNull()
+  })
+
+  it('a fresh endpoint that finds the contract prevents the permanent state', async () => {
+    const refusal = async (): Promise<unknown> => { throw wasmError(RESET_DEVNET_ERROR) }
+    const probe = vi.fn(refusal)
+      .mockRejectedValueOnce(wasmError(RESET_DEVNET_ERROR))
+      .mockResolvedValueOnce({ id: forge.core })
+    const { service, sdk, probes, freed } = await connected(wasmError(RESET_DEVNET_ERROR), refusal, probe)
+    await expect(readCore(sdk)).rejects.toBeDefined()
+    await flush()
+    expect(probes).toHaveLength(2)
+    expect(freed).toHaveBeenCalledTimes(2)
+    expect(service.contractsMissing).toBeNull()
+    expect(service.generation).toBe(1)
+  })
+
+  it('mixed endpoint failures remain an ordinary error', async () => {
+    const refusal = async (): Promise<unknown> => { throw wasmError(RESET_DEVNET_ERROR) }
+    const probe = vi.fn(refusal)
+      .mockRejectedValueOnce(wasmError(RESET_DEVNET_ERROR))
+      .mockRejectedValueOnce(new Error('transport error: tcp connect error'))
+    const { service, sdk, probes } = await connected(wasmError(RESET_DEVNET_ERROR), refusal, probe)
+    await expect(readCore(sdk)).rejects.toBeDefined()
+    await flush()
+    expect(probes).toHaveLength(2)
+    expect(service.contractsMissing).toBeNull()
+  })
+
+  it.each([{ addresses: [] }, { addresses: ['https://127.0.0.1:1443'] }, { addresses: ['https://127.0.0.1:1443', 'https://127.0.0.1:1443'] }])(
+    'a pool with fewer than two distinct endpoints cannot corroborate unproved refusals (%j)',
+    async ({ addresses }) => {
+      vi.spyOn(NETWORKS, 'devnet', 'get').mockReturnValue({ ...NETWORKS.devnet, dapiAddresses: addresses })
+      const refusal = async (): Promise<unknown> => { throw wasmError(RESET_DEVNET_ERROR) }
+      const { service, sdk } = await connected(wasmError(RESET_DEVNET_ERROR), refusal)
+      await expect(readCore(sdk)).rejects.toBeDefined()
+      await flush()
+      expect(service.contractsMissing).toBeNull()
+    },
+  )
+
+  it('cleanup discards an in-flight confirmation and frees its probe', async () => {
+    let finish: (value: unknown) => void = () => undefined
+    const pending = new Promise((resolve) => { finish = resolve })
+    const refusal = async (): Promise<unknown> => { throw wasmError(RESET_DEVNET_ERROR) }
+    const { service, sdk, probes, freed } = await connected(wasmError(RESET_DEVNET_ERROR), refusal, () => pending)
+    await expect(readCore(sdk)).rejects.toBeDefined()
+    await flush()
+    expect(probes).toHaveLength(1)
+    service.cleanup()
+    finish(undefined)
+    await flush()
+    expect(probes).toHaveLength(1)
+    expect(freed).toHaveBeenCalledOnce()
+    expect(service.contractsMissing).toBeNull()
   })
 
   it("another contract's absence (a repo's, the wallet key exchange) stays that view's error", async () => {
