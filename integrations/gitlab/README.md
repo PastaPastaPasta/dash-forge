@@ -9,10 +9,10 @@ The full walk-through, with the variables to set and what is and is not mirrored
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.1.0/integrations/gitlab/dash-forge-mirror.yml
+  - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.2.0/integrations/gitlab/dash-forge-mirror.yml
 variables:
   FORGE_REPO: dash://<owner identity id>/<repo name>
-  FORGE_VERSION: "0.1.0"
+  FORGE_VERSION: "0.2.0"
 ```
 
 To run code that is not in a release, pin a commit you have reviewed in the URL and set `FORGE_SOURCE_REF: <the same commit>` instead of `FORGE_VERSION`: the job builds the tools from it (several minutes the first time).
@@ -20,7 +20,7 @@ To run code that is not in a release, pin a commit you have reviewed in the URL 
 | Variable | Default | Meaning |
 |---|---|---|
 | `FORGE_REPO` | (required) | The destination, `dash://<owner>/<name>`. Nothing runs while it is empty. |
-| `FORGE_NETWORK`, `FORGE_DEVNET_NAME` | `devnet`, `sakura` | The network. |
+| `FORGE_NETWORK`, `FORGE_DEVNET_NAME` | `testnet`, empty | The network (`mainnet`, `testnet`, or `devnet` with a name for development). |
 | `FORGE_VERSION` | empty | A Dash Forge release to install, checked against its `SHA256SUMS`. |
 | `FORGE_SOURCE_REF` | empty | A reviewed dash-forge commit to build when no release is set or installable. One of the two is required. |
 | `FORGE_STORAGE_KIND` | `platform` | `s3` to put packs in your bucket (`FORGE_S3_ENDPOINT`, `_REGION`, `_BUCKET`, `_PUBLIC_URL`, `_PREFIX`, `_VIRTUAL_HOSTED`, and `FORGE_REPLICAS`), with the `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` variables. |

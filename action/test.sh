@@ -142,7 +142,7 @@ validate() {
         INPUT_REPO=alice/project INPUT_GITHUB_REPO=alice/project INPUT_NETWORK=mainnet \
         INPUT_DEVNET_NAME='' INPUT_SYNC=code,releases INPUT_STORAGE_KIND=platform \
         INPUT_REPLICAS=1 INPUT_COST_CAP=0.05 INPUT_DRY_RUN=false INPUT_INSTALL=true \
-        INPUT_STATE_CACHE=true INPUT_VERSION=0.1.0 INPUT_S3_ENDPOINT='' INPUT_S3_BUCKET='' \
+        INPUT_STATE_CACHE=true INPUT_VERSION=0.2.0 INPUT_S3_ENDPOINT='' INPUT_S3_BUCKET='' \
         INPUT_S3_REGION='' INPUT_S3_PUBLIC_URL='' INPUT_S3_PREFIX='' INPUT_PINNING_ENDPOINT='' \
         "$@" bash "$here/validate.sh" >"$tmp/val" 2>&1
 }
@@ -162,10 +162,10 @@ good INPUT_REPO=project INPUT_SYNC=code,issues,prs,releases,labels INPUT_COST_CA
 good INPUT_GITHUB_REPO=https://github.com/alice/project.js
 good INPUT_NETWORK=devnet INPUT_DEVNET_NAME=moutai
 expect vout 'devnet-name=moutai'
-# devnet-name has a default, so it is ignored (and not passed on) for the other networks.
-good INPUT_NETWORK=testnet INPUT_DEVNET_NAME=sakura
+# devnet-name is ignored (and not passed on) for the other networks.
+good INPUT_NETWORK=testnet INPUT_DEVNET_NAME=examplenet
 expect vout 'devnet-name='
-reject vout 'sakura'
+reject vout 'examplenet'
 good INPUT_INSTALL=source INPUT_VERSION=latest
 good INPUT_INSTALL=false INPUT_VERSION=''
 good INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.r2.cloudflarestorage.com INPUT_S3_BUCKET=forge
@@ -314,16 +314,17 @@ case="mirror s3 without secrets"
 if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3; then fail "accepted"; fi
 expect log 'S3_SECRET_ACCESS_KEY'
 
-# action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and the
+# action.yml's defaults: a network Forge is deployed on (testnet, no devnet name), and the
 # release cut from this commit (the workspace version), which install 'true' downloads.
 case="action.yml defaults"
 default_of() {
     awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
 }
-[ "$(default_of network)" = devnet ] || fail "network defaults to '$(default_of network)'"
+[ "$(default_of network)" = testnet ] || fail "network defaults to '$(default_of network)'"
 devnet_default=$(default_of devnet-name)
-[ -f "$here/../forge-contracts/deployments/devnet-$devnet_default.json" ] ||
-    fail "no deployment for the default devnet '$devnet_default'"
+[ -z "$devnet_default" ] || fail "devnet-name defaults to '$devnet_default', not empty"
+[ -f "$here/../forge-contracts/deployments/$(default_of network).json" ] ||
+    fail "no deployment file for the default network '$(default_of network)'"
 [ "$(default_of install)" = true ] || fail "install defaults to '$(default_of install)'"
 # The release this Action version pins is the one cut from this commit: the workspace version.
 workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
@@ -332,7 +333,7 @@ workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/
 [ "$(default_of build-cache)" = true ] || fail "build-cache defaults to '$(default_of build-cache)'"
 # The defaults pass validation as they are.
 good INPUT_NETWORK="$(default_of network)" INPUT_DEVNET_NAME="$devnet_default" INPUT_VERSION="$(default_of version)"
-expect vout "devnet-name=$devnet_default"
+expect vout "devnet-name="
 
 # install-forge.sh with stub curl, cargo, protoc and uname, on a PATH without the real ones.
 ib="$tmp/ibin"

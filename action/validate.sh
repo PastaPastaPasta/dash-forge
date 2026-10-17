@@ -33,8 +33,7 @@ match github-repo "${INPUT_GITHUB_REPO:-}" \
     '^((https://)?github\.com/)?[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$' \
     "must be owner/repo, github.com/owner/repo or https://github.com/owner/repo"
 
-# devnet-name has a default (the hosted site's devnet), so it is used, and checked, only for
-# network devnet; for the others it is ignored. The step's `devnet-name` output is the value in
+# devnet-name is used, and checked, only for network devnet; for the others it is ignored. The step's `devnet-name` output is the value in
 # effect ('' unless devnet), for the cache keys and mirror.sh.
 devnet_name=''
 case "${INPUT_NETWORK:-}" in

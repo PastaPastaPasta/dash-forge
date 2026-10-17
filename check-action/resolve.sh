@@ -91,9 +91,8 @@ summary=$(printf '%s' "$summary" | tr '\n\r' '  ')
 # 2000 bytes.
 [[ ${#summary} -le 500 ]] || summary="${summary:0:497}..."
 
-# The default is the devnet the hosted site targets. devnet-name has a default too, so it is
-# used, and checked, only for network devnet.
-network="${INPUT_NETWORK:-devnet}"
+# The default is testnet. devnet-name is used, and checked, only for network devnet.
+network="${INPUT_NETWORK:-testnet}"
 devnet="${INPUT_DEVNET_NAME:-}"
 case "$network" in
   mainnet|testnet) ;;
