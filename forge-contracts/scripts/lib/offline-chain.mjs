@@ -135,15 +135,26 @@ export class OfflineChain {
     );
     if (found.length === 0) return 40120;
     // A `where` entry is a property of the referring document (a path), or on a four-contract set
-    // a literal test on the found document's: { const }, { in: [..] } or { greaterThanOrEqual }.
-    const holds = (v, e) => {
+    // a literal test on the found document's: { const }, { in: [..] } or { greaterThanOrEqual },
+    // whose bound is a path or { const: <number> } (PV14 refuses a bare number at registration;
+    // book refers-to.md "Conditions"). The chain reads a literal on an identifier as base58 and on
+    // a byte array as hex, which this view (hex ids, hex bytes) does not reproduce, so a literal on
+    // either stops the run rather than mismatching silently.
+    const unmodelled = (e) => new Error(`offline chain: where ${JSON.stringify(e)} is not modelled`);
+    const holds = (k, v, e) => {
       if (typeof e === 'string') return v === get(view, e);
+      const prop = this.lookup.propSchema(ref.documentType, k);
+      if (prop?.byteArray || this.lookup.isIdentifier(ref.documentType, k)) throw unmodelled(e);
       if ('const' in e) return v === e.const;
       if ('in' in e) return e.in.includes(v);
-      if ('greaterThanOrEqual' in e) return v >= (typeof e.greaterThanOrEqual === 'string' ? get(view, e.greaterThanOrEqual) : e.greaterThanOrEqual);
-      throw new Error(`offline chain: where ${JSON.stringify(e)} is not modelled`);
+      if ('greaterThanOrEqual' in e) {
+        const b = e.greaterThanOrEqual;
+        if (typeof b === 'string') return v !== undefined && get(view, b) !== undefined && v >= get(view, b);
+        if (b !== null && typeof b === 'object' && typeof b.const === 'number') return v !== undefined && v >= b.const;
+      }
+      throw unmodelled(e);
     };
-    const agrees = (t) => Object.entries(ref.where ?? {}).every(([k, e]) => holds(get(t.view, k), e));
+    const agrees = (t) => Object.entries(ref.where ?? {}).every(([k, e]) => holds(k, get(t.view, k), e));
     return found.some(agrees) ? null : 40127;
   }
 

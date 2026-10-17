@@ -1471,6 +1471,13 @@ def flags_from(off='', on=''):
     return flags
 
 
+def mainnet_flags(off='', on=''):
+    """The `--mainnet` flags: every MAINNET_BUILT item plus `on`, with `off` applied last, so
+    `--mainnet --off X` builds the mainnet set without X."""
+    offs = set(filter(None, off.split(',')))
+    return flags_from(off, ','.join([*filter(None, on.split(',')), *(k for k in MAINNET_BUILT if k not in offs)]))
+
+
 def validate(validator, contracts, vectors=None):
     """Run tools/contract-validate (its binary) on `contracts`, in registration order; return
     (exit code, its output, {name: (contract bytes, create-transition bytes)})."""
@@ -1518,12 +1525,9 @@ def main():
     a = ap.parse_args()
     if a.check and (a.mainnet or a.out):
         sys.exit('--check compares the committed builds: run it alone')
-    on = a.on
-    if a.mainnet:
-        on = ','.join(filter(None, [on, *MAINNET_BUILT]))
     # a variant is the user's own --off/--on; --mainnet alone is the committed four-contract build
     variant = bool(a.off or a.on)
-    contracts = build(flags_from(a.off, on))
+    contracts = build(mainnet_flags(a.off, a.on) if a.mainnet else flags_from(a.off, a.on))
     if a.out:
         out_dir = a.out
     elif a.mainnet and not variant:
@@ -1548,7 +1552,7 @@ def main():
         for p in stale:
             print(f'stale: {os.path.relpath(p)} (re-run forge-contracts/schema/build.py)')
         # the four-contract set: exactly what `build.py --mainnet` writes, and nothing else in the directory
-        four = build(flags_from('', ','.join(MAINNET_BUILT)))
+        four = build(mainnet_flags())
         for n, c in four.items():
             p = os.path.join(MAINNET_DIR, f'{n}.json')
             if not os.path.exists(p) or open(p).read() != dumps(c):
