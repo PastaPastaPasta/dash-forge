@@ -551,7 +551,10 @@ async function rankedForked(sdk: EvoSDK, forge: ForgeIds, network: Network, limi
   const parentOwners = new Map([...got.byId.values()].map((r) => [r.key, r.ownerId]))
   const raw = new Map(page.entries.map((e) => [e.group, e.count]))
   const held = new Map<string, number>()
-  for (const d of got.forkRows ?? []) held.set(asIdentifierString(d['forkOf']), (held.get(asIdentifierString(d['forkOf'])) ?? 0) + 1)
+  for (const d of got.forkRows ?? []) {
+    const parent = asIdentifierString(d['forkOf'])
+    held.set(parent, (held.get(parent) ?? 0) + 1)
+  }
   // Groups the lookup did not hold whole (or all of them, when it was refused) are read on their
   // own, a few at a time, most forks first. A hidden repo is never listed, so its forks are not
   // read. A group whose raw fork count is below the `limit`-th best owner count known so far is
@@ -562,8 +565,7 @@ async function rankedForked(sdk: EvoSDK, forge: ForgeIds, network: Network, limi
   for (const id of ids) if (byId.has(id) && (held.get(id) ?? 0) >= (raw.get(id) ?? 0)) exact.set(id, heldOwners.get(id)?.size ?? 0)
   const bar = (): number => [...exact.values()].sort((a, b) => b - a)[limit - 1] ?? 0
   const pending = ids.filter((id) => byId.has(id) && !exact.has(id)).sort((a, b) => (raw.get(b) ?? 0) - (raw.get(a) ?? 0))
-  const unheld: string[] = []
-  const own: { id: string; documents: PlainDocument[] }[] = []
+  const own:{ id: string; documents: PlainDocument[] }[] = []
   for (let at = 0; at < pending.length; at += FORK_READ_PARALLEL) {
     const batch = pending.slice(at, at + FORK_READ_PARALLEL).filter((id) => (raw.get(id) ?? 0) >= bar())
     if (batch.length === 0) break
@@ -580,12 +582,11 @@ async function rankedForked(sdk: EvoSDK, forge: ForgeIds, network: Network, limi
       ).documents,
     }))
     for (const o of fetched) {
-      unheld.push(o.id)
       own.push(o)
       exact.set(o.id, forkOwnersByParent(o.documents, parentOwners).get(o.id)?.size ?? 0)
     }
   }
-  const readOwn = new Set(unheld)
+  const readOwn = new Set(own.map((o) => o.id))
   // This group's partial rows are replaced by the group's own read.
   const rows = [...(got.forkRows ?? []).filter((d) => !readOwn.has(asIdentifierString(d['forkOf']))), ...own.flatMap((o) => o.documents)]
   const approximate = own.some((o) => o.documents.length >= MAX_ROWS && (raw.get(o.id) ?? 0) > MAX_ROWS)

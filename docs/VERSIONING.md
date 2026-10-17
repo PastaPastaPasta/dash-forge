@@ -44,7 +44,7 @@ A release works with the forge-v2 contracts registered on each network, and thei
 - `contracts/<network>.json`: a snapshot of the registered contracts, which the web app bundles;
 - `fixtures/<network>.json`: the seeded test data the end-to-end suites read.
 
-A release works on the networks that have a live deployment in that directory at the time it is tagged. Tools from an older release do not know about a later registration. So a devnet reset, a move to a new devnet, or a re-registration of the contracts can require a new release. That happened when Forge moved to devnet sakura: tools built for the previous devnet do not work there ([Dash Forge moved to devnet sakura](guides/devnet-move.md)). On a network without a deployment, every tool stops with a "not deployed" error ([E702](errors.md#e702)) and never falls back to another network's contracts.
+A release works on the networks that have a live deployment in that directory at the time it is tagged. Tools from an older release do not know about a later registration. So a devnet reset, a move to a new devnet, or a re-registration of the contracts can require a new release. That happened when Forge moved to devnet sakura: tools built for the previous devnet do not work there ([Dash Forge moved to devnet sakura](archive/devnet-move.md)). On a network without a deployment, every tool stops with a "not deployed" error ([E702](errors.md#e702)) and never falls back to another network's contracts.
 
 ## How a release is cut
 

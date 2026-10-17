@@ -5,9 +5,9 @@
 #
 # No network, no keys: identity files are fake {"identityId": ...} stubs under a temporary HOME.
 # Covers the testnet rules of release plan WS-D (QA-05, QA-V-05, HYGI-12): OWNER is the owner role
-# on every network, DEPLOYER and the July-era pool are refused, the testnet funding wallet and the
-# per-network identity directory are the defaults, a missing funding key fails a minting scenario on
-# testnet and skips on a devnet.
+# on every network, DEPLOYER and the July-era pool are refused, the funding wallet is explicit on every
+# network (no default, HYGI-12), the per-network identity directory is the default, and a missing
+# funding key fails a minting scenario on testnet and skips on a devnet.
 # shellcheck disable=SC2015,SC2016 # `A && pass || fail` where pass never fails; snippets are single-quoted on purpose
 set -uo pipefail
 
@@ -58,25 +58,25 @@ echo "config.sh"
 
 H="$TMP/h-devnet"
 fresh_pool "$H/.config/dash-forge/test-identities/devnet-sakura"
-expect_ok "devnet defaults: sakura, OWNER, devnet-sakura dir, sakura funding key" \
-  "devnet sakura OWNER $H/.config/dash-forge/test-identities/devnet-sakura $H/workspace/dash-forge-qa/secrets/sakura-funding.wif --network devnet --devnet-name sakura" \
-  "$H" -- 'echo "$DASH_FORGE_NETWORK $DASH_FORGE_DEVNET_NAME $E2E_OWNER_ROLE $E2E_IDENTITY_DIR $E2E_MINT_FUNDING ${E2E_MINT_NET_ARGS[*]}"'
+expect_ok "devnet defaults: sakura, OWNER, devnet-sakura dir, no funding key (HYGI-12), sakura lock" \
+  "devnet sakura OWNER $H/.config/dash-forge/test-identities/devnet-sakura [] /tmp/qa-mint-sakura.lock --network devnet --devnet-name sakura" \
+  "$H" -- 'echo "$DASH_FORGE_NETWORK $DASH_FORGE_DEVNET_NAME $E2E_OWNER_ROLE $E2E_IDENTITY_DIR [$E2E_MINT_FUNDING] $E2E_MINT_LOCK ${E2E_MINT_NET_ARGS[*]}"'
 expect_refused "an unknown network" "must be devnet or testnet" "$H" DASH_FORGE_NETWORK=mainnet -- true
 expect_refused "a devnet name that is not [a-z0-9-]" "DASH_FORGE_DEVNET_NAME must match" "$H" 'DASH_FORGE_DEVNET_NAME=../x' -- true
 
 H="$TMP/h-testnet"
 fresh_pool "$H/.config/dash-forge/test-identities/testnet-scratch"
-expect_ok "testnet defaults: no devnet name, OWNER, testnet-scratch dir, testnet funding wallet" \
-  "testnet [] OWNER $H/.config/dash-forge/test-identities/testnet-scratch $H/workspace/dash-forge-qa/secrets/testnet-funding.wif --network testnet" \
-  "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 -- 'echo "$DASH_FORGE_NETWORK [$DASH_FORGE_DEVNET_NAME] $E2E_OWNER_ROLE $E2E_IDENTITY_DIR $E2E_MINT_FUNDING ${E2E_MINT_NET_ARGS[*]}"'
+expect_ok "testnet defaults: no devnet name, OWNER, testnet-scratch dir, no funding key (HYGI-12), testnet lock" \
+  "testnet [] OWNER $H/.config/dash-forge/test-identities/testnet-scratch [] /tmp/qa-mint-testnet.lock --network testnet" \
+  "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 -- 'echo "$DASH_FORGE_NETWORK [$DASH_FORGE_DEVNET_NAME] $E2E_OWNER_ROLE $E2E_IDENTITY_DIR [$E2E_MINT_FUNDING] $E2E_MINT_LOCK ${E2E_MINT_NET_ARGS[*]}"'
 expect_refused "testnet without E2E_LIVE_TARGET=1 (QA-14: the suite writes permanent documents to the live registration)" "E2E_LIVE_TARGET=1" \
   "$H" DASH_FORGE_NETWORK=testnet -- true
 expect_refused "testnet with E2E_LIVE_TARGET=0" "E2E_LIVE_TARGET=1" "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=0 -- true
 expect_ok "a devnet needs no E2E_LIVE_TARGET" "devnet" "$TMP/h-devnet" -- 'echo "$DASH_FORGE_NETWORK"'
 expect_ok "testnet ignores a devnet name from the environment" "[]" \
   "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 DASH_FORGE_DEVNET_NAME=sakura -- 'echo "[$DASH_FORGE_DEVNET_NAME]"'
-expect_ok "DASH_FORGE_QA_DIR moves the funding wallet" "/qa/secrets/testnet-funding.wif" \
-  "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 DASH_FORGE_QA_DIR=/qa -- 'echo "$E2E_MINT_FUNDING"'
+expect_ok "testnet: a QA-harness directory or variable never supplies a funding key (explicit and required, HYGI-12)" "[]" \
+  "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 DASH_FORGE_QA_DIR=/qa TESTNET_FUNDING=/q/testnet-funding.wif MOUTAI_FUNDING=/q/moutai-funding.wif -- 'echo "[$E2E_MINT_FUNDING]"'
 expect_refused "testnet with E2E_OWNER_ROLE=DEPLOYER" "DEPLOYER" "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_OWNER_ROLE=DEPLOYER -- true
 expect_refused "testnet with a devnet funding key" "devnet funding key" "$H" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_MINT_FUNDING=/x/sakura-funding.wif -- true
 
@@ -151,7 +151,7 @@ out="$(libsh "$TMP/h-testnet" "require_not_july '$TMP/fresh/RUNNER.identity.json
 out="$(libsh "$H" "require_not_july '$TMP/jul/RUNNER.identity.json'; echo reached")"
 [[ "$out" == *reached* ]] && pass "devnet: require_not_july is a no-op" || fail "require_not_july devnet: $out"
 expect_refused "testnet with some other devnet's funding key" "looks like a devnet funding key" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_MINT_FUNDING=/x/newnet-funding.wif -- true
-expect_ok "TESTNET_FUNDING (the QA harness's variable) names the testnet wallet" "/q/testnet-funding.wif" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 TESTNET_FUNDING=/q/testnet-funding.wif -- 'echo "$E2E_MINT_FUNDING"'
+expect_ok "testnet: an explicit E2E_MINT_FUNDING is honoured" "/q/testnet-funding.wif" "$TMP/h-testnet" DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1 E2E_MINT_FUNDING=/q/testnet-funding.wif -- 'echo "$E2E_MINT_FUNDING"'
 
 echo "the July list agrees with forge-contracts/scripts/lib/target.mjs"
 want="$(node -e "import('$REPO/forge-contracts/scripts/lib/target.mjs').then(m=>console.log([...m.JULY_POOL_IDS.keys()].sort().join(' ')))")"

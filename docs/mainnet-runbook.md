@@ -78,11 +78,12 @@ Adapt `e2e/cli/run.sh` to mainnet with a small-balance PROD identity (budget ≤
 
 ## 7. Dogfood (the credibility step)
 
-Host the Dash Forge repo itself on mainnet Forge: `dg repo create dash-forge` (owner = a jointly-held org identity), push the codebase, keep GitHub as a `gitmirror://` read-only mirror during transition. `dash://<org>/dash-forge` becomes the canonical mirror-of-record.
+Host the Dash Forge repo itself on mainnet Forge: `dg repo create dash-forge` (owner = a jointly-held org identity), push the codebase, keep the GitHub repo and the [Forge Mirror Action](guides/mirror-a-github-repo.md) running during transition. `dash://<org>/dash-forge` becomes the canonical mirror-of-record.
 
 ## 8. Rollback / incident
 
 - Contracts are immutable in their gates and cannot be deleted — there is no "undo register." A bad registration means registering a *new* pair (`--force-new`) and shipping clients that read it; repositories created under the old pair stay there, unread. So **rehearse on sakura (and testnet once it runs protocol 14) and dry-run on mainnet first**.
+- A **Platform reset that keeps Core** is not a bad registration: the escrowed deployer and the committed record re-register the same ids (`mint.mjs restore`, then `deploy-v2.mjs --replay`; docs/contracts/forge-v2.md §8, "Same-id restore after a Platform reset"). Keep the deployer file's asset-lock `txid` and the record's ledger complete for that.
 - A client bug ships via a normal client release (Pages redeploy / new `dg` binary) — no on-chain action.
 - External-backend outage: `dg reseed --from-local` from any clone restores a lost copy at its recorded address (given write access to that storage); a member can record copies at a new address with `dg reseed --profile` or `dg repack --profile`. Refs/manifests on Platform are unaffected.
 

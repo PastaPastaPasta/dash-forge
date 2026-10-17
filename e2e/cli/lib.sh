@@ -416,7 +416,7 @@ require_not_july() {
 # run.sh's E2E_MAX_SKIPS ceiling bounds how many.
 require_mint_funding() {
   [[ -r "$E2E_MINT_FUNDING" ]] && return 0
-  local why="no ${DASH_FORGE_NETWORK}${DASH_FORGE_DEVNET_NAME:+ ${DASH_FORGE_DEVNET_NAME}} funding key (${E2E_MINT_FUNDING})${1:+; $1}"
+  local why="no ${DASH_FORGE_NETWORK}${DASH_FORGE_DEVNET_NAME:+ ${DASH_FORGE_DEVNET_NAME}} funding key (set E2E_MINT_FUNDING to a readable WIF file; got '${E2E_MINT_FUNDING:-}')${1:+; $1}"
   if [[ "$DASH_FORGE_NETWORK" == testnet ]]; then
     printf '%sFAIL%s  %s  — %s\n' "${C_RED}" "${C_RST}" "${SCENARIO_NAME}" "$why" >&2
     exit 1

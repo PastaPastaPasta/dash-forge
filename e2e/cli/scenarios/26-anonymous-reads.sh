@@ -126,7 +126,7 @@ mkdir -p "$IDS" && chmod 700 "$IDS"
 if [[ -n "${E2E_S26_OWNER:-}" ]]; then
   cp "$E2E_S26_OWNER" "$IDS/S26.identity.json"
 else
-  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING); set E2E_S26_OWNER"
+  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key (set E2E_MINT_FUNDING to a readable WIF file; got '${E2E_MINT_FUNDING:-}'); set E2E_S26_OWNER"
   [[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
   lock=() lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")

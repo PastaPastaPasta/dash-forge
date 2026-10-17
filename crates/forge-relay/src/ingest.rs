@@ -2031,8 +2031,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Members-only content in a public repo (DESIGN D14), with the shapes spike S2 wrote live
-    // on sakura (`spikes/mixed-visibility/s2/seal-fixture.mjs`): `vis: "public"`, a v0x03 or
+    // Members-only content in a public repo (DESIGN D14), with the shapes the S2 spike wrote live
+    // on sakura (a throwaway script in the QA repo, not in this tree): `vis: "public"`, a v0x03 or
     // v0x04 `enc` of random bytes, `epoch` 0, and `asMember` on a member's write.
     // -----------------------------------------------------------------------
 

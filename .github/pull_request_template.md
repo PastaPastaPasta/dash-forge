@@ -4,7 +4,7 @@
 
 ## How it was tested
 
-<!-- Commands you ran, and anything you checked by hand on devnet sakura. -->
+<!-- Commands you ran, and anything you checked by hand on testnet (or a devnet). -->
 
 - [ ] `make check-rust` and `make check-web` pass
 - [ ] Rule changes come with vectors in `forge-contracts/vectors/`, and both the Rust and TypeScript rules pass them
