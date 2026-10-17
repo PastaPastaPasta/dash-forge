@@ -22,6 +22,8 @@ harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
+# One fork per parent repo name. Set E2E_FORK_NAME when two long repo names share their first
+# 50 characters, or when OWNER changes but the repo name stays (the old fork has another parent).
 if [[ -z "${E2E_FORK_NAME:-}" ]]; then
   E2E_FORK_NAME="$(printf 'e2e-cli-fork-%s' "$E2E_REPO_NAME" | tr '[:upper:]' '[:lower:]')"
   E2E_FORK_NAME="${E2E_FORK_NAME:0:63}"
@@ -46,6 +48,7 @@ merge_landed() { # merge_landed <merge oid>: wait for the recorded merge and bas
       && [[ "$(jq_py "$LOG-merged-view.json" 'd["state"] + " " + (d["baseTip"] or "")')" == "merged $oid" ]] && return 0
     sleep 3
   done
+  echo "merge did not read back as merged at $oid: $(jq_py "$LOG-merged-view.json" 'd.get("state"), d.get("baseTip")' 2>/dev/null)" >&2
   return 1
 }
 

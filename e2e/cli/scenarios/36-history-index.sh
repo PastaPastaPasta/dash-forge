@@ -159,6 +159,9 @@ if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-4" -C "$SRC" push "dash://$OWNER_ID/$N
 fi
 check "the larger base publishes a full index of 6 commits" assert_eq "commits=6 delta=false" \
   "$(event_of "$LOG-4.err" historyIndex commits delta)"
+# The next push prices its delta against the stored index: wait (reads only) for the full one.
+seen=1; for _ in $(seq 1 10); do [[ "$(history_tips "$OWNER_ID/$NAME" 4s)" == 4 ]] && { seen=0; break; }; sleep 3; done
+check "the full index of 6 commits reads back" test "$seen" -eq 0
 commit_in "$SRC" README.md "one changed file" "one-file change over the larger base"
 if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-5" -C "$SRC" push "dash://$OWNER_ID/$NAME" main:main; then
   cat "$LOG-5.err" >&2; is_flake "$LOG-5.err" && skip_scenario "push flaked"
