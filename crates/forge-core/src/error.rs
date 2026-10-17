@@ -116,15 +116,14 @@ pub enum Error {
         network: String,
     },
 
-    /// This build records forge-v2 contracts for the network, but the network does not have
-    /// them: a devnet that was reset, or a deployment record that is wrong. Platform answered
-    /// (a proof of absence, or Drive's `contract not found` refusal); retrying cannot help.
-    #[error("the forge contracts are not on {network}: {detail}")]
+    /// Platform proved a recorded Forge contract absent. Unproved node refusals alone
+    /// must remain retryable Platform errors.
+    #[error("forge contracts not found on {network}: {detail}")]
     ContractsMissing {
         /// The network as a person reads it (`devnet sakura`, `mainnet`); `user_error` tells a
         /// devnet by the `devnet ` prefix.
         network: String,
-        /// What Platform answered: the missing contract, or Drive's refusal.
+        /// The missing contract and its proof of absence.
         detail: String,
     },
 

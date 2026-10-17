@@ -1706,21 +1706,15 @@ fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
     ))
 }
 
-/// E702 as well: this build records forge-v2 contracts for `network`, but the network does not
-/// have them. A devnet was reset and Forge is not deployed again yet. Testnet or mainnet may
-/// have been reset too (a reset removes every contract), or this build targets another network
-/// (CNT-06: not "misconfigured"). Running it again cannot help.
+/// E702 requires proved absence; older/unproved missing-contract reports stay retryable.
 fn contracts_missing(ctx: &ErrorContext<'_>, network: &str, detail: &str) -> UserError {
-    let (note, fix) = if network.starts_with("devnet ") {
-        (
-            "a devnet is reset from time to time, which removes every contract on it; retrying will not help".to_string(),
-            "the network may have been reset: update dg and git-remote-dash to a release made after Forge was deployed on it again".to_string(),
-        )
+    if !detail.contains("Platform proved it absent") {
+        return contract_read_refused(ctx, detail);
+    }
+    let note = if network.starts_with("devnet ") {
+        "Platform proved this contract absent; a devnet reset removes every contract".to_string()
     } else {
-        (
-            format!("{network} may have been reset (or this build targets another network); a reset removes every contract on it, and retrying will not help"),
-            format!("update dg and git-remote-dash to a release made after Forge was deployed on {network} again (a reset also removes repositories, identities and names created before it)"),
-        )
+        format!("Platform proved this contract absent; {network} may have been reset (or this build targets another network)")
     };
     let u = UserError::new(
         codes::NOT_DEPLOYED,
@@ -1728,8 +1722,8 @@ fn contracts_missing(ctx: &ErrorContext<'_>, network: &str, detail: &str) -> Use
     )
     .cause(detail)
     .note(note)
-    .fix(fix)
-    .fix("`dg doctor` shows the network and contract ids in use");
+    .fix("if the network was reset, update dg and git-remote-dash to a release made after Forge was deployed on it again")
+    .fix("run `dg doctor` to check the deployment with proof-verified reads and the DAPI list in use");
     if ctx.via_git {
         u.fix("check the network the helper uses: `git config --get dash.network` and `git config --get dash.devnetName` (DASH_FORGE_NETWORK overrides them)")
     } else {
@@ -1784,8 +1778,11 @@ fn refusal_cause(detail: &str) -> String {
 }
 
 /// E101 for a read Platform refused as invalid ([`is_unindexed_query`], [`is_invalid_argument`])
-/// outside `dg api query`: the request is this build's, so retrying or rewording cannot help.
+/// outside `dg api query`. Missing-contract refusals may be stale-node answers and are retryable.
 fn read_refused(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
+    if detail.to_ascii_lowercase().contains("contract not found") {
+        return contract_read_refused(ctx, detail);
+    }
     UserError::new(
         codes::UNEXPECTED,
         ctx.headline("Platform refused the request as invalid"),
@@ -1793,6 +1790,18 @@ fn read_refused(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
     .cause(refusal_cause(detail))
     .fix("update dg and git-remote-dash: this build may ask for an index or property the network's contracts do not have")
     .note("Platform answered; this is not a connection problem, and retrying will not help")
+}
+
+/// A node's unproved missing-contract refusal is retryable even after bounded read retries.
+fn contract_read_refused(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
+    UserError::new(
+        codes::UNREACHABLE,
+        ctx.headline("a node is behind; try again"),
+    )
+    .cause(refusal_cause(detail))
+    .fix("run it again; the SDK rotates through the configured DAPI nodes")
+    .fix("if it keeps happening, `dg doctor` shows the DAPI list in use; check `--dapi-addresses` / `git config dash.dapiAddresses`")
+    .note("the contract has not been proved absent; a node's refusal alone does not establish a network reset")
 }
 
 /// E201 for a query [`is_unindexed_query`] refused. `indexes` (`name (property, …)`, from
@@ -1819,7 +1828,7 @@ fn unreachable(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
     )
     .cause(detail)
     .fix("check the connection and run it again (nodes that failed are skipped for a minute)")
-    .fix("`dg doctor` tests DAPI reachability; on a devnet check `--dapi-addresses` / git config dash.dapiAddresses");
+    .fix("`dg doctor` tests DAPI reachability; on testnet or a devnet check `--dapi-addresses` / git config dash.dapiAddresses");
     // A devnet name that does not exist looks like an outage: the quorum service host is
     // derived from the name (`quorums.<name>.networks.dash.org`) and does not resolve. A
     // resolver failure for it cannot tell a typo from being offline, so say both (QW3-068).
@@ -2832,8 +2841,27 @@ mod tests {
         }
     }
 
-    /// Moutai after its reset to beta.6 (2026-09-28): the build's forge contracts are gone.
-    const RESET_DEVNET_CAUSE: &str = "contract 6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux: Dapi client error: transport error: grpc error: code: 'Client specified an invalid argument', message: \"contract not found error: contract not found when querying from value with contract info\"";
+    const RESET_DEVNET_CAUSE: &str = "contract X: Platform proved it absent";
+
+    #[test]
+    fn unproved_missing_contract_reports_are_retryable_with_the_right_message() {
+        for error in [
+            CoreError::Platform(
+                "querying documents: status: 'Client specified an invalid argument', message: \"contract not found error: contract not found\"".into(),
+            ),
+            CoreError::ContractsMissing {
+                network: "testnet".into(),
+                detail: "contract X: a node said contract not found".into(),
+            },
+        ] {
+            let user = core_chain(error, &ErrorContext::default());
+            assert_eq!(user.code, "E701");
+            assert_eq!(user.message, "a node is behind; try again");
+            assert!(user.fix[0].starts_with("run it again"), "{user:?}");
+            assert!(!format!("{user:?}").contains("update dg"));
+            assert!(!format!("{user:?}").contains("retrying will not help"));
+        }
+    }
 
     #[test]
     fn forge_contracts_missing_is_e702_with_a_next_step_not_a_transport_error() {
@@ -2850,12 +2878,12 @@ mod tests {
         );
         assert_eq!(u.cause.as_deref(), Some(RESET_DEVNET_CAUSE));
         assert!(
-            u.fix[0].starts_with("the network may have been reset: update dg"),
+            u.fix[0].starts_with("if the network was reset, update dg"),
             "{u:?}"
         );
         assert!(u.fix.iter().any(|f| f.contains("dg doctor")), "{u:?}");
         assert!(
-            u.note
+            !u.note
                 .as_deref()
                 .unwrap_or("")
                 .contains("retrying will not help"),
@@ -2894,7 +2922,7 @@ mod tests {
             let note = main.note.as_deref().unwrap_or_default();
             assert!(
                 note.starts_with(&format!(
-                    "{network} may have been reset (or this build targets another network)"
+                    "Platform proved this contract absent; {network} may have been reset (or this build targets another network)"
                 )),
                 "{main:?}"
             );

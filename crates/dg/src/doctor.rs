@@ -831,7 +831,25 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
                 crate::fmt::plural_with(dapi_addresses.len(), "address", "addresses")
             },
         ),
-        _ => format!("{network}, {source} (DAPI: built-in seed list; quorums: {quorums})"),
+        _ => match ctx.target.dapi_addresses() {
+            Ok(addresses) => {
+                let dapi = if addresses.is_empty() {
+                    "built-in seed list".to_string()
+                } else if ctx.target.testnet_dapi_override.is_some() {
+                    format!(
+                        "{} from testnet --dapi-addresses / config / environment override",
+                        crate::fmt::plural_with(addresses.len(), "address", "addresses")
+                    )
+                } else {
+                    format!(
+                        "{} from forge-contracts/deployments/{network}.json",
+                        crate::fmt::plural_with(addresses.len(), "address", "addresses")
+                    )
+                };
+                format!("{network}, {source} (DAPI: {dapi}; quorums: {quorums})")
+            }
+            Err(e) => return vec![Check::fail("target", e.to_string(), "update dg")],
+        },
     };
     let mut out = vec![Check::ok("target", target)];
     if let Some(notice) = forge_core::network::retired_notice(network) {
@@ -854,18 +872,18 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
             out.push(Check::fail(
                 "dapi",
                 format!("could not connect: {e:#}"),
-                "check the connection; on a devnet check --dapi-addresses / `dash.dapiAddresses`",
+                "check the connection; on testnet or a devnet check --dapi-addresses / `dash.dapiAddresses`",
             ));
             return out;
         }
     };
     out.push(match client.fetch_contract(contract_id).await {
         Ok(_) => Check::ok("dapi", format!("reachable; {what} fetched and proof-verified")),
-        // Platform answered: the node is fine, the contract is not there (E702).
+        // E702 is reached only after Platform proved the recorded contract absent.
         Err(e @ forge_core::Error::ContractsMissing { .. }) => Check::fail(
             "dapi",
             format!("reachable, but {e}"),
-            "the network may have been reset: update dg to a release made after Forge was deployed on it again, or check the network selection",
+            "the contract was proved absent: check the network selection; if the network was reset, update dg to a release made after Forge was deployed on it again",
         ),
         Err(e) => Check::fail(
             "dapi",

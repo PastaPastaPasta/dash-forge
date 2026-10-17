@@ -68,6 +68,7 @@ use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
 use drive_proof_verifier::{
     DocumentCount, DocumentSplitCounts, DocumentSplitSums, SplitCountEntry, SplitSumEntry,
 };
+use futures::future::BoxFuture;
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
 
@@ -619,7 +620,8 @@ impl PlatformClient {
     /// Connect to `target.network`, wiring in the trusted HTTP context provider so proofs
     /// verify without a local Core RPC node.
     ///
-    /// Testnet and mainnet use the SDK's built-in seed lists. A devnet uses its configured
+    /// Testnet uses its configured or embedded deployment addresses, falling back to SDK
+    /// seeds when empty. Mainnet keeps the SDK seeds. A devnet uses its configured
     /// DAPI addresses; when it has none they are discovered from the devnet's quorum
     /// service (`/masternodes`), the same trusted source the quorum keys come from.
     ///
@@ -642,7 +644,7 @@ impl PlatformClient {
         .map_err(|e| Error::Platform(format!("building context provider for {network}: {e}")))?;
 
         let builder = match network {
-            Network::Testnet => SdkBuilder::new_testnet(),
+            Network::Testnet => testnet_builder(&target.dapi_addresses()?)?,
             Network::Mainnet => SdkBuilder::new_mainnet(),
             Network::Devnet { dapi_addresses, .. } => {
                 let addresses = if dapi_addresses.is_empty() {
@@ -793,19 +795,25 @@ impl PlatformClient {
             c
         } else {
             let contract =
-                retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
+                match retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
                     .await
-                    .map_err(|e| {
-                        self.read_error(
-                            contract_id,
-                            &e,
-                            &format!("fetching contract {contract_id}"),
-                        )
-                    })?
-                    .ok_or_else(|| {
-                        self.forge_contract_missing(contract_id, "Platform proved it absent")
-                            .unwrap_or(Error::NotFound)
-                    })?;
+                    .map_err(Box::new)
+                {
+                    Ok(value) => value,
+                    Err(e) => {
+                        return Err(self
+                            .read_error(
+                                contract_id,
+                                &e,
+                                &format!("fetching contract {contract_id}"),
+                            )
+                            .await)
+                    }
+                }
+                .ok_or_else(|| {
+                    forge_contract_missing(&self.target, contract_id, "Platform proved it absent")
+                        .unwrap_or(Error::NotFound)
+                })?;
             self.store_contract(contract_id, &contract);
             contract
         };
@@ -813,9 +821,8 @@ impl PlatformClient {
     }
 
     /// Whether Platform proves contract `contract_id` absent now: one proved `getDataContract`,
-    /// past this process's memo and the disk cache. [`Error::ContractsMissing`] can also come
-    /// from one node's `contract not found` refusal, which proves nothing; a caller that acts
-    /// on an absence for good (forge-gateway deleting a mirror) confirms it here. `Ok(false)`
+    /// past this process's memo and the disk cache. A caller acting on an earlier absence
+    /// for good (forge-gateway deleting a mirror) confirms it here. `Ok(false)`
     /// when the contract exists; an error when the read failed.
     pub async fn contract_proved_absent(&self, contract_id: &str) -> Result<bool> {
         let id = parse_id(contract_id, "contract id")?;
@@ -1004,33 +1011,26 @@ impl PlatformClient {
         .write(&path);
     }
 
-    /// A failed read of `contract_id` as a crate error: [`Error::ContractsMissing`] when
-    /// Platform refused it because that contract, one of this build's forge contracts, does
-    /// not exist on the network (Drive's `contract not found`: a devnet that was reset);
-    /// otherwise the SDK's error under `what`.
-    fn read_error(&self, contract_id: &str, e: &dash_sdk::Error, what: &str) -> Error {
-        if is_contract_missing(e) {
-            if let Some(missing) = self.forge_contract_missing(contract_id, &e.to_string()) {
-                return missing;
-            }
+    /// A refusal alone cannot establish absence. Only a fresh proved contract read can
+    /// turn it into E702. Copy the SDK error's text before creating the boxed future;
+    /// callers keep the error boxed while this proof read runs.
+    fn read_error<'a>(
+        &'a self,
+        contract_id: &'a str,
+        e: &dash_sdk::Error,
+        what: &str,
+    ) -> BoxFuture<'a, Error> {
+        let missing = is_contract_missing(e);
+        let detail = format!("{what}: {e}");
+        if !missing {
+            return Box::pin(std::future::ready(Error::Platform(detail)));
         }
-        Error::Platform(format!("{what}: {e}"))
-    }
-
-    /// [`Error::ContractsMissing`] for `contract_id` when it is one of the forge contracts this
-    /// build records for the network; `None` for any other contract (a repository's own).
-    fn forge_contract_missing(&self, contract_id: &str, detail: &str) -> Option<Error> {
-        let forge = self.target.v2.as_ref()?;
-        if !forge.contains(contract_id) {
-            return None;
-        }
-        let network = &self.target.network;
-        Some(Error::ContractsMissing {
-            network: network
-                .devnet_name()
-                .map_or_else(|| network.key(), |name| format!("devnet {name}")),
-            detail: format!("contract {contract_id}: {detail}"),
-        })
+        Box::pin(missing_contract_error(
+            &self.target,
+            contract_id,
+            detail,
+            self.contract_proved_absent(contract_id),
+        ))
     }
 
     /// Fetch an identity by base58 id.
@@ -1123,17 +1123,23 @@ impl PlatformClient {
                 limit: Some(PAGE),
                 offset: (offset > 0).then_some(offset),
             };
-            let page = retry_transient_read("fetch document history", || {
+            let page = match retry_transient_read("fetch document history", || {
                 drive_proof_verifier::types::DocumentHistory::fetch(&self.sdk, query.clone())
             })
             .await
-            .map_err(|e| {
-                self.read_error(
-                    &contract.id(),
-                    &e,
-                    &format!("fetching the history of document {document_id}"),
-                )
-            })?
+            .map_err(Box::new)
+            {
+                Ok(value) => value,
+                Err(e) => {
+                    return Err(self
+                        .read_error(
+                            &contract.id(),
+                            &e,
+                            &format!("fetching the history of document {document_id}"),
+                        )
+                        .await)
+                }
+            }
             .unwrap_or_default();
             let got = page.len();
             out.extend(page.values().map(FetchedDocument::from_document));
@@ -1172,17 +1178,23 @@ impl PlatformClient {
         let query = DocumentQuery::new(self.current(contract), document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?
             .with_document_id(&doc_id);
-        let found = retry_transient_read("fetch document", || {
+        let found = match retry_transient_read("fetch document", || {
             Document::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| {
-            self.read_error(
-                &contract.id(),
-                &e,
-                &format!("fetching document {document_id}"),
-            )
-        })?;
+        .map_err(Box::new)
+        {
+            Ok(value) => value,
+            Err(e) => {
+                return Err(self
+                    .read_error(
+                        &contract.id(),
+                        &e,
+                        &format!("fetching document {document_id}"),
+                    )
+                    .await)
+            }
+        };
         Ok(found.as_ref().map(FetchedDocument::from_document))
     }
 
@@ -1302,17 +1314,23 @@ impl PlatformClient {
             query.start = Some(Start::StartAfter(id.to_vec()));
         }
 
-        let documents = retry_transient_read("query documents", || {
+        let documents = match retry_transient_read("query documents", || {
             Document::fetch_many(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| {
-            self.read_error(
-                &contract.id(),
-                &e,
-                &format!("querying {document_type} documents"),
-            )
-        })?;
+        .map_err(Box::new)
+        {
+            Ok(value) => value,
+            Err(e) => {
+                return Err(self
+                    .read_error(
+                        &contract.id(),
+                        &e,
+                        &format!("querying {document_type} documents"),
+                    )
+                    .await)
+            }
+        };
 
         Ok(documents
             .into_iter()
@@ -1469,7 +1487,7 @@ impl PlatformClient {
                     RETRY_BACKOFF_BASE,
                     // A page that ran out of time is the pager's to shrink, not a flake to
                     // repeat at the same size.
-                    |e: &dash_sdk::Error| is_transient_node_error(e) && !is_deadline(e),
+                    |e: &dash_sdk::Error| is_retryable_read_error(e) && !is_deadline(e),
                     rate_limit_reset,
                     (quorum::is_quorum_miss, &quorum::QUORUM_WAITS),
                     || {
@@ -1485,13 +1503,16 @@ impl PlatformClient {
                     },
                 )
                 .await
-                .map_err(|e| {
-                    if is_deadline(&e) {
-                        PageFailure::Deadline(e.to_string())
-                    } else {
-                        PageFailure::Other(self.read_error(&contract.id(), &e, what))
+                .map_err(Box::new);
+                let documents = match documents {
+                    Ok(documents) => documents,
+                    Err(e) if is_deadline(&e) => return Err(PageFailure::Deadline(e.to_string())),
+                    Err(e) => {
+                        return Err(PageFailure::Other(
+                            self.read_error(&contract.id(), &e, what).await,
+                        ));
                     }
-                })?;
+                };
                 Ok(documents
                     .into_iter()
                     .filter_map(|(_id, maybe_doc)| {
@@ -1681,14 +1702,17 @@ impl PlatformClient {
             CompositeDocuments::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| {
+        .map_err(Box::new);
+        let result = match result {
+            Ok(result) => result,
             // Not a refusal of the composition: plain reads would get the same answer.
-            if is_contract_missing(&e) {
-                self.read_error(&page.contract.id(), &e, "composite query")
-            } else {
-                composite_refusal(&e)
+            Err(e) if is_contract_missing(&e) => {
+                return Err(self
+                    .read_error(&page.contract.id(), &e, "composite query")
+                    .await);
             }
-        })?
+            Err(e) => return Err(composite_refusal(&e)),
+        }
         .ok_or_else(|| Error::Platform("composite query returned nothing".into()))?;
         if result.sub_results.len() != rest.len() {
             return Err(Error::Platform(format!(
@@ -1738,17 +1762,23 @@ impl PlatformClient {
             query = query.with_where(f.to_where_clause());
         }
         query = query.with_select(SelectProjection::count_star());
-        let count = retry_transient_read("count documents", || {
+        let count = match retry_transient_read("count documents", || {
             DocumentCount::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| {
-            self.read_error(
-                &contract.id(),
-                &e,
-                &format!("counting {document_type} documents"),
-            )
-        })?;
+        .map_err(Box::new)
+        {
+            Ok(value) => value,
+            Err(e) => {
+                return Err(self
+                    .read_error(
+                        &contract.id(),
+                        &e,
+                        &format!("counting {document_type} documents"),
+                    )
+                    .await)
+            }
+        };
         Ok(count.map_or(0, |c| c.0))
     }
 
@@ -1769,17 +1799,23 @@ impl PlatformClient {
         let query = self
             .grouped_query(contract, document_type, filters, group_field)?
             .with_select(SelectProjection::count_star());
-        let counts = retry_transient_read("grouped count", || {
+        let counts = match retry_transient_read("grouped count", || {
             DocumentSplitCounts::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| {
-            self.read_error(
-                &contract.id(),
-                &e,
-                &format!("counting {document_type} documents by {group_field}"),
-            )
-        })?;
+        .map_err(Box::new)
+        {
+            Ok(value) => value,
+            Err(e) => {
+                return Err(self
+                    .read_error(
+                        &contract.id(),
+                        &e,
+                        &format!("counting {document_type} documents by {group_field}"),
+                    )
+                    .await)
+            }
+        };
         Ok(split_counts(counts.map(|c| c.0).unwrap_or_default()))
     }
 
@@ -1798,17 +1834,23 @@ impl PlatformClient {
         let query = self
             .grouped_query(contract, document_type, filters, group_field)?
             .with_select(SelectProjection::sum(sum_field));
-        let sums = retry_transient_read("grouped sum", || {
+        let sums = match retry_transient_read("grouped sum", || {
             DocumentSplitSums::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| {
-            self.read_error(
-                &contract.id(),
-                &e,
-                &format!("summing {document_type}.{sum_field} by {group_field}"),
-            )
-        })?;
+        .map_err(Box::new)
+        {
+            Ok(value) => value,
+            Err(e) => {
+                return Err(self
+                    .read_error(
+                        &contract.id(),
+                        &e,
+                        &format!("summing {document_type}.{sum_field} by {group_field}"),
+                    )
+                    .await)
+            }
+        };
         Ok(split_sums(sums.map(|s| s.0).unwrap_or_default()))
     }
 
@@ -3455,6 +3497,17 @@ fn parse_address_list(addresses: &[String]) -> Result<AddressList> {
         .collect()
 }
 
+/// Replace testnet's bundled seeds once; rc.4 starts no discovery or refresh that could
+/// extend this list. Empty deployment/override lists preserve the SDK fallback.
+fn testnet_builder(addresses: &[String]) -> Result<SdkBuilder> {
+    let builder = SdkBuilder::new_testnet();
+    if addresses.is_empty() {
+        Ok(builder)
+    } else {
+        Ok(builder.with_address_list(parse_address_list(addresses)?))
+    }
+}
+
 /// Parse a base58 Platform id, mapping failures to a config error.
 pub(crate) fn parse_id(s: &str, what: &str) -> Result<Identifier> {
     // The SDK's own text ("byte length not 32 bytes error: Identifier must be 32 bytes long
@@ -4183,9 +4236,48 @@ pub(crate) fn is_stale_contract(message: &str) -> bool {
     message.contains("trailing bytes") && message.contains("refetch the contract")
 }
 
-/// Drive refused a read because the contract it names does not exist: gRPC `InvalidArgument`
-/// carrying `QuerySyntaxError::DataContractNotFound` ("contract not found error: …"). An answer,
-/// not a flake: no node has the contract.
+/// Only a proof of absence can make a recorded Forge contract E702.
+fn forge_contract_missing(
+    target: &NetworkTarget,
+    contract_id: &str,
+    detail: &str,
+) -> Option<Error> {
+    if !target.v2.as_ref()?.contains(contract_id) {
+        return None;
+    }
+    let network = &target.network;
+    Some(Error::ContractsMissing {
+        network: network
+            .devnet_name()
+            .map_or_else(|| network.key(), |name| format!("devnet {name}")),
+        detail: format!("contract {contract_id}: {detail}"),
+    })
+}
+
+/// The proof is independent of document-query refusals and bypasses the contract caches.
+/// Present or inconclusive proofs leave a retryable Platform error, never reset advice.
+async fn missing_contract_error(
+    target: &NetworkTarget,
+    contract_id: &str,
+    detail: String,
+    proof: impl std::future::Future<Output = Result<bool>>,
+) -> Error {
+    if let Some(missing) = forge_contract_missing(target, contract_id, "Platform proved it absent")
+    {
+        if matches!(proof.await, Ok(true)) {
+            return missing;
+        }
+    }
+    Error::Platform(detail)
+}
+
+/// Keep missing-contract retries local to reads; the SDK does not retry InvalidArgument.
+fn is_retryable_read_error(e: &dash_sdk::Error) -> bool {
+    is_contract_missing(e) || is_transient_node_error(e)
+}
+
+/// Drive's unproved `InvalidArgument` refusal carrying `QuerySyntaxError::DataContractNotFound`.
+/// The refusing node may be behind even when the contract exists on the network.
 fn is_contract_missing(e: &dash_sdk::Error) -> bool {
     use dash_sdk::dapi_client::transport::TransportError;
     use dash_sdk::dapi_client::DapiClientError;
@@ -4652,9 +4744,9 @@ fn duration_ms(d: std::time::Duration) -> u64 {
 /// Run a proof-verified read, retrying transient node failures with exponential backoff.
 ///
 /// Reads are side-effect free, so a retry is always safe. Each attempt is a fresh SDK call
-/// and therefore a fresh rotation over the unbanned DAPI nodes. A non-transient error (a
-/// verified "not found" is an `Ok(None)`, not an error; a malformed query is not transient)
-/// returns immediately.
+/// and therefore another selection in the SDK's round-robin active set. An unproved
+/// `contract not found` refusal is retried within the same bounded attempt budget. Verified
+/// absence is `Ok(None)`; other non-transient errors return immediately.
 // The error is the SDK's own (large) type, passed straight through from the SDK calls this
 // wraps; every caller maps it to a crate error on the next line.
 #[allow(clippy::result_large_err)]
@@ -4669,7 +4761,7 @@ where
     retry_with_quorum_waits(
         label,
         RETRY_BACKOFF_BASE,
-        is_transient_node_error,
+        is_retryable_read_error,
         rate_limit_reset,
         (quorum::is_quorum_miss, &quorum::QUORUM_WAITS),
         || {
@@ -5025,8 +5117,165 @@ mod tests {
         WriteIntent, WriteOp, MAX_PAGES, MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
     };
     use crate::error::{Error, Result};
+    use crate::network::{Network, NetworkTarget};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    /// Build without connecting: inspect the exact list the SDK will use, including whether
+    /// its own bootstrap seeds leaked into an explicit deployment list.
+    fn seed_addresses(
+        network: &crate::network::Network,
+        builder: super::SdkBuilder,
+    ) -> Vec<String> {
+        let provider = super::TrustedHttpContextProvider::new_with_url(
+            super::to_dashcore(network),
+            "https://127.0.0.1".into(),
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap();
+        let sdk = builder.with_context_provider(provider).build().unwrap();
+        let mut addresses: Vec<_> = sdk
+            .address_list()
+            .get_live_addresses()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        addresses.sort();
+        addresses
+    }
+
+    #[test]
+    fn testnet_sdk_uses_only_deployment_addresses_when_present() {
+        let target = NetworkTarget::for_network(Network::Testnet).unwrap();
+        let addresses = target.dapi_addresses().unwrap();
+        assert!(!addresses.is_empty());
+        let mut expected: Vec<_> = super::parse_address_list(&addresses)
+            .unwrap()
+            .get_live_addresses()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        expected.sort();
+        let builder = super::testnet_builder(&addresses).unwrap();
+        assert_eq!(seed_addresses(&target.network, builder), expected);
+    }
+
+    #[test]
+    fn testnet_sdk_uses_only_the_override_when_given() {
+        let target = crate::network::NetworkSettings {
+            network: Some("testnet".into()),
+            dapi_addresses: Some("127.0.0.1:2443".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        let builder = super::testnet_builder(&target.dapi_addresses().unwrap()).unwrap();
+        let expected: Vec<_> = super::parse_address_list(&["https://127.0.0.1:2443".into()])
+            .unwrap()
+            .get_live_addresses()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(seed_addresses(&target.network, builder), expected);
+    }
+
+    #[test]
+    fn empty_testnet_addresses_keep_the_sdk_bootstrap_seeds() {
+        let seeds = seed_addresses(&Network::Testnet, super::testnet_builder(&[]).unwrap());
+        assert!(!seeds.is_empty());
+        assert_eq!(
+            seeds,
+            seed_addresses(&Network::Testnet, dash_sdk::SdkBuilder::new_testnet())
+        );
+    }
+
+    fn missing_contract_refusal() -> Box<dash_sdk::Error> {
+        Box::new(dash_sdk::Error::DapiClientError(
+            dash_sdk::dapi_client::DapiClientError::Transport(
+                dash_sdk::dapi_client::transport::TransportError::Grpc(
+                    dapi_grpc::tonic::Status::invalid_argument(
+                        "contract not found error: contract not found for a document query",
+                    ),
+                ),
+            ),
+        ))
+    }
+
+    #[tokio::test]
+    async fn one_missing_contract_refusal_then_success_returns_data() {
+        let mut script = [Err(missing_contract_refusal()), Ok(7)].into_iter();
+        let mut calls = 0;
+        let result = super::retry_with_backoff::<_, Box<dash_sdk::Error>, _, _>(
+            "test read",
+            std::time::Duration::ZERO,
+            |e| super::is_retryable_read_error(e),
+            |_| None,
+            || {
+                calls += 1;
+                std::future::ready(script.next().expect("script exhausted"))
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(calls, 2);
+    }
+
+    /// Drive the real retry predicate and proof-classification path with offline answers.
+    async fn refused_contract_with_proof(proof: Result<bool>) -> crate::user_error::UserError {
+        let mut calls = 0;
+        let result = super::retry_with_backoff::<_, Box<dash_sdk::Error>, _, _>(
+            "test read",
+            std::time::Duration::ZERO,
+            |e| super::is_retryable_read_error(e),
+            |_| None,
+            || {
+                calls += 1;
+                std::future::ready(Err::<u32, _>(missing_contract_refusal()))
+            },
+        )
+        .await;
+        assert_eq!(calls, MAX_READ_ATTEMPTS);
+        let mut target = NetworkTarget::for_network(Network::Testnet).unwrap();
+        target.v2 = Some(crate::network::ForgeIds::test_forge());
+        let error = super::missing_contract_error(
+            &target,
+            "CORE",
+            result.unwrap_err().to_string(),
+            std::future::ready(proof),
+        )
+        .await;
+        crate::user_error::classify(
+            [&error as &(dyn std::error::Error + 'static)],
+            &crate::user_error::ErrorContext::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn proved_present_or_inconclusive_after_refusals_is_retryable() {
+        for proof in [Ok(false), Err(Error::Platform("proof unavailable".into()))] {
+            let user = refused_contract_with_proof(proof).await;
+            assert_eq!(user.code, "E701");
+            assert_eq!(user.message, "a node is behind; try again");
+            assert!(user.fix[0].starts_with("run it again"), "{user:?}");
+            assert!(!format!("{user:?}").contains("update dg"));
+            assert!(!format!("{user:?}").contains("retrying will not help"));
+        }
+    }
+
+    #[tokio::test]
+    async fn proved_absence_after_bounded_refusals_is_e702() {
+        let user = refused_contract_with_proof(Ok(true)).await;
+        assert_eq!(user.code, "E702");
+        assert_eq!(
+            user.cause.as_deref(),
+            Some("contract CORE: Platform proved it absent")
+        );
+        assert!(user
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("proved this contract absent"));
+    }
 
     /// The grouped-count keys of `transition.kind` (a `u8` under sized integer types) and the
     /// grouped-sum keys of `targetId` (an identifier), as Drive serializes them from protocol 14

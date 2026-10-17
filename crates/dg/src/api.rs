@@ -238,7 +238,7 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
             let indexes = contract.index_summaries(&a.doc_type);
             return unindexed_query(Some("query failed"), &text, &indexes).into();
         }
-        if is_invalid_argument(&text) {
+        if is_invalid_argument(&text) && !is_contract_refusal(&text) {
             return UserError::new(codes::USAGE, "query failed: Platform refused the query")
                 .cause(forge_core::user_error::one_line(&text))
                 .fix("check the clauses against the type's indexes and properties: the where-clauses must fit an index, and --order must follow it")
@@ -288,9 +288,26 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
     Ok(())
 }
 
+/// A node's "contract not found" refusal is about the contract, not the user's clauses: it is
+/// left to forge-core, which asks for a proof before saying the contract is gone (E702) and
+/// otherwise reports a node that is behind (E701).
+fn is_contract_refusal(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("contract not found")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{op_of, operand, orders, value_json};
+    use super::{is_contract_refusal, op_of, operand, orders, value_json};
+
+    /// A contract refusal is never turned into E201 "check the clauses"; other refusals are.
+    #[test]
+    fn a_contract_refusal_is_not_a_usage_error() {
+        let refused = "querying documents: status: 'Client specified an invalid argument', message: \"contract not found error: contract not found\"";
+        assert!(forge_core::user_error::is_invalid_argument(refused));
+        assert!(is_contract_refusal(refused));
+        let clauses = "querying documents: status: 'Client specified an invalid argument', message: \"query invalid limit error\"";
+        assert!(!is_contract_refusal(clauses));
+    }
     use forge_core::platform::{FieldValue, PropertyKind, QueryOp};
     use serde_json::json;
 

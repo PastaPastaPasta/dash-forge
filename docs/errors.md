@@ -485,7 +485,9 @@ Two common ones:
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.
 
-**What to do:** check your connection and run the command again after a minute. `dg doctor` tests reachability. On a devnet, check `--dapi-addresses` / `git config dash.dapiAddresses`.
+**What to do:** check your connection and run the command again after a minute. `dg doctor` tests reachability and shows the DAPI list in use. On testnet or a devnet, check `--dapi-addresses` / `git config dash.dapiAddresses`.
+
+**A node is behind.** A node may answer that a Forge contract does not exist when it is behind the rest of the network. The tools ask other nodes, and then ask Platform for a proof; when the contract is not proved absent, the error is E701 with "a node is behind; try again" rather than [E702](#e702). Running the command again usually reaches an up-to-date node. If it keeps happening, check the DAPI addresses you configured: nodes of another network refuse every contract.
 
 A devnet name that does not exist is reported here too, because a lookup failure cannot tell a typo from being offline: the quorum service host is derived from the name (`quorums.<name>.networks.dash.org`), and `cause:` shows `Failed to resolve domain 'quorums.<name>.networks.dash.org'`. When it does, the fix names the `--devnet-name` that failed. A devnet name is checked for its shape only ([E204](#e204), for example a leading `-`), never for existing.
 
@@ -495,11 +497,11 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 **What to do:** use a network with a deployment. For `dg`, pass `--network devnet --devnet-name sakura` (`dg auth new` and `dg auth login` record it as the default). For `git clone` / `git push`, the helper takes the network from `DASH_FORGE_NETWORK`, then git config `dash.network` / `dash.devnetName`, then the network `dg` recorded, so set one of those: `git config --global dash.network devnet && git config --global dash.devnetName sakura`, or `git clone -c dash.network=devnet -c dash.devnetName=sakura dash://…` for one clone. See [the mainnet runbook](mainnet-runbook.md).
 
-`forge contracts not found on <network>` is also E702. This build knows of a Forge deployment on the network, but the network does not have it. On a devnet this means it was reset, which removes every contract on it, and Forge has not been deployed on it again yet. On testnet or mainnet it means the network may have been reset (a reset removes every contract, and with them the repositories, identities and names created before it), or that this build targets another network. Running the command again cannot help.
+`forge contracts not found on <network>` is also E702. This build knows of a Forge deployment on the network, but Platform proved a recorded contract absent with a fresh proof-verified contract read. On a devnet this may mean it was reset, which removes every contract on it, and Forge has not been deployed on it again yet. On testnet or mainnet it means the network may have been reset (a reset removes every contract, and with them the repositories, identities and names created before it), or that this build targets another network. An unproved `contract not found` refusal alone never establishes absence: Rust clients retry it within a bounded budget on the main SDK's node rotation, then check for proved absence. If the contract is proved present or the proof is inconclusive, the error is E701: “a node is behind; try again”, with retry advice.
 
-**What to do:** update `dg` and `git-remote-dash` to a release made after Forge was deployed on the network again. `dg doctor` shows the network and the contract ids in use. Check that the network is the one you meant: `--network` for `dg`; git config `dash.network` / `dash.devnetName` or `DASH_FORGE_NETWORK` for the helper.
+**What to do:** check the network selection. If the network was reset, update `dg` and `git-remote-dash` to a release made after Forge was deployed on it again. `dg doctor` shows the network and the contract ids in use. Check that the network is the one you meant: `--network` for `dg`; git config `dash.network` / `dash.devnetName` or `DASH_FORGE_NETWORK` for the helper.
 
-*Protocol detail:* in the first case the build's embedded `forge-contracts/deployments/<network>.json` records no forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group); the CLI says "forge-v2 isn't deployed". The second is Platform proving one of those contracts absent, or refusing a read with `contract not found`.
+*Protocol detail:* in the first case the build's embedded `forge-contracts/deployments/<network>.json` records no forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group); the CLI says "forge-v2 isn't deployed". The second requires Platform proving one of those contracts absent. A node's refusal alone is retryable, including when it reaches the generic invalid-read error path.
 
 ## E703
 

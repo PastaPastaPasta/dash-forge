@@ -127,7 +127,7 @@ struct NetArgs {
     #[arg(long, global = true)]
     devnet_name: Option<String>,
 
-    /// Devnet DAPI addresses, comma-separated.
+    /// Testnet/devnet DAPI addresses, comma-separated.
     #[arg(long, global = true)]
     dapi_addresses: Option<String>,
 }
