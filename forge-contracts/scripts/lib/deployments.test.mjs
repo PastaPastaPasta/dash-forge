@@ -91,8 +91,13 @@ test('a devnet record is not held to the production rules, and a record without 
   assert.deepEqual(check(d, { name: 'devnet-test' }), [], 'a devnet name has no production rules (and no frozen copy here)');
   assert.deepEqual(check({ dapiAddresses: ['http://x'] }), []);
   // a devnet record that predates the ledger, once deploy-v2 has stamped its set and logged an update, still holds
-  const sakura = JSON.parse(readFileSync(join(DEPLOYMENTS, 'devnet-sakura.json'), 'utf8'));
+  // (sakura's three-contract record before its 2026-10-17 switch, rebuilt from the blocks it superseded)
+  const live = JSON.parse(readFileSync(join(DEPLOYMENTS, 'devnet-sakura.json'), 'utf8'));
+  const was = (key) => { const { supersededAt, ...c } = live.v2[`${key}Superseded`][0]; return c; };
+  const sakura = { network: 'devnet', devnetName: 'sakura', v2: { forgeCore: was('forgeCore'), forgeCollab: was('forgeCollab'), forgeCommunity: was('forgeCommunity'), contractGroupId: was('forgeCore').contractGroupId } };
   sakura.v2.contractsSet = 'devnet';
   sakura.v2.nonceLedger = [{ contractNonce: '1', kind: 'dataContractUpdate', key: 'forgeCollab', contractId: sakura.v2.forgeCollab.contractId, status: 'updated' }];
   assert.deepEqual(recordProblems({ name: 'devnet-sakura', dep: sakura }), []);
+  // and the live record, now the four-contract set with its ledger
+  assert.deepEqual(recordProblems({ name: 'devnet-sakura', dep: live }), []);
 });

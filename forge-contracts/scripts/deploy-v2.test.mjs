@@ -11,6 +11,7 @@ import { after, test } from 'node:test';
 
 import { ROOM_MIN, SETS, b58encode, contractGroupId, contractId, formatSums, main, parseSums, recordedSet, setSums } from './deploy-v2.mjs';
 import { createFakePlatform, fakeIdentityFile } from './lib/fake-platform.mjs';
+import { recordProblems } from './lib/deployments-check.mjs';
 
 const MAX = 20480;
 const KEYS = ['forgeCore', 'forgeCollab', 'forgeCommunity', 'forgeMeta'];
@@ -238,7 +239,88 @@ test('a record registered from one set refuses another, and testnet needs --set 
   // a record of another network
   writeFileSync(join(t.deploymentsRoot, 'devnet-test.json'), JSON.stringify({ network: 'testnet' }));
   await assert.rejects(t.run(devnet), /records network testnet, not devnet/);
-  assert.equal(recordedSet(JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'deployments', 'devnet-sakura.json'), 'utf8'))), 'devnet', 'sakura is inferred as the devnet set');
+  assert.equal(recordedSet(JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'deployments', 'devnet-sakura.json'), 'utf8'))), 'mainnet', 'sakura runs the four-contract set since rel2 (2026-10-17)');
+});
+
+test('a devnet record moves to another set only with --force-new for the whole set', async () => {
+  const t = setup();
+  t.fake.state.chainId = 'dash-devnet-test';
+  const devnet = ['--network', 'devnet', '--devnet-name', 'test', '--identity', t.identity];
+  await t.run(devnet);
+  const old = t.read('devnet-test.json');
+  assert.equal(old.v2.contractsSet, 'devnet');
+  await assert.rejects(t.run([...devnet, '--set', 'mainnet']), /registered from the "devnet" set; --set mainnet would .*or --force-new without --only/);
+  await assert.rejects(t.run([...devnet, '--set', 'mainnet', '--force-new', '--only', 'meta', '--same-group']), /registered from the "devnet" set/);
+  await t.run([...devnet, '--set', 'mainnet', '--force-new']);
+  const rec = t.read('devnet-test.json');
+  assert.equal(rec.v2.contractsSet, 'mainnet');
+  for (const key of ['forgeCore', 'forgeCollab', 'forgeCommunity']) {
+    assert.equal(rec.v2[`${key}Superseded`].at(-1).contractId, old.v2[key].contractId, key);
+    assert.notEqual(rec.v2[key].contractId, old.v2[key].contractId, key);
+  }
+  assert.equal(rec.v2.forgeMeta.status, 'registered');
+  assert.equal(rec.v2.contractGroupSuperseded.at(-1).id, old.v2.contractGroupId);
+  assert.notEqual(rec.v2.contractGroupId, old.v2.contractGroupId);
+  // the same deployer on the same chain: one ledger, nonces 1-3 then 4-7
+  assert.deepEqual(rec.v2.nonceLedger.map((e) => e.identityNonce), ['1', '2', '3', '4', '5', '6', '7']);
+  assert.equal(rec.v2.forgeCore.identityNonce, '4');
+  // the old set is not a set the record can go back to without another --force-new
+  await assert.rejects(t.run([...devnet, '--set', 'devnet']), /registered from the "mainnet" set/);
+});
+
+/** A devnet record shaped like sakura's before its switch: the devnet set, no ledger, no deployer block, no
+ * contractsSet, and the deployer's nonce 4 spent outside the record (the key-exchange copy). */
+async function sakuraShaped() {
+  const t = setup();
+  t.fake.state.chainId = 'dash-devnet-test';
+  const devnet = ['--network', 'devnet', '--devnet-name', 'test', '--identity', t.identity];
+  await t.run(devnet);
+  const d = t.read('devnet-test.json');
+  for (const k of ['nonceLedger', 'deployer', 'restores', 'contractsSet']) delete d.v2[k];
+  d.keyExchange = { contractId: 'KX', ownerId: t.fake.ownerId, identityNonce: '4' };
+  writeFileSync(join(t.deploymentsRoot, 'devnet-test.json'), JSON.stringify(d, null, 2));
+  t.fake.state.identities.get(t.fake.ownerId).nonce = 4n;
+  return { t, old: d, switchArgs: [...devnet, '--set', 'mainnet', '--force-new'] };
+}
+
+test('sakura\'s switch: a ledger-less devnet record moves to the mainnet set at the next nonces', async () => {
+  const { t, old, switchArgs } = await sakuraShaped();
+  await t.run(switchArgs);
+  const rec = t.read('devnet-test.json');
+  assert.equal(rec.v2.contractsSet, 'mainnet');
+  KEYS.forEach((key, i) => {
+    assert.equal(rec.v2[key].identityNonce, String(5 + i), key);
+    assert.equal(rec.v2[key].contractId, contractId(t.fake.ownerId, BigInt(5 + i)), key);
+  });
+  assert.equal(rec.v2.contractGroupId, contractGroupId(t.fake.ownerId, 5n));
+  assert.deepEqual(rec.v2.nonceLedger.map((e) => [e.identityNonce, e.status]), [['5', 'registered'], ['6', 'registered'], ['7', 'registered'], ['8', 'registered']]);
+  assert.equal(rec.v2.forgeCoreSuperseded.at(-1).contractId, old.v2.forgeCore.contractId);
+  assert.deepEqual(rec.keyExchange, old.keyExchange);
+  assert.deepEqual(recordProblems({ name: 'devnet-test', dep: rec }), []);
+});
+
+test('a set switch that crashed part way finishes on a rerun of the same command', async () => {
+  const { t, old, switchArgs } = await sakuraShaped();
+  t.fake.failIn(2, 'before'); // forge-collab's create never lands
+  await assert.rejects(t.run(switchArgs));
+  const mid = t.read('devnet-test.json');
+  assert.equal(mid.v2.contractsSet, 'mainnet', 'the set is named before the first create');
+  assert.equal(mid.v2.forgeCore.status, 'registered');
+  await t.run(switchArgs);
+  const rec = t.read('devnet-test.json');
+  assert.equal(rec.v2.forgeCore.contractId, mid.v2.forgeCore.contractId, 'the landed forge-core is kept, not superseded again');
+  assert.equal(rec.v2.forgeCoreSuperseded.length, 1);
+  assert.equal(rec.v2.forgeCoreSuperseded[0].contractId, old.v2.forgeCore.contractId);
+  for (const key of KEYS) assert.equal(rec.v2[key].status, 'registered', key);
+  assert.deepEqual(recordProblems({ name: 'devnet-test', dep: rec }), []);
+});
+
+test('a production record never switches sets, even with --force-new --abandon-live-set', async () => {
+  // a testnet record holding only the three contracts (inferred "devnet"): the set guard refuses before anything connects
+  const seed = { ...TESTNET_SEED, v2: { forgeCore: { contractId: 'X', ownerId: 'O', status: 'registered' } } };
+  const t = setup({ seed });
+  await assert.rejects(t.run(t.prod('--force-new', '--abandon-live-set', 'testnet')), /registered from the "devnet" set; --set mainnet would register or update a different set into it\. Use --set devnet, or a scratch --record for another set\.$/);
+  assert.equal(t.fake.state.broadcasts, 0);
 });
 
 test('--force-new on the live testnet record needs --abandon-live-set testnet', async () => {

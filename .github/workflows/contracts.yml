@@ -133,8 +133,9 @@ jobs:
         run: cargo +1.98.1 build -q --release --locked --manifest-path tools/contract-validate/Cargo.toml
       # registered/<contract>.v1.json are the schemas registered fresh at the v5 re-cut (devnet sakura, 2026-10-01): every
       # later change to any of the three must stay an in-place update of them (UPDATE-1, roadmap D4).
-      # (Sakura was re-registered fresh on 2026-10-13 from the then-current schema, so these copies
-      # describe its first registration; they are kept as the devnet baseline, not moved.)
+      # (Sakura was re-registered fresh on 2026-10-13 from the then-current schema, and moved to the
+      # four-contract contracts/mainnet set on 2026-10-17, so these copies describe no live network;
+      # they are kept as the three-contract devnet set's baseline, not moved.)
       - name: Validate forge-core, forge-collab and forge-community (each as an update of its registered schema)
         run: |
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors forge-contracts/vectors/rc1 \

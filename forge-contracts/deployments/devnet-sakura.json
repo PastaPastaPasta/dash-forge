@@ -19,54 +19,8 @@
     "https://68.67.122.241:1443"
   ],
   "v2": {
-    "forgeCore": {
-      "contractId": "BKt2Lk6RwUchcdytHT8Sn1ZzYvu8vD4JFEh5G9LHFzRo",
-      "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
-      "identityNonce": "1",
-      "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
-      "status": "registered",
-      "sizeBytes": 17642,
-      "schemaHash": "28940bb805f649483c9fac2469715ba7d95c8c5b7c5e7fccd124386e63856324",
-      "balanceBefore": "799868801420",
-      "deployedAt": "2026-10-13T17:21:30.153Z",
-      "costCredits": "68742693330",
-      "costDash": 0.6874269333
-    },
-    "forgeCollab": {
-      "contractId": "BTEsn5BmsSWF8ahQLJjohy392vnpD2NgPnTjAVEUCWKh",
-      "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
-      "identityNonce": "2",
-      "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
-      "status": "registered",
-      "sizeBytes": 17739,
-      "schemaHash": "8271807fa2c7e6702e554861732da6a7b6388425cba9e5b7a4f34bc10e8a7a81",
-      "balanceBefore": "731126108090",
-      "deployedAt": "2026-10-13T17:21:32.687Z",
-      "costCredits": "46666858500",
-      "costDash": 0.466668585
-    },
-    "forgeCommunity": {
-      "contractId": "FASrkH8LH77EjvUPH3bRsgmpUdBtsqALEkBRAqefkMu1",
-      "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
-      "identityNonce": "3",
-      "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
-      "status": "registered",
-      "sizeBytes": 17619,
-      "schemaHash": "54c42914861ada413e7af72db2120ac937e38ee2b398726676cd4d842d64b848",
-      "balanceBefore": "684459249590",
-      "deployedAt": "2026-10-13T17:21:36.719Z",
-      "costCredits": "57705599680",
-      "costDash": 0.5770559968
-    },
-    "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
-    "contractGroup": {
-      "id": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
-      "name": "dash-forge",
-      "owner": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
-      "verifiedAt": "2026-10-13T17:21:37.031Z"
-    },
     "protocolVersion": 14,
-    "sdk": "@dashevo/evo-sdk@5.0.0-beta.6",
+    "sdk": "@dashevo/evo-sdk@5.0.0-rc.3",
     "devnet": {
       "name": "sakura",
       "addresses": [
@@ -84,7 +38,259 @@
         "https://68.67.122.240:1443",
         "https://68.67.122.241:1443"
       ]
-    }
+    },
+    "forgeCoreSuperseded": [
+      {
+        "contractId": "BKt2Lk6RwUchcdytHT8Sn1ZzYvu8vD4JFEh5G9LHFzRo",
+        "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+        "identityNonce": "1",
+        "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
+        "status": "registered",
+        "sizeBytes": 17642,
+        "schemaHash": "28940bb805f649483c9fac2469715ba7d95c8c5b7c5e7fccd124386e63856324",
+        "balanceBefore": "799868801420",
+        "deployedAt": "2026-10-13T17:21:30.153Z",
+        "costCredits": "68742693330",
+        "costDash": 0.6874269333,
+        "supersededAt": "2026-10-17T17:28:05.693Z"
+      }
+    ],
+    "forgeCollabSuperseded": [
+      {
+        "contractId": "BTEsn5BmsSWF8ahQLJjohy392vnpD2NgPnTjAVEUCWKh",
+        "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+        "identityNonce": "2",
+        "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
+        "status": "registered",
+        "sizeBytes": 17739,
+        "schemaHash": "8271807fa2c7e6702e554861732da6a7b6388425cba9e5b7a4f34bc10e8a7a81",
+        "balanceBefore": "731126108090",
+        "deployedAt": "2026-10-13T17:21:32.687Z",
+        "costCredits": "46666858500",
+        "costDash": 0.466668585,
+        "supersededAt": "2026-10-17T17:28:05.693Z"
+      }
+    ],
+    "forgeCommunitySuperseded": [
+      {
+        "contractId": "FASrkH8LH77EjvUPH3bRsgmpUdBtsqALEkBRAqefkMu1",
+        "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+        "identityNonce": "3",
+        "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
+        "status": "registered",
+        "sizeBytes": 17619,
+        "schemaHash": "54c42914861ada413e7af72db2120ac937e38ee2b398726676cd4d842d64b848",
+        "balanceBefore": "684459249590",
+        "deployedAt": "2026-10-13T17:21:36.719Z",
+        "costCredits": "57705599680",
+        "costDash": 0.5770559968,
+        "supersededAt": "2026-10-17T17:28:05.693Z"
+      }
+    ],
+    "contractGroupSuperseded": [
+      {
+        "id": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
+        "name": "dash-forge",
+        "owner": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+        "verifiedAt": "2026-10-13T17:21:37.031Z",
+        "supersededAt": "2026-10-17T17:28:05.693Z"
+      }
+    ],
+    "contractsSet": "mainnet",
+    "forgeCore": {
+      "contractId": "J1pkAdc1rvuzY5o4LXRopoRa5Azw9LZQJuZqUbYvcGw4",
+      "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+      "identityNonce": "5",
+      "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+      "status": "registered",
+      "sizeBytes": 16362,
+      "roomBytes": 4118,
+      "schemaHash": "64bf6346788602014fefb738d95aa0eb45c60995a26603e5aedd493ea6dd8445",
+      "registeredSchemaHash": "64bf6346788602014fefb738d95aa0eb45c60995a26603e5aedd493ea6dd8445",
+      "documentsHash": "726f8740c9266ae53b6bce74264e4d2d7852c6ffffeeaf66a77dde99a7a104bb",
+      "sourceFile": "forge-contracts/contracts/mainnet/forge-core.json",
+      "sourceSha256": "c280e9d4ecbcba0647c882f99ae39dbbe833e7225aa4b7d07f2c815f3e51b9a5",
+      "transitionSha256": "a99768052165c63b56cbd5730f16b35c2930c7e7cb1adfa284e48832303f54f6",
+      "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+      "gitCommitPushed": true,
+      "balanceBefore": "612674088550",
+      "deployedAt": "2026-10-17T17:28:07.983Z",
+      "costCredits": "59680696530",
+      "costDash": 0.5968069653,
+      "provedAt": {
+        "height": "19006",
+        "coreChainLockedHeight": 145858,
+        "epoch": 99,
+        "timeMs": "1792258086437",
+        "protocolVersion": 14
+      }
+    },
+    "nonceLedger": [
+      {
+        "identityNonce": "5",
+        "kind": "dataContractCreate",
+        "key": "forgeCore",
+        "contractId": "J1pkAdc1rvuzY5o4LXRopoRa5Azw9LZQJuZqUbYvcGw4",
+        "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+        "registersGroup": true,
+        "schemaHash": "64bf6346788602014fefb738d95aa0eb45c60995a26603e5aedd493ea6dd8445",
+        "documentsHash": "726f8740c9266ae53b6bce74264e4d2d7852c6ffffeeaf66a77dde99a7a104bb",
+        "sourceSha256": "c280e9d4ecbcba0647c882f99ae39dbbe833e7225aa4b7d07f2c815f3e51b9a5",
+        "transitionSha256": "a99768052165c63b56cbd5730f16b35c2930c7e7cb1adfa284e48832303f54f6",
+        "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+        "gitCommitPushed": true,
+        "status": "registered",
+        "at": "2026-10-17T17:28:06.139Z"
+      },
+      {
+        "identityNonce": "6",
+        "kind": "dataContractCreate",
+        "key": "forgeCollab",
+        "contractId": "4Hx4fcEj1VHRRojUWq2vPrmtU7duBJh8z1RMYskh5Exw",
+        "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+        "registersGroup": false,
+        "schemaHash": "000f87aaaead510edf0a5cd8bc7bf57f2758cddb3ff07e1486861b08265b228e",
+        "documentsHash": "49e818a4949454d84c46693b5a78c5b7a4ad8692cca83b111e3b17bf4b5860e9",
+        "sourceSha256": "bb7735b8d191d506edf392c3536b1ef706281fa8b50d912c9223a79c9fc1b324",
+        "transitionSha256": "28b8fef86f4a2a6af12cfa2621f157a797ab69914dff9bfa100423e831ee5ae2",
+        "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+        "gitCommitPushed": true,
+        "status": "registered",
+        "at": "2026-10-17T17:28:08.144Z"
+      },
+      {
+        "identityNonce": "7",
+        "kind": "dataContractCreate",
+        "key": "forgeCommunity",
+        "contractId": "BNzgBsCvBV1xbaz8vcmaJEFF1cvT1PxiW8Zn2wnMQgmR",
+        "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+        "registersGroup": false,
+        "schemaHash": "7a80c44e0670122b76b2063e4c4ea24afc9b405a22eb894bc0003c74a877ba1e",
+        "documentsHash": "dd93b9ffc6c4b610a3459940ec2c7c3dbcc69923869c0688c3d636a5a4583803",
+        "sourceSha256": "77a822bda29f70a45cab0b08dc4902ce572df8a05a8e1205457330a9e19167d1",
+        "transitionSha256": "b1541e545fa0f1ba40abdfa3a9831b696dbe591d6b14b525c4547867e07ba26c",
+        "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+        "gitCommitPushed": true,
+        "status": "registered",
+        "at": "2026-10-17T17:28:10.354Z"
+      },
+      {
+        "identityNonce": "8",
+        "kind": "dataContractCreate",
+        "key": "forgeMeta",
+        "contractId": "4CyDFQaz4nqkndYHcdoNQzuERQSqcMPrE95tKs1AzAFB",
+        "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+        "registersGroup": false,
+        "schemaHash": "48e99f200076ba48ea8c0b403b53ff8aea3eea29137ce13108321eed52dd9127",
+        "documentsHash": "ed51bd2d7a79cb17aa3c39ea14d99fb434376fe8bf94350e56721420f3a8ef2e",
+        "sourceSha256": "04627b526c706ceec4b8356c7c83851825f95004885a5d1c59872dde9767a5b0",
+        "transitionSha256": "f8611834a4179811eca37027333cc6ae27e7aa461cec69c507735ddb70700020",
+        "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+        "gitCommitPushed": true,
+        "status": "registered",
+        "at": "2026-10-17T17:28:12.270Z"
+      }
+    ],
+    "forgeCollab": {
+      "contractId": "4Hx4fcEj1VHRRojUWq2vPrmtU7duBJh8z1RMYskh5Exw",
+      "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+      "identityNonce": "6",
+      "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+      "status": "registered",
+      "sizeBytes": 17291,
+      "roomBytes": 3189,
+      "schemaHash": "000f87aaaead510edf0a5cd8bc7bf57f2758cddb3ff07e1486861b08265b228e",
+      "registeredSchemaHash": "000f87aaaead510edf0a5cd8bc7bf57f2758cddb3ff07e1486861b08265b228e",
+      "documentsHash": "49e818a4949454d84c46693b5a78c5b7a4ad8692cca83b111e3b17bf4b5860e9",
+      "sourceFile": "forge-contracts/contracts/mainnet/forge-collab.json",
+      "sourceSha256": "bb7735b8d191d506edf392c3536b1ef706281fa8b50d912c9223a79c9fc1b324",
+      "transitionSha256": "28b8fef86f4a2a6af12cfa2621f157a797ab69914dff9bfa100423e831ee5ae2",
+      "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+      "gitCommitPushed": true,
+      "balanceBefore": "552993392020",
+      "deployedAt": "2026-10-17T17:28:10.199Z",
+      "costCredits": "39633709920",
+      "costDash": 0.3963370992,
+      "provedAt": {
+        "height": "19007",
+        "coreChainLockedHeight": 145858,
+        "epoch": 99,
+        "timeMs": "1792258088440",
+        "protocolVersion": 14
+      }
+    },
+    "forgeCommunity": {
+      "contractId": "BNzgBsCvBV1xbaz8vcmaJEFF1cvT1PxiW8Zn2wnMQgmR",
+      "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+      "identityNonce": "7",
+      "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+      "status": "registered",
+      "sizeBytes": 15651,
+      "roomBytes": 4829,
+      "schemaHash": "7a80c44e0670122b76b2063e4c4ea24afc9b405a22eb894bc0003c74a877ba1e",
+      "registeredSchemaHash": "7a80c44e0670122b76b2063e4c4ea24afc9b405a22eb894bc0003c74a877ba1e",
+      "documentsHash": "dd93b9ffc6c4b610a3459940ec2c7c3dbcc69923869c0688c3d636a5a4583803",
+      "sourceFile": "forge-contracts/contracts/mainnet/forge-community.json",
+      "sourceSha256": "77a822bda29f70a45cab0b08dc4902ce572df8a05a8e1205457330a9e19167d1",
+      "transitionSha256": "b1541e545fa0f1ba40abdfa3a9831b696dbe591d6b14b525c4547867e07ba26c",
+      "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+      "gitCommitPushed": true,
+      "balanceBefore": "513359682100",
+      "deployedAt": "2026-10-17T17:28:12.110Z",
+      "costCredits": "51632780980",
+      "costDash": 0.5163278098,
+      "provedAt": {
+        "height": "19008",
+        "coreChainLockedHeight": 145858,
+        "epoch": 99,
+        "timeMs": "1792258090586",
+        "protocolVersion": 14
+      }
+    },
+    "forgeMeta": {
+      "contractId": "4CyDFQaz4nqkndYHcdoNQzuERQSqcMPrE95tKs1AzAFB",
+      "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+      "identityNonce": "8",
+      "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+      "status": "registered",
+      "sizeBytes": 6976,
+      "roomBytes": 13504,
+      "schemaHash": "48e99f200076ba48ea8c0b403b53ff8aea3eea29137ce13108321eed52dd9127",
+      "registeredSchemaHash": "48e99f200076ba48ea8c0b403b53ff8aea3eea29137ce13108321eed52dd9127",
+      "documentsHash": "ed51bd2d7a79cb17aa3c39ea14d99fb434376fe8bf94350e56721420f3a8ef2e",
+      "sourceFile": "forge-contracts/contracts/mainnet/forge-meta.json",
+      "sourceSha256": "04627b526c706ceec4b8356c7c83851825f95004885a5d1c59872dde9767a5b0",
+      "transitionSha256": "f8611834a4179811eca37027333cc6ae27e7aa461cec69c507735ddb70700020",
+      "gitCommit": "ec3c86f12fa9dc47810d7faa3fd26f0e11ae0de6",
+      "gitCommitPushed": true,
+      "balanceBefore": "461726901120",
+      "deployedAt": "2026-10-17T17:28:13.927Z",
+      "costCredits": "36360892580",
+      "costDash": 0.3636089258,
+      "provedAt": {
+        "height": "19010",
+        "coreChainLockedHeight": 145858,
+        "epoch": 99,
+        "timeMs": "1792258092711",
+        "protocolVersion": 14
+      }
+    },
+    "contractGroupId": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+    "contractGroup": {
+      "id": "CQs9mqT8sw4jEWfuBECiyo2nbKogKxG3AbyYYvkiV2xj",
+      "name": "dash-forge",
+      "owner": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+      "admins": [],
+      "description": "Dash Forge v2: forge-core, forge-collab, forge-community and forge-meta",
+      "verifiedAt": "2026-10-17T17:28:14.308Z"
+    },
+    "deployer": {
+      "identityId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
+      "assetLockTxid": "9f9cdf41ea993791bf2cadddb0da63a1de37bde650fbb7ed1ef5acf9bcde2551",
+      "createdAtHeight": null,
+      "note": "custody: offline escrow (OD-2); never signs anything but Forge contract registrations and updates"
+    },
+    "restores": []
   },
   "keyExchange": {
     "contractId": "C2btTEt62RxL3LaZWgngVs2YJYyof8Mqqc6LZrNEbSc2",
