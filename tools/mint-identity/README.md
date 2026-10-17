@@ -253,6 +253,11 @@ that has rotated out, and Platform refuses it. The network comes from the file
   with other keys, or Platform reports the asset lock already used (something else
   spent it on this chain).
 
+The restored identity holds the original asset lock's credits only (later top-ups were
+on the old chain): `deploy-v2.mjs --replay --dry-run` prints what the replay needs, and
+`node mint.mjs topup --identity <restored file> --amount <DASH>` adds the rest. Platform
+is asked first, so an identity that is already restored exits 0 without reading Core.
+
 It writes `<name>.restored.identity.json` next to the input (or `--out`; 0600, never
 over an existing file, which is left as is when it holds the same identity) and prints
 the id, balance and asset-lock height, never the mnemonic or a key.

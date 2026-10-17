@@ -83,10 +83,12 @@
 // external entries are not replayed: they leave nonce gaps, each at most MAX_NONCE_GAP (24),
 // else a same-id restore is impossible and a new set is the only way (--force-new
 // --abandon-live-set). An external transition (a key rotation) is not redone; the run lists it.
-// --replay-from-chain echoes the record's chainId. The production refusals apply (git, build.py
-// --check, HEAD on origin, a proved chain id, room), and --expect-sha256 is checked against the
-// recorded sums (the ones the owner signed at registration). A rerun resumes: a contract on chain
-// at its recorded id is not sent again. The end appends v2.restores and moves `chainId` to the
+// --replay-from-chain echoes the record's chainId. The production refusals about what is sent
+// apply (HEAD on origin, a proved chain id, room; not the set directory's state or build.py
+// --check, since the recorded bytes come from git), --expect-sha256 is checked against the
+// recorded sums (the ones the owner signed at registration), the deployer's balance must cover
+// the recorded costs + 20 %, and the restored deployer must have signed nothing but the replay.
+// A rerun resumes: a contract on chain at its recorded id is not sent again. The end appends v2.restores and moves `chainId` to the
 // new chain; ids, ledger entries and registeredSchemaHash are unchanged.
 //
 // forge-meta (DESIGN rev 4.1 D44): when <dir> holds forge-meta.json it is registered fourth, after

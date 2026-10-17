@@ -5,12 +5,14 @@
 // id), and the record's set registered again at the recorded nonces, so every contract and the
 // group keep their ids. No network, no key, a temp copy of deployments/.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
 
-import { MAX_NONCE_GAP, SETS, contractGroupId, contractId, formatSums, main, nonceGapProblem, planReplay, setSums } from './deploy-v2.mjs';
+import { MAX_NONCE_GAP, SETS, contractGroupId, contractId, defaultGit, formatSums, main, nonceGapProblem, planReplay, replaySource, setSums } from './deploy-v2.mjs';
 import { createFakePlatform } from './lib/fake-platform.mjs';
 
 const REPO = resolve(import.meta.dirname, '..', '..');
@@ -357,4 +359,170 @@ test('planReplay refuses a record it cannot replay', async () => {
   assert.throws(plan((d) => { d.v2.forgeMeta.contractGroupId = 'X'; }), /v2\.forgeMeta in contract group X/);
   assert.throws(plan(() => {}, 'dash-testnet-7'), /registered on chain dash-testnet-51, not dash-testnet-7/);
   assert.throws(() => planReplay(base, { recordKeys: KEYS.slice(0, 3), fromChain: OLD }), /records v2\.forgeMeta, which the set has no file for/);
+});
+
+/** A copy of the mainnet set in a temp dir: `drop` leaves files out, `probe` adds a document type to forge-core. */
+function setCopy(tag, { drop = [], probe = null } = {}) {
+  const dir = tempDir(tag);
+  cpSync(SETS.mainnet, dir, { recursive: true });
+  for (const f of drop) rmSync(join(dir, f));
+  if (probe) {
+    const core = JSON.parse(readFileSync(join(dir, 'forge-core.json'), 'utf8'));
+    core.documentSchemas[probe] = structuredClone(core.documentSchemas[Object.keys(core.documentSchemas)[0]]);
+    writeFileSync(join(dir, 'forge-core.json'), `${JSON.stringify(core, null, 2)}\n`);
+  }
+  return dir;
+}
+
+test('a later chain change archives the restores with their ledger: --force-new registers the new set from nonce 1', async () => {
+  const t = setup();
+  t.fake.failNext('before');
+  await assert.rejects(t.run(t.prod()), /connection lost/);
+  t.fake.externalTransition();
+  await t.run(t.prod('--acknowledge-nonce', '1', '--note', 'a transfer'));
+  t.fake.reset(NEW);
+  await t.run(t.replay());
+  assert.equal(t.read().v2.restores.length, 1);
+  // Platform resets again and this time the set is abandoned for a new one
+  t.fake.reset('dash-testnet-53');
+  await t.run(t.prod('--force-new', '--abandon-live-set', 'testnet'));
+  const rec = t.read();
+  assert.equal(rec.chainId, 'dash-testnet-53');
+  assert.deepEqual(rec.v2.nonceLedger.map((e) => [e.identityNonce, e.key, e.status]), KEYS.map((k, i) => [String(i + 1), k, 'registered']));
+  assert.deepEqual(KEYS.map((k) => rec.v2[k].contractId), KEYS.map((_, i) => contractId(t.fake.ownerId, BigInt(i + 1))));
+  assert.deepEqual(rec.v2.restores, []);
+  const archived = rec.v2.nonceLedgerSuperseded.at(-1);
+  assert.equal(archived.chainId, NEW);
+  assert.equal(archived.restores.length, 1);
+  assert.equal(archived.restores[0].toChainId, NEW);
+});
+
+test('the replay checks the deployer can pay for it before the first broadcast', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  const cost = KEYS.reduce((n, k) => n + BigInt(t.read().v2[k].costCredits), 0n);
+  t.fake.reset(NEW);
+  const me = t.fake.state.identities.get(t.fake.ownerId);
+  me.balance = cost; // the recorded cost, without the 20 % margin
+  await t.run(t.replay('--dry-run'));
+  assert.ok(t.logs.some((m) => /WARNING the deployer holds [\d.]+ DASH, under the [\d.]+ DASH the replay needs: top it up first \(node tools\/mint-identity\/mint\.mjs topup/.test(m)));
+  await assert.rejects(t.run(t.replay()), /under the [\d.]+ DASH the replay needs: top it up first.*Nothing was broadcast/s);
+  assert.equal(t.fake.broadcasts, 4);
+  me.balance = (cost * 13n) / 10n;
+  await t.run(t.replay());
+  assert.equal(t.fake.broadcasts, 8);
+});
+
+test('the restored deployer must have signed nothing else: an unrecorded transition stops the replay', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  t.fake.reset(NEW);
+  t.fake.externalTransition();
+  await assert.rejects(t.run(t.replay()), /identity nonce is 1 on this chain, but the replay has sent creates up to nonce 0: something else signed with it/);
+  assert.equal(t.fake.broadcasts, 4);
+  // the same part way through a replay
+  t.fake.reset(NEW);
+  t.fake.failIn(2, 'before');
+  await assert.rejects(t.run(t.replay()), /connection lost/);
+  t.fake.externalTransition();
+  await assert.rejects(t.run(t.replay()), /identity nonce is 2 on this chain, but the replay has sent creates up to nonce 1/);
+});
+
+test('a second reset: the chain to name is the one the record moved to; old externals are not listed again', async () => {
+  const t = setup();
+  t.fake.failNext('before');
+  await assert.rejects(t.run(t.prod()), /connection lost/);
+  t.fake.externalTransition();
+  await t.run(t.prod('--acknowledge-nonce', '1', '--note', 'IdentityUpdate: rotated CRITICAL'));
+  const before = t.read();
+  t.fake.reset(NEW);
+  await t.run(t.replay());
+  const warned = t.logs.filter((m) => /WARNING 1 external transition/.test(m)).length;
+  assert.ok(warned > 0);
+  t.fake.reset('dash-testnet-53');
+  await assert.rejects(t.run(t.replay()), /was restored from dash-testnet-51 onto dash-testnet-52, and the network reports dash-testnet-53: name the record's chain, --replay-from-chain dash-testnet-52/);
+  assert.equal(t.fake.broadcasts, 5 + 4);
+  await t.run(t.prod('--replay', '--replay-from-chain', NEW));
+  const rec = t.read();
+  assert.deepEqual(ids(rec), ids(before));
+  assert.deepEqual(rec.v2.restores.map((r) => [r.fromChainId, r.toChainId]), [[OLD, NEW], [NEW, 'dash-testnet-53']]);
+  assert.equal(t.logs.filter((m) => /WARNING 1 external transition/.test(m)).length, warned, 'the rotation is asked for at the first restore only');
+  assert.ok(rec.v2.restores[1].notReplayed.some((e) => e.kind === 'external' && e.listedBefore));
+});
+
+test('a tampered record: recorded ids and hashes that the bytes and nonces do not give are refused', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  t.fake.reset(NEW);
+  const base = t.read();
+  const tamper = async (mutate, pattern) => {
+    const rec = structuredClone(base);
+    mutate(rec);
+    t.write(rec);
+    await assert.rejects(t.run(t.replay()), pattern);
+    assert.equal(t.fake.broadcasts, 4);
+  };
+  const owner = t.fake.ownerId;
+  const fakeId = contractId(owner, 99n);
+  await tamper((r) => { r.v2.forgeCollab.contractId = fakeId; r.v2.nonceLedger[1].contractId = fakeId; },
+    new RegExp(`forgeCollab: nonce 2 of ${owner} derives ${base.v2.forgeCollab.contractId}, not the recorded ${fakeId}`));
+  const fakeGroup = contractGroupId(owner, 99n);
+  await tamper((r) => { r.v2.contractGroupId = fakeGroup; for (const k of KEYS) r.v2[k].contractGroupId = fakeGroup; },
+    new RegExp(`forge-core's nonce 1 derives contract group ${base.v2.contractGroupId}, not the recorded ${fakeGroup}`));
+  await tamper((r) => { r.v2.forgeCollab.registeredSchemaHash = '0'.repeat(64); }, /forgeCollab create \(nonce 2\): the record's registeredSchemaHash 000000000000… is not its ledger create's/);
+  await tamper((r) => { r.v2.forgeMeta.schemaHash = '0'.repeat(64); }, /replaying the ledger leaves forgeMeta at schema .* not the recorded 000000000000…/);
+});
+
+test('creates and updates replay interleaved as recorded; a crash during an update resumes; contract nonces may differ', async () => {
+  const t = setup();
+  const v1 = setCopy('i1', { drop: ['forge-meta.json'] });
+  const v2dir = setCopy('i2', { probe: 'replayProbe' });
+  const v3 = setCopy('i3', { probe: 'replayProbe2' });
+  const scratch = join(t.dir, 'interleaved.json');
+  const read = () => JSON.parse(readFileSync(scratch, 'utf8'));
+  const argv = (dir, ...extra) => ['--network', 'testnet', '--contracts', dir, '--record', scratch, '--identity', t.identity, ...extra];
+  await t.run(argv(v1)); // forge-core, forge-collab, forge-community
+  const coreId = read().v2.forgeCore.contractId;
+  // something used forge-core's identity-contract nonce first, so the update is at contract nonce 2
+  t.fake.state.identities.get(t.fake.ownerId).contractNonces.set(coreId, 1n);
+  await t.run(argv(v2dir, '--update', 'core'));
+  await t.run(argv(v2dir, '--only', 'meta')); // forge-meta after the update, at nonce 4
+  const before = read();
+  assert.deepEqual(before.v2.nonceLedger.map((e) => [e.kind, e.key, e.identityNonce ?? e.contractNonce]),
+    [['dataContractCreate', 'forgeCore', '1'], ['dataContractCreate', 'forgeCollab', '2'], ['dataContractCreate', 'forgeCommunity', '3'], ['dataContractUpdate', 'forgeCore', '2'], ['dataContractCreate', 'forgeMeta', '4']]);
+
+  for (const [chain, from, mode] of [[NEW, OLD, 'before'], ['dash-testnet-53', NEW, 'after']]) {
+    t.fake.reset(chain);
+    t.logs.length = 0;
+    t.fake.failIn(4, mode); // the update, sent after the three creates
+    await assert.rejects(t.run(argv(v2dir, '--replay', '--replay-from-chain', from)), mode === 'before' ? /connection lost/ : /timed out/);
+    await t.run(argv(v2dir, '--replay', '--replay-from-chain', from));
+    const rec = read();
+    assert.deepEqual(ids(rec), ids(before));
+    assert.equal(rec.chainId, chain);
+    assert.equal(t.fake.state.contracts.get(coreId).version, 2);
+    const order = t.logs.filter((m) => /replay (create|update) of/.test(m)).map((m) => m.split(':')[0] + (m.includes('update') ? ' update' : ''));
+    // (the update that failed is sent again only if it never landed)
+    assert.deepEqual(order.slice(-2), ['forgeCore update', 'forgeMeta']);
+    assert.equal(order.filter((o) => o === 'forgeCore update').length, mode === 'before' ? 2 : 1);
+    if (mode === 'after') assert.ok(t.logs.some((m) => /forgeCore: version 2 is on this chain already \(a resumed replay\)/.test(m)));
+    assert.deepEqual(order.slice(0, 4), ['forgeCore', 'forgeCollab', 'forgeCommunity', 'forgeCore update']);
+  }
+  // on the new chain forge-core's contract nonce is 1; a later update takes 2, where the old chain's
+  // update sits in the ledger: that entry is the old chain's and does not stop it
+  await t.run(argv(v3, '--update', 'core'));
+  const rec = read();
+  assert.equal(t.fake.state.contracts.get(coreId).version, 3);
+  assert.deepEqual([rec.v2.nonceLedger.at(-1).contractNonce, rec.v2.nonceLedger.at(-1).status], ['2', 'updated']);
+});
+
+test('the real git path: replaySource reads a file at a commit and refuses one git cannot show', () => {
+  const git = defaultGit();
+  const path = 'forge-contracts/contracts/mainnet/forge-core.json';
+  const bytes = Buffer.from(execFileSync('git', ['show', `HEAD:${path}`], { cwd: REPO }));
+  const sha = createHash('sha256').update(bytes).digest('hex');
+  assert.deepEqual(replaySource({ what: 'forgeCore create', sourceFile: path, gitCommit: 'HEAD', sourceSha256: sha }, git), bytes);
+  assert.throws(() => replaySource({ what: 'forgeCore create', sourceFile: path, gitCommit: '0'.repeat(40), sourceSha256: sha }, git),
+    /--replay: git cannot show 000000000000:forge-contracts\/contracts\/mainnet\/forge-core\.json \(.+\); fetch origin first\. Nothing was broadcast\./);
+  assert.throws(() => replaySource({ what: 'forgeCore create', sourceFile: path, gitCommit: 'HEAD', sourceSha256: '1'.repeat(64) }, git), /not the bytes registered/);
 });
