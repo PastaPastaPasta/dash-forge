@@ -26,6 +26,7 @@ import { ARCHIVED_REASON, branchName, forkSourcePrefix, commitSubject, readCommi
 import { shortIdentity } from '@/lib/view/format'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
 import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
+import { CREATED_PLAIN, createdParamFor } from '@/lib/view/created-pull'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { useQuotedUntilEmptied } from '@/lib/view/draft-text'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
@@ -378,13 +379,13 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         return pr
       })
       dropPrDraft(repo)
-      router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: '1' }))
+      router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: createdParamFor(asDraft) }))
     } catch (e) {
       if (e instanceof DraftMarkError) {
         // The PR itself landed: never post it again. Open it; its page offers "Convert to draft".
         dropPrDraft(repo)
         draftIntent.renew()
-        router.push(repoHref('/repo/pull', addr, { number: String(e.created.number), created: '1' }))
+        router.push(repoHref('/repo/pull', addr, { number: String(e.created.number), created: CREATED_PLAIN }))
         return
       }
       if (e instanceof SupersededWriteError) {

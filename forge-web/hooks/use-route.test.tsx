@@ -128,6 +128,23 @@ describe('useShortAddressBar', () => {
     expect(seen.search).toBe('owner=alice&name=project&number=7&created=1')
   })
 
+  it('drops `created=draft` from the bar and does not bring it back when Back restores the short URL (#559)', () => {
+    load('/repo/pull/?owner=alice&name=project&number=7&created=draft')
+    expect(bar()).toBe('/alice/project/pull/7#L3')
+    // The page read `created=draft` once, from the router's route. Back restores the short URL
+    // from the address bar: the route it reads from there has no `created`, so no second wait.
+    render('/alice/project/pull/7')
+    expect(seen).toEqual({ pathname: '/repo/pull/', search: 'owner=alice&name=project&number=7', owner: 'alice' })
+  })
+
+  it('keeps every other param when it drops `created` from the route Back restores', () => {
+    load('/repo/pull/?owner=alice&name=project&number=7&created=1&tab=files&repo=R1')
+    render('/alice/project/pull/7/files?repo=R1')
+    expect(new URLSearchParams(seen.search).has('created')).toBe(false)
+    expect(new URLSearchParams(seen.search).get('tab')).toBe('files')
+    expect(new URLSearchParams(seen.search).get('repo')).toBe('R1')
+  })
+
   it('drops `created=1` from a canonical route the bar keeps (a private repo), and nothing else', () => {
     const replace = vi.spyOn(window.history, 'replaceState')
     load('/repo/?owner=alice&name=secret&created=1', 'private')
