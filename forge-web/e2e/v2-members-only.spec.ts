@@ -72,9 +72,11 @@ async function ensureEncryptionKey(page: Page, name: string): Promise<void> {
   if (await prompt.isVisible()) {
     await prompt.getByLabel('Passphrase').fill(PASSPHRASE)
     await prompt.getByRole('button', { name: /^unlock$/i }).click()
-    await expect(stored.or(file).first()).toBeVisible({ timeout: 60_000 })
+    await expect(prompt).toBeHidden({ timeout: 60_000 })
   }
   if (!(await stored.isVisible())) {
+    // (the panel opens on the Recovery phrase tab: the file input is on the Identity file tab)
+    await page.getByTestId('encryption-key-panel').getByRole('tab', { name: 'Identity file', exact: true }).click()
     await file.setInputFiles(idFile(name))
     await expect(stored).toBeVisible({ timeout: 60_000 })
   }
@@ -149,7 +151,9 @@ test("outsider: the member's members-only comment is a placeholder, and nothing 
   // a message to specific people (letters, lib/view/audience.ts), so the chip is a button that opens
   // the picker. The checks that none of the sealed text is anywhere on the page stand as before.
   await expect(page.getByTestId('audience-chip')).toHaveText(/Public/)
-  await expect(page.getByTestId('audience-chip')).toHaveJSProperty('tagName', 'BUTTON')
+  // A button that opens the letter picker when this viewer holds an encryption key to address one
+  // with, a plain label when not: either way it says Public and carries none of the sealed text.
+  expect(['BUTTON', 'SPAN']).toContain(await page.getByTestId('audience-chip').evaluate((e) => e.tagName))
   outsiderThread = steady(await page.getByTestId('thread-conversation').innerText())
   expect(await runAxe(page, 'issue with placeholders (outsider)')).toEqual([])
   await page.context().close()

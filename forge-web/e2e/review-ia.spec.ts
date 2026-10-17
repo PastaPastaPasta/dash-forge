@@ -111,6 +111,8 @@ test.beforeAll(() => {
   g('commit', '-q', '-m', 'base: greet')
   dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect')
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main'])
+  // #1, the issue the PR's "Fixes #1" names (on a fresh repo #1 would otherwise be the PR itself)
+  dg('OWNER', 'issue', 'create', SLUG, '--title', 'Greet the forge', '--body', 'The greeting should name the forge.')
   // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
   // node that has not seen the consent yet).
   dg('COLLAB', 'collab', 'accept', SLUG)
