@@ -1262,8 +1262,8 @@ dash: push failed: ref did not converge to pushed tip"#;
 
     /// Traced pushes to your own storage (RustFS) on moutai, 2026-09-27, each with the
     /// measured balance drop. Both the fresh estimate and the helper-priced one must be upper
-    /// bounds, within 25% for a first push into a new repository (the case the first-write
-    /// fees price). (Before F-9 the fresh estimate for the first run was 0.0798 DASH, 23x what
+    /// bounds, within 45% for a first push into a new repository (the case the first-write
+    /// fees price; 25% before ECON-05 raised those to the testnet contracts' charges). (Before F-9 the fresh estimate for the first run was 0.0798 DASH, 23x what
     /// it paid.)
     #[test]
     fn own_storage_estimates_cover_recorded_pushes() {
@@ -1277,6 +1277,7 @@ dash: push failed: ref did not converge to pushed tip"#;
             (1, 136_108_920, false),
             (1, 214_148_780, false),
         ];
+        let mut too_loose = Vec::new();
         for &(refs, paid, first) in RUNS {
             let fresh = fresh_push_credits(0, 0, refs, PackStorage::External { targets: 1 });
             let helper = fresh_push_credits(4_000, 3, refs, PackStorage::External { targets: 1 });
@@ -1303,13 +1304,14 @@ dash: push failed: ref did not converge to pushed tip"#;
             .est_credits;
             assert_eq!(fresh, priced, "the two prices agree");
             assert!(priced >= paid, "estimate {priced} under paid {paid}");
-            if first {
-                assert!(
-                    priced <= paid + paid / 4,
-                    "estimate {priced} vs paid {paid}"
-                );
+            // Within +45 % on a first push: ECON-05 raised the first manifest and ref bounds to
+            // the testnet contracts' charges (Platform rc.4, 2026-10-17), above what these
+            // earlier pushes paid. Covering the charge stays strict.
+            if first && priced > paid + paid * 45 / 100 {
+                too_loose.push(format!("{refs} ref(s): estimate {priced} vs paid {paid}"));
             }
         }
+        assert!(too_loose.is_empty(), "{}", too_loose.join("\n"));
         // A push that only creates a ref (no pack, no `platform` event): paid 66,744,380.
         let ref_only = price_helper_estimate(
             PushReport {
