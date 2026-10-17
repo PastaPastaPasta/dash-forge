@@ -1651,8 +1651,13 @@ async function deploy(argv, injected, locks) {
             continue;
           }
           await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
-          const fetched = await sdk.contracts.fetch(s.id);
-          if (!fetched) throw new Error(`${s.key}: broadcast confirmed but ${s.id} cannot be fetched`);
+          // (a node behind the one that applied it is asked again, as settledBalance does)
+          let fetched = await sdk.contracts.fetch(s.id);
+          for (let i = 0; !fetched && i < (injected.settleTries ?? 10); i++) {
+            await new Promise((r) => setTimeout(r, injected.settleMs ?? 2000));
+            fetched = await sdk.contracts.fetch(s.id);
+          }
+          if (!fetched) throw new Error(`${s.key}: broadcast confirmed but ${s.id} cannot be fetched; rerun the same command to resume`);
           onChain[s.key] = fetched;
           v2[s.key].restoredAt = stamp();
           record();
