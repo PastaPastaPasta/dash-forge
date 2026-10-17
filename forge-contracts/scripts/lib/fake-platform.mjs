@@ -97,7 +97,11 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     me.balance -= BigInt(st.toBytes().length) * COST_PER_BYTE;
     state.height += 1n;
     if (st.kind === 'create') {
-      if (transition.nonce !== me.nonce + 1n) throw new Error(`invalid identity nonce ${transition.nonce}, expected ${me.nonce + 1n}`);
+      // A node accepts a nonce up to MAX_MISSING_IDENTITY_REVISIONS (24) past the identity's (rs-dpp
+      // validate_identity_nonce_update); the skipped ones stay usable later, which this fake does not model
+      if (transition.nonce <= me.nonce || transition.nonce - me.nonce > 24n) {
+        throw new Error(`invalid identity nonce ${transition.nonce}: the identity's is ${me.nonce} (a create takes one up to 24 past it)`);
+      }
       if (json.id !== contractId(ownerId, transition.nonce)) throw new Error('contract id does not derive from the owner and nonce');
       if (transition.group) {
         state.groups.set(contractGroupId(ownerId, transition.nonce), {
@@ -204,14 +208,20 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     failNext: (mode) => { state.failure = { mode }; },
     /** Something other than deploy-v2 signs with the deployer: its identity nonce moves. */
     externalTransition: (count = 1) => { deployer().nonce += BigInt(count); },
-    /** Platform resets: another chain id, no contracts, groups or nonces; the deployer is minted again. */
-    reset: (newChainId) => {
+    /**
+     * Platform resets: another chain id, no contracts, groups or nonces. The deployer is minted again
+     * (as `mint.mjs restore` does from its original asset lock) unless `deployer: false`.
+     */
+    reset: (newChainId, { deployer: restored = true } = {}) => {
       state.chainId = newChainId;
       state.contracts.clear();
       state.groups.clear();
       state.memberships.clear();
-      state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() });
+      state.identities.clear();
+      if (restored) state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() });
     },
+    /** The deployer identity is re-created on the current chain (a fresh nonce). */
+    restoreDeployer: () => { state.identities.set(ownerId, { balance, nonce: 0n, contractNonces: new Map() }); },
     /**
      * The node lags (as one behind a load-balanced DAPI can): once the n-th broadcast lands, the
      * deployer's identity nonce reads as of the block before it until catchUp().

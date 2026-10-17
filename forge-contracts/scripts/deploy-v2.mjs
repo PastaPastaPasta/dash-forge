@@ -8,6 +8,8 @@
 //        [--set devnet|mainnet | --contracts <dir> --record <scratch-record.json>]
 //   node forge-contracts/scripts/deploy-v2.mjs --network testnet --set mainnet --identity <deployer.identity.json> \
 //        --expect-sha256 <signed sums> [--deployer-created-height <n>] [--dry-run]
+//   node forge-contracts/scripts/deploy-v2.mjs --network testnet --set mainnet --identity <restored deployer.identity.json> \
+//        --replay --replay-from-chain <the record's chainId> --expect-sha256 <signed sums> [--dry-run]
 //   node forge-contracts/scripts/deploy-v2.mjs --print-sha256 [--set mainnet]    # the sums the owner signs
 //   node forge-contracts/scripts/deploy-v2.mjs --self-test [--contracts <dir>]   # offline: ids, schemas, group fields
 //
@@ -68,6 +70,24 @@
 // contract's schema is the reservation's; a dependent's reservation left by an interrupted run is
 // settled against the chain when --force-new supersedes the forge-core it names. A run that writes holds `<record>.lock` (created
 // exclusively, removed when the run ends); one left by a killed run is deleted by hand.
+//
+// --replay is the same-id restore after a Platform reset that kept Core (CNT-02, CNT-15): once
+// `node tools/mint-identity/mint.mjs restore` has re-created the deployer from its original asset
+// lock (same identity id), it re-registers the record's live contracts on the new chain at their
+// recorded identity nonces, so every contract and the group get the ids clients embed. It replays
+// v2.nonceLedger in order: each live contract's create at its recorded nonce, built from the bytes
+// it was registered from (contracts/registered/<network>/<name>.v1.json when it exists, else `git
+// show <gitCommit>:<sourceFile>`), with its sha256 equal to `sourceSha256`, its schema hash to
+// `registeredSchemaHash` and the derived contract and group ids to the recorded ones, all checked
+// for every step before the first is signed; then each recorded update. Superseded, abandoned and
+// external entries are not replayed: they leave nonce gaps, each at most MAX_NONCE_GAP (24),
+// else a same-id restore is impossible and a new set is the only way (--force-new
+// --abandon-live-set). An external transition (a key rotation) is not redone; the run lists it.
+// --replay-from-chain echoes the record's chainId. The production refusals apply (git, build.py
+// --check, HEAD on origin, a proved chain id, room), and --expect-sha256 is checked against the
+// recorded sums (the ones the owner signed at registration). A rerun resumes: a contract on chain
+// at its recorded id is not sent again. The end appends v2.restores and moves `chainId` to the
+// new chain; ids, ledger entries and registeredSchemaHash are unchanged.
 //
 // forge-meta (DESIGN rev 4.1 D44): when <dir> holds forge-meta.json it is registered fourth, after
 // forge-community, like the others: its schema names forge-core's id (FORGE_CORE_CONTRACT_ID), and
@@ -498,6 +518,8 @@ function defaultGit() {
     porcelain: (path) => run('git', ['status', '--porcelain', '--', path]).trim(),
     // (the remote-tracking branches as last fetched: a commit on one of origin's is on origin)
     pushed: (commit) => run('git', ['branch', '-r', '--contains', commit]).split('\n').some((b) => b.trim().startsWith('origin/')),
+    // a file's bytes at a commit (--replay rebuilds a registration from them)
+    show: (commit, path) => execFileSync('git', ['show', `${commit}:${path}`], { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 }),
     buildCheck: () => {
       try {
         run('python3', [join(ROOT, 'schema', 'build.py'), '--check']);
@@ -572,6 +594,124 @@ export function takeLock(recordFile, { now = () => new Date() } = {}) {
     closeSync(fd);
   }
   return lock;
+}
+
+// ---- the same-id restore (--replay; CNT-02, CNT-15) ----
+/**
+ * How far past an identity's nonce Platform takes the next one: rs-dpp identity_nonce.rs
+ * MAX_MISSING_IDENTITY_REVISIONS (validate_identity_nonce_update refuses `new - current > 24`;
+ * checked at v5.0.0-rc.3, 0f38a693). A fresh identity's nonce is 0 (drive add_new_identity), so
+ * a replayed forge-core needs nonce <= 24, and each later replayed create at most 24 past the one
+ * before it.
+ */
+export const MAX_NONCE_GAP = 24n;
+const SCHEMA_OF_KEY = Object.fromEntries([{ key: 'forgeCore', schemaName: 'forge-core' }, ...DEPENDENT_CONTRACTS, META_CONTRACT].map((c) => [c.key, c.schemaName]));
+
+/**
+ * What --replay re-registers from a record, or a refusal: the live contracts (every one
+ * `registered`, in the set's group, each with exactly one registered create in the ledger), and
+ * the ledger's creates and updates of them in ledger order (`ops`). `sums` are the recorded
+ * sha256 of the files the creates were built from (what --expect-sha256 is checked against);
+ * `skipped` the identity nonces the replay leaves as gaps (external, superseded, abandoned).
+ * `fromChain` must be the record's chainId, or the one the record's last restore came from (a
+ * finished replay, run again).
+ */
+export function planReplay(dep, { recordKeys, fromChain, recordName = 'the record' }) {
+  const v2 = dep?.v2 ?? {};
+  const refuse = (m) => { throw new Error(`--replay: ${recordName} ${m}. Nothing was broadcast.`); };
+  const ledger = v2.nonceLedger ?? [];
+  if (!ledger.some((e) => e.kind === 'dataContractCreate')) refuse('has no nonceLedger to replay (a record registered before the ledger existed cannot be restored with the same ids)');
+  if (!v2.deployer?.identityId) refuse('records no v2.deployer');
+  if (!dep.chainId) refuse('records no chainId, so the chain it was registered on cannot be named');
+  const lastRestore = v2.restores?.at(-1);
+  const finished = Boolean(lastRestore && dep.chainId === lastRestore.toChainId && fromChain === lastRestore.fromChainId);
+  if (fromChain !== dep.chainId && !finished) refuse(`was registered on chain ${dep.chainId}, not ${fromChain} (--replay-from-chain names the record's chainId)`);
+  const stray = Object.keys(SCHEMA_OF_KEY).filter((k) => v2[k] && !recordKeys.includes(k));
+  if (stray.length > 0) refuse(`records ${stray.map((k) => `v2.${k}`).join(', ')}, which the set has no file for`);
+  const keys = recordKeys.filter((k) => v2[k]);
+  if (!keys.includes('forgeCore')) refuse('records no forgeCore');
+  const group = v2.contractGroupId ?? v2.forgeCore.contractGroupId;
+  if (!group) refuse('records no contract group');
+  const createOf = {};
+  for (const key of keys) {
+    const rec = v2[key];
+    if (rec.status !== 'registered') refuse(`has v2.${key} ${rec.status}, not registered: only a complete set is replayed`);
+    if (rec.pendingUpdate) refuse(`has a pending update of v2.${key}: the record cannot say which version is on chain`);
+    if (rec.ownerId !== v2.deployer.identityId) refuse(`has v2.${key} owned by ${rec.ownerId}, not the deployer ${v2.deployer.identityId}`);
+    if (rec.contractGroupId !== group) refuse(`has v2.${key} in contract group ${rec.contractGroupId}, not the set's ${group}`);
+    const creates = ledger.filter((e) => e.kind === 'dataContractCreate' && e.contractId === rec.contractId && e.status === 'registered' && !e.supersededAt);
+    if (creates.length !== 1 || creates[0].key !== key || creates[0].identityNonce !== rec.identityNonce) {
+      refuse(`has ${creates.length} registered ledger creates of v2.${key} ${rec.contractId} (at identity nonce ${rec.identityNonce}), not one`);
+    }
+    createOf[key] = creates[0];
+    const updates = ledger.filter((e) => e.kind === 'dataContractUpdate' && e.contractId === rec.contractId);
+    const open = updates.find((e) => e.status !== 'updated');
+    if (open) refuse(`has an update of v2.${key} to version ${open.version} left ${open.status}`);
+    if (updates.length !== (rec.updates?.length ?? 0)) refuse(`has v2.${key} with ${rec.updates?.length ?? 0} updates but ${updates.length} in the ledger`);
+  }
+  const open = ledger.find((e) => e.status === 'broadcasting');
+  if (open) refuse(`has a ${open.kind} of ${open.key} still broadcasting (nonce ${open.identityNonce ?? open.contractNonce}): whether it landed is unknown`);
+  // The ledger's own order is the order things were signed: an update can precede a later create
+  // that refers to what it added
+  const ops = [];
+  const created = new Set();
+  let prev = 0n;
+  for (const e of ledger) {
+    const key = keys.find((k) => v2[k].contractId === e.contractId);
+    if (!key) continue;
+    if (e === createOf[key]) {
+      const nonce = BigInt(e.identityNonce);
+      if (nonce <= prev) refuse(`has the creates out of identity-nonce order (v2.${key} at ${nonce} after ${prev})`);
+      if (ops.length === 0 && key !== 'forgeCore') refuse(`registers v2.${key} before forge-core, which registers the group`);
+      prev = nonce;
+      created.add(key);
+      ops.push({ kind: 'create', key, schemaName: SCHEMA_OF_KEY[key], entry: e, nonce });
+    } else if (e.kind === 'dataContractUpdate') {
+      if (!created.has(key)) refuse(`has an update of v2.${key} before its create`);
+      ops.push({ kind: 'update', key, schemaName: SCHEMA_OF_KEY[key], entry: e });
+    }
+  }
+  const replayedNonces = new Set(ops.filter((o) => o.kind === 'create').map((o) => o.entry.identityNonce));
+  const skipped = ledger.filter((e) => e.identityNonce !== undefined && e.kind !== undefined && !(e.kind === 'dataContractCreate' && replayedNonces.has(e.identityNonce) && e.status === 'registered' && !e.supersededAt))
+    .map((e) => ({ identityNonce: e.identityNonce, kind: e.kind, ...(e.key ? { key: e.key } : {}), ...(e.status ? { status: e.status } : {}), ...(e.supersededAt ? { superseded: true } : {}), ...(e.note ? { note: e.note } : {}) }));
+  const sums = Object.fromEntries(keys.map((k) => [`${SCHEMA_OF_KEY[k]}.json`, v2[k].sourceSha256]));
+  return { fromChain, group, keys, ops, sums, skipped, finished };
+}
+
+/** The first nonce gap a replay of `creates` (ascending identity nonces) cannot make from `chain`, or null. */
+export function nonceGapProblem(creates, chain) {
+  let prev = BigInt(chain);
+  for (const { key, nonce } of creates) {
+    if (nonce <= prev) return `${key}'s identity nonce ${nonce} is not past the deployer's ${prev} on this chain: something else signed with the restored deployer first, so ${key} cannot get its recorded id`;
+    if (nonce - prev > MAX_NONCE_GAP) return `${key} needs identity nonce ${nonce} but the deployer's is ${prev}: nonce gap ${nonce - prev} exceeds the protocol's window of ${MAX_NONCE_GAP}`;
+    prev = nonce;
+  }
+  return null;
+}
+
+/**
+ * The bytes a replayed transition is built from, which must hash to the recorded `sourceSha256`:
+ * the frozen registered copy when one exists (`frozen`, a create), else the file at the recorded
+ * commit, else (a scratch set outside the repository, recorded by absolute path) the file itself.
+ */
+export function replaySource({ what, sourceFile, gitCommit, sourceSha256, frozen }, git) {
+  const check = (bytes, from) => {
+    const got = sha256Hex(bytes);
+    if (got !== sourceSha256) throw new Error(`--replay: ${what} from ${from} has sha256 ${got.slice(0, 12)}…, not the recorded ${String(sourceSha256).slice(0, 12)}…: not the bytes registered. Nothing was broadcast.`);
+    return bytes;
+  };
+  if (!/^[0-9a-f]{64}$/.test(String(sourceSha256))) throw new Error(`--replay: ${what} records no sourceSha256. Nothing was broadcast.`);
+  if (frozen && existsSync(frozen)) return check(readFileSync(frozen), repoPath(frozen));
+  if (!sourceFile) throw new Error(`--replay: ${what} records no sourceFile. Nothing was broadcast.`);
+  if (sourceFile.startsWith('/')) return check(readFileSync(sourceFile), sourceFile);
+  if (!gitCommit) throw new Error(`--replay: ${what} records no gitCommit to read ${sourceFile} at. Nothing was broadcast.`);
+  let bytes;
+  try {
+    bytes = git.show(gitCommit, sourceFile);
+  } catch (e) {
+    throw new Error(`--replay: git cannot show ${gitCommit.slice(0, 12)}:${sourceFile} (${String(e?.stderr ?? e?.message ?? e).trim().split('\n')[0]}); fetch origin first. Nothing was broadcast.`);
+  }
+  return check(Buffer.from(bytes), `${gitCommit.slice(0, 12)}:${sourceFile}`);
 }
 
 // Whether --force-new supersedes a record. Only a completed registration from a different
@@ -696,6 +836,17 @@ async function deploy(argv, injected, locks) {
     throw new Error(`--deployer-created-height takes the block height the deployer identity was created at (digits only), got ${args['deployer-created-height']}`);
   }
   if (args['abandon-live-set'] !== undefined && !forceNew) throw new Error('--abandon-live-set goes with --force-new (the only way to leave the live contract set)');
+  // --replay (the same-id restore) re-registers the recorded set as it was: it runs alone
+  const replay = Boolean(args.replay);
+  if (args.replay !== undefined && args.replay !== true) throw new Error('--replay takes no value (the chain it restores from is --replay-from-chain <chain id>)');
+  if (replay) {
+    if (only !== null || update !== null || forceNew || acknowledged.length > 0) throw new Error('--replay runs alone: no --only, --update, --force-new or --acknowledge-nonce');
+    if (args['replay-from-chain'] === undefined || args['replay-from-chain'] === true) {
+      throw new Error("--replay needs --replay-from-chain <chain id>: the record's chainId, the chain the set was registered on (the reset one)");
+    }
+  } else if (args['replay-from-chain'] !== undefined) {
+    throw new Error('--replay-from-chain goes with --replay');
+  }
 
   // The record: the network's own for a committed set, else the scratch --record. A devnet's DAPI
   // addresses: --addresses, else the record's `dapiAddresses` (as deploy-key-exchange.mjs reads
@@ -753,6 +904,9 @@ async function deploy(argv, injected, locks) {
     );
   }
 
+  // --replay: the record must be a complete set with its ledger, registered on the chain named
+  const replayPlan = replay ? planReplay(dep, { recordKeys: RECORD_KEYS, fromChain: String(args['replay-from-chain']), recordName }) : null;
+
   // What is registered must be in git, be the current build, and be what the owner signed
   // (testnet and mainnet refuse; a devnet only warns), with room under the transition limit
   // (checked once the transitions exist, below)
@@ -767,7 +921,8 @@ async function deploy(argv, injected, locks) {
     if (!build?.ok) problems.push(`${repoPath(contractsDir)} is not the current build (build.py --check failed); regenerate and commit it${build?.output ? `: ${build.output.split('\n')[0]}` : ''}`);
   }
   if (args['expect-sha256'] !== undefined) {
-    problems.push(...sumsProblems(parseSums(readFileSync(resolve(String(args['expect-sha256'])), 'utf8')), fileSums).map((p) => `--expect-sha256: ${p}`));
+    // (a replay re-registers the recorded bytes: the sums are checked against those)
+    problems.push(...sumsProblems(parseSums(readFileSync(resolve(String(args['expect-sha256'])), 'utf8')), replayPlan?.sums ?? fileSums).map((p) => `--expect-sha256: ${p}`));
   } else if (production) {
     problems.push(`--expect-sha256 <file> is required to register on ${network}: the sums the owner signed (--print-sha256 prints them)`);
   }
@@ -780,7 +935,7 @@ async function deploy(argv, injected, locks) {
       : 'git cannot report whether HEAD is on origin: the recorded gitCommit cannot be shown to be fetchable');
   }
   if (problems.length > 0) {
-    if (production && !dryRun) throw new Error(`${network} registration refused, nothing was broadcast:\n  - ${problems.join('\n  - ')}`);
+    if (production && !dryRun) throw new Error(`${network} ${replay ? 'replay' : 'registration'} refused, nothing was broadcast:\n  - ${problems.join('\n  - ')}`);
     for (const p of problems) log(`WARNING ${p}`);
   }
 
@@ -805,6 +960,9 @@ async function deploy(argv, injected, locks) {
   const deployerChanged = Boolean(recordedDeployer && recordedDeployer !== ownerId);
   if (deployerChanged && !(forceNew && only === null)) {
     throw new Error(`${recordName} was registered by ${recordedDeployer}; ${ownerId} can only register a new set into it (--force-new without --only). Nothing was broadcast.`);
+  }
+  if (replayPlan && dep.v2.deployer.identityId !== ownerId) {
+    throw new Error(`--replay: ${recordName} was registered by ${dep.v2.deployer.identityId}, not ${ownerId}: restore that deployer (mint.mjs restore) and pass its file. Nothing was broadcast.`);
   }
   const critKey = pickKey(rec, 'AUTHENTICATION', 'CRITICAL');
 
@@ -849,7 +1007,8 @@ async function deploy(argv, injected, locks) {
     throw new Error(`the node serves chain ${chainId}, which is not a ${network} chain id (${CHAIN_IDS[network].source}); nothing was broadcast`);
   }
   const chainChanged = Boolean(dep.chainId && chainId && dep.chainId !== chainId);
-  if (chainChanged) {
+  // (a replay is what moves a record to the new chain)
+  if (chainChanged && !replay) {
     if (!forceNew) {
       throw new Error(
         `${recordName} records chain ${dep.chainId} but the network reports ${chainId}: ` +
@@ -866,7 +1025,9 @@ async function deploy(argv, injected, locks) {
   const identity = await sdk.identities.fetch(ownerId);
   if (!identity) {
     // A dry run only builds and sizes the transitions, which needs no identity on chain
-    if (!dryRun) throw new Error(`deployer identity ${ownerId} not found on ${network}`);
+    if (!dryRun) {
+      throw new Error(`deployer identity ${ownerId} not found on ${network}${replay ? ': restore it from escrow first (node tools/mint-identity/mint.mjs restore --identity <escrowed deployer.identity.json>)' : ''}`);
+    }
     log(`deployer ${ownerId} is not on this network; dry run continues with nonce 1`);
   } else {
     const onChainKey = identity.getPublicKeyById(critKey.id);
@@ -948,10 +1109,14 @@ async function deploy(argv, injected, locks) {
     };
     // The highest identity nonce of the ledger entries `counts` keeps (an abandoned reservation's
     // nonce went elsewhere and never counts)
+    // After a same-id restore the chain holds, of the ledger before it, only the creates it replayed
+    // (an external transition or a superseded contract of the old chain never happened on this one)
     const lastSigned = (counts) => {
+      const restore = v2.restores?.at(-1);
       let last = 0n;
-      for (const e of v2.nonceLedger ?? []) {
+      for (const [i, e] of (v2.nonceLedger ?? []).entries()) {
         if (e.identityNonce === undefined || e.status === 'abandoned' || !counts(e)) continue;
+        if (restore?.ledgerLength !== undefined && i < restore.ledgerLength && !restore.replayedNonces?.includes(e.identityNonce)) continue;
         if (BigInt(e.identityNonce) > last) last = BigInt(e.identityNonce);
       }
       return last;
@@ -1370,6 +1535,201 @@ async function deploy(argv, injected, locks) {
       }
       return report;
     }
+
+    // --replay: the same-id restore. Every step is checked (bytes, schema hash, derived ids) before
+    // the first is signed; then the ledger's creates and updates of the live set are sent in its
+    // order, each skipped when the chain already has it (a resumed replay).
+    async function replayLedger() {
+      const { ops, group, keys, skipped, fromChain } = replayPlan;
+      const frozenDir = scratch ? null : join(ROOT, 'contracts', 'registered', basename(depFile, '.json'));
+      const ids = Object.fromEntries(keys.map((k) => [placeholderFor(SCHEMA_OF_KEY[k]), v2[k].contractId]));
+      // 1. Check everything first
+      const steps = [];
+      const finalHash = {};
+      for (const op of ops) {
+        const rec = v2[op.key];
+        const at = op.kind === 'create'
+          ? { sourceFile: rec.sourceFile, gitCommit: rec.gitCommit ?? op.entry.gitCommit, frozen: frozenDir && join(frozenDir, `${op.schemaName}.v1.json`) }
+          : { sourceFile: rec.updates?.find((u) => u.version === op.entry.version)?.sourceFile ?? rec.sourceFile, gitCommit: op.entry.gitCommit };
+        const what = `${op.key} ${op.kind === 'create' ? `create (nonce ${op.nonce})` : `update to version ${op.entry.version}`}`;
+        const bytes = replaySource({ what, ...at, sourceSha256: op.kind === 'create' ? rec.sourceSha256 : op.entry.sourceSha256 }, git);
+        // (a create names only the contracts registered before it, an update every recorded one, as --update does)
+        const names = op.kind === 'create' ? Object.fromEntries(Object.entries(ids).filter(([, id]) => steps.some((s) => s.kind === 'create' && s.id === id))) : ids;
+        const json = loadSchema(op.schemaName, names, bytes.toString('utf8'));
+        const want = op.kind === 'create' ? (rec.registeredSchemaHash ?? op.entry.schemaHash) : op.entry.schemaHash;
+        if (schemaHash(json) !== want || (op.kind === 'create' && op.entry.schemaHash !== want)) {
+          throw new Error(`--replay: ${what}: its schema with the recorded ids hashes to ${schemaHash(json).slice(0, 12)}…, not the recorded ${String(want).slice(0, 12)}… (does it name a superseded contract the replay does not re-create?). Nothing was broadcast.`);
+        }
+        if (op.kind === 'create') {
+          const id = contractId(ownerId, op.nonce);
+          if (id !== rec.contractId) throw new Error(`--replay: ${op.key}: nonce ${op.nonce} of ${ownerId} derives ${id}, not the recorded ${rec.contractId}. Nothing was broadcast.`);
+          if (op.key === 'forgeCore' && (contractGroupId(ownerId, op.nonce) !== group || !op.entry.registersGroup)) {
+            throw new Error(`--replay: forge-core's nonce ${op.nonce} derives contract group ${contractGroupId(ownerId, op.nonce)}, not the recorded ${group} (or its create did not register it). Nothing was broadcast.`);
+          }
+          steps.push({ ...op, id, json, docsHash: documentsHash(json) });
+        } else {
+          if (op.entry.previousSchemaHash && op.entry.previousSchemaHash !== finalHash[op.key]) {
+            throw new Error(`--replay: ${what} follows schema ${String(op.entry.previousSchemaHash).slice(0, 12)}…, but the replay has the contract at ${String(finalHash[op.key]).slice(0, 12)}…. Nothing was broadcast.`);
+          }
+          steps.push({ ...op, id: rec.contractId, json });
+        }
+        finalHash[op.key] = want;
+      }
+      for (const k of keys) {
+        if (finalHash[k] !== v2[k].schemaHash) throw new Error(`--replay: replaying the ledger leaves ${k} at schema ${String(finalHash[k]).slice(0, 12)}…, not the recorded ${String(v2[k].schemaHash).slice(0, 12)}…. Nothing was broadcast.`);
+      }
+
+      // 2. What this chain has already: nothing (a fresh reset), or the start of an interrupted replay
+      const onChain = {};
+      for (const k of keys) onChain[k] = await sdk.contracts.fetch(v2[k].contractId);
+      for (const s of steps.filter((x) => x.kind === 'create' && onChain[x.key])) {
+        const c = onChain[s.key];
+        if (Number(c.version) === 1 && documentsHash(c.toJSON?.()) !== s.docsHash) {
+          throw new Error(`--replay: ${s.key}: ${s.id} is on this chain with another schema than the one recorded: settle it by hand. Nothing was broadcast.`);
+        }
+      }
+      const sameChain = Boolean(chainId) && chainId === d.chainId;
+      if (sameChain) {
+        const missing = keys.filter((k) => !onChain[k]);
+        if (missing.length === 0 && keys.every((k) => Number(onChain[k].version) === (v2[k].version ?? 1))) {
+          say(`nothing to replay: the network is still ${chainId}, and every recorded contract is on it at its recorded version`);
+          report.replay = { nothingToReplay: true, chainId };
+          return report;
+        }
+        // A testnet reset renumbers dash-testnet-<n>; a devnet such as sakura keeps its chain id
+        if (network !== 'devnet') {
+          throw new Error(`--replay: the network still reports ${chainId}, the record's chain, yet ${missing.join(', ') || 'a recorded update'} is not on it: this is no Platform reset (one renumbers the chain id). Nothing was broadcast.`);
+        }
+        say(`WARNING the devnet still reports chain ${chainId} (a devnet keeps its chain id across a reset); ${missing.join(', ')} not on it: replaying`);
+      }
+      const chain = await chainNonce();
+      const gap = nonceGapProblem(steps.filter((s) => s.kind === 'create' && !onChain[s.key]), chain);
+      if (gap) {
+        throw new Error(`--replay: ${gap}. A same-id restore is impossible; register a new set instead (--force-new --abandon-live-set ${network}). Nothing was broadcast.`);
+      }
+      for (const e of skipped) say(`identity nonce ${e.identityNonce}: ${e.kind}${e.key ? ` ${e.key}` : ''}${e.superseded ? ' (superseded)' : e.status ? ` (${e.status})` : ''}${e.note ? `: ${e.note}` : ''}: not replayed (a gap)`);
+      const external = skipped.filter((e) => e.kind === 'external');
+      if (external.length > 0) say(`WARNING ${external.length} external transition(s) of the old chain are not redone (${external.map((e) => `nonce ${e.identityNonce}: ${e.note ?? '?'}`).join('; ')}): redo any that still matter (a key rotation) by hand`);
+
+      // 3. Send them, in the ledger's order
+      const description = v2.contractGroup?.description ?? GROUP_DESCRIPTION;
+      let updatesReplayed = 0;
+      // each contract's version as this pass leaves it (a dry pass sends nothing, so it counts)
+      const version = Object.fromEntries(keys.map((k) => [k, onChain[k] ? Number(onChain[k].version) : 0]));
+      for (const s of steps) {
+        if (s.kind === 'create') {
+          if (onChain[s.key]) {
+            say(`${s.key}: ${s.id} is on this chain already (a resumed replay)`);
+            continue;
+          }
+          version[s.key] = 1;
+          const contract = DataContract.fromJSON(contractJson(s.json, s.id, 1), true, PROTOCOL_VERSION);
+          if (contract.id.toString() !== s.id) throw new Error(`${s.key}: contract id mismatch ${contract.id} != ${s.id}`);
+          const transition = new DataContractCreateTransition(contract, s.nonce, PROTOCOL_VERSION);
+          if (s.key === 'forgeCore') transition.setContractGroup({ admins: [], name: GROUP.name, description });
+          transition.setContractGroupMemberships([{ contractGroupId: b58decode(group), member: 'contract' }]);
+          const st = transition.toStateTransition();
+          st.sign(privateKey, publicKey);
+          const stBytes = st.toBytes();
+          const size = stBytes.length;
+          const room = MAX_STATE_TRANSITION_SIZE - size;
+          const same = sha256Hex(stBytes) === s.entry.transitionSha256;
+          say(`${s.key}: replay create of ${s.id} at nonce ${s.nonce}, group ${group}, ${size} B (room ${room} B${same ? ', the bytes registered' : ''})`);
+          if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${s.key}: transition exceeds max_state_transition_size`);
+          if (room < ROOM_MIN) {
+            const message = `${s.schemaName}: create transition ${formatBytes(size)} B leaves ${formatBytes(room)} B of room, under the ${formatBytes(ROOM_MIN)} B floor (D44)`;
+            roomProblems.push(message);
+            if (production && !dryRun) throw new Error(message);
+            say(`WARNING ${message}`);
+          }
+          if (dryRun) {
+            report.steps.push({ key: s.key, contractId: s.id, nonce: s.nonce.toString(), contractGroupId: group, sizeBytes: size, roomBytes: room, replay: true, dryRun: true });
+            continue;
+          }
+          await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
+          const fetched = await sdk.contracts.fetch(s.id);
+          if (!fetched) throw new Error(`${s.key}: broadcast confirmed but ${s.id} cannot be fetched`);
+          onChain[s.key] = fetched;
+          v2[s.key].restoredAt = stamp();
+          record();
+          report.steps.push({ key: s.key, contractId: s.id, nonce: s.nonce.toString(), replay: true });
+          say(`${s.key}: ${s.id} registered again`);
+          continue;
+        }
+        // an update: the contract must be at the version before it (or past it, a resumed replay)
+        const current = dryRun ? null : await sdk.contracts.fetch(s.id);
+        const chainVersion = current ? Number(current.version) : version[s.key];
+        if (chainVersion >= s.entry.version) {
+          say(`${s.key}: version ${s.entry.version} is on this chain already (a resumed replay)`);
+          continue;
+        }
+        if (chainVersion !== s.entry.version - 1) throw new Error(`--replay: ${s.key} is at version ${chainVersion} on this chain; the next recorded update is to ${s.entry.version}`);
+        const contract = DataContract.fromJSON(contractJson(s.json, s.id, s.entry.version), true, PROTOCOL_VERSION);
+        const nonce = ((BigInt((await sdk.identities.contractNonce(ownerId, s.id)) ?? 0n)) & NONCE_MASK) + 1n;
+        const st = new DataContractUpdateTransition(contract, nonce, PROTOCOL_VERSION).toStateTransition();
+        st.sign(privateKey, publicKey);
+        const size = st.toBytes().length;
+        say(`${s.key}: replay update of ${s.id} to version ${s.entry.version}, contract nonce ${nonce}, ${size} B`);
+        if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${s.key}: update transition exceeds max_state_transition_size`);
+        version[s.key] = s.entry.version;
+        if (dryRun) {
+          report.steps.push({ key: s.key, contractId: s.id, update: { to: s.entry.version }, sizeBytes: size, replay: true, dryRun: true });
+          continue;
+        }
+        try {
+          await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
+        } catch (e) {
+          // (evo-sdk's strict wait refuses an update's proof, as in --update: the version check decides)
+          if (!/affected state only|VerifiedDataContract snapshot/i.test(String(e?.message ?? e))) throw e;
+        }
+        if (current) sdk.wasm?.removeCachedContract?.(current.id);
+        const fetched = await sdk.contracts.fetch(s.id);
+        if (!fetched || Number(fetched.version) !== s.entry.version) throw new Error(`${s.key}: update broadcast but the chain shows version ${fetched ? fetched.version : 'none'}`);
+        updatesReplayed += 1;
+        report.steps.push({ key: s.key, contractId: s.id, update: { to: s.entry.version }, replay: true });
+        say(`${s.key}: updated to version ${s.entry.version} again`);
+      }
+      if (dryRun) {
+        report.replay = { fromChainId: d.chainId, toChainId: chainId, dryRun: true };
+        return report;
+      }
+
+      // 4. The group and every member, then the record: ids, ledger and hashes unchanged
+      const { admins } = await verifyGroup(group);
+      for (const k of keys) {
+        const m = await sdk.contractGroups.forContract(v2[k].contractId);
+        if (!m.contract.includes(group)) throw new Error(`${k} is not enrolled in ${group}`);
+        const c = await sdk.contracts.fetch(v2[k].contractId);
+        if (!c || Number(c.version) !== (v2[k].version ?? 1)) throw new Error(`${k}: the chain has version ${c?.version ?? 'none'}, the record ${v2[k].version ?? 1}`);
+      }
+      const at = stamp();
+      const proved = {};
+      for (const k of keys) {
+        v2[k].restoredAt ??= at;
+        proved[k] = await provedAt(v2[k].contractId);
+      }
+      v2.restores = [...(v2.restores ?? []), {
+        at,
+        fromChainId: d.chainId ?? fromChain,
+        toChainId: chainId,
+        replayed: keys,
+        updatesReplayed,
+        replayedNonces: steps.filter((s) => s.kind === 'create').map((s) => s.entry.identityNonce),
+        ledgerLength: (v2.nonceLedger ?? []).length,
+        notReplayed: skipped,
+        provedAt: proved,
+        gitCommit,
+        sdk: injected.sdkId ?? installedSdk(),
+      }];
+      if (chainId) d.chainId = chainId;
+      v2.contractGroup = { ...(v2.contractGroup ?? {}), admins, verifiedAt: at };
+      record();
+      say(`same-id restore done: ${keys.join(', ')} and group ${group} are on ${chainId ?? 'this chain'} at their recorded ids`);
+      report.replay = { fromChainId: v2.restores.at(-1).fromChainId, toChainId: chainId, replayed: keys, updatesReplayed };
+      report.contractGroupId = group;
+      return report;
+    }
+    if (replayPlan) return replayLedger();
 
     // Move a record to its `<key>Superseded` list (the caller writes the record).
     const moveToSuperseded = (key, at) => {
