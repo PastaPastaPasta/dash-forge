@@ -2,7 +2,7 @@
 .DS_Store
 
 # Agent worktrees and local agent state
-.claude/
+/.claude/
 
 # Rust
 target/

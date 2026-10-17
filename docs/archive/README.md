@@ -6,4 +6,4 @@ Historical material, kept for reference. Nothing here describes the current syst
 - [Dash Forge moved to devnet sakura](devnet-move.md): what the move from devnet bonsia lost and kept.
 - [Older Forge builds](older-forge-builds.md): what builds from before members-only content show.
 
-The spike code itself is no longer in the tree; it lives in git history and under the `archive/spikes` tag.
+The spike code itself is no longer in the tree; it lives in git history: commit `36543f658` is the last one that has `spikes/`.
