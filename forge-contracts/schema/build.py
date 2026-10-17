@@ -24,7 +24,7 @@ the new core).
             forge-contracts/contracts.
 --mainnet   turn on every built MAINNET_FLAGS item (the four-contract layout and the mixed-visibility
             items of DESIGN rev 4.1 §8.3 included): the fresh mainnet registration. Needs --out.
---validate  run tools/contract-validate (rs-dpp v5.0.0-beta.6) on the result and print each
+--validate  run tools/contract-validate (rs-dpp v5.0.0-rc.3) on the result and print each
             contract's serialized size and create-transition size against the D-12 budget and
             the 20,480-byte transition limit. forge-contracts/schema/variants.py does this for
             every combination of the RC2 flags and of the mainnet items.
