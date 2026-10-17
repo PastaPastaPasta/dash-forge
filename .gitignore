@@ -1,6 +1,9 @@
 # OS
 .DS_Store
 
+# Agent worktrees and local agent state
+.claude/
+
 # Rust
 target/
 # Local-only cargo overrides (see docs/BUILDING.md) — committing one would redirect
@@ -22,6 +25,10 @@ dist/
 *.identity.json
 test-identities/
 dash-identity-*.json
+# Funding WIFs, PEM keys and dg's stored identity keys (<network>-<identityId>.key)
+*.wif
+*.pem
+*.key
 
 # Test artifacts
 playwright-report/
