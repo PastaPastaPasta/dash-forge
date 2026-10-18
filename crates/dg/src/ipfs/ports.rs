@@ -1,6 +1,7 @@
 //! Reserve daemon ports while configuring offline, retaining saved swarm choices.
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::time::Duration;
 
 use anyhow::Result;
 use socket2::{Domain, Socket, Type};
@@ -20,9 +21,10 @@ enum Kind {
 
 fn bind_socket(address: SocketAddr, kind: Type) -> io::Result<Socket> {
     let socket = Socket::new(Domain::for_address(address), kind, None)?;
-    // std's TCP listeners enable SO_REUSEADDR on Unix. Disable it so wildcard
-    // probes also detect occupied loopback addresses on macOS.
-    socket.set_reuse_address(false)?;
+    // Reuse TCP addresses so our stopped daemon's TIME_WAIT connections do not
+    // block a restart. UDP must stay exclusive; live TCP listeners are checked
+    // by connecting before creating our own reservations.
+    socket.set_reuse_address(kind == Type::STREAM)?;
     if address.is_ipv6() {
         socket.set_only_v6(true)?;
     }
@@ -35,10 +37,26 @@ fn bind_socket(address: SocketAddr, kind: Type) -> io::Result<Socket> {
 
 fn bind(port: u16, kind: Kind) -> io::Result<Reservation> {
     let mut sockets = Vec::new();
+    let ipv6 = matches!(kind, Kind::Swarm)
+        && bind_socket((Ipv6Addr::UNSPECIFIED, 0).into(), Type::STREAM).is_ok();
+    let mut loopbacks = vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))];
+    if ipv6 {
+        loopbacks.push((Ipv6Addr::LOCALHOST, port).into());
+    }
+    // On macOS a reusable wildcard bind can coexist with a loopback listener.
+    // Probe before binding, so we never connect to our own reservation.
+    for address in loopbacks {
+        if TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "a TCP listener answered",
+            ));
+        }
+    }
     if matches!(kind, Kind::Swarm) {
         // Hosts without IPv6 can still use kubo's IPv4 listeners. IPv6-only
         // reservations can coexist with IPv4 reservations for the same port.
-        if bind_socket((Ipv6Addr::UNSPECIFIED, 0).into(), Type::STREAM).is_ok() {
+        if ipv6 {
             sockets.push(bind_socket(
                 (Ipv6Addr::UNSPECIFIED, port).into(),
                 Type::STREAM,
@@ -119,16 +137,6 @@ fn choose_swarm(config: &NodeConfig) -> Result<(u16, Reservation)> {
     )
 }
 
-/// Resolve legacy configs before validation, excluding their four existing ports.
-pub(super) fn resolve_swarm(config: &mut NodeConfig) -> Result<()> {
-    if config.swarm_port.is_none() {
-        let (port, _reservation) = choose_swarm(config)?;
-        warn_change("swarm", config.swarm_port(), port);
-        config.swarm_port = Some(port);
-    }
-    Ok(())
-}
-
 /// Called after our daemon stops, so its own listeners never look like conflicts.
 pub(super) fn select(config: &mut NodeConfig) -> Result<[Reservation; 3]> {
     let (swarm_port, swarm) = choose_swarm(config)?;
@@ -165,7 +173,47 @@ pub(super) fn select(config: &mut NodeConfig) -> Result<[Reservation; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{TcpListener, UdpSocket};
+    use std::io::Read as _;
+    use std::net::{Shutdown, TcpListener, UdpSocket};
+
+    #[test]
+    fn time_wait_connections_do_not_make_tcp_ports_busy() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        client.set_reuse_address(true).unwrap();
+        client
+            .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
+            .unwrap();
+        let port = client.local_addr().unwrap().as_socket().unwrap().port();
+        client
+            .connect(&listener.local_addr().unwrap().into())
+            .unwrap();
+        let mut client = TcpStream::from(client);
+        let (mut server, _) = listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        // The client actively closes first. Waiting for each FIN keeps TIME_WAIT
+        // on its local port after both streams and the server listener are gone.
+        client.shutdown(Shutdown::Write).unwrap();
+        server.read_to_end(&mut Vec::new()).unwrap();
+        server.shutdown(Shutdown::Write).unwrap();
+        client.read_to_end(&mut Vec::new()).unwrap();
+        drop((client, server, listener));
+        let exclusive = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        exclusive.set_reuse_address(false).unwrap();
+        let error = exclusive
+            .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)).into())
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        drop(exclusive);
+        let internal = bind(port, Kind::Loopback).unwrap();
+        drop(internal);
+        let _swarm = bind(port, Kind::Swarm).unwrap();
+    }
 
     #[test]
     fn occupied_internal_ports_move_and_saved_choices_are_reused() {

@@ -69,14 +69,10 @@ pub async fn collect(node: &Node) -> Result<Value> {
             .iter()
             .any(|a| a.as_str().is_some_and(public_address))
     });
-    let fix = (!public).then(|| {
-        format!(
-            "forward TCP+UDP {} to this machine",
-            node.config.swarm_port()
-        )
-    });
+    let swarm_port = node.swarm_port();
+    let fix = (!public).then(|| format!("forward TCP+UDP {swarm_port} to this machine"));
     Ok(json!({
-        "kuboVersion":version["Version"], "peerId":id["ID"], "api":node.api(), "gateway":node.gateway(), "swarmPort":node.config.swarm_port(),
+        "kuboVersion":version["Version"], "peerId":id["ID"], "api":node.api(), "gateway":node.gateway(), "swarmPort":swarm_port,
         "repoBytes":repo["RepoSize"].as_u64().context("kubo repo size is missing")?,
         "recursivePins":pins["Keys"].as_object().map_or(0, serde_json::Map::len),
         "listenAddresses":listen["Strings"], "reachability":if public {"public addresses (reachability unverified)"} else {"private-only"},
@@ -92,7 +88,7 @@ mod tests {
     async fn status_reports_the_saved_swarm_port_in_its_forwarding_fix() {
         let temp = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let node = Node {
+        let mut node = Node {
             dir: temp.path().to_owned(),
             config: super::super::config::NodeConfig {
                 internal_api_port: listener.local_addr().unwrap().port(),
@@ -110,6 +106,21 @@ mod tests {
         let status = Box::pin(collect(&node)).await.unwrap();
         assert_eq!(status["swarmPort"], 4401);
         assert_eq!(status["fix"], "forward TCP+UDP 4401 to this machine");
+        // Legacy status uses repo config, without selecting or saving a new port.
+        node.config.swarm_port = None;
+        super::super::config::private_dir(&node.repo()).unwrap();
+        std::fs::write(
+            node.repo().join("config"),
+            serde_json::to_vec(&json!({
+                "Addresses":{"Swarm":["/ip4/0.0.0.0/udp/4402/quic-v1"]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let status = Box::pin(collect(&node)).await.unwrap();
+        assert_eq!(status["swarmPort"], 4402);
+        assert_eq!(status["fix"], "forward TCP+UDP 4402 to this machine");
+        assert_eq!(node.config.swarm_port, None);
         task.abort();
         let _ = task.await;
     }

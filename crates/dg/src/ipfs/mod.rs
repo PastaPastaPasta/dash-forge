@@ -128,14 +128,23 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
         IpfsCommand::Up(args) => Box::pin(up(ctx, args)).await,
         IpfsCommand::Serve => Box::pin(serve::run(ctx, Node::load()?)).await,
         IpfsCommand::Status => {
-            let value = status::collect(&Node::load()?).await?;
+            let node = Node::load()?;
+            let value = status::collect(&node).await?;
             ctx.emit(value.clone(), || {
                 println!(
                     "IPFS node: kubo {}, peer {}",
                     value["kuboVersion"].as_str().unwrap_or("?"),
                     value["peerId"].as_str().unwrap_or("?")
                 );
-                println!("  Swarm port: {}", value["swarmPort"]);
+                println!(
+                    "  Swarm port: {}{}",
+                    value["swarmPort"],
+                    if node.config.swarm_port.is_none() {
+                        " (not yet saved)"
+                    } else {
+                        ""
+                    }
+                );
                 println!("  Service: {}", value["service"].as_str().unwrap_or("?"));
                 println!(
                     "  Stored: {} bytes; {} recursive pins",

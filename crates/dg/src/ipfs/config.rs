@@ -68,11 +68,10 @@ impl Node {
     }
 
     pub fn load_from(dir: PathBuf) -> Result<Self> {
-        let mut config: NodeConfig =
+        let config: NodeConfig =
             toml::from_str(&fs::read_to_string(dir.join("node.toml")).map_err(|_| {
                 node_error("no managed IPFS node is configured", "run `dg ipfs up`")
             })?)?;
-        super::ports::resolve_swarm(&mut config)?;
         config.validate()?;
         Ok(Self { dir, config })
     }
@@ -96,6 +95,33 @@ impl Node {
     }
     pub fn internal_api(&self) -> String {
         format!("http://127.0.0.1:{}", self.config.internal_api_port)
+    }
+    /// Read legacy nodes' configured port without probing their running listeners.
+    pub fn swarm_port(&self) -> u16 {
+        self.config.swarm_port.unwrap_or_else(|| {
+            let port = fs::read(self.repo().join("config"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|config| {
+                    config["Addresses"]["Swarm"]
+                        .as_array()?
+                        .iter()
+                        .find_map(|address| {
+                            let mut parts = address.as_str()?.split('/');
+                            while let Some(part) = parts.next() {
+                                if matches!(part, "tcp" | "udp") {
+                                    return parts
+                                        .next()?
+                                        .parse::<u16>()
+                                        .ok()
+                                        .filter(|port| *port != 0);
+                                }
+                            }
+                            None
+                        })
+                });
+            port.unwrap_or(4001)
+        })
     }
     pub fn binary(&self) -> PathBuf {
         std::env::var_os("DASH_FORGE_KUBO_BIN")
@@ -567,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_node_with_public_api_on_4001_resolves_swarm_before_validation() {
+    fn legacy_node_with_public_api_on_4001_defers_swarm_selection_until_configure() {
         let temp = tempfile::tempdir().unwrap();
         let legacy = NodeConfig {
             api_port: 4001,
@@ -576,13 +602,41 @@ mod tests {
         let text = toml::to_string(&legacy).unwrap();
         assert!(!text.contains("swarmPort"));
         fs::write(temp.path().join("node.toml"), text).unwrap();
-        let node = Node::load_from(temp.path().to_owned()).unwrap();
+        let mut node = Node::load_from(temp.path().to_owned()).unwrap();
         assert_eq!(node.config.api_port, 4001);
-        assert!(node.config.swarm_port() > 4001);
+        assert_eq!(node.config.swarm_port, None);
         assert!(node.config.validate().is_ok());
+        let _reservations = super::super::ports::select(&mut node.config).unwrap();
+        assert!(node.config.swarm_port() > 4001);
         node.save().unwrap();
         let restored = Node::load_from(temp.path().to_owned()).unwrap();
         assert_eq!(restored.config.swarm_port, node.config.swarm_port);
+    }
+
+    #[test]
+    fn loading_a_legacy_node_keeps_its_port_unresolved_even_when_busy() {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        fs::write(
+            temp.path().join("node.toml"),
+            toml::to_string(&NodeConfig::default()).unwrap(),
+        )
+        .unwrap();
+        private_dir(&temp.path().join("repo")).unwrap();
+        fs::write(
+            temp.path().join("repo/config"),
+            serde_json::to_vec(&json!({
+                "Addresses":{"Swarm":[format!("/ip4/0.0.0.0/tcp/{port}")]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let node = Node::load_from(temp.path().to_owned()).unwrap();
+        assert_eq!(node.config.swarm_port, None);
+        assert_eq!(node.swarm_port(), port);
+        fs::write(node.repo().join("config"), b"invalid").unwrap();
+        assert_eq!(node.swarm_port(), 4001);
     }
 
     #[tokio::test]

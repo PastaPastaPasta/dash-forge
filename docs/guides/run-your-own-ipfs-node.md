@@ -79,6 +79,8 @@ The link `dg` prints still points at forge.dashhq.org. On your own address, open
 
 The public API, public gateway, two internal ports and swarm port must all differ. The internal API and gateway prefer 5101 and 8180; if either is busy, `dg` picks a free loopback port. Port selection scans upward from the preferred number, skipping conflicts. The chosen ports are saved in `node.toml`. The swarm port stays fixed on later runs, including origin changes; if it becomes busy, stop the conflicting program or choose another port with `--swarm-port`. Internal ports can move if needed. Any port change produces a warning on stderr, and `up` reports the swarm and both internal ports in human and JSON output. If a profile called `kubo` already points somewhere else, `dg` stops and asks for another `--name`.
 
+Port selection happens during configuration, after the managed daemon stops. Loading an older config never probes or selects a port. Until its swarm port is saved, `status` reads the port from the kubo repo config (falling back to 4001) and labels it "not yet saved".
+
 ### Running next to IPFS Desktop
 
 IPFS Desktop and other kubo nodes commonly use public ports 5001/8080 and swarm port 4001. Keep that node running and give Forge different public ports:
