@@ -201,13 +201,16 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
         node.config.name.clone_from(name);
     }
     if let Some(port) = args.api_port {
+        ports::warn_change("public API", node.config.api_port, port);
         node.config.api_port = port;
     }
     if let Some(port) = args.gateway_port {
+        ports::warn_change("public gateway", node.config.gateway_port, port);
         node.config.gateway_port = port;
     }
     if let Some(port) = args.swarm_port {
-        node.config.swarm_port = port;
+        ports::warn_change("swarm", node.config.swarm_port(), port);
+        node.config.swarm_port = Some(port);
     }
     for origin in &args.origin {
         let origin = config::validate_origin(origin)?;
@@ -240,7 +243,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     if node.dir.join("pair.json").exists() {
         std::fs::remove_file(node.dir.join("pair.json"))?;
     }
-    config::configure(&mut node, &tokens, args.swarm_port.is_some()).await?;
+    config::configure(&mut node, &tokens).await?;
     node.config.service = !args.no_service;
     node.save()?;
     // In --no-service mode, run a temporary supervisor for the same verification, then
@@ -305,7 +308,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
         args.no_open || ctx.json || !node.config.service,
     )
     .await;
-    let value = json!({"node":{"kuboVersion":version,"peerId":peer_id,"api":node.api(),"gateway":node.gateway(),"origins":node.config.origins,"service":if node.config.service {"login"} else {"manual"}}, "profile":node.config.name,"connect":connection});
+    let value = json!({"node":up_node(&node, &peer_id, &version), "profile":node.config.name,"connect":connection});
     ctx.emit(value, || {
         println!(
             "IPFS node ready: kubo {version}, peer {peer_id}, {}.",
@@ -323,6 +326,11 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
             "  Gateway  {} (serves only what this node holds)",
             node.gateway()
         );
+        println!("  Swarm    TCP+UDP {}", node.config.swarm_port());
+        println!(
+            "  Internal API {}; gateway {} (loopback only)",
+            node.config.internal_api_port, node.config.internal_gateway_port
+        );
         println!(
             "  CLI      storage profile {:?} saved — `dg storage use {}` sends your pushes there.",
             node.config.name, node.config.name
@@ -330,6 +338,15 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
         print_connection(&connection, opened);
     });
     Ok(())
+}
+
+fn up_node(node: &Node, peer_id: &str, version: &str) -> serde_json::Value {
+    json!({
+        "kuboVersion":version, "peerId":peer_id, "api":node.api(), "gateway":node.gateway(),
+        "swarmPort":node.config.swarm_port(), "internalApiPort":node.config.internal_api_port,
+        "internalGatewayPort":node.config.internal_gateway_port, "origins":node.config.origins,
+        "service":if node.config.service {"login"} else {"manual"},
+    })
 }
 
 async fn check_public_ports(node: &Node) -> Result<()> {
@@ -442,7 +459,7 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
         }
     }
     let tokens = Tokens::load(&node)?;
-    config::configure(&mut node, &tokens, false).await?;
+    config::configure(&mut node, &tokens).await?;
     node.save()?;
     if node.config.service {
         check_public_ports(&node).await?;
@@ -613,6 +630,23 @@ fn print_connection(connection: &pair::Connection, opened: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn up_output_reports_all_selected_daemon_ports() {
+        let node = Node {
+            dir: std::path::PathBuf::new(),
+            config: NodeConfig {
+                swarm_port: Some(4002),
+                internal_api_port: 5102,
+                internal_gateway_port: 8181,
+                ..Default::default()
+            },
+        };
+        let value = up_node(&node, "test-peer", KUBO_VERSION);
+        assert_eq!(value["swarmPort"], 4002);
+        assert_eq!(value["internalApiPort"], 5102);
+        assert_eq!(value["internalGatewayPort"], 8181);
+    }
 
     #[test]
     fn swarm_port_flag_is_optional_and_nonzero() {

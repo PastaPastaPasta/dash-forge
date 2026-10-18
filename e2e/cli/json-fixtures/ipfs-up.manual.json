@@ -15,6 +15,9 @@
       "peerId": "test-peer",
       "api": "http://127.0.0.1:5001",
       "gateway": "http://127.0.0.1:8080",
+      "swarmPort": 4002,
+      "internalApiPort": 5102,
+      "internalGatewayPort": 8181,
       "origins": [
         "https://forge.dashhq.org"
       ],

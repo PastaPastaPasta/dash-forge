@@ -43,6 +43,8 @@ tempfile = "3"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 sha2 = "0.10"
 subtle = "2"
+# Probe managed-node ports without SO_REUSEADDR, including on macOS.
+socket2 = "0.6.5"
 # Hidden prompts: a pasted storage secret, the recovery words, backup-check words.
 rpassword = "7"
 

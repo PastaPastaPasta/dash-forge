@@ -720,7 +720,9 @@ cmd('storage remove', 'A storage profile removed.', {'status': E('removed'), 'pr
 # Managed loopback IPFS node. Pairing codes are short-lived; bearer tokens never appear.
 IPFS_CONNECT = O({'link': S, 'code': S, 'expiresAt': I}, ['link', 'code', 'expiresAt'])
 IPFS_NODE = O({'kuboVersion': S, 'peerId': S, 'api': S, 'gateway': S, 'origins': SA,
-               'service': E('manual', 'login')}, ['kuboVersion', 'peerId', 'api', 'gateway', 'origins', 'service'])
+               'swarmPort': I, 'internalApiPort': I, 'internalGatewayPort': I,
+               'service': E('manual', 'login')}, ['kuboVersion', 'peerId', 'api', 'gateway', 'origins',
+                                               'swarmPort', 'internalApiPort', 'internalGatewayPort', 'service'])
 cmd('ipfs up', 'A verified local IPFS node and a one-time browser connection.', {
     'node': IPFS_NODE, 'profile': S, 'connect': IPFS_CONNECT,
 }, ['node', 'profile', 'connect'])

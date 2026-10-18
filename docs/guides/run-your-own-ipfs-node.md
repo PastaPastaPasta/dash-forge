@@ -41,6 +41,8 @@ You see:
 IPFS node ready: kubo 0.43.1, peer 12D3Koo…, starts at login.
   RPC      http://127.0.0.1:5001 (add, pin, unpin, id; allowed websites only)
   Gateway  http://127.0.0.1:8080 (serves only what this node holds)
+  Swarm    TCP+UDP 4001
+  Internal API 5101; gateway 8180 (loopback only)
   CLI      storage profile "kubo" saved — `dg storage use kubo` sends your pushes there.
 Connecting the web app… opened https://forge.dashhq.org/settings/storage/#kubo=5001.7KQ2-M9XD-PF4C
 Settings → Storage → IPFS (kubo) → Connect with a code: 7KQ2-M9XD-PF4C (valid 10 min).
@@ -68,14 +70,14 @@ The link `dg` prints still points at forge.dashhq.org. On your own address, open
 | `--name <name>` | The storage profile's name. The default is `kubo`, or the name this node already has. |
 | `--api-port <port>` | The port your browser and `dg` use (default 5001). |
 | `--gateway-port <port>` | The read port (default 8080). |
-| `--swarm-port <port>` | The TCP and UDP port other IPFS nodes use (default 4001, or the saved port). An explicitly chosen port must be free. Without this flag, `dg` picks a free port if the preferred one is busy. |
+| `--swarm-port <port>` | The TCP and UDP port other IPFS nodes use (default 4001, or the saved port). An explicitly chosen port must be free. On first setup (or when an older config has no saved swarm port), `dg` scans upward from 4001 for a free port. Later runs keep the saved swarm port; use this flag to change it. |
 | `--rotate-token` | Replace both tokens. The old ones stop working at once, so connect your browsers again with `dg ipfs connect`. |
 | `--no-service` | Don't install a login service. `dg` checks the node, then stops it. You start it with `dg ipfs serve` under your own supervisor. |
 | `--linger` | Linux: keep the service running when you are logged out. |
 | `--no-open` | Print the connect link; don't open a browser. |
 | `--json` | Print the result as JSON, including the connect link and code. |
 
-The public API, public gateway, two internal ports and swarm port must all differ. The internal API and gateway prefer 5101 and 8180; if either is busy, `dg` picks a free loopback port. The chosen ports are saved in `node.toml` and reused on later runs while available. If a profile called `kubo` already points somewhere else, `dg` stops and asks for another `--name`.
+The public API, public gateway, two internal ports and swarm port must all differ. The internal API and gateway prefer 5101 and 8180; if either is busy, `dg` picks a free loopback port. Port selection scans upward from the preferred number, skipping conflicts. The chosen ports are saved in `node.toml`. The swarm port stays fixed on later runs, including origin changes; if it becomes busy, stop the conflicting program or choose another port with `--swarm-port`. Internal ports can move if needed. Any port change produces a warning on stderr, and `up` reports the swarm and both internal ports in human and JSON output. If a profile called `kubo` already points somewhere else, `dg` stops and asks for another `--name`.
 
 ### Running next to IPFS Desktop
 
@@ -85,7 +87,7 @@ IPFS Desktop and other kubo nodes commonly use public ports 5001/8080 and swarm 
 dg ipfs up --name forge-kubo --api-port 5002 --gateway-port 8081
 ```
 
-Forge uses its own repo and tokens. It selects another swarm port when 4001 is busy, and moves either internal port if needed. To choose the swarm port yourself, add `--swarm-port 4002` (it must be free for both TCP and UDP). `dg ipfs status` shows the selected swarm port and the router-forwarding hint uses that port.
+Forge uses its own repo and tokens. On first setup it selects another swarm port when 4001 is busy, and moves either internal port if needed. Later runs retain the saved swarm port so router forwarding stays valid. To choose the swarm port yourself, add `--swarm-port 4002` (it must be free for both TCP and UDP). `dg ipfs status` shows the selected swarm port and the router-forwarding hint uses that port.
 
 Two managed nodes under one user also need separate data and configuration directories (`XDG_DATA_HOME` and `XDG_CONFIG_HOME`), different public ports, and `--no-service`. Run each `dg ipfs serve` with its matching directory variables; the login-service name is shared.
 
@@ -202,7 +204,7 @@ Other programs running as you can read `tokens.toml`. `dg` trusts your own accou
 
 ## Being reachable
 
-Other nodes need to dial yours to fetch what you hold. Forward the **TCP and UDP swarm port shown by `dg ipfs status`** on your router to the computer running the node. It defaults to 4001, but can differ when you use `--swarm-port` or another program already holds that port. Kubo also tries to open the port itself through UPnP, which many routers allow.
+Other nodes need to dial yours to fetch what you hold. Forward the **TCP and UDP swarm port shown by `dg ipfs status`** on your router to the computer running the node. It defaults to 4001, but can differ when you use `--swarm-port` or another program held that port during first setup. Kubo also tries to open the port itself through UPnP, which many routers allow.
 
 `dg ipfs status` reports one of two things:
 
@@ -291,8 +293,8 @@ Private repositories need more care:
 | `no pinned kubo archive is available for this platform` | `dg ipfs up` supports macOS and Linux on arm64 and amd64, and Windows on amd64. |
 | `this profile name belongs to another storage address; choose a new name with --name` | A storage profile called `kubo` already points at a different node. Pick another `--name`. |
 | `could not bind the IPFS API port` | Something else uses port 5001 (or 8080). Run `dg ipfs up --api-port <port> --gateway-port <port>`. |
-| `the IPFS node did not become ready within 60 seconds` | Read `serve.log` in the node's directory. The selected internal and swarm ports are in `node.toml`; rerun `dg ipfs up` if another program has taken them. |
-| `IPFS swarm port <port> is already in use` | Choose a free TCP and UDP port with `--swarm-port`, or omit the flag to let `dg` choose. |
+| `the IPFS node did not become ready within 60 seconds` | Read `serve.log` in the node's directory. The selected internal and swarm ports are in `node.toml`; rerun `dg ipfs up` if another program has taken an internal port. A busy saved swarm port requires stopping that program or choosing `--swarm-port <port>`. |
+| `IPFS swarm port <port> is already in use` | Stop the conflicting program, or choose a free TCP and UDP port with `--swarm-port`. Only first setup (or a config without `swarmPort`) selects the swarm port automatically. |
 | `the kubo repo is still in use` | A kubo started by hand holds the repo. Stop it and retry. |
 | `systemd's user service is unavailable` | Run `dg ipfs up --no-service`, then `dg ipfs serve` under your own supervisor. |
 | `could not start the IPFS login service` (macOS) | Run `dg ipfs up --no-service`, then `dg ipfs serve` yourself. |

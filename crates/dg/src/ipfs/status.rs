@@ -69,10 +69,14 @@ pub async fn collect(node: &Node) -> Result<Value> {
             .iter()
             .any(|a| a.as_str().is_some_and(public_address))
     });
-    let fix =
-        (!public).then(|| format!("forward TCP+UDP {} to this machine", node.config.swarm_port));
+    let fix = (!public).then(|| {
+        format!(
+            "forward TCP+UDP {} to this machine",
+            node.config.swarm_port()
+        )
+    });
     Ok(json!({
-        "kuboVersion":version["Version"], "peerId":id["ID"], "api":node.api(), "gateway":node.gateway(), "swarmPort":node.config.swarm_port,
+        "kuboVersion":version["Version"], "peerId":id["ID"], "api":node.api(), "gateway":node.gateway(), "swarmPort":node.config.swarm_port(),
         "repoBytes":repo["RepoSize"].as_u64().context("kubo repo size is missing")?,
         "recursivePins":pins["Keys"].as_object().map_or(0, serde_json::Map::len),
         "listenAddresses":listen["Strings"], "reachability":if public {"public addresses (reachability unverified)"} else {"private-only"},
@@ -92,7 +96,7 @@ mod tests {
             dir: temp.path().to_owned(),
             config: super::super::config::NodeConfig {
                 internal_api_port: listener.local_addr().unwrap().port(),
-                swarm_port: 4401,
+                swarm_port: Some(4401),
                 ..Default::default()
             },
         };

@@ -29,6 +29,15 @@
             "type": "string"
           }
         },
+        "swarmPort": {
+          "type": "integer"
+        },
+        "internalApiPort": {
+          "type": "integer"
+        },
+        "internalGatewayPort": {
+          "type": "integer"
+        },
         "service": {
           "type": "string",
           "enum": [
@@ -43,6 +52,9 @@
         "api",
         "gateway",
         "origins",
+        "swarmPort",
+        "internalApiPort",
+        "internalGatewayPort",
         "service"
       ]
     },
