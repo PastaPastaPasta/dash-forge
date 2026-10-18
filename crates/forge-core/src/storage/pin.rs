@@ -1164,7 +1164,8 @@ mod tests {
     #[tokio::test]
     async fn swarm_size_abort_unpins_and_forbidden_has_refresh_hint() {
         for (status, body, why) in [
-            (200, "{\"Progress\":2}\n", "size limit"),
+            // No Bytes (older kubo): 16 blocks at the 256 KiB estimate pass the 1 MiB bound.
+            (200, "{\"Progress\":16}\n", "size limit"),
             (200, "{\"Progress\":0,\"Bytes\":1048577}\n", "size limit"),
             (
                 403,
