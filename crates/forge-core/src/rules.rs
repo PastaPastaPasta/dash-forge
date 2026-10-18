@@ -3435,6 +3435,11 @@ mod tests {
             }
             "pack_copies" => run_pack_copies(v),
             "fork_sync" | "fork_refs" => run_fork_case(v),
+            "pin_targets" => {
+                let inp: crate::storage::pin::PinInput = input(v);
+                let got = serde_json::to_value(crate::storage::pin::plan_targets(&inp)).unwrap();
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
             "v2_pack_list" => {
                 let inp: V2PackListInput = input(v);
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());

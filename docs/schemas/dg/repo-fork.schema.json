@@ -57,6 +57,9 @@
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
+    },
+    "pin": {
+      "type": "object"
     }
   },
   "required": [

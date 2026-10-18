@@ -1,0 +1,60 @@
+{
+  "name": "sealed_asset_hash",
+  "description": "sealed asset hash",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "maint": "maintainer",
+      "reader": "reader",
+      "bot": "bot"
+    },
+    "manifests": [],
+    "releases": [
+      {
+        "owner": "writer",
+        "tag": "private",
+        "assets": [
+          {
+            "name": "sealed",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 10,
+            "uris": [
+              "ipfs://bafkreidtmr3a7plvrrn24o67nq7mhumqovsg2frfka2vrjj5dfbs3gitvi"
+            ],
+            "sealedSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "sealedSizeBytes": 80
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "targets": [
+      {
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 80,
+        "what": {
+          "type": "releaseAsset",
+          "tag": "private",
+          "name": "sealed"
+        },
+        "candidates": [
+          {
+            "cid": "bafkreidtmr3a7plvrrn24o67nq7mhumqovsg2frfka2vrjj5dfbs3gitvi",
+            "swarmAllowed": true
+          }
+        ]
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": true,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 0
+  }
+}

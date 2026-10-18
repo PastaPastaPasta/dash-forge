@@ -63,6 +63,7 @@ export async function timedFetch(
   }
   const onCancel = (): void => controller.abort()
   opts.signal?.addEventListener('abort', onCancel)
+  if (opts.signal?.aborted) controller.abort()
   const uploadMs = Math.ceil(((opts.uploadBytes ?? 0) / MIN_UPLOAD_BYTES_PER_S) * 1000)
   arm(CONNECT_MS + uploadMs, `no answer within ${Math.round((CONNECT_MS + uploadMs) / 1000)}s`)
   const done = (): void => {

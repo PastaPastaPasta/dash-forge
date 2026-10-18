@@ -30,6 +30,8 @@ mod git;
 mod help_lint;
 mod import;
 mod infer;
+mod ipfs;
+mod ipfs_pin;
 mod issue;
 #[cfg(test)]
 mod json_schemas;
@@ -311,6 +313,9 @@ pub enum Command {
     /// Storage availability.
     #[command(subcommand)]
     Storage(StorageCommand),
+    /// Run an IPFS node on this computer and keep repositories' files on it.
+    #[command(subcommand)]
+    Ipfs(ipfs::IpfsCommand),
     /// Manage webhooks.
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
@@ -483,6 +488,9 @@ pub enum RepoCommand {
         /// every branch and tag: one ref update instead of one per branch and tag.
         #[arg(long)]
         default_branch_only: bool,
+        /// Also keep the parent's files on your IPFS node.
+        #[arg(long)]
+        pin: bool,
     },
     /// Sync a fork with the repo it was forked from (GitHub's "Sync fork").
     ///
@@ -2493,8 +2501,6 @@ impl RoleArg {
 }
 
 fn main() {
-    forge_core::logging::init_cli();
-
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let cli = match infer::parse(args, storage::clone_repo) {
         Ok((cli, from_clone)) => {
@@ -2505,6 +2511,15 @@ fn main() {
         }
         Err(e) => exit_on_parse_error(&e),
     };
+
+    if matches!(cli.command, Command::Ipfs(ipfs::IpfsCommand::Serve)) {
+        if let Err(error) = ipfs::init_serve_logging() {
+            eprintln!("dg: cannot initialize IPFS logging: {error}");
+            std::process::exit(1);
+        }
+    } else {
+        forge_core::logging::init_cli();
+    }
 
     // Completions touch neither config nor the network: handle them before `Ctx::resolve`,
     // so a broken config or an undeployed network cannot stop a shell from loading them.
@@ -2661,6 +2676,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Embargo(cmd) => Box::pin(embargo::run(ctx, cmd)).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
+        Command::Ipfs(cmd) => Box::pin(ipfs::run(ctx, cmd)).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
         Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,

@@ -1,0 +1,103 @@
+{
+  "name": "dedupe_copies_and_releases",
+  "description": "Authorized copies and release assets with identical hash and size merge into one target with alternate CIDs, charging size once.",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "maint": "maintainer",
+      "reader": "reader",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "owner",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "2",
+        "owner": "writer",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe",
+          "ipfs://bafkreig4pvlrx2llpybnpa2ahcf3jvpyvwbiv6wxt3y7xr2ik3tvbizrku"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": [
+      {
+        "owner": "owner",
+        "tag": "v1",
+        "assets": [
+          {
+            "name": "file",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 10,
+            "uris": [
+              "https://gateway.example/ipfs/bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe"
+            ]
+          }
+        ]
+      },
+      {
+        "owner": "stranger",
+        "tag": "junk",
+        "assets": [
+          {
+            "name": "junk",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size": 999,
+            "uris": [
+              "ipfs://bafkreietazgkuxaw25vde3nsjxcyd5y4agfojgaww3lgd3yaoy2jwjstz4"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "targets": [
+      {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe",
+            "swarmAllowed": true
+          },
+          {
+            "cid": "bafkreig4pvlrx2llpybnpa2ahcf3jvpyvwbiv6wxt3y7xr2ik3tvbizrku",
+            "swarmAllowed": true
+          }
+        ]
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": false,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 0
+  }
+}

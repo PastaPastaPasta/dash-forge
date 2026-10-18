@@ -1,0 +1,122 @@
+{
+  "name": "strangers_only_add_copies",
+  "description": "Stranger and reader hashes are ignored; bots authorize packs; conflicting stranger size metadata is discarded without changing the authorized target.",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "maint": "maintainer",
+      "reader": "reader",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "writer",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "2",
+        "owner": "stranger",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 9000000000,
+        "uris": [
+          "ipfs://bafkreiewhdth2uzaidulepiurt7ahxzxm4xkldv6avp4xzt3jzeolmfkla"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "3",
+        "owner": "stranger",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreietazgkuxaw25vde3nsjxcyd5y4agfojgaww3lgd3yaoy2jwjstz4"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "4",
+        "owner": "reader",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreifrnbr5xlb4mf3333f5ubibhzejlzi3e5cscjamspd56adjgiabq4"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "5",
+        "owner": "bot",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreif5wfccmo7jm6ep7knb5ky4ownaqc2dwrkeel64evogungjxwvrpm"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": []
+  },
+  "expected": {
+    "targets": [
+      {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe",
+            "swarmAllowed": true
+          }
+        ]
+      },
+      {
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreif5wfccmo7jm6ep7knb5ky4ownaqc2dwrkeel64evogungjxwvrpm",
+            "swarmAllowed": true
+          }
+        ]
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 2,
+    "needsConsent": false,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 1
+  }
+}

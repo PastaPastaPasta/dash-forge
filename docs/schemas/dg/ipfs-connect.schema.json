@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ipfs-connect.schema.json",
+  "title": "dg ipfs connect --json",
+  "description": "A one-time connection code for this computer’s IPFS node.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "connect": {
+      "type": "object",
+      "properties": {
+        "link": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "link",
+        "code",
+        "expiresAt"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "connect"
+  ],
+  "additionalProperties": true
+}

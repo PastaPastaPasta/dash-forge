@@ -14,6 +14,7 @@
 import { useId, useState } from 'react'
 import { AlertTriangle, ExternalLink, Lock } from 'lucide-react'
 import {
+  corsFix,
   profileProblem,
   providerPreset,
   type ProfilePublic,
@@ -21,6 +22,7 @@ import {
   type ProviderId,
   type StorageProfile,
 } from '@/lib/storage'
+import { CopyBlock } from '@/components/storage/copy-block'
 import { Input } from '@/components/ui/input'
 
 const SECRET_NOTE = 'Stored encrypted in this browser only. Never sent to Forge (there is no Forge server) and never written to Platform.'
@@ -150,6 +152,7 @@ export function ProfileForm({
   const [values, setValues] = useState<Values>(() => initialValues(provider, existing))
   const idBase = useId()
   const kept = existing?.secrets ?? {}
+  const manual = preset.kind === 'ipfs-kubo' ? corsFix('kubo', '', typeof window === 'undefined' ? 'https://forge.dashhq.org' : window.location.origin) : null
   const set = (k: string, v: string | boolean): void => {
     const next = { ...values, [k]: v }
     setValues(next)
@@ -163,7 +166,7 @@ export function ProfileForm({
         <div role="note" className="flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 p-3 text-[12px] text-anvil-700 dark:text-anvil-200 sm:col-span-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
           <span>
-            kubo’s RPC API is the node’s <span className="font-medium">admin</span> interface. Give this site a token limited to add, pin-check, unpin and id (kubo <span className="font-mono">API.Authorizations</span> with <span className="font-mono">AllowedPaths</span>), and paste it as the API Authorization header. The test prints the commands.
+            Give this site a token limited to add, pin, unpin and id with kubo’s API.Authorizations and AllowedPaths. A proxy must answer browser preflights. Simpler: run dg ipfs up. The test prints the hand setup commands.
           </span>
         </div>
       ) : null}
@@ -217,6 +220,10 @@ export function ProfileForm({
           </div>
         )
       })}
+      {manual ? <div className="space-y-2 sm:col-span-2">
+        <p className="text-[12px]">{manual.where}</p>
+        <CopyBlock text={manual.text} label="Copy the manual node setup" />
+      </div> : null}
       {preset.kind === 's3' ? (
         <label className="flex items-center gap-2 text-dense text-anvil-700 dark:text-anvil-200 sm:col-span-2">
           <input type="checkbox" checked={values['pathStyle'] !== false} onChange={(e) => set('pathStyle', e.target.checked)} className="h-4 w-4 accent-forge-700" />

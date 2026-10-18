@@ -1,0 +1,101 @@
+{
+  "name": "stranger_cid_candidates",
+  "description": "One hash has one size charge and authorized candidates first, even when an earlier stranger copy supplies another CID. Mirrors use the same untrusted-copy shape (empty owner).",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "0",
+        "owner": "stranger",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreidpljqdjz3qvs73h54x42t6w6ki2rynix4zfd4sw7ls3r6elzwqzu"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "1",
+        "owner": "writer",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "https://gateway.example/ipfs/bafkreifzgadhotf52szjsoe2aowd3cgdu5vumdktq6k3yetrqai2scp3uu"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "2",
+        "owner": "",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreiaacvdwcy34u5dmgvfg3hh36hnbvexhtl5gxmjhxofbyq2otrzroa"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "3",
+        "owner": "stranger",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreifzgadhotf52szjsoe2aowd3cgdu5vumdktq6k3yetrqai2scp3uu"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": []
+  },
+  "expected": {
+    "targets": [
+      {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreifzgadhotf52szjsoe2aowd3cgdu5vumdktq6k3yetrqai2scp3uu",
+            "swarmAllowed": true
+          },
+          {
+            "cid": "bafkreiaacvdwcy34u5dmgvfg3hh36hnbvexhtl5gxmjhxofbyq2otrzroa",
+            "swarmAllowed": false
+          },
+          {
+            "cid": "bafkreidpljqdjz3qvs73h54x42t6w6ki2rynix4zfd4sw7ls3r6elzwqzu",
+            "swarmAllowed": false
+          }
+        ]
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": false,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 0
+  }
+}

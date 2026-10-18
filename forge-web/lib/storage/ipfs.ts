@@ -13,7 +13,7 @@
  * token goes into the profile's `apiAuth`.
  */
 
-import { cidV1RawLeaves, isCid } from './cid'
+import { cidV1RawLeaves, isCid, sameCid } from './cid'
 import { plain } from './sigv4'
 import type { ProfilePublic, ProfileSecrets } from './profiles'
 import { TimeoutError, isHeaderSafe, timedFetch } from './util'
@@ -25,7 +25,7 @@ export const ADD_PARAMS =
   'cid-version=1&raw-leaves=true&chunker=size-262144&hash=sha2-256&trickle=false&max-file-links=174&pin=true&quieter=true'
 
 /** The RPC paths Forge calls: what a restricted `API.Authorizations` entry must allow. */
-export const FORGE_RPC_PATHS = ['/api/v0/add', '/api/v0/pin/ls', '/api/v0/pin/rm', '/api/v0/id', '/api/v0/version'] as const
+export const FORGE_RPC_PATHS = ['/api/v0/add', '/api/v0/pin/add', '/api/v0/pin/ls', '/api/v0/pin/rm', '/api/v0/id', '/api/v0/version'] as const
 
 const PIN_TIMEOUT_MS = 120_000
 const PIN_POLL_MS = 2_000
@@ -40,7 +40,20 @@ export class IpfsError extends Error {
   }
 }
 
-async function rpc(s: IpfsSettings, secrets: ProfileSecrets, op: string, pathAndQuery: string, body?: FormData, uploadBytes = 0): Promise<string> {
+/** Address-space hints only for literal destinations whose network scope is known. */
+export function apiAddressSpace(api: string): { targetAddressSpace?: 'loopback' | 'local' } {
+  const host = new URL(api).hostname.toLowerCase()
+  if (host === '127.0.0.1' || host === 'localhost' || host === '[::1]') return { targetAddressSpace: 'loopback' }
+  const octets = host.split('.').map(Number)
+  if (octets.length === 4 && octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+    const [a, b] = octets
+    if (a === 10 || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)) return { targetAddressSpace: 'local' }
+  }
+  if (/^\[fe[89ab][0-9a-f]:/i.test(host) || /^\[f[cd][0-9a-f]{2}:/i.test(host)) return { targetAddressSpace: 'local' }
+  return {}
+}
+
+async function rpc(s: IpfsSettings, secrets: ProfileSecrets, op: string, pathAndQuery: string, body?: FormData, uploadBytes = 0, signal?: AbortSignal): Promise<string> {
   const headers = new Headers()
   if (secrets.apiAuth) {
     // A value fetch refuses would be quoted in its error: refuse it here, without echoing it.
@@ -51,7 +64,7 @@ async function rpc(s: IpfsSettings, secrets: ProfileSecrets, op: string, pathAnd
   let text: string
   let resp: Response
   try {
-    const r = await timedFetch(url, { method: 'POST', headers, ...(body ? { body } : {}), redirect: 'error', credentials: 'omit' }, { uploadBytes })
+    const r = await timedFetch(url, { method: 'POST', headers, ...(body ? { body } : {}), redirect: 'error', credentials: 'omit', ...apiAddressSpace(s.api) } as RequestInit, { uploadBytes, signal })
     resp = r.resp
     text = await r.text()
   } catch (e) {
@@ -84,18 +97,21 @@ export async function kuboVersion(s: IpfsSettings, secrets: ProfileSecrets): Pro
 }
 
 /** Add `bytes` with the pinned parameters; the CID must equal the local derivation and be pinned. */
-export async function addVerified(s: IpfsSettings, secrets: ProfileSecrets, bytes: Uint8Array): Promise<string> {
+export async function addVerified(s: IpfsSettings, secrets: ProfileSecrets, bytes: Uint8Array, signal?: AbortSignal): Promise<string> {
   const form = new FormData()
   form.append('file', new Blob([plain(bytes)]), 'pack')
-  const text = await rpc(s, secrets, 'ipfs add', `add?${ADD_PARAMS}`, form, bytes.length)
+  const text = await rpc(s, secrets, 'ipfs add', `add?${ADD_PARAMS}`, form, bytes.length, signal)
   const line = text.trim().split('\n').pop() ?? ''
   const cid = /"Hash"\s*:\s*"([^"]+)"/.exec(line)?.[1] ?? ''
   const expected = cidV1RawLeaves(bytes)
-  if (cid !== expected) {
+  if (!sameCid(cid, expected)) {
+    if (isCid(cid)) await unpin(s, secrets, cid).catch(() => undefined)
     throw new IpfsError('ipfs add', `kubo returned CID ${cid || '(none)'} but these bytes derive to ${expected} under the pinned import parameters; refusing to record it`)
   }
-  const pinned = await rpc(s, secrets, 'pin check', `pin/ls?arg=${cid}&type=recursive`).catch(ignoreNotPinned)
-  if (!pinned.includes(cid)) throw new IpfsError('pin check', `kubo added ${cid} but does not report it pinned; a gc would drop it`)
+  const pinned = await rpc(s, secrets, 'pin check', `pin/ls?arg=${cid}&type=recursive`, undefined, 0, signal).catch(ignoreNotPinned)
+  let keys: unknown
+  try { keys = (JSON.parse(pinned) as { Keys?: unknown }).Keys } catch { /* Report a failed pin check below. */ }
+  if (!keys || typeof keys !== 'object' || !Object.keys(keys).some((key) => sameCid(key, expected))) throw new IpfsError('pin check', `kubo added ${cid} but does not report it pinned; a gc would drop it`)
   return cid
 }
 

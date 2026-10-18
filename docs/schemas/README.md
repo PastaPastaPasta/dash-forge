@@ -76,6 +76,15 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg env unshare` | [`env-unshare.schema.json`](dg/env-unshare.schema.json) |
 | `dg import` | [`import.schema.json`](dg/import.schema.json) |
 | `dg init` | [`init.schema.json`](dg/init.schema.json) |
+| `dg ipfs connect` | [`ipfs-connect.schema.json`](dg/ipfs-connect.schema.json) |
+| `dg ipfs down` | [`ipfs-down.schema.json`](dg/ipfs-down.schema.json) |
+| `dg ipfs ipfs` | [`ipfs-ipfs.schema.json`](dg/ipfs-ipfs.schema.json) |
+| `dg ipfs origin add` | [`ipfs-origin-add.schema.json`](dg/ipfs-origin-add.schema.json) |
+| `dg ipfs origin remove` | [`ipfs-origin-remove.schema.json`](dg/ipfs-origin-remove.schema.json) |
+| `dg ipfs pin` | [`ipfs-pin.schema.json`](dg/ipfs-pin.schema.json) |
+| `dg ipfs serve` | none: Long-running node supervisor; writes logs rather than a JSON result. |
+| `dg ipfs status` | [`ipfs-status.schema.json`](dg/ipfs-status.schema.json) |
+| `dg ipfs up` | [`ipfs-up.schema.json`](dg/ipfs-up.schema.json) |
 | `dg issue assign` | [`issue-assign.schema.json`](dg/issue-assign.schema.json) |
 | `dg issue close` | [`issue-close.schema.json`](dg/issue-close.schema.json) |
 | `dg issue comment` | [`issue-comment.schema.json`](dg/issue-comment.schema.json) |

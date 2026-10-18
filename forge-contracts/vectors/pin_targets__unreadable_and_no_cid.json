@@ -1,0 +1,82 @@
+{
+  "name": "unreadable_and_no_cid",
+  "description": "An unreadable visibility check skips one pack; no-CID packs skip visibility checking; the readable pack still plans.",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "owner",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreig2hqaqkcy7guvthbj36f7ebc5gjyfriqr5j5ytpiqja3ws4whgpe"
+        ],
+        "createdAt": 1,
+        "readable": false,
+        "sensitive": false,
+        "unreadable": true
+      },
+      {
+        "id": "2",
+        "owner": "owner",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "https://store.example/bytes"
+        ],
+        "createdAt": 1,
+        "readable": false,
+        "sensitive": false,
+        "unreadable": true
+      },
+      {
+        "id": "3",
+        "owner": "writer",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreido66epefopwef7yciep6ra4byxdzevk5ecxpo3hnmzr2gqfu2h3q"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": []
+  },
+  "expected": {
+    "targets": [
+      {
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreido66epefopwef7yciep6ra4byxdzevk5ecxpo3hnmzr2gqfu2h3q",
+            "swarmAllowed": true
+          }
+        ]
+      }
+    ],
+    "notOnIpfs": 1,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": false,
+    "unreadableSkipped": 1,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 0
+  }
+}

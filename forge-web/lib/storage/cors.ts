@@ -70,7 +70,7 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
     case 'pinning':
       return {
         where:
-          'The RPC API is the node’s admin interface. Give this app a token limited to what Forge calls, paste it in the profile’s API Authorization field, and allow this origin. Run these commands, then restart the daemon:',
+          'Stop kubo first. Raw kubo rejects browser preflights with Authorizations enabled. Configure the scoped tokens below, move kubo to 5101, and run Caddy with this preflight proxy. Simpler: run `dg ipfs up`.',
         text: kuboCorsLines(origin),
       }
     case 'platform':
@@ -78,11 +78,7 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
   }
 }
 
-/**
- * Shell lines that (1) create a kubo API token limited to the paths Forge calls, (2) ADD this
- * app's origin to the RPC API's allowed origins without dropping existing ones (IPFS WebUI's,
- * for instance), and (3) let any origin read the gateway. `jq` merges the list.
- */
+/** Scoped kubo tokens plus a loopback proxy that answers browser preflights. */
 export function kuboCorsLines(origin: string): string {
   const paths = JSON.stringify(FORGE_RPC_PATHS)
   return [
@@ -100,8 +96,42 @@ export function kuboCorsLines(origin: string): string {
     `#    (no jq? ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["${origin}"]' replaces the list instead)`,
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["POST"]'`,
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Headers '["Authorization"]'`,
-    '# 3. Let any origin read the gateway (the content is public):',
+    '# 3. Serve only files this node already holds:',
+    'ipfs config --json Gateway.NoFetch true',
+    "ipfs config Addresses.API /ip4/127.0.0.1/tcp/5101",
     `ipfs config --json Gateway.HTTPHeaders.Access-Control-Allow-Origin '["*"]'`,
     `ipfs config --json Gateway.HTTPHeaders.Access-Control-Expose-Headers '["Content-Range", "Content-Length", "ETag"]'`,
+    '# Caddyfile (keep this listener on loopback):',
+    '{',
+    '  admin off',
+    '  auto_https off',
+    '}',
+    ':5001 {',
+    '  bind 127.0.0.1',
+    '  @preflight {',
+    '    method OPTIONS',
+    `    header Origin ${origin}`,
+    '  }',
+    '  handle @preflight {',
+    `    header Access-Control-Allow-Origin "${origin}"`,
+    '    header Access-Control-Allow-Methods "POST"',
+    '    header Access-Control-Allow-Headers "Authorization, Content-Type"',
+    '    header Access-Control-Allow-Private-Network "true"',
+    '    header Access-Control-Max-Age "600"',
+    '    header Vary "Origin"',
+    '    respond 204',
+    '  }',
+    '  @forge {',
+    '    method POST',
+    `    path ${FORGE_RPC_PATHS.join(' ')}`,
+    '  }',
+    '  handle @forge {',
+    '    reverse_proxy 127.0.0.1:5101',
+    '  }',
+    '  handle {',
+    '    respond 404',
+    '  }',
+    '}',
+    '# Simpler: run dg ipfs up.',
   ].join('\n')
 }

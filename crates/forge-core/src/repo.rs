@@ -2840,6 +2840,38 @@ impl<'a> RepoService<'a> {
             .map_err(|(last, _)| last)
     }
 
+    /// Recorded mirror addresses for one already-authorized pack hash. Private repositories
+    /// never use mirrors. Unsupported mirror contracts have no records, as for a clone.
+    pub(crate) async fn pin_mirror_uris(
+        &self,
+        repo: &RepoRef,
+        hash: &str,
+        roles: &RoleMap,
+    ) -> Result<Vec<String>> {
+        if repo.visibility != Visibility::Public {
+            return Ok(Vec::new());
+        }
+        let contract = self
+            .client
+            .fetch_contract(repo.forge().home(crate::pack_mirror::DOC_PACK_MIRROR))
+            .await?;
+        let mirrors = crate::pack_mirror::mirrors_of(
+            self.client,
+            &contract,
+            repo,
+            hash,
+            &trusted_members(roles),
+        )
+        .await?;
+        Ok(crate::pack_mirror::read_order(
+            repo,
+            hash,
+            &[hash.to_string()],
+            &mirrors,
+            roles,
+        ))
+    }
+
     /// [`Self::fetch_best_copy`] for a read: when no recorded copy verifies, a public
     /// repository's recorded pack mirrors ([`Self::fetch_from_mirrors`]). A mirror that serves
     /// is recorded on `reader` as a [`crate::storage::read::Fallback`] naming every copy that
@@ -2852,8 +2884,25 @@ impl<'a> RepoService<'a> {
         roles: &RoleMap,
         reader: &PackReader,
     ) -> Result<(Vec<u8>, &'m PackManifestInfo)> {
+        self.fetch_pin_copy_or_mirror(repo, contract, copies, roles, reader)
+            .await
+            .map(|(bytes, _, manifest)| (bytes, manifest))
+    }
+
+    /// The same verified read with the actual serving place for pin progress.
+    pub(crate) async fn fetch_pin_copy_or_mirror<'m>(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        copies: &[&'m PackManifestInfo],
+        roles: &RoleMap,
+        reader: &PackReader,
+    ) -> Result<(Vec<u8>, String, &'m PackManifestInfo)> {
         match self.best_copy(repo, contract, copies, roles, reader).await {
-            Ok((served, m)) => Ok((served.note_on(reader, &hex::encode(m.pack_hash)), m)),
+            Ok((served, m)) => {
+                let by = served.by.clone();
+                Ok((served.note_on(reader, &hex::encode(m.pack_hash)), by, m))
+            }
             Err((last, mut failed)) => {
                 let Some(first) = copies.first() else {
                     return Err(last);
@@ -2864,6 +2913,7 @@ impl<'a> RepoService<'a> {
                     Err(Some(clause)) => return Err(with_mirror_clause(last, &clause)),
                     Err(None) => return Err(last),
                 };
+                let by = served.by.clone();
                 failed.extend(served.failed);
                 reader.note_fallback(crate::storage::read::Fallback {
                     pack: hex::encode(first.pack_hash),
@@ -2871,7 +2921,7 @@ impl<'a> RepoService<'a> {
                     failed,
                     mirror: true,
                 });
-                Ok((served.bytes, first))
+                Ok((served.bytes, by, first))
             }
         }
     }

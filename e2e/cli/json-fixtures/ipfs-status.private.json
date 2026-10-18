@@ -1,0 +1,30 @@
+{
+  "command": "ipfs status",
+  "args": [
+    "--json",
+    "ipfs",
+    "status"
+  ],
+  "exit": 0,
+  "source": "managed IPFS command output shape; synthetic connection nonce",
+  "expect": "valid",
+  "stdout": {
+    "schemaVersion": 1,
+    "kuboVersion": "0.43.1",
+    "peerId": "test-peer",
+    "api": "http://127.0.0.1:5001",
+    "gateway": "http://127.0.0.1:8080",
+    "repoBytes": 2048,
+    "recursivePins": 2,
+    "listenAddresses": [
+      "/ip4/127.0.0.1/tcp/4001"
+    ],
+    "reachability": "private-only",
+    "fix": "forward TCP+UDP 4001 to this machine",
+    "service": "manual",
+    "origins": [
+      "https://forge.dashhq.org"
+    ],
+    "followed": {}
+  }
+}

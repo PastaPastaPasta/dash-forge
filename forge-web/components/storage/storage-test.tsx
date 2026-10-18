@@ -20,6 +20,7 @@ import {
   type RowState,
   type StorageProfile,
 } from '@/lib/storage'
+import { LOCAL_ACCESS_HINT } from '@/lib/storage/kubo-connect'
 import { errText } from '@/lib/storage/util'
 import { Button } from '@/components/ui/button'
 import { CopyBlock } from '@/components/storage/copy-block'
@@ -51,7 +52,7 @@ export function profileSnapshot(p: StorageProfile): string {
  * (no stale green rows); a run still in flight when that happens reports into the unmounted
  * copy and is dropped.
  */
-export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDone: (ok: boolean, snapshot: string) => void }): JSX.Element {
+export function StorageTest({ profile, onDone, buttonLabel, disabled = false }: { profile: StorageProfile; onDone: (ok: boolean, snapshot: string) => void; buttonLabel?: string; disabled?: boolean }): JSX.Element {
   const [rows, setRows] = useState<ProbeRow[] | null>(null)
   const [running, setRunning] = useState(false)
   const [summary, setSummary] = useState('')
@@ -65,7 +66,7 @@ export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDo
   const origin = typeof window === 'undefined' ? 'https://forge.dashhq.org' : window.location.origin
 
   const run = async (): Promise<void> => {
-    if (running) return
+    if (running || disabled) return
     const snapshot = profileSnapshot(profile)
     setRunning(true)
     setSummary('Testing…')
@@ -92,8 +93,8 @@ export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDo
   return (
     <div className="space-y-3" data-testid="storage-test">
       <div className="flex items-center gap-2">
-        <Button variant="primary" size="sm" onClick={run} loading={running}>
-          {rows === null ? 'Test' : <><RotateCw className="h-3.5 w-3.5" aria-hidden /> Re-test</>}
+        <Button variant="primary" size="sm" onClick={run} loading={running} disabled={disabled}>
+          {buttonLabel ?? (rows === null ? 'Test' : <><RotateCw className="h-3.5 w-3.5" aria-hidden /> Re-test</>)}
         </Button>
         <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
           Runs from this page, so it checks what the browser will do: a few bytes are written and removed again.
@@ -122,7 +123,7 @@ export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDo
           <p className="flex items-start gap-2 text-dense text-anvil-800 dark:text-anvil-100">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
             <span>
-              <span className="font-medium">Fix CORS.</span> {fix.where}
+              <span className="font-medium">Fix CORS.</span> {fix.where} {profile.settings.provider === 'kubo' ? LOCAL_ACCESS_HINT : null}
             </span>
           </p>
           <CopyBlock text={fix.text} label="Copy the CORS configuration" />

@@ -166,3 +166,19 @@ fn the_banned_list_catches_what_it_names() {
     // Upper-case terms match case-sensitively: "rc1" in a word is not a release name.
     assert!(hits("source1 rc1x").is_empty());
 }
+
+#[test]
+fn visible_ipfs_commands_match_their_snapshot() {
+    let mut cli = Cli::command();
+    cli.build();
+    let ipfs = cli.find_subcommand("ipfs").unwrap();
+    let help = ipfs
+        .get_subcommands()
+        .filter(|cmd| !cmd.is_hide_set())
+        .map(|cmd| format!("{}  {}", cmd.get_name(), cmd.get_about().unwrap()))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(help, include_str!("../tests/snapshots/ipfs-commands.txt"));
+    assert!(ipfs.find_subcommand("serve").unwrap().is_hide_set());
+}

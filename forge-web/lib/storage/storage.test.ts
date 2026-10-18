@@ -321,8 +321,12 @@ describe('CORS fix blocks', () => {
 
   it('gives kubo a restricted token and merges the origin into the existing list', () => {
     const { where, text } = corsFix('kubo', '', 'https://forge.dashhq.org')
-    expect(where).toMatch(/admin interface/)
+    expect(where).toMatch(/preflights/)
     expect(text).toContain('API.Authorizations.dash-forge')
+    expect(text).toContain('Gateway.NoFetch true')
+    expect(text).toContain('reverse_proxy 127.0.0.1:5101')
+    expect(text).toContain('header Access-Control-Allow-Private-Network "true"')
+    expect(text).toContain('respond 204')
     for (const path of ['/api/v0/add', '/api/v0/pin/ls', '/api/v0/pin/rm', '/api/v0/id', '/api/v0/version']) expect(text).toContain(path)
     expect(text).toMatch(/\(ipfs config API\.HTTPHeaders\.Access-Control-Allow-Origin 2>\/dev\/null \|\| echo null\) \| jq -c '\(\. \/\/ \[\]\) \+ \["https:\/\/forge\.dashhq\.org"\] \| unique'/)
     const commands = text.split('\n').filter((l) => !l.startsWith('#'))

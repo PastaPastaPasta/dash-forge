@@ -2628,3 +2628,23 @@ export function resetBrowseCache(): void {
   browseCache.clear()
   openedFragments = new WeakMap()
 }
+
+/** Inspect the stored header before offering a pin, using the browse reader's held keys. */
+export async function pinArtifactAccess(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest): Promise<{ readable: boolean; private: boolean; unavailable?: boolean }> {
+  if (repo.visibility === 'private' && (!repo.session || repo.session.closed)) return { readable: false, private: true }
+  if (manifest.kind === PACK_KIND.MEMBERS_GIT_PACK && (!membersLane(repo) || membersLane(repo)?.closed)) return { readable: false, private: true }
+  let head = await packHead(sdk, repo, manifest.copies ?? [manifest])
+  if (head === null) {
+    const uris = await mirrorUrisOf(sdk, repo, manifest)
+    if (uris.length) head = await packHead(sdk, repo, [mirrorCopy(manifest, uris)])
+  }
+  if (head === null) return { readable: false, private: true, unavailable: true }
+  const branch = sniffBranchKcv(head)
+  if (branch !== null) return { readable: (await branchRingFor(sdk, repo))?.ring.branchOfKcv(branch) !== undefined, private: true }
+  const h = sniff(head)
+  if (h.kind === 'plain') return { readable: repo.visibility !== 'private' && manifest.kind !== PACK_KIND.MEMBERS_GIT_PACK, private: false }
+  if (h.kind !== 'sealed') return { readable: false, private: true }
+  const candidates = manifest.kind === PACK_KIND.MEMBERS_GIT_PACK ? [membersLane(repo)] : [repo.session, repo.published, membersLane(repo)]
+  const keys = candidates.find((s) => s !== undefined && !s.closed && s.ctx.keys.has(h.epoch))
+  return { readable: keys !== undefined, private: repo.visibility === 'private' || keys !== repo.published }
+}

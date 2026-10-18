@@ -1,0 +1,266 @@
+//! Supervise kubo and the two streaming loopback listeners in one user service.
+use std::fs::{File, OpenOptions};
+use std::io::Write as _;
+use std::process::Stdio;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use tokio::io::{AsyncRead, AsyncReadExt as _};
+use tokio::sync::watch;
+use tokio::task::JoinSet;
+
+use super::{config, node_error, proxy, Node};
+use crate::context::Ctx;
+
+/// Re-pin every followed repository at start and every 30 minutes. Runs beside the listeners
+/// rather than as a spawned task because it borrows `ctx`; a stop drops it mid-refresh, and the
+/// next run resumes (already pinned files are skipped).
+async fn follow_loop(ctx: &Ctx, node: &Node, tokens: &config::Tokens) {
+    let ready = tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            if super::status::admin_rpc(node, tokens, "version")
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await;
+    if ready.is_err() {
+        tracing::warn!("kubo did not become ready for the initial follow refresh");
+    }
+    let mut interval = tokio::time::interval(Duration::from_mins(30));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        match Box::pin(crate::ipfs_pin::follow_tick(ctx)).await {
+            Ok(summary) if !summary.failed.is_empty() => {
+                tracing::warn!(failed = ?summary.failed, "IPFS follow refresh had failures");
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "IPFS follow refresh failed"),
+        }
+    }
+}
+
+pub async fn shutdown(mut receiver: watch::Receiver<bool>) {
+    if !*receiver.borrow() {
+        let _ = receiver.changed().await;
+    }
+}
+
+async fn signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! { result = tokio::signal::ctrl_c() => result?, _ = term.recv() => {} }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+    }
+    Ok(())
+}
+
+pub async fn run(ctx: &Ctx, node: Node) -> Result<()> {
+    node.config.validate_version()?;
+    let _guard = config::lock(&node.dir, "serve.lock")?;
+    let _ = std::fs::remove_file(node.dir.join("stop"));
+    let tokens = config::Tokens::load(&node)?;
+    let state = proxy::Proxy::new(node.clone(), tokens.clone())?;
+    let api = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, node.config.api_port))
+        .await
+        .context("could not bind the IPFS API port")?;
+    let gateway =
+        tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, node.config.gateway_port))
+            .await
+            .context("could not bind the IPFS gateway port")?;
+    let (sender, receiver) = watch::channel(false);
+    let mut tasks = JoinSet::new();
+    let rx = receiver.clone();
+    let api_router = proxy::rpc_router(state.clone());
+    tasks.spawn(async move {
+        axum::serve(api, api_router)
+            .with_graceful_shutdown(shutdown(rx))
+            .await
+            .map_err(anyhow::Error::from)
+    });
+    let rx = receiver.clone();
+    let gw_router = proxy::gateway_router(state);
+    tasks.spawn(async move {
+        axum::serve(gateway, gw_router)
+            .with_graceful_shutdown(shutdown(rx))
+            .await
+            .map_err(anyhow::Error::from)
+    });
+    tasks.spawn(supervise(node.clone(), tokens.clone(), receiver.clone()));
+    let result = tokio::select! {
+        result = signal() => result,
+        () = follow_loop(ctx, &node, &tokens) => Ok(()),
+        () = stop_requested(&node) => Ok(()),
+        result = tasks.join_next() => match result { Some(result) => result.unwrap_or_else(|error| Err(error.into())), None => Ok(()) },
+    };
+    let _ = sender.send(true);
+    // Give in-flight streams a bounded grace period, then close their connections.
+    let drained = tokio::time::timeout(Duration::from_secs(15), async {
+        while let Some(joined) = tasks.join_next().await {
+            joined??;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await;
+    if let Ok(result) = drained {
+        result?;
+    } else {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+    result
+}
+
+async fn stop_requested(node: &Node) {
+    loop {
+        if node.dir.join("stop").exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+pub async fn stop(node: &Node) -> Result<()> {
+    config::private_dir(&node.dir)?;
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(node.dir.join("serve.lock"))?;
+    if file.try_lock().is_ok() {
+        return Ok(());
+    }
+    config::write_private(&node.dir.join("stop"), b"stop\n")?;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if file.try_lock().is_ok() {
+            return Ok(());
+        }
+    }
+    Err(node_error(
+        "the IPFS supervisor has not stopped",
+        "stop `dg ipfs serve` before changing its configuration",
+    ))
+}
+
+async fn supervise(
+    node: Node,
+    tokens: config::Tokens,
+    receiver: watch::Receiver<bool>,
+) -> Result<()> {
+    let log = log_writer(&node.dir);
+    let mut backoff = 1;
+    loop {
+        if *receiver.borrow() {
+            return Ok(());
+        }
+        let start = tokio::time::Instant::now();
+        let child = tokio::process::Command::new(node.binary())
+            .env("IPFS_PATH", node.repo())
+            .args(["daemon", "--migrate=true"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
+        match child {
+            Ok(mut child) => {
+                let stdout = child.stdout.take().context("missing kubo stdout")?;
+                let stderr = child.stderr.take().context("missing kubo stderr")?;
+                let out = tokio::spawn(log_stream(stdout, log.clone()));
+                let err = tokio::spawn(log_stream(stderr, log.clone()));
+                tokio::select! {
+                    result = child.wait() => { result?; }
+                    () = shutdown(receiver.clone()) => {
+                        // shutdown is authenticated and only targets our child's repo. No token in argv.
+                        let _ = super::status::admin_rpc(&node, &tokens, "shutdown").await;
+                        if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() { child.kill().await?; }
+                        let _ = out.await; let _ = err.await;
+                        return Ok(());
+                    }
+                }
+                out.await??;
+                err.await??;
+            }
+            Err(_) => {
+                tracing::warn!("could not start kubo; retrying");
+            }
+        }
+        if start.elapsed() > Duration::from_secs(60) {
+            backoff = 1;
+        }
+        tokio::select! {
+            () = shutdown(receiver.clone()) => return Ok(()),
+            () = tokio::time::sleep(Duration::from_secs(backoff)) => {}
+        }
+        backoff = (backoff * 2).min(60);
+    }
+}
+
+static LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(super) fn log_writer(dir: &std::path::Path) -> LogWriter {
+    LogWriter {
+        dir: dir.to_owned(),
+    }
+}
+
+/// Open on every write so rotation never strands a service or tracing file descriptor.
+#[derive(Clone)]
+pub(super) struct LogWriter {
+    dir: std::path::PathBuf,
+}
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let _guard = LOG_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("IPFS log lock poisoned"))?;
+        let path = self.dir.join("serve.log");
+        if std::fs::metadata(&path).is_ok_and(|m| {
+            m.len()
+                .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+                > 5 * 1024 * 1024
+        }) {
+            let old = self.dir.join("serve.log.1");
+            if old.exists() {
+                std::fs::remove_file(&old)?;
+            }
+            std::fs::rename(&path, old)?;
+        }
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        options.open(path)?.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+async fn log_stream(mut stream: impl AsyncRead + Unpin, mut log: LogWriter) -> Result<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        let size = stream.read(&mut buffer).await?;
+        if size == 0 {
+            return Ok(());
+        }
+        log.write_all(&buffer[..size])?;
+    }
+}

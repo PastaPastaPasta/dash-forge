@@ -12,6 +12,10 @@ use std::sync::{Arc, Mutex};
 pub struct Seen {
     /// `GET`, `HEAD`, `PUT`, …
     pub method: String,
+    /// Request path and query.
+    pub path: String,
+    /// Request bytes (the stub consumes content-length bodies before routing).
+    pub body: Vec<u8>,
     /// Header lines, names lower-cased, in order.
     pub headers: Vec<(String, String)>,
 }
@@ -76,6 +80,11 @@ pub fn serve(
                 .next()
                 .unwrap_or_default()
                 .to_string();
+            let path = line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
             let mut headers = Vec::new();
             loop {
                 let mut h = String::new();
@@ -86,13 +95,19 @@ pub fn serve(
                     headers.push((n.trim().to_ascii_lowercase(), v.trim().to_string()));
                 }
             }
-            let seen = Seen { method, headers };
+            let mut seen = Seen {
+                method,
+                path,
+                headers,
+                body: Vec::new(),
+            };
             let len: usize = seen
                 .header("content-length")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
             let mut body = vec![0u8; len];
             let _ = reader.read_exact(&mut body);
+            seen.body = body;
             let reply = route(&seen);
             let head_request = seen.method == "HEAD";
             seen_log.lock().unwrap().push(seen);

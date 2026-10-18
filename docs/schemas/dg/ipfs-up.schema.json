@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ipfs-up.schema.json",
+  "title": "dg ipfs up --json",
+  "description": "A verified local IPFS node and a one-time browser connection.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "node": {
+      "type": "object",
+      "properties": {
+        "kuboVersion": {
+          "type": "string"
+        },
+        "peerId": {
+          "type": "string"
+        },
+        "api": {
+          "type": "string"
+        },
+        "gateway": {
+          "type": "string"
+        },
+        "origins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "service": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "login"
+          ]
+        }
+      },
+      "required": [
+        "kuboVersion",
+        "peerId",
+        "api",
+        "gateway",
+        "origins",
+        "service"
+      ]
+    },
+    "profile": {
+      "type": "string"
+    },
+    "connect": {
+      "type": "object",
+      "properties": {
+        "link": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "link",
+        "code",
+        "expiresAt"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "node",
+    "profile",
+    "connect"
+  ],
+  "additionalProperties": true
+}

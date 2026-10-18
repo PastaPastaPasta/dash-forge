@@ -399,7 +399,7 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
 
 /// What `dg storage remove` did with the keychain entries the removed profile referenced.
 #[derive(Debug, Default, PartialEq)]
-struct SecretCleanup {
+pub(crate) struct SecretCleanup {
     /// The profile's own entry (`dash-forge/<profile>`), deleted.
     deleted: Vec<String>,
     /// The profile's own entry, referenced but not in the keychain (nothing to delete).
@@ -420,7 +420,7 @@ struct SecretCleanup {
 /// reported: one under another service, a `dg auth` key (`dash-forge/<network>/<id>`), or
 /// another profile's `dash-forge/<other>` entry, which may be a secret the user stored by
 /// hand. `delete` is [`forge_core::keychain::delete`] (`Ok(false)`: no such entry).
-fn remove_owned_secrets(
+pub(crate) fn remove_owned_secrets(
     name: &str,
     removed: &Profile,
     remaining: &StorageProfiles,
@@ -606,6 +606,16 @@ impl Report {
 /// public URL, the browser CORS preflight for `Range`, and a delete of the probe (IPFS:
 /// add + pin, gateway reads, unpin). `live` prints each row as it finishes.
 pub(crate) async fn run_checks(profile: &Profile, live: bool) -> Report {
+    run_checks_with_auth(profile, live, None).await
+}
+
+/// The managed node verifies with its private token even when no keychain is available.
+/// An override stays in memory; it never enters the environment or storage.toml.
+pub(crate) async fn run_checks_with_auth(
+    profile: &Profile,
+    live: bool,
+    auth: Option<&str>,
+) -> Report {
     let http = forge_core::storage::http_client();
     let mut r = Report {
         live,
@@ -621,7 +631,7 @@ pub(crate) async fn run_checks(profile: &Profile, live: bool) -> Report {
         ),
         Profile::S3(p) => test_s3(p, &http, &mut r).await,
         Profile::IpfsKubo(_) | Profile::IpfsPinningService(_) => {
-            test_ipfs(profile, &http, &mut r).await;
+            test_ipfs(profile, &http, &mut r, auth).await;
         }
     }
     r
@@ -801,7 +811,12 @@ async fn test_s3(p: &S3Profile, http: &reqwest::Client, r: &mut Report) {
     });
 }
 
-async fn test_ipfs(profile: &Profile, http: &reqwest::Client, r: &mut Report) {
+async fn test_ipfs(
+    profile: &Profile,
+    http: &reqwest::Client,
+    r: &mut Report,
+    auth_override: Option<&str>,
+) {
     let (api, local_gw, public_gw, api_auth) = match profile {
         Profile::IpfsKubo(p) => (&p.api, &p.gateway, &p.public_gateway, &p.api_auth),
         Profile::IpfsPinningService(p) => (&p.api, &p.gateway, &p.public_gateway, &p.api_auth),
@@ -809,7 +824,10 @@ async fn test_ipfs(profile: &Profile, http: &reqwest::Client, r: &mut Report) {
     };
     let Some(auth) = r.check(
         "credentials",
-        api_auth.as_ref().map(SecretRef::resolve).transpose(),
+        auth_override.map_or_else(
+            || api_auth.as_ref().map(SecretRef::resolve).transpose(),
+            |value| Ok(Some(forge_core::keystore::Secret::new(value))),
+        ),
         |a| {
             if a.is_some() {
                 "RPC auth resolved".into()

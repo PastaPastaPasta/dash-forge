@@ -35,6 +35,7 @@ import { UnlockMore } from '@/components/auth/unlock-more'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { ProfileForm, initialDraft } from '@/components/storage/profile-form'
 import { StorageTest, profileSnapshot } from '@/components/storage/storage-test'
+import { KuboConnectView } from '@/components/storage/kubo-connect'
 import { CostCard } from '@/components/storage/cost-card'
 import { cn } from '@/lib/utils'
 import { formatDate } from '@/lib/view/format'
@@ -130,7 +131,12 @@ export function StorageWizardView({ storage, embedded = false }: { storage: Stor
         </div>
       </section>
 
-      {provider ? (
+      {provider === 'kubo' && !editing ? <KuboConnectView storage={storage} /> : null}
+      {provider === 'kubo' && !editing ? (
+        <details><summary className="cursor-pointer text-dense">Set it up by hand</summary>
+          <AddProfile provider="kubo" existing={null} config={config} storable={storable} save={save} onDone={() => setProvider(null)} />
+        </details>
+      ) : provider ? (
         <AddProfile
           key={`${provider}:${editing?.name ?? ''}`}
           provider={provider}

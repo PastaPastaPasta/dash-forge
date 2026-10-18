@@ -52,6 +52,112 @@ pub fn cid_v1_raw_leaves(bytes: &[u8]) -> String {
     multibase_base32(&root.cid)
 }
 
+/// Parse CIDv0 or CIDv1 in base32, base36 or base58btc. CIDv1 is returned in
+/// lowercase base32; the legacy CIDv0 spelling is preserved. Bound decoding work
+/// because candidate addresses can come from untrusted manifests.
+pub fn normalize_cid(cid: &str) -> Option<String> {
+    if cid.is_empty() || cid.len() > 512 || !cid.is_ascii() {
+        return None;
+    }
+    let legacy = cid.starts_with("Qm");
+    let bytes = if legacy {
+        decode_radix(
+            cid,
+            b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz",
+        )?
+    } else {
+        match cid.as_bytes()[0] {
+            b'b' | b'B' => decode_base32(&cid[1..])?,
+            b'k' | b'K' => decode_radix(
+                &cid[1..].to_ascii_lowercase(),
+                b"0123456789abcdefghijklmnopqrstuvwxyz",
+            )?,
+            b'z' => decode_radix(
+                &cid[1..],
+                b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz",
+            )?,
+            _ => return None,
+        }
+    };
+    let mut rest = bytes.as_slice();
+    if legacy {
+        if bytes.len() != 34 || bytes[..2] != [0x12, 32] {
+            return None;
+        }
+        return Some(cid.to_string());
+    }
+    if take_varint(&mut rest)? != 1 || take_varint(&mut rest)? == 0 {
+        return None;
+    }
+    let hash = take_varint(&mut rest)?;
+    let len = take_varint(&mut rest)?;
+    if len != rest.len() as u64 || (hash == MH_SHA2_256 && len != 32) {
+        return None;
+    }
+    Some(multibase_base32(&bytes))
+}
+
+fn take_varint(rest: &mut &[u8]) -> Option<u64> {
+    let mut value = 0u64;
+    for index in 0..10 {
+        let (&byte, tail) = rest.split_first()?;
+        *rest = tail;
+        if index == 9 && byte > 1 {
+            return None;
+        }
+        value |= u64::from(byte & 127) << (index * 7);
+        if byte & 128 == 0 {
+            return (index == 0 || byte != 0).then_some(value);
+        }
+    }
+    None
+}
+
+fn decode_base32(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0;
+    for byte in text.bytes() {
+        let byte = byte.to_ascii_lowercase();
+        let digit = b"abcdefghijklmnopqrstuvwxyz234567"
+            .iter()
+            .position(|&b| b == byte)?;
+        buffer = (buffer << 5) | u32::try_from(digit).ok()?;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from((buffer >> bits) & 255).ok()?);
+        }
+    }
+    if bits >= 5 || buffer & ((1 << bits) - 1) != 0 {
+        return None;
+    }
+    Some(out)
+}
+
+fn decode_radix(text: &str, alphabet: &[u8]) -> Option<Vec<u8>> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut out = Vec::<u8>::new();
+    for byte in text.bytes() {
+        let mut carry = u32::try_from(alphabet.iter().position(|&b| b == byte)?).ok()?;
+        for digit in out.iter_mut().rev() {
+            carry += u32::from(*digit) * u32::try_from(alphabet.len()).ok()?;
+            *digit = u8::try_from(carry & 255).ok()?;
+            carry >>= 8;
+        }
+        while carry > 0 {
+            out.insert(0, u8::try_from(carry & 255).ok()?);
+            carry >>= 8;
+        }
+    }
+    let zeros = text.bytes().take_while(|&b| b == alphabet[0]).count();
+    let mut decoded = vec![0; zeros];
+    decoded.extend(out);
+    Some(decoded)
+}
+
 fn leaf(chunk: &[u8]) -> Block {
     Block {
         cid: cid_bytes(CODEC_RAW, chunk),
@@ -157,6 +263,49 @@ fn multibase_base32(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cid_normalization_accepts_supported_bases_and_preserves_v0() {
+        let expected = "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq";
+        for cid in [
+            expected.to_string(),
+            expected.to_uppercase(),
+            "k2cwue9rqdypmt3thjky14z1tk9fi9f0o5w7b3ofitdewlcf87lismqs".into(),
+            "zb2rhZfjRh2FHHB2RkHVEvL2vJnCTcu7kwRqgVsf9gpkLgteo".into(),
+        ] {
+            assert_eq!(normalize_cid(&cid).as_deref(), Some(expected));
+        }
+        let legacy = "QmNLei78zWmzUdbeRB3CiUfAizWUrbeeZh5K1rhAQKCh51";
+        assert_eq!(normalize_cid(legacy).as_deref(), Some(legacy));
+    }
+
+    #[test]
+    fn cid_normalization_rejects_bad_encoding_versions_and_lengths() {
+        for cid in [
+            "",
+            "bafyOtherImport",
+            "b=",
+            "k!",
+            "z0",
+            "bafkrei",
+            "QmInvalid",
+            "é",
+        ] {
+            assert_eq!(normalize_cid(cid), None, "{cid}");
+        }
+        for binary in [
+            vec![2, 0x55, 0x12, 0],       // unknown version
+            vec![0x81, 0, 0x55, 0x12, 0], // noncanonical varint
+            vec![1, 0x55, 0x12, 32, 0],   // truncated digest
+            vec![1, 0x55, 0x12, 0],       // wrong sha256 digest length
+            vec![
+                1, 0x55, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 2,
+            ], // overflow
+        ] {
+            assert_eq!(normalize_cid(&multibase_base32(&binary)), None);
+        }
+        assert_eq!(normalize_cid(&format!("b{}", "a".repeat(512))), None);
+    }
 
     #[test]
     fn empty_raw_leaf_matches_the_well_known_cid() {
