@@ -764,16 +764,9 @@ pub fn classify<'e>(
 
 fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     Some(match core {
-        CoreError::InsufficientCredits { needed, available } => insufficient(
-            ctx,
-            &format!(
-                "insufficient credits: needs {} DASH{}, balance {} DASH{}",
-                dash(*needed),
-                crate::fiat::note_credits(*needed),
-                dash(*available),
-                crate::fiat::balance_note_credits(*available)
-            ),
-        ),
+        CoreError::InsufficientCredits { needed, available } => {
+            insufficient(ctx, &insufficient_detail(*needed, *available))
+        }
         CoreError::NotAMember {
             document_type,
             detail,
@@ -977,6 +970,17 @@ fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
         .fix("`dg doctor` checks the network, contracts, identity and storage configuration")
 }
 
+/// "insufficient credits: needs X DASH, balance Y DASH", each amount with its fiat note.
+fn insufficient_detail(needed: u64, available: u64) -> String {
+    format!(
+        "insufficient credits: needs {} DASH{}, balance {} DASH{}",
+        dash(needed),
+        crate::fiat::note_credits(needed),
+        dash(available),
+        crate::fiat::balance_note_credits(available)
+    )
+}
+
 /// Map the SDK's text (a flattened `dash_sdk::Error`) — consensus codes are only available
 /// as their messages at this boundary.
 fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
@@ -1030,15 +1034,7 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     if m.contains("insufficient identity") || m.contains("is not enough to pay") {
         let detail = balance_numbers(&m).map_or_else(
             || format!("insufficient credits: {}", one_line(msg)),
-            |(bal, need)| {
-                format!(
-                    "insufficient credits: needs {} DASH{}, balance {} DASH{}",
-                    dash(need),
-                    crate::fiat::note_credits(need),
-                    dash(bal),
-                    crate::fiat::balance_note_credits(bal)
-                )
-            },
+            |(bal, need)| insufficient_detail(need, bal),
         );
         return Some(insufficient(ctx, &detail));
     }
