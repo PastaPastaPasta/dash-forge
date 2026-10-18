@@ -14,6 +14,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CopyRow } from '@/components/ui/copy-row'
 import { SecretValue } from '@/components/ui/secret-value'
 import { CostPreview } from '@/components/ui/cost-preview'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { CopyBlock } from '@/components/storage/copy-block'
 import { StorageWizardView } from '@/components/storage/storage-wizard'
 import { UnlockMore } from '@/components/auth/unlock-more'
@@ -33,6 +34,7 @@ import type { ForgeIds } from '@/lib/deployments'
 import { parseDashAmount } from '@/lib/auth'
 import { createRepo, normalizeRepoName, previewRepoCreate, readRefs, branchesOf, tagsOf, resolveAnyRepoWith, type CreateRepoStep, type RepoCreationFirsts } from '@/lib/repo'
 import { CREDITS_PER_DASH, KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits } from '@/lib/sdk'
+import { creditsToDash } from '@/lib/sdk/cost'
 import { corsFix, PLATFORM_PROFILE, type StorageProfile } from '@/lib/storage'
 import { creditsAsDash, formatDate, plural, shortIdentity } from '@/lib/view/format'
 import {
@@ -390,13 +392,14 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
   const origin = typeof window === 'undefined' ? 'https://forge.dashhq.org' : window.location.origin
   const cors = profile?.settings.kind === 's3' ? { bucket: profile.settings.bucket, ...corsFix(profile.settings.provider, profile.settings.bucket, origin) } : null
   const platformDash = (github.sizeKib / 1024) * PUSH_COST_DASH.perMib
+  const firstPushDash = platformDash < 0.01 ? '0.01' : platformDash.toFixed(2)
 
   if (needsUnlock) return <UnlockMore title="Unlock this tab to use your storage settings" testId="mirror-storage-unlock" />
 
   return (
     <>
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        Where the mirror&apos;s git data goes. <strong className="font-medium">Recommended: a Cloudflare R2 or S3 bucket of your own.</strong> Platform then keeps only each push&apos;s manifest and refs (about {PUSH_COST_DASH.byo.max} DASH a push), and readers check every byte against the recorded hash.
+        Where the mirror&apos;s git data goes. <strong className="font-medium">Recommended: a Cloudflare R2 or S3 bucket of your own.</strong> Platform then keeps only each push&apos;s manifest and refs (about {PUSH_COST_DASH.byo.max} DASH a push<FiatNote dash={PUSH_COST_DASH.byo.max} />), and readers check every byte against the recorded hash.
       </p>
       <fieldset className="space-y-2">
         <legend className="sr-only">Storage for the mirror</legend>
@@ -425,8 +428,8 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
           <span>
             <span className="font-medium">Dash Platform</span>{' '}
             <span className="text-anvil-500 dark:text-anvil-400">
-              nothing to set up · permanent · about {PUSH_COST_DASH.perMib} DASH per MiB
-              {github.sizeKib > 0 ? `, so about ${platformDash < 0.01 ? '0.01' : platformDash.toFixed(2)} DASH for this repository's first push` : ''}
+              nothing to set up · permanent · about {PUSH_COST_DASH.perMib} DASH per MiB<FiatNote dash={PUSH_COST_DASH.perMib} />
+              {github.sizeKib > 0 ? <>, so about {firstPushDash} DASH for this repository&apos;s first push<FiatNote dash={Number(firstPushDash)} /></> : null}
             </span>
           </span>
         </label>
@@ -530,7 +533,7 @@ export function KeyStep({
     return (
       <>
         <p className="flex items-center gap-2 text-dense text-verify-700 dark:text-verify-400">
-          <CheckCircle2 className="h-4 w-4" aria-hidden /> Key {record.keyId} is on your identity: {creditsAsDash(Number(record.budgetCredits))} DASH budget, until {formatDate(record.expiresAt)}.
+          <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden /> <span>Key {record.keyId} is on your identity: {creditsAsDash(Number(record.budgetCredits))} DASH budget<FiatNote dash={creditsToDash(Number(record.budgetCredits))} kind="bound" />, until {formatDate(record.expiresAt)}.</span>
         </p>
         <div className="space-y-1">
           <p className="text-dense font-medium">
@@ -586,7 +589,7 @@ export function KeyStep({
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Field label="Budget (DASH)" htmlFor="runner-budget" hint="The most the key can ever spend.">
+              <Field label="Budget (DASH)" htmlFor="runner-budget" hint={<>The most the key can ever spend{credits !== null ? <FiatNote dash={creditsToDash(Number(credits))} kind="bound" /> : null}.</>}>
                 <Input id="runner-budget" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={budgetError !== null} />
               </Field>
               {budgetError ? <Hint tone="danger">{budgetError}</Hint> : null}
@@ -720,14 +723,14 @@ export function WorkflowStep({
               label="Cost cap per run (DASH)"
               htmlFor="mirror-cost-cap"
               // Why it is above the Action's own default (QW4-045).
-              hint={`A run that would spend more stops first. This is above the Action's default of ${ACTION_COST_CAP} DASH because the first run copies everything. Lower it once the mirror is up.`}
+              hint={<>A run that would spend more stops first{capError === null ? <FiatNote dash={Number(costCap)} kind="bound" /> : null}. This is above the Action&apos;s default of {ACTION_COST_CAP} DASH<FiatNote dash={Number(ACTION_COST_CAP)} kind="bound" /> because the first run copies everything. Lower it once the mirror is up.</>}
             >
               <Input id="mirror-cost-cap" inputMode="decimal" value={costCap} onChange={(e) => setCostCap(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
             </Field>
             {capError ? <Hint tone="danger">{capError}</Hint> : null}
             {overBudget && runnerKey ? (
               <Hint tone="caution">
-                More than the runner key&apos;s whole budget ({creditsAsDash(Number(runnerKey.budgetCredits))} DASH): a run that needs it stops when the key runs out. Make a key with a larger budget in the runner key step.
+                More than the runner key&apos;s whole budget of {creditsAsDash(Number(runnerKey.budgetCredits))} DASH<FiatNote dash={creditsToDash(Number(runnerKey.budgetCredits))} kind="bound" />: a run that needs it stops when the key runs out. Make a key with a larger budget in the runner key step.
               </Hint>
             ) : null}
           </div>
@@ -989,7 +992,7 @@ export function CliStep({ github, settings, onSettings, ownerId }: {
           <input type="checkbox" checked={settings.collab} onChange={(e) => onSettings({ ...settings, collab: e.target.checked })} className="mt-1 accent-forge-700" />
           <span>Issues and pull requests too<span className="block text-[12px] text-fg-muted">Takes longer and costs more on a busy repo. Every issue, comment and review becomes a permanent public copy.</span></span>
         </label>
-        <Field label="Spending cap (DASH)" htmlFor="mirror-cli-cap" hint="dg shows the estimate and asks before it writes. It stops before spending more than this.">
+        <Field label="Spending cap (DASH)" htmlFor="mirror-cli-cap" hint={<>dg shows the estimate and asks before it writes. It stops before spending more than this{capError === null ? <FiatNote dash={Number(settings.cap)} kind="bound" /> : null}.</>}>
           <Input id="mirror-cli-cap" value={settings.cap} onChange={(e) => onSettings({ ...settings, cap: e.target.value })} inputMode="decimal" className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
         </Field>
         {capError ? <Hint tone="danger">{capError}</Hint> : null}

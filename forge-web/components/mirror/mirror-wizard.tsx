@@ -11,6 +11,7 @@ import { SignInButton } from '@/components/sign-in-button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { LoadingBlock } from '@/components/ui/states'
 import { CostPreview } from '@/components/ui/cost-preview'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
@@ -20,6 +21,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { previewRepoCreate, readRefs, repoCreationFirsts, resolveAnyRepoWith } from '@/lib/repo'
 import { KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits, sumPreviews } from '@/lib/sdk'
+import { creditsToDash } from '@/lib/sdk/cost'
 import { PLATFORM_PROFILE } from '@/lib/storage'
 import { EMPTY_PROGRESS, clearMirrorProgress, loadMirrorProgress, refsFingerprint, resumed, saveMirrorProgress, withAnswer, type MirrorProgress, type RunnerKeyRecord } from '@/lib/mirror/progress'
 import { mirrorRepoInput, suggestForgeName, suggestedRunnerBudget, type MirrorCliSettings } from '@/lib/mirror/wizard'
@@ -94,11 +96,11 @@ function storageSummary(storage: string | null): React.ReactNode {
   return null
 }
 
-function keySummary(key: RunnerKeyRecord | null): string | null {
+function keySummary(key: RunnerKeyRecord | null): React.ReactNode {
   if (key === null) return null
   // A negative key id: the person added a runner key of their own.
   if (key.keyId < 0) return 'Added by you'
-  return `Key ${key.keyId}: ${creditsAsDash(Number(key.budgetCredits))} DASH until ${formatDate(key.expiresAt)}`
+  return <>Key {key.keyId}: {creditsAsDash(Number(key.budgetCredits))} DASH<FiatNote dash={creditsToDash(Number(key.budgetCredits))} kind="bound" /> until {formatDate(key.expiresAt)}</>
 }
 
 /** Record a runner key in `identityId`'s saved progress, whatever the page shows now. */

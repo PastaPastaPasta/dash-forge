@@ -10,6 +10,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MirrorProgress } from '@/lib/mirror/progress'
+import { FIAT_RATES_KEY, FIAT_SETTINGS_KEY } from '@/lib/fiat/store'
 
 type OnCreated = (r: unknown, value: string) => void
 
@@ -115,6 +116,18 @@ afterEach(() => {
 })
 
 describe('MirrorWizard: the runner key value', () => {
+  it('shows the saved key budget as a fiat bound in the completed step summary', async () => {
+    localStorage.setItem(FIAT_RATES_KEY, JSON.stringify({ v: 1, source: 'ctx', fetchedAt: Date.now(), rates: { USD: 40 } }))
+    localStorage.setItem(FIAT_SETTINGS_KEY, JSON.stringify({ v: 1, enabled: true, currency: 'USD' }))
+    window.dispatchEvent(new StorageEvent('storage', { key: FIAT_SETTINGS_KEY }))
+    window.dispatchEvent(new StorageEvent('storage', { key: FIAT_RATES_KEY }))
+    savedAnswers.patch = { runnerKey: { ...RECORD, budgetCredits: '50000000000', saved: true } }
+    await renderAs(A)
+    const summary = host.querySelector('[data-testid="mirror-step-key"]')!
+    expect(summary.textContent).toContain('Key 3: 0.5 DASH (≤ $20.00 on mainnet) until')
+    expect(summary.querySelector('button')?.getAttribute('aria-label')).toBe('Change: The runner key')
+  })
+
   it('is dropped on an identity switch, and switching back does not restore it', async () => {
     await renderAs(A)
     act(() => created[A]!(RECORD, FAKE_KEY))
