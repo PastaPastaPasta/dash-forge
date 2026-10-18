@@ -412,6 +412,15 @@ mod tests {
         }
     }
     #[test]
+    fn node_locks_are_exclusive_and_stale_files_do_not_block_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = lock(temp.path(), "repo.lock").unwrap();
+        assert!(lock(temp.path(), "repo.lock").is_err());
+        drop(first);
+        assert!(lock(temp.path(), "repo.lock").is_ok());
+    }
+
+    #[test]
     fn secrets_round_trip_and_authorizations_are_replaced() {
         let temp = tempfile::tempdir().unwrap();
         let node = Node {

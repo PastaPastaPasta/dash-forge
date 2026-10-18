@@ -422,6 +422,16 @@ async fn down(ctx: &Ctx, purge: bool) -> Result<()> {
         ))?;
     }
     service::uninstall(&node).await?;
+    let _repo_guard = if purge {
+        Some(config::lock(&node.repo(), "repo.lock").map_err(|_| {
+            node_error(
+                "the kubo repo is still in use",
+                "stop any manually started kubo daemon before purging",
+            )
+        })?)
+    } else {
+        None
+    };
     if purge {
         let path = StorageProfiles::default_path()?;
         let mut profiles = StorageProfiles::load_from(&path)?;
