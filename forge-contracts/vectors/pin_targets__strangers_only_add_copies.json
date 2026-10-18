@@ -71,7 +71,7 @@
         "kind": 0,
         "size": 10,
         "uris": [
-          "ipfs://bafkreiewhdth2uzaidulepiurt7ahxzxm4xkldv6avp4xzt3jzeolmfklaot"
+          "ipfs://bafkreif5wfccmo7jm6ep7knb5ky4ownaqc2dwrkeel64evogungjxwvrpm"
         ],
         "createdAt": 1,
         "readable": true,
@@ -105,7 +105,7 @@
         },
         "candidates": [
           {
-            "cid": "bafkreiewhdth2uzaidulepiurt7ahxzxm4xkldv6avp4xzt3jzeolmfklaot",
+            "cid": "bafkreif5wfccmo7jm6ep7knb5ky4ownaqc2dwrkeel64evogungjxwvrpm",
             "swarmAllowed": true
           }
         ]
