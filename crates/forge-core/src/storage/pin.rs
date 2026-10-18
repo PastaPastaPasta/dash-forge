@@ -111,7 +111,11 @@ pub struct PinAsset {
 }
 
 fn authorized(owner: &str, identity: &str, roles: &RoleMap) -> bool {
-    identity == owner || matches!(roles.get(identity), Some(Role::Maintainer | Role::Writer))
+    identity == owner
+        || matches!(
+            roles.get(identity),
+            Some(Role::Maintainer | Role::Writer | Role::Bot)
+        )
 }
 
 fn cid(uri: &str) -> Option<String> {
@@ -155,8 +159,9 @@ fn add_targets(
 }
 
 /// Pure enumeration. A stranger can add addresses for a writer's hash, never a new hash,
-/// kind, size or decryption entitlement. Bots (which need a push grant), triagers and readers
-/// cannot independently authorize storage by writing a manifest.
+/// kind, size or decryption entitlement. A bot's packs count (it pushes under a maintainer's
+/// grant, and a mirrored repository's packs are all a bot's); triagers and readers cannot
+/// authorize storage by writing a manifest.
 pub fn plan_targets(input: &PinInput) -> PinPlan {
     let mut plan = PinPlan::default();
     let mut seen = BTreeSet::new();
