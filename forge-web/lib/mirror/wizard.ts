@@ -419,7 +419,7 @@ export function workflowYaml(o: WorkflowOptions): string {
 
 /** The secrets the workflow reads, in the order to add them. `DASH_FORGE_KEY` first. */
 export function workflowSecrets(storage: UsableMirrorStorage): readonly SecretSpec[] {
-  return [{ name: 'DASH_FORGE_KEY', what: 'the runner key from step 4 (starts with dfk1:)' }, ...storage.secrets]
+  return [{ name: 'DASH_FORGE_KEY', what: 'your runner key (starts with dfk1:)' }, ...storage.secrets]
 }
 
 /** GitHub's "new file" page with the workflow filled in. */
