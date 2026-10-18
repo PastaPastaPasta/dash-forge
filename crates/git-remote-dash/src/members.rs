@@ -888,10 +888,10 @@ pub fn remade_lines(g: &GitGraph, remade: &[Remade]) -> Vec<String> {
 
 /// The `-o publish-private=<oid>` of this push, unless `push.pushOption` sets it: the override is
 /// bound to one push (security L6), so a permanent one is ignored with a warning.
-pub fn publish_private(values: &[String]) -> Option<String> {
-    let v = values.last()?;
-    // a full id, or anything git resolves to one (`HEAD`, a short id)
-    let v = LocalRepo::rev_parse(v).unwrap_or_else(|| v.to_ascii_lowercase());
+pub fn publish_private(values: &[String]) -> Vec<String> {
+    if values.is_empty() {
+        return Vec::new();
+    }
     let permanent = std::process::Command::new("git")
         .args(["config", "--get-all", "push.pushOption"])
         .output()
@@ -905,9 +905,13 @@ pub fn publish_private(values: &[String]) -> Option<String> {
         eprintln!(
             "dash: warning: push.pushOption sets {OPTION_PUBLISH_PRIVATE}; it is ignored: give -o {OPTION_PUBLISH_PRIVATE}=<oid> on the one push that publishes"
         );
-        return None;
+        return Vec::new();
     }
-    Some(v)
+    // Each command-line override is bound to its own tip in this push.
+    values
+        .iter()
+        .map(|v| LocalRepo::rev_parse(v).unwrap_or_else(|| v.to_ascii_lowercase()))
+        .collect()
 }
 
 /// What the guard knows about narrower branches (phase 3F): who each is for, by ledger token,
@@ -926,12 +930,12 @@ pub fn run_guard(
     decryptable: Option<&[String]>,
     public_tips: &[String],
     batch: &[BatchRef],
-    publish_private: Option<&str>,
+    publish_private: &[String],
     narrower: &Narrower,
 ) -> Result<Outcome> {
     let ledger = read_ledger();
     let g = GitGraph::here();
-    Ok(guard::guard(
+    let mut outcome = guard::guard(
         &g,
         &GuardInput {
             members_key,
@@ -939,12 +943,36 @@ pub fn run_guard(
             decryptable,
             public_tips,
             batch,
-            publish_private,
+            publish_private: None,
             patch_ids: patch_id_check(),
             audiences: &narrower.audiences,
             decryptable_narrower: &narrower.decryptable,
         },
-    )?)
+    )?;
+    allow_publications(&mut outcome, batch, publish_private);
+    Ok(outcome)
+}
+
+/// Apply each tip's explicit override to the already-computed batch findings. An unavailable
+/// guard stays unavailable, and one unapproved finding still refuses the whole batch.
+fn allow_publications(outcome: &mut Outcome, batch: &[BatchRef], tips: &[String]) {
+    if outcome.verdict == guard::Verdict::Unavailable {
+        return;
+    }
+    let (allowed, refused) = std::mem::take(&mut outcome.findings)
+        .into_iter()
+        .partition(|f| {
+            batch
+                .iter()
+                .any(|r| r.dst == f.dst && r.new.as_ref().is_some_and(|t| tips.contains(t)))
+        });
+    outcome.published.extend(allowed);
+    outcome.findings = refused;
+    outcome.verdict = if outcome.findings.is_empty() {
+        guard::Verdict::Pass
+    } else {
+        guard::Verdict::Refuse
+    };
 }
 
 /// The opt-in `patch-id` comparison of re-made commits (DESIGN §4.3 guard): `git config

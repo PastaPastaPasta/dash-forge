@@ -647,6 +647,34 @@ pub(crate) fn is_members_only_ref(d: &FetchedDocument) -> bool {
         && d.field_str("vis").as_deref() == Some(Visibility::Public.as_str())
 }
 
+/// Private-stamped commit ids withheld by a conversion, readable without any keys. The
+/// stated epoch is an upper bound; the keep step also handles the marker's earlier boundary.
+#[must_use]
+pub fn withheld_new_oids(
+    state: &GitState,
+    conversion: Option<&crate::private::convert::Conversion>,
+) -> Vec<String> {
+    let Some(epoch) = conversion.and_then(|c| c.seal_off_epoch) else {
+        return Vec::new();
+    };
+    state
+        .ref_updates
+        .iter()
+        .chain(&state.protected_ref_updates)
+        .filter(|d| {
+            d.field_str("vis").as_deref() == Some("private")
+                && d.field_u64("epoch").is_some_and(|e| e >= u64::from(epoch))
+                && d.field_bytes("enc")
+                    .is_some_and(|enc| enc.first() == Some(&crate::private::doc::V1))
+        })
+        .filter_map(|d| d.field_bytes("newOid"))
+        .filter(|oid| matches!(oid.len(), 20 | 32) && oid.iter().any(|&b| b != 0))
+        .map(hex::encode)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// A member's ref updates of a PUBLIC repository with members-only branches
 /// (`docs/security/private-repos.md` §19.3, DESIGN §4.3): the union, per ref name, of the
 /// public updates (plaintext, [`git_plane_well_formed`]) and the members-only ones that `open`
@@ -1511,6 +1539,53 @@ mod tests {
             revision: None,
             fields,
         }
+    }
+
+    #[test]
+    fn withheld_commit_ids_need_no_keys_and_do_not_change_public_refs() {
+        use crate::private::convert::Conversion;
+        let row = |id, epoch, vis: &str, version, oid| {
+            let mut d = update("refs/heads/topic", id, u64::from(id), 0, oid);
+            d.fields.insert("epoch".into(), FieldValue::Integer(epoch));
+            d.fields.insert("vis".into(), FieldValue::Text(vis.into()));
+            d.fields
+                .insert("enc".into(), FieldValue::Bytes(vec![version; 32]));
+            d
+        };
+        let mut malformed = row(8, 3, "private", 1, 8);
+        malformed
+            .fields
+            .insert("newOid".into(), FieldValue::Bytes(vec![8; 19]));
+        let state = GitState {
+            ref_updates: vec![
+                row(1, 1, "private", 1, 1),
+                row(2, 2, "private", 1, 2),
+                row(3, 3, "private", 1, 0),
+                row(4, 3, "public", 3, 4),
+                row(5, 3, "private", 6, 5),
+                malformed,
+            ],
+            protected_ref_updates: vec![row(6, 3, "private", 1, 6), row(7, 2, "private", 1, 2)],
+            configs: vec![],
+        };
+        let c = Conversion {
+            seal_off_epoch: Some(2),
+            marker_height: Some(20),
+        };
+        assert_eq!(
+            super::withheld_new_oids(&state, Some(&c)),
+            [hex::encode([2; 20]), hex::encode([6; 20])]
+        );
+        assert!(super::withheld_new_oids(&state, None).is_empty());
+        assert!(super::withheld_new_oids(
+            &state,
+            Some(&Conversion {
+                seal_off_epoch: None,
+                ..c
+            })
+        )
+        .is_empty());
+        assert!(super::public_refs(&state).is_empty());
     }
 
     /// A repository being made public keeps the ref updates sealed below its seal-off epoch,

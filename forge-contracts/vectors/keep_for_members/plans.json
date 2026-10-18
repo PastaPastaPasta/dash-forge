@@ -1,0 +1,500 @@
+[
+  {
+    "name": "new branch",
+    "allEra": {
+      "refs/heads/late": "b"
+    },
+    "below": {},
+    "public": {},
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/late",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/late"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "published branch",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/topic": "a"
+    },
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "default branch",
+    "allEra": {
+      "refs/heads/main": "b"
+    },
+    "below": {},
+    "public": {},
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/main",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/main"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "Code only unselected changed branch",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/main": "a"
+    },
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "Everything changed branch",
+    "allEra": {
+      "refs/heads/topic": "b",
+      "refs/heads/main": "a"
+    },
+    "below": {
+      "refs/heads/topic": "a",
+      "refs/heads/main": "a"
+    },
+    "public": {
+      "refs/heads/topic": "a",
+      "refs/heads/main": "a"
+    },
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "deleted branch",
+    "allEra": {},
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {},
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [],
+    "reserved": []
+  },
+  {
+    "name": "force push",
+    "allEra": {
+      "refs/heads/topic": "z"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/topic": "a"
+    },
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "z",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "alias collision",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/topic": "a"
+    },
+    "members": {
+      "refs/heads/members/topic": "z",
+      "refs/heads/members/topic-2": "z"
+    },
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic-3"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "tag reported",
+    "allEra": {
+      "refs/tags/v2": "b"
+    },
+    "below": {},
+    "public": {},
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/tags/v2",
+        "tip": "b",
+        "keep": {
+          "status": "tag"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "later public push contains tip",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/main": "c"
+    },
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [
+      [
+        "b",
+        "c"
+      ]
+    ],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "public"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "later public push diverges",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/topic": "c"
+    },
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "rerun already kept",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/topic": "a"
+    },
+    "members": {
+      "refs/heads/members/topic": "c"
+    },
+    "defaultRef": "refs/heads/main",
+    "ancestors": [
+      [
+        "b",
+        "c"
+      ]
+    ],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "kept",
+          "as": "refs/heads/members/topic"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "unchanged unselected branch",
+    "allEra": {
+      "refs/heads/topic": "a"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {},
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [],
+    "reserved": []
+  },
+  {
+    "name": "new branch kept under own name",
+    "allEra": {
+      "refs/heads/late": "b"
+    },
+    "below": {},
+    "public": {},
+    "members": {
+      "refs/heads/late": "b"
+    },
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "expected": [
+      {
+        "name": "refs/heads/late",
+        "tip": "b",
+        "keep": {
+          "status": "kept",
+          "as": "refs/heads/late"
+        }
+      }
+    ],
+    "reserved": []
+  },
+  {
+    "name": "narrower source name reserved",
+    "allEra": {
+      "refs/heads/late": "b"
+    },
+    "below": {},
+    "public": {},
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "reserved": [
+      "refs/heads/late"
+    ],
+    "expected": [
+      {
+        "name": "refs/heads/late",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/late"
+        }
+      }
+    ]
+  },
+  {
+    "name": "narrower alias name reserved",
+    "allEra": {
+      "refs/heads/main": "b"
+    },
+    "below": {},
+    "public": {},
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "reserved": [
+      "refs/heads/members/main"
+    ],
+    "expected": [
+      {
+        "name": "refs/heads/main",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/main-2"
+        }
+      }
+    ]
+  },
+  {
+    "name": "alias parent taken",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/topic": "a"
+    },
+    "members": {
+      "refs/heads/members": "z"
+    },
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "reserved": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "notKept",
+          "reason": "members-only alias is blocked by branch members"
+        }
+      }
+    ]
+  },
+  {
+    "name": "nested alias parent taken",
+    "allEra": {
+      "refs/heads/foo/topic": "b"
+    },
+    "below": {
+      "refs/heads/foo/topic": "a"
+    },
+    "public": {
+      "refs/heads/foo/topic": "a"
+    },
+    "members": {
+      "refs/heads/members/foo": "z"
+    },
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "reserved": [],
+    "expected": [
+      {
+        "name": "refs/heads/foo/topic",
+        "tip": "b",
+        "keep": {
+          "status": "notKept",
+          "reason": "members-only alias is blocked by branch members/foo"
+        }
+      }
+    ]
+  },
+  {
+    "name": "alias child taken",
+    "allEra": {
+      "refs/heads/topic": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {},
+    "members": {
+      "refs/heads/members/topic/child": "z"
+    },
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "reserved": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic-2"
+        }
+      }
+    ]
+  },
+  {
+    "name": "source parent reserved below boundary",
+    "allEra": {
+      "refs/heads/topic/late": "b"
+    },
+    "below": {
+      "refs/heads/topic": "a"
+    },
+    "public": {
+      "refs/heads/main": "a"
+    },
+    "members": {},
+    "defaultRef": "refs/heads/main",
+    "ancestors": [],
+    "reserved": [],
+    "expected": [
+      {
+        "name": "refs/heads/topic/late",
+        "tip": "b",
+        "keep": {
+          "status": "push",
+          "target": "refs/heads/members/topic/late"
+        }
+      }
+    ]
+  }
+]

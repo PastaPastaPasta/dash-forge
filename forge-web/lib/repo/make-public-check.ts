@@ -334,7 +334,7 @@ export async function readCensus(
   await countKind(session, 'patch', patches, out, below)
   await countKind(session, 'comment', comments, out, below)
   await countKind(session, 'review', reviews, out, below)
-  const events = (await readAllRows(sdk, view, DOC.event)).filter((d) => {
+  const events = (await readAllRows(sdk, view, DOC.event)).filter((d) => sealedBelow(d, below)).filter((d) => {
     if (before === null) return true
     const at = blockHeightOf(d)
     return at !== undefined && at <= before
@@ -343,7 +343,7 @@ export async function readCensus(
     if (d['kind'] === EVENT_HIDE) out.hidden++
     else if (d['kind'] === EVENT_AGENT_REQUEST) out.botRequests++
   }
-  const opened = await readableEvents(view, events.filter((d) => (bytesField(d, 'enc')?.length ?? 0) > 0 && sealedBelow(d, below)))
+  const opened = await readableEvents(view, events.filter((d) => (bytesField(d, 'enc')?.length ?? 0) > 0))
   out.unread += opened.hiddenValues
   for (const d of opened.docs) {
     const value = d['value']
@@ -466,7 +466,7 @@ export async function inspect(c: PrivateWriteContext, session: PrivateSession, o
   if (conversion === null && !(await contractVisibilityOneWay(sdk, c.repo.forge.core))) blockers.push(new MakePublicError(COPY.frozen, 'E103'))
   if (res.currentEpoch === null || !res.keys.has(res.currentEpoch)) blockers.push(new MakePublicError(COPY.notKeyHolder, 'E307'))
   if (res.repair !== null && (res.repair.rotate || res.repair.missingWraps.length > 0)) blockers.push(new MakePublicError(COPY.repairFirst, 'E310'))
-  const sealOff = opts.below ?? conversion?.sealOffEpoch ?? undefined
+  const sealOff = cutoffOf(opts.below, conversion?.sealOffEpoch)
   const published = sealOff ?? (res.currentEpoch === null ? 0 : res.currentEpoch + 1)
   for (let e = 0; e < published; e++) {
     if (res.anchors.has(e) && !res.keys.has(e)) {
@@ -570,6 +570,7 @@ export async function inspect(c: PrivateWriteContext, session: PrivateSession, o
   const [codeSize, allSize] = [code.size, all.size]
   const base = { private: conversion === null, marked: conversion?.markerHeight != null, rotationCredits: rotationCredits(c, session), readableEpochs: res.keys.size }
   const check: MakePublicCheck = {
+    ...(sealOff !== undefined ? { publicationCutoff: sealOff } : {}),
     blockers: blockers.map((b) => b.message),
     notes,
     allRefs: sorted,
