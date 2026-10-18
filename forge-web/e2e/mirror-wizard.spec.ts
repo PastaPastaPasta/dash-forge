@@ -127,7 +127,9 @@ test('m1. signed out: choose a path, copy CLI commands and resume their settings
   expect(asked.filter((path) => path === `/repos/${GH.owner}/${GH.name}`)).toHaveLength(1)
 
   await checkGithub(page, 'someone/private-thing')
-  await expect(step(page, 'github').getByRole('alert')).toHaveCount(0)
+  // A 404 may be a typo or a private repo: path B says both, without GitHub's public-only message.
+  await expect(step(page, 'github').getByRole('alert')).toHaveText("GitHub doesn't show this repo publicly. Check its owner and name.")
+  await expect(step(page, 'github')).not.toContainText('The wizard mirrors public repositories')
   await expect(step(page, 'github')).toContainText("This page can't check private GitHub repositories.")
   await expect(step(page, 'github').getByRole('link', { name: /The guide shows/ })).toHaveAttribute('href', /#into-a-private-repository$/)
   await checkGithub(page, 'not a repo')

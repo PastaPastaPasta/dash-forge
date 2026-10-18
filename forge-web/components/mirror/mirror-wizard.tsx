@@ -201,8 +201,10 @@ export function MirrorWizard(): JSX.Element {
 
   const cliSettings: MirrorCliSettings = { ...cli, name: cli.name ?? suggestForgeName(progress.github?.name ?? '') }
   useEffect(() => {
-    if (!settled || query === null) return
-    if (progress.way !== 'cli') {
+    // No way chosen yet: a `?repo=` from a GitHub address stays until one is (sign-out clears it).
+    if (!settled || query === null || progress.way === null) return
+    // The Action path resumes from this identity's saved progress, never from the address.
+    if (progress.way === 'action') {
       clearMirrorUrl()
       return
     }

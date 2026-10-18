@@ -205,6 +205,14 @@ describe('MirrorWizard: paths', () => {
     expect(saves).toEqual([])
   })
 
+  it('keeps a GitHub address prefill in the URL until a way is chosen', async () => {
+    window.history.replaceState({ __NA: true, tree: 'router-tree' }, '', '/mirror/?repo=octo/repo')
+    await renderAs(null)
+    await act(async () => vi.advanceTimersByTime(300))
+    expect(state('way')).toBe('active')
+    expect(new URLSearchParams(window.location.search).get('repo')).toBe('octo/repo')
+  })
+
   it('restores CLI URL settings and still waits for the GitHub answer', async () => {
     window.history.replaceState({ __NA: true, tree: 'router-tree' }, '', '/mirror/?way=cli&repo=octo/repo&name=my-copy&collab=1&cap=0.5')
     await renderAs(null)

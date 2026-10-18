@@ -89,6 +89,9 @@ test.describe('GitHub addresses (CJ-3)', () => {
     await shot(page, 'ga-03-not-mirrored')
     await page.getByTestId('alias-mirror').click()
     await expect(page).toHaveURL(/\/mirror\/\?repo=forge-e2e-nobody%2Fno-such-repo-here/)
+    // The wizard asks which way first; the GitHub box then holds the repo from the address.
+    await page.getByRole('radio', { name: 'No, copy it from the command line', exact: true }).check()
+    await page.getByTestId('mirror-step-way').getByRole('button', { name: 'Continue' }).click()
     await expect(page.locator('#mirror-github')).toHaveValue('forge-e2e-nobody/no-such-repo-here', { timeout: 30_000 })
   })
 })
