@@ -156,6 +156,7 @@ pub async fn stop(node: &Node) -> Result<()> {
     super::serve::stop(node).await
 }
 
+#[allow(clippy::too_many_lines)] // one branch per platform: launchd, systemd, schtasks
 pub async fn install(node: &Node, linger: bool) -> Result<bool> {
     let exe = std::env::current_exe()?;
     #[cfg(target_os = "macos")]
