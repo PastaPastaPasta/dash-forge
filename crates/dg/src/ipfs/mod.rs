@@ -110,7 +110,7 @@ pub enum OriginCommand {
 pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
     match command {
         IpfsCommand::Up(args) => up(ctx, args).await,
-        IpfsCommand::Serve => serve::run(Node::load()?).await,
+        IpfsCommand::Serve => serve::run(ctx, Node::load()?).await,
         IpfsCommand::Status => {
             let value = status::collect(&Node::load()?).await?;
             ctx.emit(value.clone(), || {

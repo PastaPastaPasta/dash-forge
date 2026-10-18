@@ -539,7 +539,6 @@ pub struct FollowSummary {
 }
 
 /// Called once at service start and every 30 minutes. Never writes progress to stdout.
-#[allow(dead_code)] // wired into R1's supervisor when the branches are integrated
 pub async fn follow_tick(ctx: &Ctx) -> Result<FollowSummary> {
     forge_core::sealed::forbid_prompts();
     refresh(

@@ -10,7 +10,26 @@ use tokio::io::{AsyncRead, AsyncReadExt as _};
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinSet;
 
-use super::{config, follow, node_error, proxy, Node};
+use super::{config, node_error, proxy, Node};
+use crate::context::Ctx;
+
+/// Re-pin every followed repository at start and every 30 minutes. Runs beside the listeners
+/// rather than as a spawned task because it borrows `ctx`; a stop drops it mid-refresh, and the
+/// next run resumes (already pinned files are skipped).
+async fn follow_loop(ctx: &Ctx) {
+    let mut interval = tokio::time::interval(Duration::from_secs(30 * 60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        match crate::ipfs_pin::follow_tick(ctx).await {
+            Ok(summary) if !summary.failed.is_empty() => {
+                tracing::warn!(failed = ?summary.failed, "IPFS follow refresh had failures");
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "IPFS follow refresh failed"),
+        }
+    }
+}
 
 pub async fn shutdown(mut receiver: watch::Receiver<bool>) {
     if !*receiver.borrow() {
@@ -31,7 +50,7 @@ async fn signal() -> Result<()> {
     Ok(())
 }
 
-pub async fn run(node: Node) -> Result<()> {
+pub async fn run(ctx: &Ctx, node: Node) -> Result<()> {
     let _guard = config::lock(&node.dir, "serve.lock")?;
     let _ = std::fs::remove_file(node.dir.join("stop"));
     let tokens = config::Tokens::load(&node)?;
@@ -62,25 +81,9 @@ pub async fn run(node: Node) -> Result<()> {
             .map_err(anyhow::Error::from)
     });
     tasks.spawn(supervise(node.clone(), tokens, receiver.clone()));
-    let follow_node = node.clone();
-    let rx = receiver.clone();
-    tasks.spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30 * 60));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                () = shutdown(rx.clone()) => return Ok(()),
-                _ = interval.tick() => {
-                    tokio::select! {
-                        () = shutdown(rx.clone()) => return Ok(()),
-                        result = follow::follow_tick(&follow_node) => if let Err(error) = result { tracing::warn!(%error, "IPFS follow refresh failed"); }
-                    }
-                }
-            }
-        }
-    });
     let result = tokio::select! {
         result = signal() => result,
+        () = follow_loop(ctx) => Ok(()),
         () = stop_requested(&node) => Ok(()),
         result = tasks.join_next() => match result { Some(result) => result.unwrap_or_else(|error| Err(error.into())), None => Ok(()) },
     };
