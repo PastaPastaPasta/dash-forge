@@ -1,0 +1,133 @@
+{
+  "name": "conflicting_metadata",
+  "description": "A stranger cannot claim an authorized CID for a different accepted hash, or change the size of the authorized CID. Conflicting candidates are dropped without failing planning.",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "writer",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreidv4fftjzytqnxqnp5sebzt4xwfmd472jvjdociyorgwnansqzlzq"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "2",
+        "owner": "stranger",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 999,
+        "uris": [
+          "ipfs://bafkreidv4fftjzytqnxqnp5sebzt4xwfmd472jvjdociyorgwnansqzlzq"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "3",
+        "owner": "writer",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreiaa2lnxnc2evjtdsxtokhukfoyxlkitz47z2wo4elnji6sauzznp4"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "4",
+        "owner": "stranger",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreidv4fftjzytqnxqnp5sebzt4xwfmd472jvjdociyorgwnansqzlzq"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "5",
+        "owner": "stranger",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafkreiaa2lnxnc2evjtdsxtokhukfoyxlkitz47z2wo4elnji6sauzznp4"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "6",
+        "owner": "writer",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "https://store.example/bytes"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": []
+  },
+  "expected": {
+    "targets": [
+      {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreidv4fftjzytqnxqnp5sebzt4xwfmd472jvjdociyorgwnansqzlzq",
+            "swarmAllowed": true
+          }
+        ]
+      },
+      {
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiaa2lnxnc2evjtdsxtokhukfoyxlkitz47z2wo4elnji6sauzznp4",
+            "swarmAllowed": true
+          }
+        ]
+      }
+    ],
+    "notOnIpfs": 1,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": false,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 3
+  }
+}

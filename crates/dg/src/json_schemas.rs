@@ -530,6 +530,13 @@ fn ipfs_pin_reports_match() {
     let body = json!({"status":"planned", "repoId":"repo", "profile":"kubo",
         "plan":PinPlan::default(), "totalBytes":0, "costDash":0, "report":PinReport::default()});
     assert_valid("ipfs pin", &body);
+    let mut with_target = body.clone();
+    with_target["plan"]["targets"] = json!([{
+        "candidates":[{"cid":"bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq","swarmAllowed":false}],
+        "sha256":"00", "size":5, "what":{"type":"pack","kind":0}
+    }]);
+    assert_valid("ipfs pin", &with_target);
+
     assert_valid("ipfs pin", &json!({"status":"unfollowed", "repoId":"repo"}));
     assert_valid(
         "ipfs pin",

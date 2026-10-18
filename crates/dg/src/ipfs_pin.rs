@@ -410,8 +410,8 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
         }
     }
     if !quiet && !ctx.json {
-        println!("{} blobs · {} · {} not on IPFS · {} members-only, skipped · {} stranger copies ignored · cost 0 DASH (local disk only)",
-            plan.targets.len(), human_bytes(plan.bytes()), plan.not_on_ipfs, plan.members_only_skipped, plan.stranger_copies_ignored);
+        println!("{} blobs · {} · {} not on IPFS · {} members-only, skipped · {} unreadable, skipped · {} invalid CIDs skipped · {} conflicting CIDs skipped · {} stranger copies ignored · cost 0 DASH (local disk only)",
+            plan.targets.len(), human_bytes(plan.bytes()), plan.not_on_ipfs, plan.members_only_skipped, plan.unreadable_skipped, plan.invalid_cids_skipped, plan.conflicting_cids_skipped, plan.stranger_copies_ignored);
     }
     let report = if args.dry_run {
         PinReport::default()
@@ -450,7 +450,9 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
                         }
                         PinOutcome::Failed { why } => format!(
                             "FAILED: {}",
-                            safe(&why.replace(&target.cid, "[IPFS address]"))
+                            safe(&target.candidates.iter().fold(why, |why, candidate| {
+                                why.replace(&candidate.cid, "[IPFS address]")
+                            }))
                         ),
                     };
                     println!(
@@ -459,7 +461,15 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
                         target.sha256.chars().take(7).collect::<String>(),
                         human_bytes(target.size),
                         if args.verbose {
-                            format!("  {}", target.cid)
+                            format!(
+                                "  {}",
+                                target
+                                    .candidates
+                                    .iter()
+                                    .map(|c| c.cid.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
                         } else {
                             String::new()
                         }

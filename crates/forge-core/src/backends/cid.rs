@@ -122,11 +122,11 @@ fn decode_base32(text: &str) -> Option<Vec<u8>> {
         let digit = b"abcdefghijklmnopqrstuvwxyz234567"
             .iter()
             .position(|&b| b == byte)?;
-        buffer = (buffer << 5) | digit as u32;
+        buffer = (buffer << 5) | u32::try_from(digit).ok()?;
         bits += 5;
         if bits >= 8 {
             bits -= 8;
-            out.push((buffer >> bits) as u8);
+            out.push(u8::try_from((buffer >> bits) & 255).ok()?);
         }
     }
     if bits >= 5 || buffer & ((1 << bits) - 1) != 0 {
@@ -141,14 +141,14 @@ fn decode_radix(text: &str, alphabet: &[u8]) -> Option<Vec<u8>> {
     }
     let mut out = Vec::<u8>::new();
     for byte in text.bytes() {
-        let mut carry = alphabet.iter().position(|&b| b == byte)? as u32;
+        let mut carry = u32::try_from(alphabet.iter().position(|&b| b == byte)?).ok()?;
         for digit in out.iter_mut().rev() {
-            carry += u32::from(*digit) * alphabet.len() as u32;
-            *digit = carry as u8;
+            carry += u32::from(*digit) * u32::try_from(alphabet.len()).ok()?;
+            *digit = u8::try_from(carry & 255).ok()?;
             carry >>= 8;
         }
         while carry > 0 {
-            out.insert(0, carry as u8);
+            out.insert(0, u8::try_from(carry & 255).ok()?);
             carry >>= 8;
         }
     }

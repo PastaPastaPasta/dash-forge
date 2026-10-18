@@ -1,6 +1,6 @@
 {
   "name": "dedupe_copies_and_releases",
-  "description": "dedupe copies and releases",
+  "description": "Authorized copies and release assets with identical hash and size merge into one target with alternate CIDs, charging size once.",
   "case": "pin_targets",
   "rules": "v2",
   "input": {
@@ -19,7 +19,7 @@
         "kind": 0,
         "size": 10,
         "uris": [
-          "ipfs://bafyA"
+          "ipfs://bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe"
         ],
         "createdAt": 1,
         "readable": true,
@@ -32,7 +32,8 @@
         "kind": 0,
         "size": 10,
         "uris": [
-          "ipfs://bafyA"
+          "ipfs://bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe",
+          "ipfs://bafkreig4pvlrx2llpybnpa2ahcf3jvpyvwbiv6wxt3y7xr2ik3tvbizrku"
         ],
         "createdAt": 1,
         "readable": true,
@@ -49,7 +50,7 @@
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "size": 10,
             "uris": [
-              "https://gateway.example/ipfs/bafyA"
+              "https://gateway.example/ipfs/bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe"
             ]
           }
         ]
@@ -63,7 +64,7 @@
             "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "size": 999,
             "uris": [
-              "ipfs://bafyJunk"
+              "ipfs://bafkreietazgkuxaw25vde3nsjxcyd5y4agfojgaww3lgd3yaoy2jwjstz4"
             ]
           }
         ]
@@ -73,18 +74,30 @@
   "expected": {
     "targets": [
       {
-        "cid": "bafyA",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "size": 10,
         "what": {
           "type": "pack",
           "kind": 0
-        }
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe",
+            "swarmAllowed": true
+          },
+          {
+            "cid": "bafkreig4pvlrx2llpybnpa2ahcf3jvpyvwbiv6wxt3y7xr2ik3tvbizrku",
+            "swarmAllowed": true
+          }
+        ]
       }
     ],
     "notOnIpfs": 0,
     "membersOnlySkipped": 0,
     "strangerCopiesIgnored": 0,
-    "needsConsent": false
+    "needsConsent": false,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 0
   }
 }

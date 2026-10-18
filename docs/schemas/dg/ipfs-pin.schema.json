@@ -29,13 +29,57 @@
         "targets": {
           "type": "array",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "candidates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "cid": {
+                      "type": "string"
+                    },
+                    "swarmAllowed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "cid",
+                    "swarmAllowed"
+                  ]
+                }
+              },
+              "size": {
+                "type": "integer"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "what": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "candidates",
+              "size",
+              "sha256",
+              "what"
+            ]
           }
         },
         "notOnIpfs": {
           "type": "integer"
         },
         "membersOnlySkipped": {
+          "type": "integer"
+        },
+        "unreadableSkipped": {
+          "type": "integer"
+        },
+        "invalidCidsSkipped": {
+          "type": "integer"
+        },
+        "conflictingCidsSkipped": {
           "type": "integer"
         },
         "strangerCopiesIgnored": {
@@ -49,6 +93,9 @@
         "targets",
         "notOnIpfs",
         "membersOnlySkipped",
+        "unreadableSkipped",
+        "invalidCidsSkipped",
+        "conflictingCidsSkipped",
         "strangerCopiesIgnored",
         "needsConsent"
       ]

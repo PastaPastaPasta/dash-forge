@@ -1,0 +1,56 @@
+{
+  "name": "normalized_and_invalid_cids",
+  "description": "Alternate CIDv1 encodings dedupe to base32 and malformed candidates are counted and skipped.",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "owner",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://BAFKREIFTFNLX2Y5CUIXDU23DXAYNRNBB4X3CQCI37U6ZXE4RWJ6IAL7CHI",
+          "ipfs://k2cwued45z0sx43tjjwplmm6byhx52nm2im17boccsarg8rnl39bf48q",
+          "ipfs://bafyInvalid"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": []
+  },
+  "expected": {
+    "targets": [
+      {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiftfnlx2y5cuixdu23dxaynrnbb4x3cqci37u6zxe4rwj6ial7chi",
+            "swarmAllowed": true
+          }
+        ]
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": false,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 1,
+    "conflictingCidsSkipped": 0
+  }
+}

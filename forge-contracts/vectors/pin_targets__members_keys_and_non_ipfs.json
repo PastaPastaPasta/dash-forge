@@ -19,7 +19,7 @@
         "kind": 64,
         "size": 10,
         "uris": [
-          "ipfs://bafyPrivate"
+          "ipfs://bafkreifbxx2ynwlvmlnqng364dy5vz5dqhrip4swukqvp2mnyytec27lea"
         ],
         "createdAt": 1,
         "readable": false,
@@ -32,7 +32,7 @@
         "kind": 64,
         "size": 10,
         "uris": [
-          "ipfs://bafyShared"
+          "ipfs://bafkreiavcjiixg2o5hwzuw27yjk6desf64cukel4j4khug7wss7wbfruwq"
         ],
         "createdAt": 1,
         "readable": true,
@@ -57,18 +57,26 @@
   "expected": {
     "targets": [
       {
-        "cid": "bafyShared",
         "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "size": 10,
         "what": {
           "type": "pack",
           "kind": 64
-        }
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiavcjiixg2o5hwzuw27yjk6desf64cukel4j4khug7wss7wbfruwq",
+            "swarmAllowed": true
+          }
+        ]
       }
     ],
     "notOnIpfs": 1,
     "membersOnlySkipped": 1,
     "strangerCopiesIgnored": 0,
-    "needsConsent": true
+    "needsConsent": true,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 0
   }
 }

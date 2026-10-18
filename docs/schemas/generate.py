@@ -702,8 +702,9 @@ cmd('reseed', 'Packs stored again where the storage policy wants them.', {
 }, ['status', 'repoId'])
 cmd('ipfs pin', 'Repository files pinned or planned, or followed repositories refreshed.', {
     'status': E('pinned', 'planned', 'unfollowed', 'refreshed'), 'repoId': S, 'profile': S,
-    'plan': O({'targets': A(OBJ), 'notOnIpfs': I, 'membersOnlySkipped': I,
-               'strangerCopiesIgnored': I, 'needsConsent': B}, ['targets', 'notOnIpfs', 'membersOnlySkipped', 'strangerCopiesIgnored', 'needsConsent']),
+    'plan': O({'targets': A(O({'candidates': A(O({'cid': S, 'swarmAllowed': B}, ['cid', 'swarmAllowed'])),
+                                'size': I, 'sha256': S, 'what': OBJ}, ['candidates', 'size', 'sha256', 'what'])), 'notOnIpfs': I, 'membersOnlySkipped': I, 'unreadableSkipped': I, 'invalidCidsSkipped': I, 'conflictingCidsSkipped': I,
+               'strangerCopiesIgnored': I, 'needsConsent': B}, ['targets', 'notOnIpfs', 'membersOnlySkipped', 'unreadableSkipped', 'invalidCidsSkipped', 'conflictingCidsSkipped', 'strangerCopiesIgnored', 'needsConsent']),
     'totalBytes': I, 'costDash': I, 'report': O({'pinned': I, 'already': I, 'failed': A(OBJ), 'bytes': I}, ['pinned', 'already', 'failed', 'bytes']),
     'repos': A(OBJ), 'failed': SA,
 }, ['status'])

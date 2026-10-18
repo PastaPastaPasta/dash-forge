@@ -1,6 +1,6 @@
 {
   "name": "strangers_only_add_copies",
-  "description": "Stranger-only and reader-only hashes are ignored; a bot's hash counts (it pushes under a maintainer's grant); a stranger adds a CID for an authorized hash without changing its size.",
+  "description": "Stranger and reader hashes are ignored; bots authorize packs; conflicting stranger size metadata is discarded without changing the authorized target.",
   "case": "pin_targets",
   "rules": "v2",
   "input": {
@@ -19,7 +19,7 @@
         "kind": 0,
         "size": 10,
         "uris": [
-          "ipfs://bafyA"
+          "ipfs://bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe"
         ],
         "createdAt": 1,
         "readable": true,
@@ -32,7 +32,7 @@
         "kind": 0,
         "size": 9000000000,
         "uris": [
-          "ipfs://bafyB"
+          "ipfs://bafkreiewhdth2uzaidulepiurt7ahxzxm4xkldv6avp4xzt3jzeolmfkla"
         ],
         "createdAt": 1,
         "readable": true,
@@ -45,7 +45,7 @@
         "kind": 0,
         "size": 10,
         "uris": [
-          "ipfs://bafyJunk"
+          "ipfs://bafkreietazgkuxaw25vde3nsjxcyd5y4agfojgaww3lgd3yaoy2jwjstz4"
         ],
         "createdAt": 1,
         "readable": true,
@@ -58,7 +58,7 @@
         "kind": 0,
         "size": 10,
         "uris": [
-          "ipfs://bafyRead"
+          "ipfs://bafkreifrnbr5xlb4mf3333f5ubibhzejlzi3e5cscjamspd56adjgiabq4"
         ],
         "createdAt": 1,
         "readable": true,
@@ -71,7 +71,7 @@
         "kind": 0,
         "size": 10,
         "uris": [
-          "ipfs://bafyBot"
+          "ipfs://bafkreiewhdth2uzaidulepiurt7ahxzxm4xkldv6avp4xzt3jzeolmfklaot"
         ],
         "createdAt": 1,
         "readable": true,
@@ -83,36 +83,40 @@
   "expected": {
     "targets": [
       {
-        "cid": "bafyA",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "size": 10,
         "what": {
           "type": "pack",
           "kind": 0
-        }
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiafqqpyxbknz2md36crczzwhppvcbppswxsj5h62zarspsn7kxfoe",
+            "swarmAllowed": true
+          }
+        ]
       },
       {
-        "cid": "bafyB",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "size": 10,
-        "what": {
-          "type": "pack",
-          "kind": 0
-        }
-      },
-      {
-        "cid": "bafyBot",
         "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         "size": 10,
         "what": {
           "type": "pack",
           "kind": 0
-        }
+        },
+        "candidates": [
+          {
+            "cid": "bafkreiewhdth2uzaidulepiurt7ahxzxm4xkldv6avp4xzt3jzeolmfklaot",
+            "swarmAllowed": true
+          }
+        ]
       }
     ],
     "notOnIpfs": 0,
     "membersOnlySkipped": 0,
     "strangerCopiesIgnored": 2,
-    "needsConsent": false
+    "needsConsent": false,
+    "unreadableSkipped": 0,
+    "invalidCidsSkipped": 0,
+    "conflictingCidsSkipped": 1
   }
 }
