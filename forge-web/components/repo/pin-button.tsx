@@ -48,6 +48,7 @@ function PinDialog({ repo, onClose }: { repo: RepoRef; onClose: () => void }): J
       {p ? <>
         <p>{plural(p.targets.length, 'file')} · {pinMib(p.sizeBytes)} MiB · cost 0 DASH (uses your disk)</p>
         {p.notOnIpfs ? <p>{plural(p.notOnIpfs, 'file')} {p.notOnIpfs === 1 ? 'is' : 'are'} not on IPFS.</p> : null}
+        {p.unverifiableSkipped ? <p>{plural(p.unverifiableSkipped, 'release file')} skipped: no recorded size or SHA-256.</p> : null}
         {p.membersOnlySkipped ? <p>{plural(p.membersOnlySkipped, 'members-only file')} skipped (key not held).</p> : null}
       </> : <p>{pin.plan.error ?? 'Reading the repository’s files…'}</p>}
       {privateFiles ? <label className="flex items-start gap-2"><input type="checkbox" checked={consent} disabled={pin.running} onChange={(e) => setConsent(e.target.checked)} />My IP address will be listed on IPFS as holding this private repo&apos;s encrypted files.</label> : <p>Your node will tell the IPFS network it holds these files.</p>}

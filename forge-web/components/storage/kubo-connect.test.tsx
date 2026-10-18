@@ -54,6 +54,7 @@ describe('the kubo connection form', () => {
     expect(mocks.probe).toHaveBeenCalledOnce(); expect(mocks.save).toHaveBeenCalledOnce()
     expect(mocks.save.mock.calls[0]![0].defaultPolicy.targets).toEqual(['kubo'])
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true)
+    await render() // The vault hook publishes the saved settings on its next render.
     await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
     expect(mocks.save.mock.calls.at(-1)![0].defaultPolicy).toBeNull()
     expect(mocks.save.mock.calls.at(-1)![0].profiles[0].name).toBe('kubo')

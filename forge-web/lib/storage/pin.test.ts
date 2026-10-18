@@ -24,7 +24,7 @@ const cid = cidV1RawLeaves(bytes)
 const hash = bytesToHex(sha256(bytes))
 const other = cidV1RawLeaves(new TextEncoder().encode('another importer CID'))
 const target = (patch: Partial<PinTarget> = {}): PinTarget => ({ cid, sizeBytes: bytes.length, sha256: hash, what: 'pack abc', private: false, ...patch })
-const plan = (...targets: PinTarget[]): PinPlan => ({ targets, sizeBytes: targets.reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs: 0, membersOnlySkipped: 0, requiresConsent: targets.some((t) => t.private) })
+const plan = (...targets: PinTarget[]): PinPlan => ({ targets, sizeBytes: targets.reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs: 0, membersOnlySkipped: 0, unverifiableSkipped: 0, requiresConsent: targets.some((t) => t.private) })
 const manifest = (patch: Partial<PackManifest> = {}): PackManifest => ({ packHash: hash, kind: 0, sizeBytes: bytes.length, objectCount: 1, chunkCount: 0, storage: 1, uris: [`ipfs://${cid}`], tips: [], supersedes: [], createdAt: 1, documentId: 'auth', uploader: 'owner', ownerRole: 'maintainer', ...patch })
 const access = async (): Promise<{ readable: boolean; private: boolean }> => ({ readable: true, private: false })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.clearAllMocks() })
@@ -61,6 +61,10 @@ describe('authorized pin targets', () => {
   it('includes mirror CIDs and release assets, and requires consent for sealed bytes', async () => {
     const p = await enumeratePinTargets({ manifests: [manifest()], access: async () => ({ readable: true, private: true }), mirrors: async () => [`ipfs://${other}`], assets: [{ name: 'file', sha256: hash, size: bytes.length, uris: [`ipfs://${cid}`] }] })
     expect(p.targets).toHaveLength(2); expect(p.requiresConsent).toBe(true)
+  })
+  it('counts release files without enough metadata to verify or bound them', async () => {
+    const p = await enumeratePinTargets({ manifests: [], access, assets: [{ name: 'no-size', sha256: hash, size: null, uris: [`ipfs://${cid}`] }, { name: 'no-hash', sha256: '', size: 1, uris: [`ipfs://${other}`] }] })
+    expect(p.targets).toHaveLength(0); expect(p.unverifiableSkipped).toBe(2)
   })
   it('reads only authorized releases and uses sealedSha256 for private assets', async () => {
     reads.packs.mockResolvedValue([]); reads.mirrors.mockResolvedValue([]); reads.role.mockImplementation((id: string) => id === 'owner' ? 'maintainer' : null)

@@ -33,6 +33,7 @@ export interface PinPlan {
   readonly sizeBytes: number
   readonly notOnIpfs: number
   readonly membersOnlySkipped: number
+  readonly unverifiableSkipped: number
   readonly requiresConsent: boolean
 }
 
@@ -58,6 +59,7 @@ export async function enumeratePinTargets(input: {
   const targets = new Map<string, PinTarget>()
   let notOnIpfs = 0
   let membersOnlySkipped = 0
+  let unverifiableSkipped = 0
   const add = (uris: readonly string[], target: Omit<PinTarget, 'cid'>): void => {
     let any = false
     for (const uri of uris) {
@@ -83,10 +85,10 @@ export async function enumeratePinTargets(input: {
     }
   }
   for (const asset of input.assets ?? []) {
-    if (asset.size === null || !/^[0-9a-f]{64}$/.test(asset.sha256)) continue
+    if (asset.size === null || !Number.isSafeInteger(asset.size) || asset.size < 0 || !/^[0-9a-f]{64}$/.test(asset.sha256)) { unverifiableSkipped++; continue }
     add(asset.uris, { sizeBytes: asset.size, sha256: asset.sha256, what: `asset ${asset.name}`, private: asset.private === true, asset })
   }
-  return { targets: [...targets.values()], sizeBytes: [...targets.values()].reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs, membersOnlySkipped, requiresConsent: [...targets.values()].some((t) => t.private) }
+  return { targets: [...targets.values()], sizeBytes: [...targets.values()].reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs, membersOnlySkipped, unverifiableSkipped, requiresConsent: [...targets.values()].some((t) => t.private) }
 }
 
 export async function readPinPlan(sdk: EvoSDK, repo: RepoRef): Promise<PinPlan> {
@@ -102,6 +104,7 @@ export async function readPinPlan(sdk: EvoSDK, repo: RepoRef): Promise<PinPlan> 
       for (const a of list.assets) {
         // Pin the encrypted object, verified against its sealed hash, never the plaintext file.
         if (a.sealedSha256 !== undefined && a.sealedSizeBytes !== undefined) assets.push({ name: a.name, sha256: a.sealedSha256, size: a.sealedSizeBytes, uris: a.uris, private: true })
+        else assets.push({ name: a.name, sha256: a.sha256, size: a.sizeBytes, uris: a.uris })
       }
     }
   }

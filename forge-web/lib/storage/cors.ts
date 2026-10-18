@@ -132,6 +132,6 @@ export function kuboCorsLines(origin: string): string {
     '    respond 404',
     '  }',
     '}',
-    '# Simpler: run dg ipfs up.', 
+    '# Simpler: run dg ipfs up.',
   ].join('\n')
 }
