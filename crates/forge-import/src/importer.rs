@@ -66,7 +66,6 @@ pub struct ImportConfig {
 /// Run an import. Always returns a summary (a failure is its status and error; what was
 /// spent before it is still reported).
 pub async fn run(cfg: &ImportConfig) -> Summary {
-    crate::fiat::set_network(&cfg.network.network);
     let mut summary = Summary::new(cfg.network.network.key(), cfg.source.display());
     let client = match PlatformClient::connect(cfg.network.clone()).await {
         Ok(c) => c,
@@ -304,13 +303,13 @@ async fn run_inner<'a>(
         summary.source,
         dest.url(),
         credits_to_dash(estimate),
-        crate::fiat::note(estimate),
+        forge_core::fiat::note_credits(estimate),
         credits_to_dash(create_credits),
-        crate::fiat::note(create_credits),
+        forge_core::fiat::note_credits(create_credits),
         credits_to_dash(git_estimate),
-        crate::fiat::note(git_estimate),
+        forge_core::fiat::note_credits(git_estimate),
         credits_to_dash(collab_estimate),
-        crate::fiat::note(collab_estimate),
+        forge_core::fiat::note_credits(collab_estimate),
     );
     let mut budget = Budget::new(cfg.max_spend);
 
@@ -558,7 +557,7 @@ async fn push_optional(ledger: &mut Ledger<'_>, p: &GitPusher, signer: &Signer) 
             "{WHAT} (~{:.6} DASH{}) does not fit what is left of --max-spend or the balance; \
              skipped this run",
             credits_to_dash(est.est_credits),
-            crate::fiat::note(est.est_credits)
+            forge_core::fiat::note_credits(est.est_credits)
         ));
     }
     if let Err(e) = push_one(ledger, p, est, WHAT).await {

@@ -1380,7 +1380,7 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>, storage_unse
     };
     let note = |t: &str| {
         t.parse::<f64>().ok().map_or_else(String::new, |d| {
-            crate::fmt::fiat_note(d, crate::fmt::default_price())
+            crate::fmt::fiat_note(d, forge_core::fiat::price())
         })
     };
     match (mode, threshold) {

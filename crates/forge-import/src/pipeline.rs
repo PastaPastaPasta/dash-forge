@@ -245,6 +245,7 @@ impl Progress {
     /// `written` counts the documents written so far and `spent_dash` the spend; a dry run
     /// (`spent_dash` `None`) counts the documents it would write.
     pub fn line(&self, last: bool, written: u64, spent_dash: Option<f64>) -> Option<String> {
+        let note = spent_dash.map_or_else(String::new, forge_core::fiat::dash_note);
         let mut s = lock(&self.state);
         let now = Instant::now();
         let due = if last {
@@ -261,10 +262,7 @@ impl Progress {
         let (what, docs) = match spent_dash {
             Some(dash) => (
                 "placed",
-                format!(
-                    "{written} documents written, {dash:.6} DASH spent{}",
-                    crate::fiat::dash_note(dash)
-                ),
+                format!("{written} documents written, {dash:.6} DASH spent{note}"),
             ),
             None => ("priced", format!("{written} documents to write (dry run)")),
         };

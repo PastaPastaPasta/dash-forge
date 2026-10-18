@@ -23,7 +23,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// Currency for optional mainnet fiat equivalents, or `off`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_fiat",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub fiat: Option<String>,
     /// Default network (`testnet` / `mainnet` / `devnet`). Overridden by `--network`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,6 +67,15 @@ pub fn config_dir() -> Result<PathBuf> {
 /// The `config.toml` path.
 pub fn config_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
+}
+
+// Core initialization reads the original TOML value and warns about a non-string fiat
+// setting. Other config fields remain strict so a typo cannot silently change the network.
+fn deserialize_fiat<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(value.as_str().map(str::to_owned))
 }
 
 impl Config {
@@ -194,6 +207,13 @@ mod tests {
         let target = cfg.network_settings().resolve().unwrap();
         assert_eq!(target.network.key(), "devnet-moutai");
         assert!(target.require_v2().is_ok());
+    }
+
+    #[test]
+    fn non_string_fiat_does_not_reject_the_rest_of_the_config() {
+        let cfg: Config = toml::from_str("network = \"mainnet\"\nfiat = 5\n").unwrap();
+        assert_eq!(cfg.network.as_deref(), Some("mainnet"));
+        assert!(cfg.fiat.is_none());
     }
 
     #[test]

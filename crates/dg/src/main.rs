@@ -2544,8 +2544,6 @@ fn main() {
         return;
     }
 
-    forge_core::fiat::initialize(cli.fiat.as_deref());
-
     let (goal, repo) = errors::context_for(&cli.command);
     let err_ctx = ErrorContext {
         goal,
@@ -2651,7 +2649,11 @@ fn run(cli: &Cli) -> Result<()> {
         Err(e) => return Err(e),
     };
     let ctx = Ctx::resolve(cli, &config)?;
-    fmt::set_network(ctx.network());
+    forge_core::fiat::initialize(
+        ctx.network(),
+        cli.fiat.as_deref(),
+        forge_core::fiat::Mode::Wait,
+    );
     let rt = Runtime::new()?;
     rt.block_on(dispatch(&ctx, cli))
 }

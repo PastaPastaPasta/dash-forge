@@ -690,10 +690,10 @@ fn price_hint() -> String {
         "It becomes your Platform credits (about 0.001 DASH{} per issue, 0.005{} per small push, \
          plus {} of code stored on Platform, which is permanent).\n\
          Pushing code? Add your own storage first, or deposit about 0.4 DASH per MiB{}.",
-        crate::fmt::fiat_note(0.001, crate::fmt::default_price()),
-        crate::fmt::fiat_note(0.005, crate::fmt::default_price()),
+        crate::fmt::fiat_note(0.001, forge_core::fiat::price()),
+        crate::fmt::fiat_note(0.005, forge_core::fiat::price()),
         crate::fmt::platform_rate(),
-        crate::fmt::fiat_note(0.4, crate::fmt::default_price())
+        crate::fmt::fiat_note(0.4, forge_core::fiat::price())
     )
 }
 

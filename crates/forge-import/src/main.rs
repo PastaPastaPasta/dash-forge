@@ -238,6 +238,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 key: key(&r.net),
                 concurrency: r.concurrency,
             };
+            forge_core::fiat::initialize(&cfg.network.network, None, forge_core::fiat::Mode::Wait);
             Ok(finish(&importer::run(&cfg).await, r.summary_json.as_ref()))
         }
     }

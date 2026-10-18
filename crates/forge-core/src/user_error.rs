@@ -767,9 +767,11 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         CoreError::InsufficientCredits { needed, available } => insufficient(
             ctx,
             &format!(
-                "insufficient credits: needs {} DASH, balance {} DASH",
+                "insufficient credits: needs {} DASH{}, balance {} DASH{}",
                 dash(*needed),
-                dash(*available)
+                crate::fiat::note_credits(*needed),
+                dash(*available),
+                crate::fiat::balance_note_credits(*available)
             ),
         ),
         CoreError::NotAMember {
@@ -1030,9 +1032,11 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
             || format!("insufficient credits: {}", one_line(msg)),
             |(bal, need)| {
                 format!(
-                    "insufficient credits: needs {} DASH, balance {} DASH",
+                    "insufficient credits: needs {} DASH{}, balance {} DASH{}",
                     dash(need),
-                    dash(bal)
+                    crate::fiat::note_credits(need),
+                    dash(bal),
+                    crate::fiat::balance_note_credits(bal)
                 )
             },
         );

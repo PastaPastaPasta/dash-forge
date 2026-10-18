@@ -1376,7 +1376,11 @@ async fn balance(ctx: &Ctx) -> Result<()> {
     ctx.emit(balance_json(&identity_id, credits, &network), || {
         println!("Identity: {identity_id}");
         // Off mainnet the balance is test money: said so, as the web says it (QW2-075).
-        let value = crate::fmt::balance_note(credits_to_dash(credits), ctx.network());
+        let value = if matches!(ctx.network(), forge_core::network::Network::Mainnet) {
+            crate::fmt::balance_note(credits_to_dash(credits), ctx.network())
+        } else {
+            format!(" · {}", crate::fmt::NO_CASH_VALUE)
+        };
         println!(
             "Balance:  {} DASH ({credits} credits){value}",
             dash_amount(credits_to_dash(credits))

@@ -4,11 +4,11 @@ Forge charges nothing. Nobody runs it, so nobody takes a cut. What you pay goes 
 
 Amounts are in **DASH**. The CLIs and web app show an optional fiat equivalent beside costs using live mainnet rates. Costs, quotes and budgets on testnet and devnets say **on mainnet**; balances there remain **test DASH, no cash value**, with no fiat equivalent. With no usable rate, amounts stay in DASH alone. The dollar amounts in the examples below are illustrative; live rates vary.
 
-`dg --fiat EUR cost` chooses a currency for one invocation. The CLIs resolve `--fiat <CODE|off>` (dg only), then `DASH_FORGE_FIAT`, then `fiat = "EUR"` in `~/.config/dash-forge/config.toml`, then USD. Only the 34 supported fiat codes are accepted. **`off` at any level wins**: use `dg --fiat off …`, `DASH_FORGE_FIAT=off`, or `fiat = "off"` to disable prices and their requests. An unknown flag value is a usage error; an unknown environment or config code warns once and falls back to USD for that setting.
+`dg --fiat EUR cost estimate` chooses a currency for one invocation. The CLIs resolve `--fiat <CODE|off>` (dg only), then `DASH_FORGE_FIAT`, then `fiat = "EUR"` in `~/.config/dash-forge/config.toml`, then USD. The 34 supported fiat codes and `off` are case-insensitive; empty values are unset. **`off` at any level wins**: use `dg --fiat off …`, `DASH_FORGE_FIAT=off`, or `fiat = "off"` to disable prices and their requests. An unknown flag value is a usage error; an unknown environment or config code warns once and falls back to USD for that setting.
 
-Rates come from [CTX](https://rates.ctx.com/rates?source=ctx), with [CoinGecko](https://www.coingecko.com/) as the fallback (data provided by CoinGecko). Requests do not vary with your selected currency. The **providers see your IP address**. No account data or cookies are sent. The cache refreshes after 10 minutes, remains usable for up to 24 hours, and waits 10 minutes after a failure before retrying. A CLI invocation has a total two-second fetch budget; `git-remote-dash` refreshes in the background and a push never waits for prices. The cache is `fiat-rates.json` under the usual Forge cache directory (`DASH_FORGE_CACHE_DIR` overrides it; `DASH_FORGE_NO_CACHE=1` disables disk caching).
+Rates come from [CTX](https://rates.ctx.com/rates?source=ctx), with [CoinGecko](https://www.coingecko.com/) as the fallback (data provided by CoinGecko). Requests do not vary with your selected currency. The **providers see your IP address**. No account data or cookies are sent. The cache refreshes after 10 minutes, remains usable for up to 24 hours, and waits 10 minutes after a failure before retrying. A CLI invocation has a total two-second fetch budget; `git-remote-dash` starts its background refresh only when it receives a push command, and a push never waits for prices. Fetch and clone do not start a rate request. Costs on test networks also use these providers; their balances have no fiat equivalent. The cache is `fiat-rates.json` under the usual Forge cache directory (`DASH_FORGE_CACHE_DIR` overrides it; `DASH_FORGE_NO_CACHE=1` disables disk caching).
 
-`DASH_USD=<n>` supplies a fixed positive USD rate and skips both providers. It supplies only USD, so another selected currency has no fiat figure. In `dg --json`, the existing `usd` and `usdPrice` fields remain USD-only and mainnet-only, and are `null` when no rate is available or prices are off. An optional `fiat` object carries `{currency, amount, rate, source, fetchedAt}` when the selected currency has a rate. `fetchedAt` is the local fetch time in Unix milliseconds; these are current price equivalents, not historical quotes.
+`DASH_USD=<n>` supplies a fixed positive USD rate and skips both providers. It supplies only USD, so another selected currency has no fiat figure. In `dg --json`, the existing `usd` and `usdPrice` fields remain USD-only and mainnet-only, and are `null` when no rate is available or prices are off. An optional `fiat` object carries `{currency, amount, rate, source, fetchedAt}` when the selected currency has a rate. `source` is `ctx`, `coingecko`, or `DASH_USD`. `fetchedAt` is the local fetch time in Unix milliseconds (or the invocation time for `DASH_USD`); these are current price equivalents, not historical quotes.
 
 1. [Credits](#credits)
 2. [Deposits and burns](#deposits-and-burns)
@@ -63,15 +63,15 @@ dg cost estimate --backend s3     # the same repository, packs in your own bucke
 
 ```
 Estimate for a first push of the repository at /home/me/qw-cost-plat (HEAD: 336 B, 5 objects) to platform:
-  total:       ~0.01359089 DASH ≈ $0.41  (an upper bound, as `git push` quotes it; later pushes pay less)
-  metadata:    ~0.00732 DASH ≈ $0.22  4 manifests + 1 ref update, on Platform
-  chunks:      ~0.00627089 DASH ≈ $0.19  pack + browse index + history index on Platform; ~0.00051354 DASH ≈ $0.02 of it is the storage deposit, never refunded (Platform packs are permanent)
+  total:       ~0.01359089 DASH (≈ $0.41 on mainnet); an upper bound; `git push` shows it rounded; later pushes pay less
+  metadata:    ~0.00732 DASH (≈ $0.22 on mainnet)  4 manifests + 1 ref update, on Platform
+  chunks:      ~0.00627089 DASH (≈ $0.19 on mainnet)  pack + browse index + history index on Platform; ~0.00051354 DASH (≈ $0.02 on mainnet) of it is the storage deposit, never refunded (Platform packs are permanent)
 ```
 
 ```
 Estimate for a first push of the repository at /home/me/qw-cost-s3 (HEAD: 334 B, 5 objects) to s3:
-  total:       ~0.00768 DASH ≈ $0.23  (an upper bound, as `git push` quotes it; later pushes pay less)
-  metadata:    ~0.00768 DASH ≈ $0.23  4 manifests + 1 ref update, on Platform
+  total:       ~0.00768 DASH (≈ $0.23 on mainnet); an upper bound; `git push` shows it rounded; later pushes pay less
+  metadata:    ~0.00768 DASH (≈ $0.23 on mainnet)  4 manifests + 1 ref update, on Platform
   pack bytes:  on your own storage (s3), billed by your provider, not by Platform
 ```
 
@@ -85,9 +85,9 @@ dg cost estimate --bytes 1048576
 
 ```
 Estimate for a first push of 1.0 MiB (~2048 objects assumed) to platform:
-  total:       ~0.43051169 DASH ≈ $12.92  (not counting the history index's chunks; later pushes pay less)
-  metadata:    ~0.00732 DASH ≈ $0.22  4 manifests + 1 ref update, on Platform
-  chunks:      ~0.42319169 DASH ≈ $12.70  pack + browse index on Platform; ~0.30331908 DASH ≈ $9.10 of it is the storage deposit, never refunded (Platform packs are permanent)
+  total:       ~0.43051169 DASH (≈ $12.92 on mainnet); not counting the history index's chunks; later pushes pay less
+  metadata:    ~0.00732 DASH (≈ $0.22 on mainnet)  4 manifests + 1 ref update, on Platform
+  chunks:      ~0.42319169 DASH (≈ $12.70 on mainnet)  pack + browse index on Platform; ~0.30331908 DASH (≈ $9.10 on mainnet) of it is the storage deposit, never refunded (Platform packs are permanent)
   not priced:  the history index's chunks: their size depends on the repository; `dg cost estimate --path <repository>` prices them
 ```
 
@@ -171,12 +171,13 @@ dg cost prices
 
 ```
 Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):
-  repo create                ~0.002 DASH ≈ $0.06
-  ref update                 ~0.00092 DASH ≈ $0.03
-  pack manifest              ~0.0014 DASH ≈ $0.04
-  pack chunk (14.7 KB)       ~0.00550791 DASH ≈ $0.17
-  issue (~500 B)             ~0.00168658 DASH ≈ $0.05
-  comment (~500 B)           ~0.00098658 DASH ≈ $0.03
+  (test DASH, no cash value on testnet)
+  repo create                ~0.002 DASH (≈ $0.06 on mainnet)
+  ref update                 ~0.00092 DASH (≈ $0.03 on mainnet)
+  pack manifest              ~0.0014 DASH (≈ $0.04 on mainnet)
+  pack chunk (14.7 KB)       ~0.00550791 DASH (≈ $0.17 on mainnet)
+  issue (~500 B)             ~0.00168658 DASH (≈ $0.05 on mainnet)
+  comment (~500 B)           ~0.00098658 DASH (≈ $0.03 on mainnet)
 ```
 
 These are the upper bounds `dg` and `git push` quote before signing: each is priced as the first of its kind (a repository's first issue, a thread's first comment), at or above the most the table above measured for that write.
@@ -192,16 +193,16 @@ dg cost audit --since 30d
 ```
 Spend estimate for ExampLeidentityExampLeidentityExampLeidentEx:
   since:  2026-08-30 14:22:07 UTC
-  total:  ~0.02585 DASH ≈ $0.78 across 38 document(s)
+  total:  ~0.02585 DASH (≈ $0.78 on mainnet) across 38 document(s)
 
   by document type:
-    comment                14  ~0.00728 DASH ≈ $0.22
-    issue                  11  ~0.00649 DASH ≈ $0.19
-    patch                   9  ~0.00648 DASH ≈ $0.19
-    chunk                   4  ~0.0056 DASH ≈ $0.17
+    comment                14  ~0.00728 DASH (≈ $0.22 on mainnet)
+    issue                  11  ~0.00649 DASH (≈ $0.19 on mainnet)
+    patch                   9  ~0.00648 DASH (≈ $0.19 on mainnet)
+    chunk                   4  ~0.0056 DASH (≈ $0.17 on mainnet)
 
   by repository:
-    9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F     38  ~0.02585 DASH ≈ $0.78
+    9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F     38  ~0.02585 DASH (≈ $0.78 on mainnet)
 
   note: excludes review (no proved query can attribute them to their author)
   note: covers every repo owned, filed an issue/patch to, or still a maintainer/writer/CI-runner/private-repo-key-holder of; a membership revoked with no other trace in that repo cannot be found by any proved query
@@ -315,6 +316,6 @@ and that the request comes from this site. Turning prices off stops rate request
 networks, costs say “on mainnet”; free test balances have no cash value and get no fiat figure.
 Settings → Spend values use today's price, rather than the price when the write happened.
 
-The CLI still uses the fixed US$30 per DASH estimate described above until live CLI rates land.
+The CLIs use the same live mainnet rates, with the settings, cache and opt-out described above.
 Rates have no refresh timer: an idle page rechecks expiry when rendered or made visible again;
 the “updated” age changes on render.

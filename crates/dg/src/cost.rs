@@ -385,7 +385,12 @@ fn estimate_cmd(
             } else {
                 "an upper bound; `git push` shows it rounded"
             };
-            println!("  total:       {}  ({kind}; later pushes pay less)", cost_line_exact(q.total(), price));
+            let total = cost_line_exact(q.total(), price);
+            if price.text(crate::fmt::credits_to_dash(q.total())).is_some() {
+                println!("  total:       {total}; {kind}; later pushes pay less");
+            } else {
+                println!("  total:       {total}  ({kind}; later pushes pay less)");
+            }
             println!(
                 "  metadata:    {}  {} manifests + 1 ref update, on Platform",
                 cost_line_exact(q.metadata, price),

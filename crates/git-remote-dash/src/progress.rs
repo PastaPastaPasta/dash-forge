@@ -60,12 +60,12 @@ impl Progress {
     }
 
     /// A priced status line; machine events retain their original message.
-    pub fn priced_note(self, text: &str, credits: u64) {
-        let priced = text.replacen(" DASH", &format!(" DASH{}", crate::fiat::note(credits)), 1);
-        self.emit(
-            &format!("dash: {priced}"),
-            &json!({ "event": "note", "message": redact(text) }),
-        );
+    pub fn priced_note(self, credits: u64, render: impl Fn(&str) -> String) {
+        if self.json {
+            self.note(&render(""));
+        } else {
+            self.note(&render(&forge_core::fiat::note_credits(credits)));
+        }
     }
 
     /// A free-form status line (`dash: note: …`).
@@ -307,7 +307,7 @@ pub fn targets_line(policy: &ResolvedPolicy, est_credits: u64) -> (String, Value
             "dash: {:<NAME_COL$} → {where_}{need} · {chain}, est {} DASH{}",
             "storage",
             dash(est_credits),
-            crate::fiat::note(est_credits)
+            forge_core::fiat::note_credits(est_credits)
         ),
         json!({
             "event": "targets",
@@ -390,7 +390,7 @@ pub fn platform_line(w: &PlatformWrites) -> (String, Value) {
             PLATFORM_PROFILE,
             parts.join(" · "),
             dash(w.est_credits),
-            crate::fiat::note(w.est_credits)
+            forge_core::fiat::note_credits(w.est_credits)
         ),
         json!({
             "event": "platform",
@@ -511,7 +511,11 @@ pub fn done_line(
         Charge::Measured(c) => (
             c,
             "measured",
-            format!("Platform charged ≈{} DASH{}", dash(c), crate::fiat::note(c)),
+            format!(
+                "Platform charged ≈{} DASH{}",
+                dash(c),
+                forge_core::fiat::note_credits(c)
+            ),
         ),
         Charge::Estimated(c) => (
             c,
@@ -519,7 +523,7 @@ pub fn done_line(
             format!(
                 "Platform charge est {} DASH{}",
                 dash(c),
-                crate::fiat::note(c)
+                forge_core::fiat::note_credits(c)
             ),
         ),
     };
@@ -528,7 +532,7 @@ pub fn done_line(
         parts.push(format!(
             "remaining {} DASH{}",
             dash(b),
-            crate::fiat::balance_note(b)
+            forge_core::fiat::balance_note_credits(b)
         ));
     }
     parts.push(url.clone());

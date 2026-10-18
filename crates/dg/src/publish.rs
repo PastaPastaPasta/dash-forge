@@ -405,12 +405,23 @@ impl Storage {
 fn platform_price(size: Option<u64>) -> String {
     let rate = crate::fmt::platform_rate();
     match size.filter(|b| *b > 0) {
-        Some(b) => format!(
-            "{rate} ({} ≈ {} DASH{})",
-            human_bytes(b),
-            dash(forge_core::cost::push_fees::chunks(b)),
-            crate::fmt::cost_note(forge_core::cost::push_fees::chunks(b))
-        ),
+        Some(b) => {
+            let cost = forge_core::cost::push_fees::chunks(b);
+            let total = format!(
+                "{} ≈ {} DASH{}",
+                human_bytes(b),
+                dash(cost),
+                crate::fmt::cost_note(cost)
+            );
+            if forge_core::fiat::price()
+                .text(crate::fmt::credits_to_dash(cost))
+                .is_some()
+            {
+                format!("{rate}; {total}")
+            } else {
+                format!("{rate} ({total})")
+            }
+        }
         None => rate,
     }
 }
@@ -1787,26 +1798,27 @@ mod tests {
     /// The plan's members-only line: its price when it is turned on, else why not and how.
     #[test]
     fn the_plan_says_whether_members_only_content_is_turned_on() {
-        assert_eq!(members_line(MembersPlan::Private, "o/r", None), None);
-        let on = members_line(MembersPlan::On, "o/r", None).unwrap();
+        let price = forge_core::fiat::Price::new(false);
+        assert_eq!(members_line(MembersPlan::Private, "o/r", price), None);
+        let on = members_line(MembersPlan::On, "o/r", price).unwrap();
         assert!(
-            on.contains(&crate::fmt::cost_line(enable_estimate(1), None)),
+            on.contains(&crate::fmt::cost_line(enable_estimate(1), price)),
             "{on}"
         );
         assert!(on.contains("--no-members-only"), "{on}");
-        let skipped = members_line(MembersPlan::Skipped, "o/r", None).unwrap();
+        let skipped = members_line(MembersPlan::Skipped, "o/r", price).unwrap();
         assert!(
             skipped.contains("stays off") && skipped.contains("dg repo members enable o/r"),
             "{skipped}"
         );
-        let none = members_line(MembersPlan::NoKey { on_identity: false }, "o/r", None).unwrap();
+        let none = members_line(MembersPlan::NoKey { on_identity: false }, "o/r", price).unwrap();
         assert!(
             none.contains("dg auth keys add --encryption")
                 && none.contains("dg repo members enable o/r"),
             "{none}"
         );
         // the identity has one and this computer doesn't hold it: never "add one"
-        let held = members_line(MembersPlan::NoKey { on_identity: true }, "o/r", None).unwrap();
+        let held = members_line(MembersPlan::NoKey { on_identity: true }, "o/r", price).unwrap();
         assert!(
             held.contains("dg auth status") && !held.contains("keys add"),
             "{held}"

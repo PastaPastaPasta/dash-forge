@@ -87,7 +87,11 @@ OID = R('oid')
 
 COMMON = {
     'cost': D('Credits spent (or quoted) and the same in DASH; `usd` only when a price was read.',
-              O({'credits': I, 'dash': F, 'usd': nl(F), 'usdPrice': nl(F)}, ['credits', 'dash'])),
+              O({'credits': I, 'dash': F, 'usd': nl(F), 'usdPrice': nl(F),
+                 'fiat': D('Current selected-currency equivalent; absent without a usable rate.',
+                           O({'currency': S, 'amount': F, 'rate': F, 'source': E('ctx', 'coingecko', 'DASH_USD'),
+                              'fetchedAt': I}, ['currency', 'amount', 'rate', 'source', 'fetchedAt']))},
+                ['credits', 'dash'])),
     'steps': D('What a multi-step write did, in order.',
                A(O({'step': S, 'ok': B, 'detail': S}, ['step', 'ok']))),
     'createSteps': D('Each document a repository create needed, and whether this run wrote it, finished an '

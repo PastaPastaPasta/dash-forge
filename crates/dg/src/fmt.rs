@@ -1,15 +1,14 @@
 //! Cost/DASH formatting and JSON-output helpers.
 //!
 //! DASH stays primary; optional fiat uses lazy shared rates and the target network.
-//! Tests pass an explicit fixed rate or `None`, so they need neither a cache nor a network.
+//! Prices stay off until the binary initializes them; tests can inject a fixed rate.
 
 use forge_core::cost::CREDITS_PER_DASH;
 use forge_core::platform::Network;
 use forge_core::rules::v2::Visibility;
 use serde_json::{json, Value};
 
-/// Lazy price context; `None` is useful for deterministic, DASH-only formatter tests.
-pub type Price = Option<forge_core::fiat::Price>;
+pub use forge_core::fiat::{Price, NO_CASH_VALUE};
 
 /// The pre-write estimate shown before `dg repo create` signs, in credits: a forge-v2
 /// repo is three small documents (`repo`, the owner's `maintainer`, the first `config`).
@@ -94,54 +93,22 @@ pub fn transition_phrase(kind: u8) -> &'static str {
 
 /// The network context for fiat costs. This does not fetch a rate.
 pub fn fiat_price(network: &Network) -> Price {
-    if cfg!(test) {
-        return None;
-    }
-    Some(forge_core::fiat::Price::new(matches!(
-        network,
-        Network::Mainnet
-    )))
-}
-
-static MAINNET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Network for copy helpers that are also used before a signing context exists.
-pub fn set_network(network: &Network) {
-    MAINNET.store(
-        matches!(network, Network::Mainnet),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-}
-
-pub fn default_price() -> Price {
-    if cfg!(test) {
-        None
-    } else {
-        Some(forge_core::fiat::Price::new(
-            MAINNET.load(std::sync::atomic::Ordering::Relaxed),
-        ))
-    }
+    Price::new(matches!(network, Network::Mainnet))
 }
 
 pub fn cost_note(credits: u64) -> String {
-    fiat_note(credits_to_dash(credits), default_price())
+    forge_core::fiat::note_credits(credits)
 }
 
 /// Fiat after a cost. Costs off mainnet say "on mainnet".
 pub fn fiat_note(dash: f64, price: Price) -> String {
-    price.map_or_else(String::new, |p| p.note(dash))
+    price.note(dash)
 }
 
-/// Balances off mainnet have no fiat equivalent, even when prices are turned off.
+/// Only mainnet balances have a fiat equivalent. Existing no-cash copy lives at its original sites.
 pub fn balance_note(dash: f64, network: &Network) -> String {
-    if !matches!(network, Network::Mainnet) {
-        return format!(" · {NO_CASH_VALUE}");
-    }
-    fiat_price(network).map_or_else(String::new, |p| p.balance_note(dash))
+    fiat_price(network).balance_note(dash)
 }
-
-/// What a DASH amount is worth off mainnet, for a line that shows a balance or a price list.
-pub const NO_CASH_VALUE: &str = "test DASH, no cash value";
 
 /// Convert credits to DASH (1 DASH = 1e11 credits).
 #[allow(clippy::cast_precision_loss)]
@@ -247,9 +214,17 @@ fn priced(credits: u64, price: Price, amount: &str) -> String {
 /// fees `git push` quotes (`forge_core::cost::push_fees`), an upper bound.
 pub fn platform_rate() -> String {
     format!(
-        "~{:.2} DASH/MiB{}",
-        credits_to_dash(forge_core::cost::push_fees::chunks(1024 * 1024)),
+        "{}{}",
+        platform_rate_dash_only(),
         cost_note(forge_core::cost::push_fees::chunks(1024 * 1024))
+    )
+}
+
+/// DASH-only rate for choices and button labels.
+pub fn platform_rate_dash_only() -> String {
+    format!(
+        "~{:.2} DASH/MiB",
+        credits_to_dash(forge_core::cost::push_fees::chunks(1024 * 1024))
     )
 }
 
@@ -257,14 +232,14 @@ pub fn platform_rate() -> String {
 /// `usd` and `usdPrice` are `null` off mainnet ([`fiat_price`]).
 pub fn cost_json(credits: u64, price: Price) -> Value {
     let dash = credits_to_dash(credits);
-    let usd_price = price.and_then(forge_core::fiat::Price::usd_rate);
+    let usd_price = price.usd_rate();
     let mut value = json!({
         "credits": credits,
         "dash": dash,
         "usd": usd_price.map(|p| usd_json(dash * p)),
         "usdPrice": usd_price,
     });
-    if let Some(fiat) = price.and_then(|p| p.json(dash)) {
+    if let Some(fiat) = price.json(dash) {
         value["fiat"] = fiat;
     }
     value
@@ -537,23 +512,16 @@ mod tests {
     /// QW-081: the `usd` of a cost carries no float noise.
     #[test]
     fn a_cost_in_usd_has_no_float_noise() {
-        let v = cost_json(
-            95_093_000,
-            Some(forge_core::fiat::Price::fixed_usd(30.0, true)),
-        );
+        let v = cost_json(95_093_000, forge_core::fiat::Price::fixed_usd(30.0, true));
         assert_eq!(v["usd"].as_f64(), Some(0.028_528));
         // the smallest writes still read as a cost, not as free
         assert_eq!(
-            cost_json(
-                100_000,
-                Some(forge_core::fiat::Price::fixed_usd(30.0, true))
-            )["usd"]
-                .as_f64(),
+            cost_json(100_000, forge_core::fiat::Price::fixed_usd(30.0, true))["usd"].as_f64(),
             Some(0.00003)
         );
         assert_eq!(v["credits"].as_u64(), Some(95_093_000));
         assert_eq!(
-            cost_json(0, Some(forge_core::fiat::Price::fixed_usd(30.0, true)))["usd"].as_f64(),
+            cost_json(0, forge_core::fiat::Price::fixed_usd(30.0, true))["usd"].as_f64(),
             Some(0.0)
         );
     }
@@ -749,7 +717,7 @@ mod tests {
         // 1 MiB storage deposit ≈ 0.283 DASH.
         let line = cost_line(
             118_000_000_000,
-            Some(forge_core::fiat::Price::fixed_usd(30.0, true)),
+            forge_core::fiat::Price::fixed_usd(30.0, true),
         );
         assert!(line.starts_with("~1.18 DASH"), "line was {line}");
         assert!(line.contains("$35.40"), "line was {line}");
@@ -761,7 +729,7 @@ mod tests {
     fn cost_json_shape_has_credits_dash_usd() {
         let v = cost_json(
             118_000_000_000,
-            Some(forge_core::fiat::Price::fixed_usd(30.0, true)),
+            forge_core::fiat::Price::fixed_usd(30.0, true),
         );
         assert_eq!(v["credits"], 118_000_000_000_u64);
         assert!((v["dash"].as_f64().unwrap() - 1.18).abs() < 1e-9);
@@ -784,8 +752,8 @@ mod tests {
         let testnet = forge_core::fiat::Price::fixed_usd(42.5, false);
         assert_eq!(testnet.usd_rate(), None);
         assert!(testnet.note(1.0).ends_with("on mainnet)"));
-        assert_eq!(testnet.balance_note(1.0), " · test DASH, no cash value");
-        let v = cost_json(100_000_000_000, Some(testnet));
+        assert!(testnet.balance_note(1.0).is_empty());
+        let v = cost_json(100_000_000_000, testnet);
         assert!(v["usd"].is_null() && v["usdPrice"].is_null());
         assert_eq!(v["fiat"]["amount"], 42.5);
         assert_eq!(v["fiat"]["currency"], "USD");
@@ -794,43 +762,36 @@ mod tests {
     /// Prices are shown to three significant figures, plurals are spelled out.
     #[test]
     fn prices_round_and_plurals_spell_out() {
-        assert_eq!(cost_line(1_017_812_000, None), "~0.0102 DASH");
-        assert_eq!(cost_line(97_600_000, None), "~0.000976 DASH");
+        let price = Price::new(false);
+        assert_eq!(cost_line(1_017_812_000, price), "~0.0102 DASH");
+        assert_eq!(cost_line(97_600_000, price), "~0.000976 DASH");
         // A fee too small for eight decimals still shows, never as ~0.
-        assert_eq!(cost_line(400, None), "~0.000000004 DASH");
-        assert_eq!(cost_line(0, None), "~0 DASH");
-        assert_eq!(cost_line(50_000_000_000, None), "~0.5 DASH");
-        assert_eq!(cost_line(517_499_000, None), "~0.00517 DASH");
-        assert_eq!(cost_line(104_000_000, None), "~0.00104 DASH");
-        assert_eq!(cost_line(3_254_000_000_000, None), "~32.5 DASH");
-        assert_eq!(cost_line(12_345_000_000_000, None), "~123 DASH");
+        assert_eq!(cost_line(400, price), "~0.000000004 DASH");
+        assert_eq!(cost_line(0, price), "~0 DASH");
+        assert_eq!(cost_line(50_000_000_000, price), "~0.5 DASH");
+        assert_eq!(cost_line(517_499_000, price), "~0.00517 DASH");
+        assert_eq!(cost_line(104_000_000, price), "~0.00104 DASH");
+        assert_eq!(cost_line(3_254_000_000_000, price), "~32.5 DASH");
+        assert_eq!(cost_line(12_345_000_000_000, price), "~123 DASH");
         // `dg cost` keeps every credit, so its rows add up to the total.
         assert_eq!(dash_exact(1_500), "0.000000015");
         assert_eq!(dash_exact(3), "0.00000000003");
         assert_eq!(dash_exact(150_000_000_000), "1.5");
         assert_eq!(dash_exact(200_000_000_000), "2");
         assert_eq!(dash_exact(0), "0");
-        assert_eq!(cost_line_exact(1_017_812_000, None), "~0.01017812 DASH");
+        assert_eq!(cost_line_exact(1_017_812_000, price), "~0.01017812 DASH");
         assert_eq!(plural(1u64, "asset"), "1 asset");
         assert_eq!(plural(0u64, "asset"), "0 assets");
         assert_eq!(plural(3usize, "asset"), "3 assets");
         assert_eq!(plural_with(2u64, "identity", "identities"), "2 identities");
     }
 
-    /// Without an injected rate, formatter tests stay DASH-only and legacy USD fields null.
+    /// Without initialization, formatter tests stay DASH-only and legacy USD fields null.
     #[test]
-    fn test_dash_has_no_usd_value() {
-        let devnet = Network::Devnet {
-            name: "sakura".into(),
-            dapi_addresses: Vec::new(),
-            quorum_base_url: None,
-        };
-        for network in [Network::Testnet, devnet] {
-            assert_eq!(fiat_price(&network), None, "{network:?}");
-        }
-        let line = cost_line(1_017_812_000, None);
+    fn uninitialized_prices_are_dash_only() {
+        let line = cost_line(1_017_812_000, forge_core::fiat::Price::new(false));
         assert_eq!(line, "~0.0102 DASH");
-        let v = cost_json(1_017_812_000, None);
+        let v = cost_json(1_017_812_000, forge_core::fiat::Price::new(false));
         assert!(v["usd"].is_null() && v["usdPrice"].is_null(), "{v}");
         assert_eq!(v["credits"].as_u64(), Some(1_017_812_000));
     }

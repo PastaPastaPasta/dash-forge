@@ -210,52 +210,54 @@ pub fn guard(
     if !must_ask {
         return Guard::Proceed;
     }
+    let fiat = forge_core::fiat::price().text(credits_to_dash(credits));
+    let cost_note = fiat
+        .as_ref()
+        .map_or_else(String::new, |text| format!(" ({text})"));
+    let inline_note = fiat
+        .as_ref()
+        .map_or_else(String::new, |text| format!(", {text}"));
+    let threshold_note = threshold_dash
+        .and_then(|t| forge_core::fiat::price().text(t))
+        .map_or_else(String::new, |text| format!(", {text}"));
     if have_tty && mode != ConfirmMode::Refuse {
         Guard::Ask(match threshold_dash {
             Some(t) if over => format!(
-                "This push costs about {} DASH{}, above dash.costWarnThreshold ({t}{}).",
-                dash(credits),
-                crate::fiat::note(credits),
-                crate::fiat::dash_note(t, false)
+                "This push costs about {} DASH{cost_note}, above dash.costWarnThreshold ({t}{threshold_note}).",
+                dash(credits)
             ),
             _ if unchosen => format!(
-                "This push stores {} on Platform (about {} DASH{}), permanently: Platform packs \
+                "This push stores {} on Platform (about {} DASH{inline_note}), permanently: Platform packs \
                  cannot be deleted, and dash.storage is not set.",
                 human_bytes(unchosen_platform_bytes),
-                dash(credits),
-                crate::fiat::note(credits)
+                dash(credits)
             ),
             _ => format!(
-                "This push costs about {} DASH{}.",
-                dash(credits),
-                crate::fiat::note(credits)
+                "This push costs about {} DASH{cost_note}.",
+                dash(credits)
             ),
         })
     } else {
         match threshold_dash {
             Some(t) if over => Guard::Refuse(
                 format!(
-                    "this push would cost ~{} DASH{}, above dash.costWarnThreshold ({t}{})",
-                    dash(credits),
-                crate::fiat::note(credits),
-                    crate::fiat::dash_note(t, false)
+                    "this push would cost ~{} DASH{cost_note}, above dash.costWarnThreshold ({t}{threshold_note})",
+                    dash(credits)
                 ),
                 Why::Threshold,
             ),
             _ if unchosen => Guard::Refuse(
                 format!(
-                    "this push would store {} on Platform (~{} DASH{}), permanently, and dash.storage is not set",
+                    "this push would store {} on Platform (~{} DASH{inline_note}), permanently, and dash.storage is not set",
                     human_bytes(unchosen_platform_bytes),
-                    dash(credits),
-                crate::fiat::note(credits)
+                    dash(credits)
                 ),
                 Why::UnchosenStorage,
             ),
             _ => Guard::Refuse(
                 format!(
-                    "this push would cost ~{} DASH{} and dash.confirm = always",
-                    dash(credits),
-                crate::fiat::note(credits)
+                    "this push would cost ~{} DASH{cost_note} and dash.confirm = always",
+                    dash(credits)
                 ),
                 Why::Always,
             ),
@@ -379,9 +381,9 @@ pub fn check_affordable(
         .cause(format!(
             "this push is estimated at {} DASH{} (an upper bound); the identity has {} DASH{}",
             dash(est_credits),
-            crate::fiat::note(est_credits),
+            forge_core::fiat::note_credits(est_credits),
             dash(have),
-            crate::fiat::balance_note(have)
+            forge_core::fiat::balance_note_credits(have)
         ))
         .fix(format!(
             "top up the identity from any Dash wallet at {} (`dg auth balance` shows the balance)",
@@ -405,9 +407,9 @@ pub fn check_affordable(
         .cause(format!(
             "this push is estimated at {} DASH{} (an upper bound); the signing key has {} DASH{} of budget left",
             dash(est_credits),
-            crate::fiat::note(est_credits),
+            forge_core::fiat::note_credits(est_credits),
             dash(left),
-            crate::fiat::note(left)
+            forge_core::fiat::note_credits(left)
         ))
         .fix(format!(
             "register a key with a bigger budget (uses your master key once): `dg auth keys add --budget {}`",

@@ -1,14 +1,15 @@
 //! Optional mainnet fiat equivalents for CLI output. Failures never fail a command.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::cache;
 
+const MAX_BODY: usize = 512 * 1024;
 const FRESH_MS: u64 = 10 * 60 * 1000;
 const USABLE_MS: u64 = 24 * 60 * 60 * 1000;
 const CTX_URL: &str = "https://rates.ctx.com/rates?source=ctx";
@@ -28,65 +29,113 @@ fn valid_rate(rate: f64) -> bool {
 
 /// Clap-compatible validation: only the curated fiat codes and `off`.
 pub fn parse_setting(value: &str) -> Result<String, String> {
-    if value == "off" || currencies().contains_key(value) {
-        Ok(value.to_string())
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("off") {
+        Ok(value.to_ascii_lowercase())
+    } else if currencies().contains_key(&value.to_ascii_uppercase()) {
+        Ok(value.to_ascii_uppercase())
     } else {
         Err("expected a supported fiat currency code (such as USD or EUR), or off".into())
     }
 }
 
-/// Resolve settings without IO. `off` in any layer wins; invalid env/config use USD.
+/// Resolve settings without IO. Empty layers are unset; `off` in any layer wins.
 fn resolve_setting(
     flag: Option<&str>,
     env: Option<&str>,
     config: Option<&str>,
 ) -> (String, Option<&'static str>) {
-    if [flag, env, config].contains(&Some("off")) {
+    let layers = [
+        (flag, "--fiat"),
+        (env, "DASH_FORGE_FIAT"),
+        (config, "config.toml fiat"),
+    ];
+    if layers
+        .iter()
+        .any(|(v, _)| v.is_some_and(|v| v.trim().eq_ignore_ascii_case("off")))
+    {
         return ("off".into(), None);
     }
-    let mut warning = None;
-    for (value, layer) in [(env, "DASH_FORGE_FIAT"), (config, "config.toml fiat")] {
-        if value.is_some_and(|v| parse_setting(v).is_err()) {
-            warning = Some(layer);
-            break;
+    for (value, layer) in layers {
+        if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+            return match parse_setting(value) {
+                Ok(value) => (value, None),
+                Err(_) => ("USD".into(), Some(layer)),
+            };
         }
     }
-    let selected = flag.or(env).or(config).unwrap_or("USD");
-    (
-        parse_setting(selected).unwrap_or_else(|_| "USD".into()),
-        warning,
-    )
+    ("USD".into(), None)
 }
 
-static SETTING: OnceLock<String> = OnceLock::new();
+/// Foreground CLIs may wait for one bounded refresh. Remote helpers only read ready rates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Wait,
+    Ready,
+}
 
-/// Set dg's flag before any price is rendered. Other binaries resolve env/config lazily.
-/// This performs no rate fetch.
-pub fn initialize(flag: Option<&str>) {
-    SETTING.get_or_init(|| {
-        if cfg!(test) {
-            return "off".into();
-        }
+struct Settings {
+    currency: String,
+    mainnet: bool,
+    mode: Mode,
+    quiet: bool,
+}
+
+static SETTINGS: OnceLock<Settings> = OnceLock::new();
+
+/// Initialize from a binary's entry point. Until then prices are off, including in tests.
+/// This reads settings only: fetching remains lazy (or explicitly started for a push).
+pub fn initialize(network: &crate::network::Network, flag: Option<&str>, mode: Mode) {
+    SETTINGS.get_or_init(|| {
         let config = crate::config_file::dg_config_path()
             .and_then(|p| crate::config_file::read_config_toml(&p).ok().flatten());
-        let config = config
-            .as_ref()
-            .and_then(|v| v.get("fiat"))
-            .and_then(toml::Value::as_str);
+        let config_value = config.as_ref().and_then(|v| v.get("fiat"));
+        // A non-string value is invalid rather than silently unset.
+        let config = config_setting(config_value);
         let env = std::env::var("DASH_FORGE_FIAT").ok();
-        let (setting, warning) = resolve_setting(flag, env.as_deref(), config);
+        let (currency, warning) = resolve_setting(flag, env.as_deref(), config);
         if let Some(layer) = warning {
-            eprintln!("warning: unsupported fiat currency in {layer}; using USD for that setting");
+            eprintln!("warning: unsupported fiat currency in {layer}; using USD");
         }
-        setting
+        Settings {
+            currency,
+            mainnet: matches!(network, crate::network::Network::Mainnet),
+            mode,
+            quiet: mode == Mode::Ready
+                && matches!(std::env::var("GIT_DASH_JSON").as_deref(), Ok("1" | "true")),
+        }
     });
 }
 
-/// The resolved currency or `off`, also forwarded to git helpers started by dg.
-pub fn setting() -> &'static str {
-    initialize(None);
-    SETTING.get().map_or("off", String::as_str)
+fn config_setting(value: Option<&toml::Value>) -> Option<&str> {
+    value.map(|v| v.as_str().unwrap_or("<non-string>"))
 }
+
+/// The resolved currency or `off`, also forwarded to helpers started by dg.
+pub fn setting() -> &'static str {
+    SETTINGS.get().map_or("off", |s| s.currency.as_str())
+}
+
+/// Shared network context for note helpers; constructing it never fetches.
+pub fn price() -> Price {
+    Price::new(SETTINGS.get().is_some_and(|s| s.mainnet))
+}
+
+pub fn dash_note(dash: f64) -> String {
+    price().note(dash)
+}
+
+pub fn note_credits(credits: u64) -> String {
+    dash_note(crate::repo::credits_to_dash(credits))
+}
+
+/// Test-network balances never carry fiat or add copy to their surrounding sentence.
+pub fn balance_note_credits(credits: u64) -> String {
+    price().balance_note(crate::repo::credits_to_dash(credits))
+}
+
+/// Retained only at dg's original balance and cost-table sites.
+pub const NO_CASH_VALUE: &str = "test DASH, no cash value";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,8 +168,13 @@ impl Snapshot {
 
 struct State {
     snapshot: Mutex<Snapshot>,
-    started: OnceLock<()>,
+    started: OnceLock<Option<Refresh>>,
     fixed: bool,
+}
+
+struct Refresh {
+    deadline: Instant,
+    completed: Mutex<mpsc::Receiver<()>>,
 }
 
 fn empty_snapshot() -> Snapshot {
@@ -220,10 +274,14 @@ fn safe_rate_url(value: &str) -> Option<reqwest::Url> {
 
 async fn fetch_providers(providers: &[(String, &str)]) -> Option<Snapshot> {
     let builder = reqwest::Client::builder()
+        .user_agent("dash-forge")
         .connect_timeout(Duration::from_secs(1))
         .redirect(reqwest::redirect::Policy::none());
     // Loopback fixtures must not go through a developer's HTTP proxy.
-    let builder = if cfg!(test) {
+    let builder = if providers
+        .iter()
+        .all(|(url, _)| safe_rate_url(url).is_some())
+    {
         builder.no_proxy()
     } else {
         builder
@@ -232,15 +290,33 @@ async fn fetch_providers(providers: &[(String, &str)]) -> Option<Snapshot> {
     // The outer timeout covers response bodies and both providers together.
     tokio::time::timeout(Duration::from_secs(2), async {
         for (url, source) in providers {
-            let Ok(response) = client.get(url).send().await else {
+            let Ok(mut response) = client.get(url).send().await else {
                 continue;
             };
             if !response.status().is_success() {
                 continue;
             }
-            let Ok(bytes) = response.bytes().await else {
+            if response
+                .content_length()
+                .is_some_and(|len| len > MAX_BODY as u64)
+            {
                 continue;
-            };
+            }
+            let mut bytes = Vec::new();
+            let mut complete = false;
+            while let Ok(chunk) = response.chunk().await {
+                let Some(chunk) = chunk else {
+                    complete = true;
+                    break;
+                };
+                if chunk.len() > MAX_BODY - bytes.len() {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if !complete {
+                continue;
+            }
             let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
                 continue;
             };
@@ -278,7 +354,12 @@ fn refresh() {
         .enable_all()
         .build()
         .ok()
-        .and_then(|rt| rt.block_on(fetch_providers(&providers)));
+        .and_then(|rt| {
+            let fetched = rt.block_on(fetch_providers(&providers));
+            // DNS uses spawn_blocking; dropping the runtime could otherwise wait on it.
+            rt.shutdown_background();
+            fetched
+        });
     let Ok(mut snapshot) = state().snapshot.lock() else {
         return;
     };
@@ -294,31 +375,54 @@ fn refresh() {
     }
 }
 
+impl Refresh {
+    fn spawn(work: impl FnOnce() + Send + 'static) -> Option<Self> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (tx, rx) = mpsc::channel();
+        // Dropping the handle detaches the worker, including if DNS or cache IO stalls.
+        let _thread = std::thread::Builder::new()
+            .name("fiat-rates".into())
+            .spawn(move || {
+                work();
+                let _ = tx.send(());
+            })
+            .ok()?;
+        Some(Self {
+            deadline,
+            completed: Mutex::new(rx),
+        })
+    }
+
+    fn wait(&self) {
+        if let Ok(completed) = self.completed.try_lock() {
+            let _ = completed.recv_timeout(self.deadline.saturating_duration_since(Instant::now()));
+        }
+    }
+}
+
 fn start(wait: bool) {
     if setting() == "off" {
         return;
     }
     let state = state();
-    state.started.get_or_init(|| {
+    let refresh = state.started.get_or_init(|| {
         if state.fixed
             || !state
                 .snapshot
-                .lock()
+                .try_lock()
                 .is_ok_and(|s| s.needs_refresh(cache::now_ms()))
         {
-            return;
+            return None;
         }
-        // A separate runtime keeps synchronous formatting safe inside dg's async runtime.
-        let thread = std::thread::Builder::new()
-            .name("fiat-rates".into())
-            .spawn(refresh);
-        if let (true, Ok(thread)) = (wait, thread) {
-            let _ = thread.join();
-        }
+        // A separate runtime keeps synchronous formatting safe inside a CLI's async runtime.
+        Refresh::spawn(refresh)
     });
+    if let (true, Some(refresh)) = (wait, refresh) {
+        refresh.wait();
+    }
 }
 
-/// Start a refresh only when prices are enabled and the cache is stale. Never joins it.
+/// Start a refresh for a push only. It never waits, including under the JSON helper mode.
 pub fn start_background() {
     start(false);
 }
@@ -331,7 +435,7 @@ pub struct Price {
 }
 
 impl Price {
-    pub fn new(mainnet: bool) -> Self {
+    pub const fn new(mainnet: bool) -> Self {
         Self {
             mainnet,
             fixed_usd: None,
@@ -346,7 +450,7 @@ impl Price {
         }
     }
 
-    fn snapshot(self, wait: bool) -> Option<Snapshot> {
+    fn snapshot(self) -> Option<Snapshot> {
         if let Some(rate) = self.fixed_usd.filter(|r| valid_rate(*r)) {
             return Some(Snapshot {
                 v: 1,
@@ -356,17 +460,13 @@ impl Price {
                 failed_at: None,
             });
         }
-        if setting() == "off" {
+        if setting() == "off" || SETTINGS.get().is_some_and(|s| s.quiet) {
             return None;
         }
-        if wait {
+        if SETTINGS.get().is_some_and(|s| s.mode == Mode::Wait) {
             start(true);
         }
-        let snapshot = if wait {
-            state().snapshot.lock().ok()?.clone()
-        } else {
-            state().snapshot.try_lock().ok()?.clone()
-        };
+        let snapshot = state().snapshot.try_lock().ok()?.clone();
         snapshot.usable(cache::now_ms()).then_some(snapshot)
     }
 
@@ -383,7 +483,7 @@ impl Price {
         if !self.mainnet {
             return None;
         }
-        self.snapshot(true)?
+        self.snapshot()?
             .rates
             .get("USD")
             .copied()
@@ -391,44 +491,37 @@ impl Price {
     }
 
     pub fn json(self, dash: f64) -> Option<Value> {
-        let snapshot = self.snapshot(true)?;
+        let snapshot = self.snapshot()?;
         let currency = self.currency();
         let rate = *snapshot.rates.get(currency).filter(|r| valid_rate(**r))?;
-        let amount = dash * rate;
+        let amount = (dash * rate * 1e6).round() / 1e6;
         amount.is_finite().then(|| json!({ "currency": currency, "amount": amount, "rate": rate, "source": snapshot.source, "fetchedAt": snapshot.fetched_at }))
     }
 
     pub fn note(self, dash: f64) -> String {
-        self.note_inner(dash, false, true)
-    }
-    pub fn balance_note(self, dash: f64) -> String {
-        self.note_inner(dash, true, true)
-    }
-    pub fn ready_note(self, dash: f64, balance: bool) -> String {
-        self.note_inner(dash, balance, false)
+        self.text(dash)
+            .map_or_else(String::new, |text| format!(" ({text})"))
     }
 
-    fn note_inner(self, dash: f64, balance: bool, wait: bool) -> String {
-        if balance && !self.mainnet {
-            return " · test DASH, no cash value".into();
+    pub fn balance_note(self, dash: f64) -> String {
+        if self.mainnet {
+            self.note(dash)
+        } else {
+            String::new()
         }
-        let Some(snapshot) = self.snapshot(wait) else {
-            return String::new();
-        };
-        snapshot
-            .rates
-            .get(self.currency())
-            .and_then(|rate| {
-                format_fiat(
-                    dash,
-                    *rate,
-                    self.currency(),
-                    Kind::Estimate,
-                    None,
-                    self.mainnet,
-                )
-            })
-            .map_or_else(String::new, |text| format!(" ({text})"))
+    }
+
+    /// Bare fiat text for an explicit slot inside a sentence or parentheses.
+    pub fn text(self, dash: f64) -> Option<String> {
+        let snapshot = self.snapshot()?;
+        format_fiat(
+            dash,
+            *snapshot.rates.get(self.currency())?,
+            self.currency(),
+            Kind::Estimate,
+            None,
+            self.mainnet,
+        )
     }
 }
 
@@ -594,12 +687,11 @@ mod tests {
     fn currency_table_matches_web() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../forge-web/lib/fiat/currencies.json");
-        if let Ok(raw) = std::fs::read_to_string(path) {
-            assert_eq!(
-                currencies(),
-                &serde_json::from_str::<BTreeMap<String, u8>>(&raw).unwrap()
-            );
-        }
+        let raw = std::fs::read_to_string(path).unwrap();
+        assert_eq!(
+            currencies(),
+            &serde_json::from_str::<BTreeMap<String, u8>>(&raw).unwrap()
+        );
     }
 
     #[test]
@@ -727,6 +819,75 @@ mod tests {
     }
 
     #[test]
+    fn case_empty_invalid_and_overridden_settings() {
+        for off in ["off", "OFF", "Off", " off "] {
+            assert_eq!(parse_setting(off).unwrap(), "off");
+            for layers in [
+                (Some(off), None, None),
+                (Some("EUR"), Some(off), None),
+                (Some("EUR"), None, Some(off)),
+            ] {
+                assert_eq!(
+                    resolve_setting(layers.0, layers.1, layers.2),
+                    ("off".into(), None)
+                );
+            }
+        }
+        assert_eq!(parse_setting(" eur ").unwrap(), "EUR");
+        assert_eq!(parse_setting("").unwrap(), "");
+        assert_eq!(
+            resolve_setting(Some(""), Some(" "), Some("eur")),
+            ("EUR".into(), None)
+        );
+        assert_eq!(resolve_setting(None, Some(""), None), ("USD".into(), None));
+        assert_eq!(
+            resolve_setting(Some("eur"), Some("BTC"), Some("XAU")),
+            ("EUR".into(), None)
+        );
+        assert_eq!(
+            resolve_setting(None, Some("BTC"), Some("eur")),
+            ("USD".into(), Some("DASH_FORGE_FIAT"))
+        );
+        let config: toml::Value = toml::from_str("fiat = 5").unwrap();
+        let setting = config_setting(config.get("fiat"));
+        assert_eq!(
+            resolve_setting(None, None, setting),
+            ("USD".into(), Some("config.toml fiat"))
+        );
+        assert_eq!(
+            resolve_setting(Some("eur"), None, setting),
+            ("EUR".into(), None)
+        );
+    }
+
+    #[test]
+    fn fiat_json_rounds_like_legacy_usd() {
+        let price = Price::fixed_usd(42.5, true);
+        let value = price.json(0.000_511_943_294_117_647_1).unwrap();
+        assert_eq!(value["amount"], json!(0.021_758));
+        assert!(price.json(f64::INFINITY).is_none());
+        assert!(Price::fixed_usd(42.5, false).balance_note(1.0).is_empty());
+    }
+
+    #[test]
+    fn refresh_wait_has_one_deadline_even_when_worker_stalls() {
+        let (release, blocked) = mpsc::channel();
+        let refresh = Refresh::spawn(move || {
+            let _ = blocked.recv();
+        })
+        .unwrap();
+        let started = Instant::now();
+        refresh.wait();
+        let elapsed = started.elapsed();
+        // Release before assertions so a failed assertion cannot leave a parked worker.
+        release.send(()).unwrap();
+        assert!(elapsed < Duration::from_millis(2500), "{elapsed:?}");
+        let started = Instant::now();
+        refresh.wait();
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
     fn cache_expiry_failure_backoff_and_atomic_write() {
         let now = USABLE_MS * 2;
         let mut s = Snapshot {
@@ -762,6 +923,7 @@ mod tests {
             Reply::new(503, "unavailable"),
             Reply::new(200, "not json"),
             Reply::new(200, "[]"),
+            Reply::new(200, vec![b' '; 512 * 1024 + 1]),
         ] {
             let (url, seen) = serve(move |_| Reply::new(primary.status, primary.body.clone()));
             let (fallback, fallback_seen) =
@@ -775,6 +937,7 @@ mod tests {
             let requests = fallback_seen.lock().unwrap();
             assert_eq!(requests.len(), 1);
             assert!(requests[0].header("cookie").is_none());
+            assert_eq!(requests[0].header("user-agent"), Some("dash-forge"));
         }
         let (url, _) = serve(|_| {
             Reply::new(

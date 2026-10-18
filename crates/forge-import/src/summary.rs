@@ -221,23 +221,23 @@ impl Summary {
             eprintln!(
                 "  estimate: {:.6} DASH{} (dry run: nothing written)",
                 credits_to_dash(self.spent_credits.max(self.estimate_credits)),
-                crate::fiat::note(self.spent_credits.max(self.estimate_credits))
+                forge_core::fiat::note_credits(self.spent_credits.max(self.estimate_credits))
             );
         } else {
             eprintln!(
                 "  spent: {:.6} DASH{} (the larger of the estimates charged and the measured \
                  balance drop; estimated {:.6}{} up front)",
                 credits_to_dash(self.spent_credits),
-                crate::fiat::note(self.spent_credits),
+                forge_core::fiat::note_credits(self.spent_credits),
                 credits_to_dash(self.estimate_credits),
-                crate::fiat::note(self.estimate_credits)
+                forge_core::fiat::note_credits(self.estimate_credits)
             );
         }
         if let Some(b) = self.balance_credits {
             eprintln!(
                 "  balance: {:.6} DASH{}",
                 credits_to_dash(b),
-                crate::fiat::balance_note(b, self.network == "mainnet")
+                forge_core::fiat::balance_note_credits(b)
             );
         }
         if let (Some(total), Some(left)) = (self.key.budget_credits, self.key.remaining_credits) {
@@ -245,9 +245,9 @@ impl Summary {
                 "  key {} budget: {:.6}{} of {:.6} DASH{} left",
                 self.key.id.unwrap_or_default(),
                 credits_to_dash(left),
-                crate::fiat::note(left),
+                forge_core::fiat::note_credits(left),
                 credits_to_dash(total),
-                crate::fiat::note(total)
+                forge_core::fiat::note_credits(total)
             );
         }
         if c.unproved_merges > 0 {

@@ -347,7 +347,7 @@ pub fn confirm(yes: bool, credits: u64) -> Result<()> {
     eprint!(
         "Proceed (~{:.6} DASH{})? [y/N] ",
         credits_to_dash(credits),
-        crate::fiat::note(credits)
+        forge_core::fiat::note_credits(credits)
     );
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;

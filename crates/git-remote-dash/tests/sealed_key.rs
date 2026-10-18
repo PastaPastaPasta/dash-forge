@@ -67,6 +67,7 @@ impl Fixture {
         cmd.args(["remote-dash", "--check-key"])
             .current_dir(self.dir.path())
             .env_clear()
+            .env("DASH_FORGE_FIAT", "off")
             .env("PATH", path)
             .env("HOME", self.dir.path())
             .env("XDG_CONFIG_HOME", self.dir.path().join("xdg"))

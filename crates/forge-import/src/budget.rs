@@ -117,7 +117,7 @@ impl CapExceeded {
     fn render(&self, fiat: bool) -> String {
         let note = |c| {
             if fiat {
-                crate::fiat::note(c)
+                forge_core::fiat::note_credits(c)
             } else {
                 String::new()
             }
@@ -154,16 +154,16 @@ impl InsufficientFunds {
             "the identity's balance"
         };
         let estimate_note = if fiat {
-            crate::fiat::note(self.estimate)
+            forge_core::fiat::note_credits(self.estimate)
         } else {
             String::new()
         };
         let available_note = if !fiat {
             String::new()
         } else if self.key_budget {
-            crate::fiat::note(self.available)
+            forge_core::fiat::note_credits(self.available)
         } else {
-            crate::fiat::balance_note(self.available, crate::fiat::is_mainnet())
+            forge_core::fiat::balance_note_credits(self.available)
         };
         format!("this run is estimated at {:.6} DASH{estimate_note}, more than {what} ({:.6} DASH{available_note}); top up or \
                  renew the key, or narrow the run (--sync, --limit)", credits_to_dash(self.estimate), credits_to_dash(self.available))
