@@ -836,7 +836,7 @@ async fn submit(
             None,
         )?;
     }
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let todo = 1 + n - draft.landed();
     let est = submit_estimate(&draft);
     let moved = draft.head_oid != view.head;
@@ -1166,7 +1166,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     } else {
         (None, "general")
     };
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let path_len = spec.as_ref().map_or(0, |s| s.path.len());
     // Who it is for: the PR's, the comment replied to and its thread root's, as the write reads
     // them (DESIGN §3.3); `--reply-to` names any comment of the thread.

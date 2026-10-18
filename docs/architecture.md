@@ -10,7 +10,7 @@ The on-chain model is **forge-v2**: three shared contracts, forge-core, forge-co
 - Zero backend: Platform is the sole source of truth; every other component is a static asset, a local tool, or an *interchangeable, integrity-irrelevant* daemon anyone can run (relay).
 - Trustless reads: refs/manifests proof-verified from Platform; content verified by SHA-256 + git OIDs. A third party can verify a full clone from Platform data alone.
 - Real git: standard `git` via a remote helper (jj push and fetch work through it; tested on testnet in October 2026, see [quick start](guides/quick-start.md#jj)); `gh`-shaped CLI.
-- Cost as first-class UX: estimates before every write batch, DASH primary / USD secondary; a repository costs ~0.001 DASH to create, and bulky pack bytes can live in storage the user brings.
+- Cost as first-class UX: estimates before every write batch, DASH primary / fiat secondary (USD unless the user picks another currency); a repository costs ~0.001 DASH to create, and bulky pack bytes can live in storage the user brings.
 - Migration path: one-command GitHub import.
 
 **Non-goals (first release)**: private repos (Phase 3 design: [security/private-repos.md](security/private-repos.md)), on-chain fast-forward/merge validation (reflog auditability instead — explicit INIT.md limit), Actions-equivalent (CI is external by design, bridged via relay), global cross-repo search, notifications inbox (poll badge only), wikis (`docs/` convention).
@@ -74,7 +74,7 @@ Three shared contracts, registered once per network by one deployer identity and
 
 | Backend | Pack bytes | Cost profile | Trust |
 |---|---|---|---|
-| `platform` (default) | `chunk` docs, ~14.4 KiB payload each (3 × 4.8 KiB fields), one ST per chunk | ~0.33 DASH/MiB (~$10/MiB @ $30; [costs.md](guides/costs.md)), **permanent**: `chunk` and `packManifest` are non-deletable, so the deposit is never refunded | Fully on-chain |
+| `platform` (default) | `chunk` docs, ~14.4 KiB payload each (3 × 4.8 KiB fields), one ST per chunk | ~0.33 DASH/MiB (fiat at live mainnet rates; [costs.md](guides/costs.md)), **permanent**: `chunk` and `packManifest` are non-deletable, so the deposit is never refunded | Fully on-chain |
 | `ipfs` | CID in manifest; pin via Storacha/Pinata/self-host Kubo | Pinning costs only | Hash-verified cache |
 | `s3` / `https` | URL in manifest | Hosting costs only | Hash-verified cache |
 | **mixed** | Recent packs on Platform, archival packs external | Best of both | — |
@@ -115,7 +115,7 @@ Client-side rules are versioned (`FORGE_RULES_V2`: `forge-core::rules::v2`, `for
 ## 8. Economics (full model: [economics.md](economics.md))
 
 - 27,000 credits/byte storage deposit (refundable on delete, 50-era amortization; the non-deletable types never refund); 1 DASH = 10¹¹ credits.
-- On-Platform data ≈ **0.33 DASH/MiB**, ≈ $10/MiB @ $30/DASH ([costs.md](guides/costs.md); DASH-primary display; USD secondary; fee-multiplier governance lever flagged).
+- On-Platform data ≈ **0.33 DASH/MiB**, with optional fiat equivalents at live mainnet rates ([costs.md](guides/costs.md); DASH stays primary; fee-multiplier governance lever flagged).
 - Social artifacts are noise (2 KiB issue ≈ 2¢). Ref update ≈ 0.0006–0.0009 DASH (its index entries, not its bytes, dominate). Creating a repository ≈ **0.0016 DASH** on bonsia (three documents; the v1 per-repo contract was ~1.18 DASH).
 - forge-v2 registration: forge-core 0.60 + forge-collab 0.55 DASH in fees (1.161234 DASH measured on devnet moutai), paid once per network by the deployer ([forge-v2.md §7](contracts/forge-v2.md#7-measured-size-and-cost)).
 - Cost engine (forge-core) quotes every write batch pre-broadcast and tracks running spend (`dg cost`, web settings).

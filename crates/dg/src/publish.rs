@@ -405,11 +405,23 @@ impl Storage {
 fn platform_price(size: Option<u64>) -> String {
     let rate = crate::fmt::platform_rate();
     match size.filter(|b| *b > 0) {
-        Some(b) => format!(
-            "{rate} ({} ≈ {} DASH)",
-            human_bytes(b),
-            dash(forge_core::cost::push_fees::chunks(b))
-        ),
+        Some(b) => {
+            let cost = forge_core::cost::push_fees::chunks(b);
+            let total = format!(
+                "{} ≈ {} DASH{}",
+                human_bytes(b),
+                dash(cost),
+                crate::fmt::cost_note(cost)
+            );
+            if forge_core::fiat::price()
+                .text(crate::fmt::credits_to_dash(cost))
+                .is_some()
+            {
+                format!("{rate}; {total}")
+            } else {
+                format!("{rate} ({total})")
+            }
+        }
         None => rate,
     }
 }
@@ -723,7 +735,7 @@ async fn members_plan(
 }
 
 /// The plan's members-only line (public repositories): its cost, or why it stays off.
-fn members_line(members: MembersPlan, repo: &str, price: Option<f64>) -> Option<String> {
+fn members_line(members: MembersPlan, repo: &str, price: crate::fmt::Price) -> Option<String> {
     match members {
         MembersPlan::Private => None,
         MembersPlan::On => Some(format!(
@@ -841,7 +853,7 @@ fn confirm_plan(
     plan: &Plan,
     flow: Flow,
     opts: &CreateOptions,
-    price: Option<f64>,
+    price: crate::fmt::Price,
 ) -> Result<()> {
     if !ctx.json {
         let who = format!("{}/{} on {}", plan.owner, plan.slug, ctx.network_label());
@@ -946,7 +958,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     // the plan only to stop there, so it stops here instead.
     ctx.require_confirmable(flow.command())?;
     let plan = plan(ctx, name, opts, flow).await?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     confirm_plan(ctx, &plan, flow, opts, price)?;
 
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
@@ -1028,7 +1040,13 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     ctx.emit(body, || {
         if let Some(push_cost) = push_cost {
             let balance = balance
-                .map(|b| format!(" · balance {} DASH", dash(b)))
+                .map(|b| {
+                    format!(
+                        " · balance {} DASH{}",
+                        dash(b),
+                        crate::fmt::balance_note(crate::fmt::credits_to_dash(b), ctx.network())
+                    )
+                })
                 .unwrap_or_default();
             println!(
                 "  total {} (create {} + push {}){balance}",
@@ -1226,7 +1244,7 @@ async fn wire_and_push(
         .or_else(|| before.zip(after).map(|(b, a)| b.saturating_sub(a)))
         .unwrap_or(0);
     let oid = git(&local.root, &["rev-parse", "HEAD"], &[]).unwrap_or_default();
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     body["push"] = json!({
         "remote": remote,
         "branch": branch,
@@ -1780,26 +1798,27 @@ mod tests {
     /// The plan's members-only line: its price when it is turned on, else why not and how.
     #[test]
     fn the_plan_says_whether_members_only_content_is_turned_on() {
-        assert_eq!(members_line(MembersPlan::Private, "o/r", None), None);
-        let on = members_line(MembersPlan::On, "o/r", None).unwrap();
+        let price = forge_core::fiat::Price::new(false);
+        assert_eq!(members_line(MembersPlan::Private, "o/r", price), None);
+        let on = members_line(MembersPlan::On, "o/r", price).unwrap();
         assert!(
-            on.contains(&crate::fmt::cost_line(enable_estimate(1), None)),
+            on.contains(&crate::fmt::cost_line(enable_estimate(1), price)),
             "{on}"
         );
         assert!(on.contains("--no-members-only"), "{on}");
-        let skipped = members_line(MembersPlan::Skipped, "o/r", None).unwrap();
+        let skipped = members_line(MembersPlan::Skipped, "o/r", price).unwrap();
         assert!(
             skipped.contains("stays off") && skipped.contains("dg repo members enable o/r"),
             "{skipped}"
         );
-        let none = members_line(MembersPlan::NoKey { on_identity: false }, "o/r", None).unwrap();
+        let none = members_line(MembersPlan::NoKey { on_identity: false }, "o/r", price).unwrap();
         assert!(
             none.contains("dg auth keys add --encryption")
                 && none.contains("dg repo members enable o/r"),
             "{none}"
         );
         // the identity has one and this computer doesn't hold it: never "add one"
-        let held = members_line(MembersPlan::NoKey { on_identity: true }, "o/r", None).unwrap();
+        let held = members_line(MembersPlan::NoKey { on_identity: true }, "o/r", price).unwrap();
         assert!(
             held.contains("dg auth status") && !held.contains("keys add"),
             "{held}"

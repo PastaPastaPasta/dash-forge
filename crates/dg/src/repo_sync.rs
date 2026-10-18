@@ -448,7 +448,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
         fork_has_packs,
         !fork_refs.is_empty(),
     );
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if !ctx.json {
         println!(
             "Sync {}:{fork_branch} with {target}: fast-forward {} → {}{}\n  {} by reference, nothing re-uploaded, + 1 ref update   {}",

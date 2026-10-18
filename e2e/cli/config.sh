@@ -32,6 +32,9 @@
 #     named <devnet>-funding.wif, is refused). A minting scenario FAILS when the file is missing
 #     (`require_mint_funding`, lib.sh) instead of skipping silently; on a devnet it still skips.
 
+# Price-provider requests are opt-in for local e2e runs.
+export DASH_FORGE_FIAT="${DASH_FORGE_FIAT:-off}"
+
 # --- network -----------------------------------------------------------------
 _cfg_fatal() { printf 'e2e config: %s\n' "$*" >&2; exit 1; }
 

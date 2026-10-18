@@ -230,7 +230,7 @@ async fn fork(
     }
     // Refused before any read a private parent would need its keys for.
     parent.require_public("forking")?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let svc = RepoService::new(&client, &identity, &bridge);
     let (parent_packs, default_branch, doc_defaults) = tokio::join!(
         Box::pin(svc.read_pack_manifests(&parent)),
@@ -381,7 +381,7 @@ fn fork_estimate(manifest_uris: &[u64], refs: u64) -> u64 {
 pub(crate) fn fork_body(
     parent: &forge_core::scope::RepoRef,
     result: &forge_core::fork::ForkResult,
-    price: Option<f64>,
+    price: crate::fmt::Price,
 ) -> serde_json::Value {
     let fork = &result.created.repo;
     let nothing_new = result.created.already_existed()
@@ -410,7 +410,7 @@ fn report_fork(
     ctx: &Ctx,
     parent: &forge_core::scope::RepoRef,
     result: &forge_core::fork::ForkResult,
-    price: Option<f64>,
+    price: crate::fmt::Price,
     pinned: Option<crate::ipfs_pin::ForkPinResult>,
 ) -> Result<()> {
     let fork = &result.created.repo;
@@ -504,7 +504,7 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
         );
     }
     let name = handle.display();
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&match (on, trending && !fused) {
         (true, true) => format!(
             "Star {name}? (two documents: the star, and one that counts it toward Trending, {}; --no-trending skips it)",
@@ -594,7 +594,7 @@ async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
         forge_core::collab::v2::require_public_for(&s.repo, "watched")?;
     }
     let verb = if on { "Watch" } else { "Stop watching" };
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&format!(
         "{verb} {}? (one document, {})",
         s.repo.display(),
@@ -690,7 +690,7 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
     }
     // The repo document's list is replaced, and each added topic writes its document (a removed
     // one's delete is refunded).
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let list_bytes: usize = topics.iter().map(String::len).sum();
     let quote = crate::quote::replace(list_bytes as u64) + added.len() as u64 * crate::quote::TOPIC;
     ctx.confirm_or_cancel(&format!(

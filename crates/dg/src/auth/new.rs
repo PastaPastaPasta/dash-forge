@@ -312,7 +312,11 @@ async fn wait_for_deposit(
         if duffs > 0 {
             say(
                 ctx,
-                format!("  deposit seen: {} DASH", dash_amount(duffs_to_dash(duffs))),
+                format!(
+                    "  deposit seen: {} DASH{}",
+                    dash_amount(duffs_to_dash(duffs)),
+                    crate::fmt::balance_note(duffs_to_dash(duffs), ctx.network())
+                ),
             );
         }
     };
@@ -683,10 +687,13 @@ fn backup_passphrase(args: &NewArgs) -> Result<Option<Secret>> {
 /// `git push` quotes), so a newcomer who funds only the minimum is not surprised by a first push.
 fn price_hint() -> String {
     format!(
-        "It becomes your Platform credits (about 0.001 DASH per issue, 0.005 per small push, \
+        "It becomes your Platform credits (about 0.001 DASH{} per issue, 0.005{} per small push, \
          plus {} of code stored on Platform, which is permanent).\n\
-         Pushing code? Add your own storage first, or deposit about 0.4 DASH per MiB.",
-        crate::fmt::platform_rate()
+         Pushing code? Add your own storage first, or deposit about 0.4 DASH per MiB{}.",
+        crate::fmt::fiat_note(0.001, forge_core::fiat::price()),
+        crate::fmt::fiat_note(0.005, forge_core::fiat::price()),
+        crate::fmt::platform_rate(),
+        crate::fmt::fiat_note(0.4, forge_core::fiat::price())
     )
 }
 
@@ -703,8 +710,9 @@ fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64)
     }
     eprintln!();
     eprintln!(
-        "Send {} DASH to this address from any Dash wallet:",
-        dash_amount(duffs_to_dash(duffs))
+        "Send {} DASH{} to this address from any Dash wallet:",
+        dash_amount(duffs_to_dash(duffs)),
+        crate::fmt::balance_note(duffs_to_dash(duffs), ctx.network())
     );
     eprintln!();
     eprintln!("{}", qr(address, duffs));
@@ -759,8 +767,9 @@ async fn fund_and_lock(
         say(
             ctx,
             format!(
-                "  locking {} DASH (asset lock {})",
+                "  locking {} DASH{} (asset lock {})",
                 dash_amount(duffs_to_dash(lock.locked_duffs)),
+                crate::fmt::balance_note(duffs_to_dash(lock.locked_duffs), ctx.network()),
                 lock.txid
             ),
         );
@@ -994,13 +1003,14 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
                 println!("✓ name {n}");
             }
             println!(
-                "  key #{key_id}: limited, {} DASH budget, only on Dash Forge, expires {}",
+                "  key #{key_id}: limited, {} DASH{} budget, only on Dash Forge, expires {}",
                 dash_amount(credits_to_dash(spec.budget_credits)),
+                crate::fmt::cost_note(spec.budget_credits),
                 expiry_text(spec.expires_at_ms)
             );
             super::print_kept_encryption(&encryption);
             println!("  stored in {}", stored.describe());
-            println!("  balance {} DASH", dash_amount(credits_to_dash(balance)));
+            println!("  balance {} DASH{}", dash_amount(credits_to_dash(balance)), crate::fmt::balance_note(credits_to_dash(balance), ctx.network()));
             println!("  next: cd my-project && dg init");
         },
     );

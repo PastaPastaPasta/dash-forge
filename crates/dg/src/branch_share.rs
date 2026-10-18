@@ -229,7 +229,7 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
         );
         eprintln!(
             "  Cost: {}",
-            crate::fmt::cost_line(credits, ctx.usd_price())
+            crate::fmt::cost_line(credits, ctx.fiat_price())
         );
     }
     ctx.confirm_or_cancel(&format!("Share {} with {who}?", safe(&short)))?;
@@ -247,12 +247,12 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
             "to": names.iter().map(|(i, _)| i).collect::<Vec<_>>(),
             "letter": id,
             "packHash": hex::encode(pack_hash),
-            "cost": crate::fmt::cost_json(spent, ctx.usd_price()),
+            "cost": crate::fmt::cost_json(spent, ctx.fiat_price()),
         }),
         || {
             println!("✓ shared {} with {who} as it is now", safe(&short));
             println!("  they get it with `git fetch`; anything pushed to it later isn't shared unless you share it again");
-            println!("  spent {}", crate::fmt::cost_line(spent, ctx.usd_price()));
+            println!("  spent {}", crate::fmt::cost_line(spent, ctx.fiat_price()));
         },
     );
     Ok(())

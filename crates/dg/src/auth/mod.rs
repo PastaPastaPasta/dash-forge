@@ -975,7 +975,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         0
     };
     let balance = before.saturating_sub(spent);
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         group::with_group_fields(
             json!({
@@ -1000,8 +1000,9 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             println!("✓ signed in as {} on {network}", master.identity_id);
             match (key_id, &spec) {
                 (Some(id), Some((s, _))) => println!(
-                    "  key #{id}: limited, {} DASH budget, expires {}",
+                    "  key #{id}: limited, {} DASH{} budget, expires {}",
                     dash_amount(credits_to_dash(s.budget_credits)),
+                    crate::fmt::cost_note(s.budget_credits),
                     expiry_text(s.expires_at_ms)
                 ),
                 _ if master.master_key().is_some() => println!(
@@ -1016,7 +1017,11 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             if key_id.is_some() && spent > 0 {
                 println!("  cost {}", crate::fmt::cost_line(spent, price));
             }
-            println!("  balance {} DASH", dash_amount(credits_to_dash(balance)));
+            println!(
+                "  balance {} DASH{}",
+                dash_amount(credits_to_dash(balance)),
+                crate::fmt::balance_note(credits_to_dash(balance), ctx.network())
+            );
             if key_id.is_some() {
                 println!(
                     "  the identity file is no longer needed here; keep it (or the words) offline"
@@ -1045,15 +1050,16 @@ pub fn explain_new_key(
         ctx.network_label()
     );
     eprintln!(
-        "  it can spend at most {} DASH, only on Dash Forge, until it expires {}",
+        "  it can spend at most {} DASH{}, only on Dash Forge, until it expires {}",
         dash_amount(credits_to_dash(spec.budget_credits)),
+        crate::fmt::cost_note(spec.budget_credits),
         expiry_text(spec.expires_at_ms)
     );
     eprintln!(
         "  one identity update, {}; the master key signs once and is not stored",
         crate::fmt::cost_line(
             forge_core::platform::identity_keys::ADD_KEY_ESTIMATE_CREDITS,
-            ctx.usd_price()
+            ctx.fiat_price()
         )
     );
     checked.print_notice(ctx, "  ");
@@ -1248,7 +1254,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 println!("Private:  {line}");
             }
             if let Some(b) = balance {
-                println!("Balance:  {} DASH", dash_amount(credits_to_dash(b)));
+                println!("Balance:  {} DASH{}", dash_amount(credits_to_dash(b)), crate::fmt::balance_note(credits_to_dash(b), ctx.network()));
             }
             println!("Stored:   {where_}");
             if report.as_ref().is_some_and(|r| r.key_id.is_some() && !r.is_capped()) {
@@ -1301,11 +1307,13 @@ pub(crate) fn key_line(
             let id = r.key_id.map_or("?".to_string(), |i| format!("#{i}"));
             let limits = || {
                 format!(
-                    "{} of {} DASH left, expires {}",
+                    "{}{} of {} DASH{} left, expires {}",
                     r.remaining
                         .map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
+                    r.remaining.map_or_else(String::new, crate::fmt::cost_note),
                     r.total
                         .map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
+                    r.total.map_or_else(String::new, crate::fmt::cost_note),
                     r.expires_at.map_or("never".into(), expiry_text)
                 )
             };
@@ -1368,10 +1376,10 @@ async fn balance(ctx: &Ctx) -> Result<()> {
     ctx.emit(balance_json(&identity_id, credits, &network), || {
         println!("Identity: {identity_id}");
         // Off mainnet the balance is test money: said so, as the web says it (QW2-075).
-        let value = if ctx.usd_price().is_none() {
-            format!(" · {}", crate::fmt::NO_CASH_VALUE)
+        let value = if matches!(ctx.network(), forge_core::network::Network::Mainnet) {
+            crate::fmt::balance_note(credits_to_dash(credits), ctx.network())
         } else {
-            String::new()
+            format!(" · {}", crate::fmt::NO_CASH_VALUE)
         };
         println!(
             "Balance:  {} DASH ({credits} credits){value}",
@@ -1405,7 +1413,7 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
     }
     if contested {
         return Err(UserError::new(codes::UNSUPPORTED, format!("{label} is a contested name"))
-            .cause("names of 3–19 characters made only of a–z, 0, 1 and `-` go to a masternode vote (and cost ~0.2 DASH to enter); dg does not run contests")
+            .cause(format!("names of 3–19 characters made only of a–z, 0, 1 and `-` go to a masternode vote (and cost ~0.2 DASH{} to enter); dg does not run contests", crate::fmt::fiat_note(0.2, ctx.fiat_price())))
             .fix(format!("pick a longer name or add a digit other than 0/1 (e.g. `{label}2`), or enter the contest from a wallet"))
             .into());
     }
@@ -1429,7 +1437,7 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
             None => identity_from_words(ctx, &client, &read_mnemonic()?).await?,
         },
     };
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if !ctx.json {
         eprintln!(
             "Registering {label}.dash for {}: preorder + domain, {}",

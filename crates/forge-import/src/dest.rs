@@ -317,6 +317,8 @@ pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<(
             } else {
                 Status::Error
             };
+            summary.human_error =
+                crate::budget::human_error(&e).map(|s| forge_core::user_error::redact(&s));
             summary.error = Some(forge_core::user_error::redact(&format!("{e:#}")));
         }
         Ok(())
@@ -342,7 +344,11 @@ pub fn confirm(yes: bool, credits: u64) -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!("refusing to spend without confirmation on a non-interactive stdin; pass --yes");
     }
-    eprint!("Proceed (~{:.6} DASH)? [y/N] ", credits_to_dash(credits));
+    eprint!(
+        "Proceed (~{:.6} DASH{})? [y/N] ",
+        credits_to_dash(credits),
+        forge_core::fiat::note_credits(credits)
+    );
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
     if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {

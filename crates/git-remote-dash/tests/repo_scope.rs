@@ -30,6 +30,7 @@ fn git(dir: &Path, home: &Path, args: &[&str]) -> Output {
         .env_remove("GIT_WORK_TREE")
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("xdg"))
+        .env("DASH_FORGE_FIAT", "off")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_COUNT", "0")

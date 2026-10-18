@@ -541,6 +541,10 @@ struct MembersFetch {
 }
 
 impl Helper {
+    pub fn network(&self) -> &forge_core::network::Network {
+        &self.target.network
+    }
+
     /// Build a helper for `url`, reading the network config from the environment and git
     /// config ([`network_target`]). No identity is read here: see [`Self::ensure_signer`].
     pub fn new(url: DashUrl, remote: Option<String>, in_clone: bool) -> Result<Self> {
@@ -4449,11 +4453,13 @@ async fn upload_members_pack(
     }
     if ctx.dry_run {
         let est = members_pack_estimate(ctx, plain_bytes, objects, resolved.platform);
-        progress.note(&format!(
-            "members-only pack for {}: est. {} DASH (dry run: nothing stored)",
-            refs[0],
-            dash(est.total())
-        ));
+        progress.priced_note(est.total(), |note| {
+            format!(
+                "members-only pack for {}: est. {} DASH{note} (dry run: nothing stored)",
+                refs[0],
+                dash(est.total())
+            )
+        });
         return Ok(None);
     }
     // the browse index is sealed as its pack is: under the members key only. A narrower branch's
@@ -5587,10 +5593,12 @@ async fn store_pack(
     // copy the user opted into as the fallback (costed and guarded like any paid write).
     ctx.say(&err.to_string());
     let fallback_cost = job.estimate(ctx, true);
-    ctx.say(&format!(
-        "dash.platformFallback: storing the pack on Platform instead, est. {} DASH",
-        dash(fallback_cost.total())
-    ));
+    ctx.progress.priced_note(fallback_cost.total(), |note| {
+        format!(
+            "dash.platformFallback: storing the pack on Platform instead, est. {} DASH{note}",
+            dash(fallback_cost.total())
+        )
+    });
     policy::enforce(
         fallback_cost.total(),
         ctx.policy,

@@ -199,6 +199,7 @@ fn run(goal: &mut Goal) -> Result<()> {
     let in_clone = git::LocalRepo::is_clone_of(remote_name.as_deref(), url_arg);
     let rt = runtime()?;
     let mut helper = Helper::new(dash_url, remote_name, in_clone)?;
+    forge_core::fiat::initialize(helper.network(), None, forge_core::fiat::Mode::Ready);
     let stdin = io::stdin();
     let stdout = io::stdout();
     protocol_loop(&rt, &mut helper, stdin.lock(), stdout.lock(), goal)
@@ -325,6 +326,7 @@ fn protocol_loop<R: BufRead, W: Write>(
                 writer.flush()?;
             }
             "push" => {
+                forge_core::fiat::start_background();
                 goal.set(true, &opts);
                 let mut specs = Vec::new();
                 if let Some(s) = parse_push_line(&line) {

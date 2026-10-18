@@ -223,7 +223,7 @@ pub(crate) async fn keep_for_members(
             let summary = format!(
                 "Keep {} for members: estimated cost {} (Platform storage estimate).",
                 plural_with(specs.len(), "branch", "branches"),
-                cost_line(credits, ctx.usd_price())
+                cost_line(credits, ctx.fiat_price())
             );
             if ctx.json {
                 eprintln!("{summary}");

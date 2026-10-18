@@ -129,7 +129,7 @@ async fn define(
     ctx.confirm_or_cancel(&format!(
         "{verb} label {name:?} in {}? (one document, {}; members only{plaintext})",
         s.repo.display(),
-        cost_line(quote, ctx.usd_price())
+        cost_line(quote, ctx.fiat_price())
     ))?;
     let before = s.balance().await;
     let id = s
@@ -138,7 +138,7 @@ async fn define(
         .await?;
     // Every paid write ends with its charge (QW3-070).
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": if retired { "retired" } else { "defined" },

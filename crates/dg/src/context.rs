@@ -384,10 +384,9 @@ impl Ctx {
         &self.target.network
     }
 
-    /// The DASH/USD price for secondary USD figures: `None` off mainnet
-    /// ([`crate::fmt::usd_price`]).
-    pub fn usd_price(&self) -> Option<f64> {
-        crate::fmt::usd_price(self.network())
+    /// Lazy fiat formatting context for this network.
+    pub fn fiat_price(&self) -> crate::fmt::Price {
+        crate::fmt::fiat_price(self.network())
     }
 
     /// The network label used in JSON / output: `testnet`, `mainnet` or `devnet-<name>`.

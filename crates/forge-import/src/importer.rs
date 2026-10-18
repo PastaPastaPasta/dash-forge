@@ -299,13 +299,17 @@ async fn run_inner<'a>(
     let required = estimate - heads_estimate;
     summary.estimate_credits = estimate;
     eprintln!(
-        "{} → {}: estimated {:.6} DASH (repo {:.6}, git {:.6}, issues/PRs/releases {:.6})",
+        "{} → {}: estimated {:.6} DASH{} (repo {:.6}{}, git {:.6}{}, issues/PRs/releases {:.6}{})",
         summary.source,
         dest.url(),
         credits_to_dash(estimate),
+        forge_core::fiat::note_credits(estimate),
         credits_to_dash(create_credits),
+        forge_core::fiat::note_credits(create_credits),
         credits_to_dash(git_estimate),
+        forge_core::fiat::note_credits(git_estimate),
         credits_to_dash(collab_estimate),
+        forge_core::fiat::note_credits(collab_estimate),
     );
     let mut budget = Budget::new(cfg.max_spend);
 
@@ -550,9 +554,10 @@ async fn push_optional(ledger: &mut Ledger<'_>, p: &GitPusher, signer: &Signer) 
     let balance = ledger.balance(&signer.id()).await;
     if !ledger.budget.fits(est.est_credits) || balance.is_some_and(|b| b < est.est_credits) {
         return ledger.skip_git(format!(
-            "{WHAT} (~{:.6} DASH) does not fit what is left of --max-spend or the balance; \
+            "{WHAT} (~{:.6} DASH{}) does not fit what is left of --max-spend or the balance; \
              skipped this run",
-            credits_to_dash(est.est_credits)
+            credits_to_dash(est.est_credits),
+            forge_core::fiat::note_credits(est.est_credits)
         ));
     }
     if let Err(e) = push_one(ledger, p, est, WHAT).await {

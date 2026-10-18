@@ -159,11 +159,18 @@ pub async fn sync_after_push(
                 out.push(hint("members-only head not found".into()));
                 continue;
             }
-            progress.note(&format!(
-                "PR #{n} in {label} follows this branch: updating its head to {} (≈ {} DASH)",
-                &m.oid[..m.oid.len().min(12)],
-                forge_core::repo::credits_to_dash(HEAD_UPDATE_CREDITS)
-            ));
+            progress.priced_note(HEAD_UPDATE_CREDITS, |note| {
+                let amount = forge_core::repo::credits_to_dash(HEAD_UPDATE_CREDITS);
+                let cost = if note.is_empty() {
+                    format!("(≈ {amount} DASH)")
+                } else {
+                    format!("≈ {amount} DASH{note}")
+                };
+                format!(
+                    "PR #{n} in {label} follows this branch: updating its head to {} {cost}",
+                    &m.oid[..m.oid.len().min(12)]
+                )
+            });
             let posted = post_head(collab, &repo, &view, &oid, members_head.as_ref()).await;
             match posted {
                 Ok(id) => out.push(Outcome::Synced {

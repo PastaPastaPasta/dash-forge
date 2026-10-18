@@ -369,7 +369,7 @@ pub(crate) async fn allow_push(
             "  Push access: about {}",
             cost_line(
                 forge_core::cost::push_fees::estimate_ref_updates(reqs.len() as u64),
-                ctx.usd_price()
+                ctx.fiat_price()
             )
         );
     }

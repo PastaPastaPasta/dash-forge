@@ -351,7 +351,7 @@ pub(crate) async fn write_notice(
     let est = copies * forge_core::env::service::snapshot_credits(512 + 600);
     if !ctx.json {
         eprintln!("Everyone will read: {}", safe(&line));
-        eprintln!("  Cost: about {}", cost_line(est, ctx.usd_price()));
+        eprintln!("  Cost: about {}", cost_line(est, ctx.fiat_price()));
     }
     // `None`: the caller asked already (and wrote what the notice names)
     if let Some(prompt) = prompt {
@@ -373,11 +373,11 @@ pub(crate) async fn write_notice(
             "push": notice.push_entries().unwrap_or_default(),
             "notice": ids,
             "packHash": hex::encode(pack_hash),
-            "cost": cost_json(spent, ctx.usd_price()),
+            "cost": cost_json(spent, ctx.fiat_price()),
         }),
         || {
             println!("✓ {}", safe(&line));
-            println!("  spent {}", cost_line(spent, ctx.usd_price()));
+            println!("  spent {}", cost_line(spent, ctx.fiat_price()));
         },
     );
     Ok(())
@@ -888,7 +888,7 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
         for line in ask_summary(&plan, &name, code_note.as_deref()) {
             eprintln!("{line}");
         }
-        eprintln!("Cost: about {}", cost_line(est, ctx.usd_price()));
+        eprintln!("Cost: about {}", cost_line(est, ctx.fiat_price()));
     }
     ctx.confirm_or_cancel(&format!("Ask {} to work on #{number}?", safe(&name)))?;
     let (asked, spent) = s.metered(|| collab.write_ask(&s.repo, &plan)).await?;
@@ -904,7 +904,7 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
             "documents": plan.letter.as_ref().map_or(0, |l| l.docs.len()),
             "code": plan.letter.as_ref().and_then(|l| l.code.as_ref()).map(|c| c.branch.clone()),
             "membersOnly": plan.members_only,
-            "cost": cost_json(spent, ctx.usd_price()),
+            "cost": cost_json(spent, ctx.fiat_price()),
     });
     out[thread] = json!(number);
     ctx.emit(out, || {
@@ -913,7 +913,7 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
         if asked.letter.is_some() {
             println!("  it got this thread's members-only content as it is now");
         }
-        println!("  spent {}", cost_line(spent, ctx.usd_price()));
+        println!("  spent {}", cost_line(spent, ctx.fiat_price()));
     });
     Ok(())
 }

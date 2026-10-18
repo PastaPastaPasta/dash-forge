@@ -230,7 +230,7 @@ fn builders_match_their_commands_schemas() {
         "pr verify",
         &json!({ "pr": 3, "merged": true, "mergeContent": crate::pr::verify::content_json(&"a".repeat(40), &content) }),
     );
-    let cost = crate::fmt::cost_json(45_300_000, Some(25.0));
+    let cost = crate::fmt::cost_json(45_300_000, forge_core::fiat::Price::fixed_usd(25.0, true));
     assert_valid(
         "issue comment",
         &json!({ "status": "commented", "issue": 2, "commentId": "C", "audience": crate::audience::json(forge_core::rules::v2::Audience::Members), "cost": cost }),
@@ -386,11 +386,15 @@ fn create_steps_and_forks_match() {
     };
     assert_valid(
         "repo fork",
-        &crate::repo::fork_body(&parent, &fork, Some(25.0)),
+        &crate::repo::fork_body(
+            &parent,
+            &fork,
+            forge_core::fiat::Price::fixed_usd(25.0, true),
+        ),
     );
     fork.unreferenceable.push([7; 32]);
     assert_error_valid(
-        &crate::repo::fork_body(&parent, &fork, None),
+        &crate::repo::fork_body(&parent, &fork, forge_core::fiat::Price::new(false)),
         &forge_core::user_error::UserError::new(
             forge_core::user_error::codes::PACKS_UNREADABLE,
             "fork incomplete",
@@ -438,7 +442,12 @@ fn reindex_and_key_repairs_match() {
     for spent in [None, Some(1_000)] {
         assert_valid(
             "repo reindex",
-            &crate::maint::reindex_body(&test_repo("r"), &report, spent, None),
+            &crate::maint::reindex_body(
+                &test_repo("r"),
+                &report,
+                spent,
+                forge_core::fiat::Price::new(false),
+            ),
         );
     }
     let rotation = crate::keys::rotation_json(&forge_core::keyring::Rotation {
@@ -454,7 +463,7 @@ fn reindex_and_key_repairs_match() {
             failed: None,
         },
     });
-    let repaired = json!({ "status": "repaired", "rotated": rotation, "nonMembers": ["C"], "wrapped": [], "skipped": [], "cost": crate::fmt::cost_json(1, None) });
+    let repaired = json!({ "status": "repaired", "rotated": rotation, "nonMembers": ["C"], "wrapped": [], "skipped": [], "cost": crate::fmt::cost_json(1, forge_core::fiat::Price::new(false)) });
     assert_valid("repo members enable", &repaired);
     assert_valid("repo keys repair", &repaired);
     assert_valid(

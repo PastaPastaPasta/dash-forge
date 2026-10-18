@@ -58,6 +58,7 @@ pub fn dash_env(ctx: &Ctx) -> DashEnv<'_> {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
+    vars.push(("DASH_FORGE_FIAT".into(), forge_core::fiat::setting().into()));
     // A file path is made absolute: git runs the helper from another directory (a scratch
     // repo, or the repository root), where a relative path names nothing. A `keychain:` or
     // inline `dfk1:` source is not a path and passes through as it is (an inline key is

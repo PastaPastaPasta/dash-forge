@@ -46,7 +46,7 @@ The fixed cost per document is **not small**. A document pays for its index entr
 
 Headline numbers:
 
-- **A retained byte costs ~27,700 credits**, so **1 MiB of pack on Platform costs 0.33–0.36 DASH measured** (the bytes alone are 0.29 DASH; the rest is each chunk's fixed cost), and `dg` and `git push` quote up to 0.39 DASH/MiB. At the $30/DASH fallback price that is about $10–12 per MiB; testnet DASH has no price.
+- **A retained byte costs ~27,700 credits**, so **1 MiB of pack on Platform costs 0.33–0.36 DASH measured** (the bytes alone are 0.29 DASH; the rest is each chunk's fixed cost), and `dg` and `git push` quote up to 0.39 DASH/MiB. The CLIs show the fiat equivalent using live mainnet rates when available; test-network costs label that equivalent “on mainnet”, and testnet balances have no cash value.
 - **Pack bytes on the Platform tier are permanent.** `chunk` and `packManifest` are non-deletable on forge-v2 (owner decision 2026-09-25: an unbreakable repository outweighs the refund), so their deposit is a one-time cost, never refunded. A byte in a *deletable* document (comment, review, label, ...) that is later deleted permanently costs only the **non-refundable ~1.5%** (≈ 412 credits + the elapsed-epoch share of storage, §3).
 
 This is why chunk geometry maximizes fill (3 × 4,900 B fields → ~14.4 KiB/doc): the fixed cost per chunk amortizes over as many bytes as fit, and why external backends exist: a manifest-only push is a few hundred bytes of payload (about 0.004–0.0055 DASH in all, measured on bonsia), and bulky pack bytes in a bucket the user controls can be garbage-collected there.
@@ -84,7 +84,7 @@ So on the Platform tier **a repo's locked deposit is its cumulative push history
 
 ## 5. Per-scenario cost sketch
 
-All in DASH, **measured on devnets** (to be re-measured on testnet); dollar figures use the $30/DASH fallback `dg` quotes on mainnet, and testnet DASH has no price.
+All in DASH, **measured on devnets** (to be re-measured on testnet); fiat figures in the CLIs use live mainnet rates when available. Historical dollar examples below are illustrative; testnet balances have no cash value.
 
 | Scenario | Platform backend | External backend |
 |---|---|---|

@@ -130,7 +130,7 @@ async fn accept(ctx: &Ctx, repo: &str, withdraw: bool) -> Result<()> {
     if !ctx.confirm(&format!(
         "Accept membership of {}? Its owner can then add you as a member (one document, {})",
         handle.display(),
-        cost_line(crate::quote::CONSENT, ctx.usd_price())
+        cost_line(crate::quote::CONSENT, ctx.fiat_price())
     ))? {
         return Err(crate::errors::cancelled());
     }
@@ -144,7 +144,7 @@ async fn accept(ctx: &Ctx, repo: &str, withdraw: bool) -> Result<()> {
     } else {
         0
     };
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let me = s.identity.id();
     ctx.emit(
         json!({
@@ -269,7 +269,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "a membership document + a key wrap, {}",
             cost_line(
                 crate::quote::MEMBER_GRANT + crate::keys::WRAP_ESTIMATE_CREDITS,
-                ctx.usd_price()
+                ctx.fiat_price()
             )
         )
     } else if sends_post_key {
@@ -277,13 +277,13 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "a membership document + the bot's key for its members-only posts, {}",
             cost_line(
                 crate::quote::MEMBER_GRANT + forge_core::bot_keys::letter_credits(),
-                ctx.usd_price()
+                ctx.fiat_price()
             )
         )
     } else {
         format!(
             "one membership document, {}",
-            cost_line(crate::quote::MEMBER_GRANT, ctx.usd_price())
+            cost_line(crate::quote::MEMBER_GRANT, ctx.fiat_price())
         )
     };
     let question = match change_from {
@@ -319,7 +319,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     )
     .await?;
     let question = match &promotion {
-        Some(p) => format!("{}{question}", p.explain(member, ctx.usd_price())),
+        Some(p) => format!("{}{question}", p.explain(member, ctx.fiat_price())),
         None => question,
     };
     // branches for fewer people (phase 3F, D34): anyone the change adds to one gets its key, and
@@ -327,8 +327,8 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let narrow = crate::narrow::prepare(&s, &after_members).await?;
     let question = format!(
         "{question}{}{}",
-        regroup.explain(ctx.usd_price()),
-        narrow.explain(ctx.usd_price())
+        regroup.explain(ctx.fiat_price()),
+        narrow.explain(ctx.fiat_price())
     );
     if !ctx.confirm(&question)? {
         return Err(crate::errors::cancelled());
@@ -409,7 +409,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         s.spent_since(before).await
     };
     let key_pending = (keyed || post_key) && !can_receive;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "granted",
@@ -500,7 +500,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     let prompt = if keyed {
         let members = MemberReader::new(client).list(handle).await?;
         let kr = crate::keys::signer(&s).keyring(handle).await?;
-        keyed_remove_prompt(&kr, &members, handle, repo, member, shown, ctx.usd_price())
+        keyed_remove_prompt(&kr, &members, handle, repo, member, shown, ctx.fiat_price())
     } else {
         format!(
             "Remove {member}'s {} access to {repo}? Their next write is refused at once",
@@ -515,12 +515,12 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     let explained = if no_resave {
         removal.explain_skipped(member)
     } else {
-        removal.explain(ctx.usd_price())
+        removal.explain(ctx.fiat_price())
     };
     // branches for fewer people the member leaves (phase 3F, D34): a new key for everyone left
     let after_members = crate::env::members_after(&before_members, member, role, false);
     let narrow = crate::narrow::prepare(&s, &after_members).await?;
-    let prompt = format!("{prompt}{explained}{}", narrow.explain(ctx.usd_price()));
+    let prompt = format!("{prompt}{explained}{}", narrow.explain(ctx.fiat_price()));
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }
@@ -743,7 +743,7 @@ fn keyed_remove_prompt(
     repo: &str,
     member: &str,
     role: forge_core::rules::v2::Role,
-    price: Option<f64>,
+    price: crate::fmt::Price,
 ) -> String {
     // Writer, triage and reader are one `writer` document: another role is the other type.
     let keeps_other_role = members.iter().any(|m| {

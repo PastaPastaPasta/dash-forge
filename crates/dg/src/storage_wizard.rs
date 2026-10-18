@@ -93,7 +93,7 @@ pub fn collect(p: &mut dyn Prompter, existing: &[String], keychain_ok: bool) -> 
     };
     let platform = format!(
         "Dash Platform (on-chain, permanent, {})",
-        crate::fmt::platform_rate()
+        crate::fmt::platform_rate_dash_only()
     );
     let kind = match p.choose(
         "Kind",

@@ -213,7 +213,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         .await
         .context("preparing the webhook")?;
 
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let credits = crate::quote::webhook(prepared.approx_bytes);
     if !ctx.json {
         println!(

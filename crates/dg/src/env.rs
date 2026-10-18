@@ -1477,7 +1477,7 @@ async fn commit(
     }
     lines.push(format!(
         "  One chunk and one record, {}.",
-        cost_line(quote, ctx.usd_price())
+        cost_line(quote, ctx.fiat_price())
     ));
     for l in &lines[1..] {
         eprintln!("{l}");
@@ -1496,8 +1496,8 @@ async fn commit(
             "id": saved.id,
             "packHash": saved.pack_hash,
             "sizeBytes": saved.size_bytes,
-            "quote": cost_json(quote, ctx.usd_price()),
-            "spent": cost_json(spent, ctx.usd_price()),
+            "quote": cost_json(quote, ctx.fiat_price()),
+            "spent": cost_json(spent, ctx.fiat_price()),
         }),
         || {
             println!(
@@ -1505,7 +1505,7 @@ async fn commit(
                 audience_phrase(&prepared),
                 summary(&changes)
             );
-            println!("  spent {}", cost_line(spent, ctx.usd_price()));
+            println!("  spent {}", cost_line(spent, ctx.fiat_price()));
         },
     );
     Ok(())
@@ -2654,7 +2654,7 @@ pub struct Regroup {
 impl Regroup {
     /// Print the plan to stderr; the sentence the confirmation adds (empty when nothing is saved).
     #[must_use]
-    pub fn explain(&self, price: Option<f64>) -> String {
+    pub fn explain(&self, price: crate::fmt::Price) -> String {
         for p in &self.pins {
             eprintln!("  {}: {}", p.env, p.what);
         }
@@ -2918,7 +2918,7 @@ impl Removal {
     /// Print to stderr what the removal saves again (per environment, values hidden) and what
     /// it cannot; the sentence the removal prompt adds (empty when nothing is saved again).
     #[must_use]
-    pub fn explain(&self, price: Option<f64>) -> String {
+    pub fn explain(&self, price: crate::fmt::Price) -> String {
         explain_pins(&self.pins, &self.cannot, "After the removal");
         let regroup = self.regroup.explain(price);
         if self.pins.is_empty() {
@@ -3320,7 +3320,7 @@ impl Promotion {
     /// Print to stderr what would change and what is saved first; the sentence the add prompt
     /// starts with (empty when nothing is saved).
     #[must_use]
-    pub fn explain(&self, member: &str, price: Option<f64>) -> String {
+    pub fn explain(&self, member: &str, price: crate::fmt::Price) -> String {
         explain_pins(&self.pins, &self.cannot, "When the role lands");
         for env in &self.appeared {
             eprintln!("  {env}: {member} saved it while not a maintainer; it appears once the role lands.");

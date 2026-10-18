@@ -408,7 +408,7 @@ pub(crate) async fn publish(ctx: &Ctx, a: &PublishArgs) -> Result<Outcome> {
         None => None,
     };
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "published",
@@ -563,14 +563,14 @@ async fn record_merge_only(
     ctx.confirm_or_cancel(&format!(
         "PR #{n} is already published as {}. Record it merged? (one transition, {})",
         short(commit),
-        crate::fmt::cost_line(crate::quote::TRANSITION, ctx.usd_price())
+        crate::fmt::cost_line(crate::quote::TRANSITION, ctx.fiat_price())
     ))?;
     let before = s.balance().await;
     let id = crate::pr::post_merge_event(collab, &s.repo, view, commit, true, repo)
         .await
         .map_err(|e| merge_not_recorded(*e, n, commit))?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "merge_recorded",

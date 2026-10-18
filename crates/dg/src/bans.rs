@@ -39,7 +39,7 @@ pub async fn ban(ctx: &Ctx, repo: &str, who: &str, reason: Option<&str>) -> Resu
     let code = reason_code(reason)?;
     let s = Session::open(ctx, repo).await?;
     let id = resolve_identity(&s.client, who, "identity").await?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&format!(
         "Ban {} from {}? Forge apps then hide what they wrote there and refuse their new issues, pull requests, comments and reviews ({}).",
         safe(who),

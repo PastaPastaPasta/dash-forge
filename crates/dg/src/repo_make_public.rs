@@ -1617,7 +1617,7 @@ fn print_check(
     kr: &Keyring,
     conversion: Option<&Conversion>,
 ) {
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let modes: Vec<Mode> = match mode {
         Some(m) => vec![m],
         None => vec![Mode::CodeOnly, Mode::Everything],
@@ -1863,7 +1863,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         dir,
     } = r;
     let label = safe(&a.repo).into_owned();
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let is_owner = s.identity.id() == s.repo.owner_id;
     let flipped = conversion.is_some();
     let public = public_view(&s.repo);

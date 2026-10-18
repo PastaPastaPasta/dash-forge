@@ -51,6 +51,7 @@ pub mod create;
 pub mod env;
 pub mod envelope;
 pub mod error;
+pub mod fiat;
 pub mod fork;
 pub mod funding;
 pub mod history;

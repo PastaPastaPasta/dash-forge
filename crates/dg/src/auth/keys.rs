@@ -199,11 +199,15 @@ async fn list(ctx: &Ctx) -> Result<()> {
         for r in &rows {
             let limits = match (r["budgetCredits"].as_u64(), r["expiresAt"].as_u64()) {
                 (Some(total), exp) => format!(
-                    "  {} of {} DASH left, expires {}",
+                    "  {}{} of {} DASH{} left, expires {}",
                     r["budgetRemainingCredits"]
                         .as_u64()
                         .map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
+                    r["budgetRemainingCredits"]
+                        .as_u64()
+                        .map_or_else(String::new, crate::fmt::cost_note),
                     dash_amount(credits_to_dash(total)),
+                    crate::fmt::cost_note(total),
                     exp.map_or("never".into(), expiry_text)
                 ),
                 _ => String::new(),
@@ -275,7 +279,7 @@ async fn add_encryption(
         .fix("run it again and type the recovery phrase when asked, or pass --master <identity file> with the phrase")
         .note("nothing was sent")
     })?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if !ctx.json {
         println!(
             "Add ENCRYPTION key #{key_id} to {} (derived from the recovery phrase), {}",
@@ -704,7 +708,7 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
     super::disable_key(&client, &full, id).await?;
     // Every paid write ends with its charge (QW3-070).
     let spent = crate::common::spent_since(&client, &full.identity_id, before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "disabled",
@@ -986,7 +990,7 @@ async fn disable_all_limited(ctx: &Ctx, master: Option<&std::path::Path>) -> Res
     let before = client.get_balance(&full.identity_id).await.unwrap_or(0);
     let done = disable_in_updates(ctx, &client, &full, &targets).await?;
     let spent = crate::common::spent_since(&client, &full.identity_id, before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "disabled",

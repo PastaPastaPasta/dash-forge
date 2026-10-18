@@ -224,7 +224,7 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
         let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
         require_serves(uris, &pack, size).await?;
     }
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&format!(
         "Record a mirror of pack {} of {} at {}? ({})",
         &pack[..12],

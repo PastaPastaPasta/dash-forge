@@ -273,7 +273,7 @@ async fn set(ctx: &Ctx, args: &SetArgs) -> Result<()> {
         );
         return Ok(());
     }
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let quote = match &stored {
         None => crate::quote::profile(text_bytes(&fields)),
         Some(_) => crate::quote::replace(text_bytes(&fields)),
@@ -368,7 +368,7 @@ async fn bot(ctx: &Ctx, cmd: &ProfileBotCommand) -> Result<()> {
         });
         return Ok(());
     }
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let quote = match &stored {
         None => crate::quote::profile(32 * (1 + claim.operates.len() as u64)),
         Some(_) => crate::quote::replace(32 * (1 + claim.operates.len() as u64)),
