@@ -119,7 +119,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Show fiat equivalents in this currency, or off.
+    /// Show fiat equivalents in this currency, or off (off in any setting wins).
     #[arg(long, global = true, value_name = "CODE|off", value_parser = forge_core::fiat::parse_setting)]
     pub fiat: Option<String>,
 
