@@ -438,6 +438,16 @@ pub fn open_pack<'k>(
     size_bytes: u64,
     keys: impl IntoIterator<Item = &'k BranchKeys>,
 ) -> Result<Vec<u8>, PrivateError> {
+    open_pack_with_key(sealed, size_bytes, keys).map(|(bytes, _)| bytes)
+}
+
+/// Keep the key that authenticated every segment, so a caller can attribute the pack without
+/// treating its four-byte KCV as proof of which branch opened it.
+fn open_pack_with_key<'k>(
+    sealed: &[u8],
+    size_bytes: u64,
+    keys: impl IntoIterator<Item = &'k BranchKeys>,
+) -> Result<(Vec<u8>, &'k BranchKeys), PrivateError> {
     if sealed.len() as u64 != size_bytes {
         return Err(PrivateError::SizeMismatch);
     }
@@ -487,7 +497,7 @@ pub fn open_pack<'k>(
             out.extend_from_slice(&Zeroizing::new(pt));
             at += len;
         }
-        return Ok(out.to_vec());
+        return Ok((out.to_vec(), k));
     }
     Err(corrupt())
 }
@@ -931,6 +941,22 @@ impl BranchRing {
     /// Every key held, read-only ones included (what opens a DFPK 0x03 pack).
     pub fn all_keys(&self) -> impl Iterator<Item = &BranchKeys> {
         self.derived.iter().map(|(_, k, _)| k)
+    }
+
+    /// Open a DFPK 0x03 pack and identify the branch whose key authenticated all of it. This
+    /// includes older and read-only generations; a KCV collision never selects its audience.
+    pub fn open_pack(
+        &self,
+        sealed: &[u8],
+        size_bytes: u64,
+    ) -> Result<(Vec<u8>, &Branch), PrivateError> {
+        let (bytes, key) = open_pack_with_key(sealed, size_bytes, self.all_keys())?;
+        let name = self
+            .derived
+            .iter()
+            .find_map(|(name, candidate, _)| std::ptr::eq(candidate, key).then_some(name))
+            .expect("the authenticated key came from this ring");
+        Ok((bytes, &self.branches[name]))
     }
 
     /// The branch whose keys open a DFPK 0x03 artifact with this KCV prefix, if any.
