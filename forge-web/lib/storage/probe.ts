@@ -86,7 +86,7 @@ async function redirects(url: string | URL): Promise<boolean> {
 }
 
 /** Why a request to `url` never got an answer: down, redirected elsewhere, or CORS. */
-async function whyBlocked(url: string | URL): Promise<'down' | 'redirect' | 'cors'> {
+export async function whyBlocked(url: string | URL): Promise<'down' | 'redirect' | 'cors'> {
   if (!(await reachable(url))) return 'down'
   return (await redirects(url)) ? 'redirect' : 'cors'
 }

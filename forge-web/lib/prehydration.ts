@@ -56,6 +56,10 @@ interface PrehydrationState {
 /** The inline <head> script (a string: it runs before any bundle loads). */
 export function prehydrationScript(): string {
   return `(function(){
+  if(location.hash.indexOf('#kubo=')===0){
+    Object.defineProperty(window,'__forgeKuboPair',{value:location.hash,configurable:true});
+    history.replaceState(null,'',location.pathname+location.search);
+  }
   var KEY=${JSON.stringify(PREHYDRATION_KEY)};
   if (window[KEY]) return;
   var busy = null, prior = null;
@@ -117,4 +121,11 @@ export function consumePrehydrationIntent(intent: PrehydrationIntent, win: WithS
 /** Stop catching (the app is up): a tap now reaches the buttons' handlers. The busy look clears. */
 export function stopPrehydrationCatcher(win: WithState = window as WithState): void {
   win[PREHYDRATION_KEY]?.stop()
+}
+
+/** Consume the pre-hydration pairing nonce once; it is never persisted. */
+export function consumeKuboPair(win: Window & { __forgeKuboPair?: string } = window): string | null {
+  const value = win.__forgeKuboPair ?? null
+  delete win.__forgeKuboPair
+  return value
 }

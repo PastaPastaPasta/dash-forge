@@ -163,7 +163,7 @@ export function ProfileForm({
         <div role="note" className="flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 p-3 text-[12px] text-anvil-700 dark:text-anvil-200 sm:col-span-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
           <span>
-            kubo’s RPC API is the node’s <span className="font-medium">admin</span> interface. Give this site a token limited to add, pin-check, unpin and id (kubo <span className="font-mono">API.Authorizations</span> with <span className="font-mono">AllowedPaths</span>), and paste it as the API Authorization header. The test prints the commands.
+            kubo’s RPC API is the node’s <span className="font-medium">admin</span> interface. Give this site a token limited to add, pin, unpin and id (kubo <span className="font-mono">API.Authorizations</span> with <span className="font-mono">AllowedPaths</span>), and paste it as the API Authorization header. A proxy must answer browser preflights before forwarding to kubo. Simpler: run dg ipfs up. The test prints the hand setup commands.
           </span>
         </div>
       ) : null}

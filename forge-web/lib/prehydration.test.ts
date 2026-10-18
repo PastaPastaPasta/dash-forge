@@ -10,7 +10,7 @@ function win(intent: string | null, at: number): { w: Window; stops: () => numbe
   // Run the real inline script against a minimal window and document to get its `stop`.
   const noop = { addEventListener: () => undefined, removeEventListener: () => undefined }
   const w: Record<string, unknown> = { ...noop }
-  new Function('window', 'document', 'setTimeout', 'clearTimeout', prehydrationScript())(w, noop, () => 0, () => undefined)
+  new Function('window', 'document', 'setTimeout', 'clearTimeout', 'location', prehydrationScript())(w, noop, () => 0, () => undefined, { hash: '' })
   const state = w[PREHYDRATION_KEY] as { intent: string | null; at: number; stop: () => void }
   state.intent = intent
   state.at = at
@@ -55,7 +55,7 @@ describe('what stops the catcher early', () => {
       removeEventListener: (type: string) => void delete listeners[type],
     }
     const doc = { addEventListener: () => undefined, removeEventListener: () => undefined, querySelectorAll: () => [] }
-    const location = { origin: 'https://forge.example' }
+    const location = { origin: 'https://forge.example', hash: '' }
     new Function('window', 'document', 'setTimeout', 'clearTimeout', 'location', prehydrationScript())(w, doc, () => 0, () => undefined, location)
     return {
       fire: (src, tag = 'SCRIPT') => listeners['error']?.({ target: { tagName: tag, src } }),
@@ -83,5 +83,22 @@ describe('what stops the catcher early', () => {
     expect(c.stopped()).toBe(false)
     c.fire('https://forge.example/ipfs/bafy/_next/static/chunks/main-app.js')
     expect(c.stopped()).toBe(true)
+  })
+})
+
+describe('pairing nonce capture before hydration', () => {
+  it('strips the fragment immediately, keeps it non-enumerable, and consumes it once', async () => {
+    const { consumeKuboPair } = await import('./prehydration')
+    const noop = { addEventListener: () => undefined, removeEventListener: () => undefined }
+    const w = { ...noop }
+    const location = { hash: '#kubo=5001.7KQ2-M9XD-PF4C', pathname: '/settings/storage/', search: '?x=1' }
+    const calls: unknown[][] = []
+    const history = { replaceState: (...args: unknown[]) => { calls.push(args); location.hash = '' } }
+    new Function('window', 'document', 'setTimeout', 'clearTimeout', 'location', 'history', prehydrationScript())(w, noop, () => 0, () => undefined, location, history)
+    expect(calls).toEqual([[null, '', '/settings/storage/?x=1']])
+    expect(location.hash).toBe('')
+    expect(Object.keys(w)).not.toContain('__forgeKuboPair')
+    expect(consumeKuboPair(w as unknown as Window)).toBe('#kubo=5001.7KQ2-M9XD-PF4C')
+    expect(consumeKuboPair(w as unknown as Window)).toBeNull()
   })
 })
