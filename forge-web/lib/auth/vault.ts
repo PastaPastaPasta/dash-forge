@@ -293,6 +293,14 @@ export class VaultLockedError extends Error {
   }
 }
 
+/** A resumed signing session needs this tab's vault unlock before using encryption keys. */
+export class EncryptionKeyLockedError extends VaultLockedError {
+  constructor() {
+    super('unlock to use your encryption key in this tab')
+    this.name = 'EncryptionKeyLockedError'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Unlock methods → key-wrapping key
 // ---------------------------------------------------------------------------
@@ -1646,9 +1654,8 @@ export async function withEncryptionKey<T>(network: Network, identityId: string,
   const src = await encryptionSource(network, identityId)
   if (src === null) {
     const scope = unlockScope(network, identityId)
-    throw new VaultLockedError(
-      scope === null ? 'unlock this browser to read private repos' : scope === 'signing' ? 'unlock to use your encryption key in this tab' : 'no encryption key is stored in this browser',
-    )
+    if (scope === 'signing') throw new EncryptionKeyLockedError()
+    throw new VaultLockedError(scope === null ? 'unlock this browser to read private repos' : 'no encryption key is stored in this browser')
   }
   const blob = keyId === undefined ? src.blobs[0] : src.blobs.find((b) => b.keyId === keyId)
   if (blob === undefined) throw new EncryptionKeyNotHeldError(keyId ?? -1)
@@ -1670,9 +1677,8 @@ export async function withEncryptionKeys<T>(network: Network, identityId: string
   const src = await encryptionSource(network, identityId)
   if (src === null) {
     const scope = unlockScope(network, identityId)
-    throw new VaultLockedError(
-      scope === null ? 'unlock this browser to read private repos' : scope === 'signing' ? 'unlock to use your encryption key in this tab' : 'no encryption key is stored in this browser',
-    )
+    if (scope === 'signing') throw new EncryptionKeyLockedError()
+    throw new VaultLockedError(scope === null ? 'unlock this browser to read private repos' : 'no encryption key is stored in this browser')
   }
   const keys = await readEncryptionBlobs(network, identityId)
   try {

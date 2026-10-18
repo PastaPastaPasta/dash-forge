@@ -16,18 +16,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RepoHome } from '@/lib/view'
 import type { MakePublicCheck, MakePublicProgress, MakePublicStatus, MakePublicStep, StepState } from '@/lib/repo/make-public'
 
-const viewer: { id: string | null } = { id: 'owner' }
+const viewer: { id: string | null; scope: 'signing' | 'full' | null; context: boolean } = { id: 'owner', scope: 'signing', context: true }
 vi.mock('@/contexts/auth-context', () => ({
-  useAuth: () => ({ identity: viewer.id, signer: viewer.id === null ? null : { identityId: viewer.id } }),
+  useAuth: () => ({ unlockScope: viewer.scope, identity: viewer.id, signer: viewer.id === null ? null : { identityId: viewer.id } }),
 }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
 vi.mock('@/hooks/use-dpns-name', () => ({ useSettledDpnsName: (id: string) => (id === 'owner' ? 'carol' : null) }))
 vi.mock('@/hooks/use-private-write', () => ({
-  usePrivateWrite: () => ({ context: { sdk: {}, auth: { identityId: viewer.id }, repo: {}, network: 'devnet', ops: {} }, done: () => undefined, loading: false }),
+  usePrivateWrite: () => ({ context: viewer.context ? { sdk: {}, auth: { identityId: viewer.id }, repo: {}, network: 'devnet', ops: {} } : null, done: () => undefined, loading: false }),
 }))
-const storage: { upload: (() => Promise<unknown>) | null; error: string | null } = { upload: async () => ({}), error: null }
+const storage: { upload: (() => Promise<unknown>) | null; error: string | null; needsUnlock: boolean } = { upload: async () => ({}), error: null, needsUnlock: false }
 vi.mock('@/components/repo/merge-upload', () => ({
-  useMergeUpload: () => ({ upload: storage.upload, question: null, begin: () => undefined, storageNeedsUnlock: false, storageError: storage.error }),
+  useMergeUpload: () => ({ get upload() { return storage.upload }, question: null, begin: () => undefined, storageNeedsUnlock: storage.needsUnlock, get storageError() { return storage.error } }),
 }))
 vi.mock('@/components/auth/unlock-more', () => ({ UnlockMore: ({ testId, then }: { testId: string; then?: () => void }) => <button data-testid={testId} onClick={then}>Unlock</button> }))
 vi.mock('@/lib/repo', () => ({ repoContractIds: () => [] }))
@@ -44,7 +44,7 @@ vi.mock('@/lib/repo/make-public-run', () => ({ runMakePublic: (...a: unknown[]) 
 const readMakePublicStatus = vi.fn()
 vi.mock('@/lib/repo/make-public-status', () => ({ readMakePublicStatus: (...a: unknown[]) => readMakePublicStatus(...a) }))
 
-import { VaultLockedError } from '@/lib/auth/vault'
+import { EncryptionKeyLockedError, VaultLockedError } from '@/lib/auth/vault'
 import { COPY } from '@/lib/repo/make-public'
 import { MakeRepoPublic } from './make-repo-public'
 
@@ -96,10 +96,13 @@ let root: Root
 const onSaved = vi.fn()
 beforeEach(() => {
   viewer.id = 'owner'
+  viewer.scope = 'signing'
+  viewer.context = true
   oneWay.value = true
   converted.value = false
   storage.upload = async () => ({})
   storage.error = null
+  storage.needsUnlock = false
   makePublicCheck.mockReset()
   runMakePublic.mockReset()
   readMakePublicStatus.mockReset()
@@ -182,11 +185,48 @@ describe('the Danger zone row', () => {
 })
 
 describe('the dialog', () => {
-  it.each(['unlock to use your encryption key in this tab', 'unlock this browser to read private repos'])('offers an inline unlock for %s and checks again after unlocking', async (message) => {
-    makePublicCheck.mockRejectedValueOnce(new VaultLockedError(message)).mockResolvedValue(aCheck())
+  it('suppresses the encryption prompt once another route has unlocked this tab, or context is locked', async () => {
+    makePublicCheck.mockRejectedValue(new EncryptionKeyLockedError())
     await renderRow()
     await click(tid('make-public-open'))
-    expect(tid('make-public-check-error')?.textContent).toContain(message)
+    expect(tid('make-public-encryption-unlock')).not.toBeNull()
+    viewer.scope = 'full'
+    await renderRow()
+    expect(tid('make-public-encryption-unlock')).toBeNull()
+    viewer.scope = 'signing'
+    viewer.context = false
+    await renderRow()
+    expect(tid('make-public-encryption-unlock')).toBeNull()
+    expect(tid('make-public-unlock')).not.toBeNull()
+  })
+
+  it('shows only the storage unlock when both keys need the same unlock', async () => {
+    makePublicCheck.mockRejectedValue(new EncryptionKeyLockedError())
+    storage.needsUnlock = true
+    await renderRow()
+    await click(tid('make-public-open'))
+    expect(tid('make-public-storage-unlock')).not.toBeNull()
+    expect(tid('make-public-encryption-unlock')).toBeNull()
+  })
+
+  it.each([null, 'Could not read storage settings.'])('refuses a stale Make public click when storage becomes unavailable: %s', async (error) => {
+    await openDialog(aCheck())
+    await click(tid('make-public-mode-codeOnly'))
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    expect(confirmButton().disabled).toBe(false)
+    // Storage becomes unavailable after the button rendered, before its handler starts.
+    storage.upload = null
+    storage.error = error
+    await click(confirmButton())
+    expect(runMakePublic).not.toHaveBeenCalled()
+    expect(tid('make-public-run-error')?.textContent).toContain(error ?? 'Reading your storage settings.')
+  })
+
+  it('offers an inline encryption unlock and checks again after unlocking', async () => {
+    makePublicCheck.mockRejectedValueOnce(new EncryptionKeyLockedError()).mockResolvedValue(aCheck())
+    await renderRow()
+    await click(tid('make-public-open'))
+    expect(tid('make-public-check-error')?.textContent).toContain('unlock to use your encryption key in this tab')
     expect(makePublicCheck).toHaveBeenCalledTimes(1)
     await click(tid('make-public-encryption-unlock'))
     expect(makePublicCheck).toHaveBeenCalledTimes(2)
@@ -194,7 +234,7 @@ describe('the dialog', () => {
     expect(tid('make-public-dialog')?.getAttribute('data-checked')).toBe('yes')
   })
 
-  it.each([new VaultLockedError('no encryption key is stored in this browser'), new Error('unlock to use your encryption key in this tab')])('keeps an error that unlocking cannot fix as text', async (error) => {
+  it.each([new VaultLockedError('no encryption key is stored in this browser'), new VaultLockedError('unlock to use your encryption key in this tab'), new Error('unlock to use your encryption key in this tab')])('keeps an error that unlocking cannot fix as text', async (error) => {
     makePublicCheck.mockRejectedValue(error)
     await renderRow()
     await click(tid('make-public-open'))
@@ -389,14 +429,34 @@ describe('the dialog', () => {
 })
 
 describe('Finish', () => {
-  it('unlocks a stopped resumed run and retries through its existing check', async () => {
+  it('does not auto-resume until storage is ready', async () => {
+    converted.value = true
+    storage.upload = null
+    readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'made', converted: true, record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 }, doneCount: 3, steps: { sealOff: 'done', flip: 'done', history: 'skipped' } }))
+    await renderRow({ visibility: 'public' })
+    await click(tid('make-public-finish'))
+    expect(runMakePublic).not.toHaveBeenCalled()
+  })
+
+  it('unlocks a stopped resumed run without publishing until Try again', async () => {
     converted.value = true
     readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'made', converted: true, record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 }, doneCount: 3, steps: { sealOff: 'done', flip: 'done', history: 'skipped' } }))
-    runMakePublic.mockRejectedValueOnce(new VaultLockedError('unlock to use your encryption key in this tab')).mockResolvedValue({ finished: true, notPublished: [] })
+    runMakePublic.mockRejectedValueOnce(new EncryptionKeyLockedError()).mockResolvedValue({ finished: true, notPublished: [] })
     await renderRow({ visibility: 'public' })
     await click(tid('make-public-finish'))
     expect(tid('make-public-encryption-unlock')).not.toBeNull()
     await click(tid('make-public-encryption-unlock'))
+    expect(runMakePublic).toHaveBeenCalledTimes(1)
+    viewer.scope = 'full'
+    storage.upload = null
+    await renderRow({ visibility: 'public' })
+    expect(tid('make-public-encryption-unlock')).toBeNull()
+    expect(tid<HTMLButtonElement>('make-public-retry')?.disabled).toBe(true)
+    await click(tid('make-public-retry'))
+    expect(runMakePublic).toHaveBeenCalledTimes(1)
+    storage.upload = async () => ({})
+    await renderRow({ visibility: 'public' })
+    await click(tid('make-public-retry'))
     expect(runMakePublic).toHaveBeenCalledTimes(2)
     expect(runMakePublic.mock.calls[1]![1]).toMatchObject({ resume: true, confirmation: '', mode: 'codeOnly' })
     expect(tid('make-public-done')).not.toBeNull()
@@ -625,13 +685,33 @@ describe('a run that stops says it in plain words (L6)', () => {
     await openDialog(aCheck())
     await click(tid('make-public-mode-codeOnly'))
     type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
-    runMakePublic.mockRejectedValueOnce(new VaultLockedError('unlock to use your encryption key in this tab'))
+    runMakePublic.mockRejectedValueOnce(new EncryptionKeyLockedError())
     await click(confirmButton())
     await click(tid('make-public-encryption-unlock'))
     expect(makePublicCheck).toHaveBeenCalledTimes(2)
     expect(runMakePublic).toHaveBeenCalledTimes(1)
     expect(tid('make-public-run-error')).toBeNull()
     expect(tid<HTMLInputElement>('make-public-words')?.value).toBe('make carol/ledger public')
+  })
+
+  it('renders one encryption prompt when both the form and check failed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      await openDialog(aCheck())
+      await click(tid('make-public-mode-codeOnly'))
+      type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+      runMakePublic.mockRejectedValue(new EncryptionKeyLockedError())
+      await click(confirmButton())
+      makePublicCheck.mockRejectedValue(new EncryptionKeyLockedError())
+      await click(q('[data-testid="make-public-ref"][data-ref="refs/heads/feature"]'))
+      await act(async () => vi.advanceTimersByTime(700))
+      await flush()
+      expect(tid('make-public-check-error')).not.toBeNull()
+      expect(tid('make-public-run-error')).not.toBeNull()
+      expect(document.querySelectorAll('[data-testid="make-public-encryption-unlock"]')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a rotation lost to another maintainer, and a raw error with internal words', async () => {

@@ -94,6 +94,7 @@ import {
 } from '@/lib/view/make-repo-public'
 import { madePublic } from '@/components/repo/conversion-status'
 import { useMergeUpload } from '@/components/repo/merge-upload'
+import { EncryptionKeyLockedError } from '@/lib/auth/vault'
 import { PublicationEncryptionUnlock } from '@/components/repo/publication-encryption-unlock'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useAuth } from '@/contexts/auth-context'
@@ -579,6 +580,13 @@ function MakePublicDialog({
     async (m: MakePublicMode): Promise<void> => {
       const c = contextRef.current
       if (c === null) return
+      const upload = uploadRef.current
+      if (upload.upload === null) {
+        const error = new MakePublicError(upload.storageError ?? 'Reading your storage settings.')
+        setFormError(error)
+        setRun((prev) => (prev === null ? prev : { ...prev, error }))
+        return
+      }
       // never two runs side by side: one still signing (a closed dialog's) settles first
       const end = beginMakePublicRun(c.network, home.repo.repoId)
       if (end === null) {
@@ -602,7 +610,6 @@ function MakePublicDialog({
         error: null,
         outcome: null,
       }))
-      const upload = uploadRef.current
       upload.begin(null)
       const resume = start.kind === 'resume'
       try {
@@ -769,7 +776,7 @@ function MakePublicDialog({
         {run.error !== null ? (
           <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2" data-testid="make-public-run-error">
             <p>{runErrorText(run.error)}</p>
-            {!locked ? <PublicationEncryptionUnlock error={run.error} then={() => void go(run.mode)} /> : null}
+            {!locked && !mergeUpload.storageNeedsUnlock ? <PublicationEncryptionUnlock error={run.error} /> : null}
             <SecretAcks findings={findings} allowed={allowed} onAllow={allow} />
             <Button size="sm" variant="outline" disabled={unacked.length > 0 || locked || !uploadReady} onClick={() => void go(run.mode)} data-testid="make-public-retry">
               Try again
@@ -847,7 +854,6 @@ function MakePublicDialog({
         {checkError !== null ? (
           <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-check-error">
             <p>{runErrorText(checkError, CHECK_STOPPED)}</p>
-            {!locked ? <PublicationEncryptionUnlock error={checkError} then={recheck} /> : null}
             <Button size="sm" variant="outline" onClick={recheck} disabled={checking !== null} data-testid="make-public-recheck">
               Run the check again
             </Button>
@@ -879,18 +885,18 @@ function MakePublicDialog({
         {formError !== null ? (
           <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-run-error">
             <p>{runErrorText(formError)}</p>
-            {!locked ? (
-              <PublicationEncryptionUnlock
-                error={formError}
-                then={() => {
-                  setFormError(null)
-                  recheck()
-                }}
-              />
-            ) : null}
           </div>
         ) : null}
-        {check !== null ? storageNote : null}
+        {!locked && !mergeUpload.storageNeedsUnlock ? (
+          <PublicationEncryptionUnlock
+            error={[checkError, formError].find((error) => error instanceof EncryptionKeyLockedError)}
+            then={() => {
+              setFormError(null)
+              recheck()
+            }}
+          />
+        ) : null}
+        {check !== null || checkError !== null ? storageNote : null}
         {check !== null ? (
           <div className="space-y-1.5">
             {startOver !== undefined ? (

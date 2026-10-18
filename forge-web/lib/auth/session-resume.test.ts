@@ -13,6 +13,9 @@ import { NETWORKS } from '../constants'
 import { idbEntries, idbGet, idbPut, resetMemoryStores } from '../idb'
 import {
   AUTO_LOCK_MS,
+  EncryptionKeyLockedError,
+  VaultLockedError,
+  withEncryptionKeys,
   applyOtherTabEvent,
   forgetVault,
   holdForSession,
@@ -193,7 +196,11 @@ describe('what is kept: the signing key only', () => {
     releaseUnlocked()
     const resumed = await resumeVault(NET)
     expect(resumed?.secret.extra).toBeUndefined()
-    await expect(withEncryptionKey(NET, ID, async () => 'x')).rejects.toThrow(/unlock to use your encryption key/)
+    for (const accessKeys of [withEncryptionKey, withEncryptionKeys]) {
+      await expect(accessKeys(NET, ID, async () => 'x')).rejects.toBeInstanceOf(EncryptionKeyLockedError)
+      await expect(accessKeys(NET, ID, async () => 'x')).rejects.toBeInstanceOf(VaultLockedError)
+      await expect(accessKeys(NET, ID, async () => 'x')).rejects.toThrow('unlock to use your encryption key in this tab')
+    }
     await expect(readStorageBlob(NET, ID)).rejects.toThrow(/unlock/)
   }, 30_000)
 
