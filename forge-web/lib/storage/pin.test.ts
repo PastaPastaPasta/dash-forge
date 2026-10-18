@@ -4,13 +4,15 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import type { PackManifest } from '../repo/packs'
 import type { RepoRef } from '../repo/contract'
+import { base58Encode } from '../auth/base58'
 import { cidV1RawLeaves } from './cid'
 import { cidOfUri, enumeratePinTargets, pinRepo, readPinPlan, PIN_IN_FLIGHT_BYTES, WEB_PIN_MAX_BYTES, type PinPlan, type PinProgress, type PinTarget } from './pin'
 import { validatePairResponse } from './kubo-connect'
 
-const reads = vi.hoisted(() => ({ packs: vi.fn(), releases: vi.fn(), role: vi.fn(), access: vi.fn(), mirrors: vi.fn(), bytes: vi.fn(), list: vi.fn() }))
+const reads = vi.hoisted(() => ({ packs: vi.fn(), releases: vi.fn(), role: vi.fn(), access: vi.fn(), mirrors: vi.fn(), bytes: vi.fn(), list: vi.fn(), grants: vi.fn(async () => []) }))
 vi.mock('../repo/packs', async (load) => ({ ...await load<object>(), readRepoPackManifests: reads.packs }))
 vi.mock('../repo/releases', async (load) => ({ ...await load<object>(), readReleases: reads.releases }))
+vi.mock('../repo/push-grants', () => ({ readPushGrants: reads.grants }))
 vi.mock('../repo/members', () => ({ readRoleOracle: async () => ({ currentRole: reads.role }) }))
 vi.mock('../repo/pack-mirrors', () => ({ mirrorUrisOf: reads.mirrors }))
 vi.mock('../view/browse-source', () => ({ loadArtifactBytesProgress: reads.bytes, pinArtifactAccess: reads.access }))
@@ -23,18 +25,18 @@ const bytes = new TextEncoder().encode('the repo pack bytes')
 const cid = cidV1RawLeaves(bytes)
 const hash = bytesToHex(sha256(bytes))
 const other = cidV1RawLeaves(new TextEncoder().encode('another importer CID'))
-const target = (patch: Partial<PinTarget> = {}): PinTarget => ({ cid, sizeBytes: bytes.length, sha256: hash, what: 'pack abc', private: false, ...patch })
-const plan = (...targets: PinTarget[]): PinPlan => ({ targets, sizeBytes: targets.reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs: 0, membersOnlySkipped: 0, unverifiableSkipped: 0, requiresConsent: targets.some((t) => t.private) })
+const target = (patch: Partial<PinTarget> = {}): PinTarget => ({ cid, candidates: [{ cid: patch.cid ?? cid, authorized: true }], sizeBytes: bytes.length, sha256: hash, what: 'pack abc', private: false, ...patch })
+const plan = (...targets: PinTarget[]): PinPlan => ({ targets, sizeBytes: targets.reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs: 0, membersOnlySkipped: 0, unverifiableSkipped: 0, unavailableSkipped: 0, invalidCidsSkipped: 0, requiresConsent: targets.some((t) => t.private) })
 const manifest = (patch: Partial<PackManifest> = {}): PackManifest => ({ packHash: hash, kind: 0, sizeBytes: bytes.length, objectCount: 1, chunkCount: 0, storage: 1, uris: [`ipfs://${cid}`], tips: [], supersedes: [], createdAt: 1, documentId: 'auth', uploader: 'owner', ownerRole: 'maintainer', ...patch })
 const access = async (): Promise<{ readable: boolean; private: boolean }> => ({ readable: true, private: false })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.clearAllMocks() })
 
-function fakeNode(options: { already?: boolean; swarm?: string; addCid?: string; status?: number } = {}) {
+function fakeNode(options: { already?: boolean; swarm?: string; addCid?: string; status?: number; responseCid?: string } = {}) {
   let pinned = options.already ?? false
   const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     expect(init?.credentials).toBe('omit'); expect(init?.redirect).toBe('error')
     const u = new URL(String(url))
-    if (u.pathname === '/api/v0/pin/ls') return pinned ? Response.json({ Keys: { [u.searchParams.get('arg')!]: { Type: 'recursive' } } }) : Response.json({ Message: 'not pinned or pinned indirectly' }, { status: 500 })
+    if (u.pathname === '/api/v0/pin/ls') return pinned ? Response.json({ Keys: { [options.responseCid ?? u.searchParams.get('arg')!]: { Type: 'recursive' } } }) : Response.json({ Message: 'not pinned or pinned indirectly' }, { status: 500 })
     if (u.pathname === '/api/v0/add') { pinned = true; return Response.json({ Hash: options.addCid ?? cid }) }
     if (u.pathname === '/api/v0/pin/add') return new Response(options.swarm ?? JSON.stringify({ Pins: [u.searchParams.get('arg')] }) + '\n', { status: options.status ?? 200 })
     if (u.pathname === '/api/v0/pin/rm') return Response.json({ Pins: [u.searchParams.get('arg')] })
@@ -51,8 +53,8 @@ describe('authorized pin targets', () => {
     expect(cidOfUri('https://example/other')).toBeNull(); expect(cidOfUri('ipfs://not-a-cid!')).toBeNull()
   })
   it('strangers only add copies to an authorized hash, never metadata or a new target', async () => {
-    const p = await enumeratePinTargets({ manifests: [manifest(), manifest({ documentId: 'stranger-copy', ownerRole: null, sizeBytes: 99999, uris: [`https://gw.example/ipfs/${other}`] }), manifest({ documentId: 'junk', packHash: 'ab'.repeat(32), ownerRole: null, uris: [`ipfs://${cidV1RawLeaves(new Uint8Array([123]))}`] })], access })
-    expect(p.targets.map((t) => t.cid)).toEqual([cid, other]); expect(p.targets.map((t) => t.sizeBytes)).toEqual([bytes.length, bytes.length])
+    const p = await enumeratePinTargets({ manifests: [manifest(), manifest({ documentId: 'stranger-copy', ownerRole: null, uris: [`https://gw.example/ipfs/${other}`] }), manifest({ documentId: 'junk', packHash: 'ab'.repeat(32), ownerRole: null, uris: [`ipfs://${cidV1RawLeaves(new Uint8Array([123]))}`] })], access })
+    expect(p.targets).toHaveLength(1); expect(p.targets[0]?.candidates).toEqual([{ cid, authorized: true }, { cid: other, authorized: false }]); expect(p.sizeBytes).toBe(bytes.length)
   })
   it('deduplicates CID copies, includes superseded packs, and counts non-IPFS and keyed skips', async () => {
     const p = await enumeratePinTargets({ manifests: [manifest(), manifest({ documentId: 'copy', uris: [`https://gw.example/ipfs/${cid}`] }), manifest({ documentId: 'older', packHash: 'a'.repeat(64), uris: ['https://bucket.example/blob'] }), manifest({ documentId: 'private', kind: 64, packHash: 'b'.repeat(64), supersedes: [hash] })], access: async (m) => ({ readable: m.kind !== 64, private: m.kind === 64 }) })
@@ -61,6 +63,49 @@ describe('authorized pin targets', () => {
   it('includes mirror CIDs and release assets, and requires consent for sealed bytes', async () => {
     const p = await enumeratePinTargets({ manifests: [manifest()], access: async () => ({ readable: true, private: true }), mirrors: async () => [`ipfs://${other}`], assets: [{ name: 'file', sha256: hash, size: bytes.length, uris: [`ipfs://${cid}`] }] })
     expect(p.targets).toHaveLength(2); expect(p.requiresConsent).toBe(true)
+  })
+  it('uses any authorized copy, including bots, instead of a higher-ranked triage copy', async () => {
+    const p = await enumeratePinTargets({ manifests: [manifest({ documentId: 'triage', ownerRole: 'triage', kind: 64, sizeBytes: 9000 }), manifest({ documentId: 'bot', ownerRole: 'bot', kind: 0 })], access })
+    expect(p.targets).toHaveLength(1)
+    expect(p.targets[0]).toMatchObject({ sizeBytes: bytes.length, pack: { kind: 0, ownerRole: 'bot' }, candidates: [{ cid, authorized: true }] })
+  })
+  it('drops conflicting stranger candidates without poisoning authorized metadata', async () => {
+    const p = await enumeratePinTargets({ manifests: [manifest({ documentId: 'a', packHash: 'ab'.repeat(32), uris: ['https://copy/a'] }), manifest({ documentId: 'stranger', packHash: 'ab'.repeat(32), ownerRole: null }), manifest({ documentId: 'real' }), manifest({ documentId: 'bad-size', ownerRole: null, sizeBytes: 9999, uris: [`ipfs://${other}`] })], access })
+    expect(p.targets).toHaveLength(1)
+    expect(p.targets[0]).toMatchObject({ sha256: hash, sizeBytes: bytes.length, candidates: [{ cid, authorized: true }] })
+  })
+  it('counts CID-less and unreachable packs, and checks at most four headers concurrently', async () => {
+    let active = 0, peak = 0
+    const check = vi.fn(async (m: PackManifest) => {
+      active++; peak = Math.max(peak, active)
+      await new Promise((r) => setTimeout(r, 5)); active--
+      if (m.kind === 1) throw new Error('unreachable')
+      return { readable: true, private: false }
+    })
+    const manifests = Array.from({ length: 9 }, (_, i) => manifest({ documentId: String(i), packHash: i.toString(16).repeat(64), kind: i === 1 ? 1 : 0, uris: [`ipfs://${cidV1RawLeaves(new Uint8Array([i]))}`] }))
+    manifests.push(manifest({ documentId: 'no-cid', packHash: 'f'.repeat(64), uris: ['https://copy/blob'] }))
+    const p = await enumeratePinTargets({ manifests, access: check })
+    expect(peak).toBe(4); expect(check).toHaveBeenCalledTimes(9)
+    expect(p).toMatchObject({ notOnIpfs: 1, unavailableSkipped: 1 })
+    expect(p.targets).toHaveLength(8)
+  })
+  it('normalizes encoded CID copies and counts invalid IPFS addresses', async () => {
+    const encoded = 'z' + base58Encode(Uint8Array.from([1, 0x55, 0x12, 32, ...sha256(bytes)]))
+    const p = await enumeratePinTargets({ manifests: [manifest({ uris: [`ipfs://${encoded}`, `ipfs://${cid.toUpperCase()}`, 'ipfs://junk', 'https://gw/ipfs/alsojunk'] })], access })
+    expect(p.targets[0]?.candidates).toEqual([{ cid, authorized: true }]); expect(p.invalidCidsSkipped).toBe(2)
+  })
+  it('includes a granted bot and the owner even when the role reader has no row', async () => {
+    reads.packs.mockResolvedValue([manifest({ uploader: 'grant-bot', ownerRole: null }), manifest({ uploader: 'owner', ownerRole: null, documentId: 'owner-copy' })])
+    reads.grants.mockResolvedValueOnce([{ bot: 'grant-bot', granter: 'owner', until: Date.now() + 10000 }] as never)
+    reads.releases.mockResolvedValue({ current: [], previous: [] }); reads.role.mockReturnValue(null); reads.access.mockResolvedValue({ readable: true, private: false }); reads.mirrors.mockResolvedValue([])
+    const p = await readPinPlan(sdk, repo)
+    expect(p.targets).toHaveLength(1); expect(p.targets[0]?.pack?.copies?.map((m) => m.ownerRole)).toEqual(['maintainer', 'bot'])
+  })
+  it('never falls back to plaintext metadata in a sealed release list', async () => {
+    reads.packs.mockResolvedValue([]); reads.role.mockReturnValue('maintainer'); reads.releases.mockResolvedValue({ current: [{ publisher: 'owner', assets: [], sealed: { fields: { assetManifest: hash } } }], previous: [] })
+    reads.list.mockResolvedValue({ assets: [{ name: 'missing-sealed-hash', sha256: hash, sizeBytes: bytes.length, uris: [`ipfs://${cid}`] }] })
+    const p = await readPinPlan(sdk, { ...repo, session: { reader: 'owner', closed: false, ctx: { keys: {} } } } as unknown as RepoRef)
+    expect(p.targets).toHaveLength(0); expect(p.unverifiableSkipped).toBe(1)
   })
   it('counts release files without enough metadata to verify or bound them', async () => {
     const p = await enumeratePinTargets({ manifests: [], access, assets: [{ name: 'no-size', sha256: hash, size: null, uris: [`ipfs://${cid}`] }, { name: 'no-hash', sha256: '', size: 1, uris: [`ipfs://${other}`] }] })
@@ -100,6 +145,44 @@ describe('resumable bounded pinning', () => {
     expect(result.pinned).toBe(1)
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/pin/add?'))).toBe(true)
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/v0/add?'))).toBe(false)
+  })
+  it.each([[false, false], [true, false], [false, true], [true, true]])('never swarms an untrusted candidate (matches: %s, mirror: %s)', async (matches, mirror) => {
+    const fetch = fakeNode()
+    const candidate = matches ? cid : other
+    const p = await enumeratePinTargets({ manifests: [manifest({ uris: ['https://bucket/pack'] }), ...(!mirror ? [manifest({ documentId: 'extra', ownerRole: null, uris: [`ipfs://${candidate}`] })] : [])], mirrors: async () => mirror ? [`ipfs://${candidate}`] : [], access })
+    const result = await pinRepo(sdk, repo, profile, p, { fetchBytes: async () => bytes })
+    expect(result.pinned).toBe(matches ? 1 : 0); expect(result.failed).toBe(matches ? 0 : 1)
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/pin/add?'))).toBe(false)
+  })
+  it('does not swarm a stranger-only large candidate', async () => {
+    const fetch = fakeNode()
+    const result = await pinRepo(sdk, repo, profile, plan(target({ sizeBytes: PIN_IN_FLIGHT_BYTES + 1, candidates: [{ cid, authorized: false }] })))
+    expect(result.failed).toBe(1); expect(fetch).not.toHaveBeenCalled()
+  })
+  it('tries authorized swarm candidates in order and never tries the stranger fallback', async () => {
+    const rows: PinProgress[] = []
+    const third = cidV1RawLeaves(new Uint8Array([99]))
+    const fetch = fakeNode()
+    fetch.mockImplementation(async (url) => String(url).includes('/pin/add?') ? (String(url).includes(`arg=${other}`) ? Response.json({}, { status: 500 }) : Response.json({ Pins: [third] })) : String(url).includes('/pin/rm?') ? Response.json({}) : Response.json({ Message: 'not pinned' }, { status: 500 }))
+    const result = await pinRepo(sdk, repo, profile, plan(target({ candidates: [{ cid: other, authorized: true }, { cid: third, authorized: true }, { cid, authorized: false }], sizeBytes: PIN_IN_FLIGHT_BYTES + 1 })), { onProgress: (row) => rows.push(row) })
+    expect(result.pinned).toBe(1); expect(rows.at(-1)?.cid).toBe(third)
+    expect(fetch.mock.calls.filter(([url]) => String(url).includes('/pin/add?')).map(([url]) => new URL(String(url)).searchParams.get('arg'))).toEqual([other, third])
+  })
+  it.each([
+    [{ Progress: 99999, Bytes: 1 }, 1],
+    [{ Progress: 1 }, 1],
+    [{ Progress: 2 }, 0],
+    [{ Bytes: 1048576 + 1000 }, 0],
+  ])('bounds swarm progress %j with bytes or one-MiB blocks', async (progress, pinned) => {
+    fakeNode({ swarm: JSON.stringify(progress) + '\n' + JSON.stringify({ Pins: [other] }) + '\n' })
+    expect((await pinRepo(sdk, repo, profile, plan(target({ cid: other })), { fetchBytes: async () => bytes })).pinned).toBe(pinned)
+  })
+  it('compares pin/ls and pin/add results in their normalized encoding', async () => {
+    const encoded = 'z' + base58Encode(Uint8Array.from([1, 0x55, 0x12, 32, ...sha256(bytes)]))
+    fakeNode({ already: true, responseCid: encoded })
+    expect((await pinRepo(sdk, repo, profile, plan(target()))).already).toBe(1)
+    fakeNode({ swarm: JSON.stringify({ Pins: [encoded] }) })
+    expect((await pinRepo(sdk, repo, profile, plan(target({ sizeBytes: PIN_IN_FLIGHT_BYTES + 1 })))).pinned).toBe(1)
   })
   it('aborts excessive swarm blocks and removes the pin', async () => {
     const fetch = fakeNode({ swarm: '{"Progress":99999}\n' }); const rows: PinProgress[] = []

@@ -2630,7 +2630,7 @@ export function resetBrowseCache(): void {
 }
 
 /** Inspect the stored header before offering a pin, using the browse reader's held keys. */
-export async function pinArtifactAccess(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest): Promise<{ readable: boolean; private: boolean }> {
+export async function pinArtifactAccess(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest): Promise<{ readable: boolean; private: boolean; unavailable?: boolean }> {
   if (repo.visibility === 'private' && (!repo.session || repo.session.closed)) return { readable: false, private: true }
   if (manifest.kind === PACK_KIND.MEMBERS_GIT_PACK && (!membersLane(repo) || membersLane(repo)?.closed)) return { readable: false, private: true }
   let head = await packHead(sdk, repo, manifest.copies ?? [manifest])
@@ -2638,7 +2638,7 @@ export async function pinArtifactAccess(sdk: EvoSDK, repo: RepoRef, manifest: Pa
     const uris = await mirrorUrisOf(sdk, repo, manifest)
     if (uris.length) head = await packHead(sdk, repo, [mirrorCopy(manifest, uris)])
   }
-  if (head === null) throw new Error(`Could not check the key for pack ${manifest.packHash.slice(0, 12)}…; try again when a copy is reachable.`)
+  if (head === null) return { readable: false, private: true, unavailable: true }
   const branch = sniffBranchKcv(head)
   if (branch !== null) return { readable: (await branchRingFor(sdk, repo))?.ring.branchOfKcv(branch) !== undefined, private: true }
   const h = sniff(head)

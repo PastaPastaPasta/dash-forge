@@ -47,7 +47,7 @@ export function useRepoPin(repo: RepoRef, { onlyWithProfile = false }: { onlyWit
     controller.current = run
     setRunning(true); setError(null); setRows({}); setSummary(null)
     try {
-      const done = await pinRepo(live.sdk, live.repo, live.profile, live.plan, { consent, signal: run.signal, onProgress: (row) => setRows((prev) => ({ ...prev, [row.cid]: row })) })
+      const done = await pinRepo(live.sdk, live.repo, live.profile, live.plan, { consent, signal: run.signal, onProgress: (row) => setRows((prev) => ({ ...prev, [row.index]: row })) })
       setSummary(done)
     } catch (e) { setError(errText(e)) } finally { setRunning(false); controller.current = null }
   }

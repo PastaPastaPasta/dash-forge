@@ -50,3 +50,13 @@ describe('a dialog’s pin lifetime', () => {
     expect(state.planHook.mock.calls.at(-1)![2].enabled).toBe(false)
   })
 })
+
+it('keeps progress for separate packs sharing a CID, by plan index', async () => {
+  state.pin.mockImplementation(async (_sdk, _repo, _profile, _plan, opts) => {
+    opts.onProgress({ event: 'blob', index: 1, total: 2, cid: 'same-cid', what: 'pack one', sizeBytes: 1, state: 'pinned' })
+    opts.onProgress({ event: 'blob', index: 2, total: 2, cid: 'same-cid', what: 'pack two', sizeBytes: 1, state: 'already' })
+    return { pinned: 1, already: 1, failed: 0, sizeBytes: 2 }
+  })
+  await render(); await act(async () => view.start(false))
+  expect(view.rows.map((r) => r.what)).toEqual(['pack one', 'pack two'])
+})

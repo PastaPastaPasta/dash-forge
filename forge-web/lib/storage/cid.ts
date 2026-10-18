@@ -5,6 +5,7 @@
  * re-derivation, so the CID a manifest records is a second integrity check next to its sha256.
  */
 
+import { base58Decode } from '../auth/base58'
 import { sha256 } from '@noble/hashes/sha2.js'
 
 /** kubo's fixed-size chunker (`size-262144`). */
@@ -118,4 +119,63 @@ export function cidV1RawLeaves(bytes: Uint8Array): string {
 /** Whether `s` is a plausible CID (base-encoded: letters and digits only). */
 export function isCid(s: string): boolean {
   return /^[A-Za-z0-9]+$/.test(s)
+}
+
+/** Parse a CID and use one spelling for comparisons, including CIDv0 dag-pb roots. */
+export function normalizeCid(value: string): string | null {
+  if (!value || value.length > 1024) return null
+  try {
+    let bytes: Uint8Array
+    if (value.startsWith('Qm')) {
+      bytes = base58Decode(value)
+      if (bytes.length !== 34 || bytes[0] !== 0x12 || bytes[1] !== 32) return null
+      return base32(Uint8Array.from([1, CODEC_DAG_PB, ...bytes]))
+    }
+    const prefix = value[0]
+    const body = value.slice(1)
+    if (prefix === 'z') bytes = base58Decode(body)
+    else if (prefix === 'b' || prefix === 'B') {
+      const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'
+      let buffer = 0, bits = 0
+      const out: number[] = []
+      for (const char of body.toLowerCase()) {
+        const digit = alphabet.indexOf(char)
+        if (digit < 0) return null
+        buffer = (buffer << 5) | digit; bits += 5
+        if (bits >= 8) { bits -= 8; out.push((buffer >> bits) & 255) }
+      }
+      if (bits >= 5 || (buffer & ((1 << bits) - 1)) !== 0) return null
+      bytes = Uint8Array.from(out)
+    } else if (prefix === 'k' || prefix === 'K') {
+      if (!/^[0-9a-z]+$/i.test(body)) return null
+      let number = 0n
+      for (const char of body.toLowerCase()) number = number * 36n + BigInt(parseInt(char, 36))
+      const out: number[] = []
+      while (number > 0n) { out.unshift(Number(number & 255n)); number >>= 8n }
+      bytes = Uint8Array.from(out)
+    } else if (prefix === 'f' || prefix === 'F') {
+      if (!/^(?:[0-9a-f]{2})+$/i.test(body)) return null
+      bytes = Uint8Array.from(body.match(/../g)!, (s) => parseInt(s, 16))
+    } else return null
+    let at = 0
+    const read = (): number => {
+      let result = 0, scale = 1
+      for (let i = 0; i < 8; i++) {
+        const byte = bytes[at++]
+        if (byte === undefined) throw new Error('truncated CID')
+        result += (byte & 127) * scale
+        if (!Number.isSafeInteger(result)) throw new Error('invalid CID varint')
+        if (byte < 128) {
+          if (i > 0 && byte === 0) throw new Error('noncanonical CID varint')
+          return result
+        }
+        scale *= 128
+      }
+      throw new Error('invalid CID varint')
+    }
+    if (read() !== 1 || read() === 0) return null
+    const hash = read(), size = read()
+    if (size !== bytes.length - at || (hash === MH_SHA2_256 && size !== 32)) return null
+    return base32(bytes)
+  } catch { return null }
 }

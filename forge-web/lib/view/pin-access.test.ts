@@ -6,6 +6,7 @@ import type { PackManifest } from '../repo/packs'
 import { pinArtifactAccess, resetExternalFetchState } from './browse-source'
 
 const branch = vi.hoisted(() => ({ read: vi.fn() }))
+vi.mock('../repo/pack-mirrors', () => ({ mirrorUrisOf: async () => [], resetMirrorUris: () => undefined }))
 vi.mock('../repo/branch-ring', () => ({ branchRingFor: branch.read }))
 const sdk = {} as EvoSDK
 const repo = { forge: { core: 'core' }, repoId: 'r', ownerId: 'owner', name: 'repo', visibility: 'public' } as RepoRef
@@ -43,6 +44,10 @@ describe('pinning follows the reader’s held keys', () => {
     expect((await pinArtifactAccess(sdk, repo, pack)).readable).toBe(false)
     branch.read.mockResolvedValue({ ring: { branchOfKcv: () => 'branch' } })
     expect(await pinArtifactAccess(sdk, { ...repo, lane: session([1]) }, { ...pack, kind: 64 })).toEqual({ readable: true, private: true })
+  })
+  it('reports an unreachable header as skipped instead of throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    expect(await pinArtifactAccess(sdk, repo, pack)).toMatchObject({ readable: false, unavailable: true })
   })
   it('skips unknown sealed formats', async () => {
     serve(9)

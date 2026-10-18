@@ -5,13 +5,14 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import type { RepoRef } from '../repo/contract'
 import { readRepoPackManifests, packsOfKind, type PackManifest } from '../repo/packs'
 import { readReleases, type ReleaseAssetView } from '../repo/releases'
+import { readPushGrants } from '../repo/push-grants'
 import { readRoleOracle } from '../repo/members'
 import { mirrorUrisOf } from '../repo/pack-mirrors'
 import { loadArtifactBytesProgress, pinArtifactAccess } from '../view/browse-source'
 import { downloadVerifiedAsset, loadReleaseManifest } from '../view/release-download'
 import { isApprover } from '../rules/v2'
-import { cidV1RawLeaves, isCid } from './cid'
-import { addVerified, unpin, type IpfsSettings } from './ipfs'
+import { cidV1RawLeaves, normalizeCid } from './cid'
+import { addVerified, apiAddressSpace, unpin, type IpfsSettings } from './ipfs'
 import { profileProblem, type StorageProfile } from './profiles'
 import { errText } from './util'
 
@@ -21,6 +22,7 @@ const PIN_TIMEOUT_MS = 120_000
 
 export interface PinTarget {
   readonly cid: string
+  readonly candidates: readonly { readonly cid: string; readonly authorized: boolean }[]
   readonly sizeBytes: number
   readonly sha256: string
   readonly what: string
@@ -33,67 +35,92 @@ export interface PinPlan {
   readonly sizeBytes: number
   readonly notOnIpfs: number
   readonly membersOnlySkipped: number
+  readonly unavailableSkipped: number
+  readonly invalidCidsSkipped: number
   readonly unverifiableSkipped: number
   readonly requiresConsent: boolean
 }
 
-export function cidOfUri(uri: string): string | null {
-  let candidate: string | undefined
-  if (uri.startsWith('ipfs://')) candidate = uri.slice(7).split(/[/?#]/)[0]
-  else {
-    try { candidate = /^\/ipfs\/([^/]+)/.exec(new URL(uri).pathname)?.[1] } catch { return null }
-  }
-  return candidate && isCid(candidate) ? candidate : null
+function uriCid(uri: string): string | null {
+  if (uri.startsWith('ipfs://')) return uri.slice(7).split(/[/?#]/)[0] ?? ''
+  try { return /^\/ipfs\/([^/]+)/.exec(new URL(uri).pathname)?.[1] ?? null } catch { return null }
 }
+
+export function cidOfUri(uri: string): string | null {
+  const cid = uriCid(uri)
+  return cid === null ? null : normalizeCid(cid)
+}
+
+const authorizedRole = (m: PackManifest): boolean => isApprover(m.ownerRole) || m.ownerRole === 'bot'
 
 /** Pure inputs with injectable key/mirror reads, so the CLI's shared vectors can exercise it. */
 export async function enumeratePinTargets(input: {
   readonly manifests: readonly PackManifest[]
   readonly assets?: readonly (ReleaseAssetView & { readonly private?: boolean })[]
-  readonly access: (pack: PackManifest) => Promise<{ readable: boolean; private: boolean }>
+  readonly access: (pack: PackManifest) => Promise<{ readable: boolean; private: boolean; unavailable?: boolean }>
   readonly mirrors?: (pack: PackManifest) => Promise<readonly string[]>
 }): Promise<PinPlan> {
-  // Anyone may write manifests. Only an authorized writer may introduce a new hash or metadata.
-  const accepted = new Set(input.manifests.filter((m) => isApprover(m.ownerRole)).map((m) => m.packHash.toLowerCase()))
-  const copies = input.manifests.filter((m) => accepted.has(m.packHash.toLowerCase()))
-  const targets = new Map<string, PinTarget>()
-  let notOnIpfs = 0
-  let membersOnlySkipped = 0
-  let unverifiableSkipped = 0
-  const add = (uris: readonly string[], target: Omit<PinTarget, 'cid'>): void => {
-    let any = false
-    for (const uri of uris) {
-      const cid = cidOfUri(uri)
-      if (cid === null) continue
-      any = true
-      const prior = targets.get(cid)
-      if (prior && (prior.sizeBytes !== target.sizeBytes || prior.sha256 !== target.sha256)) throw new Error('Conflicting sizes or hashes recorded for an IPFS file.')
-      targets.set(cid, prior ? { ...prior, private: prior.private || target.private } : { ...target, cid })
-    }
-    if (!any) notOnIpfs++
-  }
-  for (const kind of [...new Set(copies.map((m) => m.kind))].sort((a, b) => a - b)) {
-    for (const ranked of packsOfKind(copies, kind)) {
-      if (!isApprover(ranked.ownerRole)) continue
-      if (!Number.isSafeInteger(ranked.sizeBytes) || ranked.sizeBytes < 0) throw new Error('Invalid pack size recorded by a writer.')
-      // A stranger can offer locations for the same bytes, never a larger allocation budget.
-      const pack = { ...ranked, copies: (ranked.copies ?? [ranked]).map((c) => ({ ...c, sizeBytes: ranked.sizeBytes })) }
-      const access = await input.access(pack)
+  // Choose metadata from authorized copies, even when the reader ranks a triage copy first.
+  const authorized = input.manifests.filter(authorizedRole)
+  const packs = [...new Set(authorized.map((m) => m.kind))].sort((a, b) => a - b).flatMap((kind) => packsOfKind(authorized, kind))
+  const pending: PinTarget[] = []
+  let notOnIpfs = 0, membersOnlySkipped = 0, unverifiableSkipped = 0, unavailableSkipped = 0, invalidCidsSkipped = 0
+  const candidatesOf = (uris: readonly string[], trusted: boolean): PinTarget['candidates'] => uris.flatMap((uri) => {
+    const raw = uriCid(uri)
+    if (raw === null) return []
+    const cid = normalizeCid(raw)
+    if (cid === null) { invalidCidsSkipped++; return [] }
+    return [{ cid, authorized: trusted }]
+  })
+  // Reserve each result's place so parallel header completion never changes candidate priority.
+  const results: (PinTarget | undefined)[] = new Array(packs.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(4, packs.length) }, async () => {
+    for (;;) {
+      const index = next++
+      const ranked = packs[index]
+      if (!ranked) return
+      if (!Number.isSafeInteger(ranked.sizeBytes) || ranked.sizeBytes < 0 || !/^[0-9a-f]{64}$/i.test(ranked.packHash)) { unverifiableSkipped++; continue }
+      const copies = input.manifests.filter((m) => m.packHash.toLowerCase() === ranked.packHash.toLowerCase() && m.kind === ranked.kind)
+      const pack = { ...ranked, copies: [...(ranked.copies ?? [ranked]), ...copies.filter((m) => !authorizedRole(m))].map((m) => ({ ...m, sizeBytes: ranked.sizeBytes })) }
+      const candidates = copies.filter((m) => m.sizeBytes === ranked.sizeBytes).sort((a, b) => Number(authorizedRole(b)) - Number(authorizedRole(a))).flatMap((m) => candidatesOf(m.uris, authorizedRole(m)))
+      try { candidates.push(...candidatesOf(await input.mirrors?.(pack) ?? [], false)) } catch { /* Other recorded copies can still be used. */ }
+      if (!candidates.length) { notOnIpfs++; continue }
+      let access: Awaited<ReturnType<typeof input.access>>
+      try { access = await input.access(pack) } catch { unavailableSkipped++; continue }
+      if (access.unavailable) { unavailableSkipped++; continue }
       if (!access.readable) { membersOnlySkipped++; continue }
-      const uris = [...(pack.copies ?? [pack]).flatMap((m) => m.uris), ...(await input.mirrors?.(pack) ?? [])]
-      add(uris, { sizeBytes: pack.sizeBytes, sha256: pack.packHash.toLowerCase(), what: `pack ${pack.packHash.slice(0, 12)}…`, private: access.private, pack })
+      results[index] = { cid: candidates[0]!.cid, candidates, sizeBytes: pack.sizeBytes, sha256: pack.packHash.toLowerCase(), what: `pack ${pack.packHash.slice(0, 12)}…`, private: access.private, pack }
     }
-  }
+  }))
+  pending.push(...results.filter((t): t is PinTarget => t !== undefined))
   for (const asset of input.assets ?? []) {
     if (asset.size === null || !Number.isSafeInteger(asset.size) || asset.size < 0 || !/^[0-9a-f]{64}$/.test(asset.sha256)) { unverifiableSkipped++; continue }
-    add(asset.uris, { sizeBytes: asset.size, sha256: asset.sha256, what: `asset ${asset.name}`, private: asset.private === true, asset })
+    const candidates = candidatesOf(asset.uris, true)
+    if (!candidates.length) { notOnIpfs++; continue }
+    pending.push({ cid: candidates[0]!.cid, candidates, sizeBytes: asset.size, sha256: asset.sha256, what: `asset ${asset.name}`, private: asset.private === true, asset })
   }
-  return { targets: [...targets.values()], sizeBytes: [...targets.values()].reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs, membersOnlySkipped, unverifiableSkipped, requiresConsent: [...targets.values()].some((t) => t.private) }
+  // A stranger cannot poison another pack by claiming its CID with conflicting metadata.
+  const metadata = new Map<string, PinTarget>()
+  for (const trusted of [true, false]) for (const target of pending) for (const c of target.candidates) {
+    if (c.authorized === trusted && !metadata.has(c.cid)) metadata.set(c.cid, target)
+  }
+  const targets = pending.flatMap((target) => {
+    const seen = new Set<string>()
+    const candidates = target.candidates.filter((c) => {
+      const preferred = metadata.get(c.cid)!
+      if (preferred.sizeBytes !== target.sizeBytes || preferred.sha256 !== target.sha256 || seen.has(c.cid)) return false
+      seen.add(c.cid); return true
+    })
+    if (!candidates.length) { notOnIpfs++; return [] }
+    return [{ ...target, cid: candidates[0]!.cid, candidates }]
+  })
+  return { targets, sizeBytes: targets.reduce((n, t) => n + t.sizeBytes, 0), notOnIpfs, membersOnlySkipped, unverifiableSkipped, unavailableSkipped, invalidCidsSkipped, requiresConsent: targets.some((t) => t.private) }
 }
 
 export async function readPinPlan(sdk: EvoSDK, repo: RepoRef): Promise<PinPlan> {
   if (repo.visibility === 'private' && (!repo.session || repo.session.closed)) throw new Error('Only members with this repository’s key can pin its files.')
-  const [manifests, releases, oracle] = await Promise.all([readRepoPackManifests(sdk, repo), readReleases(sdk, repo), readRoleOracle(sdk, repo)])
+  const [manifests, releases, oracle, grants] = await Promise.all([readRepoPackManifests(sdk, repo), readReleases(sdk, repo), readRoleOracle(sdk, repo), readPushGrants(sdk, repo)])
   if (repo.visibility === 'private' && !oracle.currentRole(repo.session!.reader)) throw new Error('Only members can pin a private repository.')
   const assets: (ReleaseAssetView & { private?: boolean })[] = []
   for (const release of [...releases.current, ...releases.previous]) {
@@ -104,11 +131,13 @@ export async function readPinPlan(sdk: EvoSDK, repo: RepoRef): Promise<PinPlan> 
       for (const a of list.assets) {
         // Pin the encrypted object, verified against its sealed hash, never the plaintext file.
         if (a.sealedSha256 !== undefined && a.sealedSizeBytes !== undefined) assets.push({ name: a.name, sha256: a.sealedSha256, size: a.sealedSizeBytes, uris: a.uris, private: true })
-        else assets.push({ name: a.name, sha256: a.sha256, size: a.sizeBytes, uris: a.uris })
+        else assets.push({ name: a.name, sha256: '', size: null, uris: a.uris, private: true })
       }
     }
   }
-  return enumeratePinTargets({ manifests, assets, access: (p) => pinArtifactAccess(sdk, repo, p), mirrors: (p) => mirrorUrisOf(sdk, repo, p) })
+  const bots = new Set(grants.filter((g) => g.until > Date.now() && (g.granter === repo.ownerId || oracle.currentRole(g.granter) === 'maintainer')).map((g) => g.bot))
+  const authorizedManifests = manifests.map((m) => m.uploader === repo.ownerId ? { ...m, ownerRole: 'maintainer' as const } : bots.has(m.uploader) ? { ...m, ownerRole: 'bot' as const } : m)
+  return enumeratePinTargets({ manifests: authorizedManifests, assets, access: (p) => pinArtifactAccess(sdk, repo, p), mirrors: (p) => mirrorUrisOf(sdk, repo, p) })
 }
 
 export type PinState = 'pinning' | 'pinned' | 'already' | 'failed'
@@ -128,7 +157,7 @@ async function nodePost(profile: StorageProfile, path: string, signal?: AbortSig
   const s = profile.settings as IpfsSettings
   return fetch(`${s.api.replace(/\/+$/, '')}/api/v0/${path}`, {
     method: 'POST', headers: profile.secrets.apiAuth ? { authorization: profile.secrets.apiAuth } : {},
-    credentials: 'omit', redirect: 'error', targetAddressSpace: 'loopback', signal,
+    credentials: 'omit', redirect: 'error', ...apiAddressSpace(s.api), signal,
   } as RequestInit)
 }
 
@@ -147,7 +176,7 @@ async function alreadyPinned(profile: StorageProfile, cid: string, signal?: Abor
     }
     let parsed: unknown
     try { parsed = JSON.parse(text) } catch { throw new Error('The node returned an invalid pin check.') }
-    return parsed !== null && typeof parsed === 'object' && 'Keys' in parsed && typeof parsed.Keys === 'object' && parsed.Keys !== null && cid in parsed.Keys
+    return parsed !== null && typeof parsed === 'object' && 'Keys' in parsed && typeof parsed.Keys === 'object' && parsed.Keys !== null && Object.keys(parsed.Keys).some((key) => normalizeCid(key) === cid)
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel) }
 }
 
@@ -174,10 +203,11 @@ async function swarmPin(profile: StorageProfile, target: PinTarget, signal?: Abo
       let value: unknown
       try { value = JSON.parse(s) } catch { throw new Error('Invalid pin progress from the node.') }
       if (value === null || typeof value !== 'object') throw new Error('Invalid pin progress from the node.')
-      const progress = value as { Progress?: unknown; Pins?: unknown; Message?: unknown }
-      if (typeof progress.Progress === 'number' && (!Number.isSafeInteger(progress.Progress) || progress.Progress < 0 || progress.Progress * 262144 > target.sizeBytes * 1.1 + 1048576)) throw new Error('The node fetched more blocks than the recorded file size allows; pinning stopped.')
+      const progress = value as { Progress?: unknown; Bytes?: unknown; Pins?: unknown; Message?: unknown }
+      const fetched = typeof progress.Bytes === 'number' ? progress.Bytes : typeof progress.Progress === 'number' ? progress.Progress * 1048576 : 0
+      if (!Number.isSafeInteger(fetched) || fetched < 0 || fetched > target.sizeBytes * 1.1 + 1048576) throw new Error('The node fetched more blocks than the recorded file size allows; pinning stopped.')
       if (typeof progress.Message === 'string') throw new Error('The node could not pin this file.')
-      if (Array.isArray(progress.Pins) && progress.Pins.includes(target.cid)) pinned = true
+      if (Array.isArray(progress.Pins) && progress.Pins.some((cid) => typeof cid === 'string' && normalizeCid(cid) === target.cid)) pinned = true
     }
     for (;;) {
       const { value, done } = await reader.read()
@@ -218,25 +248,39 @@ export async function pinRepo(sdk: EvoSDK, repo: RepoRef, profile: StorageProfil
   const active = new Set<Promise<void>>()
   let inFlight = 0
   const run = async (target: PinTarget, index: number): Promise<void> => {
-    const report = (state: PinState, why?: string): void => opts.onProgress?.({ event: 'blob', index: index + 1, total: plan.targets.length, cid: target.cid, what: target.what, sizeBytes: target.sizeBytes, state, ...(why ? { why } : {}) })
+    let selectedCid = target.cid
+    const report = (state: PinState, why?: string): void => opts.onProgress?.({ event: 'blob', index: index + 1, total: plan.targets.length, cid: selectedCid, what: target.what, sizeBytes: target.sizeBytes, state, ...(why ? { why } : {}) })
     report('pinning')
     try {
-      if (!isCid(target.cid) || !Number.isSafeInteger(target.sizeBytes) || target.sizeBytes < 0 || !/^[a-f0-9]{64}$/.test(target.sha256)) throw new Error('Invalid file metadata.')
+      if (!normalizeCid(target.cid) || !Number.isSafeInteger(target.sizeBytes) || target.sizeBytes < 0 || !/^[a-f0-9]{64}$/.test(target.sha256)) throw new Error('Invalid file metadata.')
       if (target.sizeBytes > WEB_PIN_MAX_BYTES) throw new Error(`File exceeds 512 MiB; use dg ipfs pin ${repo.ownerId}/${repo.name}`)
       if (opts.signal?.aborted) throw new Error('Cancelled')
-      if (await alreadyPinned(profile, target.cid, opts.signal)) { summary.already++; summary.sizeBytes += target.sizeBytes; report('already'); return }
+      const trusted = target.candidates.filter((c) => c.authorized)
+      for (const c of trusted) {
+        if (await alreadyPinned(profile, c.cid, opts.signal)) { selectedCid = c.cid; summary.already++; summary.sizeBytes += target.sizeBytes; report('already'); return }
+      }
       if (target.sizeBytes <= PIN_IN_FLIGHT_BYTES) {
         const bytes = await (opts.fetchBytes ? opts.fetchBytes(target, opts.signal) : target.pack
           ? loadArtifactBytesProgress(sdk, repo, target.pack, undefined, opts.signal, true)
           : downloadVerifiedAsset(target.asset!, undefined, { signal: opts.signal, fetch: (url, init) => fetch(url, { ...init, credentials: 'omit', redirect: 'error' }) }))
         if (bytes.length !== target.sizeBytes || bytesToHex(sha256(bytes)) !== target.sha256) throw new Error('The downloaded bytes do not match the recorded size and SHA-256.')
         if (opts.signal?.aborted) throw new Error('Cancelled')
-        if (cidV1RawLeaves(bytes) === target.cid) {
+        const derived = cidV1RawLeaves(bytes)
+        if (target.candidates.some((c) => c.cid === derived)) {
+          selectedCid = derived
+          if (!trusted.some((c) => c.cid === derived) && await alreadyPinned(profile, derived, opts.signal)) { summary.already++; summary.sizeBytes += target.sizeBytes; report('already'); return }
           await addVerified(profile.settings as IpfsSettings, profile.secrets, bytes, opts.signal)
           summary.pinned++; summary.sizeBytes += target.sizeBytes; report('pinned'); return
         }
       }
-      await swarmPin(profile, target, opts.signal)
+      if (!trusted.length) throw new Error('No authorized IPFS CID matches the verified bytes; use dg ipfs pin for large files.')
+      let failure: unknown
+      let pinned = false
+      for (const c of trusted) {
+        if (opts.signal?.aborted) throw new Error('Cancelled')
+        try { await swarmPin(profile, { ...target, cid: c.cid }, opts.signal); selectedCid = c.cid; pinned = true; break } catch (e) { failure = e }
+      }
+      if (!pinned) throw failure
       summary.pinned++; summary.sizeBytes += target.sizeBytes; report('pinned')
     } catch (e) { summary.failed++; report('failed', opts.signal?.aborted ? 'Cancelled; press Pin to resume.' : errText(e)) }
   }
