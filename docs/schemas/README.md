@@ -76,6 +76,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg env unshare` | [`env-unshare.schema.json`](dg/env-unshare.schema.json) |
 | `dg import` | [`import.schema.json`](dg/import.schema.json) |
 | `dg init` | [`init.schema.json`](dg/init.schema.json) |
+| `dg ipfs pin` | [`ipfs-pin.schema.json`](dg/ipfs-pin.schema.json) |
 | `dg issue assign` | [`issue-assign.schema.json`](dg/issue-assign.schema.json) |
 | `dg issue close` | [`issue-close.schema.json`](dg/issue-close.schema.json) |
 | `dg issue comment` | [`issue-comment.schema.json`](dg/issue-comment.schema.json) |

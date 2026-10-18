@@ -298,6 +298,9 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("mirror not removed", None)
         }
         Command::Storage(_) => ("storage command failed", None),
+        Command::Ipfs(crate::IpfsCommand::Pin(args)) => {
+            ("repository files not pinned", args.repo.as_ref())
+        }
         Command::Webhook(w) => w.context(),
         Command::Env(e) => e.context(),
         Command::Search(crate::SearchCommand::Issues(a) | crate::SearchCommand::Prs(a)) => {

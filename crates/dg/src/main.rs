@@ -30,6 +30,7 @@ mod git;
 mod help_lint;
 mod import;
 mod infer;
+mod ipfs_pin;
 mod issue;
 #[cfg(test)]
 mod json_schemas;
@@ -175,6 +176,12 @@ impl NetworkArg {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum IpfsCommand {
+    /// Keep a repository's files on your IPFS node.
+    Pin(ipfs_pin::IpfsPinArgs),
+}
+
+#[derive(Debug, Subcommand)]
 pub enum Command {
     /// Identities and keys: create, sign in, limited keys, DPNS names, export.
     #[command(subcommand)]
@@ -311,6 +318,9 @@ pub enum Command {
     /// Storage availability.
     #[command(subcommand)]
     Storage(StorageCommand),
+    /// Keep repository files on IPFS.
+    #[command(subcommand)]
+    Ipfs(IpfsCommand),
     /// Manage webhooks.
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
@@ -483,6 +493,9 @@ pub enum RepoCommand {
         /// every branch and tag: one ref update instead of one per branch and tag.
         #[arg(long)]
         default_branch_only: bool,
+        /// Also keep the parent's files on your IPFS node.
+        #[arg(long)]
+        pin: bool,
     },
     /// Sync a fork with the repo it was forked from (GitHub's "Sync fork").
     ///
@@ -2661,6 +2674,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Embargo(cmd) => Box::pin(embargo::run(ctx, cmd)).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
+        Command::Ipfs(IpfsCommand::Pin(args)) => ipfs_pin::run_pin(ctx, args).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
         Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,

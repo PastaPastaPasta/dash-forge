@@ -64,6 +64,7 @@
     "env unshare": "env-unshare.schema.json",
     "import": "import.schema.json",
     "init": "init.schema.json",
+    "ipfs pin": "ipfs-pin.schema.json",
     "issue assign": "issue-assign.schema.json",
     "issue close": "issue-close.schema.json",
     "issue comment": "issue-comment.schema.json",

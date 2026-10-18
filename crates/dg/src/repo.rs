@@ -44,7 +44,8 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             repo,
             name,
             default_branch_only,
-        } => fork(ctx, repo, name.as_deref(), *default_branch_only).await,
+            pin,
+        } => fork(ctx, repo, name.as_deref(), *default_branch_only, *pin).await,
         RepoCommand::Sync { repo, branch } => {
             crate::repo_sync::sync(ctx, repo, branch.as_deref()).await
         }
@@ -207,7 +208,13 @@ fn clone_dir_name(name: &str) -> &str {
 /// recorded without re-uploading (external URIs as they are; Platform chunks by a locator
 /// into the parent's scope), and the parent's branches and tags copied (its default branch
 /// alone with `default_branch_only`). Resumable.
-async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>, default_branch_only: bool) -> Result<()> {
+async fn fork(
+    ctx: &Ctx,
+    repo: &str,
+    name: Option<&str>,
+    default_branch_only: bool,
+    pin: bool,
+) -> Result<()> {
     let Session {
         client,
         bridge,
@@ -290,7 +297,12 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>, default_branch_only: bo
     )
     .await
     .context("forking the repository")?;
-    report_fork(ctx, &parent, &result, price)
+    let pinned = if pin && result.unreferenceable.is_empty() {
+        Some(crate::ipfs_pin::pin_parent_after_fork(ctx, &parent.display()).await)
+    } else {
+        None
+    };
+    report_fork(ctx, &parent, &result, price, pinned)
 }
 
 /// QW4-062: warn, before the prompt (on stderr, JSON mode too), when some of the parent's packs
@@ -393,10 +405,25 @@ fn report_fork(
     parent: &forge_core::scope::RepoRef,
     result: &forge_core::fork::ForkResult,
     price: Option<f64>,
+    pinned: Option<crate::ipfs_pin::ForkPinResult>,
 ) -> Result<()> {
     let fork = &result.created.repo;
     let incomplete = !result.unreferenceable.is_empty();
-    let body = fork_body(parent, result, price);
+    let mut body = fork_body(parent, result, price);
+    if let Some(pin) = pinned {
+        body["pin"] = pin.body;
+        if pin.failed {
+            return Err(crate::errors::reported(
+                forge_core::user_error::UserError::new(
+                    forge_core::user_error::codes::PARTIAL,
+                    "fork created, but its parent's files could not all be pinned",
+                )
+                .note(format!("the fork exists at {}", fork.remote_url()))
+                .fix(format!("run dg ipfs pin {} to resume", parent.display())),
+                body,
+            ));
+        }
+    }
     if incomplete {
         // Some objects are nowhere a fork can point at: refs were not copied (they could
         // name commits the fork cannot serve). The repository exists; the user pushes.

@@ -233,7 +233,7 @@ cmd('repo clone', 'Where the repository was cloned.', {
 cmd('repo fork', 'A fork of a repository.', {
     'status': E('forked', 'exists'), 'repoId': S, 'ownerId': S, 'name': S, 'forkOf': S, 'parent': S, 'remoteUrl': S,
     'manifestsWritten': I, 'platformPacksReferenced': I, 'manifestsExisting': I, 'unreferenceablePacks': SA,
-    'refsWritten': D('The refs this run wrote to the fork.', SA), 'cost': COST,
+    'refsWritten': D('The refs this run wrote to the fork.', SA), 'cost': COST, 'pin': OBJ,
 }, ['status', 'repoId'])
 cmd('repo sync', 'A fork brought up to date with its parent.', {'status': S}, ['status'])
 STAR = {'status': S, 'repo': S, 'starred': B, 'stars': nl(I), 'cost': NCOST}
@@ -700,6 +700,13 @@ cmd('reseed', 'Packs stored again where the storage policy wants them.', {
     'unreachable': D('With --from-local: packs whose recorded hosts do not answer, not uploaded.',
                      A(O({'packHash': S, 'hosts': SA}, ['packHash', 'hosts']))),
 }, ['status', 'repoId'])
+cmd('ipfs pin', 'Repository files pinned or planned, or followed repositories refreshed.', {
+    'status': E('pinned', 'planned', 'unfollowed', 'refreshed'), 'repoId': S, 'profile': S,
+    'plan': O({'targets': A(OBJ), 'notOnIpfs': I, 'membersOnlySkipped': I,
+               'strangerCopiesIgnored': I, 'needsConsent': B}, ['targets', 'notOnIpfs', 'membersOnlySkipped', 'strangerCopiesIgnored', 'needsConsent']),
+    'totalBytes': I, 'costDash': I, 'report': O({'pinned': I, 'already': I, 'failed': A(OBJ), 'bytes': I}, ['pinned', 'already', 'failed', 'bytes']),
+    'repos': A(OBJ), 'failed': SA,
+}, ['status'])
 cmd('storage status', 'Where the repository\'s packs are stored.', {
     'repoId': S, 'packCount': I, 'ipfsGateways': SA, 'packs': A(OBJ),
 }, ['repoId', 'packs'])

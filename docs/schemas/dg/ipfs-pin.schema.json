@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ipfs-pin.schema.json",
+  "title": "dg ipfs pin --json",
+  "description": "Repository files pinned or planned, or followed repositories refreshed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pinned",
+        "planned",
+        "unfollowed",
+        "refreshed"
+      ]
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "notOnIpfs": {
+          "type": "integer"
+        },
+        "membersOnlySkipped": {
+          "type": "integer"
+        },
+        "strangerCopiesIgnored": {
+          "type": "integer"
+        },
+        "needsConsent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "targets",
+        "notOnIpfs",
+        "membersOnlySkipped",
+        "strangerCopiesIgnored",
+        "needsConsent"
+      ]
+    },
+    "totalBytes": {
+      "type": "integer"
+    },
+    "costDash": {
+      "type": "integer"
+    },
+    "report": {
+      "type": "object",
+      "properties": {
+        "pinned": {
+          "type": "integer"
+        },
+        "already": {
+          "type": "integer"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "bytes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pinned",
+        "already",
+        "failed",
+        "bytes"
+      ]
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "failed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}
