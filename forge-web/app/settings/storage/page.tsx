@@ -33,7 +33,7 @@ export default function StorageSettingsPage(): JSX.Element {
         <p className="flex items-center gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-[12px] text-anvil-600 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-300 md:hidden">
           <MonitorSmartphone className="h-4 w-4 shrink-0" aria-hidden /> Use a desktop browser for this step: it needs a few long fields and a copy-paste from your provider’s console.
         </p>
-        <KuboConnectView storage={storage} fragmentOnly />
+        <KuboConnectView storage={storage} fragmentOnly showUnlock={false} />
         {identity ? (
           <StorageWizardView storage={storage} />
         ) : (

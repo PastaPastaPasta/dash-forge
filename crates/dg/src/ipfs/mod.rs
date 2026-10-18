@@ -3,6 +3,7 @@ pub(crate) mod config;
 mod follow;
 mod install;
 mod pair;
+mod ports;
 mod proxy;
 mod serve;
 mod service;
@@ -97,6 +98,9 @@ pub struct UpArgs {
     /// Local read port (default: 8080, or the saved port).
     #[arg(long, value_name = "PORT")]
     gateway_port: Option<u16>,
+    /// Port other IPFS nodes use (default: 4001, or the saved port).
+    #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+    swarm_port: Option<u16>,
     /// Replace the node's access tokens; connect your browsers again afterwards.
     #[arg(long)]
     rotate_token: bool,
@@ -124,12 +128,22 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
         IpfsCommand::Up(args) => Box::pin(up(ctx, args)).await,
         IpfsCommand::Serve => Box::pin(serve::run(ctx, Node::load()?)).await,
         IpfsCommand::Status => {
-            let value = status::collect(&Node::load()?).await?;
+            let node = Node::load()?;
+            let value = status::collect(&node).await?;
             ctx.emit(value.clone(), || {
                 println!(
                     "IPFS node: kubo {}, peer {}",
                     value["kuboVersion"].as_str().unwrap_or("?"),
                     value["peerId"].as_str().unwrap_or("?")
+                );
+                println!(
+                    "  Swarm port: {}{}",
+                    value["swarmPort"],
+                    if node.config.swarm_port.is_none() {
+                        " (not yet saved)"
+                    } else {
+                        ""
+                    }
                 );
                 println!("  Service: {}", value["service"].as_str().unwrap_or("?"));
                 println!(
@@ -196,10 +210,16 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
         node.config.name.clone_from(name);
     }
     if let Some(port) = args.api_port {
+        ports::warn_change("public API", node.config.api_port, port);
         node.config.api_port = port;
     }
     if let Some(port) = args.gateway_port {
+        ports::warn_change("public gateway", node.config.gateway_port, port);
         node.config.gateway_port = port;
+    }
+    if let Some(port) = args.swarm_port {
+        ports::warn_change("swarm", node.config.swarm_port(), port);
+        node.config.swarm_port = Some(port);
     }
     for origin in &args.origin {
         let origin = config::validate_origin(origin)?;
@@ -232,7 +252,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     if node.dir.join("pair.json").exists() {
         std::fs::remove_file(node.dir.join("pair.json"))?;
     }
-    config::configure(&node, &tokens).await?;
+    config::configure(&mut node, &tokens).await?;
     node.config.service = !args.no_service;
     node.save()?;
     // In --no-service mode, run a temporary supervisor for the same verification, then
@@ -297,7 +317,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
         args.no_open || ctx.json || !node.config.service,
     )
     .await;
-    let value = json!({"node":{"kuboVersion":version,"peerId":peer_id,"api":node.api(),"gateway":node.gateway(),"origins":node.config.origins,"service":if node.config.service {"login"} else {"manual"}}, "profile":node.config.name,"connect":connection});
+    let value = json!({"node":up_node(&node, &peer_id, &version), "profile":node.config.name,"connect":connection});
     ctx.emit(value, || {
         println!(
             "IPFS node ready: kubo {version}, peer {peer_id}, {}.",
@@ -315,6 +335,11 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
             "  Gateway  {} (serves only what this node holds)",
             node.gateway()
         );
+        println!("  Swarm    TCP+UDP {}", node.config.swarm_port());
+        println!(
+            "  Internal API {}; gateway {} (loopback only)",
+            node.config.internal_api_port, node.config.internal_gateway_port
+        );
         println!(
             "  CLI      storage profile {:?} saved — `dg storage use {}` sends your pushes there.",
             node.config.name, node.config.name
@@ -322,6 +347,15 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
         print_connection(&connection, opened);
     });
     Ok(())
+}
+
+fn up_node(node: &Node, peer_id: &str, version: &str) -> serde_json::Value {
+    json!({
+        "kuboVersion":version, "peerId":peer_id, "api":node.api(), "gateway":node.gateway(),
+        "swarmPort":node.config.swarm_port(), "internalApiPort":node.config.internal_api_port,
+        "internalGatewayPort":node.config.internal_gateway_port, "origins":node.config.origins,
+        "service":if node.config.service {"login"} else {"manual"},
+    })
 }
 
 async fn check_public_ports(node: &Node) -> Result<()> {
@@ -433,7 +467,8 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
             node.config.set_link_origin(None)?;
         }
     }
-    config::configure(&node, &Tokens::load(&node)?).await?;
+    let tokens = Tokens::load(&node)?;
+    config::configure(&mut node, &tokens).await?;
     node.save()?;
     if node.config.service {
         check_public_ports(&node).await?;
@@ -604,6 +639,43 @@ fn print_connection(connection: &pair::Connection, opened: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn up_output_reports_all_selected_daemon_ports() {
+        let node = Node {
+            dir: std::path::PathBuf::new(),
+            config: NodeConfig {
+                swarm_port: Some(4002),
+                internal_api_port: 5102,
+                internal_gateway_port: 8181,
+                ..Default::default()
+            },
+        };
+        let value = up_node(&node, "test-peer", KUBO_VERSION);
+        assert_eq!(value["swarmPort"], 4002);
+        assert_eq!(value["internalApiPort"], 5102);
+        assert_eq!(value["internalGatewayPort"], 8181);
+    }
+
+    #[test]
+    fn swarm_port_flag_is_optional_and_nonzero() {
+        use clap::Parser as _;
+        for (flags, expected) in [
+            (vec!["dg", "ipfs", "up"], None),
+            (vec!["dg", "ipfs", "up", "--swarm-port", "4401"], Some(4401)),
+        ] {
+            let cli = crate::Cli::try_parse_from(flags).unwrap();
+            let crate::Command::Ipfs(IpfsCommand::Up(args)) = cli.command else {
+                panic!("expected ipfs up");
+            };
+            assert_eq!(args.swarm_port, expected);
+        }
+        for port in ["0", "65536", "invalid"] {
+            assert!(
+                crate::Cli::try_parse_from(["dg", "ipfs", "up", "--swarm-port", port]).is_err()
+            );
+        }
+    }
 
     #[tokio::test]
     async fn public_port_conflicts_name_the_corresponding_flag() {

@@ -129,3 +129,15 @@ export function consumeKuboPair(win: Window & { __forgeKuboPair?: string } = win
   delete win.__forgeKuboPair
   return value
 }
+
+/** Take a pairing link on Storage, preferring a new URL over a stale initial-load stash. */
+export function takeKuboPair(win: Window & { __forgeKuboPair?: string } = window, basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? ''): string | null {
+  const { pathname, search, hash } = win.location
+  const storage = `${basePath}/settings/storage`
+  if (pathname !== storage && pathname !== `${storage}/`) return null
+  const pending = consumeKuboPair(win)
+  if (!hash.startsWith('#kubo=')) return pending
+  // Preserve Next's router tree and marker so stripping a hash does not restore another route.
+  win.history.replaceState(win.history.state, '', pathname + search)
+  return hash
+}

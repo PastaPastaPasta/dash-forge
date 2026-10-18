@@ -20,6 +20,9 @@
     "gateway": {
       "type": "string"
     },
+    "swarmPort": {
+      "type": "integer"
+    },
     "repoBytes": {
       "type": "integer"
     },
@@ -60,6 +63,7 @@
     "peerId",
     "api",
     "gateway",
+    "swarmPort",
     "repoBytes",
     "recursivePins",
     "listenAddresses",

@@ -33,6 +33,8 @@ pub(crate) struct NodeConfig {
     pub gateway_port: u16,
     pub internal_api_port: u16,
     pub internal_gateway_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm_port: Option<u16>,
     pub origins: Vec<String>,
     #[serde(default = "default_link_origin")]
     pub link_origin: String,
@@ -50,6 +52,7 @@ impl Default for NodeConfig {
             gateway_port: 8080,
             internal_api_port: 5101,
             internal_gateway_port: 8180,
+            swarm_port: None,
             origins: vec![DEFAULT_ORIGIN.into()],
             link_origin: default_link_origin(),
             kubo_version: KUBO_VERSION.into(),
@@ -93,6 +96,33 @@ impl Node {
     pub fn internal_api(&self) -> String {
         format!("http://127.0.0.1:{}", self.config.internal_api_port)
     }
+    /// Read legacy nodes' configured port without probing their running listeners.
+    pub fn swarm_port(&self) -> u16 {
+        self.config.swarm_port.unwrap_or_else(|| {
+            let port = fs::read(self.repo().join("config"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|config| {
+                    config["Addresses"]["Swarm"]
+                        .as_array()?
+                        .iter()
+                        .find_map(|address| {
+                            let mut parts = address.as_str()?.split('/');
+                            while let Some(part) = parts.next() {
+                                if matches!(part, "tcp" | "udp") {
+                                    return parts
+                                        .next()?
+                                        .parse::<u16>()
+                                        .ok()
+                                        .filter(|port| *port != 0);
+                                }
+                            }
+                            None
+                        })
+                });
+            port.unwrap_or(4001)
+        })
+    }
     pub fn binary(&self) -> PathBuf {
         std::env::var_os("DASH_FORGE_KUBO_BIN")
             .map(PathBuf::from)
@@ -106,6 +136,11 @@ impl Node {
 }
 
 impl NodeConfig {
+    /// The saved port, or the preferred port before first setup selects one.
+    pub fn swarm_port(&self) -> u16 {
+        self.swarm_port.unwrap_or(4001)
+    }
+
     /// An older repo is migrated by kubo; a newer repo requires a newer dg.
     pub fn validate_version(&self) -> Result<()> {
         let parse = |version: &str| -> Option<Vec<u64>> {
@@ -161,21 +196,24 @@ impl NodeConfig {
                 "the kubo binary override must be an absolute path",
             ));
         }
-        let ports = [
+        let mut ports = vec![
             self.api_port,
             self.gateway_port,
             self.internal_api_port,
             self.internal_gateway_port,
         ];
+        if let Some(port) = self.swarm_port {
+            ports.push(port);
+        }
         if ports.contains(&0)
             || ports
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
-                != 4
+                != ports.len()
         {
             return Err(crate::errors::usage(
-                "the node's four ports must be distinct and nonzero",
+                "the node's five ports must be distinct and nonzero",
             ));
         }
         if !self.origins.iter().any(|o| o == DEFAULT_ORIGIN) {
@@ -369,6 +407,29 @@ pub fn validate_origin(origin: &str) -> Result<String> {
 }
 
 pub fn patch_config(config: &mut Value, node: &Node, tokens: &Tokens) {
+    // Preserve init's transports and address families, changing only tcp/udp ports.
+    // Kubo v0.43.1 config/init.go::addressesConfig includes TCP, QUIC v1,
+    // WebTransport and WebRTC Direct for both IPv4 and IPv6.
+    if let Some(addresses) = config
+        .get_mut("Addresses")
+        .and_then(|addresses| addresses.get_mut("Swarm"))
+        .and_then(Value::as_array_mut)
+    {
+        for address in addresses {
+            if let Some(value) = address.as_str() {
+                let mut parts: Vec<_> = value.split('/').map(str::to_owned).collect();
+                let mut replace_port = false;
+                for part in &mut parts {
+                    let transport = matches!(part.as_str(), "tcp" | "udp");
+                    if replace_port {
+                        *part = node.config.swarm_port().to_string();
+                    }
+                    replace_port = transport;
+                }
+                *address = json!(parts.join("/"));
+            }
+        }
+    }
     config["Addresses"]["API"] = json!(format!(
         "/ip4/127.0.0.1/tcp/{}",
         node.config.internal_api_port
@@ -427,8 +488,13 @@ pub async fn refuse_live_kubo(node: &Node) -> Result<()> {
     Ok(())
 }
 
-pub async fn configure(node: &Node, tokens: &Tokens) -> Result<()> {
+pub async fn configure(node: &mut Node, tokens: &Tokens) -> Result<()> {
     refuse_live_kubo(node).await?;
+    // The caller has stopped our daemon; busy ports now belong to another process.
+    // Hold reservations through the config write. The race between releasing them
+    // and starting kubo is accepted; re-running up recovers (choose --swarm-port
+    // if another process has taken the saved swarm port).
+    let _ports = super::ports::select(&mut node.config)?;
     let path = node.repo().join("config");
     if !path.exists() {
         private_dir(&node.repo())?;
@@ -464,6 +530,143 @@ pub async fn configure(node: &Node, tokens: &Tokens) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn swarm_rewrite_keeps_kubo_0431_default_transports_and_address_families() {
+        // https://github.com/ipfs/kubo/blob/v0.43.1/config/init.go
+        let defaults = [
+            "/ip4/0.0.0.0/tcp/4001",
+            "/ip6/::/tcp/4001",
+            "/ip4/0.0.0.0/udp/4001/webrtc-direct",
+            "/ip4/0.0.0.0/udp/4001/quic-v1",
+            "/ip4/0.0.0.0/udp/4001/quic-v1/webtransport",
+            "/ip6/::/udp/4001/webrtc-direct",
+            "/ip6/::/udp/4001/quic-v1",
+            "/ip6/::/udp/4001/quic-v1/webtransport",
+        ];
+        let node = Node {
+            dir: PathBuf::new(),
+            config: NodeConfig {
+                swarm_port: Some(4401),
+                ..Default::default()
+            },
+        };
+        let tokens = Tokens {
+            forge: "test-forge".into(),
+            admin: "test-admin".into(),
+        };
+        let mut config = json!({"Addresses":{"Swarm":defaults}});
+        patch_config(&mut config, &node, &tokens);
+        assert_eq!(
+            config["Addresses"]["Swarm"],
+            json!(defaults.map(|address| address.replace("/4001", "/4401")))
+        );
+        // Repeated setup rewrites a previously selected port, and keeps custom transports.
+        config["Addresses"]["Swarm"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("/ip4/192.0.2.1/tcp/9876/ws"));
+        patch_config(&mut config, &node, &tokens);
+        assert_eq!(
+            config["Addresses"]["Swarm"][8],
+            "/ip4/192.0.2.1/tcp/4401/ws"
+        );
+    }
+
+    #[test]
+    fn legacy_nodes_default_swarm_port_and_new_choices_round_trip() {
+        let mut legacy = toml::Value::try_from(NodeConfig {
+            swarm_port: Some(4001),
+            ..Default::default()
+        })
+        .unwrap();
+        legacy.as_table_mut().unwrap().remove("swarmPort");
+        let mut config: NodeConfig = legacy.try_into().unwrap();
+        assert_eq!(config.swarm_port, None);
+        config.swarm_port = Some(4401);
+        let restored: NodeConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.swarm_port, Some(4401));
+        assert!(restored.validate().is_ok());
+        config.swarm_port = Some(0);
+        assert!(config.validate().is_err());
+        config.swarm_port = Some(config.api_port);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_node_with_public_api_on_4001_defers_swarm_selection_until_configure() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = NodeConfig {
+            api_port: 4001,
+            ..Default::default()
+        };
+        let text = toml::to_string(&legacy).unwrap();
+        assert!(!text.contains("swarmPort"));
+        fs::write(temp.path().join("node.toml"), text).unwrap();
+        let mut node = Node::load_from(temp.path().to_owned()).unwrap();
+        assert_eq!(node.config.api_port, 4001);
+        assert_eq!(node.config.swarm_port, None);
+        assert!(node.config.validate().is_ok());
+        let _reservations = super::super::ports::select(&mut node.config).unwrap();
+        assert!(node.config.swarm_port() > 4001);
+        node.save().unwrap();
+        let restored = Node::load_from(temp.path().to_owned()).unwrap();
+        assert_eq!(restored.config.swarm_port, node.config.swarm_port);
+    }
+
+    #[test]
+    fn loading_a_legacy_node_keeps_its_port_unresolved_even_when_busy() {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        fs::write(
+            temp.path().join("node.toml"),
+            toml::to_string(&NodeConfig::default()).unwrap(),
+        )
+        .unwrap();
+        private_dir(&temp.path().join("repo")).unwrap();
+        fs::write(
+            temp.path().join("repo/config"),
+            serde_json::to_vec(&json!({
+                "Addresses":{"Swarm":[format!("/ip4/0.0.0.0/tcp/{port}")]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let node = Node::load_from(temp.path().to_owned()).unwrap();
+        assert_eq!(node.config.swarm_port, None);
+        assert_eq!(node.swarm_port(), port);
+        fs::write(node.repo().join("config"), b"invalid").unwrap();
+        assert_eq!(node.swarm_port(), 4001);
+    }
+
+    #[tokio::test]
+    async fn saved_swarm_is_fixed_in_shared_up_and_origin_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let node = Node {
+            dir: temp.path().to_owned(),
+            config: NodeConfig {
+                swarm_port: Some(port),
+                ..Default::default()
+            },
+        };
+        node.save().unwrap();
+        let tokens = Tokens {
+            forge: "test-forge".into(),
+            admin: "test-admin".into(),
+        };
+        // Both up and origin add/remove call this same configure path.
+        let mut loaded = Node::load_from(temp.path().to_owned()).unwrap();
+        let error = Box::pin(configure(&mut loaded, &tokens)).await.unwrap_err();
+        let user = error
+            .downcast_ref::<forge_core::user_error::UserError>()
+            .unwrap();
+        assert_eq!(user.code, forge_core::user_error::codes::STORAGE_CONFIG);
+        assert!(user.to_json().to_string().contains("--swarm-port"));
+        assert_eq!(loaded.config.swarm_port, Some(port));
+    }
+
     #[tokio::test]
     async fn live_repo_api_is_detected_even_when_it_refuses_auth() {
         let temp = tempfile::tempdir().unwrap();
