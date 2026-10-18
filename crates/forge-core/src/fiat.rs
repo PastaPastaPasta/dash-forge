@@ -685,10 +685,8 @@ mod tests {
         assert!(parse_ctx(&json!({})).is_none());
         assert!(parse_coingecko(&json!({"dash":{"last_updated_at":123,"eur":36}})).is_none());
         assert!(parse_coingecko(&json!({"dash":{"usd":"40"}})).is_none());
-        assert_eq!(
-            parse_coingecko(&json!({"dash":{"usd":40,"eur":36}})).unwrap()["EUR"],
-            36.0
-        );
+        let eur = parse_coingecko(&json!({"dash":{"usd":40,"eur":36}})).unwrap()["EUR"];
+        assert!((eur - 36.0).abs() < 1e-9);
     }
 
     #[test]
@@ -772,7 +770,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(s.source, "coingecko");
-            assert_eq!(s.rates["USD"], 40.0);
+            assert!((s.rates["USD"] - 40.0).abs() < 1e-9);
             assert_eq!(seen.lock().unwrap().len(), 1);
             let requests = fallback_seen.lock().unwrap();
             assert_eq!(requests.len(), 1);
