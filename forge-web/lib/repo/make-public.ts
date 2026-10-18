@@ -75,6 +75,8 @@ export interface MakePublicCensus {
 
 /** What the check found (step 0). */
 export interface MakePublicCheck {
+  /** The adopted or clamped epoch cutoff used by the check and publication. */
+  readonly publicationCutoff?: number
   /** User copy; non-empty: nothing may run before the flip. */
   readonly blockers: readonly string[]
   readonly notes: readonly string[]

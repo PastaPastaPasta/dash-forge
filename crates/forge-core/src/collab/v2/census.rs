@@ -65,6 +65,48 @@ pub struct Census {
 }
 
 impl Census {
+    /// Count already-opened discussion and collect only its publication/scan inputs.
+    fn count_opened(&mut self, kind: ContentKind, rows: &[FetchedDocument]) {
+        let number = |d: &FetchedDocument| {
+            d.field_u64("number")
+                .map_or_else(String::new, |n| format!("#{n}"))
+        };
+        for d in rows {
+            self.authors.insert(d.owner_id.clone());
+            self.revisions +=
+                usize::try_from(d.revision.unwrap_or(1).saturating_sub(1)).unwrap_or(usize::MAX);
+            if let Some(i) = imported_of(d) {
+                self.imported.insert((host_of(&i.url), i.author));
+            }
+            let (noun, place) = match kind {
+                ContentKind::Issue => {
+                    self.issues += 1;
+                    ("issue", number(d))
+                }
+                ContentKind::Patch => {
+                    self.prs += 1;
+                    ("pull request", number(d))
+                }
+                ContentKind::Comment => {
+                    self.comments += 1;
+                    ("comment", d.id.clone())
+                }
+                _ => {
+                    self.reviews += 1;
+                    ("review", d.id.clone())
+                }
+            };
+            for field in ["title", "body", "path"] {
+                if let Some(text) = d.field_str(field).filter(|t| !t.is_empty()) {
+                    self.texts.push(CensusText {
+                        place: format!("{noun} {place} {field}"),
+                        text,
+                    });
+                }
+            }
+        }
+    }
+
     /// The imported authors' hosts (`github.com`), distinct.
     #[must_use]
     pub fn imported_hosts(&self) -> BTreeSet<&str> {
@@ -86,14 +128,33 @@ fn written_private(d: &FetchedDocument) -> bool {
     d.field_str("vis").as_deref() == Some(Visibility::Private.as_str())
 }
 
+/// Missing epochs belong to the older unsealed format, as in the web census.
+fn sealed_below(d: &FetchedDocument, below: Option<u32>) -> bool {
+    below.is_none_or(|b| d.field_u64("epoch").is_none_or(|e| e < u64::from(b)))
+}
+
+fn discussion_below(
+    docs: Vec<FetchedDocument>,
+    below: Option<u32>,
+) -> impl Iterator<Item = FetchedDocument> {
+    docs.into_iter()
+        .filter(move |d| written_private(d) && sealed_below(d, below))
+}
+
 impl Collab<'_> {
     /// The census of `repo` (private, or made public: read through its private view either way,
     /// with the signer's own keys). Reads every issue, pull request, comment, review, event and
     /// release of the repository once. `before` is the conversion marker's block height of a
     /// repository already made public (events carry no `vis` stamp, so they are placed by it);
-    /// `None` while it is private.
+    /// `None` while it is private. `below` is the run's adopted or clamped publication cutoff;
+    /// discussion sealed at that epoch or later is excluded before opening, counting or scanning.
     #[allow(clippy::too_many_lines)] // one pass per document type, each counted the same way
-    pub async fn make_public_census(&self, repo: &RepoRef, before: Option<u64>) -> Result<Census> {
+    pub async fn make_public_census(
+        &self,
+        repo: &RepoRef,
+        before: Option<u64>,
+        below: Option<u32>,
+    ) -> Result<Census> {
         let private = repo.private_view();
         let collab = self.collab_contract(&private).await?;
         let community = self.community_contract(&private).await?;
@@ -135,7 +196,7 @@ impl Collab<'_> {
             (ContentKind::Comment, comments),
             (ContentKind::Review, reviews),
         ] {
-            self.count(&private, kind, docs, &mut out).await?;
+            self.count(&private, kind, docs, &mut out, below).await?;
         }
         let events: Vec<FetchedDocument> = self
             .client
@@ -143,6 +204,7 @@ impl Collab<'_> {
             .await?
             .into_iter()
             .filter(|d| before.is_none_or(|h| d.created_at_block_height.is_some_and(|at| at <= h)))
+            .filter(|d| sealed_below(d, below))
             .collect();
         for d in &events {
             match d.field_u64("kind") {
@@ -185,52 +247,13 @@ impl Collab<'_> {
         kind: ContentKind,
         docs: Vec<FetchedDocument>,
         out: &mut Census,
+        below: Option<u32>,
     ) -> Result<()> {
-        let (letters, docs): (Vec<_>, Vec<_>) = docs
-            .into_iter()
-            .filter(written_private)
-            .partition(is_letter);
+        let (letters, docs): (Vec<_>, Vec<_>) = discussion_below(docs, below).partition(is_letter);
         out.letters += letters.len();
         let read = self.readable(private, kind, docs).await?;
         out.unread += read.members_only.len();
-        let number = |d: &FetchedDocument| {
-            d.field_u64("number")
-                .map_or_else(String::new, |n| format!("#{n}"))
-        };
-        for d in &read.rows {
-            out.authors.insert(d.owner_id.clone());
-            out.revisions +=
-                usize::try_from(d.revision.unwrap_or(1).saturating_sub(1)).unwrap_or(usize::MAX);
-            if let Some(i) = imported_of(d) {
-                out.imported.insert((host_of(&i.url), i.author));
-            }
-            let (noun, place) = match kind {
-                ContentKind::Issue => {
-                    out.issues += 1;
-                    ("issue", number(d))
-                }
-                ContentKind::Patch => {
-                    out.prs += 1;
-                    ("pull request", number(d))
-                }
-                ContentKind::Comment => {
-                    out.comments += 1;
-                    ("comment", d.id.clone())
-                }
-                _ => {
-                    out.reviews += 1;
-                    ("review", d.id.clone())
-                }
-            };
-            for field in ["title", "body", "path"] {
-                if let Some(text) = d.field_str(field).filter(|t| !t.is_empty()) {
-                    out.texts.push(CensusText {
-                        place: format!("{noun} {place} {field}"),
-                        text,
-                    });
-                }
-            }
-        }
+        out.count_opened(kind, &read.rows);
         Ok(())
     }
 }
@@ -238,6 +261,44 @@ impl Collab<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::FieldValue;
+
+    #[test]
+    fn adopted_boundary_excludes_later_comments_authors_and_scan_texts() {
+        let comment = |epoch, author: &str, text: &str| FetchedDocument {
+            id: text.into(),
+            owner_id: author.into(),
+            created_at: Some(1),
+            created_at_block_height: Some(1),
+            updated_at_block_height: None,
+            updated_at: None,
+            revision: Some(2),
+            fields: [
+                ("vis".into(), FieldValue::Text("private".into())),
+                ("epoch".into(), FieldValue::Integer(epoch)),
+                ("body".into(), FieldValue::Text(text.into())),
+            ]
+            .into(),
+        };
+        let docs = vec![
+            comment(0, "earlier-author", "before the boundary"),
+            comment(1, "later-author", "after the boundary"),
+        ];
+        // A fresh device adopts epoch 1; a later stated epoch cannot widen that cutoff.
+        let below = crate::private::convert::history_cutoff(Some(4), Some(1));
+        let mut census = Census::default();
+        census.count_opened(
+            ContentKind::Comment,
+            &discussion_below(docs.clone(), below).collect::<Vec<_>>(),
+        );
+        assert_eq!(census.comments, 1);
+        assert_eq!(census.revisions, 1);
+        assert_eq!(census.authors, BTreeSet::from(["earlier-author".into()]));
+        assert_eq!(census.texts.len(), 1);
+        assert_eq!(census.texts[0].text, "before the boundary");
+        assert!(!sealed_below(&docs[1], below));
+        assert_eq!(discussion_below(docs, None).count(), 2);
+    }
 
     #[test]
     fn hosts_are_read_from_urls() {

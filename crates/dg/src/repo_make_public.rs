@@ -7,7 +7,7 @@
 //!   owner picks (by default the default branch and the tags on it). Issues, pull requests,
 //!   reviews and other branches stay members-only.
 //! * **Everything** (`--everything`): every live branch and tag, and the keys of everything
-//!   members could read until now, published last. Code only can become Everything later (run
+//!   members could read before the publication boundary, published last. Code only can become Everything later (run
 //!   it again with `--everything`), never the reverse.
 //!
 //! The steps, each reading state first so a run that stops can be finished (`--resume`):
@@ -92,7 +92,8 @@ pub struct MakePublicArgs {
     /// stay members-only. You can make everything public later.
     #[arg(long, conflicts_with = "everything")]
     pub code_only: bool,
-    /// Everything: everything members could ever read until now, every branch and tag included.
+    /// Everything: everything members could read before the publication boundary, every branch
+    /// and tag included.
     #[arg(long)]
     pub everything: bool,
     /// With --code-only: a branch or tag to publish (repeat it for more).
@@ -176,7 +177,7 @@ fn state_dir(repo: &RepoRef) -> Result<PathBuf> {
 }
 
 /// Create `dir` readable by this user alone.
-fn private_dir(dir: &Path) -> Result<()> {
+pub(crate) fn private_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     #[cfg(unix)]
     {
@@ -229,6 +230,8 @@ struct Secret {
 /// What the check found.
 #[derive(Debug, Default)]
 struct Check {
+    /// The adopted or clamped cutoff used by this check and the publication steps.
+    below: Option<u32>,
     /// What stops the run before anything is signed.
     blockers: Vec<UserError>,
     /// What the owner should know.
@@ -458,9 +461,16 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
         .note("nothing was written")
         .into());
     }
-    let mode = flag_mode
+    let chosen_mode = flag_mode
         .or(saved.as_ref().map(|s| s.mode))
         .or(history_started.then_some(Mode::Everything));
+    let public_refs = if chosen_mode.is_none() && a.resume && conversion.is_some() {
+        public_state(&svc, &public_view(&s.repo)).await?.0
+    } else {
+        BTreeMap::new()
+    };
+    let (mode, inferred_mode) =
+        resume_mode(chosen_mode, conversion.is_some(), a.resume, &public_refs);
     // what the owner chose on this computer, when this run continues it
     let chosen = saved
         .as_ref()
@@ -515,21 +525,7 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
         }
         return Ok(());
     }
-    let Some(mode) = mode else {
-        return Err(UserError::new(
-            codes::USAGE,
-            format!(
-                "{} was made public; say which mode to finish",
-                safe(&a.repo)
-            ),
-        )
-        .fix(format!(
-            "dg repo make-public {} --resume --code-only (or --everything)",
-            safe(&a.repo)
-        ))
-        .note("this computer has no record of the run that started it")
-        .into());
-    };
+    let mode = mode_to_finish(mode, &a.repo)?;
     Box::pin(convert(
         Run {
             ctx,
@@ -541,6 +537,7 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
             conversion,
             saved,
             mode,
+            inferred_mode,
             history_started,
             start_over,
             checked_below: below,
@@ -878,7 +875,11 @@ async fn preflight(
     chosen: Option<&[(String, String)]>,
     below: Option<u32>,
 ) -> Result<Check> {
-    let mut out = Check::default();
+    let below = history_cutoff(conversion.and_then(|c| c.seal_off_epoch), below);
+    let mut out = Check {
+        below,
+        ..Check::default()
+    };
     let res = kr.resolution();
     let repo_label = safe(&a.repo).into_owned();
     // the network: the live contracts keep a repository's visibility as created
@@ -996,7 +997,7 @@ async fn preflight(
     if census_wanted {
         out.census = s
             .collab()
-            .make_public_census(private, conversion.and_then(|c| c.marker_height))
+            .make_public_census(private, conversion.and_then(|c| c.marker_height), below)
             .await?;
         let members: BTreeSet<String> = kr
             .members()
@@ -1167,21 +1168,32 @@ async fn work_repo(
 ) -> Result<(PathBuf, usize)> {
     let state = state_dir(private)?;
     private_dir(&state)?;
-    let dir = state.join("work.git");
-    if !dir.join("HEAD").exists() {
-        std::fs::create_dir_all(&dir)?;
-        git::git(&dir, &["init", "-q", "--bare"], &[])?;
+    work_repo_at(psvc, private, refs, below, &state.join("work.git")).await
+}
+
+/// Load private-era packs into an explicitly chosen repository. A keep clone never shares
+/// objects with the below-boundary repository used for public publication.
+pub(crate) async fn work_repo_at(
+    psvc: &RepoService<'_>,
+    private: &RepoRef,
+    refs: &[(String, String)],
+    below: Option<u32>,
+    dir: &Path,
+) -> Result<(PathBuf, usize)> {
+    if !dir.join("HEAD").exists() && !dir.join(".git/HEAD").exists() {
+        std::fs::create_dir_all(dir)?;
+        git::git(dir, &["init", "-q", "--bare"], &[])?;
     }
     let marker = dir.join("make-public-packs");
     // "<opened> <unfetched>" of the last read; a read that missed some is done again
     let unfetched_before = std::fs::read_to_string(&marker)
         .ok()
         .and_then(|t| t.split_whitespace().nth(1)?.parse::<usize>().ok());
-    let missing = refs.iter().any(|(_, t)| !git::has_object(&dir, t));
+    let missing = refs.iter().any(|(_, t)| !git::has_object(dir, t));
     let unfetched = if missing || unfetched_before.is_none_or(|n| n > 0) {
         let read = psvc
             .open_git_packs(private, below, |bytes| {
-                index_pack(&dir, bytes).map_err(|e| forge_core::Error::Io(format!("{e:#}")))
+                index_pack(dir, bytes).map_err(|e| forge_core::Error::Io(format!("{e:#}")))
             })
             .await?;
         std::fs::write(&marker, format!("{} {}\n", read.opened, read.unfetched))?;
@@ -1190,11 +1202,11 @@ async fn work_repo(
         0
     };
     for (name, tip) in refs {
-        if git::has_object(&dir, tip) {
-            git::git(&dir, &["update-ref", name, tip], &[])?;
+        if git::has_object(dir, tip) {
+            git::git(dir, &["update-ref", name, tip], &[])?;
         }
     }
-    Ok((dir, unfetched))
+    Ok((dir.to_path_buf(), unfetched))
 }
 
 /// Index one plaintext pack into `dir`.
@@ -1253,7 +1265,7 @@ fn git_with_input(dir: &Path, args: &[&str], input: String) -> Result<Vec<u8>> {
 
 /// The on-disk size and object count of everything reachable from `tips`: about what a pack of
 /// them takes.
-fn pack_size(dir: &Path, tips: &[String]) -> Result<(u64, u64)> {
+pub(crate) fn pack_size(dir: &Path, tips: &[String]) -> Result<(u64, u64)> {
     if tips.is_empty() {
         return Ok((0, 0));
     }
@@ -1534,10 +1546,20 @@ fn people(n: usize) -> String {
 }
 
 /// `refs/heads/x` and `refs/tags/x` as `x`.
-fn short_ref(name: &str) -> &str {
+pub(crate) fn short_ref(name: &str) -> &str {
     name.strip_prefix("refs/heads/")
         .or_else(|| name.strip_prefix("refs/tags/"))
         .unwrap_or(name)
+}
+
+/// The publication scope shown before Everything's census.
+fn everything_scope(below: Option<u32>) -> String {
+    let until = if below.is_some() {
+        "before the existing publication boundary"
+    } else {
+        "until now"
+    };
+    format!("Everything members could ever read {until}: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, old settings, imported authors and links, and requests sent to bots. Releases made while the repo was private stay hidden.")
 }
 
 /// What Everything makes readable, counted: the non-zero counts, in the dialog's order.
@@ -1688,7 +1710,7 @@ fn print_check(
             }
             if modes.contains(&Mode::Everything) {
                 println!("  Everything (--everything)");
-                println!("    Everything members could ever read until now: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, old settings, imported authors and links, and requests sent to bots. Releases made while the repo was private stay hidden.");
+                println!("    {}", everything_scope(check.below));
                 println!("    That is {}.", everything_counts(check));
                 if c.unread > 0 {
                     println!("    {} you can't read yourself aren't counted.", plural(c.unread, "post"));
@@ -1713,9 +1735,10 @@ fn print_check(
             }
             println!();
             println!(
-                "Stays private: {}, {}, and everything members write from now on.",
+                "Stays private: {}, {}, and {}.",
                 plural_with(c.letters, "message to specific people", "messages to specific people"),
-                plural(check.environments, "environment")
+                plural(check.environments, "environment"),
+                if check.below.is_some() { "everything members wrote from the existing publication boundary on" } else { "everything members write from now on" }
             );
             println!("Members-only content keeps working afterwards, without a pause.");
             println!("People on Forge older than {CONVERTED_REPO_MIN_CLIENT_VERSION} can't clone it until they update.");
@@ -1773,6 +1796,8 @@ struct Run<'r> {
     conversion: Option<Conversion>,
     saved: Option<Saved>,
     mode: Mode,
+    /// Inferred solely to keep branches; never authorizes publishing any code.
+    inferred_mode: bool,
     history_started: bool,
     /// `--start-over` in place of a recorded run whose boundary was passed: what it replaces.
     start_over: Option<StartOver>,
@@ -1829,6 +1854,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         conversion,
         saved,
         mode,
+        inferred_mode,
         history_started,
         start_over,
         checked_below,
@@ -1861,12 +1887,32 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     }
     // the refs this run publishes: the owner's earlier choice on this computer, else the
     // check's; a maintainer finishing someone else's run names them
-    let saved_here = saved.as_ref().is_some_and(|sv| sv.mode == mode);
-    let mut wanted: Vec<(String, String)> = match mode {
-        Mode::CodeOnly => check.code_refs.clone(),
-        Mode::Everything => check.all_refs.clone(),
+    let local_choice = saved.as_ref().filter(|sv| sv.mode == mode);
+    let saved_here = local_choice.is_some();
+    let recorded_refs = local_choice.map_or(0, |sv| sv.refs.len());
+    let (public_refs, members_only) = if flipped {
+        public_state(svc, &public).await?
+    } else {
+        (BTreeMap::new(), BTreeSet::new())
     };
-    if flipped && !is_owner && mode == Mode::CodeOnly && !saved_here && a.refs.is_empty() {
+    let keep_only = inferred_mode
+        || keep_only_resume(
+            flipped,
+            a.resume,
+            mode,
+            recorded_refs,
+            a.code_only,
+            &a.refs,
+            &public_refs,
+        );
+    let mut wanted = publication_refs(&check, mode, keep_only);
+    if flipped
+        && !is_owner
+        && mode == Mode::CodeOnly
+        && !saved_here
+        && a.refs.is_empty()
+        && !keep_only
+    {
         return Err(UserError::new(
             codes::USAGE,
             format!("say which branches and tags the owner chose for {label}"),
@@ -1879,11 +1925,6 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         .into());
     }
     // what is public already, and what members continued after the flip (never published)
-    let (public_refs, members_only) = if flipped {
-        public_state(svc, &public).await?
-    } else {
-        (BTreeMap::new(), BTreeSet::new())
-    };
     let todo = unpublished_refs(&wanted, &public_refs, &members_only);
     let left_out: Vec<String> = wanted
         .iter()
@@ -1954,7 +1995,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             }
             None => typed_confirmation(ctx, &a.repo).map_err(discard)?,
         }
-    } else {
+    } else if !keep_only {
         ctx.confirm_or_cancel(&format!(
             "Continue making {label} public ({}): about {}, plus storing the code ({} on Platform)?",
             mode.label(),
@@ -2205,10 +2246,26 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             );
         }
     }
+    // 5b. Keep withheld branches using this run's already-clamped boundary. The preflight
+    // service cached keys before the rotation; a new private view must open the withheld epoch.
+    let keep_service = RepoService::new(&s.client, &s.identity, &s.bridge);
+    let kept = crate::make_public_keep::keep_for_members(
+        ctx,
+        s,
+        &keep_service,
+        private,
+        &public,
+        history_cutoff(stated, saved.seal_off),
+        dir,
+        keep_only,
+    )
+    .await;
+    let kept_report = crate::make_public_keep::report(ctx, &label, kept);
+    let kept_for_members = &kept_report.plan;
     // 6. notifications: Forge apps read them from the flip and the published keys
     steps.push(json!({ "step": "notify", "status": "done" }));
     // 7. the history
-    let mut finished = true;
+    let mut finished = kept_for_members.is_some();
     if mode == Mode::Everything {
         let c = fresh
             .anchored_conversion(&public)
@@ -2249,19 +2306,18 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     }
     let spent = s.spent_since(before).await;
     if finished {
-        if keep_boundary {
-            // the boundary record alone: the work repository holds the private era's code
-            let _ = std::fs::remove_dir_all(dir.join("work.git"));
-        } else {
-            let _ = std::fs::remove_dir_all(dir);
-        }
+        cleanup_finished_run(dir, keep_boundary);
     }
     ctx.emit(
         json!({
             "status": if finished { "public" } else { "in_progress" },
             "repo": s.repo.display(),
-            "mode": mode,
+            "mode": (!inferred_mode).then_some(mode),
+            "keepOnly": keep_only,
             "steps": steps,
+            "keptForMembers": kept_for_members,
+            "keptForMembersError": kept_report.error,
+            "notKeptForMembers": kept_report.not_kept,
             "notPublished": left_out.iter().chain(&dropped).collect::<Vec<_>>(),
             "startOver": start_over.map(StartOver::json),
             "boundaryKept": keep_boundary,
@@ -2269,15 +2325,91 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         }),
         || {
             if finished {
-                println!(
-                    "{label} is public ({}). Members and the people whose words became public see it in their notifications.",
-                    mode.label()
-                );
+                if keep_only {
+                    println!("This run published nothing; it only kept branches for members. To publish more, use --resume --code-only --ref <each> or --everything.");
+                } else {
+                    println!(
+                        "{label} is public ({}). Members and the people whose words became public see it in their notifications.",
+                        mode.label()
+                    );
+                }
             }
             println!("  cost: {}", cost_line(spent, price));
         },
     );
     Ok(())
+}
+
+/// Post-completion cleanup is best-effort. In particular, never delete a directory whose
+/// keeper is still active just because acquiring the sweep lock failed.
+fn cleanup_finished_run(dir: &Path, keep_boundary: bool) {
+    if let Err(e) = crate::make_public_keep::sweep_keep_dirs(dir) {
+        eprintln!(
+            "warning: could not clean up the completed conversion: {}",
+            safe(&format!("{e:#}"))
+        );
+    } else if keep_boundary {
+        // Keep the boundary record alone; work.git holds private-era plaintext.
+        let _ = std::fs::remove_dir_all(dir.join("work.git"));
+    } else {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+fn publication_refs(check: &Check, mode: Mode, keep_only: bool) -> Vec<(String, String)> {
+    if keep_only {
+        Vec::new()
+    } else {
+        match mode {
+            Mode::CodeOnly => check.code_refs.clone(),
+            Mode::Everything => check.all_refs.clone(),
+        }
+    }
+}
+
+/// A bare resume can infer a placeholder only when there is public code already. It never
+/// recovers the owner's publication choice from a different computer.
+fn resume_mode(
+    chosen: Option<Mode>,
+    flipped: bool,
+    resume: bool,
+    public: &BTreeMap<String, String>,
+) -> (Option<Mode>, bool) {
+    let inferred = chosen.is_none() && flipped && resume && !public.is_empty();
+    (chosen.or(inferred.then_some(Mode::CodeOnly)), inferred)
+}
+
+fn mode_to_finish(mode: Option<Mode>, label: &str) -> Result<Mode> {
+    mode.ok_or_else(|| {
+        UserError::new(
+            codes::USAGE,
+            format!("{} was made public; say which mode to finish", safe(label)),
+        )
+        .fix(format!(
+            "dg repo make-public {} --resume --code-only (or --everything)",
+            safe(label)
+        ))
+        .note("this computer has no record of the run that started it")
+        .into()
+    })
+}
+
+/// A finished Code-only conversion needs no repeated publication choice just to keep branches.
+fn keep_only_resume(
+    flipped: bool,
+    resume: bool,
+    mode: Mode,
+    recorded_refs: usize,
+    explicit_code_only: bool,
+    refs: &[String],
+    public: &BTreeMap<String, String>,
+) -> bool {
+    flipped
+        && resume
+        && mode == Mode::CodeOnly
+        && (recorded_refs == 0 || explicit_code_only)
+        && refs.is_empty()
+        && !public.is_empty()
 }
 
 /// The history step keeps the boundary checked by this run, including after an owner replacement.
@@ -2311,6 +2443,19 @@ fn push_public(
     todo: &[&(String, String)],
     allowed: &BTreeSet<String>,
 ) -> Result<()> {
+    let args = public_push_args(repo, todo, allowed);
+    let push: Vec<&str> = args.iter().map(String::as_str).collect();
+    git::git_dash(work, &push, &git::dash_env_signing(ctx)?)
+        .context("pushing the published branches and tags")?;
+    Ok(())
+}
+
+/// Arguments for the below-boundary publication; each tip has its own explicit override.
+fn public_push_args(
+    repo: &RepoRef,
+    todo: &[&(String, String)],
+    allowed: &BTreeSet<String>,
+) -> Vec<String> {
     // Step 1's typed confirmation already covered the cost, and the flip cannot be undone: the
     // helper's cost guard must not stop this push with E801 (or wait on a terminal) now.
     let mut args: Vec<String> = vec![
@@ -2320,6 +2465,10 @@ fn push_public(
         "-o".into(),
         "public".into(),
     ];
+    for (_, tip) in todo {
+        args.push("-o".into());
+        args.push(format!("publish-private={tip}"));
+    }
     for f in allowed {
         args.push("-o".into());
         args.push(format!("{}={f}", forge_secrets::ALLOW_PUSH_OPTION));
@@ -2328,10 +2477,7 @@ fn push_public(
     for (n, t) in todo {
         args.push(format!("{t}:{n}"));
     }
-    let push: Vec<&str> = args.iter().map(String::as_str).collect();
-    git::git_dash(work, &push, &git::dash_env_signing(ctx)?)
-        .context("pushing the published branches and tags")?;
-    Ok(())
+    args
 }
 
 /// The public refs of `public` (name -> tip) and the refs members continued after the flip, which
@@ -2454,6 +2600,199 @@ fn repair_marker_keys(label: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopted_boundary_confirmation_describes_the_scope_it_will_publish() {
+        let below = history_cutoff(Some(4), Some(1));
+        let scope = everything_scope(below);
+        assert!(scope.contains("before the existing publication boundary"));
+        assert!(!scope.contains("until now"));
+        assert!(everything_scope(None).contains("until now"));
+    }
+
+    #[test]
+    fn an_owner_without_a_record_cannot_infer_publication_choices() {
+        // The owner selected topic or Everything elsewhere; the flip landed before step 5.
+        let (mode, inferred) = resume_mode(None, true, true, &BTreeMap::new());
+        assert!(!inferred);
+        let error = mode_to_finish(mode, "owner/repo").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("was made public; say which mode to finish"));
+        assert_eq!(
+            resume_mode(None, false, true, &BTreeMap::new()),
+            (None, false)
+        );
+    }
+
+    #[test]
+    fn an_inferred_keep_only_resume_publishes_nothing() {
+        let public = BTreeMap::from([("refs/heads/topic".into(), "a".into())]);
+        let (mode, inferred) = resume_mode(None, true, true, &public);
+        assert!(inferred);
+        let mode = mode_to_finish(mode, "owner/repo").unwrap();
+        let check = Check {
+            code_refs: vec![("refs/heads/main".into(), "b".into())],
+            all_refs: vec![("refs/heads/topic".into(), "a".into())],
+            ..Check::default()
+        };
+        assert!(publication_refs(&check, mode, inferred).is_empty());
+        // An explicit mode keeps its normal publication choice.
+        assert_eq!(
+            resume_mode(Some(Mode::Everything), true, true, &public),
+            (Some(Mode::Everything), false)
+        );
+        assert_eq!(
+            publication_refs(&check, Mode::Everything, false),
+            check.all_refs
+        );
+        let args = public_push_args(
+            &RepoRef {
+                repo_id: "r".into(),
+                owner_id: "o".into(),
+                name: "n".into(),
+                visibility: Visibility::Public,
+                forge: forge_core::network::ForgeIds::test_forge_meta(),
+            },
+            &[],
+            &BTreeSet::new(),
+        );
+        assert!(!args.iter().any(|a| a.contains("refs/heads/")));
+    }
+
+    #[test]
+    fn a_maintainer_can_resume_a_finished_code_only_conversion_to_keep_branches() {
+        let public = BTreeMap::from([("refs/heads/main".into(), "a".into())]);
+        assert!(keep_only_resume(
+            true,
+            true,
+            Mode::CodeOnly,
+            0,
+            false,
+            &[],
+            &public
+        ));
+        assert!(!keep_only_resume(
+            true,
+            false,
+            Mode::CodeOnly,
+            0,
+            false,
+            &[],
+            &public
+        ));
+        assert!(!keep_only_resume(
+            true,
+            true,
+            Mode::CodeOnly,
+            0,
+            false,
+            &[],
+            &BTreeMap::new()
+        ));
+        assert!(!keep_only_resume(
+            true,
+            true,
+            Mode::CodeOnly,
+            0,
+            false,
+            &["topic".into()],
+            &public
+        ));
+    }
+
+    #[test]
+    fn an_explicit_owner_keep_only_resume_does_not_resume_recorded_publication() {
+        let public = BTreeMap::from([("refs/heads/topic".into(), "a".into())]);
+        assert!(keep_only_resume(
+            true,
+            true,
+            Mode::CodeOnly,
+            1,
+            true,
+            &[],
+            &public
+        ));
+        assert!(!keep_only_resume(
+            true,
+            true,
+            Mode::CodeOnly,
+            1,
+            false,
+            &[],
+            &public
+        ));
+        assert!(!keep_only_resume(
+            true,
+            true,
+            Mode::CodeOnly,
+            1,
+            true,
+            &["topic".into()],
+            &public
+        ));
+        // A retry of a failed keep-only run has a local record but no selected public refs.
+        assert!(keep_only_resume(
+            true,
+            true,
+            Mode::CodeOnly,
+            0,
+            false,
+            &[],
+            &public
+        ));
+    }
+
+    #[test]
+    fn completed_conversion_cleanup_is_nonfatal_and_preserves_busy_state() {
+        let parent = tempfile::tempdir().unwrap();
+        let invalid = parent.path().join("not-a-directory");
+        std::fs::write(&invalid, "state").unwrap();
+        cleanup_finished_run(&invalid, false);
+        assert!(invalid.is_file());
+        let dir = parent.path().join("conversion");
+        private_dir(&dir).unwrap();
+        std::fs::write(dir.join("state.json"), "{}").unwrap();
+        std::fs::create_dir(dir.join("work.git")).unwrap();
+        std::fs::create_dir(dir.join("keep-interrupted")).unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(".keep.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        cleanup_finished_run(&dir, false);
+        assert!(dir.join("keep-interrupted").exists());
+        drop(lock);
+        cleanup_finished_run(&dir, true);
+        assert!(dir.join("state.json").exists());
+        assert!(!dir.join("work.git").exists());
+        assert!(!dir.join("keep-interrupted").exists());
+        cleanup_finished_run(&dir, false);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_code_only_ref_choice_then_everything_authorizes_each_below_boundary_tip() {
+        let repo = RepoRef {
+            repo_id: "r".into(),
+            owner_id: "o".into(),
+            name: "n".into(),
+            visibility: Visibility::Public,
+            forge: forge_core::network::ForgeIds::test_forge_meta(),
+        };
+        let main = ("refs/heads/main".into(), "a".repeat(40));
+        let topic = ("refs/heads/topic".into(), "b".repeat(40));
+        let first = public_push_args(&repo, &[&topic], &BTreeSet::new());
+        assert!(first.contains(&format!("publish-private={}", topic.1)));
+        let upgrade = public_push_args(&repo, &[&main, &topic], &BTreeSet::new());
+        for r in [&main, &topic] {
+            assert!(upgrade.contains(&format!("publish-private={}", r.1)));
+            assert!(upgrade.contains(&format!("{}:{}", r.1, r.0)));
+        }
+    }
 
     #[test]
     fn interrupted_start_over_keeps_its_replacement_marker_identity() {

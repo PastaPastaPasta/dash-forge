@@ -41,6 +41,8 @@ const makePublicCheck = vi.fn()
 vi.mock('@/lib/repo/make-public-check', () => ({ makePublicCheck: (...a: unknown[]) => makePublicCheck(...a), publicViewOf: (r: unknown) => r }))
 const runMakePublic = vi.fn()
 vi.mock('@/lib/repo/make-public-run', () => ({ runMakePublic: (...a: unknown[]) => runMakePublic(...a) }))
+const pendingKeep = { count: 0 }
+vi.mock('@/lib/repo/keep-for-members-read', () => ({ readPendingKeep: async () => pendingKeep.count }))
 const readMakePublicStatus = vi.fn()
 vi.mock('@/lib/repo/make-public-status', () => ({ readMakePublicStatus: (...a: unknown[]) => readMakePublicStatus(...a) }))
 
@@ -95,6 +97,7 @@ let host: HTMLDivElement
 let root: Root
 const onSaved = vi.fn()
 beforeEach(() => {
+  pendingKeep.count = 0
   viewer.id = 'owner'
   viewer.scope = 'signing'
   viewer.context = true
@@ -153,6 +156,13 @@ async function openDialog(check: MakePublicCheck): Promise<void> {
 }
 
 describe('the Danger zone row', () => {
+  it('shows the reused boundary in the confirmation scope and what stays private', async () => {
+    await openDialog(aCheck({ publicationCutoff: 1 }))
+    expect(host.textContent).toContain('Everything members could ever read before the existing publication boundary:')
+    expect(host.textContent).toContain('everything members wrote from the existing publication boundary on.')
+    expect(host.textContent).not.toContain('Everything members could ever read until now:')
+  })
+
   it('the owner of a private repo gets "Make public…"', async () => {
     await renderRow()
     expect(tid('make-public-row')?.textContent).toContain('Make this repo public')
@@ -757,4 +767,33 @@ it('offers Start again after a refused run and refreshed member session without 
   await flush()
   expect(tid('make-public-start-over')?.textContent).toBe('Start again…')
   expect(tid('make-public-finish')).toBeNull()
+})
+
+
+describe('branches waiting to be kept for members', () => {
+  for (const role of ['owner', 'maintainer', 'reader', 'anonymous'] as const) {
+    it(`shows the count and dg command only to a ${role} who can keep branches`, async () => {
+      converted.value = true
+      pendingKeep.count = 2
+      viewer.id = role === 'anonymous' ? null : role
+      readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'public', converted: true, mode: 'everything' }))
+      await act(async () => { root.render(<MakeRepoPublic home={home('public')} maintainer={role === 'maintainer'} onSaved={onSaved} />) })
+      const row = host.querySelector('[data-testid="make-public-keep-row"]')
+      if (role === 'owner' || role === 'maintainer') {
+        expect(row?.textContent).toContain("Members can't see 2 branches that changed while this repo was being made public.")
+        expect(row?.textContent).toContain('dg repo make-public carol/ledger --resume')
+      } else expect(row).toBeNull()
+    })
+  }
+  it('has no keep row when nothing is left', async () => {
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'public', converted: true }))
+    await act(async () => { root.render(<MakeRepoPublic home={home('public')} maintainer onSaved={onSaved} />) })
+    expect(host.querySelector('[data-testid="make-public-keep-row"]')).toBeNull()
+  })
+  it('has no keep row before the flip', async () => {
+    pendingKeep.count = 2
+    await act(async () => { root.render(<MakeRepoPublic home={home()} maintainer onSaved={onSaved} />) })
+    expect(host.querySelector('[data-testid="make-public-keep-row"]')).toBeNull()
+  })
 })

@@ -50,6 +50,7 @@ import {
 import { makePublicCheck, publicViewOf, type PackCache } from '@/lib/repo/make-public-check'
 import { beginMakePublicRun, makePublicInFlight, subscribeMakePublicRuns } from '@/lib/repo/make-public-inflight'
 import { runMakePublic, type MakePublicOutcome } from '@/lib/repo/make-public-run'
+import { readPendingKeep } from '@/lib/repo/keep-for-members-read'
 import { readMakePublicStatus } from '@/lib/repo/make-public-status'
 import { invalidatePrivateSession } from '@/lib/repo/private-session'
 import { shortRef } from '@/lib/repo/ref-admin'
@@ -59,8 +60,8 @@ import {
   EVERYTHING_LATER_TEXT,
   EVERYTHING_LATER_TITLE,
   EVERYTHING_RELEASES,
-  EVERYTHING_TEXT,
   KEEPS_WORKING,
+  keepForMembersLine,
   MAKE_PUBLIC_FIRST_LINE,
   MODE_LABEL,
   NO_REFS_CHOSEN,
@@ -73,6 +74,7 @@ import {
   doneLine,
   everythingLaterTitle,
   everythingThatIs,
+  everythingText,
   interruptedLine,
   noSecretsLine,
   notPublishedLine,
@@ -153,6 +155,11 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
     [ready, repo.repoId, repo.visibility, network, identity ?? '', repo.session?.id ?? repo.lane?.id ?? ''],
     { enabled: relevant && ready && sdk !== null },
   )
+  const pendingKeep = useAsync(
+    () => readPendingKeep(sdk!, repo, status.data?.record?.sealOff ?? null),
+    [ready, repo.repoId, repo.visibility, identity ?? '', repo.lane?.id ?? '', status.data],
+    { enabled: relevant && !isPrivate && ready && sdk !== null },
+  )
   const oneWay = useAsync(() => contractVisibilityOneWay(sdk!, repo.forge.core), [ready, repo.forge.core], {
     enabled: relevant && isPrivate && isOwner && ready && sdk !== null,
   })
@@ -232,6 +239,12 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
   return (
     <>
       {panel}
+      {relevant && !isPrivate && (pendingKeep.data ?? 0) > 0 ? (
+        <div className="space-y-2 rounded-lg border border-caution/50 bg-caution/5 p-4" data-testid="make-public-keep-row">
+          <p className="text-dense">{keepForMembersLine(pendingKeep.data!)}</p>
+          {labelReady ? <code className="block break-all text-[12px]">{resumeCommand(liveLabel)}</code> : null}
+        </div>
+      ) : null}
       {dialog !== null ? (
         <MakePublicDialog
           home={home}
@@ -242,6 +255,7 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
           onClose={() => {
             dialogOpen.current = false
             setDialog(null)
+            pendingKeep.reload()
             status.reload()
             refreshIfNeeded()
           }}
@@ -252,6 +266,7 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
           onSettled={() => {
             invalidatePrivateSession(repo)
             if (dialogOpen.current) refreshPending.current = true
+            pendingKeep.reload()
             status.reload()
             if (!dialogOpen.current) refreshIfNeeded()
           }}
@@ -1091,7 +1106,7 @@ function CheckForm({
 
         <ModeOption groupName={groupName} mode="everything" chosen={mode} onMode={onMode} disabled={!modeAllowed('everything')}>
           <p className="text-anvil-600 dark:text-anvil-300">
-            {EVERYTHING_TEXT} {EVERYTHING_RELEASES}
+            {everythingText(check)} {EVERYTHING_RELEASES}
           </p>
           <p data-testid="make-public-everything-counts">{thatIs}</p>
           {unread !== null ? <p className="text-anvil-600 dark:text-anvil-300">{unread}</p> : null}

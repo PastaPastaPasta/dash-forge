@@ -585,7 +585,7 @@ error: E805 pushing refs/heads/main would publish 3 commits from members-only br
 
 **What to do:** `dg publish <branch> --onto <public branch>` makes one new public commit, and the members-only history stays members-only. If you mean to publish the commits as they are, push with `-o publish-private=<oid>`, naming the new tip of the ref that publishes them: the push lists what it publishes. That is a publication and can't be undone. Setting it in `push.pushOption` doesn't work: it is ignored, so it can only ever apply to one push. If the message says some public branches aren't in your clone yet, run `git fetch` and push again: a public commit your clone doesn't have yet can't be told apart from a members-only one.
 
-Pushing a members-only branch with `-o public` is refused with this code too: that would publish it.
+Pushing a members-only branch with `-o public` is refused with this code too: that would publish it. The guard also includes private-stamped commits written at or above a converted repository's stated boundary, even before dg keeps their branches for members. Repeat `-o publish-private=<tip>` for each tip you deliberately publish; dg supplies these overrides only for the below-boundary code selected by make-public.
 
 ## E806
 

@@ -8,12 +8,12 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
-import { base58Encode } from '../auth/base58'
+import { base58Decode, base58Encode } from '../auth/base58'
 import { EpochKeys, WrapError, bytesToHex, refNameHash, sealDoc, type PrivateDoc, type PrivateDocType } from '../private'
 import type { Membership } from '../rules/v2'
 import { bytesToBase64, type DocumentQuery } from '../sdk'
 import type { RepoRef } from './contract'
-import { hostOf, privateEraRefs, privateViewOf, publicViewOf } from './make-public-check'
+import { hostOf, privateEraRefs, privateViewOf, publicViewOf, readCensus } from './make-public-check'
 import { loadPrivateSession } from './private-session'
 import { readRefs } from './refs'
 
@@ -56,6 +56,39 @@ function mockSdk(rows: Record<string, Record<string, unknown>[]>): EvoSDK {
   return { documents: { query, count: async () => new Map(), sum: async () => new Map() } } as unknown as EvoSDK
 }
 
+async function sessionAtBoundary() {
+  const k0 = await EpochKeys.import(REPO, 0, K0)
+  const k1 = await EpochKeys.import(REPO, 1, K1)
+  const configs = [
+    await sealed('config', k0, {}, { defaultBranch: 'trunk' }, { vis: 'private', backend: { mode: 0 } }, 10, true),
+    // the seal-off rotation, still private
+    await sealed('config', k1, {}, { defaultBranch: 'trunk', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) }, { vis: 'private', backend: { mode: 0 } }, 20, true),
+    // the first public settings, after the flip
+    { $id: b58(docId()), $ownerId: b58(ALICE), $createdAt: 40_000, $createdAtBlockHeight: 40, repoId: b58(REPO), defaultBranch: 'main', vis: 'public', backend: { mode: 0 } },
+  ]
+  const members: Membership[] = [{ identity: b58(ALICE), role: 'maintainer', createdAt: 1 }]
+  const keys = new Map([
+    [0, k0],
+    [1, k1],
+  ])
+  const view = privateViewOf(PUBLIC)
+  const session = await loadPrivateSession({
+    repo: view,
+    network: 'devnet',
+    reader: b58(ALICE),
+    source: { memberships: async () => members, configs: async () => configs, repoKeys: async () => [wrap(0, 11), wrap(1, 19)], identityKeys: async () => [{ keyId: 4, purposeNumber: 1, keyTypeNumber: 0, data: '02' + 'ab'.repeat(32) }] },
+    unwrapper: {
+      keyId: 4,
+      unwrap: async (p) => {
+        const k = keys.get(p.epoch)
+        if (k === undefined) throw new WrapError('wrapUnreadable')
+        return k
+      },
+    },
+  })
+  return { session, k0, k1, view }
+}
+
 describe("the check's private view of a repo made public", () => {
   it('drops the caller\'s sessions and states the visibility', () => {
     const page = { ...PUBLIC, lane: {} as never }
@@ -64,35 +97,7 @@ describe("the check's private view of a repo made public", () => {
   })
 
   it('opens the settings and refs written while private and leaves out what came after the flip', async () => {
-    const k0 = await EpochKeys.import(REPO, 0, K0)
-    const k1 = await EpochKeys.import(REPO, 1, K1)
-    const configs = [
-      await sealed('config', k0, {}, { defaultBranch: 'trunk' }, { vis: 'private', backend: { mode: 0 } }, 10, true),
-      // the seal-off rotation, still private
-      await sealed('config', k1, {}, { defaultBranch: 'trunk', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) }, { vis: 'private', backend: { mode: 0 } }, 20, true),
-      // the first public settings, after the flip
-      { $id: b58(docId()), $ownerId: b58(ALICE), $createdAt: 40_000, $createdAtBlockHeight: 40, repoId: b58(REPO), defaultBranch: 'main', vis: 'public', backend: { mode: 0 } },
-    ]
-    const members: Membership[] = [{ identity: b58(ALICE), role: 'maintainer', createdAt: 1 }]
-    const keys = new Map([
-      [0, k0],
-      [1, k1],
-    ])
-    const view = privateViewOf(PUBLIC)
-    const session = await loadPrivateSession({
-      repo: view,
-      network: 'devnet',
-      reader: b58(ALICE),
-      source: { memberships: async () => members, configs: async () => configs, repoKeys: async () => [wrap(0, 11), wrap(1, 19)], identityKeys: async () => [{ keyId: 4, purposeNumber: 1, keyTypeNumber: 0, data: '02' + 'ab'.repeat(32) }] },
-      unwrapper: {
-        keyId: 4,
-        unwrap: async (p) => {
-          const k = keys.get(p.epoch)
-          if (k === undefined) throw new WrapError('wrapUnreadable')
-          return k
-        },
-      },
-    })
+    const { session, k0, k1, view } = await sessionAtBoundary()
     expect(session.resolution.currentEpoch).toBe(1)
     expect(session.config?.defaultBranch).toBe('trunk')
     expect(session.conversion).toBeNull()
@@ -123,6 +128,34 @@ describe("the check's private view of a repo made public", () => {
     expect(await tip()).toEqual([bytesToHex(oid(0xdd))])
     expect(await tip(1)).toEqual([bytesToHex(oid(0xaa))])
     session.close()
+  })
+})
+
+describe('the adopted publication boundary census', () => {
+  it('counts only earlier discussion and events, authors and scan inputs', async () => {
+    const { session, k0, k1 } = await sessionAtBoundary()
+    try {
+      const issue = await sealed('issue', k0, { number: 1 }, { title: 'Earlier issue', body: 'Earlier body' }, { vis: 'private', number: 1 }, 12)
+      // Use the actual issue id for both the query and the ciphertext binding.
+      const targetId = base58Decode(String(issue['$id']))
+      const comments = [
+        await sealed('comment', k0, { targetId }, { body: 'Earlier comment' }, { vis: 'private', targetId: b58(targetId) }, 15),
+        await sealed('comment', k1, { targetId }, { body: 'Later comment' }, { vis: 'private', targetId: b58(targetId) }, 25),
+      ]
+      const events = [
+        await sealed('event', k0, { targetId }, { eventValue: 'Earlier request' }, { targetId: b58(targetId), kind: 27 }, 16),
+        await sealed('event', k1, { targetId }, { eventValue: 'Later request' }, { targetId: b58(targetId), kind: 27 }, 26),
+        await sealed('event', k1, { targetId }, { eventValue: 'Hidden later' }, { targetId: b58(targetId), kind: 24 }, 27),
+      ]
+      const sdk = mockSdk({ issue: [issue], comment: comments, event: events })
+      // Fresh device: no flip block height or local record, but epoch 1 is the adopted cutoff.
+      const read = await readCensus(sdk, PUBLIC, session, null, 1)
+      expect(read.census).toMatchObject({ issues: 1, comments: 1, botRequests: 1, hidden: 0, unread: 0, authors: [b58(ALICE)] })
+      expect(read.texts.map((t) => t.text)).toEqual(['Earlier issue', 'Earlier body', 'Earlier comment', 'Earlier request'])
+      expect((await readCensus(sdk, PUBLIC, session, null)).census).toMatchObject({ comments: 2, botRequests: 2, hidden: 1 })
+    } finally {
+      session.close()
+    }
   })
 })
 

@@ -1006,11 +1006,19 @@ impl Helper {
         }
         let state = svc.git_state(&conn.repo).await?;
         let public = forge_core::refs::refs_view(&state, None);
+        // A bogus high epoch can only shrink this added withheld set; accepting it here
+        // cannot weaken the pre-existing members-only guard.
+        let conversion = forge_core::private::convert::Conversion::of(
+            true,
+            &forge_core::keyring::config_stamps(&state.configs),
+            |_| true,
+        );
         let mut out = PushView {
             remote_refs: public.public.clone(),
             public: public.public,
             members_key: public.members_key,
             has_members_branch: public.members_only_updates > 0,
+            withheld: forge_core::refs::withheld_new_oids(&state, conversion.as_ref()),
             owner: conn.repo.owner_id().to_owned(),
             ..PushView::default()
         };
@@ -3727,6 +3735,8 @@ struct PushView {
     members_key: bool,
     /// A members-only ref update exists.
     has_members_branch: bool,
+    /// Private-era commits at or above the stated conversion epoch, known without keys.
+    withheld: Vec<String>,
     /// The names live only as members-only branches (with the key).
     members_only: BTreeSet<String>,
     /// Every members-only commit the pusher decrypts (with the key).
@@ -3784,9 +3794,10 @@ impl PushView {
             .collect()
     }
 
-    /// S as far as this clone knows it: the decryptable members-only commits and the ledger's.
+    /// S as far as this clone knows it: decryptable, keyless withheld and ledger commits.
     fn known_members_only(&self) -> Vec<String> {
         let mut s: BTreeSet<String> = self.decryptable.iter().flatten().cloned().collect();
+        s.extend(self.withheld.iter().cloned());
         if let forge_core::members_git::ledger::State::Present(l) = members::read_ledger() {
             s.extend(l.commits.into_keys());
         }
@@ -3824,7 +3835,7 @@ fn accepted_batch(planned: &[Planned], audience: impl Fn(&Planned) -> Audience) 
 }
 
 /// The `-o publish-private=<oid>` of this push ([`members::publish_private`]).
-fn publish_override(options: &OptionState) -> Option<String> {
+fn publish_override(options: &OptionState) -> Vec<String> {
     let values: Vec<String> = options
         .push_option_values(members::OPTION_PUBLISH_PRIVATE)
         .map(str::to_owned)
@@ -4084,6 +4095,20 @@ fn guard_push(
     // check, so no E806 for a repository that only has members-only content turned on (D43 turns
     // it on at creation).
     let members_only_exists = view.members_key && view.has_members_branch;
+    let known = view.known_members_only();
+    // Withheld ids are known even without keys. They do not make an otherwise unknown
+    // members-only history complete; keep the existing E806 and empty-ledger behavior.
+    let decryptable = if !view.withheld.is_empty()
+        && (view.decryptable.is_some()
+            || !members_only_exists
+            || matches!(
+                members::read_ledger(),
+                forge_core::members_git::ledger::State::Present(_)
+            )) {
+        Some(known.as_slice())
+    } else {
+        view.decryptable.as_deref()
+    };
     let mut narrower = view.narrower.clone();
     for (dst, nb) in new_branches {
         if let Some(Audience::Narrower(token)) = planned
@@ -4098,10 +4123,10 @@ fn guard_push(
     }
     let outcome = members::run_guard(
         members_only_exists,
-        view.decryptable.as_deref(),
+        decryptable,
         &p_tips,
         &batch,
-        publish.as_deref(),
+        &publish,
         &narrower,
     )?;
     let g = members::GitGraph::here();
@@ -4198,7 +4223,7 @@ fn guard_private_push(
         None,
         &known,
         &batch,
-        publish.as_deref(),
+        &publish,
         &members::Narrower::default(),
     )?;
     let g = members::GitGraph::here();
@@ -6670,6 +6695,16 @@ mod tests {
     };
     use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
     use forge_core::members_git::Audience;
+
+    #[test]
+    fn withheld_commits_are_known_before_any_members_branch_exists() {
+        let view = super::PushView {
+            withheld: vec!["a".repeat(40)],
+            ..super::PushView::default()
+        };
+        assert!(!view.has_members_branch);
+        assert!(view.known_members_only().contains(&"a".repeat(40)));
+    }
 
     #[test]
     fn a_moved_hint_names_the_remote_to_update() {

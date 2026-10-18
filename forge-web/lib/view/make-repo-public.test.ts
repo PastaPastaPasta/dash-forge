@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { COPY, MakePublicError, type MakePublicCensus } from '../repo/make-public'
 import { MembersUnsettledError, PrivateMembersError } from '../repo/private-members'
-import { EVERYTHING_RELEASES, EVERYTHING_TEXT, RUN_ERRORS, everythingCounts, notPublishedLine, othersLabel, refChoices, runErrorText, staysPrivateLine, unreadLine, wordsLine } from './make-repo-public'
+import { EVERYTHING_RELEASES, RUN_ERRORS, everythingCounts, everythingText, notPublishedLine, othersLabel, refChoices, runErrorText, staysPrivateLine, unreadLine, wordsLine } from './make-repo-public'
 
 const census = (c: Partial<MakePublicCensus> = {}): MakePublicCensus => ({
   issues: 0,
@@ -46,6 +46,13 @@ describe('everythingCounts', () => {
 })
 
 describe('what stays private and the branches offered', () => {
+  it('describes the adopted publication boundary instead of the time of this confirmation', () => {
+    expect(everythingText({ publicationCutoff: 1 })).toContain('before the existing publication boundary:')
+    expect(everythingText({ publicationCutoff: 1 })).not.toContain('until now')
+    expect(everythingText({})).toContain('until now')
+    expect(staysPrivateLine({ publicationCutoff: 1, census: null, environments: 0, narrowerBranches: 0 })).toContain('everything members wrote from the existing publication boundary on.')
+  })
+
   it('names branches only some members can read only when there are some', () => {
     expect(staysPrivateLine({ census: census({ letters: 1 }), environments: 0, narrowerBranches: 0 })).toBe(
       'Stays private: 1 message to specific people, 0 environments, and everything members write from now on.',
@@ -105,7 +112,7 @@ describe('runErrorText (L6)', () => {
 
 describe('Everything and releases (MIXE-12)', () => {
   it('does not list releases among what becomes public, and says private-era ones stay hidden', () => {
-    expect(EVERYTHING_TEXT).not.toMatch(/releases/)
+    expect(everythingText({})).not.toMatch(/releases/)
     expect(EVERYTHING_RELEASES).toBe('Releases made while the repo was private stay hidden.')
   })
 })

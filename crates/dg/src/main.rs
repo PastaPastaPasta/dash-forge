@@ -38,6 +38,7 @@ mod label;
 mod long_body;
 mod maint;
 mod make_public;
+mod make_public_keep;
 mod meta;
 mod milestone;
 mod narrow;

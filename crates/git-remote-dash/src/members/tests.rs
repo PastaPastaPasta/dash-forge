@@ -822,3 +822,105 @@ fn the_branches_shared_with_this_clone_read_back_by_name() {
     let got: Vec<String> = read_branch_lines(&p).into_iter().collect();
     assert_eq!(got, ["refs/heads/a", "refs/heads/sec/fix"]);
 }
+
+#[test]
+fn every_explicit_publication_override_is_preserved() {
+    let tips = vec!["1".repeat(40), "2".repeat(40)];
+    // Collect also compiles against the old single-tip return type; it then loses the first tip.
+    let actual: Vec<String> = publish_private(&tips).into_iter().collect();
+    assert_eq!(actual, tips);
+}
+
+#[test]
+fn publication_overrides_are_bound_to_each_tip_and_keep_batch_refusal() {
+    use forge_core::members_git::guard::{Finding, FindingKind, Verdict};
+    let batch: Vec<_> = ["a", "b"]
+        .map(|t| BatchRef {
+            dst: format!("refs/heads/{t}"),
+            new: Some(t.into()),
+            audience: Audience::Public,
+        })
+        .into();
+    let mut outcome = Outcome {
+        verdict: Verdict::Refuse,
+        findings: batch
+            .iter()
+            .map(|r| Finding {
+                dst: r.dst.clone(),
+                kind: FindingKind::Commits,
+                oids: vec![r.new.clone().unwrap()],
+            })
+            .collect(),
+        notes: vec![],
+        published: vec![],
+        gitlinks: vec![],
+        remade: vec![],
+    };
+    allow_publications(&mut outcome, &batch, &["a".into()]);
+    assert_eq!(outcome.verdict, Verdict::Refuse);
+    assert_eq!(outcome.findings.len(), 1);
+    assert_eq!(outcome.published.len(), 1);
+    allow_publications(&mut outcome, &batch, &["b".into()]);
+    assert_eq!(outcome.verdict, Verdict::Pass);
+    assert_eq!(outcome.published.len(), 2);
+    outcome.verdict = Verdict::Unavailable;
+    allow_publications(&mut outcome, &batch, &["a".into(), "b".into()]);
+    assert_eq!(outcome.verdict, Verdict::Unavailable);
+}
+
+#[test]
+fn real_git_refuses_withheld_and_kept_history_but_allows_selected_pre_boundary_tips() {
+    use forge_core::members_git::guard::Verdict;
+    let objects = serde_json::json!({
+        "a": {"type":"commit", "parents":[]},
+        "b": {"type":"commit", "parents":["a"]},
+        "c": {"type":"commit", "parents":["b"]},
+        "d": {"type":"commit", "parents":["a"]}
+    });
+    let r = realize(objects.as_object().unwrap(), &serde_json::Map::new());
+    let known = vec![r.oid("b"), r.oid("d")];
+    let ledger = ledger::State::Absent;
+    let no_audiences = guard::NarrowAudiences::new();
+    let batch = vec![BatchRef {
+        dst: "refs/heads/main".into(),
+        new: Some(r.oid("c")),
+        audience: Audience::Public,
+    }];
+    let input = GuardInput {
+        members_key: false,
+        ledger: &ledger,
+        decryptable: Some(&known),
+        public_tips: &[],
+        batch: &batch,
+        publish_private: None,
+        patch_ids: false,
+        audiences: &no_audiences,
+        decryptable_narrower: &[],
+    };
+    let mut result = guard::guard(&GitGraph::at(&r.path), &input).unwrap();
+    assert_eq!(result.verdict, Verdict::Refuse);
+    assert!(result.findings.iter().any(|f| f.oids.contains(&r.oid("b"))));
+    let (error, _) = publish_refusal(&GitGraph::at(&r.path), &result, &batch, &BTreeMap::new(), 0);
+    assert_eq!(
+        error.code,
+        forge_core::user_error::codes::PUBLISHES_MEMBERS_ONLY
+    );
+    // Kept descendants include the pre-boundary parents in S. The conversion authorizes only
+    // the exact selected tips; a withheld descendant in another ref still refuses the batch.
+    let upgrade = vec![BatchRef {
+        dst: "refs/heads/topic".into(),
+        new: Some(r.oid("a")),
+        audience: Audience::Public,
+    }];
+    result = guard::guard(
+        &GitGraph::at(&r.path),
+        &GuardInput {
+            batch: &upgrade,
+            ..input
+        },
+    )
+    .unwrap();
+    assert_eq!(result.verdict, Verdict::Refuse);
+    allow_publications(&mut result, &upgrade, &[r.oid("a")]);
+    assert_eq!(result.verdict, Verdict::Pass);
+}

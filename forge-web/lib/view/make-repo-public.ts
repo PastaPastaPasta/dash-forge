@@ -21,11 +21,18 @@ export const MAKE_PUBLIC_FIRST_LINE = "Everyone will be able to see what you cho
 export const CODE_ONLY_STAYS = 'Issues, pull requests, reviews and other branches stay members-only. You can make them public later.'
 
 /** Under Everything, before its counts. */
-export const EVERYTHING_TEXT =
-  'Everything members could ever read until now: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, old settings, imported authors and links, and requests sent to bots.'
+export function everythingText(check: Pick<MakePublicCheck, 'publicationCutoff'>): string {
+  const until = check.publicationCutoff === undefined ? 'until now' : 'before the existing publication boundary'
+  return `Everything members could ever read ${until}: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, old settings, imported authors and links, and requests sent to bots.`
+}
 
-/** After {@link EVERYTHING_TEXT}: private-era sealed releases are not opened with the published keys (MIXE-12). */
+/** After {@link everythingText}: private-era sealed releases are not opened with the published keys (MIXE-12). */
 export const EVERYTHING_RELEASES = 'Releases made while the repo was private stay hidden.'
+
+/** Branches waiting for dg's members-only keep step after the flip. */
+export function keepForMembersLine(count: number): string {
+  return `Members can't see ${plural(count, 'branch', 'branches')} that changed while this repo was being made public. To keep them for members, run:`
+}
 
 export const KEEPS_WORKING = 'Members-only content keeps working afterwards, without a pause.'
 
@@ -88,11 +95,12 @@ export function secretLine(place: string): string {
 }
 
 /** "Stays private: …, and everything members write from now on." */
-export function staysPrivateLine(check: Pick<MakePublicCheck, 'census' | 'environments' | 'narrowerBranches'>): string {
+export function staysPrivateLine(check: Pick<MakePublicCheck, 'census' | 'environments' | 'narrowerBranches' | 'publicationCutoff'>): string {
   const letters = plural(check.census?.letters ?? 0, 'message to specific people', 'messages to specific people')
   const narrower =
     check.narrowerBranches > 0 ? `, ${plural(check.narrowerBranches, 'branch only some members can read', 'branches only some members can read')}` : ''
-  return `Stays private: ${letters}, ${plural(check.environments, 'environment')}${narrower}, and everything members write from now on.`
+  const writing = check.publicationCutoff === undefined ? 'everything members write from now on' : 'everything members wrote from the existing publication boundary on'
+  return `Stays private: ${letters}, ${plural(check.environments, 'environment')}${narrower}, and ${writing}.`
 }
 
 /** Clients that can't read a repo made public. */
