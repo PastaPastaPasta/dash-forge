@@ -96,12 +96,15 @@ pub fn card_svg(c: &Card) -> String {
     const FONT: &str = "DejaVu Sans, Helvetica, Arial, sans-serif";
     let owner = xml_escape(&clip(&c.owner, 40));
     let name = xml_escape(&clip(&c.name, 32));
+    // A long name starts smaller; [`render_png`] squeezes whatever still runs past the margin.
+    let name_size = if c.name.chars().count() > 20 { 56 } else { 76 };
     let mut desc = String::new();
     for (i, line) in wrap(&c.description, 56, 3).iter().enumerate() {
         let y = 380 + i * 44;
         let _ = write!(
             desc,
-            r##"<text x="80" y="{y}" font-family="{FONT}" font-size="32" fill="#cbd5e1">{}</text>"##,
+            r##"<text id="fit-{}" x="80" y="{y}" font-family="{FONT}" font-size="32" fill="#cbd5e1">{}</text>"##,
+            i + 3,
             xml_escape(line)
         );
     }
@@ -115,17 +118,51 @@ pub fn card_svg(c: &Card) -> String {
     let facts = xml_escape(&facts.join("   ·   "));
     let site = xml_escape(&clip(&c.site, 48));
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}"><rect width="{WIDTH}" height="{HEIGHT}" fill="#0f172a"/><rect width="{WIDTH}" height="10" fill="#008de4"/><text x="80" y="110" font-family="{FONT}" font-size="34" font-weight="bold" fill="#38bdf8">Dash Forge</text><text x="80" y="215" font-family="{FONT}" font-size="44" fill="#94a3b8">{owner} /</text><text x="80" y="300" font-family="{FONT}" font-size="76" font-weight="bold" fill="#f8fafc">{name}</text>{desc}<text x="80" y="570" font-family="{FONT}" font-size="30" fill="#e2e8f0">{facts}</text><text x="1120" y="570" text-anchor="end" font-family="{FONT}" font-size="26" fill="#64748b">{site}</text></svg>"##
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}"><rect width="{WIDTH}" height="{HEIGHT}" fill="#0f172a"/><rect width="{WIDTH}" height="10" fill="#008de4"/><text x="80" y="110" font-family="{FONT}" font-size="34" font-weight="bold" fill="#38bdf8">Dash Forge</text><text id="fit-0" x="80" y="215" font-family="{FONT}" font-size="44" fill="#94a3b8">{owner} /</text><text id="fit-1" x="80" y="300" font-family="{FONT}" font-size="{name_size}" font-weight="bold" fill="#f8fafc">{name}</text>{desc}<text id="fit-2" x="80" y="570" font-family="{FONT}" font-size="30" fill="#e2e8f0">{facts}</text><text x="1120" y="570" text-anchor="end" font-family="{FONT}" font-size="26" fill="#64748b">{site}</text></svg>"##
     )
 }
 
-/// `svg` drawn as a PNG.
+/// The x every card line starts at.
+const LEFT: u32 = 80;
+/// The width a card line may take before the right margin.
+const LINE: u32 = WIDTH - 2 * LEFT;
+/// The right margin (`LEFT + LINE`) in the `f32` a laid-out bounding box is measured in.
+const RIGHT: f32 = 1120.0;
+
+/// `svg` with each `fit-<n>` line that `tree` (`svg` laid out) shows running past the right
+/// margin squeezed to the line width (`textLength`), or `None` when every line fits. Names and
+/// titles are clipped by characters, which cannot know how wide the font draws them.
+fn fit(svg: &str, tree: &usvg::Tree) -> Option<String> {
+    let mut out: Option<String> = None;
+    for n in 0.. {
+        let id = format!(r#"id="fit-{n}""#);
+        if !svg.contains(&id) {
+            break;
+        }
+        let too_wide = tree
+            .node_by_id(&format!("fit-{n}"))
+            .is_some_and(|node| node.abs_bounding_box().right() > RIGHT);
+        if too_wide {
+            out = Some(out.as_deref().unwrap_or(svg).replacen(
+                &id,
+                &format!(r#"{id} textLength="{LINE}" lengthAdjust="spacingAndGlyphs""#),
+                1,
+            ));
+        }
+    }
+    out
+}
+
+/// `svg` drawn as a PNG, with any line too wide for the card squeezed to fit.
 pub fn render_png(svg: &str, fonts: Arc<usvg::fontdb::Database>) -> Result<Vec<u8>> {
     let opt = usvg::Options {
         fontdb: fonts,
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_str(svg, &opt)?;
+    let mut tree = usvg::Tree::from_str(svg, &opt)?;
+    if let Some(fitted) = fit(svg, &tree) {
+        tree = usvg::Tree::from_str(&fitted, &opt)?;
+    }
     let mut pixmap =
         tiny_skia::Pixmap::new(WIDTH, HEIGHT).ok_or_else(|| anyhow!("cannot allocate the card"))?;
     resvg::render(
@@ -186,7 +223,8 @@ pub fn item_svg(c: &ItemCard) -> String {
         let y = 270 + i * 72;
         let _ = write!(
             lines,
-            r##"<text x="80" y="{y}" font-family="{FONT}" font-size="56" font-weight="bold" fill="#f8fafc">{}</text>"##,
+            r##"<text id="fit-{}" x="80" y="{y}" font-family="{FONT}" font-size="56" font-weight="bold" fill="#f8fafc">{}</text>"##,
+            i + 1,
             xml_escape(line)
         );
     }
@@ -195,7 +233,8 @@ pub fn item_svg(c: &ItemCard) -> String {
         let y = body_top + i * 42;
         let _ = write!(
             lines,
-            r##"<text x="80" y="{y}" font-family="{FONT}" font-size="30" fill="#cbd5e1">{}</text>"##,
+            r##"<text id="fit-{}" x="80" y="{y}" font-family="{FONT}" font-size="30" fill="#cbd5e1">{}</text>"##,
+            i + 1 + title.len(),
             xml_escape(line)
         );
     }
@@ -208,7 +247,7 @@ pub fn item_svg(c: &ItemCard) -> String {
     let label = xml_escape(&item_label(c.kind, c.number));
     let site = xml_escape(&clip(&c.site, 48));
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}"><rect width="{WIDTH}" height="{HEIGHT}" fill="#0f172a"/><rect width="{WIDTH}" height="10" fill="#008de4"/><text x="80" y="110" font-family="{FONT}" font-size="34" font-weight="bold" fill="#38bdf8">Dash Forge</text><text x="80" y="180" font-family="{FONT}" font-size="36" fill="#94a3b8">{repo}</text>{lines}<text x="80" y="570" font-family="{FONT}" font-size="30" fill="#e2e8f0"><tspan font-weight="bold" fill="{color}">● {state}</tspan>   ·   {label}</text><text x="1120" y="570" text-anchor="end" font-family="{FONT}" font-size="26" fill="#64748b">{site}</text></svg>"##
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}"><rect width="{WIDTH}" height="{HEIGHT}" fill="#0f172a"/><rect width="{WIDTH}" height="10" fill="#008de4"/><text x="80" y="110" font-family="{FONT}" font-size="34" font-weight="bold" fill="#38bdf8">Dash Forge</text><text id="fit-0" x="80" y="180" font-family="{FONT}" font-size="36" fill="#94a3b8">{repo}</text>{lines}<text x="80" y="570" font-family="{FONT}" font-size="30" fill="#e2e8f0"><tspan font-weight="bold" fill="{color}">● {state}</tspan>   ·   {label}</text><text x="1120" y="570" text-anchor="end" font-family="{FONT}" font-size="26" fill="#64748b">{site}</text></svg>"##
     )
 }
 
@@ -455,6 +494,39 @@ mod tests {
         let png = render_png(&card_svg(&card()), fonts(None)).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         assert!(png.len() > 1000);
+    }
+
+    #[test]
+    fn a_line_too_wide_for_the_card_is_squeezed_to_fit() {
+        let db = fonts(None);
+        if db.is_empty() {
+            return; // no fonts: nothing is drawn, so nothing can run past the margin
+        }
+        let opt = usvg::Options {
+            fontdb: db,
+            ..usvg::Options::default()
+        };
+        let right = |svg: &str, id: &str| {
+            let tree = usvg::Tree::from_str(svg, &opt).unwrap();
+            tree.node_by_id(id).unwrap().abs_bounding_box().right()
+        };
+        let wide = card_svg(&Card {
+            name: "W".repeat(40),
+            ..card()
+        });
+        assert!(
+            right(&wide, "fit-1") > RIGHT,
+            "the unfitted name runs past the margin"
+        );
+        let fitted = fit(&wide, &usvg::Tree::from_str(&wide, &opt).unwrap()).unwrap();
+        assert!(fitted.contains(r#"id="fit-1" textLength="1040""#));
+        assert!(right(&fitted, "fit-1") <= RIGHT + 2.0);
+        let short = card_svg(&card());
+        let short = fit(&short, &usvg::Tree::from_str(&short, &opt).unwrap()).unwrap_or(short);
+        assert!(
+            !short.contains(r#"id="fit-1" textLength"#),
+            "a short name is left alone"
+        );
     }
 
     #[test]

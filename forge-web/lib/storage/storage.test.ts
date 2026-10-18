@@ -500,7 +500,10 @@ describe('storeArtifact', () => {
     const net = fakeNetwork()
     vi.stubGlobal('fetch', net.fetchMock)
     const local = { ...S3, settings: { ...s3Of(S3), publicUrl: 'https://192.168.1.20/forge-byo' } }
-    await expect(storeArtifact(SDK, AUTH, REPO, bytes, { policy: policyFor(['r2-main'], 'one'), profiles: [local], confirmPlatform: async () => false })).rejects.toThrow(/other people can't read/)
+    const run = storeArtifact(SDK, AUTH, REPO, bytes, { policy: policyFor(['r2-main'], 'one'), profiles: [local], confirmPlatform: async () => false })
+    await expect(run).rejects.toThrow(/other people can't read/)
+    // The reason's own full stop is not doubled by the message's closing sentence.
+    await expect(run).rejects.toThrow(/a tunnel\. Nothing was written to Platform\.$/)
     expect(net.puts).toEqual([])
   })
 

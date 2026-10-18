@@ -85,7 +85,8 @@ export class ReplicationError extends Error {
   ) {
     super(
       `storage policy not met: ${confirmed.length} of ${required} required ${required === 1 ? 'target' : 'targets'} confirmed` +
-        failures.map((f) => `; ${f.target}: ${f.reason}`).join('') +
+        // A reason may end its own sentence; the message adds the closing one.
+        failures.map((f) => `; ${f.target}: ${f.reason.replace(/\.+$/, '')}`).join('') +
         (platformWritten
           ? '. Some pack chunks were written to Platform before the push stopped; they are kept, and a retry does not pay for them again. No manifest or ref was written.'
           : '. Nothing was written to Platform.'),
