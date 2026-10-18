@@ -34,6 +34,8 @@ import {
   EncryptionKeyNotHeldError,
   unlockWithPassphrase,
   withEncryptionKey,
+  withEncryptionKeys,
+  EncryptionKeyLockedError,
 } from './vault'
 import { encodeWif } from './wif'
 
@@ -140,7 +142,10 @@ describe('the vault encryption-key slot', () => {
     await storeEncryptionKey('devnet', ID, 4, new Uint8Array(ENC))
     await removeEncryptionKey('devnet', ID)
     expect(await storedEncryptionKeyId('devnet', ID)).toBeNull()
-    await expect(withEncryptionKey('devnet', ID, async () => 1)).rejects.toThrow(/no encryption key/)
+    for (const accessKeys of [withEncryptionKey, withEncryptionKeys]) {
+      await expect(accessKeys('devnet', ID, async () => 1)).rejects.toThrow(/no encryption key/)
+      await expect(accessKeys('devnet', ID, async () => 1)).rejects.not.toBeInstanceOf(EncryptionKeyLockedError)
+    }
   }, 30_000)
 
   it('a tab-only session holds it in memory only', async () => {
