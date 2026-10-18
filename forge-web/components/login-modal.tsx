@@ -19,9 +19,12 @@
  * deployed".
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { PushCostText } from '@/components/ui/push-cost-text'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
@@ -51,7 +54,7 @@ import { lockedIdentityOf } from '@/lib/auth/last-identity'
 import { readCreationJournal } from '@/lib/auth/create-identity'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
-import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
+import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, typicalIssueCredits } from '@/lib/sdk'
 import { writesPausedReason } from '@/lib/devnet-notice'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage, shortId } from '@/lib/utils'
@@ -166,7 +169,7 @@ export function LoginModal(): JSX.Element {
           {intent.privateRepo
             ? 'Private repos are encrypted for their members. Import your identity with "Read and write members-only and private content" ticked: this browser then keeps your encryption key and opens the private repos you are a member of. Reading costs nothing.'
             : intent.credits !== undefined
-              ? `Once you're signed in, this costs at most about ${creditsAsDash(intent.credits)} DASH, paid from your identity's balance (often less: the exact price shows before you confirm).`
+              ? <>Once you&apos;re signed in, this costs at most about {creditsAsDash(intent.credits)} DASH<FiatNote dash={creditsToDash(intent.credits)} kind="bound" />, paid from your identity&apos;s balance (often less: the exact price shows before you confirm).</>
               : "Once you're signed in, you see what it costs and confirm before anything is signed."}
         </p>
       ) : null}
@@ -250,22 +253,22 @@ function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number
 }
 
 /** The sheet's description line for a view. */
-function describeView(view: View, limitedKeys: boolean): string {
+function describeView(view: View, limitedKeys: boolean): ReactNode {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet sends this browser a key it derives for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
-  const base = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge`
+  const base = <>at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge</>
   // Import, renew and dg offer a lifetime picker; creating an identity does not.
-  const limits = `${base}, for ${BROWSER_KEY_DEFAULTS.days} days by default (up to a year)`
-  const fixedLimits = `${base}, for ${BROWSER_KEY_DEFAULTS.days} days; you can renew it for up to a year later`
-  if (view === 'renew') return `A new key for this browser (${limits}) replaces the current one, which is disabled in the same update.`
-  if (view === 'dg') return `dg registers a limited key for this browser (${limits}). Your recovery phrase stays out of the browser.`
-  if (view === 'import') return `Forge signs with a limited key: ${limits}.`
-  if (view === 'create') return `Forge signs with a limited key: ${fixedLimits}.`
+  const limits = <>{base}, for {BROWSER_KEY_DEFAULTS.days} days by default (up to a year)</>
+  const fixedLimits = <>{base}, for {BROWSER_KEY_DEFAULTS.days} days; you can renew it for up to a year later</>
+  if (view === 'renew') return <>A new key for this browser ({limits}) replaces the current one, which is disabled in the same update.</>
+  if (view === 'dg') return <>dg registers a limited key for this browser ({limits}). Your recovery phrase stays out of the browser.</>
+  if (view === 'import') return <>Forge signs with a limited key: {limits}.</>
+  if (view === 'create') return <>Forge signs with a limited key: {fixedLimits}.</>
   if (view === 'unlock') return 'Unlock the key this browser already holds.'
   // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md). Creating
   // fixes the lifetime (renewable later); importing lets you pick up to a year at once (Q5-C04).
-  return `A new or imported identity gives this browser a limited key: ${base}, for ${BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity's key can be renewed for up to a year later.`
+  return <>A new or imported identity gives this browser a limited key: {base}, for {BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity&apos;s key can be renewed for up to a year later.</>
 }
 
 function Tile({
@@ -366,7 +369,8 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
         />
       ) : null}
       {walletFirst ? walletTile : null}
-      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${pushCostPhrase()}.`} onClick={() => onPick('create')} pausedReason={pausedReason} />
+      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet." onClick={() => onPick('create')} pausedReason={pausedReason} />
+      <p data-testid="tile-create-cost" className="text-[12px] text-anvil-500 dark:text-anvil-400">About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.</p>
       <Tile
         testId="tile-import"
         icon={Upload}
@@ -912,13 +916,13 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
       </label>
       )}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        {renew && keyId !== null ? `Disables key #${keyId} and registers` : 'Registers'} a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {lifetimeLabel(days)}
+        {renew && keyId !== null ? `Disables key #${keyId} and registers` : 'Registers'} a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge, for {lifetimeLabel(days)}
         {renewing
-          ? ` (renewing: ~${creditsAsDash(KEY_RENEW_CREDITS)} DASH, one master-key signature; the old key is disabled in the same update).`
+          ? <> (renewing: ~{creditsAsDash(KEY_RENEW_CREDITS)} DASH<FiatNote dash={creditsToDash(KEY_RENEW_CREDITS)} />, one master-key signature; the old key is disabled in the same update).</>
           : // Platform meters the update: an identity that already holds a Forge key (from another
             // browser or dg) pays the lower figure (QW-043). Its floor is the least one was measured to
             // cost, the low end Settings → Spend shows too (QW3-037: 0.00028 quoted, 0.000269 charged).
-            ` (${creditsAsDash(KEY_ADD_FLOOR_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; up to ${creditsAsDash(KEY_RENEW_CREDITS)} when the identity already has a Forge key).`}
+            <> ({creditsAsDash(KEY_ADD_FLOOR_CREDITS)}–{creditsAsDash(KEY_REGISTER_CREDITS)} DASH<FiatNote dash={creditsToDash(KEY_REGISTER_CREDITS)} range={creditsToDash(KEY_ADD_FLOOR_CREDITS)} />, one master-key signature; up to {creditsAsDash(KEY_RENEW_CREDITS)}<FiatNote dash={creditsToDash(KEY_RENEW_CREDITS)} kind="bound" /> when the identity already has a Forge key).</>}
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <div ref={errorRef} hidden={error === null}>

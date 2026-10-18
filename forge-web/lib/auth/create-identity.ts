@@ -158,6 +158,7 @@ export class IdentityNotCreatedError extends Error {
   }
 }
 
+// Refusal errors stay DASH-only; the confirmation already priced the write with fiat.
 function creditsText(credits: bigint): string {
   return `${(Number(credits) / 1e11).toFixed(5)} DASH`
 }

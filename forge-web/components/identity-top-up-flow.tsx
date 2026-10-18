@@ -29,6 +29,8 @@ import { creditsAsDash } from '@/lib/view/format'
 import { recordSpend, TOP_UP_KIND } from '@/lib/spend'
 import { errorMessage } from '@/lib/utils'
 import { PhraseWarning } from '@/components/auth/phrase-warning'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const STAGE_TEXT: Readonly<Record<TopUpStage, string>> = {
   'waiting-deposit': 'Watching for your deposit…',
@@ -144,7 +146,7 @@ export function IdentityTopUpFlow({ faucets }: { faucets: readonly string[] }): 
     return (
       <p role="status" data-testid="identity-top-up-done" className="flex items-start gap-2 rounded-md border border-verify/30 bg-verify/5 px-3 py-2 text-dense text-verify-700 dark:text-verify-400">
         <Check className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-        <span>Topped up{done !== null ? `: your balance is now ${creditsAsDash(Number(done))} DASH` : ''}. It can take a moment to show everywhere.</span>
+        <span>Topped up{done !== null ? <>: your balance is now {creditsAsDash(Number(done))} DASH<FiatNote dash={creditsToDash(Number(done))} balance /></> : ''}. It can take a moment to show everywhere.</span>
       </p>
     )
   }
@@ -176,7 +178,7 @@ export function IdentityTopUpFlow({ faucets }: { faucets: readonly string[] }): 
         ) : (
           <>
             <p className="text-dense">
-              Send at least <span className="font-mono">{(MIN_TOP_UP_DUFFS / 1e8).toFixed(2)} DASH</span> to this address from any Dash wallet. It
+              Send at least <span className="font-mono">{(MIN_TOP_UP_DUFFS / 1e8).toFixed(2)} DASH</span><FiatNote dash={MIN_TOP_UP_DUFFS / 1e8} /> to this address from any Dash wallet. It
               becomes credits on your identity, less a small network fee.
             </p>
             <PaymentAddress address={address} amountDash={MIN_TOP_UP_DUFFS / 1e8} label="Top-up address" />
@@ -188,7 +190,7 @@ export function IdentityTopUpFlow({ faucets }: { faucets: readonly string[] }): 
           <span data-testid="identity-top-up-stage">{stage ?? STAGE_TEXT['waiting-deposit']}</span>
           {seen > 0 ? (
             <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
-              <Check className="h-3.5 w-3.5" aria-hidden /> {(seen / 1e8).toFixed(4)} DASH seen
+              <Check className="h-3.5 w-3.5" aria-hidden /> {(seen / 1e8).toFixed(4)} DASH seen<FiatNote dash={seen / 1e8} balance />
             </span>
           ) : null}
         </div>

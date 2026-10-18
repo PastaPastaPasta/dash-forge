@@ -33,6 +33,7 @@ import { trendingPref } from '@/lib/repo/trending'
 import { firstWriteRead, previewCreate, previewCredits, previewDelete, sumPreviews } from '@/lib/sdk'
 import { LAST_STAR_DELETE_CREDITS } from '@/lib/sdk/cost'
 import { priceLabel, refundLabel } from '@/lib/view/format'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 export function StarButton({
   repo,
@@ -124,8 +125,11 @@ export function StarButton({
       </Button>
       {/* The price in view before the one-click write (D-098, style guide rule 2), as Follow shows it. */}
       {signedIn && star.on !== null ? (
-        <span className="hidden font-mono text-[11px] text-anvil-500 dark:text-anvil-400 sm:inline" data-testid="star-cost" aria-hidden>
-          {starred ? refundLabel('unstar', refund.credits) : `${priceLabel(cost.credits, upperBound)} DASH`}
+        <span className="hidden text-[11px] sm:inline" aria-hidden>
+          <span className="font-mono text-anvil-500 dark:text-anvil-400" data-testid="star-cost">
+            {starred ? refundLabel('unstar', refund.credits) : `${priceLabel(cost.credits, upperBound)} DASH`}
+          </span>
+          <FiatNote dash={Math.abs(starred ? refund.dash : cost.dash)} kind={!starred && upperBound ? 'bound' : 'estimate'} />
         </span>
       ) : null}
     </span>

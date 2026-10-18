@@ -18,7 +18,7 @@ import { Button } from './button'
 export interface ConfirmActionOptions {
   readonly title: string
   /** What happens, and what does not (one or two sentences). */
-  readonly body: string
+  readonly body: React.ReactNode
   /** The confirm button's label: the action, e.g. "Forget key". */
   readonly confirmLabel: string
   /** Red for destructive actions (the default), primary otherwise. */

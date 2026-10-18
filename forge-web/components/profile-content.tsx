@@ -20,6 +20,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 
 import { Building2, GitBranch, Link2, MapPin, Pencil, UserPlus, Users } from 'lucide-react'
+import { FiatNote } from '@/components/ui/fiat-note'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import { dropHidden, isHiddenIdentity } from '@/lib/view/curation'
@@ -255,12 +256,15 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
             >
               <UserPlus className="h-3.5 w-3.5" aria-hidden />
               {following ? 'Following' : 'Follow'}
-              {identity !== null && follow.on !== null ? (
-                <span className="ml-1 font-mono text-[11px]" data-testid="follow-cost" aria-hidden>
+            </Button>
+            {identity !== null && follow.on !== null ? (
+              <p className="text-[11px] text-anvil-500 dark:text-anvil-400" aria-hidden>
+                <span className="font-mono" data-testid="follow-cost">
                   {following ? refundLabel('unfollow', unfollowRefund.credits) : `${priceLabel(followCost.credits, !firstWriteRead(first))} DASH`}
                 </span>
-              ) : null}
-            </Button>
+                <FiatNote dash={Math.abs(following ? unfollowRefund.dash : followCost.dash)} kind={!following && !firstWriteRead(first) ? 'bound' : 'estimate'} />
+              </p>
+            ) : null}
             {follow.error ? (
               <span role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{follow.error}</span>
             ) : null}

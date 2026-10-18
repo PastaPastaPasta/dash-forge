@@ -24,6 +24,8 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AlertTriangle, Check, CirclePause, Globe, Loader2, Minus, X } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 import type { RepoHome } from '@/lib/view'
 import { aboutDash } from '@/lib/view/audience'
@@ -68,7 +70,6 @@ import {
   OTHERS_SHOWN,
   STEP_LABEL,
   STILL_WORKING,
-  costLine,
   defaultGroupLabel,
   doneButHistoryLine,
   doneLine,
@@ -822,7 +823,7 @@ function MakePublicDialog({
                 {notPublished}
               </p>
             ) : null}
-            {o.spentCredits !== undefined && o.spentCredits > 0 ? <p className="text-[12px] text-anvil-600 dark:text-anvil-300">Spent about {aboutDash(o.spentCredits)}.</p> : null}
+            {o.spentCredits !== undefined && o.spentCredits > 0 ? <p className="text-[12px] text-anvil-600 dark:text-anvil-300">Spent about {aboutDash(o.spentCredits)}<FiatNote dash={creditsToDash(o.spentCredits)} />.</p> : null}
           </div>
         ) : null}
         {locked ? <UnlockMore title="Unlock this tab to continue" testId="make-public-unlock" forgot={false} /> : null}
@@ -1127,7 +1128,7 @@ function CheckForm({
         <p data-testid="make-public-stays-private">{staysPrivateLine(check)}</p>
         <p>{KEEPS_WORKING}</p>
         <p>{oldClientsLine(check.minClientVersion)}</p>
-        {mode !== null ? <p data-testid="make-public-cost">{costLine(check.estimate[mode])}</p> : null}
+        {mode !== null ? <p data-testid="make-public-cost">Costs about {aboutDash(check.estimate[mode].credits)}<FiatNote dash={creditsToDash(check.estimate[mode].credits)} />, plus storing the code: about {aboutDash(check.estimate[mode].storageCredits)}<FiatNote dash={creditsToDash(check.estimate[mode].storageCredits)} /> on Platform, or nothing extra with your own storage.</p> : null}
       </div>
     </>
   )

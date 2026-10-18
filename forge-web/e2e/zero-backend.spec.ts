@@ -1,3 +1,4 @@
+import { FIAT_PROVIDER_HOSTS } from '../lib/fiat/providers'
 import { test, expect } from '@playwright/test'
 import { expectLanded, repoUrl, waitForRepoResolved } from './helpers'
 
@@ -8,6 +9,7 @@ import { expectLanded, repoUrl, waitForRepoResolved } from './helpers'
  * allowed class of host:
  *   - the app's own origin (static assets served locally, mirroring the static host / IPFS gateway)
  *   - Dash Platform DAPI / quorum-key endpoints (*.networks.dash.org, *.dash.org, raw MN IPs)
+ *   - declared fiat providers (CTX / CoinGecko), when prices are enabled
  *   - configured pack backends (ipfs / s3 / https gateways) referenced by the repo's manifests
  *
  * A request to any *unexpected* third-party host — an analytics beacon, a "backend of ours", a
@@ -31,9 +33,10 @@ function isDashPlatform(host: string): boolean {
   )
 }
 
-// Pack/artifact backends the repo may reference (availability layer, content-hash verified).
+// Declared price providers and pack/artifact backends the repo may reference (availability layer, content-hash verified).
 function isKnownBackend(host: string): boolean {
   return (
+    FIAT_PROVIDER_HOSTS.some((provider) => provider === host) ||
     host.endsWith('.ipfs.io') ||
     host === 'ipfs.io' ||
     host.endsWith('.dweb.link') ||

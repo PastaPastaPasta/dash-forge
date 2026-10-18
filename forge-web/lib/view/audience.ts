@@ -330,16 +330,25 @@ export function aboutDash(credits: number): string {
   return `${Number(dash.toPrecision(2)).toString()} DASH`
 }
 
-/** The "Turn on members-only content?" sheet's paragraphs (DESIGN §10, one idea per sentence). */
-export function turnOnText(holders: number, bots = 0): readonly string[] {
+/** The cost sentence split so visible prices can sit directly beside the DASH amount. */
+export function turnOnCostParts(holders: number, bots = 0): { before: string; credits: number; after: string } {
   // Bots get no members key, only a key for their own members-only posts.
   const withBots = bots > 0 ? `, and a key for members-only posts for ${plural(bots, 'bot')},` : ''
+  return {
+    before: holders <= 1
+      ? `You're the only member so far. Setting up your key${withBots} costs about `
+      : `Setting up keys for ${plural(holders, 'member')}${withBots} costs about `,
+    credits: enableEstimate(holders, bots),
+    after: holders <= 1 ? '.' : '. Each later removal costs about the same again.',
+  }
+}
+
+/** The "Turn on members-only content?" sheet's paragraphs (DESIGN §10, one idea per sentence). */
+export function turnOnText(holders: number, bots = 0): readonly string[] {
+  const cost = turnOnCostParts(holders, bots)
   return [
     'Members of this repo will be able to post comments, reviews and issues only members can read. Everyone can still see that something was posted, by whom and when.',
-    // Only the maintainer turning it on holds the key so far: say so, rather than "1 member".
-    holders <= 1
-      ? `You're the only member so far. Setting up your key${withBots} costs about ${aboutDash(enableEstimate(1, bots))}.`
-      : `Setting up keys for ${plural(holders, 'member')}${withBots} costs about ${aboutDash(enableEstimate(holders, bots))}. Each later removal costs about the same again.`,
+    `${cost.before}${aboutDash(cost.credits)}${cost.after}`,
     'People using older Forge builds will see fewer things until they update.',
   ]
 }

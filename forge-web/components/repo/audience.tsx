@@ -22,6 +22,8 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import Link from 'next/link'
 import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock, Users } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 import type { RepoHome, MembersOnlyEntry, MembersOnlyTarget } from '@/lib/view'
 import type { MembersAccess } from '@/lib/view/repo-view'
@@ -69,6 +71,7 @@ import {
   audienceChoice,
   audienceLabel,
   audienceWarnings,
+  aboutDash,
   enableEstimate,
   isLetter,
   keyHolders,
@@ -82,6 +85,7 @@ import {
   type MembersTexts,
   removalReads,
   turnOnText,
+  turnOnCostParts,
   whilePrivateNote,
   writtenWhilePrivateLabel,
   type AudienceChoice,
@@ -849,7 +853,8 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
   const holders = members.data === null ? null : new Set([...keyHolders(members.data), ...(identity !== null ? [identity] : [])]).size
   // Bots get a key for their own members-only posts (§23), not the members key.
   const bots = members.data === null ? 0 : botsOf(members.data).length
-  const [lead, costLine, older] = turnOnText(holders ?? 1, bots)
+  const [lead, , older] = turnOnText(holders ?? 1, bots)
+  const cost = turnOnCostParts(holders ?? 1, bots)
   const retry = (what: string, onRetry: () => void, testId: string): JSX.Element => (
     <p className="text-dense text-danger-700 dark:text-danger-400" role="alert" data-testid={testId}>
       {what}{' '}
@@ -914,11 +919,12 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
         write.done()
       }}
     >
-      {(holders === null ? [older] : [costLine, older]).map((p) => (
-        <p key={p} className="text-dense text-anvil-700 dark:text-anvil-200" data-testid={p === costLine ? 'turn-on-cost' : undefined}>
-          {p}
+      {holders !== null ? (
+        <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="turn-on-cost">
+          {cost.before}{aboutDash(cost.credits)}<FiatNote dash={creditsToDash(cost.credits)} />{cost.after}
         </p>
-      ))}
+      ) : null}
+      <p className="text-dense text-anvil-700 dark:text-anvil-200">{older}</p>
     </ConfirmDialog>
   )
 }

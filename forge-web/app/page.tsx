@@ -12,6 +12,8 @@
 import Link from 'next/link'
 import { BookOpen, Coins, Compass, CopyPlus, ExternalLink, GitBranch, KeyRound, Lock, Plus, ShieldCheck, Upload } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { FiatNote } from '@/components/ui/fiat-note'
+import { creditsAsDash } from '@/lib/view/format'
 import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
@@ -22,19 +24,13 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
-import { deriveConnectionTrust, mainnetCents, type DiscoveredRepo } from '@/lib/view'
+import { deriveConnectionTrust, type DiscoveredRepo } from '@/lib/view'
 import { RECENT_PER_OWNER, landingRecent, listShowcaseRepos, recentFeed, showcaseFor } from '@/lib/view/showcase'
 import { creditsToDash, PUSH_COST_DASH, typicalIssueCredits } from '@/lib/sdk'
 import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { faucetUrl } from '@/components/top-up-sheet'
 import { verifyGuideUrl } from '@/lib/build-info'
-
-/** What a write costs on mainnet, in cents at the indicative rate (docs/guides/costs.md). */
-const ISSUE_CENTS = mainnetCents(creditsToDash(typicalIssueCredits()))
-// Both storage choices: own storage from its low end to packs on Platform at their high end.
-// A word joiner after the dash keeps `12–33¢` on one line.
-const PUSH_CENTS = `${mainnetCents(PUSH_COST_DASH.byo.min).slice(0, -1)}–\u2060${mainnetCents(PUSH_COST_DASH.platform.max)}`
 
 export default function LandingPage(): JSX.Element {
   const { sdk, ready, connection, network, status: sdkStatus, retry: retrySdk } = useSdk()
@@ -128,7 +124,7 @@ export default function LandingPage(): JSX.Element {
         <Feature
           icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
           title="Spam has a price"
-          body={`Opening an issue costs its author about ${ISSUE_CENTS} on mainnet, so flooding a project costs real money. Reading and cloning are free.`}
+          body={<>Opening an issue costs its author about {creditsAsDash(typicalIssueCredits())} DASH on mainnet<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" />, so flooding a project costs real money. Reading and cloning are free.</>}
           link={{ href: DOCS.costs, label: 'What it costs', external: true }}
         />
       </section>
@@ -147,9 +143,7 @@ export default function LandingPage(): JSX.Element {
             icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
             title="2. Fund it with a little DASH"
             body={
-              testNetwork
-                ? `Every write costs a small fee, shown before you sign. On ${networkName()} the DASH is free test money${faucet ? ', from the faucet' : ''}; on mainnet an issue costs about ${ISSUE_CENTS} and a push ${PUSH_CENTS}. Reading is free.`
-                : `Every write costs a small fee, shown before you sign: about ${ISSUE_CENTS} for an issue and ${PUSH_CENTS} for a push, paid from your identity’s credits. Reading is free.`
+              <>Every write costs a small fee, shown before you sign. {testNetwork ? <>On {networkName()} the DASH is free test money{faucet ? ', from the faucet' : ''}; on mainnet </> : 'On mainnet, '}an issue costs about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and a push {PUSH_COST_DASH.byo.min}{'–\u2060'}{PUSH_COST_DASH.platform.max} DASH<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.byo.min} network="mainnet" />{testNetwork ? null : ", paid from your identity's credits"}. Reading is free.</>
             }
             link={faucet ? { href: faucet, label: `${networkName()} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
           />
@@ -271,7 +265,7 @@ function RepoGrid({ repos }: { repos: readonly DiscoveredRepo[] }): JSX.Element 
   )
 }
 
-function Step({ icon, title, body, link }: { icon: ReactNode; title: string; body: string; link: { href: string; label: string } }): JSX.Element {
+function Step({ icon, title, body, link }: { icon: ReactNode; title: string; body: ReactNode; link: { href: string; label: string } }): JSX.Element {
   return (
     <li className="flex flex-col rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-800 dark:bg-anvil-900">
       <div className="flex items-center gap-2">
@@ -286,7 +280,7 @@ function Step({ icon, title, body, link }: { icon: ReactNode; title: string; bod
   )
 }
 
-function Feature({ icon, title, body, link }: { icon: ReactNode; title: string; body: string; link: { href: string; label: string; external?: boolean } }): JSX.Element {
+function Feature({ icon, title, body, link }: { icon: ReactNode; title: string; body: ReactNode; link: { href: string; label: string; external?: boolean } }): JSX.Element {
   const linkClass = 'hit-area mt-2 inline-flex items-center gap-1 text-dense text-forge-700 underline dark:text-forge-300'
   return (
     <div className="flex flex-col rounded-lg border border-anvil-200 bg-anvil-50 p-4 dark:border-anvil-800 dark:bg-anvil-900">

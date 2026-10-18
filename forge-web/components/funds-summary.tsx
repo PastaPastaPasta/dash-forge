@@ -7,6 +7,8 @@
  * wallet's), which has neither.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { KeyRound } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
@@ -20,18 +22,29 @@ export function KeyFundsLine({ className }: { className?: string }): JSX.Element
   // A budget above the balance is not all spendable (QW2-035: "0.05 of 0.05 DASH left" beside a
   // 0.0054 DASH balance): say the balance caps it, in the words Settings and the pill use.
   const budget = keyBudgetWords(keyLimits, balance, creditsAsDash)
-  const parts = [
-    budget !== null ? `${budget.left} budget left` : null,
-    budget?.cap ?? null,
-    keyLimits.expiresAt !== null ? `expires ${formatDate(keyLimits.expiresAt)}` : null,
-  ].filter((p): p is string => p !== null)
   return (
     <p
       data-testid="key-funds-line"
       className={cn('flex items-start gap-1.5 text-[12px]', warn ? 'text-caution-700 dark:text-caution-400' : 'text-anvil-500 dark:text-anvil-400', className)}
     >
       <KeyRound className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
-      <span>This browser&apos;s key: {parts.join(', ')}</span>
+      <span>
+        This browser&apos;s key: {budget ? <>
+          <KeyBudgetText remaining={keyLimits.remaining} total={keyLimits.total} /> budget left
+          {budget.cap ? <>, {budget.cap}<FiatNote dash={creditsToDash(Number(balance))} balance /></> : null}
+          {keyLimits.expiresAt !== null ? ', ' : ''}
+        </> : null}
+        {keyLimits.expiresAt !== null ? `expires ${formatDate(keyLimits.expiresAt)}` : null}
+      </span>
     </p>
   )
+}
+
+/** Price the remaining budget once, including its mainnet equivalent on test networks. */
+export function KeyBudgetText({ remaining, total }: { remaining: bigint | null; total: bigint | null }): JSX.Element | null {
+  if (total === null) return null
+  return <>
+    {remaining === null ? '?' : <>{creditsAsDash(Number(remaining))} DASH<FiatNote dash={creditsToDash(Number(remaining))} /></>}
+    {' of '}{creditsAsDash(Number(total))} DASH
+  </>
 }

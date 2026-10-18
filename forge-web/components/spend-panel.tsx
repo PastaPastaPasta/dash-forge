@@ -15,6 +15,7 @@ import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
+import { useFiat } from '@/hooks/use-fiat'
 import { useSdk } from '@/hooks/use-sdk'
 import { repoHref } from '@/hooks/use-query-param'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
@@ -36,16 +37,17 @@ import { measurementPending } from '@/lib/sdk/write'
 import { creditsAsDash, plural, timeAgo } from '@/lib/view/format'
 import { LoadingBlock } from '@/components/ui/states'
 import { cn, shortId } from '@/lib/utils'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 /** A DASH amount; `signed` marks a positive one "+" too (a balance that grew, a top-up). */
-function Dash({ credits, signed = false }: { credits: number; signed?: boolean }): JSX.Element {
+function Dash({ credits, signed = false, balance = false }: { credits: number; signed?: boolean; balance?: boolean }): JSX.Element {
   const amount = creditsAsDash(Math.abs(credits))
   // No sign on an amount too small to show ("−0 DASH").
   const sign = amount === '0' ? '' : credits < 0 ? '−' : signed && credits > 0 ? '+' : ''
   return (
-    <span className="whitespace-nowrap font-mono">
-      {sign}
-      {amount} DASH
+    <span className="font-mono">
+      <span className="whitespace-nowrap">{sign}{amount} DASH</span><FiatNote dash={creditsToDash(Math.abs(credits))} balance={balance} />
     </span>
   )
 }
@@ -58,7 +60,7 @@ function Estimate({ row }: { row: SpendRow }): JSX.Element {
   return (
     <span className="font-mono">
       {creditsAsDash(min)}–<wbr />
-      <span className="whitespace-nowrap">{creditsAsDash(row.estimateCredits)} DASH</span>
+      <span className="whitespace-nowrap">{creditsAsDash(row.estimateCredits)} DASH</span><FiatNote dash={creditsToDash(row.estimateCredits)} range={creditsToDash(min)} />
     </span>
   )
 }
@@ -87,6 +89,7 @@ const SETTLE_READS = 4
 const SETTLE_WAIT_MS = 2000
 
 export function SpendPanel(): JSX.Element {
+  const { rate } = useFiat()
   const { identity, balance, balanceReadAt, refreshBalance } = useAuth()
   // Re-read with every balance read (a write's row lands just before its refresh), showing the
   // last ledger meanwhile rather than blanking the panel.
@@ -180,6 +183,7 @@ export function SpendPanel(): JSX.Element {
 
   return (
     <div className="space-y-4 text-dense" data-testid="spend-panel">
+      {rate !== undefined ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Fiat amounts use today&apos;s price.</p> : null}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="text-[12px] text-anvil-500 dark:text-anvil-400">This month</div>
@@ -195,15 +199,15 @@ export function SpendPanel(): JSX.Element {
           Since the ledger began: <Dash credits={since?.allTime ?? 0} /> spent
           {since !== null && since.credited > 0 ? (
             <>
-              , <Dash credits={since.credited} signed /> topped up here
+              , <Dash credits={since.credited} signed balance /> topped up here
             </>
           ) : null}{' '}
-          · balance <Dash credits={rec.balanceChange} signed /> ·{' '}
+          · balance <Dash credits={rec.balanceChange} signed balance /> ·{' '}
           {creditsAsDash(Math.abs(rec.unexplained)) === '0' ? (
             'all of it in the ledger'
           ) : (
             <>
-              <Dash credits={rec.unexplained} signed /> not in the ledger ({rec.unexplained > 0 ? 'top-ups made elsewhere' : 'other apps or keys'})
+              <Dash credits={rec.unexplained} signed balance /> not in the ledger ({rec.unexplained > 0 ? 'top-ups made elsewhere' : 'other apps or keys'})
             </>
           )}
         </p>
@@ -253,7 +257,7 @@ export function SpendPanel(): JSX.Element {
                     <span className="text-anvil-500 dark:text-anvil-400">{timeAgo(r.at)}</span>
                   </span>
                   <span className="text-right text-verify-700 dark:text-verify-400">
-                    {r.actualCredits === null ? '—' : <Dash credits={-r.actualCredits} signed />}
+                    {r.actualCredits === null ? '—' : <Dash credits={-r.actualCredits} signed balance />}
                     <span className="block text-anvil-500 dark:text-anvil-400">credited</span>
                   </span>
                 </li>

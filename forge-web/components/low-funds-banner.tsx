@@ -13,6 +13,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { fundsNotice } from '@/lib/view/funds'
 import { cn } from '@/lib/utils'
 
@@ -66,7 +67,7 @@ export function LowFundsBanner(): JSX.Element | null {
     >
       <div className="mx-auto flex max-w-[1280px] flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 text-dense sm:px-6">
         <AlertTriangle className={cn('h-4 w-4 shrink-0', empty ? 'text-danger' : 'text-caution')} aria-hidden />
-        <p className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">{notice.message}</p>
+        <p className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">{notice.threshold ? <>{notice.threshold.before}{notice.threshold.dash} DASH<FiatNote dash={notice.threshold.dash} balance />{notice.threshold.after}</> : notice.message}</p>
         <div className="flex items-center gap-1">
           <Button
             size="sm"

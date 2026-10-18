@@ -20,11 +20,13 @@ import { Button } from '@/components/ui/button'
 import { CopyRow } from '@/components/ui/copy-row'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { IdentityTopUpFlow } from '@/components/identity-top-up-flow'
-import { KeyFundsLine } from '@/components/funds-summary'
+import { KeyBudgetText, KeyFundsLine } from '@/components/funds-summary'
 import { faucetUrls } from '@/lib/faucets'
 import { typicalIssueCredits } from '@/lib/sdk'
-import { issueCoverage, type KeyLimits } from '@/lib/view/funds'
+import { issueCoverageParts, type KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 /** The first place this network gets test DASH (`lib/faucets.ts`: testnet and devnet have one, mainnet none). */
 export function faucetUrl(): string | null {
@@ -37,39 +39,32 @@ export function faucetUrl(): string | null {
  */
 const ISSUE_CREDITS = typicalIssueCredits()
 
-function short(shortfall: bigint | undefined): string {
-  return shortfall && shortfall > 0n ? ` (short by ${creditsAsDash(Number(shortfall))} DASH)` : ''
-}
-
-/** What the sheet says blocks the write, or (opened ahead of any write) how the funds stand. */
-export function describeBlocker(reason: TopUpReason, balance: string | null, keyLimits: KeyLimits | null = null, now = Date.now()): string {
-  if (reason.proactive) {
-    const left = keyLimits?.remaining != null && keyLimits.total != null ? `${creditsAsDash(Number(keyLimits.remaining))} of ${creditsAsDash(Number(keyLimits.total))} DASH` : null
-    switch (reason.blocker) {
-      case 'balance':
-        return `Your identity's balance is ${balance !== null ? `${creditsAsDash(Number(balance))} DASH` : 'being read'}. Every write is paid from it; reading is free.`
-      case 'key-budget':
-        return `This browser's key has ${left ?? 'little'}${left ? ' of budget' : ' budget'} left. Top it up or renew it before your next write.`
-      case 'key-expiry':
-        if (keyLimits?.expiresAt != null && keyLimits.expiresAt > now) return `This browser's key expires on ${formatDate(keyLimits.expiresAt)}. Renew it to keep writing from this browser.`
-        return "This browser's key has expired. Reading still works."
-      default:
-        break
+function BlockerDescription({ reason, balance, keyLimits }: { reason: TopUpReason; balance: string | null; keyLimits: KeyLimits | null }): JSX.Element {
+  const shortfall = reason.shortfall && reason.shortfall > 0n
+    ? <> (short by {creditsAsDash(Number(reason.shortfall))} DASH<FiatNote dash={creditsToDash(Number(reason.shortfall))} />)</>
+    : null
+  if (reason.proactive && reason.blocker === 'balance') {
+    return <>Your identity&apos;s balance is {balance !== null ? <>{creditsAsDash(Number(balance))} DASH<FiatNote dash={creditsToDash(Number(balance))} balance /></> : 'being read'}. Every write is paid from it; reading is free.</>
+  }
+  if (reason.blocker === 'key-budget') {
+    if (reason.proactive) {
+      return <>This browser&apos;s key has {keyLimits?.remaining != null && keyLimits.total != null ? <><KeyBudgetText remaining={keyLimits.remaining} total={keyLimits.total} /> of budget</> : 'little budget'} left. Top it up or renew it before your next write.</>
     }
+    return <>This browser&apos;s key does not have enough budget left for this write{shortfall}. Reading still works.</>
+  }
+  if (reason.blocker === 'balance') {
+    return <>Your identity&apos;s balance{balance !== null ? <> ({creditsAsDash(Number(balance))} DASH<FiatNote dash={creditsToDash(Number(balance))} balance />)</> : null} does not cover this write{shortfall}. Reading still works; drafts stay here.</>
   }
   switch (reason.blocker) {
     case 'key-expiry':
-      return "This browser's key has expired. Reading still works."
+      if (reason.proactive && keyLimits?.expiresAt != null && keyLimits.expiresAt > Date.now()) return <>This browser&apos;s key expires on {formatDate(keyLimits.expiresAt)}. Renew it to keep writing from this browser.</>
+      return <>This browser&apos;s key has expired. Reading still works.</>
     case 'key-disabled':
-      return "This browser's key was disabled on Platform. Reading still works."
+      return <>This browser&apos;s key was disabled on Platform. Reading still works.</>
     case 'key-missing':
-      return "This browser's key is not on this identity. Reading still works."
+      return <>This browser&apos;s key is not on this identity. Reading still works.</>
     case 'key-level':
-      return "This browser's key cannot sign Forge writes. Reading still works."
-    case 'key-budget':
-      return `This browser's key does not have enough budget left for this write${short(reason.shortfall)}. Reading still works.`
-    case 'balance':
-      return `Your identity's balance${balance !== null ? ` (${creditsAsDash(Number(balance))} DASH)` : ''} does not cover this write${short(reason.shortfall)}. Reading still works; drafts stay here.`
+      return <>This browser&apos;s key cannot sign Forge writes. Reading still works.</>
   }
 }
 
@@ -83,6 +78,7 @@ export function TopUpSheet(): JSX.Element | null {
   if (identity === null) return null
   if (topUpKey) return <KeyTopUpDialog onClose={() => setTopUpKey(false)} />
   if (reason === null) return null
+  const coverage = issueCoverageParts(funds?.spendable ?? null, ISSUE_CREDITS)
   const keyProblem = reason.blocker !== 'balance'
   // A stored Forge browser key with a budget can take more budget in place.
   const canTopUpKey = reason.blocker === 'key-budget' && storage === 'vault' && keyLimits?.total != null
@@ -99,7 +95,7 @@ export function TopUpSheet(): JSX.Element | null {
       open
       onClose={close}
       title={title}
-      description={describeBlocker(reason, balance, keyLimits)}
+      description={<BlockerDescription reason={reason} balance={balance} keyLimits={keyLimits} />}
     >
       <div className="space-y-3 text-dense" data-testid="top-up-sheet" data-blocker={reason.blocker}>
         {reason.proactive ? <KeyFundsLine /> : null}
@@ -138,7 +134,7 @@ export function TopUpSheet(): JSX.Element | null {
             {/* From this browser: a deposit address any wallet (or the faucet) can pay (QW-012). */}
             <IdentityTopUpFlow faucets={faucetUrls()} />
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="top-up-coverage">
-              {issueCoverage(funds?.spendable ?? null, ISSUE_CREDITS, creditsAsDash)}
+              {coverage.before}{creditsAsDash(coverage.credits)} DASH<FiatNote dash={creditsToDash(coverage.credits)} />{coverage.after}
             </p>
             <div>
               <button type="button" aria-expanded={other} onClick={() => setOther((o) => !o)} className="hit-area text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100">

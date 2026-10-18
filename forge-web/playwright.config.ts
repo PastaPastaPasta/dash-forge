@@ -21,7 +21,7 @@ const PORT = Number(process.env.E2E_PORT ?? 4321)
 const BASE_URL = `http://127.0.0.1:${PORT}`
 
 /** The build's NEXT_PUBLIC_* environment for E2E_NETWORK / E2E_DEVNET (e2e/network.ts, shared with the specs). */
-const BUILD_ENV = buildEnv()
+const BUILD_ENV = `${buildEnv()}NEXT_PUBLIC_FIAT_RATE_URL=/__e2e/fiat-rates.json `
 
 export default defineConfig({
   testDir: './e2e',

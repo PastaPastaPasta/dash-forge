@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/ui/states'
 import { StorageWizard } from '@/components/storage/storage-wizard'
 import { useAuth } from '@/contexts/auth-context'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 export default function StorageSettingsPage(): JSX.Element {
   const { identity } = useAuth()
@@ -23,7 +24,7 @@ export default function StorageSettingsPage(): JSX.Element {
           </p>
           <h1 className="mt-1 text-xl">Storage</h1>
           <p className="mt-1 max-w-2xl text-dense text-anvil-600 dark:text-anvil-300">
-            We host nothing. Your git data goes to a bucket or IPFS node you own, and Platform records where it is. A push costs about {dashRange(PUSH_COST_DASH.byo)} DASH, or {dashRange(PUSH_COST_DASH.platform)} with everything on Platform. Readers verify every file.
+            We host nothing. Your git data goes to a bucket or IPFS node you own, and Platform records where it is. A push costs about {dashRange(PUSH_COST_DASH.byo)} DASH<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} />, or {dashRange(PUSH_COST_DASH.platform)} with everything on Platform<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.platform.min} />. Readers verify every file.
           </p>
         </div>
         <p className="flex items-center gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-[12px] text-anvil-600 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-300 md:hidden">

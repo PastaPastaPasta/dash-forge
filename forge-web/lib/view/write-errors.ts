@@ -166,6 +166,7 @@ function sheetFor(blocker: TopUpReason['blocker'], has: bigint | undefined, requ
 }
 
 /** `what` (a sentence start naming `has`), then what Platform needs; '' when a figure is missing. */
+// Refusal errors stay DASH-only; the confirmation already priced the write with fiat.
 function neededDetail(what: (has: string) => string, has: bigint | undefined, required: bigint | undefined): string {
   if (has === undefined || required === undefined) return ''
   return ` ${what(creditsAsDash(Number(has)))}, and this change needs ${creditsAsDash(Number(required))} DASH.`

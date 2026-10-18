@@ -429,25 +429,6 @@ export function dashRange({ min, max }: { readonly min: number; readonly max: nu
   return `${min}–${max}`
 }
 
-/**
- * A push's cost for copy that cannot know where the packs go (sign-in, /start, funding): both
- * figures, each named, so it never reads as a second price for the same push (QW3-038: "0.004–0.0055
- * per push" there, "a small push ≈ 0.004–0.011" on an empty repo).
- */
-export function pushCostPhrase(): string {
-  return `${dashRange(PUSH_COST_DASH.byo)} DASH per push with your own storage, up to ${PUSH_COST_DASH.platform.max} with packs on Platform, plus ~${PUSH_COST_DASH.perMib} DASH per MiB of code stored on Platform (permanent)`
-}
-
-/**
- * One line for the funding screens (the deposit step, /start): the default storage is Platform,
- * where code is permanent and costs {@link PUSH_COST_DASH}.perMib per MiB, so a newcomer who
- * funds only the minimum cannot push a real repository (ECON-06). "About 0.4" is `perMib` rounded
- * to one decimal, the figure `dg auth new` says too.
- */
-export function pushStorageHint(): string {
-  return `Pushing code? Add your own storage first, or deposit about ${PUSH_COST_DASH.perMib.toFixed(1)} DASH per MiB.`
-}
-
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
   /** Charge upper bound, or negative approximate refund for a delete soon after creation. */

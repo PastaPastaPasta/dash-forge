@@ -15,8 +15,11 @@
  * unmounts, and the buttons are disabled while a run is active.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { PushCostText, PushStorageHint } from '@/components/ui/push-cost-text'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
@@ -26,7 +29,7 @@ import { StepFailed, Waiting } from '@/components/auth/step-status'
 import { FaucetLinks } from '@/components/faucet-links'
 import { faucetUrls } from '@/lib/faucets'
 import { ACTIVE_NETWORK, NotDeployedError } from '@/lib/constants'
-import { pushCostPhrase, pushStorageHint, typicalIssueCredits } from '@/lib/sdk'
+import { typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 import { isAbort } from '@/lib/sdk/facade'
 import { PHASE_TEXT, STEP_MS, connectPlatform, loadSdkLibrary, type ConnectPhase } from '@/lib/auth/connect'
@@ -115,7 +118,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     resumeRef.current = el
   }, [])
   // Cleared as soon as a run starts (start() empties it).
-  const [discardWarning, setDiscardWarning] = useState<string | null>(null)
+  const [discardWarning, setDiscardWarning] = useState<ReactNode>(null)
   const { fields, protection, problem } = useProtection()
   const words = mnemonic?.split(' ') ?? []
   const run = useRef<AbortController | null>(null)
@@ -279,7 +282,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         if (held !== 0) {
           setDiscardWarning(
             held > 0
-              ? `The deposit address still holds ${(held / 1e8).toFixed(4)} DASH. Discarding forgets this creation; only your 12 words can recover those funds. Discard anyway?`
+              ? <>The deposit address still holds {(held / 1e8).toFixed(4)} DASH<FiatNote dash={held / 1e8} balance />. Discarding forgets this creation; only your 12 words can recover those funds. Discard anyway?</>
               : "Couldn't check the deposit address for funds. If you sent any, only your 12 words can recover them. Discard anyway?",
           )
           return
@@ -448,11 +451,11 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   return (
     <div className="space-y-3" data-testid="fund-step">
       <p className="text-dense">
-        Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span> ({SUGGESTED_DEPOSIT_DASH} suggested) to this address from any Dash wallet. It becomes your
-        Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue, {pushCostPhrase()}.
+        Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span><FiatNote dash={MIN_DEPOSIT_DUFFS / 1e8} /> ({SUGGESTED_DEPOSIT_DASH} suggested<FiatNote dash={SUGGESTED_DEPOSIT_DASH} />) to this address from any Dash wallet. It becomes your
+        Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.
       </p>
       <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="push-storage-hint">
-        {pushStorageHint()}
+        <PushStorageHint />
       </p>
       {/* Copy, and a wallet link for paying from this same phone (QW3-008). */}
       {address ? <PaymentAddress address={address} amountDash={SUGGESTED_DEPOSIT_DASH} label="Deposit address" /> : null}
@@ -463,7 +466,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         <span data-testid="create-stage">{stage ?? STAGE_TEXT['waiting-deposit']}</span>
         {seen > 0 ? (
           <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
-            <Check className="h-3.5 w-3.5" aria-hidden /> {(seen / 1e8).toFixed(4)} DASH seen
+            <Check className="h-3.5 w-3.5" aria-hidden /> {(seen / 1e8).toFixed(4)} DASH seen<FiatNote dash={seen / 1e8} balance />
           </span>
         ) : null}
       </div>
@@ -476,7 +479,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         <div className="space-y-3" data-testid="signin-failed">
           <ErrorBox error={error} />
           <p className="text-dense text-anvil-600 dark:text-anvil-300">
-            Discard this creation and start again: new words and a new deposit of at least 0.02 DASH.
+            Discard this creation and start again: new words and a new deposit of at least {MIN_DEPOSIT_DUFFS / 1e8} DASH<FiatNote dash={MIN_DEPOSIT_DUFFS / 1e8} />.
           </p>
           {discardWarning ? <p className="text-dense text-caution-700 dark:text-caution-400">{discardWarning}</p> : null}
           <Button variant="outline" className="w-full" onClick={discard}>

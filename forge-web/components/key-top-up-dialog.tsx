@@ -9,7 +9,7 @@
  * closing unmounts it and drops everything).
  */
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { create } from 'zustand'
 import { CheckCircle2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -24,6 +24,8 @@ import { KEY_LIMITS_UPDATE_CREDITS, previewCredits } from '@/lib/sdk'
 import type { KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -131,7 +133,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
     onClose()
   }
 
-  const dash = (c: bigint | null): string => (c === null ? '—' : `${creditsAsDash(Number(c))} DASH`)
+  const dash = (c: bigint | null): ReactNode => c === null ? '—' : <>{creditsAsDash(Number(c))} DASH<FiatNote dash={creditsToDash(Number(c))} /></>
 
   return (
     <Dialog open onClose={closeDialog} title="Top up this browser's key" description="Same key, more budget or a later expiry.">
@@ -200,7 +202,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
             Adds budget to the key this browser already signs with, so nothing here has to be re-imported. Your master key
             signs this one update and is not stored. The fee comes from your identity balance.
           </p>
-          <Field label="Add to the budget (DASH)" htmlFor="topup-amount" hint={keyLimits?.total != null ? `Now ${dash(keyLimits.remaining)} left of ${dash(keyLimits.total)}.` : undefined}>
+          <Field label="Add to the budget (DASH)" htmlFor="topup-amount" hint={keyLimits?.total != null ? <>Now {dash(keyLimits.remaining)} left of {dash(keyLimits.total)}.</> : undefined}>
             <Input id="topup-amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={amountError !== null} />
           </Field>
           {amountError ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{amountError}</p> : null}

@@ -75,12 +75,18 @@ export function keyBudgetWords(
  * cover now (`spendable`: the balance, capped by this browser's key budget). QW2-035: it said
  * "0.05 DASH covers about 40", the key's budget, to an identity with 0.0054 DASH.
  */
+export function issueCoverageParts(spendable: bigint | null, issueCredits: number): { before: string; credits: number; after: string } {
+  const each = ' covers an issue'
+  const n = spendable === null ? null : Math.floor(Number(spendable) / issueCredits)
+  const after = n === null ? `${each}.` : n === 0
+    ? `${each}; what you can spend now does not cover one.`
+    : `${each}; what you can spend now covers about ${n === 1 ? 'one' : n}.`
+  return { before: 'About ', credits: issueCredits, after }
+}
+
 export function issueCoverage(spendable: bigint | null, issueCredits: number, dash: (credits: number) => string): string {
-  const each = `About ${dash(issueCredits)} DASH covers an issue`
-  if (spendable === null) return `${each}.`
-  const n = Math.floor(Number(spendable) / issueCredits)
-  if (n === 0) return `${each}; what you can spend now does not cover one.`
-  return `${each}; what you can spend now covers about ${n === 1 ? 'one' : n}.`
+  const cost = issueCoverageParts(spendable, issueCredits)
+  return `${cost.before}${dash(cost.credits)} DASH${cost.after}`
 }
 
 /** The one fix a low or empty state needs (`ux-dx-spec.md` §4: top up / renew key). */
@@ -91,18 +97,20 @@ export type FundsFix = 'top-up' | 'renew-key'
  * (comfortable). `key` names the state, so dismissing "low balance" does not also hide a later
  * "key expired" (one dismissal per state per session).
  */
-export function fundsNotice(state: FundsState): { readonly key: string; readonly message: string; readonly fix: FundsFix } | null {
+export function fundsNotice(state: FundsState): { readonly key: string; readonly message: string; readonly threshold?: { before: string; dash: number; after: string }; readonly fix: FundsFix } | null {
   if (state.level === 'comfortable') return null
   const reason = state.reason ?? 'balance'
   const empty = state.level === 'empty'
   const key = `${state.level}:${reason}`
   if (reason === 'balance') {
+    const threshold = { before: 'Your balance is under ', dash: LOW_BALANCE_CREDITS / CREDITS_PER_DASH, after: ', enough for only a few more writes. Top up to keep writing.' }
     return {
       key,
       fix: 'top-up',
       message: empty
         ? 'Your balance is 0: writes are off until you top up. Reading still works.'
-        : 'Your balance is under 0.01 DASH, enough for only a few more writes. Top up to keep writing.',
+        : `${threshold.before}${threshold.dash} DASH${threshold.after}`,
+      threshold: empty ? undefined : threshold,
     }
   }
   if (reason === 'key-budget') {

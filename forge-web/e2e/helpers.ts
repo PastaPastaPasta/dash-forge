@@ -518,7 +518,7 @@ export function stateFile(name: string): string {
  * and replayed by the app itself (#115), so a click that opens nothing is a product bug, not
  * something to retry here.
  */
-async function openSignIn(page: Page, ready: Locator): Promise<void> {
+export async function openSignIn(page: Page, ready: Locator): Promise<void> {
   // "Sign in", or "Session locked — Unlock" when this browser holds a locked key.
   await page.getByRole('banner').getByRole('button', { name: /^sign in$|unlock$/i }).first().click()
   await ready.waitFor({ state: 'visible', timeout: 30_000 })

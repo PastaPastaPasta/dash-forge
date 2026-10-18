@@ -1,5 +1,7 @@
 'use client'
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { CheckCircle2, AlertTriangle, X } from 'lucide-react'
 import { useToasts } from '@/hooks/use-toasts'
 import { creditsAsDash } from '@/lib/view/format'
@@ -30,7 +32,7 @@ export function Toaster(): JSX.Element {
               {t.credits != null ? (
                 <span className="font-mono text-anvil-500 dark:text-anvil-400">
                   {' · '}
-                  {t.credits < 0 ? `+${creditsAsDash(-t.credits)} DASH refunded` : `${creditsAsDash(t.credits)} DASH`}
+                  {t.credits < 0 ? `+${creditsAsDash(-t.credits)} DASH refunded` : `${creditsAsDash(t.credits)} DASH`}<FiatNote dash={creditsToDash(Math.abs(t.credits))} />
                   {(t.writes ?? 1) > 1 ? ` for ${t.writes} writes` : ''}
                 </span>
               ) : null}

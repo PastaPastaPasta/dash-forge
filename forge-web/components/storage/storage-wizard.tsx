@@ -39,6 +39,15 @@ import { CostCard } from '@/components/storage/cost-card'
 import { cn } from '@/lib/utils'
 import { formatDate } from '@/lib/view/format'
 import { PUSH_COST_DASH } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
+
+/** The Platform preset is the only blurb with a DASH price. */
+function ProviderBlurb({ provider }: { provider: ProviderId }): JSX.Element {
+  const preset = providerPreset(provider)
+  return preset.kind === 'platform'
+    ? <>permanent, ~{PUSH_COST_DASH.perMib} DASH per MiB<FiatNote dash={PUSH_COST_DASH.perMib} /></>
+    : <>{preset.blurb}</>
+}
 
 const TILE_ICON: Readonly<Record<ProviderId, typeof Cloud>> = {
   r2: Cloud,
@@ -91,26 +100,31 @@ export function StorageWizardView({ storage, embedded = false }: { storage: Stor
             const Icon = TILE_ICON[p.id]
             const active = provider === p.id
             return (
-              <button
+              <div
                 key={p.id}
-                type="button"
-                data-testid={`tile-${p.id}`}
-                aria-pressed={active}
-                onClick={() => start(p.id)}
                 className={cn(
-                  'flex items-start gap-2.5 rounded-lg border p-3 text-left transition-colors',
+                  'relative rounded-lg border transition-colors',
                   active
                     ? 'border-forge-500 bg-forge-500/5'
                     : 'border-anvil-200 bg-white hover:border-anvil-300 dark:border-anvil-750 dark:bg-anvil-900 dark:hover:border-anvil-600',
                   p.id === 'platform' && 'sm:col-span-2 lg:col-span-1',
                 )}
               >
-                <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', p.id === 'platform' ? 'text-dash-600 dark:text-dash-400' : 'text-forge-700 dark:text-forge-400')} aria-hidden />
-                <span>
-                  <span className="block text-dense font-medium text-anvil-900 dark:text-anvil-50">{p.title}</span>
-                  <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">{p.blurb}</span>
-                </span>
-              </button>
+                <button
+                  type="button"
+                  data-testid={`tile-${p.id}`}
+                  aria-pressed={active}
+                  aria-describedby={`tile-${p.id}-blurb`}
+                  onClick={() => start(p.id)}
+                  className="flex w-full items-start gap-2.5 p-3 pb-1 text-left after:absolute after:inset-0"
+                >
+                  <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', p.id === 'platform' ? 'text-dash-600 dark:text-dash-400' : 'text-forge-700 dark:text-forge-400')} aria-hidden />
+                  <span className="text-dense font-medium text-anvil-900 dark:text-anvil-50">{p.title}</span>
+                </button>
+                <p id={`tile-${p.id}-blurb`} className="px-3 pb-3 text-[12px] text-anvil-500 dark:text-anvil-400">
+                  <ProviderBlurb provider={p.id} />
+                </p>
+              </div>
             )
           })}
         </div>
@@ -208,7 +222,7 @@ function AddProfile({
       <section className="space-y-3 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label="Dash Platform storage">
         <h3 className="text-prose">Dash Platform</h3>
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Your git data is stored on Platform: permanent, public and nothing to run. About {PUSH_COST_DASH.perMib} DASH per MiB, charged when you push and never refunded, because nobody can delete it. Every push shows its price first.
+          Your git data is stored on Platform: permanent, public and nothing to run. About {PUSH_COST_DASH.perMib} DASH per MiB<FiatNote dash={PUSH_COST_DASH.perMib} />, charged when you push and never refunded, because nobody can delete it. Every push shows its price first.
         </p>
         <div className="flex gap-2">
           <Button
@@ -249,7 +263,7 @@ function AddProfile({
     <section className="space-y-4 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label={`${preset.title} settings`}>
       <div className="flex items-baseline justify-between gap-2">
         <h3 className="text-prose">{existing ? `Edit ${existing.name}` : preset.title}</h3>
-        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{preset.blurb}</span>
+        <span className="text-[12px] text-anvil-500 dark:text-anvil-400"><ProviderBlurb provider={provider} /></span>
       </div>
       <ProfileForm
         provider={provider}
@@ -318,7 +332,7 @@ function Profiles({ config, storable, save, onEdit }: { config: StorageConfig; s
       </h2>
       {config.profiles.length === 0 ? (
         <p className="rounded-lg border border-dashed border-anvil-300 px-4 py-5 text-center text-dense text-anvil-500 dark:border-anvil-700 dark:text-anvil-400">
-          No storage yet. Browser pushes (merges, forks) would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB, asking first.
+          No storage yet. Browser pushes (merges, forks) would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB<FiatNote dash={PUSH_COST_DASH.perMib} />, asking first.
         </p>
       ) : (
         <ul className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" data-testid="profile-list">

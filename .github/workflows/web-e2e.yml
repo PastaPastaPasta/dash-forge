@@ -120,6 +120,7 @@ jobs:
         env:
           NEXT_PUBLIC_NETWORK: devnet
           NEXT_PUBLIC_DEVNET_NAME: sakura
+          NEXT_PUBLIC_FIAT_RATE_URL: /__e2e/fiat-rates.json
         run: pnpm build
       # E2E_SKIP_BUILD serves the `out/` just built instead of building a second time. Both
       # projects run: chromium (every spec) and webkit (sign-in resilience).

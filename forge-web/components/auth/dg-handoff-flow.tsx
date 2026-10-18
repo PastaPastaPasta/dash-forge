@@ -23,6 +23,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
 import { handoffCommand, handoffRequest, type HandoffRequest } from '@/lib/auth/key-handoff'
 import { errorMessage } from '@/lib/utils'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 /** A key this browser holds, which the new key replaces (disabled in the same update). */
 export interface HandoffTarget {
@@ -165,7 +166,7 @@ export function DgHandoffFlow({ onDone, renew = false, target }: { readonly onDo
       {command && blocker === null ? <CopyBlock text={command} label="Copy the dg command" /> : null}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         {replace !== undefined ? `Key #${replace.keyId} is disabled in the same update. ` : ''}
-        The new key can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge. dg shows the cost and asks before it signs.
+        The new key can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge. dg shows the cost and asks before it signs.
       </p>
       <Field label="Paste the line dg printed" htmlFor="dg-reply" hint="It starts with dfkh1: and opens only in this tab.">
         {/* Uncontrolled: what it opens to is a key, and the field is cleared after use. */}

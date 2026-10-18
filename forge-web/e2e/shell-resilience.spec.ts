@@ -1,4 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
+import { typicalIssueCredits } from '../lib/sdk/cost'
+import { creditsAsDash } from '../lib/view/format'
 import { atRoute, DEMO, ownerIs, repoUrl, waitForRepoResolved, skipWithoutFixture } from './helpers'
 import { quorumGuardLong, quorumHeldMs } from './quorum-sync'
 
@@ -140,6 +142,7 @@ test.describe('signed-out writes (L-62)', () => {
     await expect(dialog.getByRole('heading', { name: 'Sign in to star this repo' })).toBeVisible({ timeout: 30_000 })
     await expect(dialog.getByTestId('signin-intent')).toContainText(/about 0\.000\d+ DASH/)
     // The create tile quotes what the New issue form previews, not the stale 0.00062.
-    await expect(dialog.getByTestId('tile-create')).not.toContainText('0.00062')
+    await expect(dialog.getByTestId('tile-create-cost')).toContainText(`${creditsAsDash(typicalIssueCredits())} DASH per issue`)
+    await expect(dialog.getByTestId('tile-create-cost')).not.toContainText('0.00062')
   })
 })

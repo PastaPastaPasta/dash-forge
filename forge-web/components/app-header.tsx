@@ -12,9 +12,9 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, BookOpen, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
@@ -31,13 +31,14 @@ import { cn, errorMessage } from '@/lib/utils'
 import type { DiscoveredRepo } from '@/lib/view/discovery'
 import { numberTargets, parseJump, resolveWord, wordTarget, type WordMatches } from '@/lib/view/jump'
 import { Author } from '@/components/author'
-import { balanceToDash, dashValueNote } from '@/lib/view/format'
+import { balanceToDash } from '@/lib/view/format'
 import { KeyFundsLine } from '@/components/funds-summary'
 import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
 import { isPageShortcut } from '@/lib/focus'
 import { bareRoute, pageTitle } from '@/lib/page-title'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const shown = (el: Element | null): boolean => el !== null && el.getClientRects().length > 0
 
@@ -672,9 +673,9 @@ function AccountMenu({
             <div className="flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
               <Wallet className="h-3.5 w-3.5" aria-hidden /> Balance
             </div>
-            <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH</div>
+            <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH<FiatNote dash={creditsToDash(credits)} balance /></div>
             <div className="font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
-              {credits.toLocaleString()} credits · {dashValueNote(creditsToDash(credits), ACTIVE_NETWORK.network)}
+              {credits.toLocaleString()} credits{ACTIVE_NETWORK.network !== 'mainnet' ? ' · test DASH, no cash value' : null}
             </div>
             {/* The key's budget and expiry, which the pill only shows on hover (QW-048). */}
             <KeyFundsLine className="mt-1.5" />

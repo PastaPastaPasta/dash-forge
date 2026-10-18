@@ -12,6 +12,9 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { GRANT_COPY, nextGrant } from '@/lib/auth/key-registration'
 import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { KeyBudgetText } from '@/components/funds-summary'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -85,10 +88,10 @@ export function KeysPanel(): JSX.Element {
               <span className="font-mono">—</span>
             ) : (
               <>
-                <span className="font-mono">{budget.left}</span>
+                <span className="font-mono"><KeyBudgetText remaining={keyLimits.remaining} total={keyLimits.total} /></span>
                 {budget.cap !== null ? (
                   <span className="block text-[12px] text-caution-700 dark:text-caution-400" data-testid="key-budget-cap">
-                    {budget.cap}
+                    {budget.cap}<FiatNote dash={creditsToDash(Number(balance))} balance />
                   </span>
                 ) : null}
               </>

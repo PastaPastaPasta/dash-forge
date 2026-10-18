@@ -1,0 +1,217 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as Store from './store'
+
+let store: typeof Store
+let fetcher: ReturnType<typeof vi.fn<typeof fetch>>
+const cleanup: (() => void)[] = []
+const ctx = [{ baseCurrency: 'DASH', quoteCurrency: 'USD', price: '40' }, { baseCurrency: 'DASH', quoteCurrency: 'EUR', price: '36' }]
+const cached = (age = 0, usd = 40) => ({ v: 1, source: 'ctx', fetchedAt: Date.now() - age, rates: { USD: usd, EUR: 36 } })
+const flush = () => vi.advanceTimersByTimeAsync(0)
+const subscribe = () => { const off = store.subscribeFiatRates(vi.fn()); cleanup.push(off); return off }
+const storage = (key: string, value: unknown) => {
+  if (value === null) localStorage.removeItem(key)
+  else localStorage.setItem(key, JSON.stringify(value))
+  window.dispatchEvent(new StorageEvent('storage', { key }))
+}
+
+beforeEach(async () => {
+  vi.resetModules()
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-10-18T12:00:00Z'))
+  vi.stubEnv('NEXT_PUBLIC_FIAT_RATE_URL', '')
+  localStorage.clear()
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+  const windowAdd = window.addEventListener.bind(window)
+  vi.spyOn(window, 'addEventListener').mockImplementation((type, listener, options) => {
+    windowAdd(type, listener, options)
+    cleanup.push(() => window.removeEventListener(type, listener, options))
+  })
+  const documentAdd = document.addEventListener.bind(document)
+  vi.spyOn(document, 'addEventListener').mockImplementation((type, listener, options) => {
+    documentAdd(type, listener, options)
+    cleanup.push(() => document.removeEventListener(type, listener, options))
+  })
+  store = await import('./store')
+  fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(ctx)))
+  store.__setFiatFetchForTests(fetcher)
+})
+afterEach(() => {
+  cleanup.splice(0).reverse().forEach((off) => off())
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+  vi.useRealTimers()
+})
+
+describe('lazy fiat rate cache', () => {
+  it('never touches localStorage at import time', async () => {
+    vi.resetModules()
+    const access = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new Error('denied') })
+    const imported = await import('./store')
+    expect(access).not.toHaveBeenCalled()
+    expect(imported.getServerFiatRates()).toBeNull()
+    expect(imported.getServerFiatSettings()).toEqual({ enabled: true, currency: 'USD' })
+  })
+  it('fetches only when a price subscribes, deduplicates and stores the full map', async () => {
+    cleanup.push(store.subscribeFiatSettings(vi.fn()))
+    expect(fetcher).not.toHaveBeenCalled()
+    subscribe(); subscribe()
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher).toHaveBeenCalledWith('https://rates.ctx.com/rates?source=ctx', expect.objectContaining({ credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'no-store', signal: expect.any(AbortSignal) }))
+    expect(store.getFiatRates()).toEqual(cached())
+    expect(JSON.parse(localStorage.getItem(store.FIAT_RATES_KEY)!)).toEqual(cached())
+    expect(store.getFiatRates()).toBe(store.getFiatRates())
+    expect(store.getFiatSettings()).toBe(store.getFiatSettings())
+  })
+  it('uses a fresh persisted map without fetching and changes currency without a request', async () => {
+    localStorage.setItem(store.FIAT_RATES_KEY, JSON.stringify(cached(store.FRESH_MS - 1)))
+    subscribe()
+    store.setFiatSettings({ currency: 'EUR' })
+    await flush()
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(store.getFiatRates()?.rates.EUR).toBe(36)
+    expect(JSON.parse(localStorage.getItem(store.FIAT_SETTINGS_KEY)!)).toEqual({ v: 1, enabled: true, currency: 'EUR' })
+  })
+  it('re-reads storage immediately before fetching in case another tab refreshed it', () => {
+    cleanup.push(store.subscribeFiatSettings(vi.fn()))
+    localStorage.setItem(store.FIAT_RATES_KEY, JSON.stringify(cached()))
+    subscribe()
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(store.getFiatRates()?.rates.USD).toBe(40)
+  })
+  it('serves stale rates on failure, backs off for two minutes and expires at 24 hours', async () => {
+    localStorage.setItem(store.FIAT_RATES_KEY, JSON.stringify(cached(store.USABLE_MS - 60_000)))
+    fetcher.mockRejectedValue(new TypeError('offline'))
+    subscribe()
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(store.getFiatRates()?.rates.USD).toBe(40)
+    subscribe()
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(store.getFiatRates()).toBeNull()
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(60_000)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(4)
+  })
+  it('drops an expired or malformed cache and uses local fetchedAt, never CTX retrieved', async () => {
+    localStorage.setItem(store.FIAT_RATES_KEY, JSON.stringify(cached(store.USABLE_MS)))
+    subscribe()
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(store.getFiatRates()?.fetchedAt).toBe(Date.now())
+  })
+  it('does not poll; a visible subscriber refreshes on visibility change', async () => {
+    localStorage.setItem(store.FIAT_RATES_KEY, JSON.stringify(cached()))
+    subscribe()
+    await vi.advanceTimersByTimeAsync(store.FRESH_MS)
+    expect(fetcher).not.toHaveBeenCalled()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(fetcher).not.toHaveBeenCalled()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('does not refresh on visibility changes without a price subscriber', async () => {
+    const off = subscribe()
+    await flush()
+    off()
+    await vi.advanceTimersByTimeAsync(store.FRESH_MS)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('prices off before subscription means zero requests; enabling starts the lazy fetch', async () => {
+    localStorage.setItem(store.FIAT_SETTINGS_KEY, JSON.stringify({ v: 1, enabled: false, currency: 'EUR' }))
+    subscribe()
+    await flush()
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(store.getFiatRates()).toBeNull()
+    store.setFiatSettings({ enabled: true })
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('propagates settings, rates and removals from other tabs with stable snapshots', async () => {
+    localStorage.setItem(store.FIAT_RATES_KEY, JSON.stringify(cached()))
+    const changed = vi.fn()
+    cleanup.push(store.subscribeFiatSettings(changed))
+    subscribe()
+    storage(store.FIAT_SETTINGS_KEY, { v: 1, enabled: true, currency: 'EUR' })
+    expect(changed).toHaveBeenCalledTimes(1)
+    const old = store.getFiatRates()
+    storage(store.FIAT_RATES_KEY, cached())
+    expect(store.getFiatRates()).toBe(old)
+    storage(store.FIAT_RATES_KEY, cached(0, 42))
+    expect(store.getFiatRates()?.rates.USD).toBe(42)
+    storage(store.FIAT_SETTINGS_KEY, { v: 1, enabled: false, currency: 'EUR' })
+    expect(store.getFiatRates()).toBeNull()
+    await flush()
+    expect(fetcher).not.toHaveBeenCalled()
+    storage(store.FIAT_RATES_KEY, null)
+    expect(store.getFiatRates()).toBeNull()
+  })
+  it('survives denied storage reads and writes', async () => {
+    vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new Error('denied') })
+    subscribe()
+    store.setFiatSettings({ currency: 'EUR' })
+    await flush()
+    expect(store.getFiatRates()?.rates.EUR).toBe(36)
+  })
+  it.each([
+    () => new Response('[]'),
+    () => new Response('[{"baseCurrency":"DASH","quoteCurrency":"EUR","price":"36"}]'),
+    () => new Response('[{"baseCurrency":"DASH","quoteCurrency":"USD","price":"invalid"}]'),
+    () => new Response(JSON.stringify(ctx), { status: 429 }),
+    () => new Response('invalid json'),
+  ])('falls back on non-ok, malformed, empty or incomplete responses', async (primary) => {
+    fetcher.mockReset().mockResolvedValueOnce(primary()).mockResolvedValueOnce(new Response('{"dash":{"usd":41,"eur":37}}'))
+    subscribe()
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(store.getFiatRates()?.source).toBe('coingecko')
+    expect(store.getFiatRates()?.rates.USD).toBe(41)
+  })
+  it('times out each provider after five seconds, including stalled JSON bodies', async () => {
+    const signals: AbortSignal[] = []
+    fetcher.mockImplementation(async (_url, options) => {
+      signals.push(options!.signal as AbortSignal)
+      return { ok: true, json: () => new Promise(() => {}) } as unknown as Response
+    })
+    subscribe()
+    await vi.advanceTimersByTimeAsync(store.TIMEOUT_MS)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(signals[0]?.aborted).toBe(true)
+    await vi.advanceTimersByTimeAsync(store.TIMEOUT_MS)
+    expect(signals[1]?.aborted).toBe(true)
+    expect(store.getFiatRates()).toBeNull()
+    subscribe()
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+  it('aborts an in-flight request and never starts a fallback when prices turn off', async () => {
+    fetcher.mockImplementation(() => new Promise(() => {}))
+    subscribe()
+    store.setFiatSettings({ enabled: false })
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect((fetcher.mock.calls[0]![1]!.signal as AbortSignal).aborted).toBe(true)
+    expect(store.getFiatRates()).toBeNull()
+  })
+  it('the default rejecting test fetcher never reaches a real provider', async () => {
+    const globalFetch = vi.spyOn(globalThis, 'fetch')
+    store.__setFiatFetchForTests(async () => { throw new Error('blocked fixture') })
+    subscribe()
+    await flush()
+    expect(globalFetch).not.toHaveBeenCalled()
+    expect(store.getFiatRates()).toBeNull()
+  })
+})

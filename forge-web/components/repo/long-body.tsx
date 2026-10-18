@@ -7,6 +7,8 @@
  * or writer, stored as a repository artifact) and what that adds to its cost.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useAsync } from '@/hooks/use-async'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useSdk } from '@/hooks/use-sdk'
@@ -104,7 +106,7 @@ export function LongComposeNote({ compose, text }: { compose: LongCompose; text:
   }
   return (
     <p data-testid="long-body-note" aria-live="polite" className="mt-1 text-[11px] text-anvil-600 dark:text-anvil-300">
-      {formatCount(utf8Bytes(text))} bytes: more than the field holds, so the whole text is stored as a repository artifact on Platform (up to {creditsAsDash(compose.credits)} DASH more), and the field keeps its first part.
+      {formatCount(utf8Bytes(text))} bytes: more than the field holds, so the whole text is stored as a repository artifact on Platform (up to {creditsAsDash(compose.credits)} DASH more<FiatNote dash={creditsToDash(compose.credits)} kind="bound" />), and the field keeps its first part.
     </p>
   )
 }

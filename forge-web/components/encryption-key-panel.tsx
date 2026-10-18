@@ -14,9 +14,10 @@
  * dropped after use.
  */
 
-import { BuildIntegrityNotice } from '@/components/build-integrity-notice'
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, Trash2 } from 'lucide-react'
+import { FiatNote } from '@/components/ui/fiat-note'
+import { BuildIntegrityNotice } from '@/components/build-integrity-notice'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { NETWORKS } from '@/lib/constants'
@@ -51,7 +52,8 @@ function heldKeys(ids: readonly number[]): string {
 }
 
 /** An identity update adding one key (measured like the limited-key registration). */
-const REGISTER_COST = '~0.0005 DASH'
+const REGISTER_DASH = 0.0005
+const REGISTER_COST = `~${REGISTER_DASH} DASH`
 
 export function EncryptionKeyPanel(): JSX.Element | null {
   const { identity, storage, controller, unlockScope } = useAuth()
@@ -154,7 +156,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   const register = async (): Promise<void> => {
     const ok = await confirm({
       title: 'Register a new encryption key?',
-      body: `This adds an encryption key to your identity (${REGISTER_COST}): your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.`,
+      body: <>This adds an encryption key to your identity ({REGISTER_COST}<FiatNote dash={REGISTER_DASH} />): your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.</>,
       confirmLabel: 'Register key',
       tone: 'primary',
     })
@@ -293,7 +295,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
               <Field
                 label="Recovery phrase (12 or 24 words)"
                 htmlFor="enc-phrase"
-                hint={`Derives the new key and your master key, which signs one identity update (${REGISTER_COST}, one master-key signature). Neither is stored. An existing encryption key is used instead, at no cost.`}
+                hint={<>Derives the new key and your master key, which signs one identity update ({REGISTER_COST}<FiatNote dash={REGISTER_DASH} />, one master-key signature). Neither is stored. An existing encryption key is used instead, at no cost.</>}
               >
                 <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
               </Field>
