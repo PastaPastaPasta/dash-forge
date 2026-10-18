@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Pin } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import { pinPlanBytes } from '@/lib/storage/pin-targets'
 import type { RepoRef } from '@/lib/repo/contract'
 import { kuboUpCommand } from '@/lib/storage/kubo-connect'
 import type { PinProgress, PinSummary } from '@/lib/storage/pin'
@@ -41,7 +42,7 @@ function PinDialog({ repo, onClose }: { repo: RepoRef; onClose: () => void }): J
   const [setup, setSetup] = useState<string | null>(null)
   useEffect(() => setSetup(kuboUpCommand(location.origin, location.pathname)), [])
   const p = pin.plan.data
-  const privateFiles = repo.visibility === 'private' || p?.requiresConsent === true
+  const privateFiles = repo.visibility === 'private' || p?.needsConsent === true
   const canPin = !!p && !!pin.profile && !pin.storage.needsUnlock && (!privateFiles || consent)
   return <Dialog open onClose={() => { pin.cancel(); onClose() }} title="Keep a copy of this repo's files on your IPFS node" footer={<>
     {pin.running ? <Button onClick={pin.cancel}>Cancel pinning</Button> : <Button variant="primary" disabled={!canPin || p?.targets.length === 0} onClick={() => void pin.start(consent)}>Pin</Button>}
@@ -49,9 +50,11 @@ function PinDialog({ repo, onClose }: { repo: RepoRef; onClose: () => void }): J
   </>}>
     <div className="space-y-3 text-dense">
       {p ? <>
-        <p>{plural(p.targets.length, 'file')} · {pinMib(p.sizeBytes)} MiB · cost 0 DASH (uses your disk)</p>
-        {p.unavailableSkipped ? <p>{plural(p.unavailableSkipped, 'file')} skipped: no reachable copy to check.</p> : null}
+        <p>{plural(p.targets.length, 'file')} · {pinMib(pinPlanBytes(p))} MiB · cost 0 DASH (uses your disk)</p>
+        {p.unreadableSkipped ? <p>{plural(p.unreadableSkipped, 'file')} skipped: no reachable copy to check.</p> : null}
         {p.invalidCidsSkipped ? <p>{plural(p.invalidCidsSkipped, 'IPFS address', 'IPFS addresses')} skipped: invalid CID.</p> : null}
+        {p.conflictingCidsSkipped ? <p>{plural(p.conflictingCidsSkipped, 'IPFS address', 'IPFS addresses')} skipped: conflicting file metadata.</p> : null}
+        {p.strangerCopiesIgnored ? <p>{plural(p.strangerCopiesIgnored, 'copy', 'copies')} ignored: no authorized pack.</p> : null}
         {p.notOnIpfs ? <p>{plural(p.notOnIpfs, 'file')} {p.notOnIpfs === 1 ? 'is' : 'are'} not on IPFS.</p> : null}
         {p.unverifiableSkipped ? <p>{plural(p.unverifiableSkipped, 'release file')} skipped: no recorded size or SHA-256.</p> : null}
         {p.membersOnlySkipped ? <p>{plural(p.membersOnlySkipped, 'members-only file')} skipped (key not held).</p> : null}

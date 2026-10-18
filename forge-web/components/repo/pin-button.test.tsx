@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({ identity: 'me' as string | null, start: vi.fn(
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: state.identity }) }))
 vi.mock('@/hooks/use-repo-pin', () => ({ useRepoPin: () => ({
   storage: { needsUnlock: false, loading: false, error: null },
-  plan: { data: { targets: [{}], sizeBytes: 1048576, requiresConsent: state.requiresConsent, notOnIpfs: 0, membersOnlySkipped: 0, unavailableSkipped: state.unavailable, invalidCidsSkipped: state.invalid }, error: null },
+  plan: { data: { targets: [{ size: 1048576 }], needsConsent: state.requiresConsent, notOnIpfs: 0, membersOnlySkipped: 0, unreadableSkipped: state.unavailable, invalidCidsSkipped: state.invalid }, error: null },
   profiles: state.profile ? [{ name: 'kubo' }] : [], profile: state.profile ? { name: 'kubo' } : null, rows: [], summary: null, error: null, running: false,
   start: state.start, cancel: state.cancel, setChosen: vi.fn(),
 }) }))

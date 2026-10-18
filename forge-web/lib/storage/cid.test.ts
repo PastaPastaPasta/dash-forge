@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
-import { CID_CHUNK_SIZE, cidV1RawLeaves, isCid, normalizeCid } from './cid'
+import { CID_CHUNK_SIZE, cidV1RawLeaves, isCid, normalizeCid, sameCid } from './cid'
 
 describe('cidV1RawLeaves (parity with forge-core backends/cid.rs)', () => {
   it('derives the well-known empty raw block', () => {
@@ -29,17 +29,19 @@ describe('cidV1RawLeaves (parity with forge-core backends/cid.rs)', () => {
 })
 
 
-it('normalizes CIDv0, base58btc, base36 and uppercase base32 to CIDv1 base32', () => {
+it('preserves CIDv0 and normalizes base58btc, base36 and uppercase base32 to CIDv1 base32', () => {
   const raw = Uint8Array.from([1, 0x70, 0x12, 32, ...new Uint8Array(32).fill(1)])
   const v0 = base58Encode(raw.slice(2))
   const expected = normalizeCid('z' + base58Encode(raw))
   expect(expected).toMatch(/^bafy/)
-  expect(normalizeCid(v0)).toBe(expected)
+  expect(normalizeCid(v0)).toBe(v0)
+  expect(sameCid(v0, expected!)).toBe(true)
   expect(normalizeCid(expected!.toUpperCase())).toBe(expected)
   let n = 0n
   for (const byte of raw) n = n * 256n + BigInt(byte)
   expect(normalizeCid('k' + n.toString(36))).toBe(expected)
-  expect(normalizeCid('f' + Array.from(raw, (b) => b.toString(16).padStart(2, '0')).join(''))).toBe(expected)
+  expect(normalizeCid('k0' + n.toString(36))).toBeNull()
+  expect(normalizeCid('f' + Array.from(raw, (b) => b.toString(16).padStart(2, '0')).join(''))).toBeNull()
 })
 it.each(['junk', 'bafkreia', 'b!!!!', 'z0', 'f01701220', 'k0', 'b' + 'a'.repeat(10000)])('rejects invalid or truncated CIDs', (value) => {
   expect(normalizeCid(value)).toBeNull()

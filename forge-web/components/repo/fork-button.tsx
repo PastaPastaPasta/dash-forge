@@ -15,6 +15,7 @@ import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
 import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
+import { pinPlanBytes } from '@/lib/storage/pin-targets'
 import { withoutMirrorMarker } from '@/lib/view/mirror-source'
 import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
@@ -98,8 +99,8 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const [pinFiles, setPinFiles] = useState<boolean | null>(null)
   const [pinConsent, setPinConsent] = useState(false)
   const [forkedHref, setForkedHref] = useState<string | null>(null)
-  const wantsPin = pinFiles ?? (pin.plan.data !== null && pin.plan.data.sizeBytes < 256 * 1048576)
-  const needsPinConsent = pin.plan.data?.requiresConsent === true
+  const wantsPin = pinFiles ?? (pin.plan.data !== null && pinPlanBytes(pin.plan.data) < 256 * 1048576)
+  const needsPinConsent = pin.plan.data?.needsConsent === true
 
   const [name, setName] = useState(parent.name)
   // The parent's description, less a mirror's "(mirror of …)" marker: a fork is no mirror (QW3-011).
@@ -301,7 +302,7 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
         )}
 
         {pin.profile && !forkedHref ? <div className="space-y-2">
-          <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={wantsPin} disabled={pending || (!pin.plan.data && !wantsPin)} onChange={(e) => setPinFiles(e.target.checked)} />Also pin its files on my IPFS node ({pin.plan.data ? pinMib(pin.plan.data.sizeBytes) : '…'} MiB)</label>
+          <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={wantsPin} disabled={pending || (!pin.plan.data && !wantsPin)} onChange={(e) => setPinFiles(e.target.checked)} />Also pin its files on my IPFS node ({pin.plan.data ? pinMib(pinPlanBytes(pin.plan.data)) : '…'} MiB)</label>
           {wantsPin ? <>
             <label className="block text-dense">IPFS node<select aria-label="Fork pin node" value={pin.profile.name} disabled={pending} onChange={(e) => pin.setChosen(e.target.value)}>{pin.profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select></label>
             {needsPinConsent ? <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={pinConsent} disabled={pending} onChange={(e) => setPinConsent(e.target.checked)} />My IP address will be listed on IPFS as holding this repo&apos;s members-only (encrypted) files.</label> : <p className="text-[12px]">Your node will tell the IPFS network it holds these files.</p>}

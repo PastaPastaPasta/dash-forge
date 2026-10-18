@@ -31,7 +31,7 @@ it.each([
   const settings: IpfsSettings = { kind: 'ipfs-kubo', provider: 'kubo', api, gateway: 'https://gw.example', publicGateway: '', pinningEndpoint: '' }
   await kuboVersion(settings, {})
   const cid = cidV1RawLeaves(new Uint8Array([1]))
-  const plan: PinPlan = { targets: [{ cid, candidates: [{ cid, authorized: true }], sizeBytes: 1, sha256: 'ab'.repeat(32), what: 'pack', private: false }], sizeBytes: 1, notOnIpfs: 0, membersOnlySkipped: 0, unverifiableSkipped: 0, unavailableSkipped: 0, invalidCidsSkipped: 0, requiresConsent: false }
+  const plan: PinPlan = { targets: [{ candidates: [{ cid, swarmAllowed: true }], size: 1, sha256: 'ab'.repeat(32), what: { type: 'pack', kind: 0 } }], notOnIpfs: 0, membersOnlySkipped: 0, unverifiableSkipped: 0, unreadableSkipped: 0, strangerCopiesIgnored: 0, conflictingCidsSkipped: 0, invalidCidsSkipped: 0, needsConsent: false }
   const profile: StorageProfile = { name: 'node', settings, secrets: {} }
   fetch.mockImplementation(async () => Response.json({ Keys: { [cid]: { Type: 'recursive' } } }) as never)
   expect((await pinRepo({} as EvoSDK, { visibility: 'public' } as RepoRef, profile, plan)).already).toBe(1)

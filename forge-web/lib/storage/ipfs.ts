@@ -13,7 +13,7 @@
  * token goes into the profile's `apiAuth`.
  */
 
-import { cidV1RawLeaves, isCid, normalizeCid } from './cid'
+import { cidV1RawLeaves, isCid, sameCid } from './cid'
 import { plain } from './sigv4'
 import type { ProfilePublic, ProfileSecrets } from './profiles'
 import { TimeoutError, isHeaderSafe, timedFetch } from './util'
@@ -104,14 +104,14 @@ export async function addVerified(s: IpfsSettings, secrets: ProfileSecrets, byte
   const line = text.trim().split('\n').pop() ?? ''
   const cid = /"Hash"\s*:\s*"([^"]+)"/.exec(line)?.[1] ?? ''
   const expected = cidV1RawLeaves(bytes)
-  if (normalizeCid(cid) !== expected) {
+  if (!sameCid(cid, expected)) {
     if (isCid(cid)) await unpin(s, secrets, cid).catch(() => undefined)
     throw new IpfsError('ipfs add', `kubo returned CID ${cid || '(none)'} but these bytes derive to ${expected} under the pinned import parameters; refusing to record it`)
   }
   const pinned = await rpc(s, secrets, 'pin check', `pin/ls?arg=${cid}&type=recursive`, undefined, 0, signal).catch(ignoreNotPinned)
   let keys: unknown
   try { keys = (JSON.parse(pinned) as { Keys?: unknown }).Keys } catch { /* Report a failed pin check below. */ }
-  if (!keys || typeof keys !== 'object' || !Object.keys(keys).some((key) => normalizeCid(key) === expected)) throw new IpfsError('pin check', `kubo added ${cid} but does not report it pinned; a gc would drop it`)
+  if (!keys || typeof keys !== 'object' || !Object.keys(keys).some((key) => sameCid(key, expected))) throw new IpfsError('pin check', `kubo added ${cid} but does not report it pinned; a gc would drop it`)
   return cid
 }
 

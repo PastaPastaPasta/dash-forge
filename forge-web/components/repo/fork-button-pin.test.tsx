@@ -10,7 +10,7 @@ vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () =>
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: state.sdk, ready: true }) }))
 vi.mock('@/hooks/use-async', () => ({ useAsync: () => ({ data: { manifests: [], refs: [], unreferenceable: [] }, error: null }) }))
 vi.mock('@/hooks/use-repo-pin', () => ({ useRepoPin: () => ({
-  plan: { data: { sizeBytes: state.size, requiresConsent: false }, error: state.planError },
+  plan: { data: { targets: [{ size: state.size }], needsConsent: false }, error: state.planError },
   profiles: state.profile ? [{ name: 'kubo' }] : [], profile: state.profile ? { name: 'kubo' } : null,
   rows: [], summary: null, error: state.pinError, running: false, start: state.start, cancel: vi.fn(), setChosen: vi.fn(),
 }) }))

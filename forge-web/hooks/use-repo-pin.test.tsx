@@ -20,7 +20,7 @@ const render = async (onlyWithProfile = false) => { await act(async () => root.r
 beforeEach(() => {
   state.locked = false; state.config = { ...EMPTY_STORAGE_CONFIG, profiles: [{ name: 'kubo', settings: { kind: 'ipfs-kubo', provider: 'kubo', api: 'http://127.0.0.1:5001', gateway: '', publicGateway: '', pinningEndpoint: '' }, secrets: {} }] }
   state.pin.mockReset().mockResolvedValue({ pinned: 1, already: 0, failed: 0, sizeBytes: 1 })
-  state.planHook.mockReset().mockReturnValue({ data: { targets: [], requiresConsent: false }, error: null })
+  state.planHook.mockReset().mockReturnValue({ data: { targets: [], needsConsent: false }, error: null })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
 afterEach(() => { act(() => root.unmount()); host.remove() })

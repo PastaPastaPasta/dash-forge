@@ -34,6 +34,7 @@ import {
   resolveRef,
   v2,
 } from './index'
+import { planPinTargets, type PinInput } from '../storage/pin-targets'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { refUpdateType } from '../repo/push'
 import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
@@ -946,6 +947,15 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['file', 'repoId'])
       const inp = v.input as { readonly file: string; readonly repoId: string }
       expect(readBacklink(inp.file, inp.repoId)).toEqual(v.expected)
+      break
+    }
+    case 'pin_targets': {
+      onlyKeys(v, ['owner', 'roles', 'manifests', 'releases'], {
+        manifests: ['id', 'owner', 'sha256', 'kind', 'size', 'uris', 'createdAt', 'readable', 'sensitive', 'unreadable'],
+        releases: ['owner', 'tag', 'assets'],
+        assets: ['name', 'sha256', 'size', 'uris', 'sealedSha256', 'sealedSizeBytes'],
+      })
+      expect(planPinTargets(v.input as PinInput)).toEqual(v.expected)
       break
     }
     case 'pack_mirror_uris': {
