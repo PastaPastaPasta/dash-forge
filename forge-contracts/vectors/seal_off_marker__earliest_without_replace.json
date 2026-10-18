@@ -1,0 +1,43 @@
+{
+  "name": "earliest_without_replace",
+  "description": "earliest without replace",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "rule",
+    "configs": [
+      {
+        "id": "0303030303030303030303030303030303030303030303030303030303030303",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 2,
+        "private": true,
+        "height": 20,
+        "opening": "opened",
+        "sealOff": "01010123456789abcdeffedcba9876543210000000020000019077fd307b"
+      },
+      {
+        "id": "0202020202020202020202020202020202020202020202020202020202020202",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 1,
+        "private": true,
+        "height": 10,
+        "opening": "opened",
+        "sealOff": "01010123456789abcdeffedcba9876543210000000010000019077fd307b"
+      }
+    ],
+    "owner": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "expected": {
+    "kind": "active",
+    "epoch": 1,
+    "height": 10,
+    "marker": {
+      "mode": "codeOnly",
+      "conversionId": "0123456789abcdeffedcba9876543210",
+      "boundaryEpoch": 1,
+      "startedAtMs": "1720000000123"
+    },
+    "highestEpoch": 2,
+    "replacesThrough": null
+  }
+}

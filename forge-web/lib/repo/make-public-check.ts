@@ -20,7 +20,7 @@ import { withLetterReader } from '../auth/encryption-key'
 import { PACK_KIND } from '../constants'
 import { oldFormatOf, needsAttention, readEnvironments, snapshotOf } from '../env/loader'
 import { sdkEnvSources } from '../env/sources'
-import { CONVERTED_REPO_MIN_CLIENT_VERSION, V4, V6, openContent, sniff, type Conversion } from '../private'
+import { CONVERTED_REPO_MIN_CLIENT_VERSION, V4, V6, openContent, TooLargeError, sniff, type Conversion } from '../private'
 import { previewCreate, queryAllDocuments, queryDocumentsWithProof, sumPreviews, type PlainDocument } from '../sdk'
 import { scanFile } from '../secrets'
 import { SuspectPackError, openPrivateArtifact } from '../view/private-packs'
@@ -50,8 +50,9 @@ import { isAncestorIn, packSize, reachable, scanObjects, secretOf, workStoreOf, 
 import { membersUpdatesOf } from './members-refs'
 import { packsOfKind, readManifestsOfKind, readRepoPackManifests } from './packs'
 import { admitAll, blockHeightOf, bytesField, readableEvents } from './private-content'
+import { drySealOffAnchor } from './members-anchor'
 import { planRotation, rotationCost, type PrivateWriteContext } from './private-members'
-import { loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
+import { readSessionSealOff, loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
 import { refTip } from './fork'
 import { shortRef } from './ref-admin'
 import { publicRefKey, toResolvedRef, type ResolvedRef } from './refs'
@@ -489,6 +490,19 @@ export async function inspect(c: PrivateWriteContext, session: PrivateSession, o
   const narrowerBranches = new Set(flat.filter((d) => bytesField(d, 'enc')?.[0] === V6).map((d) => (bytesField(d, 'refNameHash') ?? new Uint8Array()).join(','))).size
   const config = session.config
   const defaultBranch = shortRef(config?.defaultBranch ?? 'main')
+  if (conversion === null && opts.below === undefined) {
+    const active = await readSessionSealOff(session, decodeIdentifier(c.repo.ownerId))
+    try {
+      await drySealOffAnchor(decodeIdentifier(c.repo.repoId), decodeIdentifier(c.repo.ownerId), {
+        defaultBranch: config?.defaultBranch ?? 'main', protectedPatterns: config?.protectedPatterns ?? [],
+        backend: session.configPlain?.backend ?? { mode: 0 }, archived: session.configPlain?.archived ?? false,
+      }, { mode: mode ?? 'codeOnly', conversionId: new Uint8Array(16), boundaryEpoch: (res.currentEpoch ?? 0) + 1, startedAtMs: 0n,
+        ...(active.kind === 'active' ? { replacesEpoch: active.highestEpoch } : {}) })
+    } catch (e) {
+      if (e instanceof TooLargeError) blockers.push(new MakePublicError(COPY.markerSize, 'E310'))
+      else throw e
+    }
+  }
   // the work store: every private-era pack this member opens
   step('Reading the code written while private')
   const { packs, unfetched } = await openPrivateEraPacks(sdk, session, c.repo, opts.packCache, sealOff)
@@ -615,7 +629,9 @@ export async function makePublicCheck(
     // the run's cutoff (`make-public-run.ts`): the lower of the stated and recorded seal-off epochs
     // once public; while private, the recorded one while it is still the current epoch (one that
     // landed unrecorded found again)
-    const recorded = record === null ? null : recordedSealOff(record.sealOff, record.sealOffFrom, r.currentEpoch, r.burned)
+    const active = await readSessionSealOff(session, decodeIdentifier(c.repo.ownerId))
+    if (active.kind === 'unknown') throw new MakePublicError(COPY.markerUnreadable, 'E310')
+    const recorded = recordedSealOff(record?.sealOff ?? null, record?.sealOffFrom, r.currentEpoch, r.burned, active)
     const below = conversion !== null ? cutoffOf(conversion.sealOffEpoch, recorded) : recorded !== null && recorded === session.resolution.currentEpoch ? recorded : undefined
     const { check } = await inspect(c, session, {
       conversion,

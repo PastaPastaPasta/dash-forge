@@ -20,6 +20,13 @@ import { onEncryptionKeyChange } from '../auth/vault'
 import type { Network } from '../constants'
 import {
   IdSet,
+  activeSealOff,
+  openWithKey,
+  constantTimeEqual,
+  type ActiveSealOff,
+  type SealOffConfig,
+  type SealOffMarker,
+  encodeSealOffMarker,
   PackHeaderCache,
   bytesEqual,
   bytesToHex,
@@ -102,6 +109,8 @@ export interface PrivateSession {
   readonly anchors: ReadonlyMap<number, AnchorInfo>
   /** Every `config` of the repo (anchor what-ifs: who would anchor an epoch without someone). */
   readonly configRows: readonly ConfigRow[]
+  /** Every raw config, including rows whose sealed fields cannot be parsed. */
+  readonly configDocuments?: readonly PlainDocument[]
   /** `repoKey` and `config` documents under an epoch no anchor recognises. */
   readonly unanchoredDocs: number
   /** Public keys of the members, by base58 identity (null: the identity could not be read). */
@@ -470,6 +479,7 @@ export async function loadPrivateSession(input: {
     memberKeys,
     suspectManifests: new Set(),
     configRows,
+    configDocuments: configDocs,
     conversion,
     publishedEpochs: new Set([...resolution.keys.keys()].filter((e) => !resolved.keys.has(e))),
     publishedAll,
@@ -646,4 +656,46 @@ export function invalidatePrivateSession(repo: RepoRef): void {
       entry.promise.then((s) => s.close(), () => undefined)
     }, RETIRE_MS)
   }
+}
+
+/** Owner seal-off markers read from the complete timeline with anchored keys, without late filtering. */
+export async function readSessionSealOff(session: PrivateSession, owner: Uint8Array): Promise<ActiveSealOff> {
+  const configs = await sessionSealOffConfigs(session)
+  return configs === null ? { kind: 'unknown' } : activeSealOff(configs, owner)
+}
+
+/** The same anchored, private-owner classification is used to confirm a written marker. */
+export async function sessionConfirmsSealOff(session: PrivateSession, owner: Uint8Array, marker: SealOffMarker): Promise<boolean> {
+  const expected = encodeSealOffMarker(marker)
+  const configs = await sessionSealOffConfigs(session)
+  return configs !== null && configs.some((c) => c.private && bytesEqual(c.owner, owner) && c.epoch === marker.boundaryEpoch &&
+    c.opening === 'opened' && c.sealOff !== undefined && bytesEqual(c.sealOff, expected))
+}
+
+async function sessionSealOffConfigs(session: PrivateSession): Promise<SealOffConfig[] | null> {
+  if (session.configDocuments === undefined) return null
+  const configs: SealOffConfig[] = []
+  for (const d of session.configDocuments) {
+    const epoch = d['epoch'] === undefined ? null : num(d, 'epoch')
+    if (epoch !== null && session.resolution.burned.has(epoch)) continue
+    const configOwner = idField(d, '$ownerId') ?? new Uint8Array(32)
+    const id = idField(d, '$id') ?? new Uint8Array(32)
+    const enc = bytesField(d, 'enc') ?? new Uint8Array()
+    const a = epoch === null ? undefined : session.resolution.anchors.get(epoch)
+    const keys = epoch === null ? undefined : session.resolution.keys.get(epoch)
+    let opening: SealOffConfig['opening'] = 'unreadable'
+    let sealOff: Uint8Array | undefined
+    if (a?.commit != null && enc[0] === 2 && enc.length >= 61 && !constantTimeEqual(a.commit, enc.subarray(1, 33))) opening = 'otherKey'
+    else if (keys !== undefined && epoch !== null && a?.commit != null && constantTimeEqual(keys.commit, a.commit)) {
+      const opened = await openWithKey({ type: 'config', ownerId: configOwner, epoch, enc }, keys, true)
+      if (opened.status === 'readable') {
+        opening = 'opened'
+        sealOff = opened.fields.sealOff
+        opened.fields.prevEpochKey?.fill(0)
+        opened.fields.skipEpochKey?.fill(0)
+      }
+    }
+    configs.push({ id, owner: configOwner, epoch, private: d['vis'] === 'private', height: blockHeightOf(d) ?? 0, opening, ...(sealOff !== undefined ? { sealOff } : {}) })
+  }
+  return configs
 }

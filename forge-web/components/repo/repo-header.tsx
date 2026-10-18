@@ -30,6 +30,7 @@ import { MembersChip } from '@/components/repo/audience'
 import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
 import { MovedBanner } from '@/components/repo/moved-banner'
 import { SecurityPolicyLink } from '@/components/repo/security-policy'
+import { SealOffBanner } from '@/components/repo/seal-off-banner'
 
 /**
  * How many of the repo's open issues and PRs are members-only (and, apart, sent to specific
@@ -175,6 +176,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       ) : null}
 
       <MovedBanner home={home} />
+      <SealOffBanner home={home} />
 
       {home.config?.archived ? (
         <div className="mt-3 flex items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-1.5 text-dense text-caution-700 dark:text-caution-400">

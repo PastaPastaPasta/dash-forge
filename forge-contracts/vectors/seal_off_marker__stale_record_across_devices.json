@@ -1,0 +1,31 @@
+{
+  "name": "stale_record_across_devices",
+  "description": "stale record across devices",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": 1,
+    "active": {
+      "kind": "active",
+      "epoch": 3,
+      "height": 30,
+      "marker": {
+        "mode": "codeOnly",
+        "conversionId": "0123456789abcdeffedcba9876543210",
+        "boundaryEpoch": 3,
+        "startedAtMs": "1720000000123",
+        "replacesEpoch": 2
+      },
+      "highestEpoch": 3,
+      "replacesThrough": 2
+    },
+    "current": 3,
+    "flipped": false,
+    "stated": null
+  },
+  "expected": {
+    "kind": "adopt",
+    "epoch": 3
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "public_record_lower",
+  "description": "public record lower",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": 1,
+    "active": {
+      "kind": "active",
+      "epoch": 2,
+      "height": 20,
+      "marker": {
+        "mode": "codeOnly",
+        "conversionId": "0123456789abcdeffedcba9876543210",
+        "boundaryEpoch": 2,
+        "startedAtMs": "1720000000123"
+      },
+      "highestEpoch": 2,
+      "replacesThrough": null
+    },
+    "current": 4,
+    "flipped": true,
+    "stated": 4
+  },
+  "expected": {
+    "kind": "public",
+    "cutoff": 1
+  }
+}

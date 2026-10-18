@@ -1,0 +1,20 @@
+{
+  "name": "u64_timestamp",
+  "description": "u64 timestamp",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "encoding",
+    "marker": {
+      "mode": "codeOnly",
+      "conversionId": "0123456789abcdeffedcba9876543210",
+      "boundaryEpoch": 1,
+      "startedAtMs": "18446744073709551615"
+    }
+  },
+  "expected": {
+    "value": "01010123456789abcdeffedcba987654321000000001ffffffffffffffff",
+    "tlv": "0600046d61696e08000400000000090020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f41001e01010123456789abcdeffedcba987654321000000001ffffffffffffffff",
+    "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bd0b9c73375adb837c54285cbeeede1de727609eaa197de7e21a5075c42253876daca0cd6cabf293dabf3af647b4d4a809fbb9447761874fee038fd8f5ec2ffb840244ab0392bd6469dbd5318ba38df709068210118603a79c860e98f0ee16281881a"
+  }
+}

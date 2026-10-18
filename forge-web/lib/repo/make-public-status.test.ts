@@ -126,3 +126,11 @@ describe('the status of making a repo public', () => {
     expect(s.steps.history).toBe('skipped')
   })
 })
+
+it('shows an owner marker from another device without inventing a local choice', () => {
+  const sealOffMarker = { kind: 'active' as const, epoch: 2, highestEpoch: 2, replacesThrough: null, height: 10, marker: null }
+  const status = statusOf(facts({ visibility: 'private', keys: { currentEpoch: 3, burned: new Set() }, sealOffMarker }))
+  expect(status.record).toBeNull()
+  expect(status.sealOffMarker).toEqual(sealOffMarker)
+  expect(status.sealOffPassed).toBe(true)
+})

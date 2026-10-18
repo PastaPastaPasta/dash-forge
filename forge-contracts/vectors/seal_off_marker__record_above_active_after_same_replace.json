@@ -1,0 +1,31 @@
+{
+  "name": "record_above_active_after_same_replace",
+  "description": "record above active after same replace",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": 4,
+    "active": {
+      "kind": "active",
+      "epoch": 3,
+      "height": 30,
+      "marker": {
+        "mode": "codeOnly",
+        "conversionId": "0123456789abcdeffedcba9876543210",
+        "boundaryEpoch": 3,
+        "startedAtMs": "1720000000123",
+        "replacesEpoch": 1
+      },
+      "highestEpoch": 4,
+      "replacesThrough": 1
+    },
+    "current": 4,
+    "flipped": false,
+    "stated": null
+  },
+  "expected": {
+    "kind": "passed",
+    "epoch": 3
+  }
+}

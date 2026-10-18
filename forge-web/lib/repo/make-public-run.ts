@@ -35,7 +35,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { decodeIdentifier } from '../auth/base58'
 import { PACK_KIND } from '../constants'
 import type { UploadPack } from '../merge/runner'
-import { epochKeyBundles, EpochKeys, constantTimeEqual, openWithKey, type Anchor, type Conversion } from '../private'
+import { epochKeyBundles, EpochKeys, constantTimeEqual, openWithKey, randomBytes, hexToBytes, sealOffBoundary, sealOffDecision, type ActiveSealOff, type SealOffMarker, type Anchor, type Conversion } from '../private'
 import { isRc1BranchName } from '../rules/oid'
 import { createDocumentIdempotent, readIdentityBalance, replaceDocumentIdempotent } from '../sdk'
 import { storeArtifact } from '../storage/upload'
@@ -58,7 +58,6 @@ import {
   sameRefs,
   recordedSealOff,
   saveMakePublicRecord,
-  sealOffPassed,
   unpublishedRefs,
   type MakePublicMode,
   type MakePublicProgress,
@@ -80,8 +79,8 @@ import {
 } from './make-public-check'
 import { buildPack } from './make-public-objects'
 import { invalidateRepoBundles } from './made-public'
-import { ownRawEpochKey, rotateRepoKey, type PrivateWriteContext } from './private-members'
-import { invalidatePrivateSession, isMaintainer, loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
+import { ownRawEpochKey, rotateRepoKey, ensureSealOffMarker, preflightSealOff, type PrivateWriteContext } from './private-members'
+import { readSessionSealOff, invalidatePrivateSession, isMaintainer, loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
 import { repoContentWritten, writePackManifest, writeRefUpdate } from './push'
 import { configData, DEFAULT_CONFIG } from './settings'
 import { readRefs } from './refs'
@@ -158,7 +157,13 @@ export interface MakePublicIo {
   /** The check (step 0) over a fresh session. */
   inspect(opts: { mode: MakePublicMode; refs?: readonly string[]; chosen?: readonly MakePublicRef[]; conversion: Conversion | null; below?: number; signal?: AbortSignal }): Promise<Inspection>
   /** The seal-off rotation: a fresh key wrapped to every member. Returns its epoch. */
-  rotate(): Promise<number>
+  rotate(marker: SealOffMarker): Promise<number>
+  /** Every owner config is considered, including ones that cannot be opened. */
+  readSealOff(): Promise<ActiveSealOff>
+  /** Dry-seal the settings, maximum chain link and marker before any wrap is written. */
+  preflightSealOff(marker: SealOffMarker): Promise<void>
+  /** Finish a marked rotation whose follow-up was not confirmed, without another rotation. */
+  ensureSealOff(marker: SealOffMarker): Promise<void>
   /** Whether the contract lets the repo's visibility move once. */
   canFlip(): Promise<boolean>
   flip(defaultBranch: string): Promise<void>
@@ -216,6 +221,14 @@ function epochMismatch(current: number | null, sealOff: number, mode: MakePublic
 }
 
 /** Whether a node shows a key epoch below `sealOff` (or none): it hasn't caught up with this run's rotation. */
+function markerOfRecord(record: MakePublicRecord, epoch: number): SealOffMarker {
+  if (record.conversionId === undefined) throw new MakePublicError(COPY.runAgain, 'E310')
+  return {
+    mode: record.mode, conversionId: hexToBytes(record.conversionId), boundaryEpoch: epoch,
+    startedAtMs: BigInt(record.startedAt), ...(record.replacesEpoch !== undefined ? { replacesEpoch: record.replacesEpoch } : {}),
+  }
+}
+
 function lagging(current: number | null, sealOff: number): boolean {
   return current === null || current < sealOff
 }
@@ -248,10 +261,23 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   const startOver = choice.startOver === true
   if (startOver && flipped) throw new MakePublicError(COPY.startOverPublic, 'E201')
   const loaded = await io.loadRecord()
+  let active = await io.readSealOff()
+  if (active.kind === 'unknown') throw new MakePublicError(COPY.markerUnreadable, 'E310')
   // A seal-off rotation that landed but was never recorded is found again: only ever earlier.
   // (it shows as `from + 1`: a node behind is waited for a few seconds first)
   if (loaded !== null && loaded.sealOff === null && loaded.sealOffFrom != null) standing = await keysShowing(io, standing, loaded.sealOffFrom + 1)
-  const recordedSeal = loaded === null ? null : recordedSealOff(loaded.sealOff, loaded.sealOffFrom, standing.currentEpoch, standing.burned)
+  // A previously confirmed start-over may have landed its rotation without confirming the
+  // follow-up. Finish that marker before applying the ordinary lower-boundary rule.
+  const landed = recordedSealOff(loaded?.sealOff ?? null, loaded?.sealOffFrom, standing.currentEpoch, standing.burned)
+  if (!flipped && isOwner && !startOver && loaded?.replacesEpoch !== undefined && loaded.conversionId !== undefined &&
+      active.kind === 'active' && active.highestEpoch <= loaded.replacesEpoch && landed !== null && landed > loaded.replacesEpoch && standing.currentEpoch === landed) {
+    await io.ensureSealOff(markerOfRecord(loaded, landed))
+    active = await io.readSealOff()
+    if (active.kind === 'unknown') throw new MakePublicError(COPY.markerUnreadable, 'E310')
+  }
+  const replacesEpoch = Math.max(landed ?? 0, active.kind === 'active' ? active.highestEpoch : 0) || null
+  const recordedSeal = recordedSealOff(loaded?.sealOff ?? null, loaded?.sealOffFrom, standing.currentEpoch, standing.burned, active)
+  if (loaded?.sealOff != null && active.kind === 'active' && loaded.sealOff !== active.epoch) report('sealOff', 'done', COPY.markerLower)
   // While private, a recorded seal-off epoch is the run's boundary for good. Above the one a node
   // shows: the node hasn't caught up with this run's own rotation, so wait a little, then stop
   // (rotating again would seal off twice). Below it: another rotation followed, and the run can't
@@ -261,14 +287,18 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   if (!flipped && recordedSeal !== null && isOwner) {
     standing = await keysShowing(io, standing, recordedSeal)
     if (lagging(standing.currentEpoch, recordedSeal)) throw new MakePublicError(COPY.lagging, 'E310')
-    const passed = sealOffPassed(recordedSeal, standing.currentEpoch)
+    const passed = sealOffDecision(recordedSeal, active, standing.currentEpoch, false, null).kind === 'passed'
     if (!startOver && passed) throw new MakePublicError(COPY.sealOffPassed(loaded?.mode ?? mode), 'E310')
     replaced = startOver && passed
   }
   // only a record whose boundary is passed is set aside: one whose rotation may have landed never is
   if (startOver && !replaced) throw new MakePublicError(COPY.startOverUnfinished, 'E201')
+  if (replaced && replacesEpoch !== null) {
+    standing = await keysShowing(io, standing, replacesEpoch)
+    if (lagging(standing.currentEpoch, replacesEpoch)) throw new MakePublicError(COPY.lagging, 'E310')
+  }
   const saved = startOver || loaded === null ? null : { ...loaded, sealOff: recordedSeal }
-  const savedSeal = saved?.sealOff ?? null
+  const savedSeal = startOver ? null : recordedSeal
   // One cutoff for the whole run: what was sealed under it or later is never published. Once
   // public, the lower of the stated and the recorded seal-off epochs; while private, the recorded
   // one (current, as read above), else none yet (the rotation makes it).
@@ -321,9 +351,11 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   let record: MakePublicRecord = {
     mode,
     refs: recordRefs(wanted),
-    sealOff: saved?.sealOff ?? null,
+    sealOff: savedSeal,
     sealOffFrom: saved?.sealOffFrom ?? null,
-    startedAt: saved?.startedAt ?? Date.now(),
+    startedAt: saved?.startedAt ?? (active.kind === 'active' && active.marker !== null && !startOver && Number(active.marker.startedAtMs) <= Number.MAX_SAFE_INTEGER ? Number(active.marker.startedAtMs) : Date.now()),
+    conversionId: saved?.conversionId ?? (active.kind === 'active' && active.marker !== null && !startOver ? bytesToHex(active.marker.conversionId) : bytesToHex(randomBytes(16))),
+    ...(startOver && replacesEpoch !== null ? { replacesEpoch } : saved?.replacesEpoch !== undefined ? { replacesEpoch: saved.replacesEpoch } : {}),
   }
   await io.saveRecord(record)
   // 2. seal off, 3. flip
@@ -333,18 +365,27 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   } else {
     // Never a second rotation: a recorded one is read again just below, and one that landed
     // unrecorded is found again. The epoch it starts from is kept before it is signed.
-    const resumed = record.sealOff === null && record.sealOffFrom != null
-    const at = await keysShowing(io, await io.keys(), record.sealOff ?? (record.sealOffFrom != null ? record.sealOffFrom + 1 : 0))
-    const found = recordedSealOff(record.sealOff, record.sealOffFrom, at.currentEpoch, at.burned)
+    let resumed = record.sealOff === null && record.sealOffFrom != null
+    const at = await keysShowing(io, await io.keys(), record.sealOff ?? (record.sealOffFrom != null ? record.sealOffFrom + 1 : startOver ? record.replacesEpoch ?? 0 : 0))
+    if (startOver && record.replacesEpoch !== undefined && lagging(at.currentEpoch, record.replacesEpoch)) throw new MakePublicError(COPY.lagging, 'E310')
+    const markerNow = await io.readSealOff()
+    if (markerNow.kind === 'unknown') throw new MakePublicError(COPY.markerUnreadable, 'E310')
+    if (startOver && markerNow.kind === 'active' && markerNow.highestEpoch > (record.replacesEpoch ?? 0)) throw new MakePublicError(COPY.markerChanged, 'E310')
+    resumed ||= !startOver && record.sealOff === null && markerNow.kind === 'active'
+    const found = recordedSealOff(record.sealOff, record.sealOffFrom, at.currentEpoch, at.burned, startOver ? { kind: 'none' } : markerNow)
     if (found !== null) {
+      if (at.currentEpoch !== found) throw epochMismatch(at.currentEpoch, found, mode)
+      if (markerNow.kind !== 'active' || markerNow.epoch !== found) await io.ensureSealOff(markerOfRecord(record, found))
       record = { ...record, sealOff: found }
       await io.saveRecord(record)
       report('sealOff', 'done')
     } else {
+      const marker = markerOfRecord(record, (at.currentEpoch ?? 0) + 1)
+      await io.preflightSealOff(marker)
       record = { ...record, sealOffFrom: at.currentEpoch }
       await io.saveRecord(record)
       report('sealOff', 'running')
-      const epoch = await io.rotate()
+      const epoch = await io.rotate(marker)
       record = { ...record, sealOff: epoch }
       await io.saveRecord(record)
       report('sealOff', 'done')
@@ -352,7 +393,7 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
     // The check ran before the run knew its boundary (a rotation that landed unrecorded, found
     // only now): what it chose may hold refs written at or after it. The next run checks below it.
     // A fresh run's own rotation comes after its check (dg `checked_before_boundary`).
-    if (record.sealOff !== (cutoff ?? null) && (resumed || cutoff !== undefined)) throw new MakePublicError(COPY.runAgain, 'E310')
+    if (record.sealOff !== (cutoff ?? null) && (resumed || cutoff !== undefined)) throw new MakePublicError(cutoff !== undefined ? COPY.markerChanged : COPY.runAgain, 'E310')
     stop()
     const sealOff = record.sealOff as number
     // a node a block behind may not show the rotation yet
@@ -371,6 +412,9 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
     stop()
     report('flip', 'running')
     // the second check can take minutes: the key is read again right before the point of no return
+    const flipMarker = await io.readSealOff()
+    if (flipMarker.kind === 'unknown') throw new MakePublicError(COPY.markerUnreadable, 'E310')
+    if (sealOffBoundary(record.sealOff, flipMarker) !== record.sealOff) throw new MakePublicError(COPY.markerChanged, 'E310')
     const atFlip = (await io.keys()).currentEpoch
     if (atFlip !== sealOff) throw epochMismatch(atFlip, sealOff, mode)
     if (!(await io.canFlip())) throw new MakePublicError(COPY.frozen, 'E103')
@@ -405,7 +449,9 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   let finished = true
   if (mode === 'everything') {
     // the run's cutoff: never at or above this run's own seal-off epoch, even if a rotation slipped in before the flip
-    const sealOff = cutoffOf((await io.readConversion())?.sealOffEpoch, record.sealOff) ?? 0
+    const historyMarker = await io.readSealOff()
+    if (historyMarker.kind === 'unknown') throw new MakePublicError(COPY.markerUnreadable, 'E310')
+    const sealOff = cutoffOf((await io.readConversion())?.sealOffEpoch, sealOffBoundary(record.sealOff, historyMarker), record.sealOff) ?? 0
     const recordedNow = await io.ownerBundles()
     const bundles = await io.historyBundles(sealOff)
     try {
@@ -554,9 +600,12 @@ export function sdkMakePublicIo(c: PrivateWriteContext, opts: { readonly upload?
           ...(opts.onCheck !== undefined ? { onProgress: opts.onCheck } : {}),
         }),
       ),
-    rotate: async () => {
+    readSealOff: () => fresh((s) => readSessionSealOff(s, decodeIdentifier(repo.ownerId))),
+    preflightSealOff: (marker) => preflightSealOff({ ...c, repo: priv }, marker),
+    ensureSealOff: (marker) => ensureSealOffMarker({ ...c, repo: priv }, marker, intentOf(repo.repoId, 'seal-off')),
+    rotate: async (marker) => {
       try {
-        return await rotateRepoKey({ ...c, repo: priv }, [], intentOf(repo.repoId, 'seal-off'))
+        return await rotateRepoKey({ ...c, repo: priv }, [], intentOf(repo.repoId, 'seal-off'), undefined, [], undefined, false, marker)
       } finally {
         invalidatePrivateSession(repo)
       }

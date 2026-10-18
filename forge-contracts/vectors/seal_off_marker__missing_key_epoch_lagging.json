@@ -1,0 +1,30 @@
+{
+  "name": "missing_key_epoch_lagging",
+  "description": "missing key epoch lagging",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": null,
+    "active": {
+      "kind": "active",
+      "epoch": 2,
+      "height": 20,
+      "marker": {
+        "mode": "codeOnly",
+        "conversionId": "0123456789abcdeffedcba9876543210",
+        "boundaryEpoch": 2,
+        "startedAtMs": "1720000000123"
+      },
+      "highestEpoch": 2,
+      "replacesThrough": null
+    },
+    "current": null,
+    "flipped": false,
+    "stated": null
+  },
+  "expected": {
+    "kind": "lagging",
+    "epoch": 2
+  }
+}

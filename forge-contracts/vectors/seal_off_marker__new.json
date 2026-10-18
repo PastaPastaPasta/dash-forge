@@ -1,0 +1,19 @@
+{
+  "name": "new",
+  "description": "new",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": null,
+    "active": {
+      "kind": "none"
+    },
+    "current": 2,
+    "flipped": false,
+    "stated": null
+  },
+  "expected": {
+    "kind": "new"
+  }
+}

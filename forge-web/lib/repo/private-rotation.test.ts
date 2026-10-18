@@ -34,6 +34,7 @@ const failNext: Record<string, number> = {}
 const hidden = new Set<string>()
 let height = 1000
 let seq = 0
+let onSleep: (() => void) | null = null
 
 const id = (b: number): Uint8Array => new Uint8Array(32).fill(b)
 const b58 = (u: Uint8Array): string => base58Encode(u)
@@ -111,7 +112,7 @@ vi.mock('../sdk/write', async (orig) => {
   }
 })
 
-vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: async () => undefined }))
+vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: async () => { onSleep?.() } }))
 // A three-contract set's repoKey has no `mr` (mainnet L4): wraps carry none.
 vi.mock('./contract-shape', () => ({ contractHasProperty: async () => false }))
 
@@ -263,6 +264,7 @@ const K0 = Uint8Array.from({ length: 32 }, (_, i) => i)
 beforeEach(async () => {
   for (const k of Object.keys(chain)) delete chain[k]
   signed.clear()
+  onSleep = null
   hidden.clear()
   for (const k of Object.keys(unconfirm)) delete unconfirm[k]
   for (const k of Object.keys(failNext)) delete failNext[k]
@@ -288,7 +290,7 @@ beforeEach(async () => {
   for (const m of [ALICE, BOB, CAROL]) wrap(ALICE, m, 0, K0)
 })
 
-const { MembersUnsettledError, addPrivateMember, planRepair, precheckAdd, rotateRepoKey, removePrivateMember, runRepair } = await import('./private-members')
+const { MembersUnsettledError, ensureSealOffMarker, addPrivateMember, planRepair, precheckAdd, rotateRepoKey, removePrivateMember, runRepair } = await import('./private-members')
 const { loadPrivateSession, sdkSessionSource, sessionUnwrapper } = await import('./private-session')
 
 const ctx = { sdk, auth, repo: REPO_REF, network: 'devnet' as const, ops }
@@ -885,5 +887,51 @@ describe('a rotation from a browser holding an older key', () => {
     newerKey.add(b58(ALICE))
     await expect(removePrivateMember(ctx, b58(CAROL), 'writer', 'rm-old')).rejects.toThrow(/current key is 5/)
     expect(members.some((m) => m.identity === b58(CAROL))).toBe(true)
+  })
+})
+
+describe('seal-off follow-up confirmation', () => {
+  const marker = { mode: 'codeOnly' as const, conversionId: new Uint8Array(16).fill(1), boundaryEpoch: 1, startedAtMs: 1n, replacesEpoch: 0 }
+  it('confirms a lost seal-off under the winning key without a membership-removal repair', async () => {
+    members.push({ identity: b58(BOB), role: 'maintainer', createdAt: 5 })
+    const raw = new Uint8Array(32).fill(0x42)
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    hidden.add(String(chain['config']!.at(-1)!['$id']))
+    hidden.add(wrap(BOB, ALICE, 1, raw))
+    const steps: string[] = []
+    const run = rotateRepoKey(ctx, [], 'seal-off-race', (step) => {
+      steps.push(step.kind)
+      if (step.kind === 'waiting') hidden.clear()
+    }, [], undefined, false, marker)
+    await expect(run).resolves.toBe(1)
+    const { sessionConfirmsSealOff } = await import('./private-session')
+    expect(await sessionConfirmsSealOff(await aliceSession(), ALICE, marker)).toBe(true)
+    expect(steps).not.toContain('lost')
+    expect(steps).not.toContain('anchored')
+    expect(chain['config']!.every((config) => Number(config['epoch']) <= 1)).toBe(true)
+  })
+  it.each([true, false])('waits for lagging wraps (anchor also lagging: %s) before confirming under the winning key', async (anchorLagging) => {
+    const raw = new Uint8Array(32).fill(0x42)
+    await anchor(ALICE, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(ALICE, ALICE, 1, raw)
+    if (anchorLagging) hidden.add(String(chain['config']!.at(-1)!['$id']))
+    hidden.add(String(chain['repoKey']!.at(-1)!['$id']))
+    let waited = false
+    onSleep = () => { waited = true; hidden.clear() }
+    await expect(ensureSealOffMarker(ctx, marker, 'confirm-lag')).resolves.toBeUndefined()
+    expect(waited).toBe(true)
+    const { sessionConfirmsSealOff } = await import('./private-session')
+    expect(await sessionConfirmsSealOff(await aliceSession(), ALICE, marker)).toBe(true)
+  })
+  it('reports persistent node lag without requesting key repair', async () => {
+    await expect(ensureSealOffMarker(ctx, marker, 'confirm-still-lagging')).rejects.toThrow(/not visible yet/)
+  })
+  it('dry-seals marked settings before posting a winning-key follow-up', async () => {
+    const raw = new Uint8Array(32).fill(0x42)
+    await anchor(ALICE, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'b'.repeat(255), protectedPatterns: [...Array<string>(7).fill('a'.repeat(100)), '𐀀'.repeat(93)+'é'+'a'.repeat(6)], prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(ALICE, ALICE, 1, raw)
+    const before = chain['config']!.length
+    await expect(ensureSealOffMarker(ctx, marker, 'confirm-size')).rejects.toThrow(/Shorten the protected patterns/)
+    expect(chain['config']).toHaveLength(before)
   })
 })

@@ -1,0 +1,12 @@
+{
+  "name": "tag_skipped_in_issue",
+  "description": "tag skipped in issue",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "issue"
+  },
+  "expected": {
+    "title": "Title"
+  }
+}

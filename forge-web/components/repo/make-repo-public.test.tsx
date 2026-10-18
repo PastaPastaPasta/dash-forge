@@ -45,7 +45,7 @@ const readMakePublicStatus = vi.fn()
 vi.mock('@/lib/repo/make-public-status', () => ({ readMakePublicStatus: (...a: unknown[]) => readMakePublicStatus(...a) }))
 
 import { EncryptionKeyLockedError, VaultLockedError } from '@/lib/auth/vault'
-import { COPY } from '@/lib/repo/make-public'
+import { COPY, MakePublicError } from '@/lib/repo/make-public'
 import { MakeRepoPublic } from './make-repo-public'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -729,3 +729,32 @@ describe('a run that stops says it in plain words (L6)', () => {
   })
 })
 
+
+it('qualifies the members-only notice after a passed boundary and warns after replacement', async () => {
+  readMakePublicStatus.mockResolvedValue(aStatus({ sealOffPassed: true, sealOffMarker: {
+    kind: 'active', epoch: 3, highestEpoch: 3, replacesThrough: 1, height: 30,
+    marker: { mode: 'codeOnly', boundaryEpoch: 3, conversionId: new Uint8Array(16), startedAtMs: 1n, replacesEpoch: 1 },
+  } }))
+  await renderRow()
+  expect(tid('make-public-interrupted')?.textContent).toContain('unless the owner starts the conversion over.')
+  expect(tid('make-public-interrupted')?.textContent).toContain('Earlier writing may now be published.')
+})
+
+it('offers Start again after a refused run and refreshed member session without reloading the page', async () => {
+  const pending = aStatus({ record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 }, sealOffPassed: false })
+  readMakePublicStatus.mockResolvedValue(pending)
+  runMakePublic.mockRejectedValue(new MakePublicError(COPY.sealOffPassed('codeOnly'), 'E310'))
+  await renderRow()
+  await click(tid('make-public-finish'))
+  expect(tid('make-public-progress')?.textContent).toContain(COPY.sealOffPassed('codeOnly'))
+  await click(tid('make-public-close'))
+  expect(onSaved).toHaveBeenCalledTimes(1)
+  // The parent's requested read finishes after the dialog's status reload, with a fresh session.
+  readMakePublicStatus.mockResolvedValue({ ...pending, sealOffPassed: true })
+  const h = home()
+  const freshHome = { ...h, repo: { ...h.repo, session: { id: 'fresh-after-refusal' } } } as unknown as RepoHome
+  act(() => root.render(<MakeRepoPublic home={freshHome} maintainer onSaved={onSaved} />))
+  await flush()
+  expect(tid('make-public-start-over')?.textContent).toBe('Start again…')
+  expect(tid('make-public-finish')).toBeNull()
+})

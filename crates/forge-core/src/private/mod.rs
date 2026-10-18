@@ -520,3 +520,6 @@ mod tests {
         assert!(p.epoch_key(0).is_err());
     }
 }
+
+#[cfg(test)]
+mod seal_off_conformance;

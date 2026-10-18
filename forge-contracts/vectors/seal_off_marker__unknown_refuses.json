@@ -1,0 +1,19 @@
+{
+  "name": "unknown_refuses",
+  "description": "unknown refuses",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": null,
+    "active": {
+      "kind": "unknown"
+    },
+    "current": 2,
+    "flipped": false,
+    "stated": null
+  },
+  "expected": {
+    "kind": "unknown"
+  }
+}
