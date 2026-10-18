@@ -68,7 +68,7 @@ export interface DialogProps {
   open: boolean
   onClose: () => void
   title: string
-  description?: string
+  description?: React.ReactNode
   children: ReactNode
   /** Footer actions row (right-aligned). */
   footer?: ReactNode

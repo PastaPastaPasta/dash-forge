@@ -16,6 +16,7 @@
  * confirm dialog; an unfollow confirms its refund the same way.
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 import Link from 'next/link'
 
@@ -261,6 +262,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
                 </span>
               ) : null}
             </Button>
+            {identity !== null && follow.on !== null ? <FiatNote dash={Math.abs(following ? unfollowRefund.dash : followCost.dash)} kind={!following && !firstWriteRead(first) ? 'bound' : 'estimate'} /> : null}
             {follow.error ? (
               <span role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{follow.error}</span>
             ) : null}

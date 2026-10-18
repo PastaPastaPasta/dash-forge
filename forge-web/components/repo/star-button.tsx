@@ -16,6 +16,7 @@
  * price is the star plus a beat, which the C1 fee gate keeps it under, shown as an upper bound.
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 import { Star } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -124,8 +125,11 @@ export function StarButton({
       </Button>
       {/* The price in view before the one-click write (D-098, style guide rule 2), as Follow shows it. */}
       {signedIn && star.on !== null ? (
-        <span className="hidden font-mono text-[11px] text-anvil-500 dark:text-anvil-400 sm:inline" data-testid="star-cost" aria-hidden>
-          {starred ? refundLabel('unstar', refund.credits) : `${priceLabel(cost.credits, upperBound)} DASH`}
+        <span className="hidden text-[11px] sm:inline">
+          <span className="font-mono text-anvil-500 dark:text-anvil-400" data-testid="star-cost" aria-hidden>
+            {starred ? refundLabel('unstar', refund.credits) : `${priceLabel(cost.credits, upperBound)} DASH`}
+          </span>
+          <FiatNote dash={Math.abs(starred ? refund.dash : cost.dash)} kind={!starred && upperBound ? 'bound' : 'estimate'} />
         </span>
       ) : null}
     </span>

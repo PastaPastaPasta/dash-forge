@@ -8,7 +8,6 @@
 
 // `../sdk/cost` has no imports: the merge worker loads this module and must not pull the SDK in.
 import { creditsToDash } from '../sdk/cost'
-import type { Network } from '../constants'
 
 /** Abbreviate an OID / hash to a struck-metal serial (default 7 chars, git convention). */
 export function shortOid(oid: string, chars = 7): string {
@@ -27,36 +26,6 @@ export function formatDash(dash: number): string {
 /** Format a credit amount as DASH (display). */
 export function creditsAsDash(credits: number): string {
   return formatDash(creditsToDash(credits))
-}
-
-/** Rough USD estimate from DASH (indicative secondary display only; mainnet only). */
-const USD_PER_DASH = 30
-
-/**
- * Secondary USD estimate string, e.g. `$0.01`, or null off mainnet: devnet and testnet DASH
- * is free test money, and a dollar figure beside it misleads (QW-046).
- */
-export function dashToUsd(dash: number, network: Network): string | null {
-  if (network !== 'mainnet') return null
-  const usd = dash * USD_PER_DASH
-  if (usd === 0) return '$0.00'
-  if (usd < 0.01) return '<$0.01'
-  return `$${usd.toFixed(2)}`
-}
-
-/**
- * A mainnet price in whole cents at the same indicative rate, for copy that quotes what a write
- * would cost there (the landing page): `4¢`. Never under 1¢.
- */
-export function mainnetCents(dash: number): string {
-  // toFixed first: 0.0055 DASH is 16.4999… cents in binary floating point, and reads as 17¢.
-  return `${Math.max(1, Math.round(Number((dash * USD_PER_DASH * 100).toFixed(6))))}¢`
-}
-
-/** What sits beside a balance: its USD estimate on mainnet, else that test DASH has no value. */
-export function dashValueNote(dash: number, network: Network): string {
-  const usd = dashToUsd(dash, network)
-  return usd === null ? 'test DASH, no cash value' : `≈ ${usd}`
 }
 
 /**

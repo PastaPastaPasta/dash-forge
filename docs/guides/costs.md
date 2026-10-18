@@ -297,3 +297,15 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 - **Limited keys cap spending.** A browser key can spend at most its budget (0.05 DASH by default), and a CI runner key its own (0.5 DASH). Platform enforces the budget at consensus, whatever the software does. See [Identity and keys](identity-and-keys.md#limited-keys).
 - **The Mirror Action** has a per-run `cost-cap` (0.05 DASH by default) and reports what each run spent in the job summary.
 - **`dg cost audit`** totals what an identity has spent on Forge, from proved document counts (not a local ledger — see [above](#what-each-action-costs)); `--since` narrows the window, `--json` for scripting.
+
+
+## Prices in the web app
+
+**Settings → Prices** chooses the currency shown beside DASH costs and can turn prices off.
+Rates come from [CTX](https://ctx.com/) (`rates.ctx.com`), with [CoinGecko](https://www.coingecko.com/)
+(`api.coingecko.com`) as a fallback.
+The app caches rates for 10 minutes and can use them for up to 24 hours while offline; without
+an available rate it shows DASH alone. Providers see your IP address, standard browser headers
+and that the request comes from this site. Turning prices off stops rate requests. On test
+networks, costs say “on mainnet”; free test balances have no cash value and get no fiat figure.
+Settings → Spend values use today's price, rather than the price when the write happened.

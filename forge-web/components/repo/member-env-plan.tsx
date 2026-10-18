@@ -13,6 +13,8 @@
  * refused before anything is signed: the change would leave them saved for the wrong people.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useMemo, useState, type ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 
@@ -209,7 +211,7 @@ export function MemberEnvPlanView({ flow }: { flow: MemberEnvFlow }): JSX.Elemen
         const who = name(plan.change.member)
         return (
           <div className="space-y-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="member-env-plan">
-            {headline !== null ? <p data-testid="member-env-headline">{headline}</p> : null}
+            {headline !== null ? <p data-testid="member-env-headline">{headline}<FiatNote dash={creditsToDash(plan.credits)} /></p> : null}
             {pins.length > 0 ? (
               <ul className="list-disc space-y-1 pl-5 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="member-env-pins">
                 {pins.map((p, i) => (
@@ -228,7 +230,7 @@ export function MemberEnvPlanView({ flow }: { flow: MemberEnvFlow }): JSX.Elemen
               <ul className="list-disc space-y-1 pl-5 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="member-branch-letters">
                 {branches.map((b) => (
                   <li key={b.name}>
-                    {branchLine(b, name)}
+                    {branchLine(b, name)}<FiatNote dash={creditsToDash(b.credits)} />
                     {branchNoKeyLines(b, name).map((l) => (
                       <span key={l} className="block text-caution-700 dark:text-caution-400">
                         {l}

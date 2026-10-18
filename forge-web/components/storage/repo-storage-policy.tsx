@@ -7,6 +7,7 @@
  * (the CLI keeps its equivalent in git config, `dash.storage`).
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 import Link from 'next/link'
 import { HardDrive } from 'lucide-react'
@@ -59,7 +60,7 @@ export function RepoStoragePolicy({
   if (config.profiles.length === 0) {
     return (
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        No storage set up in this browser: browser pushes here would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB, asking first.{' '}
+        No storage set up in this browser: browser pushes here would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB<FiatNote dash={PUSH_COST_DASH.perMib} />, asking first.{' '}
         <Link href="/settings/storage/" className="hit-area text-forge-700 underline dark:text-forge-400">Set up storage →</Link>
       </p>
     )

@@ -1,13 +1,12 @@
 /**
- * The cost comparison card of the storage wizard (`ux-dx-spec.md` §3.1 step 5), always
- * visible: what a repo costs with its packs in your bucket versus on Platform. Platform fees
- * are the measured per-push manifest + ref costs; bucket prices are the providers' public
- * list prices, rounded, and say so.
+ * The cost comparison card of the storage wizard. Platform fees are measured per-push
+ * manifest + ref costs; bucket prices are the providers' public list prices, rounded.
  */
 
+import type { ReactNode } from 'react'
 import { CREDITS_PER_DASH, dashRange, estimateChunkCredits, PUSH_COST_DASH } from '@/lib/sdk/cost'
-import { dashToUsd, formatDash } from '@/lib/view/format'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { formatDash } from '@/lib/view/format'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 
 const MIB = 1024 * 1024
@@ -16,21 +15,14 @@ export function CostCard(): JSX.Element {
   const platform50 = estimateChunkCredits(50 * MIB) / CREDITS_PER_DASH
   const perMib = estimateChunkCredits(MIB) / CREDITS_PER_DASH
   const pushes = PUSH_COST_DASH.byo.max * 10
-  // USD only on mainnet (QW-046): test DASH has no price.
-  const usd = (dash: number): string => {
-    const v = dashToUsd(dash, ACTIVE_NETWORK.network)
-    return v === null ? '' : ` ≈ ${v}`
-  }
-  const rows: [string, string, string, string][] = [
-    ['Your R2 bucket', `manifest + refs ≈ ${dashRange(PUSH_COST_DASH.byo)} DASH / push`, '≈ $0.001', `≈ ${formatDash(pushes)} DASH${usd(pushes)} + $0.00`],
-    ['Your B2 / S3 bucket', 'same', '≈ $0.0003 / $0.001', `≈ ${formatDash(pushes)} DASH + < $0.01`],
-    ['Dash Platform', `${formatDash(perMib)} DASH / MiB, permanent`, '0', `≈ ${formatDash(platform50)} DASH${usd(platform50)} first upload, then ${formatDash(perMib)} DASH per pushed MiB`],
+  const rows: [string, ReactNode, string, ReactNode][] = [
+    ['Your R2 bucket', <>manifest + refs ≈ {dashRange(PUSH_COST_DASH.byo)} DASH / push<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} /></>, '≈ US$0.001', <>≈ {formatDash(pushes)} DASH<FiatNote dash={pushes} /> + US$0.00</>],
+    ['Your B2 / S3 bucket', 'same', '≈ US$0.0003 / US$0.001', <>≈ {formatDash(pushes)} DASH<FiatNote dash={pushes} /> + &lt; US$0.01</>],
+    ['Dash Platform', <>{formatDash(perMib)} DASH / MiB<FiatNote dash={perMib} />, permanent</>, '0', <>≈ {formatDash(platform50)} DASH<FiatNote dash={platform50} /> first upload, then {formatDash(perMib)} DASH per pushed MiB<FiatNote dash={perMib} /></>],
   ]
   return (
     <section aria-labelledby="cost-card-title" className="rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
-      <h2 id="cost-card-title" className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">
-        What it costs
-      </h2>
+      <h2 id="cost-card-title" className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">What it costs</h2>
       <ScrollRegion label="Cost table" className="overflow-x-auto">
         <table className="w-full min-w-[34rem] text-left text-[12px]">
           <thead className="text-anvil-500 dark:text-anvil-400">
@@ -54,7 +46,7 @@ export function CostCard(): JSX.Element {
         </table>
       </ScrollRegion>
       <p className="mt-2 text-[11px] text-anvil-500 dark:text-anvil-400">
-        Platform figures are estimates from measured fees; bucket prices are the providers’ list prices, rounded. USD is indicative.
+        Platform figures are estimates from measured fees; bucket prices are the providers’ list prices, rounded, in US dollars.
       </p>
     </section>
   )

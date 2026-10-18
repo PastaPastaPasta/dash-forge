@@ -8,6 +8,7 @@
  * Everything saved is sealed in the vault with this browser's key (`lib/storage/store.ts`).
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useId, useState } from 'react'
 import { Cloud, Database, HardDrive, Link2, Pencil, Server, Trash2, Waypoints } from 'lucide-react'
 import {
@@ -208,7 +209,7 @@ function AddProfile({
       <section className="space-y-3 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label="Dash Platform storage">
         <h3 className="text-prose">Dash Platform</h3>
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Your git data is stored on Platform: permanent, public and nothing to run. About {PUSH_COST_DASH.perMib} DASH per MiB, charged when you push and never refunded, because nobody can delete it. Every push shows its price first.
+          Your git data is stored on Platform: permanent, public and nothing to run. About {PUSH_COST_DASH.perMib} DASH per MiB<FiatNote dash={PUSH_COST_DASH.perMib} />, charged when you push and never refunded, because nobody can delete it. Every push shows its price first.
         </p>
         <div className="flex gap-2">
           <Button
@@ -318,7 +319,7 @@ function Profiles({ config, storable, save, onEdit }: { config: StorageConfig; s
       </h2>
       {config.profiles.length === 0 ? (
         <p className="rounded-lg border border-dashed border-anvil-300 px-4 py-5 text-center text-dense text-anvil-500 dark:border-anvil-700 dark:text-anvil-400">
-          No storage yet. Browser pushes (merges, forks) would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB, asking first.
+          No storage yet. Browser pushes (merges, forks) would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB<FiatNote dash={PUSH_COST_DASH.perMib} />, asking first.
         </p>
       ) : (
         <ul className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" data-testid="profile-list">

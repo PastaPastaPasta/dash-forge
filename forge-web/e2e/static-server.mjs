@@ -77,6 +77,15 @@ const server = http.createServer(async (req, res) => {
     'Cross-Origin-Embedder-Policy': 'credentialless',
     'Cross-Origin-Opener-Policy': 'same-origin',
   }
+  if (req.url?.split('?')[0] === '/__e2e/fiat-rates.json') {
+    res.writeHead(200, { 'content-type': MIME['.json'], 'cache-control': 'no-store', ...commonHeaders })
+    res.end(JSON.stringify([
+      { symbol: 'DASHUSD', baseCurrency: 'DASH', quoteCurrency: 'USD', price: '40.00' },
+      { symbol: 'DASHEUR', baseCurrency: 'DASH', quoteCurrency: 'EUR', price: '36.00' },
+      { symbol: 'BTCUSD', baseCurrency: 'BTC', quoteCurrency: 'USD', price: '60000.00' },
+    ]))
+    return
+  }
   let file = await resolve(req.url ?? '/')
   let status = 200
   if (!file) {

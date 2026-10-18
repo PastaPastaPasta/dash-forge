@@ -7,6 +7,7 @@
  * Off: every page load starts locked, and nothing is kept between them.
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
@@ -49,7 +50,7 @@ export function SecurityPanel(): JSX.Element {
             {pasted
               ? 'Not for a pasted key: it is held in this tab only and is gone after a reload. Import your identity file or recovery phrase to get a key this browser can keep.'
               : stay
-              ? `Reloads and new tabs stay signed in for up to ${KEPT_TTL_MS / HOUR_MS} hours, or until ${KEPT_IDLE_MS / HOUR_MS} idle hours pass. The key kept here can spend at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge. Private repos still ask you to unlock.`
+              ? <>Reloads and new tabs stay signed in for up to {KEPT_TTL_MS / HOUR_MS} hours, or until {KEPT_IDLE_MS / HOUR_MS} idle hours pass. The key kept here can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge. Private repos still ask you to unlock.</>
               : 'Off: each reload or new tab starts locked; unlock with your passkey or passphrase to write.'}
           </span>
         </span>

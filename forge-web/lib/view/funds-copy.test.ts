@@ -8,20 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { firstWriteRead, previewCreate, STEADY } from '../sdk/cost'
 import { repairRepo, spendKindLabel, summarize, type SpendRow } from '../spend'
-import { dashToUsd, dashValueNote, priceLabel, refundLabel } from './format'
-
-describe('USD only on mainnet (QW-046)', () => {
-  it('devnet and testnet DASH has no dollar figure', () => {
-    expect(dashToUsd(1, 'devnet')).toBeNull()
-    expect(dashToUsd(1, 'testnet')).toBeNull()
-    expect(dashValueNote(0.19, 'devnet')).toBe('test DASH, no cash value')
-  })
-
-  it('mainnet keeps its estimate', () => {
-    expect(dashToUsd(1, 'mainnet')).toBe('$30.00')
-    expect(dashValueNote(1, 'mainnet')).toBe('≈ $30.00')
-  })
-})
+import { priceLabel, refundLabel } from './format'
 
 describe('an upper-bound price says so (QW-043)', () => {
   it('"≤" until the first-write reads answer, "~" after', () => {

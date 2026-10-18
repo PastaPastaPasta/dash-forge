@@ -6,6 +6,7 @@
  * browser's storage is kept (TS-17).
  */
 
+import { KeyBudgetText } from '@/components/funds-summary'
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, HardDrive, KeyRound, LifeBuoy, Pencil, ShieldOff } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -25,7 +26,7 @@ import { keyKind } from '@/lib/auth/key-watch'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
 import { readLedger } from '@/lib/spend'
-import { creditsAsDash, formatDate } from '@/lib/view/format'
+import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
 export function DevicesKeys(): JSX.Element {
@@ -170,7 +171,7 @@ function KeyRowItem({
       {row.budgetTotal !== null || row.expiresAt !== null ? (
         <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
           {row.budgetTotal !== null
-            ? `${row.budgetLeft !== null ? creditsAsDash(Number(row.budgetLeft)) : '?'} of ${creditsAsDash(Number(row.budgetTotal))} DASH left`
+            ? <><KeyBudgetText remaining={row.budgetLeft} total={row.budgetTotal} /> left</>
             : 'No budget'}
           {' · '}
           {row.expiresAt !== null ? `${expired ? 'expired' : 'expires'} ${formatDate(row.expiresAt)}` : 'never expires'}

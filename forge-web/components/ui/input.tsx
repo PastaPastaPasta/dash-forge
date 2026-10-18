@@ -35,7 +35,7 @@ export function Field({
   children,
 }: {
   label: string
-  hint?: string
+  hint?: React.ReactNode
   htmlFor?: string
   children: React.ReactNode
 }): JSX.Element {

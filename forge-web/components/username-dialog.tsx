@@ -20,6 +20,8 @@
  * The caller mounts this only while it is open: closing drops what was typed or given.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { CheckCircle2, Copy, Loader2, XCircle } from 'lucide-react'
@@ -196,7 +198,7 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
               <CostPreview cost={COST} />
               {lowBalance ? (
                 <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="username-low-balance">
-                  Your balance ({creditsAsDash(Number(balance))} DASH) is below the {creditsAsDash(NAME_REGISTER_CREDITS)} DASH a registration may take. Top up first.
+                  Your balance ({creditsAsDash(Number(balance))} DASH<FiatNote dash={creditsToDash(Number(balance))} balance />) is below the {creditsAsDash(NAME_REGISTER_CREDITS)} DASH<FiatNote dash={creditsToDash(NAME_REGISTER_CREDITS)} kind="bound" /> a registration may take. Top up first.
                 </p>
               ) : null}
               <ErrorBox error={error} />
@@ -236,7 +238,7 @@ function NameStatus({
           <span className="font-mono font-medium">{check.label}.dash</span> is a contested name.
         </p>
         <p className="text-[12px] text-anvil-700 dark:text-anvil-200">
-          Names of 3–19 characters made only of letters, 0, 1 and “-” go to a masternode vote: {creditsAsDash(NAME_CONTEST_FUND_CREDITS)} DASH
+          Names of 3–19 characters made only of letters, 0, 1 and “-” go to a masternode vote: {creditsAsDash(NAME_CONTEST_FUND_CREDITS)} DASH<FiatNote dash={creditsToDash(NAME_CONTEST_FUND_CREDITS)} />
           to enter, two weeks on mainnet (90 minutes on test networks), and someone else can win it.
         </p>
         <p className="text-[12px] text-anvil-700 dark:text-anvil-200">

@@ -10,6 +10,7 @@
  * in, below `xl`, the jump box is a search button that opens that second row (QW2-073).
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { usePathname, useSearchParams } from '@/hooks/use-route'
@@ -31,7 +32,7 @@ import { cn, errorMessage } from '@/lib/utils'
 import type { DiscoveredRepo } from '@/lib/view/discovery'
 import { numberTargets, parseJump, resolveWord, wordTarget, type WordMatches } from '@/lib/view/jump'
 import { Author } from '@/components/author'
-import { balanceToDash, dashValueNote } from '@/lib/view/format'
+import { balanceToDash } from '@/lib/view/format'
 import { KeyFundsLine } from '@/components/funds-summary'
 import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
@@ -672,9 +673,9 @@ function AccountMenu({
             <div className="flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
               <Wallet className="h-3.5 w-3.5" aria-hidden /> Balance
             </div>
-            <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH</div>
+            <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH<FiatNote dash={creditsToDash(credits)} balance /></div>
             <div className="font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
-              {credits.toLocaleString()} credits · {dashValueNote(creditsToDash(credits), ACTIVE_NETWORK.network)}
+              {credits.toLocaleString()} credits{ACTIVE_NETWORK.network !== 'mainnet' ? ' · test DASH, no cash value' : null}
             </div>
             {/* The key's budget and expiry, which the pill only shows on hover (QW-048). */}
             <KeyFundsLine className="mt-1.5" />

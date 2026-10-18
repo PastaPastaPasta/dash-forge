@@ -10,6 +10,8 @@
  * repo created inside the window, on read), so the panel says so instead of offering the toggle.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 
 import { useStarShape } from '@/hooks/use-star-shape'
@@ -43,7 +45,7 @@ export function TrendingPrefPanel(): JSX.Element {
         Count my stars toward Trending
       </label>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Each new star adds about {creditsAsDash(beat.credits)} DASH so Trending can count it for a week. It isn&apos;t refunded, and stars on
+        Each new star adds about {creditsAsDash(beat.credits)} DASH<FiatNote dash={creditsToDash(beat.credits)} /> so Trending can count it for a week. It isn&apos;t refunded, and stars on
         your own repos never count.
       </p>
     </div>

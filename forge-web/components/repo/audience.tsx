@@ -19,6 +19,8 @@
  * people. Never "sealed", "lane" or "letter", nor any internal id.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import Link from 'next/link'
 import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock, Users } from 'lucide-react'
@@ -916,7 +918,7 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
     >
       {(holders === null ? [older] : [costLine, older]).map((p) => (
         <p key={p} className="text-dense text-anvil-700 dark:text-anvil-200" data-testid={p === costLine ? 'turn-on-cost' : undefined}>
-          {p}
+          {p}{p === costLine ? <FiatNote dash={creditsToDash(enableEstimate(holders ?? 1, bots))} /> : null}
         </p>
       ))}
     </ConfirmDialog>

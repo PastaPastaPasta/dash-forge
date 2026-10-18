@@ -7,6 +7,9 @@
  * linked at the end; the figures come from the same cost model the app quotes.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { PushCostText, PushStorageHint } from '@/components/ui/push-cost-text'
+import { FiatNote } from '@/components/ui/fiat-note'
 import Link from 'next/link'
 import { BookOpen, Compass, Coins, ExternalLink, KeyRound, Terminal, UserRound } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -17,7 +20,7 @@ import { TestNetworkNote } from '@/components/test-network-note'
 import { useAuth } from '@/contexts/auth-context'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
 import { DOCS } from '@/lib/docs-links'
-import { pushCostPhrase, pushStorageHint, typicalIssueCredits } from '@/lib/sdk'
+import { typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 
 function Section({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }): JSX.Element {
@@ -67,17 +70,17 @@ export default function GettingStartedPage(): JSX.Element {
         <Section icon={<Coins className="h-4 w-4 text-fg-muted" aria-hidden />} title="Writes cost a little; reading is free">
           <p>
             Every write (a repo, an issue, a comment, a push) is stored on Dash Platform for a small fee from your identity&apos;s{' '}
-            <strong>balance</strong>: about {creditsAsDash(typicalIssueCredits())} DASH for an issue, and {pushCostPhrase()}. You see the
+            <strong>balance</strong>: about {creditsAsDash(typicalIssueCredits())} DASH for an issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, and <PushCostText />. You see the
             price before you confirm.
           </p>
           <p>You add credits by sending DASH to your identity: a new identity is funded when it is made, and Settings → Top up adds more later.</p>
-          <p data-testid="start-push-storage">{pushStorageHint()}</p>
+          <p data-testid="start-push-storage"><PushStorageHint /></p>
           <TestNetworkNote />
         </Section>
 
         <Section icon={<KeyRound className="h-4 w-4 text-fg-muted" aria-hidden />} title="Signing in gives this browser a limited key">
           <p>
-            Your master key is used once, to give this browser a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on
+            Your master key is used once, to give this browser a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on
             Forge, for {BROWSER_KEY_DEFAULTS.days} days by default (up to a year).
           </p>
           <p>A passkey or passphrase protects it. The master key and recovery phrase are never stored.</p>

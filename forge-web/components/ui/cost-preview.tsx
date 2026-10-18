@@ -1,13 +1,14 @@
 /**
  * Cost preview — signature element (style guide §A.2, `ux-dx-spec.md` §4 rule 1). Every
- * signing button shows its price before the click: DASH primary, USD secondary. A delete that
+ * signing button shows its price before the click: DASH primary, fiat secondary. A delete that
  * returns storage shows the refund in green.
  */
 
 import type { CostPreview as Cost } from '@/lib/sdk'
-import { dashToUsd, formatDash } from '@/lib/view'
+import { formatDash } from '@/lib/view/format'
+import { FiatNote } from './fiat-note'
+import { creditsToDash } from '@/lib/sdk/cost'
 import { creditsAsDash } from '@/lib/view/format'
-import { ACTIVE_NETWORK } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 export function CostPreview({
@@ -24,7 +25,6 @@ export function CostPreview({
   const dash = Math.abs(cost.dash)
   // An edit's charge ranges far below its bound: show the range Settings → Spend records (QW3-037).
   const min = !isRefund && cost.minCredits !== undefined && cost.minCredits < cost.credits ? cost.minCredits : null
-  const usd = dashToUsd(dash, ACTIVE_NETWORK.network)
   return (
     <div
       data-testid="cost-preview"
@@ -46,7 +46,7 @@ export function CostPreview({
         {formatDash(dash)} DASH
       </span>
       {isRefund ? <span className="text-anvil-500 dark:text-anvil-400">if deleted soon; less as it ages</span> : null}
-      {usd !== null ? <span className="font-mono text-anvil-500 dark:text-anvil-400">≈ {usd}</span> : null}
+      <FiatNote dash={dash} range={min !== null ? creditsToDash(min) : undefined} variant="bare" />
     </div>
   )
 }

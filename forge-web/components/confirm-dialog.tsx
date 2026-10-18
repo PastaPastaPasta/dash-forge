@@ -14,6 +14,8 @@
  * write Platform has shown; an unconfirmed one says so and keeps the dialog open.
  */
 
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useEffect, useState, type ReactNode } from 'react'
 import { newIntent, type CostPreview as Cost } from '@/lib/sdk'
 import { useAuth } from '@/contexts/auth-context'
@@ -149,8 +151,8 @@ export function ConfirmDialog({
         {!check.ok ? (
           <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
             {check.blocker === 'key-budget'
-              ? `This browser's key has ${creditsAsDash(Number(keyLimits?.remaining ?? 0n))} DASH of budget left; Platform needs ${creditsAsDash(cost?.admit.budget ?? 0)} DASH available to accept this write (it then charges about ${creditsAsDash(cost?.credits ?? 0)}). Top up or renew the key to continue.`
-              : `Not enough credits: Platform needs ${creditsAsDash(cost?.admit.balance ?? 0)} DASH available to accept this write, ${creditsAsDash(Number(check.shortfall))} DASH more than your balance.`}
+              ? <>This browser&apos;s key has {creditsAsDash(Number(keyLimits?.remaining ?? 0n))} DASH of budget left<FiatNote dash={creditsToDash(Number(keyLimits?.remaining ?? 0n))} kind="bound" />; Platform needs {creditsAsDash(cost?.admit.budget ?? 0)} DASH<FiatNote dash={creditsToDash(cost?.admit.budget ?? 0)} /> available to accept this write (it then charges about {creditsAsDash(cost?.credits ?? 0)}<FiatNote dash={creditsToDash(cost?.credits ?? 0)} />). Top up or renew the key to continue.</>
+              : <>Not enough credits: Platform needs {creditsAsDash(cost?.admit.balance ?? 0)} DASH<FiatNote dash={creditsToDash(cost?.admit.balance ?? 0)} /> available to accept this write, {creditsAsDash(Number(check.shortfall))} DASH<FiatNote dash={creditsToDash(Number(check.shortfall))} /> more than your balance.</>}
           </div>
         ) : null}
 

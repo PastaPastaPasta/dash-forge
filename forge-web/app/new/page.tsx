@@ -21,6 +21,7 @@
  * On a network without forge-v2 the page shows "not deployed".
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Check, Globe, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
@@ -59,7 +60,7 @@ import {
 import { createEpochZero, enableMembersContent } from '@/lib/repo/private-members'
 import { aboutDash, enableEstimate, SET_UP_KEY } from '@/lib/view/audience'
 import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
-import { previewCredits, sumPreviews } from '@/lib/sdk/cost'
+import { creditsToDash, previewCredits, sumPreviews } from '@/lib/sdk/cost'
 import { encryptionOps } from '@/lib/auth/encryption-key'
 import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { useAsync } from '@/hooks/use-async'
@@ -387,7 +388,7 @@ export default function NewRepoPage(): JSX.Element {
               />
               <div className="min-w-0">
                 <label htmlFor="repo-members-only" className="text-dense font-medium">
-                  Turn on members-only content now <span className="font-normal text-anvil-500 dark:text-anvil-400">(about {aboutDash(MEMBERS_ONLY_CREDITS)})</span>
+                  Turn on members-only content now <span className="font-normal text-anvil-500 dark:text-anvil-400">(about {aboutDash(MEMBERS_ONLY_CREDITS)}<FiatNote dash={creditsToDash(MEMBERS_ONLY_CREDITS)} />)</span>
                 </label>
                 <p id="repo-members-only-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
                   {keyMissing ? (

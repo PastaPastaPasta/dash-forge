@@ -16,6 +16,7 @@
  *   diff no longer shows, collapse under "n comments on an older version".
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { longEditBlock } from '@/components/repo/long-body'
 import { MakeOthersPublicButton, MakePublicButton, bundleable } from '@/components/repo/make-public'
 import { EditedAfterPublicNote, MadePublicBy, PublicEditHint } from '@/components/repo/made-public'
@@ -483,9 +484,12 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
           </Button>
         )}
         {actions?.canResolve && !replying ? (
-          <Button size="sm" variant="outline" onClick={() => actions.onResolve(thread.root.id, !resolved)} title="≈ 0.0005 DASH (one event)">
-            {resolved ? 'Unresolve conversation' : 'Resolve conversation'}
-          </Button>
+          <>
+            <Button size="sm" variant="outline" onClick={() => actions.onResolve(thread.root.id, !resolved)} title="≈ 0.0005 DASH (one event)">
+              {resolved ? 'Unresolve conversation' : 'Resolve conversation'}
+            </Button>
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">~0.0005 DASH<FiatNote dash={0.0005} /></span>
+          </>
         ) : null}
         {resolved ? (
           <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>

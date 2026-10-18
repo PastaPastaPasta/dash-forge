@@ -5,6 +5,8 @@
  * Appearance and the IPFS gateways are this browser's own, so they show signed out too.
  */
 
+import { PricesPanel } from '@/components/prices-panel'
+import { FiatNote } from '@/components/ui/fiat-note'
 import Link from 'next/link'
 import { Lock, Wallet } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
@@ -27,7 +29,7 @@ import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
 import { AppearancePanel } from '@/components/appearance-panel'
 import { TrendingPrefPanel } from '@/components/trending-pref-panel'
 import { creditsToDash } from '@/lib/sdk'
-import { balanceToDash, dashValueNote } from '@/lib/view/format'
+import { balanceToDash } from '@/lib/view/format'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NOTIFY_URL } from '@/lib/notify/config'
 
@@ -64,6 +66,13 @@ export default function SettingsPage(): JSX.Element {
     </section>
   )
 
+  const prices = (
+    <section aria-labelledby="prices-title" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+      <h2 id="prices-title" className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Prices</h2>
+      <PricesPanel />
+    </section>
+  )
+
   if (!identity) {
     return (
       <AppShell>
@@ -80,6 +89,8 @@ export default function SettingsPage(): JSX.Element {
             action={<SignInButton />}
           />
           {appearance}
+
+        {prices}
           {gateways}
           {quorumService}
         </div>
@@ -119,9 +130,9 @@ export default function SettingsPage(): JSX.Element {
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Balance</h2>
-          <div className="font-mono text-2xl text-dash-600 dark:text-dash-400">{balanceToDash(balance ?? '0')} DASH</div>
+          <div className="font-mono text-2xl text-dash-600 dark:text-dash-400">{balanceToDash(balance ?? '0')} DASH<FiatNote dash={creditsToDash(credits)} balance /></div>
           <div className="mt-1 font-mono text-dense text-anvil-500 dark:text-anvil-400">
-            {credits.toLocaleString()} credits · {dashValueNote(creditsToDash(credits), ACTIVE_NETWORK.network)}
+            {credits.toLocaleString()} credits{ACTIVE_NETWORK.network !== 'mainnet' ? ' · test DASH, no cash value' : null}
           </div>
           <button type="button" onClick={() => openTopUp()} className="hit-area mt-3 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Top up →
@@ -159,6 +170,8 @@ export default function SettingsPage(): JSX.Element {
         </section>
 
         {appearance}
+
+        {prices}
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Stars</h2>

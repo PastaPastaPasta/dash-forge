@@ -14,6 +14,7 @@
  * dropped after use.
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { BuildIntegrityNotice } from '@/components/build-integrity-notice'
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, Trash2 } from 'lucide-react'
@@ -154,7 +155,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   const register = async (): Promise<void> => {
     const ok = await confirm({
       title: 'Register a new encryption key?',
-      body: `This adds an encryption key to your identity (${REGISTER_COST}): your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.`,
+      body: <>This adds an encryption key to your identity ({REGISTER_COST}<FiatNote dash={0.0005} />): your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.</>,
       confirmLabel: 'Register key',
       tone: 'primary',
     })
@@ -293,7 +294,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
               <Field
                 label="Recovery phrase (12 or 24 words)"
                 htmlFor="enc-phrase"
-                hint={`Derives the new key and your master key, which signs one identity update (${REGISTER_COST}, one master-key signature). Neither is stored. An existing encryption key is used instead, at no cost.`}
+                hint={<>Derives the new key and your master key, which signs one identity update ({REGISTER_COST}<FiatNote dash={0.0005} />, one master-key signature). Neither is stored. An existing encryption key is used instead, at no cost.</>}
               >
                 <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
               </Field>

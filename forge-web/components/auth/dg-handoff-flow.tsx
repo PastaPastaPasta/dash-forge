@@ -10,6 +10,7 @@
  * closes or once a reply was opened: a reply only opens in the tab that asked for it.
  */
 
+import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -165,7 +166,7 @@ export function DgHandoffFlow({ onDone, renew = false, target }: { readonly onDo
       {command && blocker === null ? <CopyBlock text={command} label="Copy the dg command" /> : null}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         {replace !== undefined ? `Key #${replace.keyId} is disabled in the same update. ` : ''}
-        The new key can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge. dg shows the cost and asks before it signs.
+        The new key can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge. dg shows the cost and asks before it signs.
       </p>
       <Field label="Paste the line dg printed" htmlFor="dg-reply" hint="It starts with dfkh1: and opens only in this tab.">
         {/* Uncontrolled: what it opens to is a key, and the field is cleared after use. */}
