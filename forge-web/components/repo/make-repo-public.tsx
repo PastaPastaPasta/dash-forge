@@ -94,6 +94,7 @@ import {
 } from '@/lib/view/make-repo-public'
 import { madePublic } from '@/components/repo/conversion-status'
 import { useMergeUpload } from '@/components/repo/merge-upload'
+import { PublicationEncryptionUnlock } from '@/components/repo/publication-encryption-unlock'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
@@ -768,6 +769,7 @@ function MakePublicDialog({
         {run.error !== null ? (
           <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2" data-testid="make-public-run-error">
             <p>{runErrorText(run.error)}</p>
+            {!locked ? <PublicationEncryptionUnlock error={run.error} then={() => void go(run.mode)} /> : null}
             <SecretAcks findings={findings} allowed={allowed} onAllow={allow} />
             <Button size="sm" variant="outline" disabled={unacked.length > 0 || locked || !uploadReady} onClick={() => void go(run.mode)} data-testid="make-public-retry">
               Try again
@@ -845,6 +847,7 @@ function MakePublicDialog({
         {checkError !== null ? (
           <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-check-error">
             <p>{runErrorText(checkError, CHECK_STOPPED)}</p>
+            {!locked ? <PublicationEncryptionUnlock error={checkError} then={recheck} /> : null}
             <Button size="sm" variant="outline" onClick={recheck} disabled={checking !== null} data-testid="make-public-recheck">
               Run the check again
             </Button>
@@ -874,9 +877,18 @@ function MakePublicDialog({
           />
         ) : null}
         {formError !== null ? (
-          <p role="alert" className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-run-error">
-            {runErrorText(formError)}
-          </p>
+          <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-run-error">
+            <p>{runErrorText(formError)}</p>
+            {!locked ? (
+              <PublicationEncryptionUnlock
+                error={formError}
+                then={() => {
+                  setFormError(null)
+                  recheck()
+                }}
+              />
+            ) : null}
+          </div>
         ) : null}
         {check !== null ? storageNote : null}
         {check !== null ? (

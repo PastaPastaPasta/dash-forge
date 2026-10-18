@@ -29,7 +29,7 @@ const storage: { upload: (() => Promise<unknown>) | null; error: string | null }
 vi.mock('@/components/repo/merge-upload', () => ({
   useMergeUpload: () => ({ upload: storage.upload, question: null, begin: () => undefined, storageNeedsUnlock: false, storageError: storage.error }),
 }))
-vi.mock('@/components/auth/unlock-more', () => ({ UnlockMore: () => <div data-testid="unlock" /> }))
+vi.mock('@/components/auth/unlock-more', () => ({ UnlockMore: ({ testId, then }: { testId: string; then?: () => void }) => <button data-testid={testId} onClick={then}>Unlock</button> }))
 vi.mock('@/lib/repo', () => ({ repoContractIds: () => [] }))
 const converted = { value: false }
 vi.mock('@/components/repo/conversion-status', () => ({ madePublic: () => converted.value }))
@@ -44,6 +44,7 @@ vi.mock('@/lib/repo/make-public-run', () => ({ runMakePublic: (...a: unknown[]) 
 const readMakePublicStatus = vi.fn()
 vi.mock('@/lib/repo/make-public-status', () => ({ readMakePublicStatus: (...a: unknown[]) => readMakePublicStatus(...a) }))
 
+import { VaultLockedError } from '@/lib/auth/vault'
 import { COPY } from '@/lib/repo/make-public'
 import { MakeRepoPublic } from './make-repo-public'
 
@@ -181,6 +182,26 @@ describe('the Danger zone row', () => {
 })
 
 describe('the dialog', () => {
+  it.each(['unlock to use your encryption key in this tab', 'unlock this browser to read private repos'])('offers an inline unlock for %s and checks again after unlocking', async (message) => {
+    makePublicCheck.mockRejectedValueOnce(new VaultLockedError(message)).mockResolvedValue(aCheck())
+    await renderRow()
+    await click(tid('make-public-open'))
+    expect(tid('make-public-check-error')?.textContent).toContain(message)
+    expect(makePublicCheck).toHaveBeenCalledTimes(1)
+    await click(tid('make-public-encryption-unlock'))
+    expect(makePublicCheck).toHaveBeenCalledTimes(2)
+    expect(tid('make-public-check-error')).toBeNull()
+    expect(tid('make-public-dialog')?.getAttribute('data-checked')).toBe('yes')
+  })
+
+  it.each([new VaultLockedError('no encryption key is stored in this browser'), new Error('unlock to use your encryption key in this tab')])('keeps an error that unlocking cannot fix as text', async (error) => {
+    makePublicCheck.mockRejectedValue(error)
+    await renderRow()
+    await click(tid('make-public-open'))
+    expect(tid('make-public-check-error')?.textContent).toContain(error.message)
+    expect(tid('make-public-encryption-unlock')).toBeNull()
+  })
+
   it('shows the check running, then nothing chosen: Make public waits for a mode and the exact words', async () => {
     let finish: (c: MakePublicCheck) => void = () => undefined
     makePublicCheck.mockImplementation((_c: unknown, o: { onProgress?: (w: string) => void }) => {
@@ -368,6 +389,19 @@ describe('the dialog', () => {
 })
 
 describe('Finish', () => {
+  it('unlocks a stopped resumed run and retries through its existing check', async () => {
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'made', converted: true, record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 }, doneCount: 3, steps: { sealOff: 'done', flip: 'done', history: 'skipped' } }))
+    runMakePublic.mockRejectedValueOnce(new VaultLockedError('unlock to use your encryption key in this tab')).mockResolvedValue({ finished: true, notPublished: [] })
+    await renderRow({ visibility: 'public' })
+    await click(tid('make-public-finish'))
+    expect(tid('make-public-encryption-unlock')).not.toBeNull()
+    await click(tid('make-public-encryption-unlock'))
+    expect(runMakePublic).toHaveBeenCalledTimes(2)
+    expect(runMakePublic.mock.calls[1]![1]).toMatchObject({ resume: true, confirmation: '', mode: 'codeOnly' })
+    expect(tid('make-public-done')).not.toBeNull()
+  })
+
   it('with this browser’s record: runs it again with resume, straight to the steps', async () => {
     converted.value = true
     readMakePublicStatus.mockResolvedValue(
@@ -587,6 +621,19 @@ describe('Everything after Code only (M5)', () => {
 })
 
 describe('a run that stops says it in plain words (L6)', () => {
+  it('unlocks and rechecks a run stopped before any writes without publishing automatically', async () => {
+    await openDialog(aCheck())
+    await click(tid('make-public-mode-codeOnly'))
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    runMakePublic.mockRejectedValueOnce(new VaultLockedError('unlock to use your encryption key in this tab'))
+    await click(confirmButton())
+    await click(tid('make-public-encryption-unlock'))
+    expect(makePublicCheck).toHaveBeenCalledTimes(2)
+    expect(runMakePublic).toHaveBeenCalledTimes(1)
+    expect(tid('make-public-run-error')).toBeNull()
+    expect(tid<HTMLInputElement>('make-public-words')?.value).toBe('make carol/ledger public')
+  })
+
   it('a rotation lost to another maintainer, and a raw error with internal words', async () => {
     await openDialog(aCheck())
     await click(tid('make-public-mode-codeOnly'))
