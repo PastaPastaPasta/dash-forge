@@ -1218,7 +1218,7 @@ fn refused(e: &reqwest::Error) -> bool {
 }
 
 /// The CID in a path-style gateway URL (`https://gw/ipfs/<cid>[/…]`), if any.
-fn gateway_cid(url: &str) -> Option<String> {
+pub(crate) fn gateway_cid(url: &str) -> Option<String> {
     let (_, after) = url.split_once("/ipfs/")?;
     let cid = after.split(['/', '?', '#']).next()?;
     (!cid.is_empty() && cid.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| cid.to_string())

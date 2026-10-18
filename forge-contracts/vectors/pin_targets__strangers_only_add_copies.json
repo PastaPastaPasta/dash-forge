@@ -1,0 +1,109 @@
+{
+  "name": "strangers_only_add_copies",
+  "description": "strangers only add copies",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "maint": "maintainer",
+      "reader": "reader",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "writer",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyA"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "2",
+        "owner": "stranger",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyB"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "3",
+        "owner": "stranger",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyJunk"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "4",
+        "owner": "reader",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyRead"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "5",
+        "owner": "bot",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyBot"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": []
+  },
+  "expected": {
+    "targets": [
+      {
+        "cid": "bafyA",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        }
+      },
+      {
+        "cid": "bafyB",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        }
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 3,
+    "needsConsent": false
+  }
+}

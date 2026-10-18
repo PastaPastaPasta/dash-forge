@@ -1,0 +1,74 @@
+{
+  "name": "members_keys_and_non_ipfs",
+  "description": "members keys and non ipfs",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "maint": "maintainer",
+      "reader": "reader",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "owner",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 64,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyPrivate"
+        ],
+        "createdAt": 1,
+        "readable": false,
+        "sensitive": true
+      },
+      {
+        "id": "2",
+        "owner": "writer",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kind": 64,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyShared"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": true
+      },
+      {
+        "id": "3",
+        "owner": "owner",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "kind": 11,
+        "size": 10,
+        "uris": [
+          "https://store.example/pack"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": []
+  },
+  "expected": {
+    "targets": [
+      {
+        "cid": "bafyShared",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 64
+        }
+      }
+    ],
+    "notOnIpfs": 1,
+    "membersOnlySkipped": 1,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": true
+  }
+}

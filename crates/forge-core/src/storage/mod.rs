@@ -25,6 +25,7 @@ pub mod copies;
 pub mod cors;
 pub mod egress;
 pub mod local;
+pub mod pin;
 pub mod policy;
 pub mod profiles;
 pub mod publish;

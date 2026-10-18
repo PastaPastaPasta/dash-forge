@@ -229,11 +229,85 @@ impl IpfsBackend {
     pub async fn is_pinned(&self, cid: &str) -> Result<bool> {
         let req = self.rpc(&format!("pin/ls?arg={cid}&type=recursive"))?;
         match self.rpc_text("pin/ls", req).await {
-            Ok(body) => Ok(body.contains(cid)),
+            Ok(body) => {
+                let value: serde_json::Value = serde_json::from_str(&body)?;
+                Ok(value
+                    .get("Keys")
+                    .and_then(|keys| keys.get(cid))
+                    .and_then(|pin| pin.get("Type"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("recursive"))
+            }
             // kubo answers 500 "not pinned" for an unpinned CID.
             Err(Error::Io(msg)) if msg.contains("not pinned") => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    /// Pin a CID fetched from the swarm, limiting the announced block count and elapsed time.
+    /// A failed attempt is unpinned before returning, including when the stream times out.
+    pub async fn pin_add_bounded(
+        &self,
+        cid: &str,
+        max_bytes: u64,
+        timeout: Duration,
+    ) -> Result<()> {
+        Self::cid_of(&Uri(format!("ipfs://{cid}")))?;
+        let result = tokio::time::timeout(timeout, self.pin_stream(cid, max_bytes)).await;
+        let result = result.unwrap_or_else(|_| Err(Error::Io("IPFS swarm pin timed out".into())));
+        if result.is_err() {
+            let _ = tokio::time::timeout(Duration::from_secs(10), self.unpin(cid)).await;
+        }
+        result
+    }
+
+    async fn pin_stream(&self, cid: &str, max_bytes: u64) -> Result<()> {
+        let mut response = self
+            .rpc("pin/add")?
+            .query(&[("arg", cid), ("progress", "true")])
+            .send()
+            .await
+            .map_err(|e| transport_err("kubo pin/add failed", &e))?;
+        if response.status() == StatusCode::FORBIDDEN {
+            return Err(Error::Io(
+                "this node's token does not allow pin/add — run `dg ipfs up` to refresh it".into(),
+            ));
+        }
+        if !response.status().is_success() {
+            return Err(Error::Io(format!(
+                "kubo pin/add failed with status {}",
+                response.status()
+            )));
+        }
+        let mut pending = Vec::new();
+        let mut done = false;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| transport_err("reading kubo pin/add response", &e))?
+        {
+            // Parse incrementally: an untrusted node must not grow a response without bound.
+            for byte in chunk {
+                if byte == b'\n' {
+                    done |= pin_progress(&pending, cid, max_bytes)?;
+                    pending.clear();
+                } else {
+                    if pending.len() >= 65_536 {
+                        return Err(Error::Io("kubo pin/add response line is too large".into()));
+                    }
+                    pending.push(byte);
+                }
+            }
+        }
+        if !pending.is_empty() {
+            done |= pin_progress(&pending, cid, max_bytes)?;
+        }
+        if !done {
+            return Err(Error::Io(
+                "kubo pin/add ended without confirming the pin".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Unpin `cid` (used by `dg storage test` to clean up its probe).
@@ -302,6 +376,29 @@ impl IpfsBackend {
         };
         client.wait_pinned(pending).await
     }
+}
+
+fn pin_progress(line: &[u8], cid: &str, max_bytes: u64) -> Result<bool> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Ok(false);
+    }
+    let value: serde_json::Value = serde_json::from_slice(line)?;
+    if value
+        .get("Progress")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|n| n.saturating_mul(262_144) > max_bytes)
+    {
+        return Err(Error::Io(
+            "IPFS swarm pin exceeded the recorded size limit".into(),
+        ));
+    }
+    if value.get("Message").is_some() || value.get("Error").is_some() {
+        return Err(Error::Io("kubo pin/add reported an error".into()));
+    }
+    Ok(value
+        .get("Pins")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|pins| pins.iter().any(|p| p.as_str() == Some(cid))))
 }
 
 /// A minimal IPFS Pinning Service API client (the subset a push needs).

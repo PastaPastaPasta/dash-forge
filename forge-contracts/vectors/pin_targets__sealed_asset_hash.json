@@ -1,0 +1,52 @@
+{
+  "name": "sealed_asset_hash",
+  "description": "sealed asset hash",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "maint": "maintainer",
+      "reader": "reader",
+      "bot": "bot"
+    },
+    "manifests": [],
+    "releases": [
+      {
+        "owner": "writer",
+        "tag": "private",
+        "assets": [
+          {
+            "name": "sealed",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 10,
+            "uris": [
+              "ipfs://bafySealed"
+            ],
+            "sealedSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "sealedSizeBytes": 80
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "targets": [
+      {
+        "cid": "bafySealed",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 80,
+        "what": {
+          "type": "releaseAsset",
+          "tag": "private",
+          "name": "sealed"
+        }
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": true
+  }
+}

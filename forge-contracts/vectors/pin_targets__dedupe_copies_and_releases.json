@@ -1,0 +1,90 @@
+{
+  "name": "dedupe_copies_and_releases",
+  "description": "dedupe copies and releases",
+  "case": "pin_targets",
+  "rules": "v2",
+  "input": {
+    "owner": "owner",
+    "roles": {
+      "writer": "writer",
+      "maint": "maintainer",
+      "reader": "reader",
+      "bot": "bot"
+    },
+    "manifests": [
+      {
+        "id": "1",
+        "owner": "owner",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyA"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      },
+      {
+        "id": "2",
+        "owner": "writer",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 0,
+        "size": 10,
+        "uris": [
+          "ipfs://bafyA"
+        ],
+        "createdAt": 1,
+        "readable": true,
+        "sensitive": false
+      }
+    ],
+    "releases": [
+      {
+        "owner": "owner",
+        "tag": "v1",
+        "assets": [
+          {
+            "name": "file",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 10,
+            "uris": [
+              "https://gateway.example/ipfs/bafyA"
+            ]
+          }
+        ]
+      },
+      {
+        "owner": "stranger",
+        "tag": "junk",
+        "assets": [
+          {
+            "name": "junk",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size": 999,
+            "uris": [
+              "ipfs://bafyJunk"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "targets": [
+      {
+        "cid": "bafyA",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 10,
+        "what": {
+          "type": "pack",
+          "kind": 0
+        }
+      }
+    ],
+    "notOnIpfs": 0,
+    "membersOnlySkipped": 0,
+    "strangerCopiesIgnored": 0,
+    "needsConsent": false
+  }
+}
