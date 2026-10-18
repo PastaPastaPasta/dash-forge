@@ -5,7 +5,7 @@ export type Rates = Partial<Record<Currency, number>>
 export type FiatSource = 'ctx' | 'coingecko'
 
 export const FIAT_PROVIDER_HOSTS = ['rates.ctx.com', 'api.coingecko.com'] as const
-export const CTX_URL = 'https://rates.ctx.com/rates?source=ctx'
+const CTX_URL = 'https://rates.ctx.com/rates?source=ctx'
 export const COINGECKO_URL = `https://api.coingecko.com/api/v3/simple/price?ids=dash&vs_currencies=${Object.keys(currencies).join(',').toLowerCase()}`
 
 export function isCurrency(value: unknown): value is Currency {

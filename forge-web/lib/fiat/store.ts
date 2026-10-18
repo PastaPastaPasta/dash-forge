@@ -9,7 +9,7 @@ export const TIMEOUT_MS = 5_000
 
 export interface FiatSettings { readonly enabled: boolean; readonly currency: Currency }
 export interface FiatRates { readonly v: 1; readonly source: FiatSource; readonly fetchedAt: number; readonly rates: Rates }
-export const SERVER_FIAT_SETTINGS: FiatSettings = { enabled: true, currency: 'USD' }
+const SERVER_FIAT_SETTINGS: FiatSettings = { enabled: true, currency: 'USD' }
 
 let settings = SERVER_FIAT_SETTINGS
 let rates: FiatRates | null = null
@@ -63,10 +63,12 @@ function applyRates(next: FiatRates | null): void {
   emitRates()
 }
 
+// A null key means storage was cleared, which changes both.
 function onStorage(event: StorageEvent): void {
-  if (event.key === FIAT_SETTINGS_KEY || event.key === null) applySettings(readSettings())
+  const settingsChanged = event.key === FIAT_SETTINGS_KEY || event.key === null
+  if (settingsChanged) applySettings(readSettings())
   if (event.key === FIAT_RATES_KEY || event.key === null) applyRates(readRates())
-  if (event.key === FIAT_SETTINGS_KEY || event.key === null) refresh()
+  if (settingsChanged) refresh()
 }
 
 function onVisibility(): void {

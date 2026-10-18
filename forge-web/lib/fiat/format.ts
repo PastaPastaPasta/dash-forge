@@ -34,7 +34,7 @@ export function fiatText(dash: number, opts: {
     const lowText = formatFiat(low, opts.currency)
     if (lowText === null) return null
     if (lowText === formatted) return fiatText(dash, { ...opts, range: undefined })
-    else if (low < unit) text = `≤ ${formatted}`
+    if (low < unit) text = `≤ ${formatted}`
     else text = `${kind === 'exact' ? '' : '≈ '}${lowText}–${formatted}`
   } else if (amount === 0) text = formatted
   else if (amount > 0 && amount < unit) text = `< ${formatFiat(unit, opts.currency)}`

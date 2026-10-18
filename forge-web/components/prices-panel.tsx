@@ -4,14 +4,25 @@ import { useFiat } from '@/hooks/use-fiat'
 import currencies from '@/lib/fiat/currencies.json'
 import { fiatText } from '@/lib/fiat/format'
 import { isCurrency } from '@/lib/fiat/providers'
-import { setFiatSettings } from '@/lib/fiat/store'
+import { setFiatSettings, type FiatRates } from '@/lib/fiat/store'
+
+// Age updates on render; prices deliberately have no interval timer.
+function ageText(fetchedAt: number): string {
+  const minutes = Math.max(0, Math.floor((Date.now() - fetchedAt) / 60_000))
+  if (minutes === 0) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  return `${Math.floor(minutes / 60)} h ago`
+}
+
+function provenanceText(enabled: boolean, price: string | null, rates: FiatRates | null): string {
+  if (!enabled) return 'Prices are off'
+  if (!price || !rates) return 'unavailable right now'
+  return `1 DASH ${price} · from ${rates.source === 'ctx' ? 'CTX' : 'CoinGecko'} · updated ${ageText(rates.fetchedAt)}`
+}
 
 export function PricesPanel(): JSX.Element {
   const { settings, rates, rate } = useFiat()
   const price = fiatText(1, { network: 'mainnet', rate, currency: settings.currency })
-  // Age updates on render; prices deliberately have no interval timer.
-  const minutes = rates ? Math.max(0, Math.floor((Date.now() - rates.fetchedAt) / 60_000)) : 0
-  const age = minutes === 0 ? 'just now' : minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} h ago`
   return (
     <div className="space-y-3 text-dense">
       <label className="flex items-center gap-2 coarse:min-h-11">
@@ -25,7 +36,7 @@ export function PricesPanel(): JSX.Element {
         </select>
       </label>
       <p data-testid="fiat-provenance" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        {!settings.enabled ? 'Prices are off' : price && rates ? `1 DASH ${price} · from ${rates.source === 'ctx' ? 'CTX' : 'CoinGecko'} · updated ${age}` : 'unavailable right now'}
+        {provenanceText(settings.enabled, price, rates)}
       </p>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Prices from <a href="https://ctx.com/" target="_blank" rel="noreferrer noopener" className="underline">CTX</a>, with CoinGecko as a fallback.{' '}

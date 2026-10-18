@@ -8,12 +8,10 @@ import {
 
 const noSubscribe = (): (() => void) => () => {}
 
-export function useFiatSettings() {
-  return useSyncExternalStore(subscribeFiatSettings, getFiatSettings, getServerFiatSettings)
-}
-
+/** `eligible` false keeps this note from subscribing, so it never triggers a rate fetch. */
 export function useFiat(eligible = true) {
-  const settings = useFiatSettings()
-  const rates = useSyncExternalStore(settings.enabled && eligible ? subscribeFiatRates : noSubscribe, getFiatRates, getServerFiatRates)
-  return { settings, rates, rate: settings.enabled && eligible ? rates?.rates[settings.currency] : undefined }
+  const settings = useSyncExternalStore(subscribeFiatSettings, getFiatSettings, getServerFiatSettings)
+  const active = settings.enabled && eligible
+  const rates = useSyncExternalStore(active ? subscribeFiatRates : noSubscribe, getFiatRates, getServerFiatRates)
+  return { settings, rates, rate: active ? rates?.rates[settings.currency] : undefined }
 }

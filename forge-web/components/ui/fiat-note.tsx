@@ -3,9 +3,8 @@
 import { useFiat } from '@/hooks/use-fiat'
 import { ACTIVE_NETWORK, type Network } from '@/lib/constants'
 import { fiatText, type FiatKind } from '@/lib/fiat/format'
-import { cn } from '@/lib/utils'
 
-export function FiatNote({ dash, range, kind = 'estimate', network = ACTIVE_NETWORK.network, balance = false, variant = 'note', prefix = '', className }: {
+export function FiatNote({ dash, range, kind = 'estimate', network = ACTIVE_NETWORK.network, balance = false, variant = 'note', prefix = '' }: {
   dash: number
   range?: number
   kind?: FiatKind
@@ -14,11 +13,10 @@ export function FiatNote({ dash, range, kind = 'estimate', network = ACTIVE_NETW
   balance?: boolean
   variant?: 'note' | 'bare'
   prefix?: string
-  className?: string
 }): JSX.Element | null {
-  const eligible = !balance || network === 'mainnet'
-  const { settings, rate } = useFiat(eligible)
-  const text = eligible ? fiatText(dash, { range, kind, network, rate, currency: settings.currency }) : null
+  // An ineligible note has no rate, so fiatText returns null for it.
+  const { settings, rate } = useFiat(!balance || network === 'mainnet')
+  const text = fiatText(dash, { range, kind, network, rate, currency: settings.currency })
   if (text === null) return null
-  return <span data-testid="fiat-note" className={cn('font-mono text-anvil-500 dark:text-anvil-400', className)}>{prefix}{variant === 'bare' ? text : ` (${text})`}</span>
+  return <span data-testid="fiat-note" className="font-mono text-anvil-500 dark:text-anvil-400">{prefix}{variant === 'bare' ? text : ` (${text})`}</span>
 }
