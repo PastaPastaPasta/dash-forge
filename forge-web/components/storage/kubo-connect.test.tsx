@@ -4,16 +4,21 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EMPTY_STORAGE_CONFIG, type StorageConfig } from '@/lib/storage'
 import { validatePairResponse } from '@/lib/storage/kubo-connect'
+import type { StorageConfigState } from '@/hooks/use-storage-config'
 
-const mocks = vi.hoisted(() => ({ save: vi.fn(), pair: vi.fn(), probe: vi.fn(), identity: 'me' as string | null, config: null as StorageConfig | null, locked: false }))
+const mocks = vi.hoisted(() => ({ save: vi.fn(), pair: vi.fn(), probe: vi.fn(), identity: 'me' as string | null, config: null as StorageConfig | null, locked: false, params: new URLSearchParams() }))
+vi.mock('next/navigation', () => ({ usePathname: () => '/settings/storage/', useSearchParams: () => mocks.params }))
 vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: mocks.config, storable: mocks.identity !== null, needsUnlock: mocks.locked, loading: false, error: null, save: mocks.save }) }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: mocks.identity }) }))
 vi.mock('@/components/sign-in-button', () => ({ SignInButton: () => <button>Sign in</button> }))
-vi.mock('@/components/auth/unlock-more', () => ({ UnlockMore: () => <button>Unlock</button> }))
+vi.mock('@/components/auth/unlock-more', () => ({ UnlockMore: ({ title }: { title: string }) => <button>{title}</button> }))
 vi.mock('@/lib/storage/kubo-connect', async (load) => ({ ...await load<object>(), pairWithNode: mocks.pair }))
 vi.mock('@/lib/storage/probe', async (load) => ({ ...await load<object>(), probeProfile: mocks.probe }))
 vi.mock('@/components/app-shell', () => ({ AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }))
-vi.mock('@/components/storage/storage-wizard', () => ({ StorageWizardView: () => <div>Storage wizard</div> }))
+vi.mock('@/components/storage/storage-wizard', async (load) => {
+  const actual = await load<typeof import('./storage-wizard')>()
+  return { ...actual, StorageWizardView: ({ storage }: { storage: StorageConfigState }) => storage.needsUnlock ? <actual.StorageWizardView storage={storage} /> : <div>Storage wizard</div> }
+})
 import StorageSettingsPage from '@/app/settings/storage/page'
 import { KuboConnect } from './kubo-connect'
 
@@ -21,14 +26,14 @@ import { KuboConnect } from './kubo-connect'
 let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
-  mocks.identity = 'me'; mocks.locked = false; mocks.config = EMPTY_STORAGE_CONFIG
+  mocks.identity = 'me'; mocks.locked = false; mocks.config = EMPTY_STORAGE_CONFIG; mocks.params = new URLSearchParams()
   mocks.save.mockReset().mockImplementation(async (next: StorageConfig) => { mocks.config = next })
   mocks.probe.mockReset().mockResolvedValue(true)
   mocks.pair.mockReset().mockResolvedValue(validatePairResponse({ name: 'kubo', api: 'http://127.0.0.1:5001', gateway: 'http://127.0.0.1:8080', auth: `Bearer ${'a'.repeat(43)}`, peerId: 'peer', version: '0.43.1' }))
-  vi.stubGlobal('location', { origin: 'https://forge.dashhq.org', pathname: '/settings/storage/' })
+  vi.stubGlobal('location', { origin: 'https://forge.dashhq.org', pathname: '/settings/storage/', search: '', hash: '' })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals() })
+afterEach(() => { act(() => root.unmount()); host.remove(); delete (window as Window & { __forgeKuboPair?: string }).__forgeKuboPair; vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const render = async (): Promise<void> => { await act(async () => root.render(<KuboConnect />)) }
 const click = async (label: string): Promise<void> => {
   const button = [...host.querySelectorAll('button')].find((b) => b.textContent === label)
@@ -44,7 +49,7 @@ describe('the kubo connection form', () => {
     ['https://ipfs.io', '/ipfs/bafy/settings/storage/', 'Open Forge from its own address'],
     ['https://ipfs.io', '/ipns/example/settings/storage/', 'Open Forge from its own address'],
   ])('shows setup for %s%s', async (origin, pathname, text) => {
-    vi.stubGlobal('location', { origin, pathname }); await render()
+    vi.stubGlobal('location', { origin, pathname, search: '', hash: '' }); await render()
     expect(host.textContent).toContain(text)
     if (pathname.startsWith('/ip')) expect(host.querySelector('pre')).toBeNull()
   })
@@ -61,6 +66,64 @@ describe('the kubo connection form', () => {
     await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
     expect(mocks.save.mock.calls.at(-1)![0].defaultPolicy).toBeNull()
     expect(mocks.save.mock.calls.at(-1)![0].profiles[0].name).toBe('kubo')
+  })
+  it('strips a same-document pairing link immediately and pairs only once', async () => {
+    await act(async () => root.render(<StorageSettingsPage />))
+    expect(host.querySelector('[aria-label="Connect an IPFS node"]')).toBeNull()
+    const state = { __NA: true, tree: 'keep' }
+    vi.spyOn(window.history, 'state', 'get').mockReturnValue(state)
+    const replace = vi.spyOn(window.history, 'replaceState').mockImplementation(() => { location.hash = '' })
+    location.search = '?keep=1'; location.hash = '#kubo=5001.7KQ2-M9XD-PF4C'
+    await act(async () => {
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+      expect(location.hash).toBe('')
+      expect(mocks.pair).toHaveBeenCalledWith({ port: 5001, code: '7KQ2-M9XD-PF4C' })
+    })
+    expect(replace).toHaveBeenCalledWith(state, '', '/settings/storage/?keep=1')
+    expect(host.textContent).toContain('Connect the IPFS node on this computer?')
+    await act(async () => window.dispatchEvent(new HashChangeEvent('hashchange')))
+    await act(async () => root.render(<StorageSettingsPage />))
+    expect(mocks.pair).toHaveBeenCalledOnce()
+    expect(mocks.probe).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled()
+  })
+  it('captures a Next client navigation that lands with a hash without hashchange', async () => {
+    await render()
+    vi.spyOn(window.history, 'replaceState').mockImplementation(() => { location.hash = '' })
+    location.hash = '#kubo=5001.7KQ2-M9XD-PF4C'
+    // Next publishes a new search-params object when its canonical URL changes, including hash.
+    mocks.params = new URLSearchParams()
+    await render()
+    expect(location.hash).toBe(''); expect(mocks.pair).toHaveBeenCalledOnce()
+    expect(host.textContent).toContain('Connect the IPFS node on this computer?')
+    expect(mocks.save).not.toHaveBeenCalled()
+  })
+  it('leaves unrelated hashes and pairing links on other paths alone', async () => {
+    await render()
+    const replace = vi.spyOn(window.history, 'replaceState')
+    for (const [pathname, hash] of [['/settings/storage/', '#help'], ['/repo/', '#kubo=5001.7KQ2-M9XD-PF4C'], ['/settings/storage/extra', '#kubo=5001.7KQ2-M9XD-PF4C']]) {
+      vi.stubGlobal('location', { origin: 'https://forge.dashhq.org', pathname, search: '', hash })
+      await act(async () => window.dispatchEvent(new HashChangeEvent('hashchange')))
+      expect(location.hash).toBe(hash)
+    }
+    expect(replace).not.toHaveBeenCalled(); expect(mocks.pair).not.toHaveBeenCalled()
+  })
+  it('consumes a stashed link only once even after remounting', async () => {
+    fragment(); await render()
+    await act(async () => root.render(<div />))
+    await render()
+    expect(mocks.pair).toHaveBeenCalledOnce()
+  })
+  it('keeps exactly one unlock panel on the paired, locked Storage page', async () => {
+    mocks.locked = true; mocks.config = null; fragment()
+    await act(async () => root.render(<StorageSettingsPage />))
+    expect(host.textContent).toContain('Connect the IPFS node on this computer?')
+    expect([...host.querySelectorAll('button')].filter((b) => b.textContent?.startsWith('Unlock'))).toHaveLength(1)
+    expect(host.textContent).toContain('Unlock this tab to set up or open your storage settings')
+    expect(host.textContent).not.toContain('Test and save')
+    expect(mocks.save).not.toHaveBeenCalled()
+    mocks.locked = false; mocks.config = EMPTY_STORAGE_CONFIG
+    await act(async () => root.render(<StorageSettingsPage />))
+    expect(host.textContent).toContain('Test and save')
   })
   it('does not save a failed probe, and Cancel forgets the payload', async () => {
     mocks.probe.mockResolvedValue(false); fragment(); await render(); await click('Test and save')
@@ -99,7 +162,7 @@ describe('the kubo connection form', () => {
   })
   it.each(['http://localhost:3000', 'http://127.0.0.1:3000', 'https://forge.dashhq.org'])('renders the Safari notice only when needed on %s', async (origin) => {
     vi.stubGlobal('navigator', { userAgent: 'Version/18.0 Safari/605.1' })
-    vi.stubGlobal('location', { origin, pathname: '/settings/storage/' }); await render()
+    vi.stubGlobal('location', { origin, pathname: '/settings/storage/', search: '', hash: '' }); await render()
     expect(host.textContent?.includes("Safari can't reach")).toBe(origin.startsWith('https:'))
   })
   it('leaves an existing storage policy unchanged and the checkbox unchecked', async () => {

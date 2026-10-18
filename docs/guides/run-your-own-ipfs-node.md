@@ -112,7 +112,7 @@ Everything is under one directory, `$XDG_DATA_HOME/dash-forge/ipfs`. If `XDG_DAT
 
 Pairing means the web app learns your node's address and a token to use it. The token never goes in a link. The link carries a one-time code instead.
 
-**The link.** `dg ipfs up` opens it for you. The page:
+**The link.** `dg ipfs up` opens it for you. The connect link also works when the Storage page is already open in the tab. The page:
 
 1. reads the code from the address bar and removes it from the URL;
 2. asks your node to swap the code for the settings;
@@ -128,6 +128,8 @@ dg ipfs connect
 A code works once, for 10 minutes. Five wrong tries cancel it.
 
 ### Browser notes
+
+Chrome may ask you to **allow access to apps on this device** (Local Network Access). Allow it so Forge can reach the IPFS node on your computer.
 
 | Browser | On forge.dashhq.org |
 |---|---|

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { consumePrehydrationIntent, INTENT_TTL_MS, PREHYDRATION_KEY, prehydrationScript, stopPrehydrationCatcher } from './prehydration'
+import { consumePrehydrationIntent, INTENT_TTL_MS, PREHYDRATION_KEY, prehydrationScript, stopPrehydrationCatcher, takeKuboPair } from './prehydration'
 
 /**
  * A window holding the inline script's state, with the script's own `stop` (the script itself
@@ -122,4 +122,39 @@ it.each([
   new Function('window', 'document', 'setTimeout', 'clearTimeout', 'location', 'history', prehydrationScript(base))(w, noop, () => 0, () => undefined, location, { replaceState })
   expect(replaceState).toHaveBeenCalledTimes(captured ? 1 : 0)
   expect(consumeKuboPair(w as unknown as Window) !== null).toBe(captured)
+})
+
+describe('pairing links after hydration', () => {
+  it.each([
+    ['/settings/storage', '', true],
+    ['/settings/storage/', '', true],
+    ['/forge/settings/storage/', '/forge', true],
+    ['/forge/settings/storage', '/forge', true],
+    ['/settings/storage/', '/forge', false],
+    ['/repo/', '', false],
+    ['/other/settings/storage/', '', false],
+    ['/settings/storage/extra', '', false],
+  ])('captures only the storage route %s (%s)', (pathname, basePath, captured) => {
+    const hash = '#kubo=5002.7KQ2-M9XD-PF4C'
+    const location = { pathname, search: '?keep=1', hash }
+    const state = { __NA: true, tree: 'router-tree' }
+    const replaceState = vi.fn(() => { location.hash = '' })
+    const w = { location, history: { state, replaceState } } as unknown as Window
+    expect(takeKuboPair(w, basePath)).toBe(captured ? hash : null)
+    expect(location.hash).toBe(captured ? '' : hash)
+    if (captured) expect(replaceState).toHaveBeenCalledWith(state, '', `${pathname}?keep=1`)
+    else expect(replaceState).not.toHaveBeenCalled()
+    expect(takeKuboPair(w, basePath)).toBeNull()
+  })
+  it('prefers a fresh URL, consumes a stale stash once, and leaves other hashes alone', () => {
+    const location = { pathname: '/settings/storage/', search: '', hash: '#kubo=5002.7KQ2-M9XD-PF4C' }
+    const w = { location, history: { state: null, replaceState: vi.fn(() => { location.hash = '' }) }, __forgeKuboPair: '#kubo=5001.7KQ2-M9XD-PF4C' }
+    expect(takeKuboPair(w as unknown as Window)).toBe('#kubo=5002.7KQ2-M9XD-PF4C')
+    expect(w).not.toHaveProperty('__forgeKuboPair')
+    expect(takeKuboPair(w as unknown as Window)).toBeNull()
+    location.hash = '#help'
+    expect(takeKuboPair(w as unknown as Window)).toBeNull()
+    expect(location.hash).toBe('#help')
+    expect(w.history.replaceState).toHaveBeenCalledOnce()
+  })
 })

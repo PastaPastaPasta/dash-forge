@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { consumeKuboPair } from '@/lib/prehydration'
+import { Suspense, useCallback, useEffect, useState } from 'react'
+import { takeKuboPair } from '@/lib/prehydration'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { safariNeedsNotice, kuboUpCommand, pairWithNode, parseKuboCode, parseKuboFragment, SAFARI_NOTICE, type PairedNode } from '@/lib/storage/kubo-connect'
 import { policyFor, withProfile, type StoragePolicy } from '@/lib/storage'
 import { errText } from '@/lib/storage/util'
@@ -18,7 +19,27 @@ export function KuboConnect({ fragmentOnly = false }: { fragmentOnly?: boolean }
   return <KuboConnectView storage={useStorageConfig()} fragmentOnly={fragmentOnly} />
 }
 
-export function KuboConnectView({ storage, fragmentOnly = false }: { storage: StorageConfigState; fragmentOnly?: boolean }): JSX.Element | null {
+/** Next changes the search-params object even on hash-only client navigation. */
+function PairLinks({ onPair }: { onPair: (fragment: string) => void }): null {
+  const pathname = usePathname()
+  const params = useSearchParams()
+  useEffect(() => {
+    const read = (): void => {
+      const fragment = takeKuboPair()
+      if (fragment !== null) onPair(fragment)
+    }
+    read()
+    window.addEventListener('hashchange', read)
+    window.addEventListener('popstate', read)
+    return () => {
+      window.removeEventListener('hashchange', read)
+      window.removeEventListener('popstate', read)
+    }
+  }, [onPair, pathname, params])
+  return null
+}
+
+export function KuboConnectView({ storage, fragmentOnly = false, showUnlock = true }: { storage: StorageConfigState; fragmentOnly?: boolean; showUnlock?: boolean }): JSX.Element | null {
   const { identity } = useAuth()
   const [node, setNode] = useState<PairedNode | null>(null)
   const [code, setCode] = useState('')
@@ -31,28 +52,31 @@ export function KuboConnectView({ storage, fragmentOnly = false }: { storage: St
   const [previousPolicy, setPreviousPolicy] = useState<StoragePolicy | null>(null)
   const [browser, setBrowser] = useState<{ command: string | null; safari: boolean } | null>(null)
 
-  const connect = async (input: { port: number; code: string }): Promise<void> => {
+  const connect = useCallback(async (input: { port: number; code: string }): Promise<void> => {
     setBusy(true)
     setError(null)
     setSaved(false)
     try { setNode(await pairWithNode(input)) } catch (e) { setError(errText(e)) } finally { setBusy(false) }
-  }
+  }, [])
+  const onPair = useCallback((fragment: string): void => {
+    const input = parseKuboFragment(fragment)
+    if (input) void connect(input)
+    else setError('Invalid connection link. Run dg ipfs connect for a new one.')
+  }, [connect])
   useEffect(() => {
     setBrowser({ command: kuboUpCommand(location.origin, location.pathname), safari: safariNeedsNotice(location.origin) })
-    const fragment = consumeKuboPair()
-    if (fragment !== null) {
-      const input = parseKuboFragment(fragment)
-      if (input) void connect(input)
-      else setError('Invalid connection link. Run dg ipfs connect for a new one.')
-    }
   }, [])
 
-  if (fragmentOnly && !node && !busy && !error && !saved) return null
+  // Keep listening even while the fragment-only card is empty; this boundary keeps the
+  // route subscription from opting the surrounding settings page out of static rendering.
+  const links = <Suspense fallback={null}><PairLinks onPair={onPair} /></Suspense>
+  if (fragmentOnly && !node && !busy && !error && !saved) return links
   const canSave = identity !== null && storage.storable && !storage.needsUnlock && storage.config !== null && !storage.loading && !storage.error
   const config = storage.config
   const collision = node && config?.profiles.some((p) => p.name === node.profile.name && (p.settings.kind !== 'ipfs-kubo' || p.settings.api !== (node.profile.settings.kind === 'ipfs-kubo' ? node.profile.settings.api : '')))
 
   return (
+    <>{links}
     <section aria-label="Connect an IPFS node" className="space-y-3 rounded-lg border border-anvil-200 p-4 text-dense dark:border-anvil-750">
       {!fragmentOnly ? <>
         <h3 className="font-medium">Run one command</h3>
@@ -72,8 +96,7 @@ export function KuboConnectView({ storage, fragmentOnly = false }: { storage: St
       {node ? <div className="space-y-3">
         <p className="font-medium">Connect the IPFS node on this computer? kubo {node.version}, peer {node.peerId.slice(0, 12)}…</p>
         {!canSave ? <>
-          <p>Sign in to finish connecting</p>
-          {identity === null ? <SignInButton /> : storage.needsUnlock ? <UnlockMore title="Unlock this tab to connect your node" /> : <p>{storage.error ?? 'Storage credentials need a signed-in session with a stored key.'}</p>}
+          {identity === null ? <><p>Sign in to finish connecting</p><SignInButton /></> : storage.needsUnlock ? showUnlock ? <UnlockMore title="Unlock this tab to connect your node" /> : <p>Unlock your storage settings below to finish connecting.</p> : <p>{storage.error ?? 'Storage credentials need a signed-in session with a stored key.'}</p>}
         </> : collision ? <p role="alert">A different profile already uses this name. Run dg ipfs up --name with another name.</p> : <StorageTest key={`${identity}:${profileSnapshot(node.profile)}`} profile={node.profile} buttonLabel="Test and save" disabled={busy} onDone={async (ok) => {
           if (!ok || !config || !canSave) return
           setBusy(true)
@@ -108,5 +131,6 @@ export function KuboConnectView({ storage, fragmentOnly = false }: { storage: St
         }} />Use it for my pushes</label>
       </div> : null}
     </section>
+    </>
   )
 }
