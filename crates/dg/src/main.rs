@@ -30,6 +30,7 @@ mod git;
 mod help_lint;
 mod import;
 mod infer;
+mod ipfs;
 mod ipfs_pin;
 mod issue;
 #[cfg(test)]
@@ -176,12 +177,6 @@ impl NetworkArg {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum IpfsCommand {
-    /// Keep a repository's files on your IPFS node.
-    Pin(ipfs_pin::IpfsPinArgs),
-}
-
-#[derive(Debug, Subcommand)]
 pub enum Command {
     /// Identities and keys: create, sign in, limited keys, DPNS names, export.
     #[command(subcommand)]
@@ -318,9 +313,9 @@ pub enum Command {
     /// Storage availability.
     #[command(subcommand)]
     Storage(StorageCommand),
-    /// Keep repository files on IPFS.
+    /// Run an IPFS node on this computer and keep repositories' files on it.
     #[command(subcommand)]
-    Ipfs(IpfsCommand),
+    Ipfs(ipfs::IpfsCommand),
     /// Manage webhooks.
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
@@ -2674,7 +2669,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Embargo(cmd) => Box::pin(embargo::run(ctx, cmd)).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
-        Command::Ipfs(IpfsCommand::Pin(args)) => ipfs_pin::run_pin(ctx, args).await,
+        Command::Ipfs(cmd) => ipfs::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
         Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,

@@ -1,0 +1,15 @@
+[Unit]
+Description=Dash Forge IPFS node
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart="/opt/dg" ipfs serve
+Environment="XDG_DATA_HOME=/data"
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=default.target

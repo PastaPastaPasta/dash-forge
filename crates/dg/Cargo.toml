@@ -21,7 +21,7 @@ anyhow.workspace = true
 clap.workspace = true
 clap_complete = "4"
 tracing.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "process", "net", "io-util", "sync"] }
 # `dg release list` opens the sealed asset lists concurrently.
 futures = "0.3"
 serde = { workspace = true }
@@ -36,9 +36,13 @@ zeroize = "1"
 # `dg auth new` picks which recovery words to quiz from the OS RNG.
 rand = "0.8"
 # `dg storage test` drives the storage probes over the same rustls client forge-core uses.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 # `dg pr merge` builds the merge in a throwaway repository.
 tempfile = "3"
+# The managed node streams browser uploads and verifies pinned kubo archives.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+sha2 = "0.10"
+subtle = "2"
 # Hidden prompts: a pasted storage secret, the recovery words, backup-check words.
 rpassword = "7"
 
