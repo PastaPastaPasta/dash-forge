@@ -236,10 +236,16 @@ impl IpfsBackend {
                 let value: serde_json::Value = serde_json::from_str(&body)?;
                 Ok(value
                     .get("Keys")
-                    .and_then(|keys| keys.get(cid))
-                    .and_then(|pin| pin.get("Type"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some("recursive"))
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|keys| {
+                        keys.iter().any(|(key, pin)| {
+                            super::cid::normalize_cid(key)
+                                .zip(super::cid::normalize_cid(cid))
+                                .is_some_and(|(a, b)| a == b)
+                                && pin.get("Type").and_then(serde_json::Value::as_str)
+                                    == Some("recursive")
+                        })
+                    }))
             }
             // kubo answers 500 "not pinned" for an unpinned CID.
             Err(Error::Io(msg)) if msg.contains("not pinned") => Ok(false),
@@ -387,15 +393,24 @@ fn pin_progress(line: &[u8], cid: &str, max_bytes: u64) -> Result<bool> {
         return Ok(false);
     }
     let value: serde_json::Value = serde_json::from_slice(line)?;
-    if let Some(progress) = value.get("Progress") {
+    let bytes = if let Some(bytes) = value.get("Bytes") {
+        Some(
+            bytes
+                .as_u64()
+                .ok_or_else(|| Error::Io("kubo pin/add returned an invalid byte count".into()))?,
+        )
+    } else if let Some(progress) = value.get("Progress") {
         let blocks = progress
             .as_u64()
             .ok_or_else(|| Error::Io("kubo pin/add returned an invalid block count".into()))?;
-        if blocks.saturating_mul(262_144) > max_bytes {
-            return Err(Error::Io(
-                "IPFS swarm pin exceeded the recorded size limit".into(),
-            ));
-        }
+        Some(blocks.saturating_mul(1024 * 1024))
+    } else {
+        None
+    };
+    if bytes.is_some_and(|bytes| bytes > max_bytes) {
+        return Err(Error::Io(
+            "IPFS swarm pin exceeded the recorded size limit".into(),
+        ));
     }
     if value.get("Message").is_some() || value.get("Error").is_some() {
         return Err(Error::Io("kubo pin/add reported an error".into()));
@@ -403,7 +418,13 @@ fn pin_progress(line: &[u8], cid: &str, max_bytes: u64) -> Result<bool> {
     Ok(value
         .get("Pins")
         .and_then(serde_json::Value::as_array)
-        .is_some_and(|pins| pins.iter().any(|p| p.as_str() == Some(cid))))
+        .is_some_and(|pins| {
+            pins.iter().filter_map(serde_json::Value::as_str).any(|p| {
+                super::cid::normalize_cid(p)
+                    .zip(super::cid::normalize_cid(cid))
+                    .is_some_and(|(a, b)| a == b)
+            })
+        }))
 }
 
 /// A minimal IPFS Pinning Service API client (the subset a push needs).
@@ -583,6 +604,35 @@ fn parse_add_cid(body: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pin_progress_prefers_bytes_and_bounds_one_mib_blocks() {
+        let cid = "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq";
+        assert!(pin_progress(br#"{"Progress":2}"#, cid, 1024 * 1024).is_err());
+        assert!(!pin_progress(br#"{"Progress":1}"#, cid, 1024 * 1024).unwrap());
+        assert!(!pin_progress(br#"{"Progress":100,"Bytes":10}"#, cid, 10).unwrap());
+        assert!(pin_progress(br#"{"Bytes":11}"#, cid, 10).is_err());
+        assert!(pin_progress(br#"{"Bytes":"10"}"#, cid, 10).is_err());
+        assert!(pin_progress(br#"{"Progress":-1}"#, cid, 10).is_err());
+        let pins = serde_json::json!({"Pins":["k2cwue9rqdypmt3thjky14z1tk9fi9f0o5w7b3ofitdewlcf87lismqs"]}).to_string();
+        assert!(pin_progress(pins.as_bytes(), cid, 10).unwrap());
+        assert!(!pin_progress(br#"{"Pins":["invalid"]}"#, cid, 10).unwrap());
+    }
+
+    #[tokio::test]
+    async fn pin_ls_normalizes_response_keys() {
+        let (url, _) = crate::test_http::serve(|_| {
+            crate::test_http::Reply::new(
+                200,
+                r#"{"Keys":{"zb2rhZfjRh2FHHB2RkHVEvL2vJnCTcu7kwRqgVsf9gpkLgteo":{"Type":"recursive"}}}"#,
+            )
+        });
+        let backend = IpfsBackend::new(IpfsConfig::local(&url, &url));
+        assert!(backend
+            .is_pinned("bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq")
+            .await
+            .unwrap());
+    }
 
     #[test]
     fn parses_single_line_add_response() {
