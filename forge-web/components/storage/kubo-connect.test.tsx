@@ -12,6 +12,9 @@ vi.mock('@/components/sign-in-button', () => ({ SignInButton: () => <button>Sign
 vi.mock('@/components/auth/unlock-more', () => ({ UnlockMore: () => <button>Unlock</button> }))
 vi.mock('@/lib/storage/kubo-connect', async (load) => ({ ...await load<object>(), pairWithNode: mocks.pair }))
 vi.mock('@/lib/storage/probe', async (load) => ({ ...await load<object>(), probeProfile: mocks.probe }))
+vi.mock('@/components/app-shell', () => ({ AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }))
+vi.mock('@/components/storage/storage-wizard', () => ({ StorageWizardView: () => <div>Storage wizard</div> }))
+import StorageSettingsPage from '@/app/settings/storage/page'
 import { KuboConnect } from './kubo-connect'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -71,6 +74,33 @@ describe('the kubo connection form', () => {
     expect(host.textContent).toContain('Unlock'); expect(mocks.save).not.toHaveBeenCalled()
     mocks.locked = false; mocks.config = EMPTY_STORAGE_CONFIG; await render()
     expect(host.textContent).toContain('Test and save')
+  })
+  it('adds the node to the current policy and restores that policy exactly when unticked', async () => {
+    const previous = { targets: ['platform', 'bucket'], replicas: 2, platformFallback: true }
+    mocks.config = { ...EMPTY_STORAGE_CONFIG, profiles: [{ name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} }], defaultPolicy: previous }
+    fragment(); await render(); await click('Test and save'); await render()
+    await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    expect(mocks.save.mock.calls.at(-1)![0].defaultPolicy).toEqual({ ...previous, targets: ['platform', 'bucket', 'kubo'] })
+    await render()
+    await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    expect(mocks.save.mock.calls.at(-1)![0].defaultPolicy).toEqual(previous)
+  })
+  it('shows only the sign-in prompt on the signed-out storage page unless pairing is pending', async () => {
+    mocks.identity = null; mocks.config = null
+    await act(async () => root.render(<StorageSettingsPage />))
+    expect(host.textContent).toContain('Sign in to set up storage')
+    expect(host.textContent).not.toContain('Run one command')
+    expect(host.querySelector('[aria-label="Connect an IPFS node"]')).toBeNull()
+    await act(async () => root.render(<div />))
+    fragment()
+    await act(async () => root.render(<StorageSettingsPage />))
+    expect(host.textContent).toContain('Connect the IPFS node on this computer?')
+    expect(host.textContent).not.toContain('Run one command')
+  })
+  it.each(['http://localhost:3000', 'http://127.0.0.1:3000', 'https://forge.dashhq.org'])('renders the Safari notice only when needed on %s', async (origin) => {
+    vi.stubGlobal('navigator', { userAgent: 'Version/18.0 Safari/605.1' })
+    vi.stubGlobal('location', { origin, pathname: '/settings/storage/' }); await render()
+    expect(host.textContent?.includes("Safari can't reach")).toBe(origin.startsWith('https:'))
   })
   it('leaves an existing storage policy unchanged and the checkbox unchecked', async () => {
     mocks.config = { ...EMPTY_STORAGE_CONFIG, profiles: [{ name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} }], defaultPolicy: { targets: ['platform'], replicas: 1, platformFallback: false } }

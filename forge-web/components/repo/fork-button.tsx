@@ -304,14 +304,14 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={wantsPin} disabled={pending || (!pin.plan.data && !wantsPin)} onChange={(e) => setPinFiles(e.target.checked)} />Also pin its files on my IPFS node ({pin.plan.data ? pinMib(pin.plan.data.sizeBytes) : '…'} MiB)</label>
           {wantsPin ? <>
             <label className="block text-dense">IPFS node<select aria-label="Fork pin node" value={pin.profile.name} disabled={pending} onChange={(e) => pin.setChosen(e.target.value)}>{pin.profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select></label>
-            {needsPinConsent ? <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={pinConsent} disabled={pending} onChange={(e) => setPinConsent(e.target.checked)} />My IP address will be listed on IPFS as holding this private repo&apos;s encrypted files.</label> : <p className="text-[12px]">Your node will tell the IPFS network it holds these files.</p>}
+            {needsPinConsent ? <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={pinConsent} disabled={pending} onChange={(e) => setPinConsent(e.target.checked)} />My IP address will be listed on IPFS as holding this repo&apos;s members-only (encrypted) files.</label> : <p className="text-[12px]">Your node will tell the IPFS network it holds these files.</p>}
           </> : null}
         </div> : null}
-        {pin.plan.error && pin.profile ? <p role="alert">Could not read files to pin: {pin.plan.error}</p> : null}
+        {pin.plan.error && pin.profile && wantsPin ? <p role="alert">Could not read files to pin: {pin.plan.error}</p> : null}
         {forkedHref ? <p role="status">Your fork is ready. Pinning its parent&apos;s files does not change the fork.</p> : null}
         <PinProgressList rows={pin.rows} summary={pin.summary} />
         {pin.running ? <Button size="sm" onClick={pin.cancel}>Cancel pinning</Button> : null}
-        {pin.error ? <p role="alert">Fork created; pinning failed: {pin.error}</p> : null}
+        {pin.error && forkedHref ? <p role="alert">Fork created; pinning failed: {pin.error}</p> : null}
         {progress ? (
           <ol aria-label="Fork steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
             {STEPS.map(({ step, label }) => {

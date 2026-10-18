@@ -1,5 +1,6 @@
 /** One-time pairing with dg's loopback proxy. Credentials stay in memory until confirmed. */
 import { z } from 'zod'
+import { servedCid } from '../build-info'
 import { profileProblem, validProfileName, type StorageProfile } from './profiles'
 import { whyBlocked } from './probe'
 
@@ -19,6 +20,12 @@ export function parseKuboFragment(hash: string): KuboCode | null {
 
 export function isSafari(agent = typeof navigator === 'undefined' ? '' : navigator.userAgent): boolean {
   return /Safari\//.test(agent) && !/Chrome|Chromium|CriOS|FxiOS|EdgiOS|OPiOS|Android/.test(agent)
+}
+
+export function safariNeedsNotice(origin: string): boolean {
+  let url: URL
+  try { url = new URL(origin) } catch { return false }
+  return isSafari() && !(url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1'))
 }
 
 export const SAFARI_NOTICE = "Safari can't reach a node on this computer from a secure site. Use dg to push, or Chrome, Firefox or Brave."
@@ -65,7 +72,7 @@ export async function pairWithNode(input: KuboCode): Promise<PairedNode> {
       credentials: 'omit', redirect: 'error', targetAddressSpace: 'loopback', signal: AbortSignal.timeout(15_000),
     } as RequestInit)
   } catch {
-    if (isSafari()) throw new Error(SAFARI_NOTICE)
+    if (isSafari() && safariNeedsNotice(location.origin)) throw new Error(SAFARI_NOTICE)
     const why = await whyBlocked(url)
     throw new Error(why === 'down'
       ? `The node is not running, or your browser blocked it. Run dg ipfs up. ${LOCAL_ACCESS_HINT}`
@@ -76,10 +83,14 @@ export async function pairWithNode(input: KuboCode): Promise<PairedNode> {
   if (!response.ok) throw new Error(`The node could not connect (HTTP ${response.status}). Run dg ipfs connect again.`)
   let value: unknown
   try { value = await response.json() } catch { throw new Error('The node returned invalid connection settings. Run dg ipfs connect again.') }
-  return validatePairResponse(value)
+  const node = validatePairResponse(value)
+  if (Number(new URL((node.profile.settings as { api: string }).api).port || 80) !== parsed.port) throw new Error('The node returned a different API port. Run dg ipfs connect again.')
+  return node
 }
 
 export function kuboUpCommand(origin: string, pathname: string): string | null {
-  if (/^\/(ipfs|ipns)\//.test(pathname)) return null
+  let url: URL
+  try { url = new URL(origin) } catch { return null }
+  if (servedCid({ protocol: url.protocol, hostname: url.hostname, pathname }) || /^\/(ipfs|ipns)\//.test(pathname) || /\.(ipfs|ipns)\./i.test(url.hostname)) return null
   return origin === 'https://forge.dashhq.org' ? 'dg ipfs up' : `dg ipfs up --origin '${origin.replace(/'/g, "'\\''")}'`
 }

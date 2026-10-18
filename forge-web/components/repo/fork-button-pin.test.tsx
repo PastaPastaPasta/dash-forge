@@ -4,13 +4,13 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RepoRef } from '@/lib/repo/contract'
 
-const state = vi.hoisted(() => ({ start: vi.fn(), fork: vi.fn(), push: vi.fn(), profile: true, size: 1048576, pinError: null as string | null, signer: { identityId: 'me' }, sdk: {} }))
+const state = vi.hoisted(() => ({ start: vi.fn(), fork: vi.fn(), push: vi.fn(), profile: true, size: 1048576, pinError: null as string | null, planError: null as string | null, signer: { identityId: 'me' }, sdk: {} }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'me', signer: state.signer }) }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, disabledReason: null, failed: () => 'fork failed' }) }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: state.sdk, ready: true }) }))
 vi.mock('@/hooks/use-async', () => ({ useAsync: () => ({ data: { manifests: [], refs: [], unreferenceable: [] }, error: null }) }))
 vi.mock('@/hooks/use-repo-pin', () => ({ useRepoPin: () => ({
-  plan: { data: { sizeBytes: state.size, requiresConsent: false }, error: null },
+  plan: { data: { sizeBytes: state.size, requiresConsent: false }, error: state.planError },
   profiles: state.profile ? [{ name: 'kubo' }] : [], profile: state.profile ? { name: 'kubo' } : null,
   rows: [], summary: null, error: state.pinError, running: false, start: state.start, cancel: vi.fn(), setChosen: vi.fn(),
 }) }))
@@ -23,7 +23,7 @@ import { ForkButton } from './fork-button'
 const parent = { forge: { core: 'core' }, repoId: 'r', ownerId: 'owner', name: 'repo', visibility: 'public' } as RepoRef
 let host: HTMLDivElement; let root: Root
 beforeEach(() => {
-  vi.useFakeTimers(); state.profile = true; state.size = 1048576; state.pinError = null
+  vi.useFakeTimers(); state.profile = true; state.size = 1048576; state.pinError = null; state.planError = null
   state.fork.mockReset().mockResolvedValue({ name: 'repo', unreferenceable: [] }); state.start.mockReset().mockResolvedValue(undefined); state.push.mockReset()
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
@@ -56,4 +56,15 @@ describe('optional pinning after a fork', () => {
     await act(async () => button('View fork').click())
     expect(state.push).toHaveBeenCalledWith('/repo/?owner=me&name=repo&created=1')
   })
+})
+
+it('hides pinning errors when pinning is unticked', async () => {
+  state.pinError = 'node unavailable'; state.planError = 'plan unavailable'
+  await render()
+  expect(host.textContent).toContain('Could not read files to pin')
+  await act(async () => option()!.click())
+  expect(host.textContent).not.toContain('Could not read files to pin')
+  expect(host.textContent).not.toContain('Fork created; pinning failed')
+  await act(async () => button('Sign & fork').click())
+  expect(state.start).not.toHaveBeenCalled(); expect(state.push).toHaveBeenCalled()
 })

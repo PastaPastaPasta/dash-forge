@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { consumePrehydrationIntent, INTENT_TTL_MS, PREHYDRATION_KEY, prehydrationScript, stopPrehydrationCatcher } from './prehydration'
 
@@ -101,4 +101,25 @@ describe('pairing nonce capture before hydration', () => {
     expect(consumeKuboPair(w as unknown as Window)).toBe('#kubo=5001.7KQ2-M9XD-PF4C')
     expect(consumeKuboPair(w as unknown as Window)).toBeNull()
   })
+})
+
+
+it.each([
+  ['/settings/storage', '', true],
+  ['/settings/storage/', '', true],
+  ['/forge/settings/storage/', '/forge', true],
+  ['/forge/settings/storage', '/forge', true],
+  ['/settings/storage', '/forge', false],
+  ['/repo/', '', false],
+  ['/other/settings/storage/', '', false],
+  ['/settings/storage/extra', '', false],
+])('captures a pairing fragment only on the configured storage route %s (%s)', async (pathname, base, captured) => {
+  const { consumeKuboPair } = await import('./prehydration')
+  const noop = { addEventListener: () => undefined, removeEventListener: () => undefined }
+  const w = { ...noop }
+  const location = { hash: '#kubo=5001.7KQ2-M9XD-PF4C', pathname, search: '' }
+  const replaceState = vi.fn()
+  new Function('window', 'document', 'setTimeout', 'clearTimeout', 'location', 'history', prehydrationScript(base))(w, noop, () => 0, () => undefined, location, { replaceState })
+  expect(replaceState).toHaveBeenCalledTimes(captured ? 1 : 0)
+  expect(consumeKuboPair(w as unknown as Window) !== null).toBe(captured)
 })

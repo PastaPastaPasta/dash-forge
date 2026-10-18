@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { consumeKuboPair } from '@/lib/prehydration'
-import { isSafari, kuboUpCommand, pairWithNode, parseKuboCode, parseKuboFragment, SAFARI_NOTICE, type PairedNode } from '@/lib/storage/kubo-connect'
-import { policyFor, withProfile } from '@/lib/storage'
+import { safariNeedsNotice, kuboUpCommand, pairWithNode, parseKuboCode, parseKuboFragment, SAFARI_NOTICE, type PairedNode } from '@/lib/storage/kubo-connect'
+import { policyFor, withProfile, type StoragePolicy } from '@/lib/storage'
 import { errText } from '@/lib/storage/util'
 import { useAuth } from '@/contexts/auth-context'
 import { useStorageConfig, type StorageConfigState } from '@/hooks/use-storage-config'
@@ -28,6 +28,7 @@ export function KuboConnectView({ storage, fragmentOnly = false }: { storage: St
   const [saved, setSaved] = useState(false)
   const [savedName, setSavedName] = useState('')
   const [useForPushes, setUseForPushes] = useState(false)
+  const [previousPolicy, setPreviousPolicy] = useState<StoragePolicy | null>(null)
   const [browser, setBrowser] = useState<{ command: string | null; safari: boolean } | null>(null)
 
   const connect = async (input: { port: number; code: string }): Promise<void> => {
@@ -37,7 +38,7 @@ export function KuboConnectView({ storage, fragmentOnly = false }: { storage: St
     try { setNode(await pairWithNode(input)) } catch (e) { setError(errText(e)) } finally { setBusy(false) }
   }
   useEffect(() => {
-    setBrowser({ command: kuboUpCommand(location.origin, location.pathname), safari: isSafari() })
+    setBrowser({ command: kuboUpCommand(location.origin, location.pathname), safari: safariNeedsNotice(location.origin) })
     const fragment = consumeKuboPair()
     if (fragment !== null) {
       const input = parseKuboFragment(fragment)
@@ -86,6 +87,7 @@ export function KuboConnectView({ storage, fragmentOnly = false }: { storage: St
             setSaved(true)
             setSavedName(node.profile.name)
             setUseForPushes(first)
+            setPreviousPolicy(config.defaultPolicy)
             setNode(null)
           } catch (e) { setError(errText(e)) } finally { setBusy(false) }
         }} />}
@@ -97,10 +99,12 @@ export function KuboConnectView({ storage, fragmentOnly = false }: { storage: St
           const checked = e.target.checked
           const current = storage.config
           if (!current) return
-          const next = { ...current, defaultPolicy: checked ? policyFor([savedName], 'one') : current.defaultPolicy?.targets.includes(savedName) ? null : current.defaultPolicy }
+          const policy = current.defaultPolicy
+          const added = policy ? { ...policy, targets: policy.targets.includes(savedName) ? policy.targets : [...policy.targets, savedName] } : policyFor([savedName], 'one')
+          const next = { ...current, defaultPolicy: checked ? added : previousPolicy }
           setBusy(true)
           setError(null)
-          try { await storage.save(next); setUseForPushes(checked) } catch (err) { setError(errText(err)) } finally { setBusy(false) }
+          try { await storage.save(next); if (checked) setPreviousPolicy(policy); setUseForPushes(checked) } catch (err) { setError(errText(err)) } finally { setBusy(false) }
         }} />Use it for my pushes</label>
       </div> : null}
     </section>

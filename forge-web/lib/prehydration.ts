@@ -54,9 +54,9 @@ interface PrehydrationState {
 }
 
 /** The inline <head> script (a string: it runs before any bundle loads). */
-export function prehydrationScript(): string {
+export function prehydrationScript(basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? ''): string {
   return `(function(){
-  if(location.hash.indexOf('#kubo=')===0){
+  if(location.hash.indexOf('#kubo=')===0&&(location.pathname===${JSON.stringify(basePath + '/settings/storage')}||location.pathname===${JSON.stringify(basePath + '/settings/storage/')})){
     Object.defineProperty(window,'__forgeKuboPair',{value:location.hash,configurable:true});
     history.replaceState(null,'',location.pathname+location.search);
   }
