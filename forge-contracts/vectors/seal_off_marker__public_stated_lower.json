@@ -1,0 +1,30 @@
+{
+  "name": "public_stated_lower",
+  "description": "public stated lower",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": 4,
+    "active": {
+      "kind": "active",
+      "epoch": 3,
+      "height": 30,
+      "marker": {
+        "mode": "codeOnly",
+        "conversionId": "0123456789abcdeffedcba9876543210",
+        "boundaryEpoch": 3,
+        "startedAtMs": "1720000000123"
+      },
+      "highestEpoch": 3,
+      "replacesThrough": null
+    },
+    "current": 4,
+    "flipped": true,
+    "stated": 2
+  },
+  "expected": {
+    "kind": "public",
+    "cutoff": 2
+  }
+}

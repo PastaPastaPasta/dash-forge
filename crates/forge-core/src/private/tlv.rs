@@ -46,6 +46,8 @@ const FIRST_EXTENSION: u8 = 64;
 /// Tag 64, the first extension tag: the padding record of a members or specific-people document
 /// (§4.3). Readers skip it like any extension record.
 pub const PAD: u8 = FIRST_EXTENSION;
+/// Tag 65: an interpreted extension in configs, skipped in every other kind.
+pub const SEAL_OFF: u8 = 65;
 /// Members and specific-people documents pad their TLV to a multiple of this many bytes (D28).
 pub const PAD_BUCKET: usize = 64;
 const MAX_PATTERNS: usize = 8;
@@ -143,6 +145,13 @@ pub struct Fields {
         with = "super::doc::opt_hex32"
     )]
     pub oid_salt: Option<[u8; 32]>,
+    /// Tag 65: raw seal-off marker. Unknown values still preserve a boundary.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::doc::opt_hex"
+    )]
+    pub seal_off: Option<Vec<u8>>,
 }
 
 /// Decrypted content is private: `Debug` shows only which fields are present and their byte
@@ -170,6 +179,7 @@ impl std::fmt::Debug for Fields {
             .field("prev_oid", &self.prev_oid.is_some())
             .field("head_oid", &self.head_oid.is_some())
             .field("oid_salt", &self.oid_salt.is_some())
+            .field("seal_off", &self.seal_off.is_some())
             .finish()
     }
 }
@@ -378,7 +388,10 @@ fn parse_inner(
         last = Some(tag);
 
         if tag >= FIRST_EXTENSION {
-            continue; // forward compatibility: skipped, never interpreted
+            if tag == SEAL_OFF && kind == DocKind::Config {
+                f.seal_off = Some(value.to_vec());
+            }
+            continue; // other extension tags remain forward compatible
         }
         if tag == RECIPIENT || tag == GROUP {
             // only a letter's TLV may carry recipients and a group; everywhere else 25 and 29
@@ -586,12 +599,21 @@ pub fn encode(f: &Fields) -> Zeroizing<Vec<u8>> {
     if let Some(s) = &f.oid_salt {
         rec(OID_SALT, s);
     }
+    if let Some(value) = &f.seal_off {
+        rec(SEAL_OFF, value);
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seal_off_extension_is_retained_in_configs() {
+        let fields = parse(&[65, 0, 0], DocKind::Config, false).unwrap();
+        assert_eq!(serde_json::to_value(fields).unwrap()["sealOff"], "");
+    }
 
     #[test]
     fn debug_hides_body_and_key() {

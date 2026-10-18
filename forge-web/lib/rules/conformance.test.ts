@@ -1207,7 +1207,7 @@ describe('FORGE_RULES conformance vectors', () => {
   const isMembersGit = (v: Vector) => MEMBERS_GIT_CASES.includes(v.case) || v.case === 'members_check' || v.case === 'members_index'
   const isPrivate = (v: Vector) =>
     isMembersGit(v) ||
-    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'env_snapshot', 'key_letter', 'access_notice', 'branch_key', 'bot_post', 'bot_push'].some((p) => v.case.startsWith(p))
+    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'seal_off_marker', 'env_snapshot', 'key_letter', 'access_notice', 'branch_key', 'bot_post', 'bot_push'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
 

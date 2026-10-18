@@ -51,6 +51,7 @@ import { makePublicCheck, publicViewOf, type PackCache } from '@/lib/repo/make-p
 import { beginMakePublicRun, makePublicInFlight, subscribeMakePublicRuns } from '@/lib/repo/make-public-inflight'
 import { runMakePublic, type MakePublicOutcome } from '@/lib/repo/make-public-run'
 import { readMakePublicStatus } from '@/lib/repo/make-public-status'
+import { invalidatePrivateSession } from '@/lib/repo/private-session'
 import { shortRef } from '@/lib/repo/ref-admin'
 import {
   CODE_ONLY_STAYS,
@@ -136,7 +137,7 @@ function useRunInFlight(network: Network, repoId: string): boolean {
 
 /** Whether `s` says a run stopped part way: flipped and unfinished, or recorded here before the flip. */
 function interruptedStatus(s: MakePublicStatus | null): s is MakePublicStatus {
-  return s !== null && (s.phase === 'made' || (s.phase === 'private' && s.record !== null))
+  return s !== null && (s.phase === 'made' || (s.phase === 'private' && (s.record !== null || s.sealOffMarker !== undefined)))
 }
 
 export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; maintainer: boolean; onSaved: () => void }): JSX.Element | null {
@@ -149,7 +150,7 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
   const relevant = (isPrivate || converted) && (maintainer || isOwner)
   const status = useAsync(
     () => readMakePublicStatus(sdk!, repo, network, identity),
-    [ready, repo.repoId, repo.visibility, network, identity ?? ''],
+    [ready, repo.repoId, repo.visibility, network, identity ?? '', repo.session?.id ?? repo.lane?.id ?? ''],
     { enabled: relevant && ready && sdk !== null },
   )
   const oneWay = useAsync(() => contractVisibilityOneWay(sdk!, repo.forge.core), [ready, repo.forge.core], {
@@ -166,13 +167,12 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
     dialogOpen.current = true
     setDialog({ start, label: liveLabel })
   }
-  // A step landed since the page last read the repo (it may be public now): the page reads it again
-  // once the dialog is closed, so the dialog's last word stays on screen until then; a step that
-  // lands after the dialog closed (a run stops only between steps) reads it again when the run ends.
-  const changed = useRef(false)
-  const refreshIfChanged = (): void => {
-    if (!changed.current) return
-    changed.current = false
+  // A settled run can observe newer keys even when it refused before writing. Refresh the page's
+  // member session once the dialog closes, or once a run finishes after its dialog closed.
+  const refreshPending = useRef(false)
+  const refreshIfNeeded = (): void => {
+    if (!refreshPending.current) return
+    refreshPending.current = false
     onSaved()
   }
   const st = status.data
@@ -243,15 +243,17 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
             dialogOpen.current = false
             setDialog(null)
             status.reload()
-            refreshIfChanged()
+            refreshIfNeeded()
           }}
           onLanded={() => {
-            changed.current = true
+            refreshPending.current = true
             forgetConversionProgress(repo)
           }}
           onSettled={() => {
+            invalidatePrivateSession(repo)
+            if (dialogOpen.current) refreshPending.current = true
             status.reload()
-            if (!dialogOpen.current) refreshIfChanged()
+            if (!dialogOpen.current) refreshIfNeeded()
           }}
         />
       ) : null}
@@ -292,7 +294,9 @@ function InterruptedPanel({
   // A run whose own key change another rotation followed can't be finished, only started again
   // (decided from the keys as the run reads them).
   const record = status.record
-  const passed = !flipped && status.sealOffPassed && record !== null
+  const passed = !flipped && status.sealOffPassed
+  const boundaryMode = record?.mode ?? status.sealOffMarker?.marker?.mode ?? 'everything'
+  const boundaryAt = record?.sealOffAt ?? null
   // Before the flip only the owner continues; after it any maintainer, the history aside.
   const canFinish = (isOwner || flipped) && !onlyOwnerLeft && !passed
   const finish = (): void => {
@@ -311,6 +315,9 @@ function InterruptedPanel({
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
         <div className="min-w-0 flex-1 space-y-1">
           <p className="text-dense font-medium [overflow-wrap:anywhere]">{interruptedLine(label)}</p>
+          {!flipped && status.sealOffMarker !== undefined ? (
+            <p className="text-[12px] text-anvil-600 dark:text-anvil-300">This repo is being made public. What you write from now on stays members-only unless the owner starts the conversion over.{status.sealOffMarker?.kind === 'active' && status.sealOffMarker.marker?.replacesEpoch !== undefined ? ' A new conversion replaced the earlier publication boundary. Earlier writing may now be published.' : null}</p>
+          ) : null}
           {passed ? null : <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{progressLine(label, status.doneCount)}</p>}
           {inFlight ? (
             <p className="flex items-center gap-1.5 text-[12px] text-anvil-600 dark:text-anvil-300" aria-live="polite" data-testid="make-public-still-working">
@@ -333,17 +340,17 @@ function InterruptedPanel({
       ) : null}
       {passed ? (
         <p className="text-[12px] text-caution-800 dark:text-caution-300" data-testid="make-public-seal-off-passed">
-          {COPY.sealOffPassed(record.mode)}
+          {COPY.sealOffPassed(boundaryMode)}
         </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {passed && isOwner ? (
           <>
-            <Button variant="danger" disabled={!labelReady || inFlight} onClick={() => onFinish({ kind: 'new', startOver: { at: record.sealOffAt ?? null, mode: record.mode } })} data-testid="make-public-start-over">
+            <Button variant="danger" disabled={!labelReady || inFlight} onClick={() => onFinish({ kind: 'new', startOver: { at: boundaryAt, mode: boundaryMode } })} data-testid="make-public-start-over">
               Start again…
             </Button>
             <span className="min-w-0 text-[12px] text-anvil-500 dark:text-anvil-400 [overflow-wrap:anywhere]">
-              or: <code className="font-mono">{startOverCommand(label, record.mode)}</code>
+              or: <code className="font-mono">{startOverCommand(label, boundaryMode)}</code>
             </span>
           </>
         ) : null}

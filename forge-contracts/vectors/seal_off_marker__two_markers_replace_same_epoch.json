@@ -1,0 +1,53 @@
+{
+  "name": "two_markers_replace_same_epoch",
+  "description": "two markers replace same epoch",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "rule",
+    "configs": [
+      {
+        "id": "0202020202020202020202020202020202020202020202020202020202020202",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 1,
+        "private": true,
+        "height": 10,
+        "opening": "opened",
+        "sealOff": "01010123456789abcdeffedcba9876543210000000010000019077fd307b"
+      },
+      {
+        "id": "0404040404040404040404040404040404040404040404040404040404040404",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 3,
+        "private": true,
+        "height": 30,
+        "opening": "opened",
+        "sealOff": "01010123456789abcdeffedcba9876543210000000030000019077fd307b00000001"
+      },
+      {
+        "id": "0505050505050505050505050505050505050505050505050505050505050505",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 4,
+        "private": true,
+        "height": 40,
+        "opening": "opened",
+        "sealOff": "01010123456789abcdeffedcba9876543210000000040000019077fd307b00000001"
+      }
+    ],
+    "owner": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "expected": {
+    "kind": "active",
+    "epoch": 3,
+    "height": 30,
+    "marker": {
+      "mode": "codeOnly",
+      "conversionId": "0123456789abcdeffedcba9876543210",
+      "boundaryEpoch": 3,
+      "startedAtMs": "1720000000123",
+      "replacesEpoch": 1
+    },
+    "highestEpoch": 4,
+    "replacesThrough": 1
+  }
+}

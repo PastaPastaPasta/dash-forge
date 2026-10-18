@@ -10,7 +10,7 @@
  *   repo's settings (they stay in its plaintext configs, which the git plane reads).
  */
 
-import type { DocFields } from '../private'
+import { EpochKeys, sealDoc, encodeSealOffMarker, type SealOffMarker, type DocFields } from '../private'
 import type { Visibility } from '../rules/v2'
 
 /** A repo's current settings, as the anchor writer is given them. */
@@ -40,9 +40,9 @@ export interface AnchorContent {
 }
 
 /** The anchor `config` of an epoch of a `visibility` repo, given its current `settings` and chain `link` (null: epoch 0). */
-export function anchorContent(visibility: Visibility, settings: AnchorSettings, link: ChainLink | null): AnchorContent {
+export function anchorContent(visibility: Visibility, settings: AnchorSettings, link: ChainLink | null, sealOff?: SealOffMarker): AnchorContent {
   const base: DocFields =
-    visibility === 'private' ? { defaultBranch: settings.defaultBranch, protectedPatterns: [...settings.protectedPatterns] } : {}
+    visibility === 'private' ? { defaultBranch: settings.defaultBranch, protectedPatterns: [...settings.protectedPatterns], ...(sealOff !== undefined ? { sealOff: encodeSealOffMarker(sealOff) } : {}) } : {}
   const plaintext: Record<string, unknown> = visibility === 'private' ? { backend: settings.backend, archived: settings.archived } : {}
   const fields: DocFields =
     link === null
@@ -55,4 +55,14 @@ export function anchorContent(visibility: Visibility, settings: AnchorSettings, 
           ...(link.burned === true ? { burned: true as const } : {}),
         }
   return { vis: visibility, fields, plaintext }
+}
+
+/** Dry-seal settings with the maximum chain link before a conversion posts any wraps. */
+export async function drySealOffAnchor(repoId: Uint8Array, owner: Uint8Array, settings: AnchorSettings, marker: SealOffMarker): Promise<void> {
+  const raw = new Uint8Array(32)
+  const keys = await EpochKeys.import(repoId, marker.boundaryEpoch, raw)
+  const content = anchorContent('private', settings, { prevEpoch: marker.boundaryEpoch - 1, prevEpochKey: raw, skipEpochKey: raw }, marker)
+  try {
+    await sealDoc(keys, { type: 'config', ownerId: owner, epoch: marker.boundaryEpoch }, content.fields, { anchor: true })
+  } finally { raw.fill(0) }
 }

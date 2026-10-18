@@ -1,0 +1,37 @@
+{
+  "name": "unknown_length_keeps_boundary",
+  "description": "unknown length keeps boundary",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "rule",
+    "configs": [
+      {
+        "id": "0202020202020202020202020202020202020202020202020202020202020202",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 1,
+        "private": true,
+        "height": 10,
+        "opening": "opened",
+        "sealOff": ""
+      },
+      {
+        "id": "0303030303030303030303030303030303030303030303030303030303030303",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 2,
+        "private": true,
+        "height": 20,
+        "opening": "opened"
+      }
+    ],
+    "owner": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "expected": {
+    "kind": "active",
+    "epoch": 1,
+    "height": 10,
+    "marker": null,
+    "highestEpoch": 1,
+    "replacesThrough": null
+  }
+}

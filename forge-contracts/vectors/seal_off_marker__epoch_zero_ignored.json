@@ -1,0 +1,24 @@
+{
+  "name": "epoch_zero_ignored",
+  "description": "epoch zero ignored",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "rule",
+    "configs": [
+      {
+        "id": "0101010101010101010101010101010101010101010101010101010101010101",
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "private": true,
+        "height": 0,
+        "opening": "opened",
+        "sealOff": "01010123456789abcdeffedcba9876543210000000010000019077fd307b"
+      }
+    ],
+    "owner": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "expected": {
+    "kind": "none"
+  }
+}

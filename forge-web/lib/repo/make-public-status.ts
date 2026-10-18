@@ -14,8 +14,9 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
+import { decodeIdentifier } from '../auth/base58'
 import type { Network } from '../constants'
-import type { Conversion } from '../private'
+import { type ActiveSealOff, type Conversion } from '../private'
 import type { PlainDocument } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { newestAt } from './conversion-status'
@@ -38,6 +39,7 @@ import { privateViewOf, publicViewOf, readMembersContinued, readRepoDoc } from '
 import { blockHeightOf } from './private-content'
 import { readRefs } from './refs'
 import { readAllRows } from './source'
+import { readSessionSealOff } from './private-session'
 
 /** What a status is decided from. */
 export interface StatusFacts {
@@ -45,6 +47,7 @@ export interface StatusFacts {
   /** The conversion facts (null: never private, or still private). */
   readonly conversion: Conversion | null
   readonly record: MakePublicRecord | null
+  readonly sealOffMarker?: ActiveSealOff
   /** The highest key epoch any `config` states (the current one, while private). */
   readonly highestEpoch: number | null
   /**
@@ -71,9 +74,10 @@ export interface StatusFacts {
 /** The status a run's facts show (module docs). */
 export function statusOf(f: StatusFacts): MakePublicStatus {
   // a seal-off rotation that landed unrecorded counts as the run's (the run finds it again)
-  const seal = f.record === null ? null : recordedSealOff(f.record.sealOff, f.record.sealOffFrom, f.keys?.currentEpoch ?? null, f.keys?.burned)
+  const marker = f.sealOffMarker?.kind === 'active' ? f.sealOffMarker : undefined
+  const seal = recordedSealOff(f.record?.sealOff ?? null, f.record?.sealOffFrom, f.keys?.currentEpoch ?? null, f.keys?.burned, marker)
   const record = f.record === null ? null : { mode: f.record.mode, refs: refsOfRecord(f.record), sealOff: seal, sealOffAt: f.sealOffAt }
-  const mode = f.record?.mode ?? (f.historyBundles.length > 0 ? 'everything' : null)
+  const mode = f.record?.mode ?? (f.historyBundles.length > 0 ? 'everything' : marker?.marker?.mode ?? null)
   const steps = (s: Partial<Record<MakePublicStep, StepState>>, fill: StepState): Record<MakePublicStep, StepState> =>
     Object.fromEntries(MAKE_PUBLIC_STEPS.map((k) => [k, s[k] ?? fill])) as Record<MakePublicStep, StepState>
   const count = (phase: MakePublicStatus['phase'], st: Record<MakePublicStep, StepState>, confirmed: boolean): number =>
@@ -91,6 +95,7 @@ export function statusOf(f: StatusFacts): MakePublicStatus {
       totalSteps: MAKE_PUBLIC_TOTAL_STEPS,
       lastStepAt: f.record === null ? null : newestAt(f.record.startedAt, sealed ? f.sealOffAt : null),
       record,
+      ...(marker !== undefined ? { sealOffMarker: marker } : {}),
       sealOffPassed: passed,
       mode,
     }
@@ -147,12 +152,13 @@ export async function readMakePublicStatus(sdk: EvoSDK, repo: RepoRef, network: 
   const rows = await readAllRows(sdk, visibility === 'public' ? publicViewOf(repo) : privateViewOf(repo), DOC.config)
   const epochs = rows.map((d) => numberOf(d, 'epoch')).filter((e): e is number => e !== null)
   const highestEpoch = epochs.length === 0 ? null : Math.max(...epochs)
-  const session = repo.session
+  const session = repo.session ?? repo.lane
+  const sealOffMarker = session === undefined ? undefined : await readSessionSealOff(session, decodeIdentifier(repo.ownerId))
   const keys = session === undefined ? null : { currentEpoch: session.resolution.currentEpoch, burned: session.resolution.burned }
   // the run's seal-off epoch, one that landed unrecorded found again
   const seal = record === null ? null : recordedSealOff(record.sealOff, record.sealOffFrom, keys?.currentEpoch ?? null, keys?.burned)
   const sealOffAt = seal === null ? null : (rows.filter((d) => numberOf(d, 'epoch') === seal).map((d) => numberOf(d, '$createdAt') ?? 0)[0] ?? null)
-  const base = { record, highestEpoch, keys, sealOffAt, viewer, owner: repo.ownerId }
+  const base = { record, highestEpoch, keys, sealOffAt, viewer, owner: repo.ownerId, ...(sealOffMarker !== undefined ? { sealOffMarker } : {}) }
   const none = { flipAt: null, markerAt: null, publicRefs: new Map(), membersOnly: new Set<string>(), historyBundles: [] }
   if (visibility === 'private') return statusOf({ ...base, ...none, visibility, conversion: null })
   const pub = publicViewOf(repo)

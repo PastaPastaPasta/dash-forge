@@ -35,6 +35,8 @@ import {
   openWithKey,
   sealDoc,
   type Anchor,
+  type SealOffMarker,
+  TooLargeError,
 } from '../private'
 import { RoleOracle, type Membership, type Role } from '../rules/v2'
 import { WRITER_ROLE_CODE, botsOf } from '../rules/roles'
@@ -53,12 +55,13 @@ import {
 } from '../sdk'
 import { sleep } from '../sdk/facade'
 import { DOC, withVis, type RepoRef } from './contract'
-import { anchorContent, type AnchorContent, type ChainLink } from './members-anchor'
+import { drySealOffAnchor, anchorContent, type AnchorContent, type ChainLink } from './members-anchor'
 import { noteMembersKey } from './members-writes'
 import { holdsMembersKey } from '../rules/roles'
 import { invalidateMembers, memberDocOf, readMemberships } from './members'
 import {
   isMaintainer,
+  sessionConfirmsSealOff,
   loadPrivateSessionUncached,
   shortBranch,
   parseWrapDoc,
@@ -532,7 +535,7 @@ async function postConfig(c: PrivateWriteContext, data: Record<string, unknown>,
  * (a `main` default when none opens) sealed, and `backend` / `archived` in plaintext; a public
  * repo's members key carries none of its settings, so no anchor is ever read as them (DESIGN D1).
  */
-function anchorOf(c: PrivateWriteContext, session: PrivateSession, link: ChainLink | null): AnchorContent {
+function anchorOf(c: PrivateWriteContext, session: PrivateSession, link: ChainLink | null, sealOff?: SealOffMarker): AnchorContent {
   return anchorContent(
     c.repo.visibility,
     {
@@ -542,6 +545,7 @@ function anchorOf(c: PrivateWriteContext, session: PrivateSession, link: ChainLi
       archived: session.configPlain?.archived ?? false,
     },
     link,
+    sealOff,
   )
 }
 
@@ -730,16 +734,24 @@ export async function rotateRepoKey(
   minFrom?: number,
   /** This rotation is the repair after a lost one: do not chain another repair. */
   afterLoss = false,
+  sealOff?: SealOffMarker,
 ): Promise<number> {
-  const done = await withFreshSession(c, (session) => rotateWith(c, session, exclude, intent, onStep, minFrom, drop), drop)
+  const done = await withFreshSession(c, (session) => rotateWith(c, session, exclude, intent, onStep, minFrom, drop, sealOff), drop)
   // Step 4: confirm the anchor of the new epoch is ours, with our key, among current maintainers.
   const epoch = 'lost' in done ? done.lost : done.epoch
   if ('commit' in done && (await confirmAnchor(c, epoch, done.commit, drop, onStep)) === 'ours') {
     onStep?.({ kind: 'anchored', epoch })
+    if (sealOff !== undefined) await ensureSealOffMarker(c, { ...sealOff, boundaryEpoch: epoch }, intent)
     // §23: in the same run as the wraps, every current Bot row gets its post key. Nobody is left
     // out: removing a Bot row rotates nothing, and a maintainer who keeps a Bot row (`drop` names
     // only the row removed) still needs theirs.
     await sendBotKeys(c, `${intent}:post-keys`, { epoch }, onStep, drop)
+    return epoch
+  }
+  if (sealOff !== undefined) {
+    await ensureSealOffMarker(c, { ...sealOff, boundaryEpoch: epoch }, `${intent}:follow-up`)
+    // A seal-off excludes nobody, so losing its anchor needs no membership-removal repair.
+    // Match Rust: rotation_post_keys does nothing after a loss; the marker uses the winning key.
     return epoch
   }
   // Their key is the repo's key now. If they rotated from a member list that still had the
@@ -804,7 +816,9 @@ async function rotateWith(
   /** The epoch the removal this rotation follows keeps as current: never chain from below it. */
   minFrom?: number,
   drop: readonly { readonly identity: string; readonly role?: Role }[] = [],
+  sealOff?: SealOffMarker,
 ): Promise<{ epoch: number; commit: Uint8Array } | { lost: number }> {
+  if (sealOff !== undefined) await preflightSealOffSession(c, session, sealOff)
   const plan = planRotation(session, c.auth.identityId, exclude, c.repo.forge.core, c.ops.keyIds)
   // The read must be at least as new as the removal it follows: a current epoch below the one
   // before the removal means its re-anchor is not visible here yet, and chaining from it would
@@ -889,7 +903,7 @@ async function rotateWith(
         if ((await straysAt(c, epoch, allowed)).length > 0) {
           throw new PrivateMembersError(`key epoch ${epoch} reached someone it must not; run the rotation again`, 'E310')
         }
-        await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, false, skip?.raw ?? null)
+        await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, false, skip?.raw ?? null, sealOff === undefined ? undefined : { ...sealOff, boundaryEpoch: epoch })
         return { epoch, commit: next.keys.commit }
       } finally {
         next.raw.fill(0)
@@ -1049,13 +1063,14 @@ async function postAnchor(
   burned: boolean,
   /** The key of the nearest non-burned epoch below a burned `prevEpoch` (§5.3 `skipEpochKey`). */
   skipEpochKey: Uint8Array | null = null,
+  sealOff?: SealOffMarker,
 ): Promise<void> {
   const anchor = anchorOf(c, session, {
     prevEpoch,
     ...(prevEpochKey !== null ? { prevEpochKey: new Uint8Array(prevEpochKey) } : {}),
     ...(skipEpochKey !== null ? { skipEpochKey: new Uint8Array(skipEpochKey) } : {}),
     ...(burned ? { burned: true } : {}),
-  })
+  }, sealOff)
   const fields = anchor.fields
   try {
     const enc = await sealDoc(keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch }, fields, { anchor: true })
@@ -1803,4 +1818,67 @@ export function repairCost(session: PrivateSession, plan: RepairPlan, self: stri
   const wraps = plan.wrap.map(() => previewCreate('repoKey'))
   if (plan.rotate.length === 0 && !plan.burned) return sumPreviews([...wraps, ...(plan.bots.length > 0 ? [postKeyLettersCost(plan.bots.length)] : [])])
   return rotationCost(planRotation(session, self, plan.rotate, coreId, held))
+}
+
+/** Dry-seal the maximum chain link plus the marker before rotation posts any wraps. */
+export async function preflightSealOff(c: PrivateWriteContext, marker: SealOffMarker): Promise<void> {
+  await withFreshSession(c, (s) => preflightSealOffSession(c, s, marker))
+}
+
+async function preflightSealOffSession(c: PrivateWriteContext, s: PrivateSession, marker: SealOffMarker): Promise<void> {
+  if (c.repo.visibility !== 'private' || c.auth.identityId !== c.repo.ownerId) throw new PrivateMembersError('only the owner marks a private repo seal-off', 'E310')
+  if (marker.replacesEpoch !== undefined && (s.resolution.currentEpoch === null || s.resolution.currentEpoch < marker.replacesEpoch)) throw new PrivateMembersError('The earlier seal-off epoch is not visible yet. Reload and finish the run.', 'E310')
+  try {
+    await drySealOffAnchor(decodeIdentifier(c.repo.repoId), decodeIdentifier(c.auth.identityId), {
+      defaultBranch: s.config?.defaultBranch ?? 'main', protectedPatterns: s.config?.protectedPatterns ?? [],
+      backend: s.configPlain?.backend ?? { mode: 0 }, archived: s.configPlain?.archived ?? false,
+    }, marker)
+  } catch (e) {
+    if (e instanceof TooLargeError) throw new PrivateMembersError('Shorten the protected patterns before making this repo public.', 'E310')
+    throw e
+  }
+}
+
+/** Finish a marked rotation whose confirmation or follow-up answer was lost, without rotating. */
+export async function ensureSealOffMarker(c: PrivateWriteContext, marker: SealOffMarker, intent: string): Promise<void> {
+  if (c.repo.visibility !== 'private' || c.auth.identityId !== c.repo.ownerId) throw new PrivateMembersError('only the owner confirms a private repo seal-off', 'E310')
+  const epoch = marker.boundaryEpoch
+  let ready = false
+  let needsRepair = false
+  for (let i = 0; i < POLL_ATTEMPTS; i++) {
+    ready = await withFreshSession(c, async (s) => {
+      needsRepair = false
+      if (s.resolution.currentEpoch === null || s.resolution.currentEpoch < epoch) return false
+      if (s.resolution.currentEpoch !== epoch) throw new PrivateMembersError('The seal-off boundary has passed. Run make-public again.', 'E310')
+      const keys = s.resolution.keys.get(epoch)
+      const anchor = s.resolution.anchors.get(epoch)
+      if (keys === undefined || anchor === undefined) { needsRepair = true; return false }
+      if (await sessionConfirmsSealOff(s, decodeIdentifier(c.repo.ownerId), marker)) return true
+      const opened = await openWithKey({ type: 'config', ownerId: anchor.owner, epoch, enc: anchor.config.enc }, keys, true)
+      if (opened.status !== 'readable' || opened.fields.prevEpoch === undefined || opened.fields.burned === true) throw new PrivateMembersError('repair keys before confirming the seal-off marker', 'E310')
+      const { prevEpoch, prevEpochKey, skipEpochKey } = opened.fields
+      try {
+        await preflightSealOffSession(c, s, marker)
+        await postAnchor(c, s, keys, epoch, prevEpoch, prevEpochKey ?? null, `${intent}:marker`, false, skipEpochKey ?? null, marker)
+      } finally {
+        prevEpochKey?.fill(0)
+        skipEpochKey?.fill(0)
+      }
+      return true
+    })
+    if (ready) break
+    if (i + 1 < POLL_ATTEMPTS) await sleep(POLL_MS)
+  }
+  if (!ready) throw new PrivateMembersError(needsRepair ? 'repair keys before confirming the seal-off marker' : 'The seal-off epoch is not visible yet. Reload and finish the run.', 'E310')
+  await confirmSealOff(c, epoch, marker)
+}
+
+/** A notice or flip follows only after a proved read shows this run's marker under an anchored key. */
+async function confirmSealOff(c: PrivateWriteContext, epoch: number, marker: SealOffMarker): Promise<void> {
+  for (let i = 0; i < POLL_ATTEMPTS; i++) {
+    const found = await withFreshSession(c, (s) => sessionConfirmsSealOff(s, decodeIdentifier(c.repo.ownerId), { ...marker, boundaryEpoch: epoch }))
+    if (found) return
+    await sleep(POLL_MS)
+  }
+  throw new PrivateMembersError('The seal-off marker is not visible yet. Reload and finish the run.', 'E310')
 }

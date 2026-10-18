@@ -1260,8 +1260,74 @@ impl Keyring {
         matches!((anchor, height), (Some(a), Some(h)) if h < a.stated_height)
     }
 
-    /// The decrypted config timeline: every config that opens (any epoch the reader holds),
-    /// as the ref rules take it, and the newest one's fields.
+    /// Owner markers from every config, opened only with its anchored epoch key (§18.5).
+    pub fn active_seal_off(&self, owner: &[u8; 32]) -> crate::private::convert::ActiveSealOff {
+        crate::private::convert::active_seal_off(&self.seal_off_configs(), owner)
+    }
+
+    fn confirms_seal_off(
+        &self,
+        owner: &[u8; 32],
+        marker: &crate::private::convert::SealOffMarker,
+    ) -> bool {
+        use crate::private::convert::SealOffOpening;
+        let value = marker.encode();
+        self.seal_off_configs().iter().any(|c| {
+            c.owner == *owner
+                && c.private
+                && c.epoch == Some(marker.boundary_epoch)
+                && matches!(&c.opening, SealOffOpening::Opened(Some(v)) if *v == value)
+        })
+    }
+
+    fn seal_off_configs(&self) -> Vec<crate::private::convert::SealOffConfig> {
+        use crate::private::convert::{SealOffConfig, SealOffOpening};
+        self.configs
+            .iter()
+            .filter(|d| {
+                !d.field_u64("epoch")
+                    .and_then(|e| u32::try_from(e).ok())
+                    .is_some_and(|e| self.resolution.burned.contains(&e))
+            })
+            .map(|d| {
+                let epoch = d.field_u64("epoch").and_then(|e| u32::try_from(e).ok());
+                let enc = d.field_bytes("enc").unwrap_or_default();
+                let opening = match epoch.and_then(|e| self.resolution.anchors.get(&e)) {
+                    Some(a)
+                        if enc.first() == Some(&crate::private::doc::V2)
+                            && enc.len() >= crate::private::doc::MIN_V2
+                            && a.commit.is_some_and(|c| enc[1..33] != c) =>
+                    {
+                        SealOffOpening::OtherKey
+                    }
+                    Some(a) if a.commit.is_some() => match epoch
+                        .and_then(|e| self.epoch_keys(e))
+                        .filter(|keys| a.commit.is_some_and(|commit| keys.commits_to(&commit)))
+                        .zip(header_of(DocKind::Config, d))
+                    {
+                        Some((keys, header)) => {
+                            match crate::private::doc::open_with(keys, &header, &enc, true) {
+                                Opened::Readable(f) => SealOffOpening::Opened(f.seal_off),
+                                _ => SealOffOpening::Unreadable,
+                            }
+                        }
+                        None => SealOffOpening::Unreadable,
+                    },
+                    _ => SealOffOpening::Unreadable,
+                };
+                SealOffConfig {
+                    id: platform::decode_identifier(&d.id).unwrap_or_default(),
+                    owner: platform::decode_identifier(&d.owner_id).unwrap_or_default(),
+                    epoch,
+                    private: d.field_str("vis").as_deref() == Some("private"),
+                    height: d.created_at_block_height.unwrap_or(0),
+                    opening,
+                }
+            })
+            .collect()
+    }
+
+    /// The decrypted config timeline and the newest readable settings.
     pub fn config(&self) -> &PrivateConfig {
         &self.config
     }
@@ -1816,7 +1882,12 @@ impl<'a> PrivateSigner<'a> {
     async fn post_anchor(&self, w: &WriteCtx, anchor: &AnchorInput<'_>) -> Result<String> {
         let (core, scope, owner) = (&w.core, &w.scope, w.me);
         let keys = EpochKeys::derive(&scope.repo_id, anchor.epoch, anchor.key);
-        let content = anchor_content(anchor.visibility, &anchor.settings, anchor.link.clone());
+        let content = anchor_content(
+            anchor.visibility,
+            &anchor.settings,
+            anchor.link.clone(),
+            anchor.seal_off.as_ref(),
+        );
         let enc = crate::private::doc::seal(
             &keys,
             &DocHeader::new(DocKind::Config, owner, anchor.epoch),
@@ -1984,12 +2055,14 @@ pub fn anchor_content(
     visibility: Visibility,
     settings: &AnchorSettings,
     link: Option<ChainLink>,
+    seal_off: Option<&crate::private::convert::SealOffMarker>,
 ) -> AnchorContent {
     let (base, plaintext) = match visibility {
         Visibility::Private => (
             Fields {
                 default_branch: Some(settings.default_branch.clone()),
                 protected_patterns: settings.protected_patterns.clone(),
+                seal_off: seal_off.map(crate::private::convert::SealOffMarker::encode),
                 ..Fields::default()
             },
             BTreeMap::from([
@@ -2014,6 +2087,7 @@ pub fn anchor_content(
 
 /// What an anchor `config` carries.
 struct AnchorInput<'k> {
+    seal_off: Option<crate::private::convert::SealOffMarker>,
     epoch: u32,
     key: &'k EpochKey,
     /// The chain link (`None` for epoch 0).
@@ -2035,6 +2109,7 @@ impl<'k> AnchorInput<'k> {
             link,
             visibility: kr.visibility,
             settings: AnchorSettings::current(kr.config()),
+            seal_off: None,
         }
     }
 }
@@ -2071,6 +2146,7 @@ pub async fn create_private_state(
         .post_anchor(
             &w,
             &AnchorInput {
+                seal_off: None,
                 epoch: 0,
                 key: &key,
                 link: None,
@@ -2137,6 +2213,7 @@ pub async fn enable_members_key(signer: &PrivateSigner<'_>, repo: &RepoRef) -> R
         // The one half state (the owner's key share without its anchor): a re-run reuses the share.
         test_fault("enable-after-share")?;
         let input = AnchorInput {
+            seal_off: None,
             epoch: 0,
             key: &key,
             link: None,
@@ -2572,7 +2649,193 @@ pub async fn rotate(
     repo: &RepoRef,
     exclude: &[String],
 ) -> Result<Rotation> {
+    Box::pin(rotate_with_seal_off(signer, repo, exclude, None)).await
+}
+
+/// Rotate for make-public; the marker is carried by the anchor before it is confirmed.
+/// A losing owner anchor is followed by a config under the winning anchored key.
+pub async fn rotate_seal_off(
+    signer: &PrivateSigner<'_>,
+    repo: &RepoRef,
+    marker: crate::private::convert::SealOffMarker,
+) -> Result<Rotation> {
+    let rotation = rotate_with_seal_off(signer, repo, &[], Some(&marker)).await?;
+    let mut marker = marker;
+    marker.boundary_epoch = rotation.epoch;
+    ensure_seal_off_marker(signer, repo, &marker).await?;
+    Ok(rotation)
+}
+
+/// Confirm the marker at an existing boundary, finishing a rotation whose answer was lost.
+/// A follow-up config repeats the anchored epoch's settings and chain link under its winning key.
+pub async fn ensure_seal_off_marker(
+    signer: &PrivateSigner<'_>,
+    repo: &RepoRef,
+    marker: &crate::private::convert::SealOffMarker,
+) -> Result<()> {
     let w = signer.open(repo).await?;
+    if w.kr.visibility != Visibility::Private || signer.identity.id() != repo.owner_id() {
+        return Err(Error::Config(
+            "only the owner confirms a private repository's seal-off".into(),
+        ));
+    }
+    let me = w.me;
+    ensure_seal_off_marker_with(&mut SealOffMarkerWriter { signer, repo, w }, me, marker).await
+}
+
+/// The reads and post used by marker confirmation; offline tests exercise the same polling and
+/// dry-seal path as the signer without sending documents.
+trait SealOffMarkerIo {
+    fn keyring(&self) -> &Keyring;
+    async fn reload(&mut self) -> Result<()>;
+    async fn wait(&self);
+    async fn post(&self, input: &AnchorInput<'_>) -> Result<()>;
+}
+
+struct SealOffMarkerWriter<'a, 's> {
+    signer: &'a PrivateSigner<'s>,
+    repo: &'a RepoRef,
+    w: WriteCtx,
+}
+
+impl SealOffMarkerIo for SealOffMarkerWriter<'_, '_> {
+    fn keyring(&self) -> &Keyring {
+        &self.w.kr
+    }
+    async fn reload(&mut self) -> Result<()> {
+        self.w.kr = self.signer.reload(&self.w, self.repo).await?;
+        Ok(())
+    }
+    async fn wait(&self) {
+        tokio::time::sleep(ANCHOR_POLL_DELAY).await;
+    }
+    async fn post(&self, input: &AnchorInput<'_>) -> Result<()> {
+        self.signer.post_anchor(&self.w, input).await?;
+        Ok(())
+    }
+}
+
+async fn ensure_seal_off_marker_with(
+    io: &mut impl SealOffMarkerIo,
+    me: [u8; 32],
+    marker: &crate::private::convert::SealOffMarker,
+) -> Result<()> {
+    for attempt in 0..ANCHOR_POLLS {
+        let kr = io.keyring();
+        if kr.resolution.current_epoch > Some(marker.boundary_epoch)
+            || (kr.resolution.current_epoch == Some(marker.boundary_epoch)
+                && kr.epoch_key(marker.boundary_epoch).is_some())
+        {
+            break;
+        }
+        if attempt + 1 == ANCHOR_POLLS {
+            if kr.resolution.current_epoch < Some(marker.boundary_epoch) {
+                return Err(Error::Timeout { retryable: true });
+            }
+            return Err(Error::Config(
+                "repair keys before confirming the seal-off marker".into(),
+            ));
+        }
+        io.wait().await;
+        io.reload().await?;
+    }
+    let kr = io.keyring();
+    if kr.resolution.current_epoch != Some(marker.boundary_epoch) {
+        return Err(Error::Config(
+            "the seal-off boundary has passed; run make-public again".into(),
+        ));
+    }
+    if kr.resolution.burned.contains(&marker.boundary_epoch) {
+        return Err(Error::Config(
+            "repair keys before confirming the seal-off marker".into(),
+        ));
+    }
+    if !kr.confirms_seal_off(&me, marker) {
+        let key = kr.epoch_key(marker.boundary_epoch).ok_or_else(|| {
+            Error::Config("repair keys before confirming the seal-off marker".into())
+        })?;
+        let mut input = AnchorInput::current(
+            kr,
+            marker.boundary_epoch,
+            key,
+            kr.link_of(marker.boundary_epoch)?,
+        );
+        input.seal_off = Some(marker.clone());
+        preflight_seal_off(&kr.repo_id, me, &input.settings, marker)?;
+        io.post(&input).await?;
+        for attempt in 0..ANCHOR_POLLS {
+            io.reload().await?;
+            if io.keyring().confirms_seal_off(&me, marker) {
+                return Ok(());
+            }
+            if attempt + 1 < ANCHOR_POLLS {
+                io.wait().await;
+            }
+        }
+        return Err(Error::Timeout { retryable: true });
+    }
+    Ok(())
+}
+
+/// Dry-seal the maximum chain link plus marked settings, before any wrap is posted.
+pub fn preflight_seal_off(
+    repo_id: &[u8; 32],
+    owner: [u8; 32],
+    settings: &AnchorSettings,
+    marker: &crate::private::convert::SealOffMarker,
+) -> Result<()> {
+    let key = EpochKey::from_bytes([0; 32]);
+    let keys = EpochKeys::derive(repo_id, marker.boundary_epoch, &key);
+    let link = ChainLink {
+        prev: marker.boundary_epoch.saturating_sub(1),
+        prev_key: Some(key.clone()),
+        skip_key: Some(key),
+        burned: false,
+    };
+    let content = anchor_content(Visibility::Private, settings, Some(link), Some(marker));
+    crate::private::doc::seal(
+        &keys,
+        &DocHeader::new(DocKind::Config, owner, marker.boundary_epoch),
+        &content.fields,
+    )
+    .map(|_| ())
+    .map_err(|_| {
+        UserError::new(
+            codes::ROTATION_PENDING,
+            "shorten the protected patterns before making this repo public",
+        )
+        .note("nothing was written")
+        .into()
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+async fn rotate_with_seal_off(
+    signer: &PrivateSigner<'_>,
+    repo: &RepoRef,
+    exclude: &[String],
+    seal_off: Option<&crate::private::convert::SealOffMarker>,
+) -> Result<Rotation> {
+    let w = signer.open(repo).await?;
+    if let Some(marker) = seal_off {
+        if w.kr.visibility != Visibility::Private || signer.identity.id() != repo.owner_id() {
+            return Err(Error::Config(
+                "only the owner marks a private repository's seal-off".into(),
+            ));
+        }
+        if marker
+            .replaces_epoch
+            .is_some_and(|r| w.kr.resolution.current_epoch < Some(r))
+        {
+            return Err(Error::Timeout { retryable: true });
+        }
+        preflight_seal_off(
+            &w.scope.repo_id,
+            w.me,
+            &AnchorSettings::current(w.kr.config()),
+            marker,
+        )?;
+    }
     let me_b58 = signer.identity.id();
     require_rotator(&w.kr, repo)?;
     let mut from = chain_from(&w.kr, repo)?;
@@ -2666,7 +2929,11 @@ pub async fn rotate(
             return Err(stray_error(epoch, *stray));
         }
         let link = next_link(&w.kr, &from, from_burned, false, skip_below.as_ref())?;
-        let input = AnchorInput::current(&w.kr, epoch, &key, Some(link));
+        let mut input = AnchorInput::current(&w.kr, epoch, &key, Some(link));
+        input.seal_off = seal_off.cloned().map(|mut m| {
+            m.boundary_epoch = epoch;
+            m
+        });
         let won = anchor_and_confirm(signer, &w, repo, &input).await?;
         let post_keys = Box::pin(rotation_post_keys(signer, &w, repo, (epoch, &key), won)).await?;
         return Ok(Rotation {
@@ -2694,6 +2961,9 @@ async fn rotation_post_keys(
     won: bool,
 ) -> Result<crate::bot_keys::Issued> {
     if !won {
+        // A seal-off excludes nobody, so a lost anchor needs no membership-removal repair.
+        // Match the web: its follow-up confirms the marker under the winning key, without
+        // issuing post keys for the losing key.
         return Ok(crate::bot_keys::Issued::default());
     }
     let keys = EpochKeys::derive(&w.scope.repo_id, epoch, key);
@@ -3530,6 +3800,244 @@ mod tests {
                 branches: std::sync::RwLock::default(),
             }
         }
+    }
+
+    #[test]
+    fn owner_marker_discovery_uses_all_configs_and_anchored_keys() {
+        use crate::private::convert::{ActiveSealOff, SealOffMarker, SealOffMode};
+        let mut f = Fixture::new(&[(ALICE, Role::Maintainer), (BOB, Role::Maintainer)]);
+        f.config(ALICE, 0, 10, None, 1, false)
+            .config(ALICE, 1, 11, Some(10), 2, false)
+            .config(ALICE, 2, 12, Some(11), 3, false)
+            .wrap(ALICE, ALICE, 2, 12);
+        let mut kr = f.keyring(ALICE);
+        kr.configs = f
+            .configs
+            .iter()
+            .map(|c| FetchedDocument {
+                id: platform::encode_identifier(c.id),
+                owner_id: platform::encode_identifier(c.owner),
+                created_at: Some(c.created_at),
+                created_at_block_height: Some(c.created_at_block_height),
+                updated_at: None,
+                updated_at_block_height: None,
+                revision: Some(1),
+                fields: BTreeMap::from([
+                    ("vis".into(), FieldValue::text("private")),
+                    ("epoch".into(), FieldValue::integer(u64::from(c.epoch))),
+                    ("enc".into(), FieldValue::bytes(c.enc.clone())),
+                ]),
+            })
+            .collect();
+        let marker = SealOffMarker {
+            mode: SealOffMode::CodeOnly,
+            conversion_id: [1; 16],
+            boundary_epoch: 1,
+            started_at_ms: 123,
+            replaces_epoch: None,
+        };
+        let fields = Fields {
+            prev_epoch: Some(0),
+            prev_epoch_key: Some(k(10)),
+            seal_off: Some(marker.encode()),
+            ..Fields::default()
+        };
+        let enc = crate::private::doc::seal(
+            kr.epoch_keys(1).unwrap(),
+            &DocHeader::new(DocKind::Config, ALICE, 1),
+            &fields,
+        )
+        .unwrap();
+        kr.configs[1]
+            .fields
+            .insert("enc".into(), FieldValue::bytes(enc));
+        assert!(matches!(
+            kr.active_seal_off(&ALICE),
+            ActiveSealOff::Active { epoch: 1, .. }
+        ));
+        assert!(kr.confirms_seal_off(&ALICE, &marker));
+        let mut other = kr.configs[1].clone();
+        other.owner_id = platform::encode_identifier(BOB);
+        other
+            .fields
+            .insert("enc".into(), FieldValue::bytes(vec![2]));
+        kr.configs.push(other);
+        assert!(matches!(
+            kr.active_seal_off(&ALICE),
+            ActiveSealOff::Active { epoch: 1, .. }
+        ));
+        let mut loser = kr.configs[1].clone();
+        let keys = EpochKeys::derive(&f.repo_id, 1, &k(99));
+        loser.fields.insert(
+            "enc".into(),
+            FieldValue::bytes(
+                crate::private::doc::seal(
+                    &keys,
+                    &DocHeader::new(DocKind::Config, ALICE, 1),
+                    &fields,
+                )
+                .unwrap(),
+            ),
+        );
+        kr.configs.push(loser);
+        assert!(matches!(
+            kr.active_seal_off(&ALICE),
+            ActiveSealOff::Active { epoch: 1, .. }
+        ));
+        let mut unreadable = kr.configs[1].clone();
+        unreadable
+            .fields
+            .insert("enc".into(), FieldValue::bytes(vec![2]));
+        kr.configs.push(unreadable);
+        assert_eq!(kr.active_seal_off(&ALICE), ActiveSealOff::Unknown);
+        // A proved burned epoch carries no marker, even without its key.
+        kr.resolution.burned.insert(1);
+        assert_eq!(kr.active_seal_off(&ALICE), ActiveSealOff::None);
+    }
+
+    struct MarkerIo {
+        kr: Keyring,
+        reads: std::collections::VecDeque<Keyring>,
+        pending: std::cell::RefCell<Option<FetchedDocument>>,
+        events: std::cell::RefCell<Vec<&'static str>>,
+    }
+
+    #[allow(clippy::unused_async_trait_impl)] // the in-memory adapter implements async I/O without waiting
+    impl SealOffMarkerIo for MarkerIo {
+        fn keyring(&self) -> &Keyring {
+            &self.kr
+        }
+        async fn reload(&mut self) -> Result<()> {
+            self.events.borrow_mut().push("read");
+            if let Some(kr) = self.reads.pop_front() {
+                self.kr = kr;
+            }
+            if let Some(doc) = self.pending.borrow_mut().take() {
+                self.kr.configs.push(doc);
+            }
+            Ok(())
+        }
+        async fn wait(&self) {
+            self.events.borrow_mut().push("wait");
+        }
+        async fn post(&self, input: &AnchorInput<'_>) -> Result<()> {
+            self.events.borrow_mut().push("post");
+            let keys = EpochKeys::derive(&self.kr.repo_id, input.epoch, input.key);
+            let content = anchor_content(
+                input.visibility,
+                &input.settings,
+                input.link.clone(),
+                input.seal_off.as_ref(),
+            );
+            let enc = crate::private::doc::seal(
+                &keys,
+                &DocHeader::new(DocKind::Config, ALICE, input.epoch),
+                &content.fields,
+            )?;
+            let mut posted = doc(vec![
+                ("vis", FieldValue::text("private")),
+                ("epoch", FieldValue::integer(u64::from(input.epoch))),
+                ("enc", FieldValue::bytes(enc)),
+            ]);
+            posted.owner_id = platform::encode_identifier(ALICE);
+            *self.pending.borrow_mut() = Some(posted);
+            Ok(())
+        }
+    }
+
+    fn marker_io(kr: Keyring) -> MarkerIo {
+        MarkerIo {
+            kr,
+            reads: std::collections::VecDeque::new(),
+            pending: std::cell::RefCell::default(),
+            events: std::cell::RefCell::default(),
+        }
+    }
+
+    fn confirmation_marker() -> crate::private::convert::SealOffMarker {
+        crate::private::convert::SealOffMarker {
+            mode: crate::private::convert::SealOffMode::CodeOnly,
+            conversion_id: [1; 16],
+            boundary_epoch: 1,
+            started_at_ms: 1,
+            replaces_epoch: Some(0),
+        }
+    }
+
+    fn confirmation_keyring() -> Keyring {
+        let mut f = Fixture::new(&[(ALICE, Role::Maintainer)]);
+        f.config(ALICE, 0, 10, None, 1, false)
+            .config(ALICE, 1, 11, Some(10), 2, false)
+            .wrap(ALICE, ALICE, 1, 11);
+        let mut kr = f.keyring(ALICE);
+        kr.configs = f
+            .configs
+            .iter()
+            .map(|c| {
+                let mut raw = doc(vec![
+                    ("vis", FieldValue::text("private")),
+                    ("epoch", FieldValue::integer(u64::from(c.epoch))),
+                    ("enc", FieldValue::bytes(c.enc.clone())),
+                ]);
+                raw.id = platform::encode_identifier(c.id);
+                raw.owner_id = platform::encode_identifier(c.owner);
+                raw.created_at_block_height = Some(c.created_at_block_height);
+                raw
+            })
+            .collect();
+        kr
+    }
+
+    #[tokio::test]
+    async fn ensure_seal_off_marker_polls_lagging_anchors_and_keys_before_posting() {
+        for anchor_lagging in [false, true] {
+            let mut lagging = confirmation_keyring();
+            lagging.resolution.keys.remove(&1);
+            if anchor_lagging {
+                lagging.resolution.current_epoch = Some(0);
+            }
+            let mut io = marker_io(lagging);
+            io.reads.push_back(confirmation_keyring());
+            let marker = confirmation_marker();
+            ensure_seal_off_marker_with(&mut io, ALICE, &marker)
+                .await
+                .unwrap();
+            assert_eq!(*io.events.borrow(), ["wait", "read", "post", "read"]);
+            assert!(io.kr.confirms_seal_off(&ALICE, &marker));
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_seal_off_marker_times_out_on_node_lag_without_posting() {
+        let mut f = Fixture::new(&[(ALICE, Role::Maintainer)]);
+        f.config(ALICE, 0, 10, None, 1, false)
+            .wrap(ALICE, ALICE, 0, 10);
+        let mut io = marker_io(f.keyring(ALICE));
+        let result = ensure_seal_off_marker_with(&mut io, ALICE, &confirmation_marker()).await;
+        assert!(matches!(result, Err(Error::Timeout { retryable: true })));
+        let events = io.events.borrow();
+        assert_eq!(
+            events.iter().filter(|&&e| e == "wait").count(),
+            ANCHOR_POLLS - 1
+        );
+        assert!(!events.contains(&"post"));
+    }
+
+    #[tokio::test]
+    async fn ensure_seal_off_marker_dry_seals_before_posting_the_follow_up() {
+        let mut kr = confirmation_keyring();
+        kr.config.default_branch = Some("b".repeat(255));
+        kr.config.protected_patterns = vec!["a".repeat(100); 7];
+        kr.config
+            .protected_patterns
+            .push(format!("{}é{}", "𐀀".repeat(93), "a".repeat(6)));
+        let mut io = marker_io(kr);
+        let result = ensure_seal_off_marker_with(&mut io, ALICE, &confirmation_marker()).await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("shorten the protected patterns"));
+        assert!(io.events.borrow().is_empty());
     }
 
     fn test_repo() -> RepoRef {

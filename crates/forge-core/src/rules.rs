@@ -2247,7 +2247,7 @@ mod tests {
             skip_key: l.skip_key.as_deref().map(key),
             burned: l.burned,
         });
-        let got = crate::keyring::anchor_content(inp.visibility, &settings, link);
+        let got = crate::keyring::anchor_content(inp.visibility, &settings, link, None);
         let got = MixedAnchorExpected {
             vis: got.vis,
             plaintext: got.plaintext.keys().cloned().collect(),
@@ -3847,6 +3847,7 @@ mod tests {
                 || crate::members_git::conformance::CASES.contains(&v.case.as_str())
                 || v.case == crate::private::branch_key::conformance::CASE
                 || v.case == crate::private::members_check::CASE
+                || v.case == "seal_off_marker"
             {
                 continue;
             }

@@ -68,6 +68,8 @@ export interface DocFields {
   readonly headOid?: Uint8Array
   /** Tag 27 (`enc` v0x03 only, exactly when one of 22-24 is present): the salt of the blinds (32 bytes). */
   readonly oidSalt?: Uint8Array
+  /** Tag 65: raw seal-off marker, retained even when its value is unknown (config only). */
+  readonly sealOff?: Uint8Array
 }
 
 /** A §4.3 violation. */
@@ -98,6 +100,7 @@ export const TAG = {
   prevOid: 23,
   headOid: 24,
   oidSalt: 27,
+  sealOff: 65,
 } as const
 
 /**
@@ -305,7 +308,10 @@ function parseWith(pt: Uint8Array, ctx: TlvContext, letter: LetterParts | undefi
       throw new MalformedError(`tag ${tag}: out of order or repeated`)
     }
     lastTag = tag
-    if (tag >= FIRST_EXTENSION) continue
+    if (tag >= FIRST_EXTENSION) {
+      if (tag === TAG.sealOff && ctx.type === 'config') out.sealOff = pt.slice(start, end)
+      continue
+    }
     if (tag === RECIPIENT_TAG && letter !== undefined && letterKind(ctx.type)) {
       if (len !== 32) throw new MalformedError('a recipient id is not 32 bytes')
       letter.recipients.push(pt.slice(start, end))
@@ -437,6 +443,7 @@ export function encodeTlv(fields: DocFields): Bytes {
     [TAG.prevOid, fields.prevOid],
     [TAG.headOid, fields.headOid],
     [TAG.oidSalt, fields.oidSalt],
+    [TAG.sealOff, fields.sealOff],
   ] as const) {
     if (v !== undefined) parts.push(record(tag, v))
   }

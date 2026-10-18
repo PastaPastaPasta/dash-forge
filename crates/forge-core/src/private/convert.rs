@@ -246,6 +246,331 @@ pub fn epoch_key_bundles(
         .collect()
 }
 
+/// The v1 tag-65 value (§18.5). Its timestamp is informational.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealOffMarker {
+    /// 1 Code only, 2 Everything.
+    pub mode: SealOffMode,
+    /// Random 16-byte run identifier, kept in the local record too.
+    pub conversion_id: [u8; 16],
+    /// The enclosing config's epoch.
+    pub boundary_epoch: u32,
+    /// Client clock in milliseconds.
+    pub started_at_ms: u64,
+    /// Earlier boundary set aside by an intentional start-over.
+    pub replaces_epoch: Option<u32>,
+}
+
+/// What becomes public.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealOffMode {
+    /// Chosen branches and tags.
+    CodeOnly,
+    /// Everything below the boundary.
+    Everything,
+}
+
+impl SealOffMarker {
+    /// A fresh run identity (the enclosing rotation supplies the final epoch).
+    pub fn new(
+        mode: SealOffMode,
+        started_at_ms: u64,
+        replaces_epoch: Option<u32>,
+    ) -> Result<Self, super::PrivateError> {
+        let random = super::keys::rnd32()?;
+        Ok(Self {
+            mode,
+            conversion_id: random[..16].try_into().expect("16 bytes"),
+            boundary_epoch: 1,
+            started_at_ms,
+            replaces_epoch,
+        })
+    }
+
+    /// Encode all integers in big-endian order.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(34);
+        out.extend_from_slice(&[
+            1,
+            match self.mode {
+                SealOffMode::CodeOnly => 1,
+                SealOffMode::Everything => 2,
+            },
+        ]);
+        out.extend_from_slice(&self.conversion_id);
+        out.extend_from_slice(&self.boundary_epoch.to_be_bytes());
+        out.extend_from_slice(&self.started_at_ms.to_be_bytes());
+        if let Some(e) = self.replaces_epoch {
+            out.extend_from_slice(&e.to_be_bytes());
+        }
+        out
+    }
+
+    /// Unknown values remain candidates at their config's epoch.
+    #[must_use]
+    pub fn parse(value: &[u8], epoch: u32) -> Option<Self> {
+        if !matches!(value.len(), 30 | 34) || value[0] != 1 || epoch == 0 {
+            return None;
+        }
+        let mode = match value[1] {
+            1 => SealOffMode::CodeOnly,
+            2 => SealOffMode::Everything,
+            _ => return None,
+        };
+        let boundary_epoch = u32::from_be_bytes(value[18..22].try_into().ok()?);
+        if boundary_epoch != epoch {
+            return None;
+        }
+        Some(Self {
+            mode,
+            conversion_id: value[2..18].try_into().ok()?,
+            boundary_epoch,
+            started_at_ms: u64::from_be_bytes(value[22..30].try_into().ok()?),
+            replaces_epoch: if value.len() == 34 {
+                Some(u32::from_be_bytes(value[30..34].try_into().ok()?))
+            } else {
+                None
+            },
+        })
+    }
+}
+
+/// A config opened under its anchored epoch key, another key, or not opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SealOffOpening {
+    /// Raw tag-65 bytes, if present.
+    Opened(Option<Vec<u8>>),
+    /// The config's commitment differs from its anchored epoch's.
+    OtherKey,
+    /// No key, malformed framing, or an authentication failure.
+    Unreadable,
+}
+
+/// Every config as the pure marker rule needs it.
+#[derive(Debug, Clone)]
+pub struct SealOffConfig {
+    /// Raw document id, used for the final tie-break.
+    pub id: [u8; 32],
+    /// Signed owner identity.
+    pub owner: [u8; 32],
+    /// Enclosing epoch.
+    pub epoch: Option<u32>,
+    /// Stamped private.
+    pub private: bool,
+    /// Platform block height.
+    pub height: u64,
+    /// Result of opening with the anchored epoch key.
+    pub opening: SealOffOpening,
+}
+
+/// The authority for an unfinished conversion, also kept after the flip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveSealOff {
+    /// No owner marker.
+    None,
+    /// At least one owner config cannot be opened: repair keys first.
+    Unknown,
+    /// Lowest boundary not set aside by a valid later owner marker.
+    Active {
+        /// Boundary epoch.
+        epoch: u32,
+        /// Platform height of the chosen config.
+        height: u64,
+        /// None for an unknown marker value (the boundary still counts).
+        marker: Option<SealOffMarker>,
+        /// Highest candidate still in force; start-over must cover all of them.
+        highest_epoch: u32,
+        /// All older boundaries through this epoch have been set aside by the owner.
+        replaces_through: Option<u32>,
+    },
+}
+
+impl ActiveSealOff {
+    /// The boundary, when known. Callers must handle `Unknown` before proceeding.
+    #[must_use]
+    pub fn epoch(&self) -> Option<u32> {
+        match self {
+            Self::Active { epoch, .. } => Some(*epoch),
+            _ => None,
+        }
+    }
+
+    /// Highest local or unreplaced owner boundary to cover when starting over.
+    #[must_use]
+    pub fn replacement_epoch(&self, recorded: Option<u32>) -> Option<u32> {
+        recorded.max(match self {
+            Self::Active { highest_epoch, .. } => Some(*highest_epoch),
+            _ => None,
+        })
+    }
+
+    /// Lower boundary still in force. Callers must refuse `Unknown` first.
+    #[must_use]
+    pub fn boundary(&self, recorded: Option<u32>) -> Option<u32> {
+        let recorded = match self {
+            Self::Active {
+                replaces_through: Some(r),
+                ..
+            } => recorded.filter(|e| e > r),
+            _ => recorded,
+        };
+        history_cutoff(recorded, self.epoch())
+    }
+}
+
+/// One sticky rule (§18.5), shared with the web's `activeSealOff` and the conformance vectors.
+#[must_use]
+pub fn active_seal_off(configs: &[SealOffConfig], owner: &[u8; 32]) -> ActiveSealOff {
+    let counted: Vec<_> = configs
+        .iter()
+        .filter(|c| c.owner == *owner && c.private && c.epoch.is_some_and(|e| e >= 1))
+        .collect();
+    if counted
+        .iter()
+        .any(|c| c.opening == SealOffOpening::Unreadable)
+    {
+        return ActiveSealOff::Unknown;
+    }
+    let mut candidates: Vec<_> = counted
+        .into_iter()
+        .filter_map(|c| {
+            let SealOffOpening::Opened(Some(value)) = &c.opening else {
+                return None;
+            };
+            let epoch = c.epoch?;
+            Some((c, epoch, SealOffMarker::parse(value, epoch)))
+        })
+        .collect();
+    let replaces_through = candidates
+        .iter()
+        .filter_map(|(_, e, m)| m.as_ref()?.replaces_epoch.filter(|r| r < e))
+        .max();
+    candidates.retain(|(_, e, _)| replaces_through.is_none_or(|r| *e > r));
+    let highest_epoch = candidates.iter().map(|(_, e, _)| *e).max();
+    candidates.sort_by_key(|(c, e, _)| (*e, c.height, c.id));
+    candidates
+        .first()
+        .map_or(ActiveSealOff::None, |(c, epoch, marker)| {
+            ActiveSealOff::Active {
+                epoch: *epoch,
+                height: c.height,
+                marker: marker.clone(),
+                highest_epoch: highest_epoch.expect("a selected candidate exists"),
+                replaces_through,
+            }
+        })
+}
+
+/// The run's decision from its record, the owner marker, and the anchored key epoch now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealOffDecision {
+    /// Rotate once with a new marker.
+    New,
+    /// Continue without rotating, checking strictly below this epoch.
+    Adopt(u32),
+    /// Wait for Platform to show this epoch.
+    Lagging(u32),
+    /// Only an intentional start-over may replace this boundary.
+    Passed(u32),
+    /// Already public: publish strictly below the lowest known cutoff.
+    Public(Option<u32>),
+    /// Repair keys before proceeding.
+    Unknown,
+}
+
+/// The common boundary decision for both conversion entry points and the shared vectors.
+#[must_use]
+pub fn seal_off_decision(
+    recorded: Option<u32>,
+    active: &ActiveSealOff,
+    current: Option<u32>,
+    flipped: bool,
+    stated: Option<u32>,
+) -> SealOffDecision {
+    if *active == ActiveSealOff::Unknown {
+        return SealOffDecision::Unknown;
+    }
+    let boundary = active.boundary(recorded);
+    if flipped {
+        return SealOffDecision::Public(history_cutoff(stated, boundary));
+    }
+    match boundary {
+        None => SealOffDecision::New,
+        Some(e) if current == Some(e) => SealOffDecision::Adopt(e),
+        Some(e) if current.is_some_and(|c| c > e) => SealOffDecision::Passed(e),
+        Some(e) => SealOffDecision::Lagging(e),
+    }
+}
+
+/// A member notice points to the owner marker rather than repeating its contents (§18.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealOffNotice {
+    /// The confirmed run's id.
+    pub conversion_id: [u8; 16],
+    /// The confirmed marker's epoch.
+    pub boundary_epoch: u32,
+    /// Earlier boundary, for a start-over notice.
+    pub replaces_epoch: Option<u32>,
+}
+
+impl ActiveSealOff {
+    /// Only a known, owner-confirmed marker supplies a notice pointer.
+    #[must_use]
+    pub fn notice_for(&self, conversion_id: &[u8; 16]) -> Option<SealOffNotice> {
+        let Self::Active {
+            marker: Some(m), ..
+        } = self
+        else {
+            return None;
+        };
+        if m.conversion_id != *conversion_id {
+            return None;
+        }
+        Some(SealOffNotice {
+            conversion_id: m.conversion_id,
+            boundary_epoch: m.boundary_epoch,
+            replaces_epoch: m.replaces_epoch,
+        })
+    }
+
+    /// A received pointer is unconfirmed unless it matches the authoritative owner marker.
+    #[must_use]
+    pub fn confirms_notice(&self, notice: &SealOffNotice) -> bool {
+        self.notice_for(&notice.conversion_id).as_ref() == Some(notice)
+    }
+}
+
+#[cfg(test)]
+mod seal_off_notice_tests {
+    use super::*;
+    #[test]
+    fn notices_resolve_only_to_the_confirmed_owner_marker() {
+        let marker = SealOffMarker {
+            mode: SealOffMode::Everything,
+            conversion_id: [1; 16],
+            boundary_epoch: 3,
+            started_at_ms: 123,
+            replaces_epoch: Some(1),
+        };
+        let active = ActiveSealOff::Active {
+            epoch: 3,
+            height: 10,
+            highest_epoch: 3,
+            replaces_through: Some(1),
+            marker: Some(marker),
+        };
+        assert!(active.notice_for(&[2; 16]).is_none());
+        let notice = active.notice_for(&[1; 16]).unwrap();
+        assert_eq!(notice.replaces_epoch, Some(1));
+        assert!(active.confirms_notice(&notice));
+        assert!(!ActiveSealOff::Unknown.confirms_notice(&notice));
+        let mut different = notice;
+        different.conversion_id[0] = 2;
+        assert!(!active.confirms_notice(&different));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +665,54 @@ mod tests {
         assert_eq!(
             hex::encode(Sha256::digest(&bundles[0])),
             "740906d2c6534bbc3c7eaaa2b4a5e0321b3c2b4d710b5c9191d30d5953811757"
+        );
+    }
+}
+
+#[cfg(test)]
+mod replacement_review_tests {
+    use super::*;
+    fn configs() -> Vec<SealOffConfig> {
+        [1, 2, 3]
+            .map(|epoch| SealOffConfig {
+                id: [u8::try_from(epoch).unwrap(); 32],
+                owner: [1; 32],
+                epoch: Some(epoch),
+                private: true,
+                height: u64::from(epoch),
+                opening: SealOffOpening::Opened(Some(
+                    SealOffMarker {
+                        mode: SealOffMode::CodeOnly,
+                        conversion_id: [1; 16],
+                        boundary_epoch: epoch,
+                        started_at_ms: 1,
+                        replaces_epoch: (epoch == 3).then_some(2),
+                    }
+                    .encode(),
+                )),
+            })
+            .to_vec()
+    }
+    #[test]
+    fn start_over_sets_aside_all_prior_owner_runs() {
+        assert_eq!(active_seal_off(&configs(), &[1; 32]).epoch(), Some(3));
+    }
+    #[test]
+    fn start_over_covers_highest_owner_or_local_boundary() {
+        let mut configs = configs();
+        configs.pop();
+        let active = active_seal_off(&configs, &[1; 32]);
+        assert_eq!(active.epoch(), Some(1));
+        assert_eq!(active.replacement_epoch(None), Some(2));
+        assert_eq!(active.replacement_epoch(Some(1)), Some(2));
+        assert_eq!(active.replacement_epoch(Some(4)), Some(4));
+    }
+    #[test]
+    fn stale_record_on_another_device_adopts_replacement() {
+        let active = active_seal_off(&configs(), &[1; 32]);
+        assert_eq!(
+            seal_off_decision(Some(1), &active, Some(3), false, None),
+            SealOffDecision::Adopt(3)
         );
     }
 }

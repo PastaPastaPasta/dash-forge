@@ -19,7 +19,7 @@
  * plaintext), and drops it when the run finishes.
  */
 
-import { CONVERTED_REPO_MIN_CLIENT_VERSION } from '../private'
+import { CONVERTED_REPO_MIN_CLIENT_VERSION, sealOffBoundary, type ActiveSealOff } from '../private'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import type { Network } from '../constants'
 import { estimateChunkCredits } from '../sdk/cost'
@@ -139,6 +139,8 @@ export interface MakePublicStatus {
    * run can't be finished (its boundary would move), only started again on purpose.
    */
   readonly sealOffPassed: boolean
+  /** Owner marker found without relying on this browser's local record. */
+  readonly sealOffMarker?: Extract<ActiveSealOff, { kind: 'active' }>
   /** The record's mode, else Everything when the owner published history, else unknown. */
   readonly mode: MakePublicMode | null
 }
@@ -184,6 +186,9 @@ export class MakePublicError extends Error {
 export const COPY = {
   frozen: "This network's Forge can't make a private repository public yet.",
   notKeyHolder: "You don't hold this repo's current key. Ask a maintainer to repair it from the repo page.",
+  markerUnreadable: "An owner config can't be opened. Repair the repo's keys before making it public (dg repo keys repair).",
+  markerSize: 'Shorten the protected patterns before making this repo public.',
+  markerLower: 'The local record and the owner marker differ. Publishing stops at the earliest boundary still in force.',
   repairFirst: "This repo's key needs a repair first. Repair it from the repo page, then try again.",
   noCode: 'Code only would publish no code: this repo has no default branch with commits. Choose branches and tags, or choose Everything.',
   unreadableHistory: "Some history written while private can't be published: nobody holds its key any more. It stays unreadable to everyone.",
@@ -201,6 +206,7 @@ export const COPY = {
   boundaryKept:
     "The repo's settings state another boundary than this run's own key change. The history published from this browser stops at the lower one, so this browser keeps its record of the run.",
   startOverUnfinished: 'This run can still be finished: choose Finish instead of starting again.',
+  markerChanged: "The owner marker's boundary changed during this run. The repo is still private. Run it again to check what becomes public below that boundary.",
   runAgain: "This run found its own key change only after its check. The repo is still private. Run it again to check what becomes public below it.",
   changedSince: (ref: string) => `Not published: ${ref} changed after this run's key change.`,
   startOverPublic: 'This repo is public already, so its run can only be finished, not started again.',
@@ -382,6 +388,10 @@ export interface MakePublicRecord {
    */
   readonly sealOffFrom?: number | null
   readonly startedAt: number
+  /** Hex of the marker's random 16-byte run id, never a key. */
+  readonly conversionId?: string
+  /** Kept until marker confirmation too, so an interrupted start-over can finish its follow-up. */
+  readonly replacesEpoch?: number
 }
 
 /** One record per network, signer and repo: another identity signed in here never continues it (an older key without the signer is ignored). */
@@ -401,13 +411,16 @@ export async function loadMakePublicRecord(network: Network, signer: string, rep
   const okRefs = Array.isArray(o.refs) && o.refs.every((x) => Array.isArray(x) && x.length === 2 && typeof x[0] === 'string' && typeof x[1] === 'string')
   const epochOk = (e: unknown): boolean => e === null || e === undefined || (typeof e === 'number' && Number.isInteger(e) && e >= 0)
   const okSeal = (o.sealOff === null || (typeof o.sealOff === 'number' && Number.isInteger(o.sealOff) && o.sealOff >= 0)) && epochOk(o.sealOffFrom)
+  const okId = o.conversionId === undefined || (typeof o.conversionId === 'string' && /^[0-9a-f]{32}$/.test(o.conversionId))
   // copy-lint-ignore: a corrupt local record, reported as is
-  if (!okMode || !okRefs || !okSeal) throw new MakePublicError("This browser's record of making this repo public can't be read. If no run is under way, clear the site's storage.", 'E201')
+  if (!okMode || !okRefs || !okSeal || !okId || !epochOk(o.replacesEpoch)) throw new MakePublicError("This browser's record of making this repo public can't be read. If no run is under way, clear the site's storage.", 'E201')
   return {
     mode: o.mode as MakePublicMode,
     refs: o.refs as MakePublicRecord['refs'],
     sealOff: o.sealOff ?? null,
     sealOffFrom: o.sealOffFrom ?? null,
+    ...(typeof o.conversionId === 'string' && /^[0-9a-f]{32}$/.test(o.conversionId) ? { conversionId: o.conversionId } : {}),
+    ...(typeof o.replacesEpoch === 'number' ? { replacesEpoch: o.replacesEpoch } : {}),
     startedAt: typeof o.startedAt === 'number' ? o.startedAt : 0,
   }
 }
@@ -443,20 +456,24 @@ export function sameRefs(a: readonly MakePublicRef[], b: readonly MakePublicRef[
  * once the key read now (`current`) shows one: the run's own rotation, or an earlier boundary.
  * Null while none shows (the rotation is made, or resumed with the same key).
  */
-export function recordedSealOff(sealOff: number | null, from: number | null | undefined, current: number | null, burned: ReadonlySet<number> | readonly number[] = []): number | null {
-  if (sealOff !== null) return sealOff
-  if (from === null || from === undefined || current === null) return null
-  const skip = new Set(burned)
-  for (let e = from + 1; e <= current; e++) if (!skip.has(e)) return e
-  return null
+export function recordedSealOff(sealOff: number | null, from: number | null | undefined, current: number | null, burned: ReadonlySet<number> | readonly number[] = [], marker: ActiveSealOff = { kind: 'none' }): number | null {
+  let recorded = sealOff
+  if (recorded === null && from != null && current !== null) {
+    const skip = new Set(burned)
+    for (let e = from + 1; e <= current; e++) {
+      if (!skip.has(e)) { recorded = e; break }
+    }
+  }
+  return sealOffBoundary(recorded, marker)
 }
 
 /**
  * Whether another rotation followed the recorded seal-off epoch `recorded` (the key epoch read now
  * is `current`): that run's boundary is passed, so it can't be finished, only started again.
  */
-export function sealOffPassed(recorded: number | null, current: number | null): boolean {
-  return recorded !== null && current !== null && current > recorded
+export function sealOffPassed(recorded: number | null, current: number | null, marker: ActiveSealOff = { kind: 'none' }): boolean {
+  const boundary = sealOffBoundary(recorded, marker)
+  return boundary !== null && current !== null && current > boundary
 }
 
 /**

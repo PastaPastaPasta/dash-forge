@@ -374,3 +374,8 @@ describe('doc hardening', () => {
     expect(await openContent({ ...ISSUE, enc }, await ctx())).toEqual({ status: 'malformed' })
   })
 })
+
+
+it('seal-off extension is retained in configs', () => {
+  expect(parseTlv(new Uint8Array([65, 0, 0]), { type: 'config', epoch: 0 })).toHaveProperty('sealOff', new Uint8Array())
+})

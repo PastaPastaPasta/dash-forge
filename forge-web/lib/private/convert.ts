@@ -12,11 +12,11 @@
  * downloaded.
  */
 
-import { constantTimeEqual } from './bytes'
+import { constantTimeEqual, isU32 } from './bytes'
 import { ENTRY_EPOCH_KEY, encodeBundle, parseBundle, type Bundle, type BundleEntry } from './bundle'
 import { V1 } from './doc'
 import { sortAlerts, type Anchor, type EpochAlert } from './epoch'
-import { bytesEqual, type PrivateId } from './ids'
+import { bytesEqual, compareBytes, type PrivateId } from './ids'
 import { EpochKeys } from './keys'
 import { sniff } from './pack'
 import type { Visibility } from '../rules/v2'
@@ -180,4 +180,116 @@ export function epochKeyBundles(repoId: Uint8Array, keys: ReadonlyMap<number, Ui
   const out: Uint8Array[] = []
   for (let i = 0; i < entries.length; i += MAX_EPOCH_ENTRIES) out.push(encodeBundle(entries.slice(i, i + MAX_EPOCH_ENTRIES), EPOCH_BUNDLE_NOTE))
   return out
+}
+
+/** The sealed tag-65 value (§18.5), integers in big-endian order. */
+export interface SealOffMarker {
+  readonly mode: 'codeOnly' | 'everything'
+  readonly conversionId: Uint8Array
+  readonly boundaryEpoch: number
+  readonly startedAtMs: bigint
+  readonly replacesEpoch?: number
+}
+
+/** Encode the v1 seal-off marker. The timestamp is informational and retains all 64 bits. */
+export function encodeSealOffMarker(m: SealOffMarker): Uint8Array {
+  if (m.conversionId.length !== 16 || !isU32(m.boundaryEpoch) || m.boundaryEpoch < 1 ||
+      (m.mode !== 'codeOnly' && m.mode !== 'everything') || m.startedAtMs < 0n || m.startedAtMs > 0xffff_ffff_ffff_ffffn ||
+      (m.replacesEpoch !== undefined && !isU32(m.replacesEpoch))) throw new TypeError('invalid seal-off marker')
+  const out = new Uint8Array(m.replacesEpoch === undefined ? 30 : 34)
+  const v = new DataView(out.buffer)
+  out[0] = 1
+  out[1] = m.mode === 'codeOnly' ? 1 : 2
+  out.set(m.conversionId, 2)
+  v.setUint32(18, m.boundaryEpoch)
+  v.setBigUint64(22, m.startedAtMs)
+  if (m.replacesEpoch !== undefined) v.setUint32(30, m.replacesEpoch)
+  return out
+}
+
+/** Unknown lengths, versions, modes and a boundary unequal to the enclosing epoch stay unknown. */
+export function parseSealOffMarker(value: Uint8Array, epoch: number): SealOffMarker | null {
+  if ((value.length !== 30 && value.length !== 34) || value[0] !== 1 || (value[1] !== 1 && value[1] !== 2)) return null
+  const v = new DataView(value.buffer, value.byteOffset, value.byteLength)
+  if (v.getUint32(18) !== epoch || epoch < 1) return null
+  return {
+    mode: value[1] === 1 ? 'codeOnly' : 'everything', conversionId: value.slice(2, 18),
+    boundaryEpoch: epoch, startedAtMs: v.getBigUint64(22),
+    ...(value.length === 34 ? { replacesEpoch: v.getUint32(30) } : {}),
+  }
+}
+
+/** Every config, classified by opening under its epoch's anchored key. */
+export interface SealOffConfig extends ConfigStamp {
+  readonly owner: PrivateId
+  readonly opening: 'opened' | 'otherKey' | 'unreadable'
+  readonly sealOff?: Uint8Array
+}
+
+export type ActiveSealOff =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unknown' }
+  | { readonly kind: 'active'; readonly epoch: number; readonly height: number; readonly marker: SealOffMarker | null; readonly highestEpoch: number; readonly replacesThrough: number | null }
+
+/**
+ * One sticky rule (§18.5): only the repo owner's private configs count. A valid later marker
+ * may replace an earlier epoch; unmarked configs never do. Unknown owner configs fail closed.
+ */
+export function activeSealOff(configs: readonly SealOffConfig[], owner: PrivateId): ActiveSealOff {
+  const candidates: { config: SealOffConfig; epoch: number; marker: SealOffMarker | null }[] = []
+  let replacesThrough: number | null = null
+  for (const c of configs) {
+    if (!bytesEqual(c.owner, owner) || !c.private || c.epoch === null || c.epoch < 1) continue
+    if (c.opening === 'unreadable') return { kind: 'unknown' }
+    if (c.opening !== 'opened' || c.sealOff === undefined) continue
+    const marker = parseSealOffMarker(c.sealOff, c.epoch)
+    candidates.push({ config: c, epoch: c.epoch, marker })
+    if (marker?.replacesEpoch !== undefined && marker.replacesEpoch < c.epoch) replacesThrough = Math.max(replacesThrough ?? 0, marker.replacesEpoch)
+  }
+  const remaining = candidates.filter((c) => replacesThrough === null || c.epoch > replacesThrough)
+  remaining.sort((a, b) => a.epoch - b.epoch || a.config.height - b.config.height || compareBytes(a.config.id, b.config.id))
+  const first = remaining[0]
+  return first === undefined ? { kind: 'none' } : { kind: 'active', epoch: first.epoch, height: first.config.height, marker: first.marker, highestEpoch: remaining.at(-1)?.epoch ?? first.epoch, replacesThrough }
+}
+
+/** The lower boundary still in force; an owner replacement also sets aside stale local records. */
+export function sealOffBoundary(recorded: number | null, active: ActiveSealOff): number | null {
+  if (active.kind === 'unknown') throw new Error('repair keys before making this repo public')
+  if (active.kind !== 'active') return recorded
+  const local = recorded !== null && active.replacesThrough !== null && recorded <= active.replacesThrough ? null : recorded
+  return local === null ? active.epoch : Math.min(local, active.epoch)
+}
+
+export type SealOffDecision =
+  | { readonly kind: 'new' | 'unknown' }
+  | { readonly kind: 'adopt' | 'lagging' | 'passed'; readonly epoch: number }
+  | { readonly kind: 'public'; readonly cutoff: number | null }
+
+/** The common boundary decision for the conversion runner and the shared vectors. */
+export function sealOffDecision(recorded: number | null, active: ActiveSealOff, current: number | null, flipped: boolean, stated: number | null): SealOffDecision {
+  if (active.kind === 'unknown') return { kind: 'unknown' }
+  const boundary = sealOffBoundary(recorded, active)
+  if (flipped) return { kind: 'public', cutoff: stated === null ? boundary : boundary === null ? stated : Math.min(stated, boundary) }
+  if (boundary === null) return { kind: 'new' }
+  return { kind: current === boundary ? 'adopt' : current !== null && current > boundary ? 'passed' : 'lagging', epoch: boundary }
+}
+
+/** A member notice points to the owner marker without repeating its contents (§18.5). */
+export interface SealOffNotice {
+  readonly conversionId: Uint8Array
+  readonly boundaryEpoch: number
+  readonly replacesEpoch?: number
+}
+
+/** Only a confirmed owner marker supplies the notice pointer. */
+export function sealOffNoticeFor(active: ActiveSealOff, conversionId: Uint8Array): SealOffNotice | null {
+  if (active.kind !== 'active' || active.marker === null || !bytesEqual(active.marker.conversionId, conversionId)) return null
+  const m = active.marker
+  return { conversionId: m.conversionId.slice(), boundaryEpoch: active.epoch, ...(m.replacesEpoch !== undefined ? { replacesEpoch: m.replacesEpoch } : {}) }
+}
+
+/** A received pointer is unconfirmed unless it resolves to the authoritative owner marker. */
+export function confirmsSealOffNotice(active: ActiveSealOff, notice: SealOffNotice): boolean {
+  const expected = sealOffNoticeFor(active, notice.conversionId)
+  return expected !== null && bytesEqual(expected.conversionId, notice.conversionId) && expected.boundaryEpoch === notice.boundaryEpoch && expected.replacesEpoch === notice.replacesEpoch
 }

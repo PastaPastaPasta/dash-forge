@@ -93,6 +93,9 @@ class FakeChain {
         const check = this.checks.shift() ?? checkOf()
         return { check, blockers: this.blockers, store: STORE, config: null, currentEpoch: this.currentEpoch }
       },
+      readSealOff: async () => ({ kind: 'none' }),
+      preflightSealOff: async () => undefined,
+      ensureSealOff: async () => undefined,
       rotate: async () => {
         this.log.push('rotate')
         this.currentEpoch = (this.currentEpoch ?? -1) + 1
@@ -595,6 +598,24 @@ describe('the boundary the repo states after the flip', () => {
     expect(chain.record?.sealOff).toBe(3)
   })
 
+  it("keeps this run's checked history cutoff when an owner replacement lands after the final read", async () => {
+    const chain = new FakeChain()
+    chain.currentEpoch = 4
+    chain.history = [new Uint8Array([1])]
+    let active: import('../private').ActiveSealOff = { kind: 'none' }
+    const io = { ...chain.io(OWNER), readSealOff: async () => active }
+    chain.beforeFlip = () => {
+      chain.currentEpoch = 6
+      active = { kind: 'active', epoch: 6, highestEpoch: 6, replacesThrough: 5, height: 60, marker: null }
+    }
+    const out = await runMakePublicWith(io, choice({ mode: 'everything' }), () => undefined)
+    expect(chain.log).toContain('inspect:private:chosen:below5')
+    expect(chain.conversion?.sealOffEpoch).toBe(6)
+    expect(out).toMatchObject({ finished: true, boundaryKept: true })
+    expect(chain.log.filter((line) => line.startsWith('keys-below:'))).toEqual(['keys-below:5'])
+    expect(chain.record?.sealOff).toBe(5)
+  })
+
   it("is the run's own: the record is forgotten", async () => {
     const chain = new FakeChain()
     const out = await runMakePublicWith(chain.io(OWNER), choice(), () => undefined)
@@ -703,4 +724,185 @@ describe("the history's keys (forge-core epoch_keys_below)", () => {
     expect(parsed.note).toBe(EPOCH_BUNDLE_NOTE)
     expect(parsed.entries.map((x) => x.revision)).toEqual([0, 1, 2])
   })
+})
+
+describe('seal-off markers across devices', () => {
+  const marked = (epoch: number): Extract<import('../private').ActiveSealOff, { kind: 'active' }> => ({ kind: 'active', epoch, highestEpoch: epoch, replacesThrough: null, height: 20, marker: { mode: 'codeOnly', conversionId: new Uint8Array(16).fill(7), boundaryEpoch: epoch, startedAtMs: 123n } })
+
+  it('adopts the marked boundary without a local record', async () => {
+    const chain = new FakeChain()
+    const io = { ...chain.io(OWNER), readSealOff: async () => marked(2) }
+    await runMakePublicWith(io, choice(), steps().on)
+    expect(chain.log).not.toContain('rotate')
+    expect(chain.log[0]).toBe('inspect:private:below2')
+  })
+
+  it('refuses a passed marked boundary without a local record', async () => {
+    const chain = new FakeChain()
+    const io = { ...chain.io(OWNER), readSealOff: async () => marked(1) }
+    expect(await codeOf(runMakePublicWith(io, choice(), steps().on))).toBe('E310')
+    expect(chain.log).not.toContain('rotate')
+  })
+
+  it('refuses an unopenable owner config before writing', async () => {
+    const chain = new FakeChain()
+    const io = { ...chain.io(OWNER), readSealOff: async () => ({ kind: 'unknown' as const }) }
+    expect(await codeOf(runMakePublicWith(io, choice(), steps().on))).toBe('E310')
+    expect(chain.log).toEqual([])
+  })
+
+  it('starts over with a marker naming the earlier boundary', async () => {
+    const chain = new FakeChain()
+    let marker: unknown
+    let active = marked(1)
+    const io = { ...chain.io(OWNER), readSealOff: async () => active, rotate: async (m: import('../private').SealOffMarker) => {
+      marker = m
+      const epoch = await chain.io(OWNER).rotate(m)
+      active = marked(epoch)
+      return epoch
+    } }
+    await runMakePublicWith(io, choice({ startOver: true, confirmation: START }), steps().on)
+    expect(marker).toMatchObject({ replacesEpoch: 1, boundaryEpoch: 3 })
+  })
+
+  it('resumes an interrupted start-over by confirming its replacement marker without rotating', async () => {
+    const chain = new FakeChain()
+    let active = marked(1)
+    let confirmed: import('../private').SealOffMarker | undefined
+    const io = { ...chain.io(OWNER), readSealOff: async () => active, ensureSealOff: async (m: import('../private').SealOffMarker) => {
+      confirmed = m
+      active = { kind: 'active', epoch: m.boundaryEpoch, highestEpoch: m.boundaryEpoch, replacesThrough: null, height: 30, marker: { ...m, mode: 'codeOnly' } }
+    } }
+    chain.loseAnswer = true
+    await expect(runMakePublicWith(io, choice({ startOver: true, confirmation: START }), steps().on)).rejects.toThrow('timed out')
+    expect(chain.record).toMatchObject({ sealOff: null, sealOffFrom: 2, replacesEpoch: 1 })
+    const id = chain.record?.conversionId
+    await runMakePublicWith(io, choice({ resume: true, confirmation: '' }), steps().on)
+    expect(confirmed).toMatchObject({ boundaryEpoch: 3, replacesEpoch: 1 })
+    expect(bytesToHex(confirmed!.conversionId)).toBe(id)
+    expect(chain.log.filter((x) => x === 'rotate')).toHaveLength(1)
+    expect(chain.log).toContain('flip:main')
+  })
+
+  it('refuses settings that do not fit before rotating', async () => {
+    const chain = new FakeChain()
+    const io = { ...chain.io(OWNER), preflightSealOff: async () => { throw new MakePublicError('Shorten the protected patterns.', 'E310') } }
+    expect(await codeOf(runMakePublicWith(io, choice(), steps().on))).toBe('E310')
+    expect(chain.log).not.toContain('rotate')
+  })
+})
+
+it('a marker discovered after the initial check requires a new check below it', async () => {
+  const chain = new FakeChain()
+  let reads = 0
+  const io = { ...chain.io(OWNER), readSealOff: async (): Promise<import('../private').ActiveSealOff> => ++reads === 1 ? { kind: 'none' } : { kind: 'active', epoch: 2, highestEpoch: 2, replacesThrough: null, height: 10, marker: null } }
+  expect(await codeOf(runMakePublicWith(io, choice(), steps().on))).toBe('E310')
+  expect(chain.log).not.toContain('rotate')
+  expect(chain.log.some((x) => x.startsWith('flip:'))).toBe(false)
+})
+
+it('a fresh public run takes the lower marked cutoff without a local record', async () => {
+  const chain = new FakeChain()
+  chain.visibility = 'public'
+  chain.currentEpoch = 4
+  chain.conversion = { sealOffEpoch: 4, markerHeight: 50 }
+  const io = { ...chain.io(OWNER), readSealOff: async () => ({ kind: 'active' as const, epoch: 2, highestEpoch: 2, replacesThrough: null, height: 10, marker: null }) }
+  await runMakePublicWith(io, choice({ mode: 'everything' }), steps().on)
+  expect(chain.log).toContain('inspect:public:below2')
+  expect(chain.log).toContain('keys-below:2')
+  expect(chain.log).not.toContain('keys-below:4')
+})
+
+it('a fresh device still needs the normal confirmation when adopting a marker', async () => {
+  const chain = new FakeChain()
+  const io = { ...chain.io(OWNER), readSealOff: async () => ({ kind: 'active' as const, epoch: 2, highestEpoch: 2, replacesThrough: null, height: 10, marker: null }) }
+  expect(await codeOf(runMakePublicWith(io, choice({ resume: true, confirmation: '' }), steps().on))).toBe('E802')
+  expect(chain.log).not.toContain('rotate')
+})
+
+it('a fresh device refuses a marked boundary above the key epoch with E310', async () => {
+  const chain = new FakeChain()
+  const io = { ...chain.io(OWNER), readSealOff: async () => ({ kind: 'active' as const, epoch: 3, highestEpoch: 3, replacesThrough: null, height: 10, marker: null }) }
+  expect(await codeOf(runMakePublicWith(io, choice(), steps().on))).toBe('E310')
+  expect(chain.log).toEqual([])
+})
+
+it('confirms a recorded boundary after an interrupted follow-up without rotating', async () => {
+  const chain = new FakeChain()
+  chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 123, conversionId: 'ab'.repeat(16) }
+  let marker: import('../private').SealOffMarker | undefined
+  const io = { ...chain.io(OWNER), ensureSealOff: async (m: import('../private').SealOffMarker) => { marker = m } }
+  await runMakePublicWith(io, choice({ resume: true, confirmation: '' }), steps().on)
+  expect(chain.log).not.toContain('rotate')
+  expect(marker).toMatchObject({ boundaryEpoch: 2, conversionId: new Uint8Array(16).fill(0xab), startedAtMs: 123n })
+})
+
+it('does not confirm a recorded marker after the current epoch passes its boundary', async () => {
+  const chain = new FakeChain()
+  chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 123 }
+  let reads = 0
+  let confirmed = false
+  const io = { ...chain.io(OWNER), keys: async () => ({ maintainer: true, currentEpoch: ++reads === 1 ? 2 : 3, burned: [] }),
+    ensureSealOff: async () => { confirmed = true } }
+  expect(await codeOf(runMakePublicWith(io, choice({ resume: true }), steps().on))).toBe('E310')
+  expect(confirmed).toBe(false)
+})
+
+for (const recorded of [null, 1, 4]) {
+  it(`start-over covers concurrent owner runs with local record ${recorded}`, async () => {
+    const chain = new FakeChain()
+    chain.currentEpoch = 4
+    if (recorded !== null) chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: recorded, startedAt: 123 }
+    let active: import('../private').ActiveSealOff = { kind: 'active', epoch: 2, highestEpoch: 3, replacesThrough: null, height: 20, marker: null }
+    let written: import('../private').SealOffMarker | undefined
+    const io = { ...chain.io(OWNER), readSealOff: async () => active, rotate: async (m: import('../private').SealOffMarker) => {
+      written = m
+      const epoch = await chain.io(OWNER).rotate(m)
+      active = { kind: 'active', epoch, highestEpoch: epoch, replacesThrough: m.replacesEpoch ?? null, height: 50, marker: { ...m, boundaryEpoch: epoch } }
+      return epoch
+    } }
+    await runMakePublicWith(io, choice({ startOver: true, confirmation: START }), steps().on)
+    expect(written).toMatchObject({ boundaryEpoch: 5, replacesEpoch: Math.max(3, recorded ?? 0) })
+    expect(chain.log).toContain('flip:main')
+  })
+}
+
+it('waits for the highest local boundary before starting over earlier owner runs', async () => {
+  const chain = new FakeChain()
+  chain.currentEpoch = 3
+  chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 4, startedAt: 123 }
+  const io = { ...chain.io(OWNER), readSealOff: async () => ({ kind: 'active' as const, epoch: 1, highestEpoch: 2, replacesThrough: null, height: 10, marker: null }) }
+  expect(await codeOf(runMakePublicWith(io, choice({ startOver: true, confirmation: START }), steps().on))).toBe('E310')
+  expect(chain.log).not.toContain('rotate')
+})
+
+it.each([
+  { epoch: 4, highestEpoch: 5, replacesThrough: null },
+  { epoch: 6, highestEpoch: 6, replacesThrough: 5 },
+])('explains a changed marker boundary before the flip (%j)', async (changed) => {
+  const chain = new FakeChain()
+  chain.currentEpoch = 5
+  let reads = 0
+  const io = { ...chain.io(OWNER), readSealOff: async (): Promise<import('../private').ActiveSealOff> => ({ kind: 'active', height: 50, marker: null, ...(++reads >= 3 ? changed : { epoch: 5, highestEpoch: 5, replacesThrough: null }) }) }
+  await expect(runMakePublicWith(io, choice(), steps().on)).rejects.toMatchObject({
+    code: 'E310',
+    message: "The owner marker's boundary changed during this run. The repo is still private. Run it again to check what becomes public below that boundary.",
+  })
+  expect(chain.log.some((line) => line.startsWith('flip:'))).toBe(false)
+})
+
+
+it('explains a replacement that changes an already checked boundary during confirmation', async () => {
+  const chain = new FakeChain()
+  chain.currentEpoch = 5
+  let markerReads = 0
+  let keyReads = 0
+  const io = { ...chain.io(OWNER),
+    keys: async () => ({ maintainer: true, currentEpoch: ++keyReads === 1 ? 5 : 6, burned: [] }),
+    readSealOff: async (): Promise<import('../private').ActiveSealOff> => ++markerReads === 1
+      ? { kind: 'active', epoch: 5, highestEpoch: 5, replacesThrough: null, height: 50, marker: null }
+      : { kind: 'active', epoch: 6, highestEpoch: 6, replacesThrough: 5, height: 60, marker: null },
+  }
+  await expect(runMakePublicWith(io, choice(), steps().on)).rejects.toMatchObject({ code: 'E310', message: COPY.markerChanged })
+  expect(chain.log.some((line) => line.startsWith('flip:'))).toBe(false)
 })

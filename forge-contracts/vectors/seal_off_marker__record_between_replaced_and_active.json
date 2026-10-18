@@ -1,0 +1,31 @@
+{
+  "name": "record_between_replaced_and_active",
+  "description": "record between replaced and active",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "decision",
+    "recorded": 2,
+    "active": {
+      "kind": "active",
+      "epoch": 3,
+      "height": 30,
+      "marker": {
+        "mode": "codeOnly",
+        "conversionId": "0123456789abcdeffedcba9876543210",
+        "boundaryEpoch": 3,
+        "startedAtMs": "1720000000123",
+        "replacesEpoch": 1
+      },
+      "highestEpoch": 3,
+      "replacesThrough": 1
+    },
+    "current": 3,
+    "flipped": false,
+    "stated": null
+  },
+  "expected": {
+    "kind": "passed",
+    "epoch": 2
+  }
+}

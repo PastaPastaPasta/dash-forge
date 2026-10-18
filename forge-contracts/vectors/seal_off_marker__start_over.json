@@ -1,0 +1,21 @@
+{
+  "name": "start_over",
+  "description": "start over",
+  "case": "seal_off_marker",
+  "rules": "v2",
+  "input": {
+    "op": "encoding",
+    "marker": {
+      "mode": "everything",
+      "conversionId": "0123456789abcdeffedcba9876543210",
+      "boundaryEpoch": 3,
+      "startedAtMs": "1720000000123",
+      "replacesEpoch": 1
+    }
+  },
+  "expected": {
+    "value": "01020123456789abcdeffedcba9876543210000000030000019077fd307b00000001",
+    "tlv": "0600046d61696e08000400000002090020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f41002201020123456789abcdeffedcba9876543210000000030000019077fd307b00000001",
+    "enc": "0212897510adf5a45f39ffd47a051437808349925aacdf6ec1a1932c0bbda665a4000102030405060708090a0b61cddb470045bede768a6c19fb8af909caa2aad74accb3a0f6f8b5232e9c1c54747523bc6ef509ebd6881a26edbb7ce2a6fade70529811e92881a39982ae36cbe2ac431baba37d4a54f33887f2349123748a9b57981e4972ac2c6dd3426639a372d93216bf34"
+  }
+}
