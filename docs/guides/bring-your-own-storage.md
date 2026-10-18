@@ -109,7 +109,7 @@ The web app has the same setup at **Settings → Storage** (`/settings/storage`)
 - **Credentials stay in this browser**, sealed in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits), and are never sent anywhere else or written on chain. Lock the vault and they are unreadable.
 - **Replication:** one place, every chosen place, or Platform as a costed fallback that asks first. A repository's **Settings → Your browser pushes** overrides the default for that repository.
 - **Only public https addresses are recorded on chain.** The wizard can reach a MinIO or kubo on `localhost` for testing, but it refuses to record a loopback, private or plain-http URL, and readers skip such URLs even if a manifest names one.
-- **kubo's RPC API is its admin interface.** The fix block creates a Forge token limited to add, pin and version calls (after an owner token, so you do not lock yourself out) rather than opening the whole API to the page.
+- **kubo's RPC API is its admin interface.** The fix block creates a Forge token limited to add, pin, unpin, id and version calls (after an owner token, so you do not lock yourself out) rather than opening the whole API to the page. It also prints a Caddy proxy for the preflight ([Kubo and the browser](#kubo-and-the-browser-a-proxy-in-front-of-kubo)). The simpler route is `dg ipfs up`, and the wizard shows that command first.
 
 **macOS: no dialog for what Forge stored.** `dg` writes the keychain, and `dg`, `git-remote-dash` and `forge-import` all read it, through Apple's `/usr/bin/security` tool, so they read what `dg` stored with no dialog, also after an upgrade or a rebuild. Entries you add with `security add-generic-password`, as in this guide, work the same way. An entry another program created (Keychain Access, say) can make macOS show an access dialog: the read prints a notice after a few seconds and waits up to 120 s for an answer. Over SSH no dialog can be answered, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
 
@@ -326,6 +326,22 @@ Storj bills storage and egress separately, and counts every object under 50 KB a
 
 Dash Forge adds content with fixed import parameters: CIDv1, raw leaves, a 256 KiB fixed-size chunker, sha2-256, a balanced layout with 174 links per node, and pinning on. It then **re-derives the CID locally** and refuses the upload if kubo returns a different one. So the CID in the manifest is a second, independent integrity check.
 
+### The quick way: `dg ipfs up`
+
+```sh
+dg ipfs up
+```
+
+This downloads kubo 0.43.1 (checked against a SHA-512 built into `dg`), runs it for your user, starts it at every login, saves a storage profile called `kubo`, and opens the web app's connect page. Then `dg storage use kubo` sends your pushes to it. In the web app, press **Test and save**, then tick **Use it for my pushes**.
+
+The node accepts the web app's requests only from the websites you allow and only for adding, pinning, unpinning and identifying. [Run your own IPFS node](run-your-own-ipfs-node.md) covers the rest: other Forge addresses (`--origin`), checking and stopping the node, forwarding port 4001 so others can reach it, Safari, and keeping a copy of someone else's repository with `dg ipfs pin`.
+
+Safari can't reach a node on your computer from the https site, so push with `dg` there.
+
+### Set up kubo by hand
+
+Use this for a node that is already running, on a server, or in Docker. (For a NAS, see [IPFS: kubo on the NAS](home-nas-storage.md#ipfs-kubo-on-the-nas).)
+
 ```sh
 dg storage add kubo --kind ipfs-kubo \
   --api http://127.0.0.1:5001 \
@@ -341,6 +357,87 @@ dg storage test kubo
   ```sh
   ipfs config --json Gateway.HTTPHeaders.Access-Control-Allow-Origin '["*"]'
   ```
+
+`dg` pushes with this setup as it is. The web app needs more, below.
+
+### Kubo and the browser: a proxy in front of kubo
+
+kubo's RPC API is its admin interface, so for the web app give it a token that can only add, pin, unpin and identify. But **once `API.Authorizations` is set, kubo answers a browser's CORS preflight with 403**, so a browser can never send the token to kubo itself. A small proxy in front of kubo has to answer the preflight. The recipe below uses Caddy (this is what the web app's storage wizard prints, filled in with your app's address). If you can, use `dg ipfs up`, which does all of this for you.
+
+1. **Tokens and settings.** Kubo refuses every call without a token once any is set, your own `ipfs` commands included, so first make an owner token for yourself, then a scoped one for Forge. Use `ipfs --api-auth bearer:$OWNER <cmd>` afterwards.
+
+   ```sh
+   OWNER=$(openssl rand -hex 24); TOKEN=$(openssl rand -hex 24)
+   ipfs config --json API.Authorizations.owner "{\"AuthSecret\": \"bearer:$OWNER\", \"AllowedPaths\": [\"/api/v0\"]}"
+   ipfs config --json API.Authorizations.dash-forge "{\"AuthSecret\": \"bearer:$TOKEN\", \"AllowedPaths\": [\"/api/v0/add\", \"/api/v0/pin/add\", \"/api/v0/pin/ls\", \"/api/v0/pin/rm\", \"/api/v0/id\", \"/api/v0/version\"]}"
+   echo "Owner token (for your own ipfs CLI): bearer:$OWNER"
+   echo "API Authorization for the Forge profile: Bearer $TOKEN"
+   ```
+
+2. **Allow the app, and move kubo's API aside.** Kubo checks the page's `Origin` against this exact list. The first command replaces any list you have. Put your Forge address in place of `https://forge.dashhq.org` if you run your own copy. Then restart kubo.
+
+   ```sh
+   ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["https://forge.dashhq.org"]'
+   ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["POST"]'
+   ipfs config --json API.HTTPHeaders.Access-Control-Allow-Headers '["Authorization"]'
+   ipfs config --json Gateway.NoFetch true      # serve only what this node holds
+   ipfs config Addresses.API /ip4/127.0.0.1/tcp/5101
+   ```
+
+3. **Run Caddy on port 5001** with this `Caddyfile`. It answers the preflight itself and passes only the Forge calls to kubo. Keep it on `127.0.0.1`.
+
+   ```
+   {
+     admin off
+     auto_https off
+   }
+
+   :5001 {
+     bind 127.0.0.1
+
+     @preflight {
+       method OPTIONS
+       header Origin https://forge.dashhq.org
+     }
+     handle @preflight {
+       header Access-Control-Allow-Origin "https://forge.dashhq.org"
+       header Access-Control-Allow-Methods "POST"
+       header Access-Control-Allow-Headers "Authorization, Content-Type"
+       header Access-Control-Allow-Private-Network "true"
+       header Access-Control-Max-Age "600"
+       header Vary "Origin"
+       respond 204
+     }
+
+     @forge {
+       method POST
+       path /api/v0/add /api/v0/pin/add /api/v0/pin/ls /api/v0/pin/rm /api/v0/id /api/v0/version
+     }
+     handle @forge {
+       reverse_proxy 127.0.0.1:5101 {
+         flush_interval -1
+       }
+     }
+
+     handle {
+       respond 404
+     }
+   }
+   ```
+
+4. **Add the profile** with the Forge token:
+
+   ```sh
+   export KUBO_AUTH="Bearer $TOKEN"
+   dg storage add kubo --kind ipfs-kubo \
+     --api http://127.0.0.1:5001 --gateway http://127.0.0.1:8080 \
+     --api-auth env:KUBO_AUTH
+   dg storage test kubo
+   ```
+
+   In the web app, paste the same `Bearer …` value as the kubo profile's API authorization.
+
+Docker users: [IPFS: kubo on the NAS](home-nas-storage.md#ipfs-kubo-on-the-nas) has the same idea as a compose file.
 
 A pin on a laptop that is usually offline makes a poor replica. Pair it with a bucket, or with a pinning service.
 

@@ -119,6 +119,18 @@ Chrome and Edge 103 or newer, Firefox 104 or newer, and Safari 16 or newer (macO
 
 Protecting the browser vault with a **passkey** also needs WebAuthn's PRF extension, which depends on the browser (Chrome and Edge 116, Safari 18, recent Firefox), the operating system and the passkey provider (iCloud Keychain and Google Password Manager support it; some third-party managers and security keys do not). Where it is missing, use a passphrase instead; everything else works the same.
 
+## How do I run my own IPFS node?
+
+Run `dg ipfs up`. It downloads kubo (checked against a hash built into `dg`), runs it for your user, starts it at login, saves a storage profile called `kubo`, and opens the web app's connect page. Then `dg storage use kubo` sends your pushes there. It costs no DASH. Your node stores the bytes on your own disk. The node accepts the web app only from the websites you allow, with a token that can add, pin and unpin and nothing else. [Run your own IPFS node](guides/run-your-own-ipfs-node.md) has the details, including port forwarding so others can reach it.
+
+## How do I keep a copy of someone's repo?
+
+Pin it to your IPFS node: `dg ipfs pin owner/name`, or press **Pin** on the repository's page. Add `--follow` and your node pins new pushes too, every 30 minutes. It pins the files that the repository's owner, maintainers, writers and bots recorded, checks each against its hash, and costs 0 DASH, since nothing is written to Platform. Your node tells the IPFS network that it holds the files, so your IP address is linked to the repository. For a private repository you must be a member and agree to that first. `--dry-run` shows the size before you pin. See [Pin someone else's repo](guides/run-your-own-ipfs-node.md#pin-someone-elses-repo).
+
+## Why does Safari not connect to my node?
+
+Safari doesn't let a secure site (https://forge.dashhq.org) talk to a node on your own computer, and the web app can't work around that. The page tells you so. Use `dg` to push to your node, or connect from Chrome, Firefox or Brave: they ask you to allow the site to reach apps on your device. See [Connect the web app](guides/run-your-own-ipfs-node.md#connect-the-web-app).
+
 ## Where do I report a bug?
 
 [GitHub Issues](https://github.com/PastaPastaPasta/dash-forge/issues) for now. Every error `dg` prints has a code; [errors.md](errors.md) explains each one.

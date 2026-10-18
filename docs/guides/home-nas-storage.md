@@ -9,7 +9,7 @@ Two facts decide most of the choices below:
 
 Readers never trust the NAS: a clone accepts only bytes that hash to the SHA-256 on chain, so a broken NAS costs availability, never integrity.
 
-> **What was tested.** On 2026-09-28 this guide was run with Docker on a developer Mac: RustFS behind a Cloudflare quick tunnel (standing in for a named one) with real pushes and clones; Garage, an existing MinIO and kubo, which passed `dg storage test`; and a clone from the Garage copy while the RustFS "NAS" was stopped. **Not yet verified live:** the Synology and TrueNAS SCALE steps, the Cloudflare dashboard steps for a named tunnel, Tailscale Funnel and the reverse-proxy setup. They follow the vendors' documentation, linked in each step.
+> **What was tested.** On 2026-09-28 this guide was run with Docker on a developer Mac: RustFS behind a Cloudflare quick tunnel (standing in for a named one) with real pushes and clones; Garage, an existing MinIO and kubo, which passed `dg storage test`; and a clone from the Garage copy while the RustFS "NAS" was stopped. **Not yet verified live:** the Synology and TrueNAS SCALE steps, the Cloudflare dashboard steps for a named tunnel, Tailscale Funnel and the reverse-proxy setup. They follow the vendors' documentation, linked in each step. The kubo section's Caddy preflight proxy was tested live against kubo 0.43.1 with Caddy 2.11.7; its `init.d` token lines follow the web app's recipe and have not been run in Docker.
 
 1. [What you will build](#what-you-will-build)
 2. [Choose a store](#choose-a-store)
@@ -424,19 +424,64 @@ The second copy keeps the repository **readable**. A backup of the NAS protects 
 
 ## IPFS: kubo on the NAS
 
-A kubo node on the NAS stores packs by CID, and a public gateway serves them. Two cautions:
+A kubo node on the NAS stores packs by CID, and a public gateway serves them.
+
+> **Only one computer?** [`dg ipfs up`](run-your-own-ipfs-node.md) is simpler. It installs kubo, starts it at login, and connects the web app and `dg` in one command. Use the recipe below for a NAS or server, where kubo runs in Docker and you want a public gateway.
+
+Three cautions:
 
 - **kubo's RPC API (port 5001) is its admin interface.** Never publish it beyond the machine. Only its gateway (port 8080) goes on the public hostname.
+- **A browser can't talk to kubo directly once it has tokens.** With `API.Authorizations` set, kubo answers the browser's CORS preflight with 403. The recipe puts a small Caddy proxy in front: kubo's RPC is no longer published, and Caddy publishes `127.0.0.1:5001` and answers the preflight for your Forge address.
 - **A home node is usually behind NAT**, so the shared public gateways can't find your content ([the NAT caveat](bring-your-own-storage.md#ipfs-your-own-kubo-node)). Give the profile your **own** public gateway, which every reader tries first, and keep a second copy with a pinning service.
 
-`init.d/001-forge.sh` (`chmod +x` it) makes the public gateway serve only what this node stores, so it can't be used to fetch arbitrary content through your connection:
+Make two tokens and put them in `.env` next to `TUNNEL_TOKEN`. The owner token is for your own `ipfs` commands, and the Forge token is for `dg` and the web app:
+
+```sh
+printf 'OWNER_TOKEN=%s\nFORGE_TOKEN=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" >> .env
+```
+
+`init.d/001-forge.sh` (`chmod +x` it) does three things. It makes the public gateway serve only what this node stores, so it can't be used to fetch arbitrary content through your connection. It lets your Forge address call the RPC. And it limits the Forge token to adding, pinning, unpinning and identifying. Replace `https://forge.dashhq.org` with your own Forge address if you run one:
 
 ```sh
 #!/bin/sh
 ipfs config --json Gateway.NoFetch true
+ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["https://forge.dashhq.org"]'
+ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["POST"]'
+ipfs config --json API.HTTPHeaders.Access-Control-Allow-Headers '["Authorization"]'
+ipfs config --json API.Authorizations "{\"owner\": {\"AuthSecret\": \"bearer:${OWNER_TOKEN}\", \"AllowedPaths\": [\"/api/v0\"]}, \"dash-forge\": {\"AuthSecret\": \"bearer:${FORGE_TOKEN}\", \"AllowedPaths\": [\"/api/v0/add\", \"/api/v0/pin/add\", \"/api/v0/pin/ls\", \"/api/v0/pin/rm\", \"/api/v0/id\", \"/api/v0/version\"]}}"
 ```
 
-`compose.yaml` (route `ipfs.example.org` to `http://kubo:8080` in the tunnel):
+`Caddyfile`, next to `compose.yaml`. It answers the preflight for your Forge address and passes everything else to kubo, which checks the token:
+
+```
+{
+  admin off
+  auto_https off
+}
+
+:5001 {
+  @preflight {
+    method OPTIONS
+    header Origin https://forge.dashhq.org
+  }
+  handle @preflight {
+    header Access-Control-Allow-Origin {http.request.header.Origin}
+    header Access-Control-Allow-Methods POST
+    header Access-Control-Allow-Headers "Authorization, Content-Type"
+    header Access-Control-Allow-Private-Network true
+    header Access-Control-Max-Age 600
+    header Vary Origin
+    respond 204
+  }
+  handle {
+    reverse_proxy kubo:5001 {
+      flush_interval -1
+    }
+  }
+}
+```
+
+`compose.yaml` (route `ipfs.example.org` to `http://kubo:8080` in the tunnel). Kubo publishes no RPC port; Caddy is the only way in, and only from this machine:
 
 ```yaml
 services:
@@ -445,25 +490,38 @@ services:
     restart: unless-stopped
     environment:
       IPFS_PROFILE: server
+      OWNER_TOKEN: ${OWNER_TOKEN:?set OWNER_TOKEN in .env}
+      FORGE_TOKEN: ${FORGE_TOKEN:?set FORGE_TOKEN in .env}
     volumes:
       - ./ipfs:/data/ipfs
       - ./init.d:/container-init.d:ro
     ports:
       - "4001:4001"             # swarm: forward it on your router so other nodes can dial you
       - "4001:4001/udp"
-      - "127.0.0.1:5001:5001"   # RPC API: this machine only
       - "127.0.0.1:8080:8080"   # gateway: this machine (the tunnel publishes it)
+      # no RPC port here: kubo's RPC (5001) is reachable only by caddy, on the compose network
+  caddy:
+    image: caddy:2.11.7
+    restart: unless-stopped
+    depends_on:
+      - kubo
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:5001:5001"   # RPC through the preflight proxy: this machine only
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
 ```
 
-Then, on the NAS (the RPC API listens only there):
+Then, on the NAS (the RPC API listens only there). The profile needs the Forge token as the full header value:
 
 ```sh
+export KUBO_AUTH="Bearer $(grep '^FORGE_TOKEN=' .env | cut -d= -f2)"
 dg storage add kubo --kind ipfs-kubo \
   --api http://127.0.0.1:5001 --gateway http://127.0.0.1:8080 \
+  --api-auth env:KUBO_AUTH \
   --public-gateway https://ipfs.example.org
 dg storage test kubo
 ```
@@ -476,6 +534,8 @@ dg storage test kubo
   [ OK ] browser CORS   GET + Range preflight allowed, Content-Range exposed
   [ OK ] cleanup        probe unpinned
 ```
+
+Kubo now refuses every RPC call without a token, so run your own commands with the owner token: `docker compose exec kubo ipfs --api-auth bearer:<owner token> repo stat`.
 
 To push from another computer, reach the RPC API through an SSH tunnel (`ssh -L 5001:127.0.0.1:5001 nas`) rather than publishing it, or put it behind auth and use `--api-auth` ([IPFS: your own kubo node](bring-your-own-storage.md#ipfs-your-own-kubo-node)).
 
@@ -493,4 +553,5 @@ To push from another computer, reach the RPC API through an SSH tunnel (`ssh -L 
 | `dg storage test`: `put` fails with `failed to lookup address information` | The hostname doesn't resolve yet. A new tunnel route can take a minute to appear in DNS. |
 | A large push fails with HTTP `413` | Cloudflare's upload limit on proxied requests (100 MB on Free and Pro). Push over the LAN with a [`nas-lan` profile](#pushing-from-home). |
 | Clones fail with `remote did not send all necessary objects` while the NAS is off | A pack whose only copy is on the NAS. Bring it back, and [add a second copy](#when-the-nas-is-offline). |
+| The web app can't reach the kubo node on the NAS (a browser CORS error, or a 403 on the preflight) | Raw kubo answers the preflight with 403 once tokens are set. Check that the `caddy` service is up, that `dg storage add` uses `--api http://127.0.0.1:5001` (Caddy's port), and that the `header Origin` line in the `Caddyfile` is the exact address of the page (`https://host`, no trailing slash). |
 | A Cloudflare login page instead of the object | Cloudflare Access protects the hostname. Remove it from the read hostname. |
