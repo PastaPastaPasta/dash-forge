@@ -150,6 +150,9 @@ pub struct Summary {
     pub lfs_detected: bool,
     /// The error, when `status` is `error` or `cap_exceeded`.
     pub error: Option<String>,
+    /// Human-only rendering of a budget error; the JSON contract keeps the original text.
+    #[serde(skip)]
+    pub(crate) human_error: Option<String>,
     /// Part of what was asked for was left out (the warnings say what): the source refused to
     /// list it, or a release's asset could not be sealed or listed. The run ends `partial`,
     /// its state does not advance, and the next run tries it again.
@@ -175,6 +178,7 @@ impl Summary {
             source_license: None,
             lfs_detected: false,
             error: None,
+            human_error: None,
             incomplete: false,
         }
     }
@@ -215,26 +219,35 @@ impl Summary {
         );
         if self.status == Status::DryRun {
             eprintln!(
-                "  estimate: {:.6} DASH (dry run: nothing written)",
-                credits_to_dash(self.spent_credits.max(self.estimate_credits))
+                "  estimate: {:.6} DASH{} (dry run: nothing written)",
+                credits_to_dash(self.spent_credits.max(self.estimate_credits)),
+                crate::fiat::note(self.spent_credits.max(self.estimate_credits))
             );
         } else {
             eprintln!(
-                "  spent: {:.6} DASH (the larger of the estimates charged and the measured \
-                 balance drop; estimated {:.6} up front)",
+                "  spent: {:.6} DASH{} (the larger of the estimates charged and the measured \
+                 balance drop; estimated {:.6}{} up front)",
                 credits_to_dash(self.spent_credits),
-                credits_to_dash(self.estimate_credits)
+                crate::fiat::note(self.spent_credits),
+                credits_to_dash(self.estimate_credits),
+                crate::fiat::note(self.estimate_credits)
             );
         }
         if let Some(b) = self.balance_credits {
-            eprintln!("  balance: {:.6} DASH", credits_to_dash(b));
+            eprintln!(
+                "  balance: {:.6} DASH{}",
+                credits_to_dash(b),
+                crate::fiat::balance_note(b, self.network == "mainnet")
+            );
         }
         if let (Some(total), Some(left)) = (self.key.budget_credits, self.key.remaining_credits) {
             eprintln!(
-                "  key {} budget: {:.6} of {:.6} DASH left",
+                "  key {} budget: {:.6}{} of {:.6} DASH{} left",
                 self.key.id.unwrap_or_default(),
                 credits_to_dash(left),
-                credits_to_dash(total)
+                crate::fiat::note(left),
+                credits_to_dash(total),
+                crate::fiat::note(total)
             );
         }
         if c.unproved_merges > 0 {
@@ -261,7 +274,7 @@ impl Summary {
         for w in &self.warnings {
             eprintln!("  warning: {w}");
         }
-        if let Some(e) = &self.error {
+        if let Some(e) = self.human_error.as_ref().or(self.error.as_ref()) {
             eprintln!("  error: {e}");
         }
         if let Some(hint) = self.backlink_hint() {

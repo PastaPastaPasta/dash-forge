@@ -510,7 +510,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
 
     let body = revert_body(view.patch.number, &merge_oid, inv.landed);
     let text = (title.len() + body.len() + base_ref.len() + branch_ref.len()) as u64;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let quote = crate::quote::revert(super::merge_stores_on_platform(), text);
     if !ctx.json {
         eprintln!(

@@ -47,6 +47,7 @@
 mod admin;
 mod bot_push;
 mod fetched;
+mod fiat;
 mod git;
 mod helper;
 mod journal;

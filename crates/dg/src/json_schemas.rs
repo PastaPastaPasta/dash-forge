@@ -230,7 +230,10 @@ fn builders_match_their_commands_schemas() {
         "pr verify",
         &json!({ "pr": 3, "merged": true, "mergeContent": crate::pr::verify::content_json(&"a".repeat(40), &content) }),
     );
-    let cost = crate::fmt::cost_json(45_300_000, Some(25.0));
+    let cost = crate::fmt::cost_json(
+        45_300_000,
+        Some(forge_core::fiat::Price::fixed_usd(25.0, true)),
+    );
     assert_valid(
         "issue comment",
         &json!({ "status": "commented", "issue": 2, "commentId": "C", "audience": crate::audience::json(forge_core::rules::v2::Audience::Members), "cost": cost }),
@@ -386,7 +389,11 @@ fn create_steps_and_forks_match() {
     };
     assert_valid(
         "repo fork",
-        &crate::repo::fork_body(&parent, &fork, Some(25.0)),
+        &crate::repo::fork_body(
+            &parent,
+            &fork,
+            Some(forge_core::fiat::Price::fixed_usd(25.0, true)),
+        ),
     );
     fork.unreferenceable.push([7; 32]);
     assert_error_valid(

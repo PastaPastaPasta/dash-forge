@@ -234,7 +234,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     ctx.confirm_or_cancel(&format!(
         "Publish release {tag} of {}{with}{kept}? (one document, {}{})",
         s.repo.display(),
-        cost_line(quote, ctx.usd_price()),
+        cost_line(quote, ctx.fiat_price()),
         planned.clause()
     ))?;
     let mut uploaded = Vec::new();
@@ -268,7 +268,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         })
     })?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "created",
@@ -416,7 +416,7 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
         },
         cost_line(
             sealed_quote(&files, args, targets.as_ref()) + notes_quote,
-            ctx.usd_price()
+            ctx.fiat_price()
         )
     ))?;
     let store = targets.as_ref().map(|(t, required)| ReleaseStore {
@@ -470,7 +470,7 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
             })
         })?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "created",
@@ -596,12 +596,12 @@ async fn unpublish(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
     ctx.confirm_or_cancel(&format!(
         "Unpublish release {tag} of {}? (one document, {})",
         s.repo.display(),
-        cost_line(revision_quote(&carried), ctx.usd_price())
+        cost_line(revision_quote(&carried), ctx.fiat_price())
     ))?;
     let before = s.balance().await;
     let doc_id = collab.unpublish_release(&s.repo, tag).await?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "unpublished",
@@ -648,7 +648,7 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
         s.repo.display(),
         cost_line(
             forge_import::budget::sealed_release_credits(false, 0),
-            ctx.usd_price()
+            ctx.fiat_price()
         )
     ))?;
     let input = ReleaseInput {
@@ -663,7 +663,7 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
         .await
         .map_err(|e| anyhow::Error::from(e).context("nothing was written"))?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "unpublished",

@@ -159,11 +159,14 @@ pub async fn sync_after_push(
                 out.push(hint("members-only head not found".into()));
                 continue;
             }
-            progress.note(&format!(
-                "PR #{n} in {label} follows this branch: updating its head to {} (≈ {} DASH)",
-                &m.oid[..m.oid.len().min(12)],
-                forge_core::repo::credits_to_dash(HEAD_UPDATE_CREDITS)
-            ));
+            progress.priced_note(
+                &format!(
+                    "PR #{n} in {label} follows this branch: updating its head to {} (≈ {} DASH)",
+                    &m.oid[..m.oid.len().min(12)],
+                    forge_core::repo::credits_to_dash(HEAD_UPDATE_CREDITS)
+                ),
+                HEAD_UPDATE_CREDITS,
+            );
             let posted = post_head(collab, &repo, &view, &oid, members_head.as_ref()).await;
             match posted {
                 Ok(id) => out.push(Outcome::Synced {

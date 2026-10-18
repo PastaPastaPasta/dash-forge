@@ -181,7 +181,7 @@ async fn add(ctx: &Ctx, ssh: Option<&str>, gpg: Option<&str>) -> Result<()> {
         .map(|p| p.pubkeys.clone())
         .unwrap_or_default();
     let keys = signing_keys::with_key(&current, entry.clone()).map_err(refused)?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let quote = if stored.is_none() {
         crate::quote::profile(entry.len() as u64)
     } else {
@@ -219,7 +219,7 @@ async fn remove(ctx: &Ctx, fingerprint: &str) -> Result<()> {
         ));
     };
     let keys = signing_keys::without_key(&stored.pubkeys, fingerprint).map_err(refused)?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&format!(
         "Remove the key ending {fingerprint} from your profile? ({}; commits signed with it then show Unverified)",
         cost_line(crate::quote::replace(0), price)

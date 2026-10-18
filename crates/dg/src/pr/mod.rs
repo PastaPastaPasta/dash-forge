@@ -621,7 +621,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         + input.base_ref_name.len() as u64
         + input.source_ref_name.as_deref().map_or(0, str::len) as u64;
     let pr_quote = crate::quote::target_create(text) + planned.extra_credits(handle);
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let stored = planned.clause();
     // Each code owner review request is one more event naming its reviewer.
     let asked = owner_plan.as_ref().map_or(0, |p| p.requests.request.len());
@@ -2103,7 +2103,7 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&format!(
         "{verb} PR #{number}? (one transition, {})",
         cost_line(crate::quote::TRANSITION, price)
@@ -2364,7 +2364,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             ""
         },
         closes_phrase(&linked),
-        cost_line(merge_quote, ctx.usd_price())
+        cost_line(merge_quote, ctx.fiat_price())
     ))?;
 
     // What the merge costs: the push (the helper pays from this identity) and the events.
@@ -2498,7 +2498,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let merged = after.as_ref().is_some_and(|v| v.state.merged);
     let on_base = after.as_ref().and_then(|v| v.state.merge_on_base);
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": if merged { "merged" } else { "merge_recorded" },

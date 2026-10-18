@@ -203,7 +203,7 @@ async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> R
         || format!("Take issue #{number} out of its milestone"),
         |t| format!("Put issue #{number} in milestone {t:?}"),
     );
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let quote = crate::quote::event(title.map_or(0, str::len) as u64, false);
     ctx.confirm_or_cancel(&format!(
         "{what}? (one event, {}; members only)",
@@ -277,7 +277,7 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         Flag::Pin => ("one event", crate::quote::event(0, false)),
         Flag::Lock => ("one transition", crate::quote::TRANSITION),
     };
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&format!(
         "{verb} issue #{number}? ({doc}, {}; {who}{note})",
         cost_line(quote, price)
@@ -1166,7 +1166,7 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
         .await?;
     let edited = collab.update_comment(&s.repo, comment_id, &body).await?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": if edited { "edited" } else { "unchanged" },
@@ -1202,7 +1202,7 @@ async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
     let before = s.balance().await;
     let deleted = there && s.collab().delete_comment(&s.repo, comment_id).await?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": if deleted { "deleted" } else { "absent" },
@@ -1252,7 +1252,7 @@ async fn create(
         cost_line(
             crate::quote::target_create(title.len() as u64 + planned.field_bytes())
                 + planned.extra_credits(&s.repo),
-            ctx.usd_price()
+            ctx.fiat_price()
         ),
         planned.clause()
     ))?;
@@ -1270,7 +1270,7 @@ async fn create(
         collab.create_issue(&s.repo, title, &body, &journal).await?
     };
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let (letter, sent_to) = crate::audience::posted(ctx, &s.client, &collab).await;
 
     ctx.emit(
@@ -1332,7 +1332,7 @@ async fn hide(
         ("Unhide", "unhid")
     };
     // The hidden comment is the event's `refId`; the 32-byte `asMaintainer` proof rides along.
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let quote = crate::quote::event(reason.map_or(0, str::len) as u64 + 32, comment.is_some());
     ctx.confirm_or_cancel(&format!(
         "{verb} {what}? (one event, {}; maintainers only; nothing is deleted, and readers can still expand it)",
@@ -1482,7 +1482,7 @@ async fn comment(
         crate::bot::require_reply_shared(&collab, &s.repo, (thread, &target.id), r, letter).await?;
     }
     refuse_if_locked(&s, number, &target.id).await?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let crate::audience::Requested { audience, to } =
         crate::audience::requested(&s.client, &collab, &s.repo, ask, Some(&target.id), reply_to)
             .await?;
@@ -1666,7 +1666,7 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, closed: Option<ClosedAs>) 
         return Ok(());
     }
     let why = closed.map_or(String::new(), |c| format!(" as {}", closed_words(&c)));
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.confirm_or_cancel(&format!(
         "{prompt} issue #{number}{why}? (one transition, {})",
         cost_line(crate::quote::TRANSITION, price)
@@ -1788,7 +1788,7 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         if add { "Add" } else { "Remove" },
         if names.len() == 1 { "label" } else { "labels" },
         names.join(", "),
-        cost_line(quote, ctx.usd_price())
+        cost_line(quote, ctx.fiat_price())
     ))?;
     let before = s.balance().await;
     let mut ids = Vec::new();
@@ -1800,7 +1800,7 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         );
     }
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "cost": cost_json(spent, price),
@@ -1891,7 +1891,7 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
         "{} {} on issue #{number}? (one event each, {}; members only)",
         if add { "Assign" } else { "Unassign" },
         ids.join(", "),
-        cost_line(quote, ctx.usd_price())
+        cost_line(quote, ctx.fiat_price())
     ))?;
     let collab = s.collab();
     let before = s.balance().await;
@@ -1900,7 +1900,7 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
         events.push(collab.set_assignee(&s.repo, &target, id, add).await?);
     }
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "cost": cost_json(spent, price),

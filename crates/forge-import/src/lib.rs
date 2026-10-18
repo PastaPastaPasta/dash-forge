@@ -20,6 +20,7 @@ pub mod budget;
 pub mod chain;
 pub mod claim;
 pub mod dest;
+mod fiat;
 pub mod github;
 pub mod gitlab;
 pub mod gitsync;

@@ -123,12 +123,12 @@ pub async fn run(
     ctx.confirm_or_cancel(&format!(
         "Make {} public? ({}{clauses})",
         crate::fmt::plural(planned.len(), "post"),
-        cost_line(quote, ctx.usd_price())
+        cost_line(quote, ctx.fiat_price())
     ))?;
     let before = s.balance().await;
     let written = write_all(&collab, &s.repo, &planned, &bodies).await?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "madePublic",
@@ -222,12 +222,12 @@ async fn bundle(
     ctx.confirm_or_cancel(&format!(
         "Make {} public? Words by {names_line} become public. They'll be notified. This can't be undone. ({})",
         crate::fmt::plural(plan.posts.len(), "post"),
-        cost_line(quote, ctx.usd_price())
+        cost_line(quote, ctx.fiat_price())
     ))?;
     let before = s.balance().await;
     let manifest = collab.write_bundle(&s.repo, &plan).await?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "status": "madePublic",

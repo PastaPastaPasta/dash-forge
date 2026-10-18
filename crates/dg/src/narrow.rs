@@ -107,7 +107,7 @@ impl Plan {
     }
 
     /// Print one line per branch (stderr) and return the sentence the confirmation adds.
-    pub fn explain(&self, price: Option<f64>) -> String {
+    pub fn explain(&self, price: crate::fmt::Price) -> String {
         for i in &self.items {
             let name = safe(forge_core::keyring::short_branch(&i.name));
             let label = narrow::label(&i.audience);

@@ -32,7 +32,7 @@ The exit code says which schema applies. A command that exits 0 prints its own c
 - **Renaming or removing a field, changing its type, or changing what a value means raises it.** The changelog names the change.
 - A field a schema lists as `required` is in every success of that command. Others appear in some outcomes only (an `unchanged` result has no `cost`, for example).
 
-Times are milliseconds since the Unix epoch (`createdAt`, `updatedAt`, `expiresAt`). Identities are base58 ids. Costs are `{ "credits", "dash", "usd", "usdPrice" }`.
+Times are milliseconds since the Unix epoch (`createdAt`, `updatedAt`, `expiresAt`). Identities are base58 ids. Costs retain `{ "credits", "dash", "usd", "usdPrice" }`. `usd` and `usdPrice` are USD-only and mainnet-only, and can now also be `null` when prices are off or no usable rate is available. A cost may additionally contain `fiat: {currency, amount, rate, source, fetchedAt}` when the selected currency has a rate. This optional object uses the current mainnet rate (including for test-network costs); `fetchedAt` is the local fetch time in Unix milliseconds. Integer `credits` remain authoritative.
 
 Before 1.0, a minor release may still raise `schemaVersion`, so pin the `dg` version a script was written for (`DASH_FORGE_VERSION` for `install.sh`, a tag for the actions) as well as checking `schemaVersion`. From 1.0, raising it needs a major release.
 

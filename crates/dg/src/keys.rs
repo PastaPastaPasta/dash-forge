@@ -348,7 +348,7 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
         });
         return Ok(());
     }
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if !ctx.confirm(&format!(
         "Repair the key of {}: {what}, {}?",
         s.repo.display(),
@@ -363,7 +363,13 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
-fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, price: Option<f64>) {
+fn emit_repair(
+    ctx: &Ctx,
+    repo: &RepoRef,
+    report: &RepairReport,
+    spent: u64,
+    price: crate::fmt::Price,
+) {
     ctx.emit(
         json!({
             "status": "repaired",
@@ -404,7 +410,7 @@ async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
     let kr = signer(&s).keyring(&s.repo).await?;
     require_maintainer(&kr, &s.repo, "rotate the key")?;
     let (est, what) = rotation_cost(&kr, distinct_members(kr.members()));
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if !ctx.confirm(&format!(
         "Rotate the key of {}: {what}, {}?",
         s.repo.display(),
@@ -517,7 +523,7 @@ pub fn enable_estimate(holders: usize) -> u64 {
 
 /// The `dg repo members enable` question (DESIGN §10, "Turn on members-only content?", for the
 /// terminal).
-fn enable_prompt(repo: &RepoRef, holders: usize, price: Option<f64>) -> String {
+fn enable_prompt(repo: &RepoRef, holders: usize, price: crate::fmt::Price) -> String {
     format!(
         "Turn on members-only content in {}?\n\
          Members of this repo will be able to post comments, reviews and issues only members can \
@@ -582,7 +588,7 @@ async fn enable(ctx: &Ctx, repo: &str) -> Result<()> {
         return Ok(());
     }
     let holders = key_holders(kr.members());
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if !ctx.confirm(&enable_prompt(&s.repo, holders, price))? {
         return Err(crate::errors::cancelled());
     }

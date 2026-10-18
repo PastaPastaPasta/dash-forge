@@ -324,7 +324,7 @@ pub async fn run_edit(ctx: &crate::context::Ctx, s: &Session, e: Edit<'_>) -> Re
     ctx.confirm_or_cancel(&format!(
         "Edit {noun} #{number}: {}? ({docs}, {}{}{})",
         what.join("; "),
-        cost_line(quote, ctx.usd_price()),
+        cost_line(quote, ctx.fiat_price()),
         e.long
             .as_ref()
             .map_or_else(String::new, crate::long_body::Planned::clause),
@@ -347,7 +347,7 @@ pub async fn run_edit(ctx: &crate::context::Ctx, s: &Session, e: Edit<'_>) -> Re
     };
     let ids = write(s, &e.target, &e.plan.events).await?;
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let written = replaced || !ids.is_empty();
     ctx.emit(
         json!({

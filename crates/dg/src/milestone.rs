@@ -113,7 +113,7 @@ async fn define(
     closed: bool,
 ) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "milestone not changed").await?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let quote = crate::quote::milestone_definition((title.len() + description.len()) as u64);
     ctx.confirm_or_cancel(&format!(
         "Define milestone {title:?} in {}? (one document, {}; maintainers, writers and triage members)",

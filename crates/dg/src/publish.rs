@@ -406,9 +406,10 @@ fn platform_price(size: Option<u64>) -> String {
     let rate = crate::fmt::platform_rate();
     match size.filter(|b| *b > 0) {
         Some(b) => format!(
-            "{rate} ({} ≈ {} DASH)",
+            "{rate} ({} ≈ {} DASH{})",
             human_bytes(b),
-            dash(forge_core::cost::push_fees::chunks(b))
+            dash(forge_core::cost::push_fees::chunks(b)),
+            crate::fmt::cost_note(forge_core::cost::push_fees::chunks(b))
         ),
         None => rate,
     }
@@ -723,7 +724,7 @@ async fn members_plan(
 }
 
 /// The plan's members-only line (public repositories): its cost, or why it stays off.
-fn members_line(members: MembersPlan, repo: &str, price: Option<f64>) -> Option<String> {
+fn members_line(members: MembersPlan, repo: &str, price: crate::fmt::Price) -> Option<String> {
     match members {
         MembersPlan::Private => None,
         MembersPlan::On => Some(format!(
@@ -841,7 +842,7 @@ fn confirm_plan(
     plan: &Plan,
     flow: Flow,
     opts: &CreateOptions,
-    price: Option<f64>,
+    price: crate::fmt::Price,
 ) -> Result<()> {
     if !ctx.json {
         let who = format!("{}/{} on {}", plan.owner, plan.slug, ctx.network_label());
@@ -946,7 +947,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     // the plan only to stop there, so it stops here instead.
     ctx.require_confirmable(flow.command())?;
     let plan = plan(ctx, name, opts, flow).await?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     confirm_plan(ctx, &plan, flow, opts, price)?;
 
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
@@ -1028,7 +1029,13 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     ctx.emit(body, || {
         if let Some(push_cost) = push_cost {
             let balance = balance
-                .map(|b| format!(" · balance {} DASH", dash(b)))
+                .map(|b| {
+                    format!(
+                        " · balance {} DASH{}",
+                        dash(b),
+                        crate::fmt::balance_note(crate::fmt::credits_to_dash(b), ctx.network())
+                    )
+                })
                 .unwrap_or_default();
             println!(
                 "  total {} (create {} + push {}){balance}",
@@ -1226,7 +1233,7 @@ async fn wire_and_push(
         .or_else(|| before.zip(after).map(|(b, a)| b.saturating_sub(a)))
         .unwrap_or(0);
     let oid = git(&local.root, &["rev-parse", "HEAD"], &[]).unwrap_or_default();
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     body["push"] = json!({
         "remote": remote,
         "branch": branch,

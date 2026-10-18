@@ -59,6 +59,15 @@ impl Progress {
         }
     }
 
+    /// A priced status line; machine events retain their original message.
+    pub fn priced_note(self, text: &str, credits: u64) {
+        let priced = text.replacen(" DASH", &format!(" DASH{}", crate::fiat::note(credits)), 1);
+        self.emit(
+            &format!("dash: {priced}"),
+            &json!({ "event": "note", "message": redact(text) }),
+        );
+    }
+
     /// A free-form status line (`dash: note: …`).
     pub fn note(self, text: &str) {
         self.emit(
@@ -295,9 +304,10 @@ pub fn targets_line(policy: &ResolvedPolicy, est_credits: u64) -> (String, Value
     };
     (
         format!(
-            "dash: {:<NAME_COL$} → {where_}{need} · {chain}, est {} DASH",
+            "dash: {:<NAME_COL$} → {where_}{need} · {chain}, est {} DASH{}",
             "storage",
-            dash(est_credits)
+            dash(est_credits),
+            crate::fiat::note(est_credits)
         ),
         json!({
             "event": "targets",
@@ -376,10 +386,11 @@ pub fn platform_line(w: &PlatformWrites) -> (String, Value) {
     parts.push(format!("refUpdate {}", w.ref_updates));
     (
         format!(
-            "dash: {:<NAME_COL$} {:<28} est {} DASH",
+            "dash: {:<NAME_COL$} {:<28} est {} DASH{}",
             PLATFORM_PROFILE,
             parts.join(" · "),
-            dash(w.est_credits)
+            dash(w.est_credits),
+            crate::fiat::note(w.est_credits)
         ),
         json!({
             "event": "platform",
@@ -497,16 +508,28 @@ pub fn done_line(
     // A public repo's short URL; a private repo's canonical link, which names no one.
     let url = repo_link(owner_id, name, visibility);
     let (charged, kind, text) = match charge {
-        Charge::Measured(c) => (c, "measured", format!("Platform charged ≈{} DASH", dash(c))),
+        Charge::Measured(c) => (
+            c,
+            "measured",
+            format!("Platform charged ≈{} DASH{}", dash(c), crate::fiat::note(c)),
+        ),
         Charge::Estimated(c) => (
             c,
             "estimated",
-            format!("Platform charge est {} DASH", dash(c)),
+            format!(
+                "Platform charge est {} DASH{}",
+                dash(c),
+                crate::fiat::note(c)
+            ),
         ),
     };
     let mut parts = vec!["dash: done".to_string(), text];
     if let Some(b) = remaining {
-        parts.push(format!("remaining {} DASH", dash(b)));
+        parts.push(format!(
+            "remaining {} DASH{}",
+            dash(b),
+            crate::fiat::balance_note(b)
+        ));
     }
     parts.push(url.clone());
     (

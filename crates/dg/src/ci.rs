@@ -437,7 +437,7 @@ async fn rerun(
         "Ask {}'s runners to re-run {what} on pull request #{number} (head {})? (one event, {})",
         pr.s.repo.display(),
         crate::fmt::short(&head),
-        cost_line(est, ctx.usd_price())
+        cost_line(est, ctx.fiat_price())
     ))?;
     let target = pr.view.patch.target();
     let (id, spent) =
@@ -450,13 +450,13 @@ async fn rerun(
             "sha": head,
             "check": check,
             "eventId": id,
-            "cost": cost_json(spent, ctx.usd_price()),
+            "cost": cost_json(spent, ctx.fiat_price()),
         }),
         || {
             println!(
                 "✓ re-run of {what} on pull request #{number} requested ({}) · {}",
                 crate::fmt::short(&head),
-                cost_line(spent, ctx.usd_price())
+                cost_line(spent, ctx.fiat_price())
             );
             println!(
                 "  a forge-runner watching {} picks it up at its next poll, or within seconds \
@@ -613,8 +613,8 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
             "path": args.output.display().to_string(),
             "enrolled": membership.as_ref().map(|m| m.document_id.clone()),
             "alreadyEnrolled": enrolled.as_ref().map(|m| m.document_id.clone()),
-            "keyCost": cost_json(key_spent, ctx.usd_price()),
-            "enrolCost": cost_json(enrol_spent, ctx.usd_price()),
+            "keyCost": cost_json(key_spent, ctx.fiat_price()),
+            "enrolCost": cost_json(enrol_spent, ctx.fiat_price()),
         }),
         || {
             println!(
@@ -622,14 +622,14 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
                 holder.identity_id,
                 args.output.display()
             );
-            println!("  the key cost {}", cost_line(key_spent, ctx.usd_price()));
+            println!("  the key cost {}", cost_line(key_spent, ctx.fiat_price()));
             if membership.is_some() {
                 // A balance read that has not moved yet is not a free write (QW-083: it read
                 // "(~0 DASH)").
                 let cost = if enrol_spent == 0 {
                     "its cost is not visible in the balance yet".to_string()
                 } else {
-                    cost_line(enrol_spent, ctx.usd_price())
+                    cost_line(enrol_spent, ctx.fiat_price())
                 };
                 println!("✓ enrolled as a runner of {} ({cost})", s.repo.display());
             }
@@ -663,14 +663,15 @@ fn explain_runner_key(
     if ctx.json {
         return;
     }
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     eprintln!(
         "Registering a runner key on {holder} ({}):",
         ctx.network_label()
     );
     eprintln!(
-        "  it can only write check runs, spend at most {} DASH, and expires in {}",
+        "  it can only write check runs, spend at most {} DASH{}, and expires in {}",
         dash_amount(credits_to_dash(spec.budget_credits)),
+        crate::fmt::cost_note(spec.budget_credits),
         crate::fmt::plural(days, "day")
     );
     eprintln!(
@@ -779,7 +780,7 @@ async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
     ctx.confirm_or_cancel(&format!(
         "Enrol {runner} as a runner of {}? ({})",
         s.repo.display(),
-        cost_line(ENROL_ESTIMATE_CREDITS, ctx.usd_price())
+        cost_line(ENROL_ESTIMATE_CREDITS, ctx.fiat_price())
     ))?;
     let before = s.balance().await;
     let m = RunnerService::new(&s.client, &s.identity, &s.bridge)
@@ -787,8 +788,8 @@ async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
         .await?;
     let spent = s.spent_since(before).await;
     ctx.emit(
-        json!({ "status": "enrolled", "runner": runner, "documentId": m.document_id, "id": m.document_id, "cost": cost_json(spent, ctx.usd_price()) }),
-        || println!("✓ {runner} is a runner of {} ({})", s.repo.display(), cost_line(spent, ctx.usd_price())),
+        json!({ "status": "enrolled", "runner": runner, "documentId": m.document_id, "id": m.document_id, "cost": cost_json(spent, ctx.fiat_price()) }),
+        || println!("✓ {runner} is a runner of {} ({})", s.repo.display(), cost_line(spent, ctx.fiat_price())),
     );
     Ok(())
 }
@@ -1216,7 +1217,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         r.conclusion.as_deref().unwrap_or(&r.status),
         &r.head_oid[..7.min(r.head_oid.len())],
         s.repo.display(),
-        cost_line(estimate, ctx.usd_price())
+        cost_line(estimate, ctx.fiat_price())
     ))?;
     if let Some(m) = members.as_ref().filter(|_| members_log) {
         let log = match &a.log {
@@ -1387,7 +1388,7 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
             // `privateNoText`), or a completed run's evidence, which stays as recorded (RC2 S1).
             "leftOut": left_out,
             "url": url,
-            "cost": cost_json(spent, ctx.usd_price()),
+            "cost": cost_json(spent, ctx.fiat_price()),
             // Set when the policy pins this check to another source: the run never counts
             // toward it. `null` says only that no pin excludes it.
             "policyNote": not_counted,
@@ -1408,7 +1409,7 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
                 done.action,
                 members.map_or(r.name.as_str(), |(name, _)| name),
                 r.conclusion.as_deref().unwrap_or(&r.status),
-                cost_line(spent, ctx.usd_price())
+                cost_line(spent, ctx.fiat_price())
             );
             if let Some((_, m)) = members {
                 println!(

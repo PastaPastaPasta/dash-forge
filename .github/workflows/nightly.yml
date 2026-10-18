@@ -188,6 +188,7 @@ jobs:
     # fixture wait (≤3), suite (≤45), plus room for the log upload after a failure.
     timeout-minutes: 95
     env:
+      DASH_FORGE_FIAT: "off"
       ID_OWNER_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
       ID_COLLAB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_COLLAB }}
       ID_CONTRIB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_CONTRIB }}

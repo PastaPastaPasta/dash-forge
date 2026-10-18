@@ -428,7 +428,7 @@ pub(crate) async fn schedule(
         when(at),
         relative(at, now_secs()),
         target.number,
-        cost_line(est, ctx.usd_price())
+        cost_line(est, ctx.fiat_price())
     ))?;
     let (id, spent) = s
         .metered(|| collab.set_embargo(&s.repo, &target, &value))
@@ -451,7 +451,7 @@ pub(crate) async fn schedule(
             "plan": e.plan,
             "checklist": items,
             "eventId": id,
-            "cost": cost_json(spent, ctx.usd_price()),
+            "cost": cost_json(spent, ctx.fiat_price()),
         }),
         || {
             println!(
@@ -459,7 +459,7 @@ pub(crate) async fn schedule(
                 target.number,
                 when(at),
                 relative(at, now_secs()),
-                cost_line(spent, ctx.usd_price())
+                cost_line(spent, ctx.fiat_price())
             );
             println!("  Only members can read the date and what is published. At that time a release bot will:");
             for l in checklist_lines(&e, &items) {
@@ -627,7 +627,7 @@ async fn cancel(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     ctx.confirm_or_cancel(&format!(
         "Withdraw #{n}'s publication date ({})? Nothing is published then. (one event, {})",
         when(current.plan.at),
-        cost_line(est, ctx.usd_price())
+        cost_line(est, ctx.fiat_price())
     ))?;
     let (id, spent) = s
         .metered(|| collab.set_embargo(&s.repo, &target, &EmbargoValue::Cancel))
@@ -637,13 +637,13 @@ async fn cancel(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "status": "cancelled",
             "number": n,
             "eventId": id,
-            "cost": cost_json(spent, ctx.usd_price()),
+            "cost": cost_json(spent, ctx.fiat_price()),
         }),
         || {
             println!(
                 "✓ #{n}'s publication date ({}) withdrawn · {}",
                 when(current.plan.at),
-                cost_line(spent, ctx.usd_price())
+                cost_line(spent, ctx.fiat_price())
             );
         },
     );

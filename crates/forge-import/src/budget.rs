@@ -113,19 +113,78 @@ pub struct CapExceeded {
     pub what: String,
 }
 
-impl std::fmt::Display for CapExceeded {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "--max-spend {:.6} DASH reached: spent {:.6} DASH, and {} would cost ~{:.6} more; \
+impl CapExceeded {
+    fn render(&self, fiat: bool) -> String {
+        let note = |c| {
+            if fiat {
+                crate::fiat::note(c)
+            } else {
+                String::new()
+            }
+        };
+        format!(
+            "--max-spend {:.6} DASH{} reached: spent {:.6} DASH{}, and {} would cost ~{:.6}{} more; \
              stopped before writing it (re-run with a higher cap to continue; nothing is \
              written twice)",
-            credits_to_dash(self.cap),
-            credits_to_dash(self.spent),
-            self.what,
-            credits_to_dash(self.next)
+            credits_to_dash(self.cap), note(self.cap),
+            credits_to_dash(self.spent), note(self.spent), self.what,
+            credits_to_dash(self.next), note(self.next)
         )
     }
+}
+
+impl std::fmt::Display for CapExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.render(false))
+    }
+}
+
+#[derive(Debug)]
+struct InsufficientFunds {
+    estimate: u64,
+    available: u64,
+    key_budget: bool,
+}
+
+impl InsufficientFunds {
+    fn render(&self, fiat: bool) -> String {
+        let what = if self.key_budget {
+            "the signing key's remaining budget"
+        } else {
+            "the identity's balance"
+        };
+        let estimate_note = if fiat {
+            crate::fiat::note(self.estimate)
+        } else {
+            String::new()
+        };
+        let available_note = if !fiat {
+            String::new()
+        } else if self.key_budget {
+            crate::fiat::note(self.available)
+        } else {
+            crate::fiat::balance_note(self.available, crate::fiat::is_mainnet())
+        };
+        format!("this run is estimated at {:.6} DASH{estimate_note}, more than {what} ({:.6} DASH{available_note}); top up or \
+                 renew the key, or narrow the run (--sync, --limit)", credits_to_dash(self.estimate), credits_to_dash(self.available))
+    }
+}
+
+impl std::fmt::Display for InsufficientFunds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.render(false))
+    }
+}
+impl std::error::Error for InsufficientFunds {}
+
+/// Only used by the human summary. The serializable error retains DASH-only text.
+pub(crate) fn human_error(error: &anyhow::Error) -> Option<String> {
+    if let Some(cap) = error.downcast_ref::<CapExceeded>() {
+        return Some(cap.render(true));
+    }
+    error
+        .downcast_ref::<InsufficientFunds>()
+        .map(|e| e.render(true))
 }
 
 impl std::error::Error for CapExceeded {}
@@ -194,17 +253,16 @@ impl Budget {
         key_remaining: Option<u64>,
     ) -> Result<()> {
         self.check_plan(estimate)?;
-        let (available, what) = match key_remaining {
-            Some(k) if k < balance => (k, "the signing key's remaining budget"),
-            _ => (balance, "the identity's balance"),
+        let (available, key_budget) = match key_remaining {
+            Some(k) if k < balance => (k, true),
+            _ => (balance, false),
         };
         if estimate > available {
-            bail!(
-                "this run is estimated at {:.6} DASH, more than {what} ({:.6} DASH); top up or \
-                 renew the key, or narrow the run (--sync, --limit)",
-                credits_to_dash(estimate),
-                credits_to_dash(available)
-            );
+            bail!(InsufficientFunds {
+                estimate,
+                available,
+                key_budget
+            });
         }
         Ok(())
     }

@@ -117,7 +117,7 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
     };
     change.validate()?;
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let is_owner = s.repo.owner_id() == s.identity.id();
     let doc_changes = repo_edit.description.is_some() || repo_edit.topics.is_some();
     if doc_changes && !is_owner {
@@ -256,7 +256,7 @@ fn edit_plan(
     branch: Option<(&CurrentConfig, &CurrentConfig)>,
     moved_to: Option<&Option<forge_core::scope::RepoRef>>,
     edit: &RepoEdit,
-    price: Option<f64>,
+    price: crate::fmt::Price,
 ) -> u64 {
     let text_bytes = edit.description.as_deref().map_or(0, str::len)
         + edit
@@ -437,7 +437,7 @@ async fn change_protection(ctx: &Ctx, repo: &str, edit: ProtectEdit<'_>) -> Resu
         ..ConfigChange::default()
     };
     let next = current.apply(&change);
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let estimate = if next == current {
         0
     } else {
@@ -756,7 +756,7 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
         ..base
     };
     refuse_stale_sources(&s, &collab, &next).await?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if current.as_ref() == Some(&next) {
         ctx.emit(
             json!({ "status": "unchanged", "repo": s.repo.display(), "policy": policy_json(&next), "note": POLICY_NOTE }),
@@ -823,7 +823,7 @@ pub async fn archive(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
         ..ConfigChange::default()
     };
     let next = current.apply(&change);
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if next == current {
         ctx.emit(
             json!({ "status": "unchanged", "repo": s.repo.display(), "archived": on }),

@@ -261,7 +261,10 @@ impl Progress {
         let (what, docs) = match spent_dash {
             Some(dash) => (
                 "placed",
-                format!("{written} documents written, {dash:.6} DASH spent"),
+                format!(
+                    "{written} documents written, {dash:.6} DASH spent{}",
+                    crate::fiat::dash_note(dash)
+                ),
             ),
             None => ("priced", format!("{written} documents to write (dry run)")),
         };

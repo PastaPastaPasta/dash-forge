@@ -95,7 +95,7 @@ pub(super) async fn rotate_encryption(
     identity_keys::require_master_key(&master)?;
     let identity = client.fetch_signer(&master).await?;
     let plan = plan(ctx, &client, &forge, &master, &identity, keep_old).await?;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     if !ctx.json {
         print_plan(&plan, price);
     }
@@ -323,7 +323,7 @@ fn ids(ids: &[u32]) -> String {
         .join(", ")
 }
 
-fn print_plan(plan: &Plan, price: Option<f64>) {
+fn print_plan(plan: &Plan, price: crate::fmt::Price) {
     let (id, new_id, members) = (&plan.id, plan.new_id, &plan.members);
     let maintained: Vec<&RepoRef> = members.maintained.iter().collect();
     let member_only: Vec<&RepoRef> = members.member_only.iter().collect();

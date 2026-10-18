@@ -100,6 +100,8 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      DASH_FORGE_FIAT: "off"
     steps:
       # A failed `changes` job must not turn into a skipped (= passing) required check.
       - name: Fail when change detection did not succeed
@@ -211,6 +213,7 @@ jobs:
       run:
         shell: bash
     env:
+      DASH_FORGE_FIAT: "off"
       # aws-lc-sys needs NASM for x86_64 Windows; use the prebuilt objects it ships.
       AWS_LC_SYS_PREBUILT_NASM: '1'
       PROTOC_VERSION: '28.3'

@@ -637,7 +637,7 @@ fn balance_of(
             "run `dg doctor` again when the network row passes",
         ),
         (true, Some(fetched)) => match fetched.map(|i| i.balance()) {
-            Ok(credits) => balance_check(credits),
+            Ok(credits) => balance_check(credits, ctx.network()),
             Err(forge_core::Error::NotFound) => Check::fail(
                 "balance",
                 format!("identity {id} does not exist on {}", ctx.network_label()),
@@ -696,9 +696,13 @@ fn keys_check(
     Check::ok("keys", format!("{line}{also}"))
 }
 
-fn balance_check(credits: u64) -> Check {
+fn balance_check(credits: u64, network: &forge_core::network::Network) -> Check {
     let dash = credits_to_dash(credits);
-    let detail = format!("{} DASH", dash_amount(dash));
+    let detail = format!(
+        "{} DASH{}",
+        dash_amount(dash),
+        crate::fmt::balance_note(dash, network)
+    );
     let fix = format!(
         "top up from any Dash wallet at {}",
         forge_core::user_error::TOP_UP_URL
@@ -1374,6 +1378,11 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>, storage_unse
             }
         },
     };
+    let note = |t: &str| {
+        t.parse::<f64>().ok().map_or_else(String::new, |d| {
+            crate::fmt::fiat_note(d, crate::fmt::default_price())
+        })
+    };
     match (mode, threshold) {
         ("never", Some(t)) => Check::ok(
             "cost guard",
@@ -1386,7 +1395,7 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>, storage_unse
         ),
         ("refuse", Some(t)) => Check::ok(
             "cost guard",
-            format!("pushes above {t} DASH fail without asking (dash.confirm=refuse)"),
+            format!("pushes above {t} DASH{} fail without asking (dash.confirm=refuse)", note(t)),
         ),
         ("refuse", None) => Check::warn(
             "cost guard",
@@ -1396,7 +1405,8 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>, storage_unse
         (_, Some(t)) => Check::ok(
             "cost guard",
             format!(
-                "pushes above {t} DASH ask first{}{}",
+                "pushes above {t} DASH{} ask first{}{}",
+                note(t),
                 if unset { " (the default; dash.costWarnThreshold is unset)" } else { "" },
                 if storage_unset { "; so do packs over 1 MiB on Platform, since dash.storage is unset" } else { "" },
             ),
@@ -2057,9 +2067,18 @@ mod tests {
     #[test]
     fn balance_thresholds() {
         let one_dash = forge_core::cost::CREDITS_PER_DASH;
-        assert_eq!(balance_check(0).status, Status::Fail);
-        assert_eq!(balance_check(one_dash / 1000).status, Status::Warn);
-        assert_eq!(balance_check(one_dash).status, Status::Ok);
+        assert_eq!(
+            balance_check(0, &forge_core::network::Network::Mainnet).status,
+            Status::Fail
+        );
+        assert_eq!(
+            balance_check(one_dash / 1000, &forge_core::network::Network::Mainnet).status,
+            Status::Warn
+        );
+        assert_eq!(
+            balance_check(one_dash, &forge_core::network::Network::Mainnet).status,
+            Status::Ok
+        );
     }
 
     #[cfg(unix)]

@@ -8,6 +8,7 @@
 //! network = "devnet"            # testnet | mainnet | devnet
 //! devnet_name = "sakura"        # devnet only
 //! dapi_addresses = "68.67.122.86,68.67.122.87"     # testnet/devnet; default: deployments file
+//! fiat = "EUR"                 # optional fiat equivalents; "off" disables requests
 //! trending = false              # `dg repo star` does not count toward Trending (default: true)
 //! islock_rpc = "https://trpc.digitalcash.dev"   # InstantSend lock source for `dg auth new`;
 //!                                               # "off" proves with chain locks only
@@ -21,6 +22,9 @@ use serde::{Deserialize, Serialize};
 /// The persisted CLI configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// Currency for optional mainnet fiat equivalents, or `off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fiat: Option<String>,
     /// Default network (`testnet` / `mainnet` / `devnet`). Overridden by `--network`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,

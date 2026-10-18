@@ -39,7 +39,7 @@ pub async fn run(ctx: &Ctx, cmd: &CostCommand) -> Result<()> {
 /// identity spend estimate; moved here so it stays reachable — see `docs/guides/costs.md`
 /// §What each action costs).
 fn prices_cmd(ctx: &Ctx) {
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let ops = price_table();
     let rows: Vec<_> = ops
         .iter()
@@ -53,7 +53,7 @@ fn prices_cmd(ctx: &Ctx) {
         }),
         || {
             println!("Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):");
-            if price.is_none() {
+            if !matches!(ctx.network(), forge_core::network::Network::Mainnet) {
                 println!("  ({} on {})", crate::fmt::NO_CASH_VALUE, ctx.network_label());
             }
             for (op, credits) in ops {
@@ -344,7 +344,7 @@ fn estimate_cmd(
         (None, None) => Target::backend(Backend::Platform),
     };
     let q = quote(&target, &input);
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let label = target.label.as_str();
     // Objects only price the browse index's chunks, which only Platform storage pays for.
     let assumed = if input.counted() || q.chunks == 0 {
@@ -423,7 +423,7 @@ async fn audit(
     since: Option<&str>,
     repo: Option<&str>,
 ) -> Result<()> {
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
 
     let Some(repo) = repo else {
         return identity_audit(ctx, identity, since, price).await;
@@ -528,7 +528,7 @@ async fn identity_audit(
     ctx: &Ctx,
     identity: Option<&str>,
     since: Option<&str>,
-    price: Option<f64>,
+    price: crate::fmt::Price,
 ) -> Result<()> {
     let client = ctx.connect().await?;
     let identity_id = match identity {
@@ -551,7 +551,7 @@ async fn identity_audit(
 }
 
 /// The `--json` payload for an identity spend [`AuditReport`].
-fn audit_json(report: &AuditReport, price: Option<f64>) -> serde_json::Value {
+fn audit_json(report: &AuditReport, price: crate::fmt::Price) -> serde_json::Value {
     json!({
         "mode": "identity_spend_estimate",
         "identityId": report.identity_id,
@@ -577,7 +577,7 @@ fn audit_json(report: &AuditReport, price: Option<f64>) -> serde_json::Value {
 }
 
 /// The human-readable rendering of an identity spend [`AuditReport`].
-fn print_audit(report: &AuditReport, price: Option<f64>) {
+fn print_audit(report: &AuditReport, price: crate::fmt::Price) {
     println!("Spend estimate for {}:", report.identity_id);
     if let Some(since_ms) = report.since_ms {
         println!("  since:  {} UTC", format_utc(since_ms));

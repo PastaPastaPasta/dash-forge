@@ -566,7 +566,7 @@ pub async fn apply_suggestions(
             }
         }
     }
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     let est = branch_commit_estimate(route);
     if !ctx.json {
         eprintln!(
@@ -695,7 +695,7 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         short(&base),
         src.ref_name,
         src.repo_display,
-        cost_line(branch_commit_estimate(route), ctx.usd_price())
+        cost_line(branch_commit_estimate(route), ctx.fiat_price())
     ))?;
     let mut steps = Steps::new(ctx.json);
     let author = git::merge_author_here(&s.identity.id());

@@ -137,6 +137,7 @@ impl Home {
             .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_CACHE_HOME", self.path("cache"))
             .env("DASH_FORGE_NO_KEYCHAIN", "1")
+            .env("DASH_FORGE_FIAT", "off")
             .env("NO_COLOR", "1")
             .env_remove("DASH_FORGE_KEY")
             .env_remove("DASH_FORGE_PASSPHRASE")

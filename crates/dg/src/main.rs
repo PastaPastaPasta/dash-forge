@@ -119,6 +119,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Show fiat equivalents in this currency, or off.
+    #[arg(long, global = true, value_name = "CODE|off", value_parser = forge_core::fiat::parse_setting)]
+    pub fiat: Option<String>,
+
     /// Skip confirmation prompts (for automation/CI).
     #[arg(long, short = 'y', global = true)]
     pub yes: bool,
@@ -2540,6 +2544,8 @@ fn main() {
         return;
     }
 
+    forge_core::fiat::initialize(cli.fiat.as_deref());
+
     let (goal, repo) = errors::context_for(&cli.command);
     let err_ctx = ErrorContext {
         goal,
@@ -2645,6 +2651,7 @@ fn run(cli: &Cli) -> Result<()> {
         Err(e) => return Err(e),
     };
     let ctx = Ctx::resolve(cli, &config)?;
+    fmt::set_network(ctx.network());
     let rt = Runtime::new()?;
     rt.block_on(dispatch(&ctx, cli))
 }
@@ -2728,6 +2735,20 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn fiat_flag_is_global_and_rejects_non_fiat_codes() {
+        for value in ["USD", "EUR", "off"] {
+            let cli =
+                Cli::try_parse_from(["dg", "cost", "estimate", "--bytes", "1", "--fiat", value])
+                    .unwrap();
+            assert_eq!(cli.fiat.as_deref(), Some(value));
+        }
+        assert!(
+            Cli::try_parse_from(["dg", "--fiat", "BTC", "cost", "estimate", "--bytes", "1"])
+                .is_err()
+        );
+    }
 
     /// P1-5: `dg pr edit` / `dg issue edit` take gh's metadata flags, comma-separated or
     /// repeated; `--milestone` and `--remove-milestone` exclude each other.

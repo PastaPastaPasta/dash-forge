@@ -633,7 +633,7 @@ async fn audience_cmd(ctx: &Ctx, name: &str, to: Option<&str>, repo: Option<&str
         set_narrower(c, &short_name, &audience)?;
     }
     let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
+    let price = ctx.fiat_price();
     ctx.emit(
         json!({
             "branch": short_name,
