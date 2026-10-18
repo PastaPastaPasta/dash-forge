@@ -404,14 +404,7 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
     .await?;
     let sensitive = read.repo.visibility == Visibility::Private || plan.needs_consent;
     if !args.dry_run {
-        if sensitive && !ctx.yes {
-            if ctx.json || quiet {
-                bail!(
-                    UserError::new(codes::CONFIRMATION_REQUIRED, PRIVATE_CONSENT).fix("add --yes")
-                );
-            }
-            ctx.confirm_or_cancel(PRIVATE_CONSENT)?;
-        }
+        consent(ctx, sensitive, quiet)?;
         if read.repo.visibility == Visibility::Public {
             public_note(&dir, quiet)?;
         }
@@ -509,6 +502,16 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
         "profile":profile_name, "plan":plan, "totalBytes":plan.bytes(), "costDash":0, "report":report}),
         report,
     })
+}
+
+fn consent(ctx: &Ctx, sensitive: bool, quiet: bool) -> Result<()> {
+    if !sensitive || ctx.yes {
+        return Ok(());
+    }
+    if ctx.json || quiet {
+        bail!(UserError::new(codes::CONFIRMATION_REQUIRED, PRIVATE_CONSENT).fix("add --yes"));
+    }
+    ctx.confirm_or_cancel(PRIVATE_CONSENT)
 }
 
 fn now() -> u64 {
@@ -753,5 +756,81 @@ mod tests {
         ] {
             assert!(crate::Cli::try_parse_from(flags).is_ok());
         }
+    }
+
+    #[test]
+    fn private_consent_is_required_for_json_and_unattended_refreshes() {
+        let json = Ctx::scripted(false, true, false, None);
+        let error = consent(&json, true, false).unwrap_err();
+        let user = error.downcast_ref::<UserError>().unwrap();
+        assert_eq!(user.code, codes::CONFIRMATION_REQUIRED);
+        assert!(user.to_json().to_string().contains("add --yes"));
+        let service = Ctx::scripted(false, false, false, None);
+        assert!(consent(&service, true, true).is_err());
+        assert!(consent(&service, false, true).is_ok());
+        assert!(consent(&Ctx::scripted(true, true, false, None), true, true).is_ok());
+    }
+
+    #[test]
+    fn managed_auth_is_used_only_for_the_managed_api_and_parse_errors_hide_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = StorageProfiles::parse("[profiles.node]\nkind='ipfs-kubo'\napi='http://127.0.0.1:5001'\napi_auth='env:FORGE_TEST_MISSING_PIN_TOKEN'\n").unwrap();
+        let node = ManagedNode {
+            api_port: Some(5001),
+            ..ManagedNode::default()
+        };
+        fs::write(
+            dir.path().join("tokens.toml"),
+            "forge='local-stub-token'\nadmin='unused-stub-token'\n",
+        )
+        .unwrap();
+        let profile = &profiles.profiles["node"];
+        let node_backend = backend(dir.path(), &node, profile).unwrap();
+        assert_eq!(
+            node_backend.config().api_auth.as_ref().unwrap().expose(),
+            "Bearer local-stub-token"
+        );
+        fs::write(dir.path().join("tokens.toml"), "forge='DO-NOT-ECHO-THIS\n").unwrap();
+        let error = backend(dir.path(), &node, profile).unwrap_err().to_string();
+        assert!(!error.contains("DO-NOT-ECHO-THIS"));
+        assert!(error.contains("cannot read the managed node token"));
+        // A foreign node does not consume a local node's token file.
+        let public = StorageProfiles::parse(
+            "[profiles.other]\nkind='ipfs-kubo'\napi='http://127.0.0.1:5002'\n",
+        )
+        .unwrap();
+        assert!(backend(dir.path(), &node, &public.profiles["other"])
+            .unwrap()
+            .config()
+            .api_auth
+            .is_none());
+    }
+
+    #[test]
+    fn concurrent_follow_updates_do_not_lose_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for n in 0..8 {
+                let path = dir.path();
+                scope.spawn(move || {
+                    update_follow(path, |file| {
+                        file.repo.push(FollowRepo {
+                            network: "testnet".into(),
+                            repo_id: n.to_string(),
+                            owner: "owner".into(),
+                            name: n.to_string(),
+                            last_run: 0,
+                            blobs: 0,
+                            last_error: None,
+                            profile: None,
+                            private_consent: false,
+                        })
+                    })
+                    .unwrap()
+                });
+            }
+        });
+        let file: FollowFile = read_toml(&dir.path().join("follow.toml")).unwrap();
+        assert_eq!(file.repo.len(), 8);
     }
 }

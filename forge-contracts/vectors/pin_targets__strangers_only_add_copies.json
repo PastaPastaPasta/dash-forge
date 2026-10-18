@@ -1,6 +1,6 @@
 {
   "name": "strangers_only_add_copies",
-  "description": "strangers only add copies",
+  "description": "Stranger-only hashes, reader-only hashes and bot-only hashes are ignored; a stranger adds a CID for an authorized hash without changing its size.",
   "case": "pin_targets",
   "rules": "v2",
   "input": {
@@ -30,7 +30,7 @@
         "owner": "stranger",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "kind": 0,
-        "size": 10,
+        "size": 9000000000,
         "uris": [
           "ipfs://bafyB"
         ],
