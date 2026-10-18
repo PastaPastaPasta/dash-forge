@@ -155,10 +155,11 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
     [ready, repo.repoId, repo.visibility, network, identity ?? '', repo.session?.id ?? repo.lane?.id ?? ''],
     { enabled: relevant && ready && sdk !== null },
   )
+  const recordedSealOff = status.data?.record?.sealOff ?? null
   const pendingKeep = useAsync(
-    () => readPendingKeep(sdk!, repo, status.data?.record?.sealOff ?? null),
-    [ready, repo.repoId, repo.visibility, identity ?? '', repo.lane?.id ?? '', status.data],
-    { enabled: relevant && !isPrivate && ready && sdk !== null },
+    () => readPendingKeep(sdk!, repo, recordedSealOff),
+    [ready, repo.repoId, repo.visibility, identity ?? '', repo.lane?.id ?? '', recordedSealOff],
+    { enabled: relevant && !isPrivate && ready && sdk !== null && status.settled },
   )
   const oneWay = useAsync(() => contractVisibilityOneWay(sdk!, repo.forge.core), [ready, repo.forge.core], {
     enabled: relevant && isPrivate && isOwner && ready && sdk !== null,

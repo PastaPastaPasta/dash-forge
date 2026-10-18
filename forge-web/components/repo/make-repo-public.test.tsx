@@ -42,7 +42,8 @@ vi.mock('@/lib/repo/make-public-check', () => ({ makePublicCheck: (...a: unknown
 const runMakePublic = vi.fn()
 vi.mock('@/lib/repo/make-public-run', () => ({ runMakePublic: (...a: unknown[]) => runMakePublic(...a) }))
 const pendingKeep = { count: 0 }
-vi.mock('@/lib/repo/keep-for-members-read', () => ({ readPendingKeep: async () => pendingKeep.count }))
+const readPendingKeep = vi.fn()
+vi.mock('@/lib/repo/keep-for-members-read', () => ({ readPendingKeep: (...a: unknown[]) => readPendingKeep(...a) }))
 const readMakePublicStatus = vi.fn()
 vi.mock('@/lib/repo/make-public-status', () => ({ readMakePublicStatus: (...a: unknown[]) => readMakePublicStatus(...a) }))
 
@@ -98,6 +99,8 @@ let root: Root
 const onSaved = vi.fn()
 beforeEach(() => {
   pendingKeep.count = 0
+  readPendingKeep.mockReset()
+  readPendingKeep.mockImplementation(async () => pendingKeep.count)
   viewer.id = 'owner'
   viewer.scope = 'signing'
   viewer.context = true
@@ -771,6 +774,35 @@ it('offers Start again after a refused run and refreshed member session without 
 
 
 describe('branches waiting to be kept for members', () => {
+  it('waits for status before reading branches with its recorded cutoff', async () => {
+    converted.value = true
+    pendingKeep.count = 2
+    let settle!: (status: MakePublicStatus) => void
+    readMakePublicStatus.mockReturnValue(new Promise<MakePublicStatus>((resolve) => { settle = resolve }))
+    await renderRow({ visibility: 'public' })
+    expect(readPendingKeep).not.toHaveBeenCalled()
+    expect(tid('make-public-keep-row')).toBeNull()
+    await act(async () => settle(aStatus({ phase: 'public', converted: true, record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 } })))
+    await flush()
+    expect(readPendingKeep).toHaveBeenCalledTimes(1)
+    expect(readPendingKeep.mock.calls[0]?.[2]).toBe(4)
+    expect(tid('make-public-keep-row')?.textContent).toContain("Members can't see 2 branches")
+  })
+
+  it('refreshes the branch count when a settled record changes its cutoff', async () => {
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'public', converted: true, record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 } }))
+    readPendingKeep.mockImplementation(async (_sdk: unknown, _repo: unknown, cutoff: number | null) => cutoff === 7 ? 1 : 2)
+    makePublicCheck.mockResolvedValue(aCheck())
+    await renderRow({ visibility: 'public' })
+    expect(tid('make-public-keep-row')?.textContent).toContain("Members can't see 2 branches")
+    await click(tid('make-public-everything-open'))
+    readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'public', converted: true, record: { mode: 'codeOnly', refs: [MAIN], sealOff: 7 } }))
+    await click(tid('make-public-cancel'))
+    expect(readPendingKeep.mock.calls.at(-1)?.[2]).toBe(7)
+    expect(tid('make-public-keep-row')?.textContent).toContain("Members can't see 1 branch")
+  })
+
   for (const role of ['owner', 'maintainer', 'reader', 'anonymous'] as const) {
     it(`shows the count and dg command only to a ${role} who can keep branches`, async () => {
       converted.value = true

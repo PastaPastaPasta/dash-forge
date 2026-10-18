@@ -232,27 +232,16 @@ pub(crate) async fn keep_for_members(
             }
             let confirmed = confirm_keep(ctx, &keep_dir, confirm)?;
             let args = keep_push_args(&specs, confirmed);
-            git::git_dash(
+            let pushed = git::git_dash(
                 &keep_dir,
                 &args.iter().map(String::as_str).collect::<Vec<_>>(),
                 &env,
             )
-            .context("keeping branches for members")?;
+            .map(|_| ())
+            .context("keeping branches for members");
             let fresh = RepoService::new(&s.client, &s.identity, &s.bridge);
             let (confirmed, _) = member_tips(&fresh, public).await?;
-            for row in &mut plan {
-                if let Keep::Push { target } = &row.keep {
-                    if !confirmed
-                        .get(target)
-                        .is_some_and(|t| t == &row.tip || git::is_ancestor(&keep_dir, &row.tip, t))
-                    {
-                        row.keep = Keep::NotKept {
-                            reason: "the members-only ref could not be confirmed".into(),
-                        };
-                    }
-                }
-            }
-            Ok(plan)
+            confirm_keep_push(&keep_dir, plan, pushed, &confirmed)
         })
         .await
     })
@@ -273,6 +262,35 @@ where
 
 fn has_pushes(plan: &[KeepPlan]) -> bool {
     plan.iter().any(|p| matches!(p.keep, Keep::Push { .. }))
+}
+
+/// A push can reject some refs after others land. Confirm every target before deciding
+/// whether the push failed globally or only individual branches were not kept.
+fn confirm_keep_push(
+    dir: &Path,
+    mut plan: Vec<KeepPlan>,
+    pushed: Result<()>,
+    confirmed: &Refs,
+) -> Result<Vec<KeepPlan>> {
+    let mut any_confirmed = false;
+    for row in &mut plan {
+        if let Keep::Push { target } = &row.keep {
+            if confirmed
+                .get(target)
+                .is_some_and(|t| t == &row.tip || git::is_ancestor(dir, &row.tip, t))
+            {
+                any_confirmed = true;
+            } else {
+                row.keep = Keep::NotKept {
+                    reason: "the members-only ref could not be confirmed".into(),
+                };
+            }
+        }
+    }
+    if !any_confirmed {
+        pushed?;
+    }
+    Ok(plan)
 }
 
 /// Validate each branch independently. Price a full sealed pack and index per branch;
@@ -624,6 +642,119 @@ mod tests {
         );
         assert!(report.plan.is_some());
         assert_eq!(report.not_kept, 3);
+    }
+
+    #[test]
+    fn a_partially_rejected_keep_push_finishes_with_per_branch_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        for repo in [dir.path(), remote.path()] {
+            git::git(repo, &["init", "--bare", "-q"], &[]).unwrap();
+        }
+        let tree = git::git(dir.path(), &["mktree"], &[]).unwrap();
+        let commit = dir.path().join("commit.txt");
+        let mut tips = Vec::new();
+        for message in ["withheld", "diverged"] {
+            std::fs::write(&commit, format!("tree {tree}\nauthor Fixture <fixture@example.test> 0 +0000\ncommitter Fixture <fixture@example.test> 0 +0000\n\n{message}\n")).unwrap();
+            tips.push(
+                git::git(
+                    dir.path(),
+                    &[
+                        "hash-object",
+                        "-t",
+                        "commit",
+                        "-w",
+                        commit.to_str().unwrap(),
+                    ],
+                    &[],
+                )
+                .unwrap(),
+            );
+        }
+        let tip = &tips[0];
+        let remote_path = remote.path().to_str().unwrap();
+        git::git(
+            dir.path(),
+            &[
+                "push",
+                remote_path,
+                &format!("{}:refs/heads/rejected", tips[1]),
+            ],
+            &[],
+        )
+        .unwrap();
+        let mut plan: Vec<_> = ["good-one", "rejected", "good-two"]
+            .into_iter()
+            .map(|name| KeepPlan {
+                name: format!("refs/heads/{name}"),
+                tip: tip.clone(),
+                keep: Keep::Push {
+                    target: format!("refs/heads/{name}"),
+                },
+            })
+            .collect();
+        let (specs, _) = prepare_push(dir.path(), &mut plan);
+        let args: Vec<_> = ["push", remote_path]
+            .into_iter()
+            .chain(specs.iter().map(String::as_str))
+            .collect();
+        let pushed = git::git(dir.path(), &args, &[]).map(|_| ());
+        assert!(pushed.is_err(), "one non-fast-forward ref must be rejected");
+        let confirmed = git::git(
+            remote.path(),
+            &["for-each-ref", "--format=%(refname) %(objectname)"],
+            &[],
+        )
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let (name, tip) = line.split_once(' ').unwrap();
+            (name.to_owned(), tip.to_owned())
+        })
+        .collect();
+        let plan = confirm_keep_push(dir.path(), plan, pushed, &confirmed).unwrap();
+        assert!(matches!(plan[0].keep, Keep::Push { .. }));
+        assert!(matches!(&plan[1].keep, Keep::NotKept { reason } if !reason.is_empty()));
+        assert!(matches!(plan[2].keep, Keep::Push { .. }));
+        let report = report(
+            &Ctx::scripted(true, true, false, None),
+            "owner/repo",
+            Ok(plan),
+        );
+        assert!(report.plan.is_some(), "partial failure permits completion");
+        assert!(report.error.is_none());
+        assert_eq!(report.not_kept, 1);
+    }
+
+    #[test]
+    fn already_kept_rows_do_not_hide_a_totally_failed_keep_push() {
+        let plan = vec![
+            KeepPlan {
+                name: "refs/heads/already".into(),
+                tip: "a".into(),
+                keep: Keep::Kept {
+                    as_: "refs/heads/already".into(),
+                },
+            },
+            KeepPlan {
+                name: "refs/heads/rejected".into(),
+                tip: "b".into(),
+                keep: Keep::Push {
+                    target: "refs/heads/rejected".into(),
+                },
+            },
+        ];
+        let error = confirm_keep_push(
+            Path::new("."),
+            plan,
+            Err(anyhow::anyhow!("push rejected").context("keeping branches for members")),
+            &BTreeMap::from([("refs/heads/already".into(), "a".into())]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "keeping branches for members: push rejected"
+        );
     }
 
     #[test]
