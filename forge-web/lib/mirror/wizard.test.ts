@@ -372,11 +372,12 @@ describe('mirrorCliCommands', () => {
 
   it('copies code and releases to dg’s own identity on the selected network', () => {
     const c = mirrorCliCommands(options)
-    expect(c.copy).toBe("dg import github.com/alice/Project --repo project --sync 'code,releases' --max-spend 0.2 --network devnet --devnet-name sakura")
+    expect(c.copy).toBe("dg import github.com/alice/Project --repo project --sync code,releases --max-spend 0.2 --network devnet --devnet-name sakura")
     expect(c.copy).not.toMatch(/--state|--dry-run|--yes|--i-have-the-rights/)
     expect(c.login).toBe('dg auth login <identity file> --network devnet --devnet-name sakura')
     expect(c.newIdentity).toBe('dg auth new --network devnet --devnet-name sakura')
     expect(c.githubLogin).toBe('gh auth login')
+    expect(mirrorCliCommands({ ...options, cap: '1000' }).login).toContain('--budget 1000')
   })
 
   it('adds a state file only for collaboration, and raises both auth budgets above 0.25', () => {
@@ -396,7 +397,7 @@ describe('mirrorCliCommands', () => {
 
   it('refuses invalid names and caps, and quotes source and owner values as shell words', () => {
     for (const name of ['', '.github', 'a/b', 'a;whoami']) expect(() => mirrorCliCommands({ ...options, name })).toThrow(/repo name/)
-    for (const cap of ['0', '-1', 'NaN', '1e3', '1;whoami']) expect(() => mirrorCliCommands({ ...options, cap })).toThrow()
+    for (const cap of ['0', '-1', 'NaN', '1e3', '1;whoami', '5000', '1000.00000001']) expect(() => mirrorCliCommands({ ...options, cap })).toThrow()
     const ownerId = "someone'$(whoami)"
     const github = { owner: 'alice;whoami', name: 'Project' }
     expect(mirrorCliCommands({ ...options, github, ownerId }).copy).toContain(shellWord(`github.com/${github.owner}/Project`))

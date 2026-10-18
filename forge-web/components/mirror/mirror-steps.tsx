@@ -44,6 +44,7 @@ import {
   mirrorCliCommands,
   type MirrorCliSettings,
   costCapProblem,
+  cliCostCapProblem,
   ACTION_COST_CAP,
   defaultCostCap,
   dfk1,
@@ -122,11 +123,11 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
 
   // A URL checks only after auth and saved progress settle, and never answers the step.
   useEffect(() => {
-    if (!settled || initial !== null || !prefill || autoChecked.current) return
+    if (!settled || initial !== null || !prefill || autoChecked.current || text !== prefill) return
     autoChecked.current = true
     setText(prefill)
     void check(prefill)
-  }, [settled, initial, prefill, check])
+  }, [settled, initial, prefill, check, text])
 
   return (
     <>
@@ -147,9 +148,9 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
         </Button>
       </form>
       <Hint>Public repositories only. Asked from your browser, anonymously: no GitHub sign-in, and nothing passes through a Forge server (there is none).</Hint>
-      {error ? <Hint tone="danger">{error}</Hint> : null}
+      {error && !(way === 'cli' && privateSource) ? <Hint tone="danger">{error}</Hint> : null}
       {way === 'cli' && privateSource ? (
-        <Hint>Private on GitHub? This page can&apos;t check it. <a href={DOCS.mirrorPrivate} className="underline">The guide shows how to copy one into a private Forge repo.</a></Hint>
+        <Hint>This page can&apos;t check private GitHub repositories. <a href={DOCS.mirrorPrivate} className="underline">The guide shows how to copy one into a private Forge repo.</a></Hint>
       ) : null}
       {found ? (
         <div className="space-y-3 rounded-md border border-verify/30 bg-verify/5 p-3" data-testid="mirror-github-found">
@@ -187,7 +188,7 @@ function AlreadyMirrored({ github }: { github: GithubRepo }): JSX.Element | null
   if (!match || match.mirrors.length === 0) return null
   return (
     <Hint>
-      {match.partial ? 'At least ' : ''}{match.mirrors.length} Forge repos say they mirror github.com/{github.owner}/{github.name}.{' '}
+      {match.partial ? 'At least ' : ''}{plural(match.mirrors.length, 'Forge repo says it mirrors', 'Forge repos say they mirror')} github.com/{github.owner}/{github.name}.{' '}
       <Link href={`/github.com/${github.owner}/${github.name}/`} className="underline">See them</Link>. Anyone can keep their own copy.
     </Hint>
   )
@@ -919,27 +920,27 @@ export function WaitStep({
 
 /** The first answer determines which steps follow. */
 export function WayStep({ initial, onDone }: { initial: MirrorWay | null; onDone: (way: MirrorWay) => void }): JSX.Element {
-  const [way, setWay] = useState<MirrorWay>(initial ?? 'action')
+  const [way, setWay] = useState<MirrorWay | null>(initial)
   return (
     <>
       <fieldset className="grid gap-3 sm:grid-cols-2">
         <legend className="sr-only">Do you maintain the repo on GitHub?</legend>
         {([
-          ['action', 'Yes: keep it in sync automatically', 'Needs write access on GitHub', 'A GitHub Action in the repo mirrors every push. Setting it up adds a workflow file and secrets to the GitHub repo.', 'You sign in here. The Action is optional: you can create the Forge repo now and add the Action later.'],
-          ['cli', 'No, or I want a one-time copy: use the command line', 'Anyone', 'dg import copies the repo from your computer. Run it again whenever you want the copy brought up to date.', 'This page signs nothing. dg signs and pays from your identity.'],
+          ['action', 'Yes, keep it in sync automatically', 'Needs write access on GitHub', 'A GitHub Action in the repo mirrors every push. Setting it up adds a workflow file and secrets to the GitHub repo.', 'You sign in here. The Action is optional. You can create the Forge repo now and add it later.'],
+          ['cli', 'No, copy it from the command line', 'Anyone', 'dg import copies the repo from your computer, once. Run it again whenever you want the copy brought up to date.', 'This page signs nothing. dg signs and pays from your identity.'],
         ] as const).map(([value, title, badge, body, foot]) => (
           <label key={value} className={cn('flex cursor-pointer flex-col gap-3 rounded-md border p-3', way === value ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750')}>
             <span className="flex items-start gap-2 text-dense font-medium">
-              <input type="radio" name="mirror-way" value={value} checked={way === value} onChange={() => setWay(value)} className="mt-1 accent-forge-700" />
-              {title}
+              <input type="radio" name="mirror-way" aria-labelledby={`mirror-way-${value}-title`} aria-describedby={`mirror-way-${value}-badge mirror-way-${value}-body mirror-way-${value}-foot`} value={value} checked={way === value} onChange={() => setWay(value)} className="mt-1 accent-forge-700" />
+              <span id={`mirror-way-${value}-title`}>{title}</span>
             </span>
-            <span className="w-fit rounded bg-surface-raised px-2 py-1 text-[12px] text-fg-muted">{badge}</span>
-            <span className="text-dense">{body}</span>
-            <span className="mt-auto text-[12px] text-fg-muted">{foot}</span>
+            <span id={`mirror-way-${value}-badge`} className="w-fit rounded bg-surface-raised px-2 py-1 text-[12px] text-fg-muted">{badge}</span>
+            <span id={`mirror-way-${value}-body`} className="text-dense">{body}</span>
+            <span id={`mirror-way-${value}-foot`} className="mt-auto text-[12px] text-fg-muted">{foot}</span>
           </label>
         ))}
       </fieldset>
-      <Button variant="primary" onClick={() => onDone(way)}>Continue</Button>
+      <Button variant="primary" disabled={way === null} onClick={() => way !== null && onDone(way)}>Continue</Button>
     </>
   )
 }
@@ -970,7 +971,8 @@ export function CliStep({ github, settings, onSettings, ownerId }: {
   } catch (e) {
     nameError = errorMessage(e)
   }
-  const capError = costCapProblem(settings.cap)
+  const capError = cliCostCapProblem(settings.cap)
+  const Heading = ownerId ? 'h4' : 'h3'
   const commands = nameError === null && capError === null ? mirrorCliCommands({ github, ...settings, ownerId }) : null
   const alias = `/github.com/${github.owner}/${github.name}/`
   return (
@@ -993,25 +995,25 @@ export function CliStep({ github, settings, onSettings, ownerId }: {
       {commands ? (
         <>
           <section className="space-y-2" aria-label="Install and sign in">
-            <h3 className="text-dense font-medium">a. Once: install and sign in</h3>
-            <p className="text-dense">You need dg and git-remote-dash (<a href={DOCS.quickStart} className="underline">install</a>), and the GitHub CLI, logged in.</p>
+            <Heading className="text-dense font-medium">a. Once: install and sign in</Heading>
+            <p className="text-dense">You need dg and git-remote-dash (<a href={DOCS.quickStart} className="underline">install</a>), and the GitHub CLI, signed in.</p>
             {ownerId ? <Hint>Sign dg in as {shortIdentity(ownerId)} to fill this repo.</Hint> : null}
             <CopyRow text={commands.login} label="Copy the dg sign-in command" />
             <Hint>New to Dash? <code>{commands.newIdentity}</code> makes an identity.</Hint>
             <CopyRow text={commands.githubLogin} label="Copy the GitHub sign-in command" />
           </section>
           <section className="space-y-2" aria-label="Copy the repo">
-            <h3 className="text-dense font-medium">b. Copy it</h3>
+            <Heading className="text-dense font-medium">b. Copy it</Heading>
             <CopyRow text={commands.copy} label="Copy the import command" />
             <Hint>Your git data goes to Dash Platform unless you <a href={DOCS.storage} className="underline">set your own storage for dg first</a>.</Hint>
             <CopyRow text={commands.storage} label="Copy the storage command" />
-            <Hint>If you already have a repo with this name, dg import writes into it and replaces its branches and tags.</Hint>
+            <Hint>{ownerId ? <>dg import writes into {settings.name} and replaces its branches and tags to match GitHub.</> : <>If you already have a repo with this name, dg import writes into it and replaces its branches and tags.</>}</Hint>
           </section>
           <section className="space-y-2" aria-label="Bring it up to date">
-            <h3 className="text-dense font-medium">c. Bring it up to date</h3>
+            <Heading className="text-dense font-medium">c. Bring it up to date</Heading>
             <p className="text-dense">Run the same command again. It copies only what changed, and costs nothing when nothing changed. To run it on a schedule, see <a href={DOCS.mirrorKeepInSync} className="underline">Keep it in sync</a>.</p>
           </section>
-          <p className="text-dense">When it&apos;s done: dg prints the repo&apos;s address. Copies with the GitHub name also appear at <Link href={alias} className="break-all text-forge-700 underline dark:text-forge-400">{alias}</Link>.</p>
+          <p className="text-dense">dg prints the repo&apos;s address when it&apos;s done. Copies with the GitHub name also appear at <Link href={alias} className="break-all text-forge-700 underline dark:text-forge-400">{alias}</Link>.</p>
         </>
       ) : null}
     </div>

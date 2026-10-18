@@ -17,6 +17,7 @@ import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { ACTIVE_NETWORK } from '@/lib/constants'
+import { DOCS } from '@/lib/docs-links'
 import { previewRepoCreate, readRefs, repoCreationFirsts, resolveAnyRepoWith } from '@/lib/repo'
 import { KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits, sumPreviews } from '@/lib/sdk'
 import { PLATFORM_PROFILE } from '@/lib/storage'
@@ -36,6 +37,27 @@ const TITLES: Readonly<Record<StepId, string>> = {
   key: 'The runner key',
   workflow: 'The workflow file and its secrets',
   wait: 'The first mirror run',
+}
+
+const DEFAULT_CLI = { name: null, collab: false, cap: '0.2' }
+const MIRROR_PARAMS = ['way', 'repo', 'name', 'collab', 'cap']
+
+/** Keep Next's router tree intact and tolerate Safari's history write limit. */
+function replaceMirrorUrl(url: URL): void {
+  const state: unknown = window.history.state
+  if (state === null || typeof state !== 'object' || !('__NA' in state)) return
+  if (url.href === window.location.href) return
+  try {
+    window.history.replaceState(state, '', url)
+  } catch {
+    // The answers still work in memory when the browser refuses an address update.
+  }
+}
+
+function clearMirrorUrl(): void {
+  const url = new URL(window.location.href)
+  for (const param of MIRROR_PARAMS) url.searchParams.delete(param)
+  replaceMirrorUrl(url)
 }
 
 /** Which steps are answered. */
@@ -99,7 +121,7 @@ export function MirrorWizard(): JSX.Element {
   const progressRef = useRef(progress)
   const [loaded, setLoaded] = useState<string | null>(null)
   const [query, setQuery] = useState<URLSearchParams | null>(null)
-  const [cli, setCli] = useState<{ name: string | null; collab: boolean; cap: string }>({ name: null, collab: false, cap: '0.2' })
+  const [cli, setCli] = useState<{ name: string | null; collab: boolean; cap: string }>(DEFAULT_CLI)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     setQuery(params)
@@ -123,8 +145,17 @@ export function MirrorWizard(): JSX.Element {
     setProgress(next)
   }, [])
 
-  // Pick up where this identity stopped; a GitHub repo checked before signing in is kept.
+  // Only a signed-out person's picks can carry into their newly signed-in identity.
+  const previousIdentity = useRef<string | null>(null)
   useEffect(() => {
+    const previous = previousIdentity.current
+    previousIdentity.current = identity
+    setReopened(null)
+    if (previous !== null && previous !== identity) {
+      clearMirrorUrl()
+      setQuery(new URLSearchParams())
+      setCli(DEFAULT_CLI)
+    }
     if (identity === null) {
       // Signed out: nothing of the last identity's stays on the page. A GitHub repository
       // checked from here on is the signed-out person's own, and resumes with them.
@@ -133,11 +164,13 @@ export function MirrorWizard(): JSX.Element {
       show(EMPTY_PROGRESS)
       return
     }
+    if (previous !== null) show(EMPTY_PROGRESS)
+    setLoaded(null)
     let live = true
     loadMirrorProgress(ACTIVE_NETWORK.key, identity).then(
       (saved) => {
         if (!live) return
-        show(resumed(progressRef.current, saved, openedAt.current))
+        show(resumed(previous === null ? progressRef.current : EMPTY_PROGRESS, saved, openedAt.current))
         setLoaded(identity)
       },
       () => live && setLoaded(identity),
@@ -168,27 +201,31 @@ export function MirrorWizard(): JSX.Element {
 
   const cliSettings: MirrorCliSettings = { ...cli, name: cli.name ?? suggestForgeName(progress.github?.name ?? '') }
   useEffect(() => {
-    if (!settled || query === null || progress.way === null) return
-    const url = new URL(window.location.href)
-    url.searchParams.set('way', progress.way)
-    if (progress.github) url.searchParams.set('repo', `${progress.github.owner}/${progress.github.name}`)
-    if (progress.way === 'cli') {
+    if (!settled || query === null) return
+    if (progress.way !== 'cli') {
+      clearMirrorUrl()
+      return
+    }
+    const timer = setTimeout(() => {
+      const url = new URL(window.location.href)
+      url.searchParams.set('way', 'cli')
+      const source = progress.github ? `${progress.github.owner}/${progress.github.name}` : query.get('repo')
+      if (source) url.searchParams.set('repo', source)
       if (progress.github !== null || cli.name !== null) url.searchParams.set('name', cliSettings.name)
       url.searchParams.set('collab', cliSettings.collab ? '1' : '0')
       url.searchParams.set('cap', cliSettings.cap)
-    }
-    window.history.replaceState(window.history.state, '', url)
+      replaceMirrorUrl(url)
+    }, 300)
+    return () => clearTimeout(timer)
   }, [settled, query, progress.way, progress.github, cli.name, cliSettings.name, cliSettings.collab, cliSettings.cap])
 
   const restart = (): void => {
     setMade(null)
     setReopened(null)
     if (identity !== null) void clearMirrorProgress(ACTIVE_NETWORK.key, identity)
-    const url = new URL(window.location.href)
-    for (const param of ['way', 'repo', 'name', 'collab', 'cap']) url.searchParams.delete(param)
-    window.history.replaceState(window.history.state, '', url)
-    setQuery(new URLSearchParams(url.search))
-    setCli({ name: null, collab: false, cap: '0.2' })
+    clearMirrorUrl()
+    setQuery(new URLSearchParams())
+    setCli(DEFAULT_CLI)
     openedAt.current = Date.now()
     show({ ...EMPTY_PROGRESS, startedAt: openedAt.current })
   }
@@ -234,7 +271,9 @@ export function MirrorWizard(): JSX.Element {
   const body = (s: StepId): React.ReactNode => {
     if (s === 'way') return <WayStep initial={progress.way} onDone={(way) => update({ way })} />
     if (s === 'github') return <GithubStep initial={progress.github} way={progress.way ?? 'action'} prefill={query?.get('repo')} settled={settled} onDone={(github) => {
-      if (progress.github && (github.owner !== progress.github.owner || github.name !== progress.github.name)) setCli((c) => ({ ...c, name: null }))
+      const source = `${github.owner}/${github.name}`
+      if ((progress.github && source !== `${progress.github.owner}/${progress.github.name}`) ||
+        (progress.way === 'cli' && query?.has('repo') && source !== query.get('repo'))) setCli((c) => ({ ...c, name: null }))
       update({ github, ...(progress.way === 'action' ? { rightsAcknowledged: true } : {}) })
     }} />
     if (s === 'cli' && progress.github) return (
@@ -334,7 +373,7 @@ export function MirrorWizard(): JSX.Element {
           {order.map((s, i) => (
             <StepCard key={s} n={i + 1} id={s} title={TITLES[s]} state={stateOf(s)} summary={summaries[s]} optional={s === 'key'} onChange={s === 'wait' ? undefined : () => setReopened(s)}>
               {body(s)}
-              {ACTION_STEPS.includes(s) ? <div className="border-t border-anvil-100 pt-3 dark:border-anvil-850"><Button variant="ghost" size="sm" onClick={() => update({ actionLater: true })}>Not now</Button></div> : null}
+              {ACTION_STEPS.includes(s) && !done[s] ? <div className="border-t border-anvil-100 pt-3 dark:border-anvil-850"><Button variant="ghost" size="sm" onClick={() => update({ actionLater: true })}>Not now</Button></div> : null}
             </StepCard>
           ))}
           {progress.way === 'action' && progress.actionLater === true && signedIn && progress.github && progress.repo && current === null ? (
@@ -346,8 +385,8 @@ export function MirrorWizard(): JSX.Element {
             <>
               <h2 className="text-dense font-medium text-fg-muted">What you need</h2>
               <ul className="space-y-2">
-                <RailItem label="dg and git-remote-dash" note="Build them from source with the install guide." />
-                <RailItem label="The GitHub CLI, logged in" note="It reads the source repo." />
+                <RailItem label="dg and git-remote-dash" note={<>Build them from source with the <a href={DOCS.quickStart} className="underline">install guide</a>.</>} />
+                <RailItem label="The GitHub CLI, signed in" note="It reads the source repo." />
                 <RailItem label="A funded identity" note="The estimate comes before anything is written." />
               </ul>
             </>
@@ -376,7 +415,7 @@ export function MirrorWizard(): JSX.Element {
   )
 }
 
-function RailItem({ label, note }: { label: string; note: string }): JSX.Element {
+function RailItem({ label, note }: { label: string; note: React.ReactNode }): JSX.Element {
   return (
     <li>
       <span className="block font-medium text-anvil-800 dark:text-anvil-100">{label}</span>

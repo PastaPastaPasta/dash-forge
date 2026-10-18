@@ -13,23 +13,25 @@ skipWithoutFixture()
  *
  *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test mirror-wizard.spec.ts
  *
- * m1 needs no identity and runs in the read-only CI job too; m2 and m3 need `E2E_WRITE=1`.
+ * m1 needs no identity and runs in the read-only CI job too. m2 needs `E2E_WRITE=1`,
+ * including its phone and accessibility checks.
  *
  * GitHub's API is answered by the spec (no network, no rate limit). The Forge repository is the
  * read fixture's `forge-v2-empty` (MAINTAINER's), which the wizard finds and reuses, so nothing
  * is created. The storage is an R2 profile saved in this browser only (its checks fail: the
  * bucket does not exist). The runner key's identity update is stopped in the browser before it
- * leaves (every `broadcastStateTransition` is aborted), then the wizard's "I have a runner key"
+ * leaves (every `broadcastStateTransition` is aborted), then the wizard's "Add DASH_FORGE_KEY yourself"
  * path continues to the workflow.
  *
  * m1. signed out: the entry question, private-source guidance, CLI commands, copy buttons,
  *     settings restored from the URL, phone layout and the automatic path's sign-in gate.
- * m2. signed in: GitHub → the existing Forge repo (no cost) → an R2 bucket (and its CORS fix) →
+ * m2. signed in: automatic sync → GitHub → the existing Forge repo (no cost) → set up the
+ *     Action → an R2 bucket (and its CORS fix) →
  *     the runner key form (budget, expiry, master key, fee), whose write never reaches Platform →
  *     the workflow file, which names the repo, network, devnet, storage and pinned commit, and
  *     the three secrets to add first. A reload in the middle resumes where it stopped.
- * m3. the same page at 390 px in the dark theme: no horizontal scroll, and axe finds nothing
- *     serious.
+ *     Includes the same page at 390 px in the dark theme: no horizontal scroll, and axe finds
+ *     nothing serious.
  *
  * Signs in as MAINTAINER (first run: registers one limited key; later runs reuse the vault).
  */
@@ -115,7 +117,9 @@ test('m1. signed out: choose a path, copy CLI commands and resume their settings
   await expect(page.getByRole('heading', { name: 'Mirror a GitHub repository', level: 1 })).toBeVisible()
   await expect(step(page, 'way')).toHaveAttribute('data-state', 'active')
   await expect(step(page, 'github')).toHaveCount(0)
-  await page.getByRole('radio', { name: /No, or I want a one-time copy/ }).check()
+  await expect(step(page, 'way').getByRole('button', { name: 'Continue' })).toBeDisabled()
+  await expect(page.getByRole('radio', { checked: true })).toHaveCount(0)
+  await page.getByRole('radio', { name: 'No, copy it from the command line', exact: true }).check()
   await step(page, 'way').getByRole('button', { name: 'Continue' }).click()
   await expect(step(page, 'github')).toHaveAttribute('data-state', 'active')
   await expect(page.getByLabel('GitHub repository', { exact: true })).toHaveValue(`${GH.owner}/${GH.name}`)
@@ -123,8 +127,8 @@ test('m1. signed out: choose a path, copy CLI commands and resume their settings
   expect(asked.filter((path) => path === `/repos/${GH.owner}/${GH.name}`)).toHaveLength(1)
 
   await checkGithub(page, 'someone/private-thing')
-  await expect(step(page, 'github').getByRole('alert')).toContainText('not found, or it is private')
-  await expect(step(page, 'github')).toContainText("Private on GitHub? This page can't check it.")
+  await expect(step(page, 'github').getByRole('alert')).toHaveCount(0)
+  await expect(step(page, 'github')).toContainText("This page can't check private GitHub repositories.")
   await expect(step(page, 'github').getByRole('link', { name: /The guide shows/ })).toHaveAttribute('href', /#into-a-private-repository$/)
   await checkGithub(page, 'not a repo')
   await expect(step(page, 'github').getByRole('alert')).toContainText('owner/name')
@@ -142,7 +146,7 @@ test('m1. signed out: choose a path, copy CLI commands and resume their settings
   await expect(cli.getByLabel('Spending cap (DASH)')).toHaveValue('0.2')
   const flags = `--network ${E2E_NETWORK}${E2E_NETWORK === 'devnet' ? ` --devnet-name ${E2E_DEVNET}` : ''}`
   await expect(cli).toContainText(`dg auth login <identity file> ${flags}`)
-  await expect(cli).toContainText(`--repo ${GH.name.toLowerCase()} --sync 'code,releases' --max-spend 0.2 ${flags}`)
+  await expect(cli).toContainText(`--repo ${GH.name.toLowerCase()} --sync code,releases --max-spend 0.2 ${flags}`)
   await cli.getByLabel('Forge repo name', { exact: true }).fill('mirror-cli-e2e')
   await cli.getByLabel('Spending cap (DASH)').fill('0.4')
   await cli.getByRole('checkbox', { name: /Issues and pull requests too/ }).check()
@@ -182,7 +186,7 @@ test('m1. signed out: choose a path, copy CLI commands and resume their settings
   await expect(page).toHaveURL(/\/mirror\/$/)
   await expect(step(page, 'way')).toHaveAttribute('data-state', 'active')
 
-  await page.getByRole('radio', { name: /Yes: keep it in sync automatically/ }).check()
+  await page.getByRole('radio', { name: /Yes, keep it in sync automatically/ }).check()
   await step(page, 'way').getByRole('button', { name: 'Continue' }).click()
   await checkGithub(page, `${GH.owner}/${GH.name}`)
   await expect(found.getByRole('button', { name: /^Mirror / })).toBeDisabled()
@@ -204,7 +208,7 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   page.on('dialog', (d) => void d.accept())
   // The saved vault is captured right after sign-in, so every run starts with no progress.
   await expect(step(page, 'way')).toHaveAttribute('data-state', 'active')
-  await page.getByRole('radio', { name: /Yes: keep it in sync automatically/ }).check()
+  await page.getByRole('radio', { name: /Yes, keep it in sync automatically/ }).check()
   await step(page, 'way').getByRole('button', { name: 'Continue' }).click()
 
   // 1. GitHub.

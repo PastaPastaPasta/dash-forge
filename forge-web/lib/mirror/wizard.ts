@@ -13,7 +13,7 @@
  */
 
 import { ACTIVE_NETWORK, type NetworkConfig } from '../constants'
-import { dgNetworkFlags, repoCommands, shellWord } from '../view/repo-commands'
+import { dgNetworkFlags, shellWord } from '../view/repo-commands'
 import { normalizeRepoName as normalizeV2RepoName } from '../rules/v2'
 import type { StorageProfile } from '../storage/profiles'
 
@@ -475,6 +475,11 @@ export interface MirrorCliSettings {
   readonly cap: string
 }
 
+/** dg refuses an auth key budget above 1000 DASH. */
+export function cliCostCapProblem(cap: string): string | null {
+  return costCapProblem(cap) ?? (Number(cap) > 1000 ? 'The cap must be 1000 DASH or less.' : null)
+}
+
 /** Commands for dg's own identity, or the existing repo named by the ready card. */
 export function mirrorCliCommands({ github, name, collab, cap, config = ACTIVE_NETWORK, ownerId }: MirrorCliSettings & {
   readonly github: GithubName
@@ -483,19 +488,18 @@ export function mirrorCliCommands({ github, name, collab, cap, config = ACTIVE_N
 }): { login: string; newIdentity: string; githubLogin: string; copy: string; storage: string } {
   const normalized = normalizeV2RepoName(name.trim())
   if (normalized === null) throw new Error('Enter a repo name starting with a letter or digit, using a–z, 0–9, . _ - (up to 63 characters).')
-  const problem = costCapProblem(cap)
+  const problem = cliCostCapProblem(cap)
   if (problem) throw new Error(problem)
   const flags = dgNetworkFlags(config)
   const budget = Number(cap) > 0.25 ? ` --budget ${shellWord(cap.trim())}` : ''
-  const auth = repoCommands(ownerId ?? '', normalized, config)
   return {
-    login: auth.authLogin.replace(` ${flags}`, `${budget} ${flags}`),
-    newIdentity: auth.authNew.replace(` ${flags}`, `${budget} ${flags}`),
+    login: `dg auth login <identity file>${budget} ${flags}`,
+    newIdentity: `dg auth new${budget} ${flags}`,
     githubLogin: 'gh auth login',
     copy: [
       'dg import', shellWord(`github.com/${github.owner}/${github.name}`),
       '--repo', shellWord(ownerId ? `${ownerId}/${normalized}` : normalized),
-      '--sync', shellWord(collab ? 'all' : 'code,releases'),
+      '--sync', collab ? 'all' : 'code,releases',
       '--max-spend', shellWord(cap.trim()),
       ...(collab ? ['--state', shellWord(`${normalized}.sync.json`)] : []),
       flags,

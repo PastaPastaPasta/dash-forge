@@ -160,18 +160,32 @@ describe('GithubStep: the command line and URL prefill', () => {
 describe('GithubStep: informational hints', () => {
   it('links private sources to the private import guide', async () => {
     const { GithubCheckError } = await import('@/lib/mirror/wizard')
-    answers.next = new GithubCheckError('not-found', 'not found, or it is private')
+    answers.next = new GithubCheckError('not-found', 'not found, or it is private. The wizard mirrors public repositories only.')
     await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/private" onDone={() => undefined} />))
-    expect(host.textContent).toContain("Private on GitHub? This page can't check it.")
+    expect(host.textContent).toContain("This page can't check private GitHub repositories.")
     expect(host.querySelector('a[href$="#into-a-private-repository"]')).not.toBeNull()
+    expect(host.textContent).not.toContain('The wizard mirrors public repositories')
   })
 
-  it.each([false, true])('shows mirror claims without blocking, partial=%s', async (more) => {
+  it.each([[1, false], [1, true], [2, false], [2, true]] as const)('shows %s mirror claims without blocking, partial=%s', async (count, more) => {
     answers.sdk = {}
-    answers.named = { more, repos: [{ key: 'r1', ownerId: 'owner', slug: 'project', visibility: 'public', description: 'Mirror of github.com/alice/project' }] }
+    answers.named = { more, repos: Array.from({ length: count }, (_, i) => ({ key: `r${i}`, ownerId: `owner${i}`, slug: 'project', visibility: 'public', description: 'Mirror of github.com/alice/project' })) }
     await check(repo())
-    expect(host.textContent).toContain(`${more ? 'At least ' : ''}1 Forge repos say they mirror github.com/alice/project`)
+    expect(host.textContent).toContain(`${more ? 'At least ' : ''}${count} Forge ${count === 1 ? 'repo says it mirrors' : 'repos say they mirror'} github.com/alice/project`)
     expect(host.textContent).toContain('Anyone can keep their own copy.')
     expect(host.querySelector('a[href^="/github.com/alice/project"]')).not.toBeNull()
   })
+})
+
+
+it('keeps text typed before progress settles instead of auto-checking the URL prefill', async () => {
+  await act(async () => root.render(<GithubStep initial={null} prefill="alice/project" settled={false} onDone={() => undefined} />))
+  const input = host.querySelector<HTMLInputElement>('#mirror-github')!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'bob/typed')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => root.render(<GithubStep initial={null} prefill="alice/project" settled onDone={() => undefined} />))
+  expect(input.value).toBe('bob/typed')
+  expect(answers.checks).toBe(0)
 })

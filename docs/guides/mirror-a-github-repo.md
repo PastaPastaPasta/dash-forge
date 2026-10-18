@@ -22,11 +22,11 @@ The [setup wizard](https://forge.dashhq.org/mirror/) helps with either path.
 This guide covers:
 
 1. [The setup wizard](#the-setup-wizard)
-1. [Before you start](#before-you-start)
-2. [First import: code, issues, PRs and releases](#1-first-import)
-3. [The Forge Mirror Action](#2-the-forge-mirror-action)
-4. [Keep it in sync without the Action](#3-keep-it-in-sync-without-the-action)
-5. [Check the mirror](#4-check-the-mirror)
+2. [Before you start](#before-you-start)
+3. [First import: code, issues, PRs and releases](#1-first-import)
+4. [The Forge Mirror Action](#2-the-forge-mirror-action)
+5. [Keep it in sync without the Action](#3-keep-it-in-sync-without-the-action)
+6. [Check the mirror](#4-check-the-mirror)
 
 ---
 
@@ -60,11 +60,11 @@ A repository filled from dg uses **dg's own storage settings**, not storage pick
 
 ### Resume
 
-The Action path saves public answers in this browser per network and signed-in identity. A key is never saved. The command-line path keeps its source, name, issues choice and cap in the page address, so reloading or sharing it restores the settings. The GitHub check runs again and waits for **Continue**. **Start over** clears the page's answers and its address parameters.
+The Action path saves public answers in this browser per network and signed-in identity. A key is never saved. The command-line path keeps its source, name, issues choice and cap in the page address, so reloading or sharing it restores the settings. When signed out, the GitHub check runs again and waits for **Continue**. When signed in, the saved GitHub answer is reused. **Start over** clears the page's answers and its address parameters.
 
 **What the copy is.** The mirror is a copy at the time of each run. Later edits and deletions on GitHub (a rewritten comment, a deleted issue) are not propagated, and imported issues, pull requests and comments stay on Dash Platform, which cannot delete them. Mirror only what you have the right to copy.
 
-The wizard pins the Action to one Dash Forge commit, the one the site was built from (`uses: PastaPastaPasta/dash-forge/action@<commit>`), and sets `install: 'source'`, so the Action builds the three tools from that same commit. The Action setup resumes from this identity’s saved answers in the browser.
+The wizard pins the Action to one Dash Forge commit, the one the site was built from (`uses: PastaPastaPasta/dash-forge/action@<commit>`), and sets `install: 'source'`, so the Action builds the three tools from that same commit.
 
 **How long it takes.** A timed run on devnet bonsia (2026-09-30) mirrored a small public repository (two commits) with Platform storage. The wizard's own steps took 16 seconds of machine time: the GitHub check, signing in, creating the repository, the runner key and the workflow. A person reading, typing and pasting needs a few minutes more. From the workflow commit to the first mirrored push took 3 minutes 50 seconds. Of that, compiling the tools took 3 minutes 9 seconds, because the wizard's workflow builds them from source (no release was published then; a workflow pinned to a release tag downloads them instead). Mirroring took under 30 seconds and spent 0.018 DASH, the Action's own up-front estimate. Counted from opening the page, the mirror was live after 6 minutes 11 seconds, and that included a two-minute fix made during the run. Later runs reuse a build cache: the run for the next push took 1 minute 41 seconds in all. (That run built the tools in its own workflow steps with rust-cache; the wizard now leaves the build, and its cache, to the Action.)
 
