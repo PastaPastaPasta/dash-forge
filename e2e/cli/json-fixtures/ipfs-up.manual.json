@@ -1,0 +1,30 @@
+{
+  "command": "ipfs up",
+  "args": [
+    "--json",
+    "ipfs",
+    "up"
+  ],
+  "exit": 0,
+  "source": "managed IPFS command output shape; synthetic connection nonce",
+  "expect": "valid",
+  "stdout": {
+    "schemaVersion": 1,
+    "node": {
+      "kuboVersion": "0.43.1",
+      "peerId": "test-peer",
+      "api": "http://127.0.0.1:5001",
+      "gateway": "http://127.0.0.1:8080",
+      "origins": [
+        "https://forge.dashhq.org"
+      ],
+      "service": "manual"
+    },
+    "profile": "kubo",
+    "connect": {
+      "link": "https://forge.dashhq.org/settings/storage/#kubo=5001.7KQ2-M9XD-PF4C",
+      "code": "7KQ2-M9XD-PF4C",
+      "expiresAt": 1800000600
+    }
+  }
+}

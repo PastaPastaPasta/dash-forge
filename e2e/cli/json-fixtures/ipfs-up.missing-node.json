@@ -1,0 +1,20 @@
+{
+  "command": "ipfs up",
+  "args": [
+    "--json",
+    "ipfs",
+    "up"
+  ],
+  "exit": 0,
+  "source": "managed IPFS command output shape; synthetic connection nonce",
+  "expect": "invalid",
+  "stdout": {
+    "schemaVersion": 1,
+    "profile": "kubo",
+    "connect": {
+      "link": "https://forge.dashhq.org/settings/storage/#kubo=5001.7KQ2-M9XD-PF4C",
+      "code": "7KQ2-M9XD-PF4C",
+      "expiresAt": 1800000600
+    }
+  }
+}

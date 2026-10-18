@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ipfs-status.schema.json",
+  "title": "dg ipfs status --json",
+  "description": "The managed node’s owner-only status.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kuboVersion": {
+      "type": "string"
+    },
+    "peerId": {
+      "type": "string"
+    },
+    "api": {
+      "type": "string"
+    },
+    "gateway": {
+      "type": "string"
+    },
+    "repoBytes": {
+      "type": "integer"
+    },
+    "recursivePins": {
+      "type": "integer"
+    },
+    "listenAddresses": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reachability": {
+      "type": "string"
+    },
+    "fix": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "service": {
+      "type": "string"
+    },
+    "origins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "followed": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "kuboVersion",
+    "peerId",
+    "api",
+    "gateway",
+    "repoBytes",
+    "recursivePins",
+    "listenAddresses",
+    "reachability",
+    "fix",
+    "service",
+    "origins",
+    "followed"
+  ],
+  "additionalProperties": true
+}

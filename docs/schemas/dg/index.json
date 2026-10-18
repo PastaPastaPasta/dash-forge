@@ -64,7 +64,14 @@
     "env unshare": "env-unshare.schema.json",
     "import": "import.schema.json",
     "init": "init.schema.json",
+    "ipfs connect": "ipfs-connect.schema.json",
+    "ipfs down": "ipfs-down.schema.json",
+    "ipfs ipfs": "ipfs-ipfs.schema.json",
+    "ipfs origin add": "ipfs-origin-add.schema.json",
+    "ipfs origin remove": "ipfs-origin-remove.schema.json",
     "ipfs pin": "ipfs-pin.schema.json",
+    "ipfs status": "ipfs-status.schema.json",
+    "ipfs up": "ipfs-up.schema.json",
     "issue assign": "issue-assign.schema.json",
     "issue close": "issue-close.schema.json",
     "issue comment": "issue-comment.schema.json",
@@ -190,7 +197,8 @@
   "noJson": {
     "api query": "prints raw Platform documents as they are, with no `schemaVersion` (like `gh api`)",
     "completions": "prints a shell completion script",
-    "env run": "runs a command with the environment; its output is the command's"
+    "env run": "runs a command with the environment; its output is the command's",
+    "ipfs serve": "Long-running node supervisor; writes logs rather than a JSON result."
   },
   "error": "error.schema.json",
   "jsonOnlyWith": {

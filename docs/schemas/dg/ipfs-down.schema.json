@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ipfs-down.schema.json",
+  "title": "dg ipfs down --json",
+  "description": "The managed node stopped, optionally with its data deleted.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "stopped"
+      ]
+    },
+    "purged": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "purged"
+  ],
+  "additionalProperties": true
+}

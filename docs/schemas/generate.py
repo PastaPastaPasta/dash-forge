@@ -716,6 +716,31 @@ cmd('storage add', 'A storage profile added.', {
 }, ['status', 'profile'])
 cmd('storage list', 'The storage profiles.', {'path': S, 'profiles': A(OBJ), 'ipfsGateways': SA}, ['profiles'])
 cmd('storage remove', 'A storage profile removed.', {'status': E('removed'), 'profile': S, 'keychain': ANY}, ['status', 'profile'])
+# Managed loopback IPFS node. Pairing codes are short-lived; bearer tokens never appear.
+IPFS_CONNECT = O({'link': S, 'code': S, 'expiresAt': I}, ['link', 'code', 'expiresAt'])
+IPFS_NODE = O({'kuboVersion': S, 'peerId': S, 'api': S, 'gateway': S, 'origins': SA,
+               'service': E('manual', 'login')}, ['kuboVersion', 'peerId', 'api', 'gateway', 'origins', 'service'])
+cmd('ipfs up', 'A verified local IPFS node and a one-time browser connection.', {
+    'node': IPFS_NODE, 'profile': S, 'connect': IPFS_CONNECT,
+}, ['node', 'profile', 'connect'])
+cmd('ipfs connect', 'A one-time connection code for this computer’s IPFS node.', {
+    'connect': IPFS_CONNECT,
+}, ['connect'])
+cmd('ipfs status', 'The managed node’s owner-only status.', {
+    'kuboVersion': S, 'peerId': S, 'api': S, 'gateway': S, 'repoBytes': I, 'recursivePins': I,
+    'listenAddresses': SA, 'reachability': S, 'fix': nl(S), 'service': S, 'origins': SA, 'followed': OBJ,
+}, ['kuboVersion', 'peerId', 'api', 'gateway', 'repoBytes', 'recursivePins', 'listenAddresses',
+    'reachability', 'fix', 'service', 'origins', 'followed'])
+for action in ('add', 'remove'):
+    cmd(f'ipfs origin {action}', 'The websites allowed to connect to this node.', {'origins': SA}, ['origins'])
+cmd('ipfs down', 'The managed node stopped, optionally with its data deleted.', {
+    'status': E('stopped'), 'purged': B,
+}, ['status', 'purged'])
+cmd('ipfs ipfs', 'Output captured from the managed IPFS program.', {
+    'exitCode': nl(I), 'stdout': S, 'stderr': S,
+}, ['exitCode', 'stdout', 'stderr'])
+none('ipfs serve', 'Long-running node supervisor; writes logs rather than a JSON result.')
+
 cmd('storage test', 'A storage profile tried end to end.', {
     'profile': S, 'kind': S, 'ok': B, 'steps': A(OBJ), 'fixes': ANY,
 }, ['profile', 'ok'])

@@ -22,7 +22,7 @@ Commands:
   repack         Consolidate a repo's packs into one superseding pack (deletes nothing on Platform)
   reseed         Re-upload packs and record the new copies (maintainers and writers; --from-local writes nothing to Platform)
   storage        Storage availability
-  ipfs           Keep repository files on IPFS
+  ipfs           Run an IPFS node on this computer and keep repositories' files on it
   webhook        Manage webhooks
   env            Environments: secrets and settings kept out of git
   ci             CI: runner keys and memberships, and check runs on commits
