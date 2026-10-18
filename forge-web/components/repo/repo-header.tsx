@@ -23,6 +23,7 @@ import { TabStrip } from '@/components/ui/tab-strip'
 import { bareRoute, ownerLabel } from '@/lib/page-title'
 import { LookalikeNote } from '@/components/lookalike-note'
 import { useSettledDpnsName } from '@/hooks/use-dpns-name'
+import { PinButton } from '@/components/repo/pin-button'
 import { ForkButton } from '@/components/repo/fork-button'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 import { CodeSearchBox } from '@/components/repo/code-search-box'
@@ -162,6 +163,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <CodeSearchBox addr={addr} />
           <CopyLinkButton repo={addr} visibility={home.repo.visibility} />
           {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
+          <PinButton repo={home.repo} member={role !== null} />
           <WatchButton repo={home.repo} />
           <StarButton repo={home.repo} count={home.starCount} lookalikes={lookalikes} />
         </div>

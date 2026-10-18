@@ -70,7 +70,7 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
     case 'pinning':
       return {
         where:
-          'Simpler: run `dg ipfs up`. For hand setup, stop kubo first. Authorizations makes raw kubo reject browser preflights, so put a proxy in front that answers OPTIONS. Run these commands, restart kubo on 5101, and run Caddy with the Caddyfile below:',
+          'Stop kubo first. Raw kubo rejects browser preflights with Authorizations enabled. Configure the scoped tokens below, move kubo to 5101, and run Caddy with this preflight proxy. Simpler: run `dg ipfs up`.',
         text: kuboCorsLines(origin),
       }
     case 'platform':

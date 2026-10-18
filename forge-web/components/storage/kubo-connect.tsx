@@ -3,26 +3,29 @@
 import { useEffect, useState } from 'react'
 import { consumeKuboPair } from '@/lib/prehydration'
 import { isSafari, kuboUpCommand, pairWithNode, parseKuboCode, parseKuboFragment, SAFARI_NOTICE, type PairedNode } from '@/lib/storage/kubo-connect'
-import { policyFor, withProfile, type StorageConfig } from '@/lib/storage'
+import { policyFor, withProfile } from '@/lib/storage'
 import { errText } from '@/lib/storage/util'
 import { useAuth } from '@/contexts/auth-context'
-import { useStorageConfig } from '@/hooks/use-storage-config'
+import { useStorageConfig, type StorageConfigState } from '@/hooks/use-storage-config'
 import { SignInButton } from '@/components/sign-in-button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CopyBlock } from './copy-block'
-import { StorageTest } from './storage-test'
+import { StorageTest, profileSnapshot } from './storage-test'
 
 export function KuboConnect({ fragmentOnly = false }: { fragmentOnly?: boolean }): JSX.Element | null {
-  const storage = useStorageConfig()
+  return <KuboConnectView storage={useStorageConfig()} fragmentOnly={fragmentOnly} />
+}
+
+export function KuboConnectView({ storage, fragmentOnly = false }: { storage: StorageConfigState; fragmentOnly?: boolean }): JSX.Element | null {
   const { identity } = useAuth()
   const [node, setNode] = useState<PairedNode | null>(null)
   const [code, setCode] = useState('')
   const [port, setPort] = useState('5001')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState<StorageConfig | null>(null)
+  const [saved, setSaved] = useState(false)
   const [savedName, setSavedName] = useState('')
   const [useForPushes, setUseForPushes] = useState(false)
   const [browser, setBrowser] = useState<{ command: string | null; safari: boolean } | null>(null)
@@ -30,7 +33,7 @@ export function KuboConnect({ fragmentOnly = false }: { fragmentOnly?: boolean }
   const connect = async (input: { port: number; code: string }): Promise<void> => {
     setBusy(true)
     setError(null)
-    setSaved(null)
+    setSaved(false)
     try { setNode(await pairWithNode(input)) } catch (e) { setError(errText(e)) } finally { setBusy(false) }
   }
   useEffect(() => {
@@ -54,7 +57,7 @@ export function KuboConnect({ fragmentOnly = false }: { fragmentOnly?: boolean }
         <h3 className="font-medium">Run one command</h3>
         {browser?.command ? <>
           <CopyBlock text={browser.command} label="Copy the node setup command" />
-          <p>It installs IPFS (kubo 0.43.1) for your user, starts it at login, and opens this page to connect. Needs dg: <a className="underline" href="https://github.com/PastaPastaPasta/dash-forge#install">install dg</a></p>
+          <p>It installs IPFS (kubo 0.43.1) for your user, starts it at login, and opens this page to connect. Needs dg: <a className="underline" href="https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/INSTALL.md">install dg</a></p>
           <p className="text-[12px]">The node only accepts this site, and only for adding, pinning and unpinning.</p>
         </> : <p>Open Forge from its own address to connect a node.</p>}
         <h3 className="font-medium">Connect with a code</h3>
@@ -70,7 +73,7 @@ export function KuboConnect({ fragmentOnly = false }: { fragmentOnly?: boolean }
         {!canSave ? <>
           <p>Sign in to finish connecting</p>
           {identity === null ? <SignInButton /> : storage.needsUnlock ? <UnlockMore title="Unlock this tab to connect your node" /> : <p>{storage.error ?? 'Storage credentials need a signed-in session with a stored key.'}</p>}
-        </> : collision ? <p role="alert">A different profile already uses this name. Run dg ipfs up --name with another name.</p> : <StorageTest profile={node.profile} buttonLabel="Test and save" disabled={busy} onDone={async (ok) => {
+        </> : collision ? <p role="alert">A different profile already uses this name. Run dg ipfs up --name with another name.</p> : <StorageTest key={`${identity}:${profileSnapshot(node.profile)}`} profile={node.profile} buttonLabel="Test and save" disabled={busy} onDone={async (ok) => {
           if (!ok || !config || !canSave) return
           setBusy(true)
           setError(null)
@@ -80,7 +83,7 @@ export function KuboConnect({ fragmentOnly = false }: { fragmentOnly?: boolean }
             if (first) next = { ...next, defaultPolicy: policyFor([node.profile.name], 'one') }
             next = { ...next, lastTests: { ...next.lastTests, [node.profile.name]: { at: Date.now(), ok: true } } }
             await storage.save(next)
-            setSaved(next)
+            setSaved(true)
             setSavedName(node.profile.name)
             setUseForPushes(first)
             setNode(null)
@@ -92,11 +95,12 @@ export function KuboConnect({ fragmentOnly = false }: { fragmentOnly?: boolean }
         <p role="status">IPFS node saved.</p>
         <label className="flex items-center gap-2"><input type="checkbox" checked={useForPushes} disabled={busy || !canSave} onChange={async (e) => {
           const checked = e.target.checked
-          const current = storage.config ?? saved
+          const current = storage.config
+          if (!current) return
           const next = { ...current, defaultPolicy: checked ? policyFor([savedName], 'one') : current.defaultPolicy?.targets.includes(savedName) ? null : current.defaultPolicy }
           setBusy(true)
           setError(null)
-          try { await storage.save(next); setSaved(next); setUseForPushes(checked) } catch (err) { setError(errText(err)) } finally { setBusy(false) }
+          try { await storage.save(next); setUseForPushes(checked) } catch (err) { setError(errText(err)) } finally { setBusy(false) }
         }} />Use it for my pushes</label>
       </div> : null}
     </section>

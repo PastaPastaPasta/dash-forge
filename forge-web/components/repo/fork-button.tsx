@@ -27,6 +27,8 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
+import { useRepoPin } from '@/hooks/use-repo-pin'
+import { PinProgressList, pinMib } from '@/components/repo/pin-button'
 import { CostPreview } from '@/components/ui/cost-preview'
 
 const STEPS: readonly { step: ForkStep; label: string }[] = [
@@ -92,6 +94,13 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const router = useRouter()
+  const pin = useRepoPin(parent, { onlyWithProfile: true })
+  const [pinFiles, setPinFiles] = useState<boolean | null>(null)
+  const [pinConsent, setPinConsent] = useState(false)
+  const [forkedHref, setForkedHref] = useState<string | null>(null)
+  const wantsPin = pinFiles ?? (pin.plan.data !== null && pin.plan.data.sizeBytes < 256 * 1048576)
+  const needsPinConsent = pin.plan.data?.requiresConsent === true
+
   const [name, setName] = useState(parent.name)
   // The parent's description, less a mirror's "(mirror of …)" marker: a fork is no mirror (QW3-011).
   const [description, setDescription] = useState(() => withoutMirrorMarker(defaults.description))
@@ -159,7 +168,7 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   }, [plan.data, refs, normalized, parent.name, description, defaults.defaultBranch])
 
   const run = async (): Promise<void> => {
-    if (!sdk || !signer || pending || nameError !== null || descriptionError !== null || check?.kind === 'taken') return
+    if (!sdk || !signer || pending || forkedHref || nameError !== null || descriptionError !== null || check?.kind === 'taken') return
     if (!guard.check(cost)) return
     setPending(true)
     setError(null)
@@ -185,7 +194,13 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           return r
         },
       )
-      router.push(`/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`)
+      const href = `/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`
+      if (wantsPin && pin.profile && pin.plan.data) {
+        // The fork is complete. Pinning is optional and can never undo or fail its signed writes.
+        setForkedHref(href)
+        await pin.start(pinConsent)
+        setPending(false)
+      } else router.push(href)
     } catch (e) {
       setError(
         e instanceof IncompleteFork
@@ -208,9 +223,9 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           <Button variant="ghost" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={run} loading={pending} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
+          {forkedHref ? <Button variant="primary" disabled={pin.running} onClick={() => router.push(forkedHref)}>View fork</Button> : <Button variant="primary" onClick={run} loading={pending} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null || (wantsPin && !!pin.profile && (!pin.plan.data || (needsPinConsent && !pinConsent)))}>
             {check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork'}
-          </Button>
+          </Button>}
         </>
       }
     >
@@ -285,6 +300,18 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           </>
         )}
 
+        {pin.profile && !forkedHref ? <div className="space-y-2">
+          <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={wantsPin} disabled={pending || (!pin.plan.data && !wantsPin)} onChange={(e) => setPinFiles(e.target.checked)} />Also pin its files on my IPFS node ({pin.plan.data ? pinMib(pin.plan.data.sizeBytes) : '…'} MiB)</label>
+          {wantsPin ? <>
+            <label className="block text-dense">IPFS node<select aria-label="Fork pin node" value={pin.profile.name} disabled={pending} onChange={(e) => pin.setChosen(e.target.value)}>{pin.profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select></label>
+            {needsPinConsent ? <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={pinConsent} disabled={pending} onChange={(e) => setPinConsent(e.target.checked)} />My IP address will be listed on IPFS as holding this private repo&apos;s encrypted files.</label> : <p className="text-[12px]">Your node will tell the IPFS network it holds these files.</p>}
+          </> : null}
+        </div> : null}
+        {pin.plan.error && pin.profile ? <p role="alert">Could not read files to pin: {pin.plan.error}</p> : null}
+        {forkedHref ? <p role="status">Your fork is ready. Pinning its parent&apos;s files does not change the fork.</p> : null}
+        <PinProgressList rows={pin.rows} summary={pin.summary} />
+        {pin.running ? <Button size="sm" onClick={pin.cancel}>Cancel pinning</Button> : null}
+        {pin.error ? <p role="alert">Fork created; pinning failed: {pin.error}</p> : null}
         {progress ? (
           <ol aria-label="Fork steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
             {STEPS.map(({ step, label }) => {

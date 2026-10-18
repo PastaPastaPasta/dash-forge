@@ -19,7 +19,7 @@ let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
   mocks.identity = 'me'; mocks.locked = false; mocks.config = EMPTY_STORAGE_CONFIG
-  mocks.save.mockReset().mockResolvedValue(undefined)
+  mocks.save.mockReset().mockImplementation(async (next: StorageConfig) => { mocks.config = next })
   mocks.probe.mockReset().mockResolvedValue(true)
   mocks.pair.mockReset().mockResolvedValue(validatePairResponse({ name: 'kubo', api: 'http://127.0.0.1:5001', gateway: 'http://127.0.0.1:8080', auth: `Bearer ${'a'.repeat(43)}`, peerId: 'peer', version: '0.43.1' }))
   vi.stubGlobal('location', { origin: 'https://forge.dashhq.org', pathname: '/settings/storage/' })
@@ -54,6 +54,9 @@ describe('the kubo connection form', () => {
     expect(mocks.probe).toHaveBeenCalledOnce(); expect(mocks.save).toHaveBeenCalledOnce()
     expect(mocks.save.mock.calls[0]![0].defaultPolicy.targets).toEqual(['kubo'])
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true)
+    await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    expect(mocks.save.mock.calls.at(-1)![0].defaultPolicy).toBeNull()
+    expect(mocks.save.mock.calls.at(-1)![0].profiles[0].name).toBe('kubo')
   })
   it('does not save a failed probe, and Cancel forgets the payload', async () => {
     mocks.probe.mockResolvedValue(false); fragment(); await render(); await click('Test and save')
