@@ -11,25 +11,31 @@ use serde_json::{json, Value};
 
 use super::{node_error, FORGE_RPC_PATHS, KUBO_VERSION};
 
+fn default_link_origin() -> String {
+    DEFAULT_ORIGIN.into()
+}
+
 pub const DEFAULT_ORIGIN: &str = "https://forge.dashhq.org";
 const STORAGE_DEFAULTS: &str =
     include_str!("../../../../forge-contracts/config/storage-defaults.json");
 
 #[derive(Clone)]
-pub struct Node {
+pub(crate) struct Node {
     pub dir: PathBuf,
     pub config: NodeConfig,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct NodeConfig {
+pub(crate) struct NodeConfig {
     pub name: String,
     pub api_port: u16,
     pub gateway_port: u16,
     pub internal_api_port: u16,
     pub internal_gateway_port: u16,
     pub origins: Vec<String>,
+    #[serde(default = "default_link_origin")]
+    pub link_origin: String,
     pub kubo_version: String,
     pub service: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +51,7 @@ impl Default for NodeConfig {
             internal_api_port: 5101,
             internal_gateway_port: 8180,
             origins: vec![DEFAULT_ORIGIN.into()],
+            link_origin: default_link_origin(),
             kubo_version: KUBO_VERSION.into(),
             service: false,
             binary_override: None,
@@ -99,6 +106,48 @@ impl Node {
 }
 
 impl NodeConfig {
+    /// An older repo is migrated by kubo; a newer repo requires a newer dg.
+    pub fn validate_version(&self) -> Result<()> {
+        let parse = |version: &str| -> Option<Vec<u64>> {
+            let parts = version
+                .split('.')
+                .map(str::parse)
+                .collect::<Result<Vec<u64>, _>>()
+                .ok()?;
+            (parts.len() == 3).then_some(parts)
+        };
+        let recorded = parse(&self.kubo_version);
+        if recorded.is_none() || recorded > parse(KUBO_VERSION) {
+            return Err(node_error(
+                "this node requires a newer kubo version",
+                "upgrade dg",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn set_binary_override(&mut self, binary: Option<std::ffi::OsString>) -> Result<()> {
+        self.binary_override = binary.map(fs::canonicalize).transpose()?;
+        Ok(())
+    }
+
+    pub fn set_link_origin(&mut self, origin: Option<&str>) -> Result<()> {
+        let origin = origin
+            .map(validate_origin)
+            .transpose()?
+            .unwrap_or_else(default_link_origin);
+        if !self.origins.contains(&origin) {
+            return Err(forge_core::user_error::UserError::new(
+                forge_core::user_error::codes::USAGE,
+                "the connection origin is not allowed for this node",
+            )
+            .fix(format!("dg ipfs origin add {origin}"))
+            .into());
+        }
+        self.link_origin = origin;
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         if !forge_core::storage::profiles::valid_profile_name(&self.name) {
             return Err(crate::errors::usage("invalid storage profile name"));
@@ -129,15 +178,14 @@ impl NodeConfig {
                 "the node's four ports must be distinct and nonzero",
             ));
         }
-        if self.kubo_version != KUBO_VERSION {
-            return Err(node_error(
-                "this node was configured by a different kubo version",
-                "run `dg ipfs up`; downgrading a migrated repo is unsupported",
-            ));
-        }
         if !self.origins.iter().any(|o| o == DEFAULT_ORIGIN) {
             return Err(crate::errors::usage(
                 "the Forge website must remain an allowed origin",
+            ));
+        }
+        if !self.origins.contains(&self.link_origin) {
+            return Err(crate::errors::usage(
+                "the connection link origin must be allowed",
             ));
         }
         for origin in &self.origins {
@@ -342,7 +390,45 @@ pub fn patch_config(config: &mut Value, node: &Node, tokens: &Tokens) {
     });
 }
 
+/// Linux kubo uses fcntl locks, which do not conflict with our flock. Also probe its
+/// advertised API address before offline writes; even an auth refusal means it is live.
+pub async fn refuse_live_kubo(node: &Node) -> Result<()> {
+    let address = match fs::read_to_string(node.repo().join("api")) {
+        Ok(address) => address,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let parts: Vec<_> = address.trim().split('/').collect();
+    let url = match parts.as_slice() {
+        ["", "ip4" | "dns" | "dns4", host, "tcp", port] => format!("http://{host}:{port}"),
+        ["", "ip6", host, "tcp", port] => format!("http://[{host}]:{port}"),
+        _ => {
+            return Err(node_error(
+                "cannot probe the repo's API address",
+                "stop any manually started kubo and remove its stale repo/api file",
+            ))
+        }
+    };
+    let live = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?
+        .post(format!("{url}/api/v0/version"))
+        .send()
+        .await
+        .is_ok();
+    if live {
+        return Err(node_error(
+            "the kubo repo is still in use",
+            "stop any manually started kubo daemon and retry",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn configure(node: &Node, tokens: &Tokens) -> Result<()> {
+    refuse_live_kubo(node).await?;
     let path = node.repo().join("config");
     if !path.exists() {
         private_dir(&node.repo())?;
@@ -358,8 +444,7 @@ pub async fn configure(node: &Node, tokens: &Tokens) -> Result<()> {
             ));
         }
     }
-    // Kubo uses an advisory OS lock on repo.lock too. Refuse to rewrite a repo held
-    // by a manually started daemon outside our supervisor.
+    // Supplement the live API probe with the advisory lock (flock on Unix).
     let _repo_guard = lock(&node.repo(), "repo.lock").map_err(|_| {
         node_error(
             "the kubo repo is still in use",
@@ -379,6 +464,84 @@ pub async fn configure(node: &Node, tokens: &Tokens) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn live_repo_api_is_detected_even_when_it_refuses_auth() {
+        let temp = tempfile::tempdir().unwrap();
+        let node = Node {
+            dir: temp.path().to_owned(),
+            config: NodeConfig::default(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        private_dir(&node.repo()).unwrap();
+        fs::write(
+            node.repo().join("api"),
+            format!("/ip4/127.0.0.1/tcp/{port}\n"),
+        )
+        .unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().fallback(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+            )
+            .await
+            .unwrap();
+        });
+        let error = refuse_live_kubo(&node).await.unwrap_err();
+        assert!(error
+            .downcast_ref::<forge_core::user_error::UserError>()
+            .is_some());
+        task.abort();
+        let _ = task.await;
+        assert!(refuse_live_kubo(&node).await.is_ok()); // stale api file is harmless.
+    }
+
+    #[test]
+    fn recorded_versions_allow_migration_but_refuse_downgrades() {
+        let temp = tempfile::tempdir().unwrap();
+        for version in ["0.9.0", "0.42.0", KUBO_VERSION, "0.44.0", "1.0.0", "bad"] {
+            let config = NodeConfig {
+                kubo_version: version.into(),
+                ..Default::default()
+            };
+            let node = Node {
+                dir: temp.path().to_owned(),
+                config,
+            };
+            node.save().unwrap();
+            let loaded = Node::load_from(temp.path().to_owned()).unwrap(); // up can load any recorded version.
+            let result = loaded.config.validate_version();
+            assert_eq!(
+                result.is_ok(),
+                matches!(version, "0.9.0" | "0.42.0" | KUBO_VERSION)
+            );
+            if let Err(error) = result {
+                let user = error
+                    .downcast_ref::<forge_core::user_error::UserError>()
+                    .unwrap();
+                assert!(user.to_json().to_string().contains("upgrade dg"));
+            }
+        }
+    }
+
+    #[test]
+    fn binary_override_is_replaced_and_cleared_on_each_up() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let mut config = NodeConfig {
+            binary_override: Some(temp.path().join("old")),
+            ..Default::default()
+        };
+        config
+            .set_binary_override(Some(temp.path().as_os_str().to_owned()))
+            .unwrap();
+        assert_eq!(
+            config.binary_override,
+            Some(fs::canonicalize(temp.path()).unwrap())
+        );
+        config.set_binary_override(None).unwrap();
+        assert_eq!(config.binary_override, None);
+    }
+
     #[test]
     fn origins_reject_shared_hosts_and_unsafe_components() {
         for bad in [

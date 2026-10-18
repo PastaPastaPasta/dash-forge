@@ -61,7 +61,7 @@ pub fn create(node: &Node) -> Result<Connection> {
     Ok(Connection {
         link: format!(
             "{}/settings/storage/#kubo={}.{}",
-            node.config.origins[0], node.config.api_port, code
+            node.config.link_origin, node.config.api_port, code
         ),
         code,
         expires_at,
@@ -105,6 +105,57 @@ pub fn consume(node: &Node, code: &str, now: u64) -> Result<Verdict> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn links_use_the_up_origin_and_connect_accepts_only_allowed_origins() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut node = Node {
+            dir: temp.path().into(),
+            config: config::NodeConfig::default(),
+        };
+        let from_up = [
+            "http://localhost:3000".to_string(),
+            "https://forge.test".to_string(),
+        ];
+        node.config.origins.extend(from_up.iter().cloned());
+        node.config
+            .set_link_origin(from_up.first().map(String::as_str))
+            .unwrap();
+        node.save().unwrap();
+        let mut node = Node::load_from(temp.path().into()).unwrap();
+        assert!(create(&node)
+            .unwrap()
+            .link
+            .starts_with("http://localhost:3000/settings/storage/#kubo="));
+        node.config
+            .set_link_origin(Some("https://forge.test"))
+            .unwrap();
+        assert!(create(&node)
+            .unwrap()
+            .link
+            .starts_with("https://forge.test/settings/storage/#kubo="));
+        let error = node
+            .config
+            .set_link_origin(Some("https://foreign.test"))
+            .unwrap_err();
+        let user = error
+            .downcast_ref::<forge_core::user_error::UserError>()
+            .unwrap();
+        assert_eq!(user.code, forge_core::user_error::codes::USAGE);
+        assert!(user
+            .to_json()
+            .to_string()
+            .contains("dg ipfs origin add https://foreign.test"));
+        node.config.set_link_origin(None).unwrap();
+        assert!(create(&node)
+            .unwrap()
+            .link
+            .starts_with(config::DEFAULT_ORIGIN));
+        let mut legacy = toml::Value::try_from(&node.config).unwrap();
+        legacy.as_table_mut().unwrap().remove("linkOrigin");
+        let config: config::NodeConfig = legacy.try_into().unwrap();
+        assert_eq!(config.link_origin, config::DEFAULT_ORIGIN);
+    }
+
     #[test]
     fn pairing_is_normalized_single_use_expiring_and_attempt_limited() {
         let temp = tempfile::tempdir().unwrap();

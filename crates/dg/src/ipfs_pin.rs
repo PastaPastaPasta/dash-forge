@@ -2,7 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context as _, Result};
@@ -24,6 +24,7 @@ use forge_core::user_error::{codes, UserError};
 use crate::common::Reader;
 use crate::context::Ctx;
 use crate::fmt::safe;
+use crate::ipfs::config::{data_dir as ipfs_data_dir, Node};
 
 const PRIVATE_CONSENT: &str =
     "Your IP address will be listed on IPFS as holding this private repo's (encrypted) files.";
@@ -52,38 +53,6 @@ pub struct IpfsPinArgs {
     /// Include full IPFS addresses in progress output.
     #[arg(long)]
     pub verbose: bool,
-}
-
-/// Same data root as the managed node, including on macOS.
-pub fn ipfs_data_dir() -> Result<PathBuf> {
-    data_dir(
-        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
-        std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
-        cfg!(unix),
-    )
-}
-
-fn data_dir(
-    xdg: Option<PathBuf>,
-    home: Option<PathBuf>,
-    local: Option<PathBuf>,
-    unix: bool,
-) -> Result<PathBuf> {
-    let root = xdg
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            if unix {
-                home.map(|p| p.join(".local/share"))
-            } else {
-                local
-            }
-        })
-        .ok_or_else(|| {
-            UserError::new(codes::STORAGE_CONFIG, "cannot find the IPFS data directory")
-                .fix("set XDG_DATA_HOME to an absolute directory")
-        })?;
-    Ok(root.join("dash-forge/ipfs"))
 }
 
 fn ensure_dir(dir: &Path) -> Result<()> {
@@ -159,22 +128,6 @@ fn update_follow(dir: &Path, change: impl FnOnce(&mut FollowFile)) -> Result<()>
     write_toml(&path, &file)
 }
 
-#[derive(Default, Deserialize)]
-struct ManagedNode {
-    #[serde(alias = "profile_name", alias = "name")]
-    profile: Option<String>,
-    api: Option<String>,
-    api_port: Option<u16>,
-}
-
-impl ManagedNode {
-    fn api(&self) -> Option<String> {
-        self.api
-            .clone()
-            .or_else(|| self.api_port.map(|port| format!("http://127.0.0.1:{port}")))
-    }
-}
-
 fn is_ipfs(profile: &Profile) -> bool {
     matches!(
         profile,
@@ -184,7 +137,7 @@ fn is_ipfs(profile: &Profile) -> bool {
 
 fn select_profile<'a>(
     profiles: &'a StorageProfiles,
-    node: &ManagedNode,
+    node: Option<&Node>,
     name: Option<&str>,
 ) -> Result<(&'a str, &'a Profile)> {
     let find = |name: &str| {
@@ -205,7 +158,7 @@ fn select_profile<'a>(
                 .into()
             });
     }
-    if let Some((key, profile)) = node.profile.as_deref().and_then(find) {
+    if let Some((key, profile)) = node.and_then(|node| find(&node.config.name)) {
         return Ok((key, profile));
     }
     let mut candidates = profiles.profiles.iter().filter(|(_, p)| is_ipfs(p));
@@ -222,11 +175,11 @@ fn select_profile<'a>(
     .fix("or pass --profile <name>"))
 }
 
-fn backend(dir: &Path, node: &ManagedNode, profile: &Profile) -> Result<IpfsBackend> {
+fn backend(dir: &Path, node: Option<&Node>, profile: &Profile) -> Result<IpfsBackend> {
     let config = match profile {
         Profile::IpfsKubo(p) => {
             let managed = node
-                .api()
+                .map(Node::api)
                 .is_some_and(|api| api.trim_end_matches('/') == p.api.trim_end_matches('/'));
             let auth = if managed {
                 // Never deserialize a token with an error that could echo its source line.
@@ -348,8 +301,13 @@ pub async fn run_pin(ctx: &Ctx, args: &IpfsPinArgs) -> Result<()> {
 async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
     let dir = ipfs_data_dir()?;
     let profiles = StorageProfiles::load()?;
-    let node: ManagedNode = read_toml(&dir.join("node.toml"))?;
-    let (profile_name, profile) = select_profile(&profiles, &node, args.profile.as_deref())?;
+    let node = if dir.join("node.toml").exists() {
+        Some(Node::load_from(dir.clone())?)
+    } else {
+        None
+    };
+    let (profile_name, profile) =
+        select_profile(&profiles, node.as_ref(), args.profile.as_deref())?;
     let repo_arg = args.repo.as_deref().context("repository required")?;
     let unsealed = Reader::open_unsealed(ctx, repo_arg).await?;
     if unsealed.repo.visibility == Visibility::Private {
@@ -402,12 +360,14 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
         },
     ))
     .await?;
-    let sensitive = read.repo.visibility == Visibility::Private || plan.needs_consent;
-    if !args.dry_run {
-        consent(ctx, sensitive, quiet)?;
-        if read.repo.visibility == Visibility::Public {
-            public_note(&dir, quiet)?;
-        }
+    let needs_consent = read.repo.visibility == Visibility::Private || plan.needs_consent;
+    let sensitive = if args.dry_run {
+        needs_consent
+    } else {
+        consent(ctx, needs_consent, quiet)?
+    };
+    if !args.dry_run && read.repo.visibility == Visibility::Public {
+        public_note(&dir, quiet)?;
     }
     if !quiet && !ctx.json {
         println!("{} blobs · {} · {} not on IPFS · {} members-only, skipped · {} unreadable, skipped · {} invalid CIDs skipped · {} conflicting CIDs skipped · {} stranger copies ignored · cost 0 DASH (local disk only)",
@@ -416,7 +376,7 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
     let report = if args.dry_run {
         PinReport::default()
     } else {
-        let node = backend(&dir, &node, profile)?;
+        let node = backend(&dir, node.as_ref(), profile)?;
         let reader = RepoPinReader {
             service: &service,
             repo: &read.repo,
@@ -499,7 +459,7 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
             blobs: report.pinned + report.already,
             last_error: failure_text(&report),
             profile: Some(profile_name.to_string()),
-            private_consent: sensitive || ctx.yes,
+            private_consent: sensitive,
         };
         update_follow(&dir, |file| {
             file.repo
@@ -514,14 +474,16 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
     })
 }
 
-fn consent(ctx: &Ctx, sensitive: bool, quiet: bool) -> Result<()> {
+/// Return consent scoped to sensitive content; a public --yes is never a grant for later private pins.
+fn consent(ctx: &Ctx, sensitive: bool, quiet: bool) -> Result<bool> {
     if !sensitive || ctx.yes {
-        return Ok(());
+        return Ok(sensitive);
     }
     if ctx.json || quiet {
         bail!(UserError::new(codes::CONFIRMATION_REQUIRED, PRIVATE_CONSENT).fix("add --yes"));
     }
-    ctx.confirm_or_cancel(PRIVATE_CONSENT)
+    ctx.confirm_or_cancel(PRIVATE_CONSENT)?;
+    Ok(true)
 }
 
 fn now() -> u64 {
@@ -692,30 +654,24 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(unix)]
-    fn data_paths_follow_xdg_on_macos_too() {
-        let expected = PathBuf::from("/home/test/.local/share/dash-forge/ipfs");
-        assert_eq!(
-            data_dir(None, Some("/home/test".into()), None, true).unwrap(),
-            expected
-        );
-        assert_eq!(
-            data_dir(Some("/data".into()), Some("/home/test".into()), None, true).unwrap(),
-            PathBuf::from("/data/dash-forge/ipfs")
-        );
-    }
-
-    #[test]
     fn profile_selection_requires_an_unambiguous_ipfs_profile() {
         let profiles = StorageProfiles::parse("[profiles.one]\nkind='ipfs-kubo'\napi='http://127.0.0.1:5001'\n[profiles.two]\nkind='ipfs-kubo'\napi='http://127.0.0.1:5002'\n").unwrap();
-        assert!(select_profile(&profiles, &ManagedNode::default(), None).is_err());
-        let managed = ManagedNode {
-            profile: Some("two".into()),
-            ..ManagedNode::default()
-        };
-        assert_eq!(select_profile(&profiles, &managed, None).unwrap().0, "two");
+        assert!(select_profile(&profiles, None, None).is_err());
+        let managed = Some(Node {
+            dir: std::path::PathBuf::new(),
+            config: crate::ipfs::config::NodeConfig {
+                name: "two".into(),
+                ..Default::default()
+            },
+        });
         assert_eq!(
-            select_profile(&profiles, &managed, Some("one")).unwrap().0,
+            select_profile(&profiles, managed.as_ref(), None).unwrap().0,
+            "two"
+        );
+        assert_eq!(
+            select_profile(&profiles, managed.as_ref(), Some("one"))
+                .unwrap()
+                .0,
             "one"
         );
     }
@@ -776,31 +732,41 @@ mod tests {
         assert!(user.to_json().to_string().contains("add --yes"));
         let service = Ctx::scripted(false, false, false, None);
         assert!(consent(&service, true, true).is_err());
-        assert!(consent(&service, false, true).is_ok());
-        assert!(consent(&Ctx::scripted(true, true, false, None), true, true).is_ok());
+        assert!(!consent(&service, false, true).unwrap());
+        let yes = Ctx::scripted(true, true, false, None);
+        assert!(consent(&yes, true, true).unwrap());
+        // A public follow created with --yes grants no future private-content consent.
+        assert!(!consent(&yes, false, true).unwrap());
     }
 
     #[test]
     fn managed_auth_is_used_only_for_the_managed_api_and_parse_errors_hide_tokens() {
         let dir = tempfile::tempdir().unwrap();
         let profiles = StorageProfiles::parse("[profiles.node]\nkind='ipfs-kubo'\napi='http://127.0.0.1:5001'\napi_auth='env:FORGE_TEST_MISSING_PIN_TOKEN'\n").unwrap();
-        let node = ManagedNode {
-            api_port: Some(5001),
-            ..ManagedNode::default()
+        let written = Node {
+            dir: dir.path().to_owned(),
+            config: crate::ipfs::config::NodeConfig::default(),
         };
+        written.save().unwrap();
+        assert!(fs::read_to_string(dir.path().join("node.toml"))
+            .unwrap()
+            .contains("apiPort"));
+        let node = Some(Node::load_from(dir.path().to_owned()).unwrap());
         fs::write(
             dir.path().join("tokens.toml"),
             "forge='local-stub-token'\nadmin='unused-stub-token'\n",
         )
         .unwrap();
         let profile = &profiles.profiles["node"];
-        let node_backend = backend(dir.path(), &node, profile).unwrap();
+        let node_backend = backend(dir.path(), node.as_ref(), profile).unwrap();
         assert_eq!(
             node_backend.config().api_auth.as_ref().unwrap().expose(),
             "Bearer local-stub-token"
         );
         fs::write(dir.path().join("tokens.toml"), "forge='DO-NOT-ECHO-THIS\n").unwrap();
-        let error = backend(dir.path(), &node, profile).unwrap_err().to_string();
+        let error = backend(dir.path(), node.as_ref(), profile)
+            .unwrap_err()
+            .to_string();
         assert!(!error.contains("DO-NOT-ECHO-THIS"));
         assert!(error.contains("cannot read the managed node token"));
         // A foreign node does not consume a local node's token file.
@@ -808,11 +774,13 @@ mod tests {
             "[profiles.other]\nkind='ipfs-kubo'\napi='http://127.0.0.1:5002'\n",
         )
         .unwrap();
-        assert!(backend(dir.path(), &node, &public.profiles["other"])
-            .unwrap()
-            .config()
-            .api_auth
-            .is_none());
+        assert!(
+            backend(dir.path(), node.as_ref(), &public.profiles["other"])
+                .unwrap()
+                .config()
+                .api_auth
+                .is_none()
+        );
     }
 
     #[test]

@@ -8,6 +8,8 @@ use super::Node;
 use anyhow::Context as _;
 use anyhow::Result;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
+use std::fmt::Write as _;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::PathBuf;
@@ -19,12 +21,22 @@ fn home() -> Result<PathBuf> {
         .context("HOME is not set")
 }
 
-#[cfg(target_os = "linux")]
-fn user_config_dir() -> Result<PathBuf> {
-    match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) => Ok(PathBuf::from(dir)),
-        None => Ok(home()?.join(".config")),
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn environment(dir: &Path) -> Vec<(String, String)> {
+    let mut values = vec![(
+        "XDG_DATA_HOME".into(),
+        dir.parent()
+            .and_then(Path::parent)
+            .unwrap_or(dir)
+            .to_string_lossy()
+            .into_owned(),
+    )];
+    for name in ["XDG_CONFIG_HOME", "DASH_FORGE_STORAGE_CONFIG"] {
+        if let Some(value) = std::env::var_os(name) {
+            values.push((name.into(), value.to_string_lossy().into_owned()));
+        }
     }
+    values
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -38,21 +50,25 @@ fn xml(value: &str) -> String {
 }
 
 #[cfg(any(target_os = "macos", test))]
-pub fn render_plist(exe: &Path, dir: &Path) -> String {
+pub fn render_plist(exe: &Path, dir: &Path, environment: &[(String, String)]) -> String {
     let exe = xml(&exe.to_string_lossy());
-    let log = xml(&dir.join("serve.log").to_string_lossy());
-    let data = xml(&dir
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or(dir)
-        .to_string_lossy());
+    let log = xml(&dir.join("serve.stderr.log").to_string_lossy());
+    let mut rendered_environment = String::new();
+    for (name, value) in environment {
+        let _ = write!(
+            rendered_environment,
+            "<key>{}</key><string>{}</string>",
+            xml(name),
+            xml(value)
+        );
+    }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>org.dashforge.ipfs</string>
 <key>ProgramArguments</key><array><string>{exe}</string><string>ipfs</string><string>serve</string></array>
-<key>EnvironmentVariables</key><dict><key>XDG_DATA_HOME</key><string>{data}</string></dict>
+<key>EnvironmentVariables</key><dict>{rendered_environment}</dict>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>{log}</string>
@@ -76,18 +92,23 @@ fn unit_quote(value: &str) -> String {
 }
 
 #[cfg(any(target_os = "linux", test))]
-pub fn render_unit(exe: &Path, dir: &Path) -> String {
+pub fn render_unit(exe: &Path, environment: &[(String, String)]) -> String {
     let exe = unit_quote(&exe.to_string_lossy().replace('$', "$$"));
-    let data = unit_quote(&format!(
-        "XDG_DATA_HOME={}",
-        dir.parent().and_then(Path::parent).unwrap_or(dir).display()
-    ));
-    format!("[Unit]\nDescription=Dash Forge IPFS node\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={exe} ipfs serve\nEnvironment={data}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=20\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
+    let mut rendered_environment = String::new();
+    for (name, value) in environment {
+        let _ = writeln!(
+            rendered_environment,
+            "Environment={}",
+            unit_quote(&format!("{name}={value}"))
+        );
+    }
+    format!("[Unit]\nDescription=Dash Forge IPFS node\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={exe} ipfs serve\n{rendered_environment}Restart=on-failure\nRestartSec=5\nTimeoutStopSec=20\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
 }
 
 async fn command(program: &str, args: &[&str]) -> Result<bool> {
     Ok(tokio::process::Command::new(program)
         .args(args)
+        .kill_on_drop(true)
         .output()
         .await?
         .status
@@ -141,14 +162,33 @@ pub async fn install(node: &Node, linger: bool) -> Result<bool> {
     {
         let _ = linger;
         let path = home()?.join("Library/LaunchAgents/org.dashforge.ipfs.plist");
-        config::write_private(&path, render_plist(&exe, &node.dir).as_bytes())?;
-        if !command(
+        config::write_private(
+            &path,
+            render_plist(&exe, &node.dir, &environment(&node.dir)).as_bytes(),
+        )?;
+        let domain = domain().await?;
+        let _ = command(
             "launchctl",
-            &["bootstrap", &domain().await?, &path.to_string_lossy()],
+            &["bootout", &format!("{domain}/org.dashforge.ipfs")],
         )
+        .await;
+        let started = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if command(
+                    "launchctl",
+                    &["bootstrap", &domain, &path.to_string_lossy()],
+                )
+                .await
+                .unwrap_or(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        })
         .await
-        .unwrap_or(false)
-        {
+        .is_ok();
+        if !started {
             return Err(node_error(
                 "could not start the IPFS login service",
                 "run `dg ipfs up --no-service`, then `dg ipfs serve` yourself",
@@ -157,9 +197,9 @@ pub async fn install(node: &Node, linger: bool) -> Result<bool> {
     }
     #[cfg(target_os = "linux")]
     {
-        let base = user_config_dir()?;
+        let base = home()?.join(".config");
         let path = base.join("systemd/user/dash-forge-ipfs.service");
-        config::write_private(&path, render_unit(&exe, &node.dir).as_bytes())?;
+        config::write_private(&path, render_unit(&exe, &environment(&node.dir)).as_bytes())?;
         let ready = command("systemctl", &["--user", "daemon-reload"])
             .await
             .unwrap_or(false)
@@ -243,7 +283,7 @@ pub async fn uninstall(node: &Node) -> Result<()> {
                 &["--user", "disable", "dash-forge-ipfs.service"],
             )
             .await;
-            let base = user_config_dir()?;
+            let base = home()?.join(".config");
             remove_if_present(&base.join("systemd/user/dash-forge-ipfs.service"))?;
             let _ = command("systemctl", &["--user", "daemon-reload"]).await;
         }
@@ -303,18 +343,29 @@ mod tests {
     use super::*;
     #[test]
     fn service_rendering_matches_goldens() {
+        let environment = vec![
+            ("XDG_DATA_HOME".into(), "/data".into()),
+            ("XDG_CONFIG_HOME".into(), "/config".into()),
+            ("DASH_FORGE_STORAGE_CONFIG".into(), "/storage.toml".into()),
+        ];
         assert_eq!(
-            render_plist(Path::new("/opt/dg"), Path::new("/data/dash-forge/ipfs")),
+            render_plist(
+                Path::new("/opt/dg"),
+                Path::new("/data/dash-forge/ipfs"),
+                &environment
+            ),
             include_str!("fixtures/service.plist")
         );
         assert_eq!(
-            render_unit(Path::new("/opt/dg"), Path::new("/data/dash-forge/ipfs")),
+            render_unit(Path::new("/opt/dg"), &environment),
             include_str!("fixtures/service.unit")
         );
-        assert!(
-            render_plist(Path::new("/a&b/dg"), Path::new("/data/dash-forge/ipfs"))
-                .contains("/a&amp;b/dg")
-        );
+        assert!(render_plist(
+            Path::new("/a&b/dg"),
+            Path::new("/data/dash-forge/ipfs"),
+            &environment
+        )
+        .contains("/a&amp;b/dg"));
         assert_eq!(unit_quote("/a %b$\"/dg"), "\"/a %%b$\\\"/dg\"");
     }
 }

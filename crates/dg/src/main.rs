@@ -2501,8 +2501,6 @@ impl RoleArg {
 }
 
 fn main() {
-    forge_core::logging::init_cli();
-
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let cli = match infer::parse(args, storage::clone_repo) {
         Ok((cli, from_clone)) => {
@@ -2513,6 +2511,15 @@ fn main() {
         }
         Err(e) => exit_on_parse_error(&e),
     };
+
+    if matches!(cli.command, Command::Ipfs(ipfs::IpfsCommand::Serve)) {
+        if let Err(error) = ipfs::init_serve_logging() {
+            eprintln!("dg: cannot initialize IPFS logging: {error}");
+            std::process::exit(1);
+        }
+    } else {
+        forge_core::logging::init_cli();
+    }
 
     // Completions touch neither config nor the network: handle them before `Ctx::resolve`,
     // so a broken config or an undeployed network cannot stop a shell from loading them.

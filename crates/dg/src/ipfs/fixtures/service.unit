@@ -6,6 +6,8 @@ After=network-online.target
 Type=simple
 ExecStart="/opt/dg" ipfs serve
 Environment="XDG_DATA_HOME=/data"
+Environment="XDG_CONFIG_HOME=/config"
+Environment="DASH_FORGE_STORAGE_CONFIG=/storage.toml"
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=20

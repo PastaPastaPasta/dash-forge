@@ -323,12 +323,20 @@ fn stderr_ansi() -> bool {
 /// only, one plain line each), recovered SDK noise hidden below debug, colour only on a
 /// terminal.
 pub fn init_cli() {
+    init_cli_writer(std::io::stderr, stderr_ansi());
+}
+
+/// Install the same filtered CLI logger with a caller-owned writer (for services).
+pub fn init_cli_writer<W: std::io::Write>(
+    writer: impl Fn() -> W + Send + Sync + 'static,
+    ansi: bool,
+) {
     let spec = std::env::var("RUST_LOG").ok();
     tracing_subscriber::registry()
         .with(layer(
             spec.as_deref(),
-            std::io::stderr,
-            stderr_ansi(),
+            writer,
+            ansi,
             &plain_prefix(std::env::args().next().as_deref()),
         ))
         .init();

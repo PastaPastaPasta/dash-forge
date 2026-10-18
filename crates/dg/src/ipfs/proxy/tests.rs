@@ -504,6 +504,8 @@ async fn content_length_and_each_loopback_host_are_preserved_or_rewritten() {
 #[tokio::test]
 async fn health_is_local_host_checked_and_never_cors_enabled() {
     let h = Harness::new().await;
+    let _serve_guard = super::super::config::lock(&h.node.dir, "serve.lock").unwrap();
+    assert!(super::super::check_public_ports(&h.node).await.is_ok());
     for base in [h.node.api(), h.node.gateway()] {
         assert!(healthy(&h.client, &base).await);
         for origin in [None, Some(ORIGIN), Some("https://evil.test")] {

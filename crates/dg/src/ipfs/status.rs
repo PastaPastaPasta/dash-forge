@@ -14,8 +14,12 @@ pub async fn admin_rpc(node: &Node, tokens: &Tokens, path: &str) -> Result<Value
         .post(format!("{}/api/v0/{path}", node.internal_api()))
         .bearer_auth(&tokens.admin)
         .send()
-        .await?
-        .error_for_status()?;
+        .await
+        .map_err(|_| super::node_error("cannot connect to the IPFS node", "start it: dg ipfs up"))?
+        .error_for_status()
+        .map_err(|_| {
+            super::node_error("the IPFS node refused the request", "start it: dg ipfs up")
+        })?;
     Ok(response.json().await?)
 }
 

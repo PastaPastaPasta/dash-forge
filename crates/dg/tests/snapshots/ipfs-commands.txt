@@ -1,0 +1,8 @@
+up  Set up an IPFS node and connect it to Forge
+status  Show the node, stored bytes, pins and followed repositories
+connect  Get a new connection code for the web app
+origin  Manage which websites may connect to this node
+down  Stop the node and remove its login service
+ipfs  Run a command with the managed IPFS program
+pin  Keep a repository's files on this node, and optionally follow its new pushes
+help  Print this message or the help of the given subcommand(s)

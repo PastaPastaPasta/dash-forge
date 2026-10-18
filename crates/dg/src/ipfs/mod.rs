@@ -1,5 +1,5 @@
 //! A managed local IPFS node and its browser connection.
-mod config;
+pub(crate) mod config;
 mod follow;
 mod install;
 mod pair;
@@ -20,6 +20,14 @@ use serde_json::json;
 
 use crate::context::Ctx;
 use config::{Node, NodeConfig, Tokens};
+
+pub(crate) fn init_serve_logging() -> Result<()> {
+    let dir = config::data_dir()?;
+    config::private_dir(&dir)?;
+    let writer = serve::log_writer(&dir);
+    forge_core::logging::init_cli_writer(move || writer.clone(), false);
+    Ok(())
+}
 
 pub const KUBO_VERSION: &str = "0.43.1";
 pub const FORGE_RPC_PATHS: &[&str] = &[
@@ -42,6 +50,7 @@ pub enum IpfsCommand {
     /// Set up an IPFS node and connect it to Forge.
     Up(UpArgs),
     /// Run the node until stopped (also used by the login service).
+    #[command(hide = true)]
     Serve,
     /// Show the node, stored bytes, pins and followed repositories.
     Status,
@@ -50,6 +59,9 @@ pub enum IpfsCommand {
         /// Print the connection link without opening a browser.
         #[arg(long)]
         no_open: bool,
+        /// Use this allowed website for the connection link.
+        #[arg(long, value_name = "ORIGIN")]
+        origin: Option<String>,
     },
     /// Manage which websites may connect to this node.
     #[command(subcommand)]
@@ -109,7 +121,7 @@ pub enum OriginCommand {
 
 pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
     match command {
-        IpfsCommand::Up(args) => up(ctx, args).await,
+        IpfsCommand::Up(args) => Box::pin(up(ctx, args)).await,
         IpfsCommand::Serve => Box::pin(serve::run(ctx, Node::load()?)).await,
         IpfsCommand::Status => {
             let value = status::collect(&Node::load()?).await?;
@@ -137,8 +149,11 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
             });
             Ok(())
         }
-        IpfsCommand::Connect { no_open } => {
-            let node = Node::load()?;
+        IpfsCommand::Connect { no_open, origin } => {
+            let mut node = Node::load()?;
+            if let Some(origin) = origin {
+                node.config.set_link_origin(Some(origin))?;
+            }
             let connection = pair::create(&node)?;
             let opened = open_link(&connection.link, *no_open || ctx.json).await;
             ctx.emit(json!({"connect":connection}), || {
@@ -146,8 +161,8 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
             });
             Ok(())
         }
-        IpfsCommand::Origin(command) => origin(ctx, command).await,
-        IpfsCommand::Down { purge } => down(ctx, *purge).await,
+        IpfsCommand::Origin(command) => Box::pin(origin(ctx, command)).await,
+        IpfsCommand::Down { purge } => Box::pin(down(ctx, *purge)).await,
         IpfsCommand::Ipfs { args } => passthrough(ctx, args).await,
         IpfsCommand::Pin(args) => Box::pin(crate::ipfs_pin::run_pin(ctx, args)).await,
     }
@@ -175,9 +190,8 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
             config: NodeConfig::default(),
         }
     };
-    if let Some(binary) = std::env::var_os("DASH_FORGE_KUBO_BIN") {
-        node.config.binary_override = Some(std::fs::canonicalize(binary)?);
-    }
+    node.config
+        .set_binary_override(std::env::var_os("DASH_FORGE_KUBO_BIN"))?;
     if let Some(name) = &args.name {
         node.config.name.clone_from(name);
     }
@@ -196,20 +210,23 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
             node.config.origins.push(origin);
         }
     }
+    node.config
+        .set_link_origin(args.origin.first().map(String::as_str))?;
     node.config.validate()?;
-    if args.name.is_none() {
-        if let Some(existing) = StorageProfiles::load()?.get(&node.config.name) {
-            if !matches!(existing, Profile::IpfsKubo(ref p) if p.api == node.api()) {
-                return Err(crate::errors::usage("this profile name belongs to another storage address; choose a new name with --name"));
-            }
+    if let Some(existing) = StorageProfiles::load()?.get(&node.config.name) {
+        if !matches!(existing, Profile::IpfsKubo(ref p) if p.api == node.api()) {
+            return Err(crate::errors::usage("this profile name belongs to another storage address; choose a new name with --name"));
         }
     }
     install::install(&node).await?;
+    node.config.kubo_version = KUBO_VERSION.into();
+    check_public_ports(&node).await?;
     if args.no_service {
         service::uninstall(&node).await?;
     } else {
         service::stop(&node).await?;
     }
+    config::refuse_live_kubo(&node).await?;
     let tokens = Tokens::load_or_create(&node, args.rotate_token)?;
     // Any earlier connection code is no longer valid after reconfiguration.
     if node.dir.join("pair.json").exists() {
@@ -221,6 +238,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     // In --no-service mode, run a temporary supervisor for the same verification, then
     // stop it. The user starts their permanent foreground supervisor with `ipfs serve`.
     if node.config.service {
+        check_public_ports(&node).await?;
         node.config.service = service::install(&node, args.linger).await?;
         node.save()?;
     }
@@ -237,7 +255,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
                 .spawn()?,
         )
     };
-    let verified = verify(&node, &tokens, !ctx.json).await;
+    let verified = Box::pin(verify(&node, &tokens, !ctx.json)).await;
     if let Some(child) = temporary.as_mut() {
         let stopped = serve::stop(&node).await;
         if stopped.is_ok()
@@ -306,6 +324,33 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     Ok(())
 }
 
+async fn check_public_ports(node: &Node) -> Result<()> {
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    let running = std::fs::File::open(node.dir.join("serve.lock"))
+        .is_ok_and(|file| matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+    let mut reservations = Vec::new();
+    for (port, base, flag) in [
+        (node.config.api_port, node.api(), "--api-port"),
+        (node.config.gateway_port, node.gateway(), "--gateway-port"),
+    ] {
+        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+            Ok(listener) => reservations.push(listener),
+            Err(_) if running && proxy::healthy(&http, &base).await => {}
+            Err(_) => {
+                return Err(node_error(
+                    &format!("IPFS public port {port} is already in use"),
+                    &format!("choose a free port with {flag}"),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, String)> {
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -314,12 +359,14 @@ async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, Str
         .build()?;
     let ready = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            if http
-                .post(format!("{}/api/v0/version", node.api()))
-                .bearer_auth(&tokens.forge)
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
+            if proxy::healthy(&http, &node.api()).await
+                && proxy::healthy(&http, &node.gateway()).await
+                && http
+                    .post(format!("{}/api/v0/version", node.api()))
+                    .bearer_auth(&tokens.forge)
+                    .send()
+                    .await
+                    .is_ok_and(|r| r.status().is_success())
             {
                 break;
             }
@@ -330,7 +377,7 @@ async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, Str
     if ready.is_err() {
         return Err(node_error(
             "the IPFS node did not become ready within 60 seconds",
-            "check serve.log and run `dg ipfs serve` to diagnose startup",
+            "start it: dg ipfs up",
         ));
     }
     let report = crate::storage::run_checks_with_auth(
@@ -345,7 +392,7 @@ async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, Str
             "the IPFS node failed its storage checks",
         )
         .cause(report.failed().join(", "))
-        .fix("check serve.log and run `dg ipfs up` again")
+        .fix("start it: dg ipfs up")
         .into());
     }
     let id = status::admin_rpc(node, tokens, "id").await?;
@@ -382,10 +429,14 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
         }
     } else {
         node.config.origins.retain(|o| o != &origin);
+        if node.config.link_origin == origin {
+            node.config.set_link_origin(None)?;
+        }
     }
     config::configure(&node, &Tokens::load(&node)?).await?;
     node.save()?;
     if node.config.service {
+        check_public_ports(&node).await?;
         node.config.service = service::install(&node, false).await?;
         node.save()?;
     } else {
@@ -399,7 +450,12 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
 
 fn directory_bytes(path: &std::path::Path) -> Result<u64> {
     let mut size = 0;
-    for entry in std::fs::read_dir(path)? {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
         let entry = entry?;
         let meta = entry.path().symlink_metadata()?;
         size += if meta.is_dir() {
@@ -421,7 +477,8 @@ async fn down(ctx: &Ctx, purge: bool) -> Result<()> {
         ))?;
     }
     service::uninstall(&node).await?;
-    let _repo_guard = if purge {
+    let _repo_guard = if purge && node.repo().exists() {
+        config::refuse_live_kubo(&node).await?;
         Some(config::lock(&node.repo(), "repo.lock").map_err(|_| {
             node_error(
                 "the kubo repo is still in use",
@@ -542,4 +599,39 @@ fn print_connection(connection: &pair::Connection, opened: bool) {
         "Settings → Storage → IPFS (kubo) → Connect with a code: {} (valid 10 min).",
         connection.code
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn public_port_conflicts_name_the_corresponding_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        let api = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let node = Node {
+            dir: temp.path().to_owned(),
+            config: NodeConfig {
+                api_port: api.local_addr().unwrap().port(),
+                gateway_port: gateway.local_addr().unwrap().port(),
+                ..Default::default()
+            },
+        };
+        let error = check_public_ports(&node).await.unwrap_err();
+        let user = error.downcast_ref::<UserError>().unwrap();
+        assert!(user.to_json().to_string().contains("--api-port"));
+        drop(api);
+        let error = check_public_ports(&node).await.unwrap_err();
+        let user = error.downcast_ref::<UserError>().unwrap();
+        assert!(user.to_json().to_string().contains("--gateway-port"));
+        drop(gateway);
+        assert!(check_public_ports(&node).await.is_ok());
+    }
+
+    #[test]
+    fn missing_repo_has_no_bytes_to_purge() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(directory_bytes(&temp.path().join("repo")).unwrap(), 0);
+    }
 }
