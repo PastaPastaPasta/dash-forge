@@ -12,6 +12,8 @@
  *   the wizard hands out never fails the Action's own validation.
  */
 
+import { ACTIVE_NETWORK, type NetworkConfig } from '../constants'
+import { dgNetworkFlags, repoCommands, shellWord } from '../view/repo-commands'
 import { normalizeRepoName as normalizeV2RepoName } from '../rules/v2'
 import type { StorageProfile } from '../storage/profiles'
 
@@ -461,4 +463,43 @@ export function defaultCostCap(kind: 'platform' | 's3', sizeKib: number, perMibD
 export function suggestedRunnerBudget(kind: 'platform' | 's3', sizeKib: number, perMibDash: number): string {
   const twice = Number(defaultCostCap(kind, sizeKib, perMibDash)) * 2
   return String(Math.min(10, Math.max(RUNNER_KEY_DEFAULTS.budgetDash, Math.ceil(twice * 10) / 10)))
+}
+
+// ---------------------------------------------------------------------------
+// Command-line copy
+// ---------------------------------------------------------------------------
+
+export interface MirrorCliSettings {
+  readonly name: string
+  readonly collab: boolean
+  readonly cap: string
+}
+
+/** Commands for dg's own identity, or the existing repo named by the ready card. */
+export function mirrorCliCommands({ github, name, collab, cap, config = ACTIVE_NETWORK, ownerId }: MirrorCliSettings & {
+  readonly github: GithubName
+  readonly config?: NetworkConfig
+  readonly ownerId?: string
+}): { login: string; newIdentity: string; githubLogin: string; copy: string; storage: string } {
+  const normalized = normalizeV2RepoName(name.trim())
+  if (normalized === null) throw new Error('Enter a repo name starting with a letter or digit, using a–z, 0–9, . _ - (up to 63 characters).')
+  const problem = costCapProblem(cap)
+  if (problem) throw new Error(problem)
+  const flags = dgNetworkFlags(config)
+  const budget = Number(cap) > 0.25 ? ` --budget ${shellWord(cap.trim())}` : ''
+  const auth = repoCommands(ownerId ?? '', normalized, config)
+  return {
+    login: auth.authLogin.replace(` ${flags}`, `${budget} ${flags}`),
+    newIdentity: auth.authNew.replace(` ${flags}`, `${budget} ${flags}`),
+    githubLogin: 'gh auth login',
+    copy: [
+      'dg import', shellWord(`github.com/${github.owner}/${github.name}`),
+      '--repo', shellWord(ownerId ? `${ownerId}/${normalized}` : normalized),
+      '--sync', shellWord(collab ? 'all' : 'code,releases'),
+      '--max-spend', shellWord(cap.trim()),
+      ...(collab ? ['--state', shellWord(`${normalized}.sync.json`)] : []),
+      flags,
+    ].join(' '),
+    storage: 'dg storage use <profile> --global',
+  }
 }

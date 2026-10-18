@@ -9,12 +9,19 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: answers.sdk, network: 'devnet' }) }))
+vi.mock('@/lib/view/discovery', () => ({ MIRROR_NAMED_PAGES: 5, reposNamed: async () => answers.named }))
+
 import type { GithubRepo } from '@/lib/mirror/wizard'
 
-const answers = vi.hoisted(() => ({ next: null as unknown }))
+const answers = vi.hoisted(() => ({ next: null as unknown, checks: 0, sdk: null as unknown, named: { repos: [] as unknown[], more: false } }))
 vi.mock('@/lib/mirror/wizard', async (orig) => ({
   ...(await orig<typeof import('@/lib/mirror/wizard')>()),
-  checkGithubRepo: async () => answers.next,
+  checkGithubRepo: async () => {
+    answers.checks++
+    if (answers.next instanceof Error) throw answers.next
+    return answers.next
+  },
 }))
 
 const { GithubStep } = await import('./mirror-steps')
@@ -37,6 +44,10 @@ const repo = (over: Partial<GithubRepo> = {}): GithubRepo => ({
 let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
+  answers.checks = 0
+  answers.sdk = null
+  answers.named = { repos: [], more: false }
+  window.history.replaceState(null, '', '/mirror/')
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -116,5 +127,51 @@ describe('GithubStep', () => {
   it('tells a person who is not the repository’s owner to mirror only what they may copy', async () => {
     await check(repo())
     expect(q('mirror-license')?.textContent).toMatch(/Mirror a repository you own, or one whose licence lets you copy it/)
+  })
+})
+
+describe('GithubStep: the command line and URL prefill', () => {
+  it('needs Continue but no rights checkbox on the CLI path', async () => {
+    const done = vi.fn()
+    await act(async () => root.render(<GithubStep initial={repo()} way="cli" onDone={done} />))
+    expect(q('mirror-rights')).toBeNull()
+    const button = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Continue')!
+    expect(button.disabled).toBe(false)
+    expect(done).not.toHaveBeenCalled()
+    await act(async () => button.click())
+    expect(done).toHaveBeenCalledWith(repo())
+  })
+
+  it('checks a URL prefill once, after progress settles, without answering', async () => {
+    answers.next = repo()
+    const done = vi.fn()
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/project" settled={false} onDone={done} />))
+    expect(q('mirror-github-found')).toBeNull()
+    expect(answers.checks).toBe(0)
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/project" settled onDone={done} />))
+    expect(q('mirror-github-found')).not.toBeNull()
+    expect(done).not.toHaveBeenCalled()
+    expect(host.querySelector<HTMLInputElement>('#mirror-github')!.value).toBe('alice/project')
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/project" settled onDone={done} />))
+    expect(answers.checks).toBe(1)
+  })
+})
+
+describe('GithubStep: informational hints', () => {
+  it('links private sources to the private import guide', async () => {
+    const { GithubCheckError } = await import('@/lib/mirror/wizard')
+    answers.next = new GithubCheckError('not-found', 'not found, or it is private')
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/private" onDone={() => undefined} />))
+    expect(host.textContent).toContain("Private on GitHub? This page can't check it.")
+    expect(host.querySelector('a[href$="#into-a-private-repository"]')).not.toBeNull()
+  })
+
+  it.each([false, true])('shows mirror claims without blocking, partial=%s', async (more) => {
+    answers.sdk = {}
+    answers.named = { more, repos: [{ key: 'r1', ownerId: 'owner', slug: 'project', visibility: 'public', description: 'Mirror of github.com/alice/project' }] }
+    await check(repo())
+    expect(host.textContent).toContain(`${more ? 'At least ' : ''}1 Forge repos say they mirror github.com/alice/project`)
+    expect(host.textContent).toContain('Anyone can keep their own copy.')
+    expect(host.querySelector('a[href^="/github.com/alice/project"]')).not.toBeNull()
   })
 })

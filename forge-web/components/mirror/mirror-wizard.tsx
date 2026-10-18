@@ -1,26 +1,12 @@
 'use client'
 
-/**
- * `/mirror` — mirror a GitHub repository into Dash Forge, end to end, from the browser
- * (`ux-dx-spec.md` §1(b), launch criterion 2: nothing to install, no Forge-run service):
- *
- *   1. the GitHub repository, checked public through GitHub's anonymous REST API, with its
- *      licence and an explicit "I have the right to copy it" before anything is written (LEG-10);
- *   2. the Forge repository (created here, three documents, or an existing one of yours);
- *   3. storage: a bucket of your own (the storage wizard, with its CORS fix) or Platform;
- *   4. a runner key: a limited, group-bound key with its own budget and expiry, shown once as
- *      the `DASH_FORGE_KEY` secret (the master key signs once; nothing is stored here);
- *   5. the workflow file, prefilled, with the secrets to add first;
- *   6. waiting for the first run: Platform is polled until the mirror's refs appear.
- *
- * Resumable: each step's answer is kept in IndexedDB (`lib/mirror/progress.ts`), never a key.
- * A rail keeps what the wizard writes to Platform, and its price, in view.
- */
+/** The mirror's Action setup resumes per identity. CLI settings resume from the URL. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { GitFork, Lock } from 'lucide-react'
 import { StepCard, type StepState } from '@/components/mirror/step-card'
-import { GithubStep, KeyStep, RepoStep, StorageStep, WaitStep, WorkflowStep, storageChoice } from '@/components/mirror/mirror-steps'
+import { ActionStep, CliStep, GithubStep, KeyStep, ReadyCard, RepoStep, StorageStep, WaitStep, WayStep, WorkflowStep, storageChoice } from '@/components/mirror/mirror-steps'
+import { Button } from '@/components/ui/button'
 import { SignInButton } from '@/components/sign-in-button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { LoadingBlock } from '@/components/ui/states'
@@ -35,16 +21,19 @@ import { previewRepoCreate, readRefs, repoCreationFirsts, resolveAnyRepoWith } f
 import { KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits, sumPreviews } from '@/lib/sdk'
 import { PLATFORM_PROFILE } from '@/lib/storage'
 import { EMPTY_PROGRESS, clearMirrorProgress, loadMirrorProgress, refsFingerprint, resumed, saveMirrorProgress, withAnswer, type MirrorProgress, type RunnerKeyRecord } from '@/lib/mirror/progress'
-import { mirrorRepoInput, suggestForgeName, suggestedRunnerBudget } from '@/lib/mirror/wizard'
+import { mirrorRepoInput, suggestForgeName, suggestedRunnerBudget, type MirrorCliSettings } from '@/lib/mirror/wizard'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 
-type StepId = 'github' | 'repo' | 'storage' | 'key' | 'workflow' | 'wait'
-const ORDER: readonly StepId[] = ['github', 'repo', 'storage', 'key', 'workflow', 'wait']
+type StepId = 'way' | 'github' | 'repo' | 'action' | 'storage' | 'key' | 'workflow' | 'wait' | 'cli'
+const ACTION_STEPS: readonly StepId[] = ['storage', 'key', 'workflow', 'wait']
 const TITLES: Readonly<Record<StepId, string>> = {
+  way: 'Do you maintain the repo on GitHub?',
   github: 'The GitHub repository',
+  action: 'The GitHub Action',
+  cli: 'Run it on your computer',
   repo: 'The Forge repository',
-  storage: 'Where the git data goes',
-  key: 'A runner key for the Action',
+  storage: 'Where the Action stores git data',
+  key: 'The runner key',
   workflow: 'The workflow file and its secrets',
   wait: 'The first mirror run',
 }
@@ -52,8 +41,10 @@ const TITLES: Readonly<Record<StepId, string>> = {
 /** Which steps are answered. */
 function doneSteps(p: MirrorProgress): Readonly<Record<StepId, boolean>> {
   return {
-    // Answered only with the rights acknowledgement (LEG-10): nothing is written before it.
-    github: p.github !== null && p.rightsAcknowledged,
+    way: p.way !== null,
+    github: p.github !== null && (p.way === 'cli' || p.rightsAcknowledged),
+    action: p.actionLater !== null,
+    cli: false,
     repo: p.repo !== null,
     storage: p.storage !== null,
     key: p.runnerKey?.saved === true,
@@ -65,6 +56,8 @@ function doneSteps(p: MirrorProgress): Readonly<Record<StepId, boolean>> {
 /** The one-line summary of each answered step. */
 function summariesOf(p: MirrorProgress): Partial<Record<StepId, React.ReactNode>> {
   return {
+    way: p.way === 'action' ? 'Automatic, with a GitHub Action' : 'From the command line',
+    action: p.actionLater ? 'Not set up yet' : 'Setting it up',
     github: p.github ? <span className="font-mono">github.com/{p.github.owner}/{p.github.name}</span> : null,
     repo: p.repo ? <span className="font-mono">{p.repo.name}</span> : null,
     storage: storageSummary(p.storage),
@@ -82,7 +75,7 @@ function storageSummary(storage: string | null): React.ReactNode {
 function keySummary(key: RunnerKeyRecord | null): string | null {
   if (key === null) return null
   // A negative key id: the person added a runner key of their own.
-  if (key.keyId < 0) return 'Your own runner key'
+  if (key.keyId < 0) return 'Added by you'
   return `Key ${key.keyId}: ${creditsAsDash(Number(key.budgetCredits))} DASH until ${formatDate(key.expiresAt)}`
 }
 
@@ -97,7 +90,7 @@ async function saveRunnerKeyFor(identityId: string, runnerKey: RunnerKeyRecord):
 }
 
 export function MirrorWizard(): JSX.Element {
-  const { identity } = useAuth()
+  const { identity, resuming } = useAuth()
   const { sdk } = useSdk()
   const storage = useStorageConfig()
   const forge = ACTIVE_NETWORK.v2
@@ -105,9 +98,17 @@ export function MirrorWizard(): JSX.Element {
   const [progress, setProgress] = useState<MirrorProgress>(EMPTY_PROGRESS)
   const progressRef = useRef(progress)
   const [loaded, setLoaded] = useState<string | null>(null)
+  const [query, setQuery] = useState<URLSearchParams | null>(null)
+  const [cli, setCli] = useState<{ name: string | null; collab: boolean; cap: string }>({ name: null, collab: false, cap: '0.2' })
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    setQuery(params)
+    setCli({ name: params.get('name'), collab: params.get('collab') === '1', cap: params.get('cap') ?? '0.2' })
+  }, [])
   const [reopened, setReopened] = useState<StepId | null>(null)
   // The runner key's `dfk1:` value lives only here, in this tab, until it is pasted into GitHub,
   // and only for the identity it was made on.
+  const [makingKey, setMakingKey] = useState(true)
   const [made, setMade] = useState<{ identity: string; value: string } | null>(null)
   const secret = made !== null && made.identity === identity ? made.value : null
   // A sign-out or switch drops the value itself, not only from view: switching back must not
@@ -158,10 +159,49 @@ export function MirrorWizard(): JSX.Element {
     [identity, show],
   )
 
+  const settled = identity === null ? !resuming : loaded === identity
+  useEffect(() => {
+    if (!settled || query === null || progress.way !== null) return
+    const way = query.get('way')
+    if (way === 'action' || way === 'cli') update({ way })
+  }, [settled, query, progress.way, update])
+
+  const cliSettings: MirrorCliSettings = { ...cli, name: cli.name ?? suggestForgeName(progress.github?.name ?? '') }
+  useEffect(() => {
+    if (!settled || query === null || progress.way === null) return
+    const url = new URL(window.location.href)
+    url.searchParams.set('way', progress.way)
+    if (progress.github) url.searchParams.set('repo', `${progress.github.owner}/${progress.github.name}`)
+    if (progress.way === 'cli') {
+      if (progress.github !== null || cli.name !== null) url.searchParams.set('name', cliSettings.name)
+      url.searchParams.set('collab', cliSettings.collab ? '1' : '0')
+      url.searchParams.set('cap', cliSettings.cap)
+    }
+    window.history.replaceState(window.history.state, '', url)
+  }, [settled, query, progress.way, progress.github, cli.name, cliSettings.name, cliSettings.collab, cliSettings.cap])
+
+  const restart = (): void => {
+    setMade(null)
+    setReopened(null)
+    if (identity !== null) void clearMirrorProgress(ACTIVE_NETWORK.key, identity)
+    const url = new URL(window.location.href)
+    for (const param of ['way', 'repo', 'name', 'collab', 'cap']) url.searchParams.delete(param)
+    window.history.replaceState(window.history.state, '', url)
+    setQuery(new URLSearchParams(url.search))
+    setCli({ name: null, collab: false, cap: '0.2' })
+    openedAt.current = Date.now()
+    show({ ...EMPTY_PROGRESS, startedAt: openedAt.current })
+  }
+
   const firsts = useAsync(() => repoCreationFirsts(sdk!, identity!, forge!.core), [identity ?? '', sdk !== null], { enabled: sdk !== null && identity !== null && forge !== null })
 
   const done = doneSteps(progress)
-  const current = reopened ?? ORDER.find((s) => !done[s]) ?? 'wait'
+  const order: readonly StepId[] = progress.way === null
+    ? ['way']
+    : progress.way === 'cli'
+      ? ['way', 'github', 'cli']
+      : ['way', 'github', 'repo', 'action', ...(progress.actionLater === false ? ACTION_STEPS : [])]
+  const current = reopened ?? order.find((s) => !done[s]) ?? (progress.actionLater === true ? null : 'wait')
   const signedIn = identity !== null && loaded === identity
 
   // The repository's refs before the workflow can run: the wait step watches for a change.
@@ -192,7 +232,20 @@ export function MirrorWizard(): JSX.Element {
   const firstsOrNone = firsts.data ?? { first: {}, rest: {} }
 
   const body = (s: StepId): React.ReactNode => {
-    if (s === 'github') return <GithubStep initial={progress.github} onDone={(github) => update({ github, rightsAcknowledged: true })} />
+    if (s === 'way') return <WayStep initial={progress.way} onDone={(way) => update({ way })} />
+    if (s === 'github') return <GithubStep initial={progress.github} way={progress.way ?? 'action'} prefill={query?.get('repo')} settled={settled} onDone={(github) => {
+      if (progress.github && (github.owner !== progress.github.owner || github.name !== progress.github.name)) setCli((c) => ({ ...c, name: null }))
+      update({ github, ...(progress.way === 'action' ? { rightsAcknowledged: true } : {}) })
+    }} />
+    if (s === 'cli' && progress.github) return (
+      <>
+        <CliStep github={progress.github} settings={cliSettings} onSettings={setCli} />
+        <div className="space-y-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+          <button type="button" className="text-dense text-forge-700 underline dark:text-forge-400" onClick={() => update({ way: 'action' })}>Maintain it on GitHub? Keep it in sync automatically instead.</button>
+          <div><Button variant="ghost" size="sm" onClick={restart}>Start over</Button></div>
+        </div>
+      </>
+    )
     if (!signedIn || progress.github === null) {
       return identity === null ? <SignInGate /> : <p className="text-dense text-anvil-500 dark:text-anvil-400">Opening your progress…</p>
     }
@@ -200,6 +253,8 @@ export function MirrorWizard(): JSX.Element {
     if (!progress.rightsAcknowledged) return null
     const gh = progress.github
     switch (s) {
+      case 'action':
+        return <ActionStep onDone={(actionLater) => update({ actionLater })} />
       case 'repo':
         return <RepoStep sdk={sdk} forge={forge} identity={identity} github={gh} firsts={firstsOrNone} onDone={(repo, created) => update(created ? { repo, refsBefore: '' } : { repo })} />
       case 'storage':
@@ -211,6 +266,7 @@ export function MirrorWizard(): JSX.Element {
             github={gh}
             record={progress.runnerKey}
             secret={secret}
+            onMakingChange={setMakingKey}
             suggestedBudget={suggestedRunnerBudget(choice?.ok ? choice.kind : 's3', gh.sizeKib, PUSH_COST_DASH.perMib)}
             onCreated={(runnerKey, value) => {
               if (identityRef.current === identity) {
@@ -247,23 +303,17 @@ export function MirrorWizard(): JSX.Element {
             progress={progress}
             onBaseline={(refsBefore) => update({ refsBefore }, true)}
             onMirrored={(at) => update({ mirroredAt: at })}
-            onRestart={() => {
-              setMade(null)
-              setReopened(null)
-              void clearMirrorProgress(ACTIVE_NETWORK.key, identity)
-              openedAt.current = Date.now()
-              show({ ...EMPTY_PROGRESS, startedAt: openedAt.current })
-            }}
+            onRestart={restart}
           />
         )
     }
   }
 
   const repoCost =
-    progress.github && !done.repo
+    progress.way === 'action' && progress.github && !done.repo
       ? previewRepoCreate(mirrorRepoInput(progress.github, suggestForgeName(progress.github.name) || 'x'), firstsOrNone)
       : null
-  const keyCost = done.key ? null : previewCredits(KEY_REGISTER_CREDITS)
+  const keyCost = progress.actionLater !== false || !makingKey || done.key || progress.runnerKey?.keyId === -1 ? null : previewCredits(KEY_REGISTER_CREDITS)
   const left = [repoCost, keyCost].filter((c) => c !== null)
 
   return (
@@ -275,34 +325,51 @@ export function MirrorWizard(): JSX.Element {
         <div>
           <h1 className="text-xl">Mirror a GitHub repository</h1>
           <p className="max-w-2xl text-dense text-anvil-500 dark:text-anvil-400">
-            A copy nobody can take down: refs signed on Dash Platform ({ACTIVE_NETWORK.key}), git data in storage you control, kept in sync by a GitHub Action. About ten minutes, nothing to install.
+            A copy on Dash Forge that nobody can take down. How you set it up depends on whether you maintain the repo on GitHub.
           </p>
         </div>
       </div>
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_16rem]">
         <ol className="min-w-0 space-y-3" aria-label="Mirror setup steps">
-          {ORDER.map((s, i) => (
-            <StepCard key={s} n={i + 1} id={s} title={TITLES[s]} state={stateOf(s)} summary={summaries[s]} onChange={s === 'wait' ? undefined : () => setReopened(s)}>
+          {order.map((s, i) => (
+            <StepCard key={s} n={i + 1} id={s} title={TITLES[s]} state={stateOf(s)} summary={summaries[s]} optional={s === 'key'} onChange={s === 'wait' ? undefined : () => setReopened(s)}>
               {body(s)}
+              {ACTION_STEPS.includes(s) ? <div className="border-t border-anvil-100 pt-3 dark:border-anvil-850"><Button variant="ghost" size="sm" onClick={() => update({ actionLater: true })}>Not now</Button></div> : null}
             </StepCard>
           ))}
-        </ol>
-        <aside aria-label="What this writes to Platform" className="h-fit space-y-3 rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-800 dark:bg-anvil-900 lg:sticky lg:top-20">
-          <h2 className="text-dense font-medium text-anvil-500 dark:text-anvil-400">On Platform</h2>
-          <ul className="space-y-2">
-            <RailItem label="Forge repository" note={done.repo ? 'done' : 'three documents'} />
-            <RailItem label="Runner key" note={done.key ? 'done' : 'an identity update; its budget is a cap, not a charge'} />
-            <RailItem label="Each mirror run" note="paid through the runner key, never more than the run's cost cap" />
-          </ul>
-          {left.length > 0 ? (
-            <div className="space-y-1">
-              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Still to sign here</p>
-              <CostPreview cost={sumPreviews(left)} />
-            </div>
+          {progress.way === 'action' && progress.actionLater === true && signedIn && progress.github && progress.repo && current === null ? (
+            <ReadyCard key={progress.repo.repoId} identity={identity} github={progress.github} repo={progress.repo} onSetup={() => update({ actionLater: false })} />
           ) : null}
-          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Nothing passes through a Forge server: GitHub is asked from your browser, keys are made in it, and the Action runs on GitHub&apos;s runners.
-          </p>
+        </ol>
+        <aside aria-label={progress.way === 'cli' ? 'What you need' : 'What this writes to Platform'} className="h-fit space-y-3 rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-800 dark:bg-anvil-900 lg:sticky lg:top-20">
+          {progress.way === 'cli' ? (
+            <>
+              <h2 className="text-dense font-medium text-fg-muted">What you need</h2>
+              <ul className="space-y-2">
+                <RailItem label="dg and git-remote-dash" note="Build them from source with the install guide." />
+                <RailItem label="The GitHub CLI, logged in" note="It reads the source repo." />
+                <RailItem label="A funded identity" note="The estimate comes before anything is written." />
+              </ul>
+            </>
+          ) : progress.way === 'action' ? (
+            <>
+              <h2 className="text-dense font-medium text-anvil-500 dark:text-anvil-400">On Platform</h2>
+              <ul className="space-y-2">
+                <RailItem label="Forge repository" note={done.repo ? 'done' : 'the repo, its owner and settings'} />
+                <RailItem label="Runner key" note={done.key ? 'optional · done' : 'optional · its budget is a cap, not a charge'} />
+                <RailItem label="Each mirror run" note="paid through the runner key, never more than the run's cost cap" />
+              </ul>
+              {left.length > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Still to sign here</p>
+                  <CostPreview cost={sumPreviews(left)} />
+                </div>
+              ) : null}
+              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                Nothing passes through a Forge server: GitHub is asked from your browser, keys are made in it, and the Action runs on GitHub&apos;s runners.
+              </p>
+            </>
+          ) : <p className="text-dense text-fg-muted">Choose how to make your copy.</p>}
         </aside>
       </div>
     </div>
@@ -324,7 +391,7 @@ function SignInGate(): JSX.Element {
       <p className="flex items-center gap-2 text-dense">
         <Lock className="h-4 w-4 text-anvil-500" aria-hidden /> Sign in, or create an identity in this browser, to continue.
       </p>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">The mirror is owned by your identity. Setting it up costs a few thousandths of a DASH; each run is capped.</p>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">The mirror is owned by your identity. Setting it up costs a few thousandths of a DASH. Each run is capped.</p>
       <SignInButton label="long" />
     </div>
   )

@@ -108,7 +108,7 @@ export function UpstreamAliasClient(): JSX.Element {
         icon={GitBranch}
         heading="h1"
         title={`${source} isn’t mirrored here yet`}
-        body="A mirror is a copy on Forge that nobody can take down, kept in sync by a GitHub Action on every push."
+        body="Copy it to Forge, where nobody can take it down: automatically if you maintain it on GitHub, or from the command line."
         action={
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Link href={`/mirror/?repo=${encodeURIComponent(`${owner}/${name}`)}`} data-testid="alias-mirror">

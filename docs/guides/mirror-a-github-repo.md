@@ -8,10 +8,16 @@ GitHub can take down a repository: a DMCA notice, a sanctions ruling, or a polic
 
 You do not have to move off GitHub. Keep working there, and let the mirror follow.
 
-There are two ways to run a mirror, and both use the same engine, `forge-import`:
+## Which way
 
-- **The [Forge Mirror Action](#2-the-forge-mirror-action)** (recommended): one workflow file in the GitHub repository. On every push, issue, PR and release, and on a daily schedule, it mirrors what changed, under a per-run cost cap. **[The setup wizard](#the-setup-wizard) at forge.dashhq.org/mirror sets it up from your browser, with nothing to install.**
-- **By hand or from cron**: run `forge-import` (or `dg import`) yourself.
+Both paths use the same import engine:
+
+| Way | Who it is for | What runs |
+|---|---|---|
+| [Forge Mirror Action](#2-the-forge-mirror-action) | People with write access to the GitHub repository, including access to its workflow file and secrets | A GitHub Action follows pushes, releases and, optionally, issues and pull requests. It also reconciles daily, under a per-run spending cap. |
+| `dg import` | Anyone who may copy the source, for a one-time copy or re-runs on their own schedule | Your computer reads GitHub and signs and pays from dg's identity. |
+
+The [setup wizard](https://forge.dashhq.org/mirror/) helps with either path.
 
 This guide covers:
 
@@ -26,20 +32,39 @@ This guide covers:
 
 ## The setup wizard
 
-Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. You need a public GitHub repository and a Dash identity. You can create the identity on the same page ([Identity and keys](identity-and-keys.md)). The hosted site runs on devnet sakura ([Which network](README.md#which-network)). The wizard works through six steps:
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. The hosted site runs on devnet sakura ([Which network](README.md#which-network)).
 
-| Step | What happens | On chain |
+### Automatic sync
+
+You need a public GitHub repository you maintain and a Dash identity signed in to this tab. You can create the identity on the same page ([Identity and keys](identity-and-keys.md)). A wallet sign-in may ask your wallet to approve a repository write.
+
+| Step | What happens | Written here |
 |---|---|---|
-| 1. GitHub repository | Your browser asks GitHub's public REST API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app. The step shows the licence GitHub detected, warns when there is none, and notes that Git LFS files are not mirrored. It asks you to confirm that you have the right to copy the code and the issue and pull request content before it goes on. | nothing |
-| 2. Forge repository | The name is suggested from GitHub, and the description is `… (mirror of github.com/<owner>/<repo>)`, which the web uses to link back. A repository of yours with that name is reused at no cost. | three documents, about 0.002 DASH |
-| 3. Storage | Pick a saved bucket, or add one with the [storage wizard](bring-your-own-storage.md). R2 or S3 is recommended. The step shows the CORS policy to paste, and also offers Dash Platform, priced for this repository's size. | nothing |
-| 4. Runner key | This registers a limited key on your identity: bound to Forge's contracts, with a budget (default 0.5 DASH) and an expiry (default 365 days). Your identity file or recovery phrase signs once and are not stored. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub. It belongs to the repository's owner, so the Action needs no membership. | one identity update, about 0.0003–0.0005 DASH |
-| 5. Workflow file | The wizard lists the secrets to add first (`DASH_FORGE_KEY`, plus `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` for a bucket), with copy buttons and a link to GitHub's *New repository secret* page. It then builds [the workflow below](#the-workflow) with every input filled in: code and releases, as the Action syncs by default. **Mirror issues and pull requests too** adds them and their triggers; leave it off on a busy repository, since anyone who can open an issue or a PR can then make a run spend. The suggested `cost-cap` is above the Action's own default of 0.05 DASH because the first run writes every branch, tag and release: 0.1 DASH with your own storage, more for packs on Platform, sized for the repository. Lower it once the mirror is up. **Create this file on GitHub** opens GitHub's new-file page with it filled in. | nothing |
-| 6. First run | Committing the file starts the first run. The page checks Platform every 10 seconds until the mirror's branches appear, then links to the repository. | the run, under its cost cap, paid through the runner key |
+| 2. GitHub repository | Your browser checks GitHub anonymously, shows its licence and the Git LFS limitation, and asks you to confirm your right to copy the content. Existing mirrors appear as claims and never block your own copy. | nothing |
+| 3. Forge repository | Create a repository with a suggested name and a description naming the GitHub source, or reuse one of yours at no cost. | the repo, its owner and settings, about 0.002 DASH |
+| 4. The GitHub Action | Choose **Set it up now** or **Later**. Later opens **Your Forge repo is ready**, with a link to the repo, commands to fill it using dg, and **Set up the Action** to continue. | nothing |
+| 5. Where the Action stores git data | Pick a saved bucket, add one with the [storage wizard](bring-your-own-storage.md), or use Dash Platform. Unlock this tab first if asked. A pasted-key tab can use Platform only. | nothing |
+| 6. The runner key (optional) | **Make one here** registers a limited key with a budget and expiry, using your master key once. It is shown once as `DASH_FORGE_KEY`. Or choose **Add DASH_FORGE_KEY yourself** and use dg, signed in as the repository's owner. Wallet sign-ins use that option. | one identity update if made here, about 0.0003–0.0005 DASH |
+| 7. The workflow file and its secrets | Add `DASH_FORGE_KEY` and any bucket secrets first. The wizard fills the workflow with code and releases by default. Issues and pull requests are optional and can cost more on a busy repository. Review the cap and pinned commit, then commit the file on GitHub. Unlock the tab if asked for its bucket settings. | nothing |
+| 8. The first mirror run | The page checks Platform every 10 seconds until the branches change, then links to the repo. The Action's run is paid through its key, under its spending cap. | nothing |
+
+Every Action step (5–8) has **Not now**. It opens the same ready card and keeps your answers. **Set up the Action** returns to the first unanswered Action step. Creating a runner key here, adding secrets and committing the workflow are optional: you can stop with a ready Forge repository.
+
+### From the command line
+
+You need a public source for the page's GitHub check, permission to copy it, dg and git-remote-dash, the GitHub CLI signed in, and a funded identity for dg. You do not sign in to the web page. For a private source, follow [Into a private repository](#into-a-private-repository).
+
+After the GitHub check, **Run it on your computer** fills in commands for this network. Edit the Forge repo name, choose whether to copy issues and pull requests too, and set a spending cap (default 0.2 DASH). The page signs nothing. dg asks about the rights to copy, shows the estimate, and asks before writing. When the cap exceeds dg's default 0.25 DASH key budget, the sign-in command also raises that budget.
+
+A repository filled from dg uses **dg's own storage settings**, not storage picked in this browser. Without your own storage configured for dg, git data goes to Platform. Set a profile with `dg storage use <profile> --global` first if you want your bucket instead. Re-running the import copies only changes. A repo with the same destination name is reused, replacing its branches and tags.
+
+### Resume
+
+The Action path saves public answers in this browser per network and signed-in identity. A key is never saved. The command-line path keeps its source, name, issues choice and cap in the page address, so reloading or sharing it restores the settings. The GitHub check runs again and waits for **Continue**. **Start over** clears the page's answers and its address parameters.
 
 **What the copy is.** The mirror is a copy at the time of each run. Later edits and deletions on GitHub (a rewritten comment, a deleted issue) are not propagated, and imported issues, pull requests and comments stay on Dash Platform, which cannot delete them. Mirror only what you have the right to copy.
 
-The wizard pins the Action to one Dash Forge commit, the one the site was built from (`uses: PastaPastaPasta/dash-forge/action@<commit>`), and sets `install: 'source'`, so the Action builds the three tools from that same commit. Progress is saved in the browser, so a closed tab picks up where it stopped. A key is never saved.
+The wizard pins the Action to one Dash Forge commit, the one the site was built from (`uses: PastaPastaPasta/dash-forge/action@<commit>`), and sets `install: 'source'`, so the Action builds the three tools from that same commit. The Action setup resumes from this identity’s saved answers in the browser.
 
 **How long it takes.** A timed run on devnet bonsia (2026-09-30) mirrored a small public repository (two commits) with Platform storage. The wizard's own steps took 16 seconds of machine time: the GitHub check, signing in, creating the repository, the runner key and the workflow. A person reading, typing and pasting needs a few minutes more. From the workflow commit to the first mirrored push took 3 minutes 50 seconds. Of that, compiling the tools took 3 minutes 9 seconds, because the wizard's workflow builds them from source (no release was published then; a workflow pinned to a release tag downloads them instead). Mirroring took under 30 seconds and spent 0.018 DASH, the Action's own up-front estimate. Counted from opening the page, the mirror was live after 6 minutes 11 seconds, and that included a two-minute fix made during the run. Later runs reuse a build cache: the run for the next push took 1 minute 41 seconds in all. (That run built the tools in its own workflow steps with rust-cache; the wizard now leaves the build, and its cache, to the Action.)
 
@@ -47,9 +72,11 @@ The wizard pins the Action to one Dash Forge commit, the one the site was built 
 
 ## Before you start
 
-You need:
+For the Action, you need GitHub write access and a signed-in Dash identity as above. GitHub runs and builds the tools for you.
 
-- `dg`, `git-remote-dash` and `forge-import`. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Once a release is published, the [install script](../INSTALL.md#install-script-linux-and-macos) can fetch all three, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
+For command-line imports, you need:
+
+- `dg` and `git-remote-dash` for `dg import`. The standalone `forge-import` is optional. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Once a release is published, the [install script](../INSTALL.md#install-script-linux-and-macos) can fetch all three, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
 - A funded identity, signed in with `dg auth new` or `dg auth login` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)). `dg import` uses that stored key. The standalone `forge-import` does not read `dg`'s default: give it `--identity <source>` or `DASH_FORGE_KEY`, for example `DASH_FORGE_KEY=keychain:dash-forge/devnet-sakura/<identity id>` for the key `dg auth` keeps in the keychain ([key sources](identity-and-keys.md#where-keys-live-today)).
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
@@ -152,7 +179,11 @@ forge-import alice/project --sync issues,prs,labels --work-dir ./project.git --s
 
 A signature or per-file checksum (`<file>.asc`, `.sig`, `.minisig`, `.sha256`, `.sha512`) is kept right after its file when it fits, and never without it; a checksum list such as `SHA256SUMS.asc` counts as a checksum file. The release's notes then end with a line saying how many assets are not mirrored, with a link to the source release, and the web shows it as "N more assets not mirrored". The summary counts them (`assetsOmitted`). The importer hashes up to 4 GiB of assets per run, newest releases first; an imported asset it has not hashed yet is shown as "not verified yet" with a link to its original on GitHub or GitLab, and a later run hashes it (`assetsUnhashed`). A release published on Forge itself never offers a file without a recorded hash. Mirroring every asset of a large release needs a contract change, proposed in [release asset manifests](../design/release-asset-manifest.md).
 
-**Into a private repository**, releases are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)) and have no 4,096-byte limit: every asset is listed in an encrypted asset list. Each asset the importer can download from its public URL, within the same 4 GiB per run and 1 GiB per release (a release's files are held in memory while they are encrypted), is checked against the size and digest the source records, encrypted and stored on your own storage (the policy set above). The others are listed as links to the source until a later run seals them (`assetsLinked`). The download sends no token, so a private source repository's assets stay links. The source link, publisher and publish date are encrypted too. A private import with releases therefore needs storage of your own: without it, a release with assets is skipped and the run ends `partial`. Storage still shows each asset's exact size, which can identify the public release it mirrors, and the run warns about it.
+### Into a private repository
+
+A private GitHub source must not be copied into a public destination. Set your own storage for dg as above. Sign the GitHub CLI in with access to the source, create a private Forge repository first (`dg repo create project --private --network devnet --devnet-name sakura`), then pass its name with `dg import github.com/alice/project --repo project --network devnet --devnet-name sakura --max-spend 0.2`. Confirm the rights and estimate in the terminal. Raise dg's key budget if the cap needs more than its remaining budget. See [Private repositories](collaborating.md#private-repositories) for membership and encryption.
+
+Into a private repository, releases are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)) and have no 4,096-byte limit: every asset is listed in an encrypted asset list. Each asset the importer can download from its public URL, within the same 4 GiB per run and 1 GiB per release (a release's files are held in memory while they are encrypted), is checked against the size and digest the source records, encrypted and stored on your own storage (the policy set above). The others are listed as links to the source until a later run seals them (`assetsLinked`). The download sends no token, so a private source repository's assets stay links. The source link, publisher and publish date are encrypted too. A private import with releases therefore needs storage of your own: without it, a release with assets is skipped and the run ends `partial`. Storage still shows each asset's exact size, which can identify the public release it mirrors, and the run warns about it.
 
 **Not mirrored.** Edits to a title or body after the item was first mirrored, a PR's later retarget to another base, and a PR's later head moves (its `headOid` stays at the commit it was mirrored at; `refs/mirror/pull/<n>/head` follows the head while the PR is open). Reactions, milestones, assignees, projects and GitHub Discussions are not mirrored.
 

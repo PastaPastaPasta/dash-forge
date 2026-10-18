@@ -22,8 +22,8 @@ skipWithoutFixture()
  * leaves (every `broadcastStateTransition` is aborted), then the wizard's "I have a runner key"
  * path continues to the workflow.
  *
- * m1. signed out: a private or missing repo is refused with the reason; a public one is shown,
- *     and the next step asks to sign in.
+ * m1. signed out: the entry question, private-source guidance, CLI commands, copy buttons,
+ *     settings restored from the URL, phone layout and the automatic path's sign-in gate.
  * m2. signed in: GitHub → the existing Forge repo (no cost) → an R2 bucket (and its CORS fix) →
  *     the runner key form (budget, expiry, master key, fee), whose write never reaches Platform →
  *     the workflow file, which names the repo, network, devnet, storage and pinned commit, and
@@ -108,32 +108,87 @@ function savedStorageChoice(page: Page): Promise<string | null> {
   )
 }
 
-test('m1. signed out: GitHub is checked anonymously, and the next step asks to sign in', async ({ page }) => {
+test('m1. signed out: choose a path, copy CLI commands and resume their settings from the URL', async ({ page }) => {
   const asked = await fakeGithub(page)
-  await page.goto('/mirror/', { waitUntil: 'domcontentloaded' })
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.goto(`/mirror/?repo=${GH.owner}/${GH.name}`, { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { name: 'Mirror a GitHub repository', level: 1 })).toBeVisible()
+  await expect(step(page, 'way')).toHaveAttribute('data-state', 'active')
+  await expect(step(page, 'github')).toHaveCount(0)
+  await page.getByRole('radio', { name: /No, or I want a one-time copy/ }).check()
+  await step(page, 'way').getByRole('button', { name: 'Continue' }).click()
   await expect(step(page, 'github')).toHaveAttribute('data-state', 'active')
+  await expect(page.getByLabel('GitHub repository', { exact: true })).toHaveValue(`${GH.owner}/${GH.name}`)
+  await expect(page.getByTestId('mirror-github-found')).toBeVisible()
+  expect(asked.filter((path) => path === `/repos/${GH.owner}/${GH.name}`)).toHaveLength(1)
 
   await checkGithub(page, 'someone/private-thing')
   await expect(step(page, 'github').getByRole('alert')).toContainText('not found, or it is private')
+  await expect(step(page, 'github')).toContainText("Private on GitHub? This page can't check it.")
+  await expect(step(page, 'github').getByRole('link', { name: /The guide shows/ })).toHaveAttribute('href', /#into-a-private-repository$/)
   await checkGithub(page, 'not a repo')
   await expect(step(page, 'github').getByRole('alert')).toContainText('owner/name')
-
   await checkGithub(page, `https://github.com/${GH.owner}/${GH.name}/tree/main`)
   const found = page.getByTestId('mirror-github-found')
-  await expect(found).toContainText(`github.com/${GH.owner}/${GH.name}`)
   await expect(found).toContainText('default branch main')
-  expect(asked).toContain(`/repos/${GH.owner}/${GH.name}`)
-  await shot(page, 'mirror-01-github-found')
-  // Nothing continues without the explicit "I have the right to copy it" (LEG-10).
   await expect(found.getByTestId('mirror-license')).toBeVisible()
-  await expect(found.getByRole('button', { name: `Mirror ${GH.owner}/${GH.name}` })).toBeDisabled()
+  await expect(found.getByRole('checkbox')).toHaveCount(0)
+  await found.getByRole('button', { name: 'Continue' }).click()
+  const cli = step(page, 'cli')
+  await expect(cli).toHaveAttribute('data-state', 'active')
+  await expect(page.getByTestId('mirror-signin')).toHaveCount(0)
+  await expect(page.getByRole('complementary', { name: 'What you need' })).toBeVisible()
+  await expect(cli.getByLabel('Forge repo name', { exact: true })).toHaveValue(GH.name.toLowerCase())
+  await expect(cli.getByLabel('Spending cap (DASH)')).toHaveValue('0.2')
+  const flags = `--network ${E2E_NETWORK}${E2E_NETWORK === 'devnet' ? ` --devnet-name ${E2E_DEVNET}` : ''}`
+  await expect(cli).toContainText(`dg auth login <identity file> ${flags}`)
+  await expect(cli).toContainText(`--repo ${GH.name.toLowerCase()} --sync 'code,releases' --max-spend 0.2 ${flags}`)
+  await cli.getByLabel('Forge repo name', { exact: true }).fill('mirror-cli-e2e')
+  await cli.getByLabel('Spending cap (DASH)').fill('0.4')
+  await cli.getByRole('checkbox', { name: /Issues and pull requests too/ }).check()
+  const command = `dg import github.com/${GH.owner}/${GH.name} --repo mirror-cli-e2e --sync all --max-spend 0.4 --state mirror-cli-e2e.sync.json ${flags}`
+  await expect(cli).toContainText(command)
+  await expect(cli).toContainText(`dg auth login <identity file> --budget 0.4 ${flags}`)
+  for (const [label, text] of [
+    ['Copy the dg sign-in command', `dg auth login <identity file> --budget 0.4 ${flags}`],
+    ['Copy the GitHub sign-in command', 'gh auth login'],
+    ['Copy the import command', command],
+    ['Copy the storage command', 'dg storage use <profile> --global'],
+  ]) {
+    await cli.getByRole('button', { name: label, exact: true }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(text)
+  }
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await shot(page, 'mirror-01-cli-commands')
+  await expect(page).toHaveURL(/way=cli/)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(step(page, 'github')).toHaveAttribute('data-state', 'active')
+  await expect(page.getByTestId('mirror-github-found')).toBeVisible()
+  await expect(step(page, 'cli')).toHaveAttribute('data-state', 'todo')
+  await page.getByTestId('mirror-github-found').getByRole('button', { name: 'Continue' }).click()
+  await expect(cli.getByLabel('Forge repo name', { exact: true })).toHaveValue('mirror-cli-e2e')
+  await expect(cli.getByLabel('Spending cap (DASH)')).toHaveValue('0.4')
+  await expect(cli.getByRole('checkbox', { name: /Issues and pull requests too/ })).toBeChecked()
+  await expect(cli).toContainText(command)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await shot(page, 'mirror-02-cli-390-dark')
+  const serious = await runAxe(page, 'mirror-cli')
+  expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
+  await cli.getByRole('button', { name: 'Start over' }).click()
+  await expect(page).toHaveURL(/\/mirror\/$/)
+  await expect(step(page, 'way')).toHaveAttribute('data-state', 'active')
+
+  await page.getByRole('radio', { name: /Yes: keep it in sync automatically/ }).check()
+  await step(page, 'way').getByRole('button', { name: 'Continue' }).click()
+  await checkGithub(page, `${GH.owner}/${GH.name}`)
+  await expect(found.getByRole('button', { name: /^Mirror / })).toBeDisabled()
   await found.getByTestId('mirror-rights').getByRole('checkbox').check()
-  await found.getByRole('button', { name: `Mirror ${GH.owner}/${GH.name}` }).click()
-  await expect(step(page, 'github')).toHaveAttribute('data-state', 'done')
-  await expect(step(page, 'repo')).toHaveAttribute('data-state', 'active')
+  await found.getByRole('button', { name: /^Mirror / }).click()
   await expect(page.getByTestId('mirror-signin')).toBeVisible()
-  await shot(page, 'mirror-02-sign-in')
 })
 
 test('m2. signed in: repo, storage, runner key and workflow, with no write reaching Platform', async ({ browser }) => {
@@ -148,7 +203,9 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   })
   page.on('dialog', (d) => void d.accept())
   // The saved vault is captured right after sign-in, so every run starts with no progress.
-  await expect(step(page, 'github')).toHaveAttribute('data-state', 'active')
+  await expect(step(page, 'way')).toHaveAttribute('data-state', 'active')
+  await page.getByRole('radio', { name: /Yes: keep it in sync automatically/ }).check()
+  await step(page, 'way').getByRole('button', { name: 'Continue' }).click()
 
   // 1. GitHub.
   await checkGithub(page, `${GH.owner}/${GH.name}`)
@@ -169,6 +226,14 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   await expect(step(page, 'repo')).toContainText(`The e2e mirror source (mirror of github.com/${GH.owner}/${GH.name})`)
   await page.getByLabel('Forge repository name').fill(EMPTY.name)
   await existing.getByRole('button', { name: `Mirror into ${EMPTY.name}` }).click()
+
+  // The Action is optional. Later keeps a ready repo and owner-qualified CLI commands.
+  await expect(step(page, 'action')).toHaveAttribute('data-state', 'active')
+  await step(page, 'action').getByRole('button', { name: 'Later', exact: true }).click()
+  const ready = page.getByTestId('mirror-ready')
+  await expect(ready).toBeVisible()
+  await expect(ready).toContainText(`--repo ${EMPTY.owner}/${EMPTY.name}`)
+  await ready.getByRole('button', { name: 'Set up the Action', exact: true }).click()
 
   // 3. Storage: an R2 bucket added through the storage wizard, then picked for the mirror.
   await expect(step(page, 'storage')).toHaveAttribute('data-state', 'active')
@@ -219,9 +284,10 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   expect(broadcasts, 'the identity update was attempted, and stopped in the browser').toBeGreaterThan(0)
   await expect(key.getByText(/Key \d+ is on your identity/)).toHaveCount(0)
   // A key made with dg instead.
-  await key.getByRole('button', { name: /I have a runner key already/ }).click()
+  await key.getByRole('radio', { name: 'Add DASH_FORGE_KEY yourself', exact: true }).check()
   await expect(key).toContainText('dg auth export --new-key --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1')
-  await key.getByRole('button', { name: 'I added DASH_FORGE_KEY myself' }).click()
+  await expect(key).toContainText(`--network ${E2E_NETWORK}${E2E_NETWORK === 'devnet' ? ` --devnet-name ${E2E_DEVNET}` : ''}`)
+  await key.getByRole('button', { name: 'I added DASH_FORGE_KEY', exact: true }).click()
 
   // 5. The workflow file and its secrets. The reloaded tab holds only its signing key: the
   // bucket's settings (sealed in the vault) open with the passphrase first.

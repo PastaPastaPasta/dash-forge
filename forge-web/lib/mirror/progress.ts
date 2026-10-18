@@ -19,7 +19,12 @@ export interface RunnerKeyRecord {
   readonly saved: boolean
 }
 
+export type MirrorWay = 'action' | 'cli'
+
 export interface MirrorProgress {
+  readonly way: MirrorWay | null
+  /** Null until asked, false for now, true for later. */
+  readonly actionLater: boolean | null
   readonly github: GithubRepo | null
   /**
    * The person ticked the rights acknowledgement for this GitHub repository (LEG-10): the
@@ -45,6 +50,8 @@ export interface MirrorProgress {
 }
 
 export const EMPTY_PROGRESS: MirrorProgress = {
+  way: null,
+  actionLater: null,
   github: null,
   rightsAcknowledged: false,
   repo: null,
@@ -84,8 +91,9 @@ export function withAnswer(p: MirrorProgress, patch: Partial<MirrorProgress>): M
  * identity's answers). A repository checked before signing in wins over a saved one.
  */
 export function resumed(now: MirrorProgress, saved: MirrorProgress | null, openedAt: number): MirrorProgress {
-  if (saved === null) return { ...EMPTY_PROGRESS, github: now.github, rightsAcknowledged: now.github !== null && now.rightsAcknowledged, startedAt: now.github !== null && now.startedAt ? now.startedAt : openedAt }
-  return now.github !== null ? withAnswer(saved, now.rightsAcknowledged ? { github: now.github, rightsAcknowledged: true } : { github: now.github }) : saved
+  if (saved === null) return { ...EMPTY_PROGRESS, way: now.way, github: now.github, rightsAcknowledged: now.github !== null && now.rightsAcknowledged, startedAt: now.github !== null && now.startedAt ? now.startedAt : openedAt }
+  const picked = now.way === null ? saved : withAnswer(saved, { way: now.way })
+  return now.github !== null ? withAnswer(picked, now.rightsAcknowledged ? { github: now.github, rightsAcknowledged: true } : { github: now.github }) : picked
 }
 
 /**
@@ -105,7 +113,12 @@ const key = (networkKey: string, identityId: string): string => `mirror-wizard:$
 /** The saved progress, or null. A record from an older shape is filled in with the defaults. */
 export async function loadMirrorProgress(networkKey: string, identityId: string): Promise<MirrorProgress | null> {
   const v = await idbGet<MirrorProgress>('journal', key(networkKey, identityId))
-  return v && typeof v === 'object' && 'startedAt' in v ? { ...EMPTY_PROGRESS, ...v } : null
+  if (!v || typeof v !== 'object' || !('startedAt' in v)) return null
+  const progress = { ...EMPTY_PROGRESS, ...v }
+  if (!('way' in v) && progress.github !== null && progress.rightsAcknowledged) {
+    return { ...progress, way: 'action', actionLater: progress.runnerKey !== null || progress.storage !== null || progress.workflowAdded ? false : null }
+  }
+  return progress
 }
 
 export function saveMirrorProgress(networkKey: string, identityId: string, progress: MirrorProgress): Promise<void> {

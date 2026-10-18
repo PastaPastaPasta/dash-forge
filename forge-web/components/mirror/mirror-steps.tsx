@@ -5,7 +5,7 @@
  * their answers). Each step settles one fact and reports it with `onDone`.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { AlertTriangle, CheckCircle2, ExternalLink, GitFork, Loader2, Plus } from 'lucide-react'
 import Link from 'next/link'
@@ -21,20 +21,28 @@ import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { Hint, LinkButton, linkButtonClass } from '@/components/mirror/step-card'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
+import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import type { StorageConfigState } from '@/hooks/use-storage-config'
 import { ACTIVE_NETWORK } from '@/lib/constants'
+import { DOCS } from '@/lib/docs-links'
+import { dgNetworkFlags } from '@/lib/view/repo-commands'
+import { MIRROR_NAMED_PAGES, reposNamed } from '@/lib/view/discovery'
+import { matchUpstream } from '@/lib/view/upstream-alias'
 import type { ForgeIds } from '@/lib/deployments'
 import { parseDashAmount } from '@/lib/auth'
 import { createRepo, normalizeRepoName, previewRepoCreate, readRefs, branchesOf, tagsOf, resolveAnyRepoWith, type CreateRepoStep, type RepoCreationFirsts } from '@/lib/repo'
 import { CREDITS_PER_DASH, KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits } from '@/lib/sdk'
 import { corsFix, PLATFORM_PROFILE, type StorageProfile } from '@/lib/storage'
-import { creditsAsDash, formatDate, plural } from '@/lib/view/format'
+import { creditsAsDash, formatDate, plural, shortIdentity } from '@/lib/view/format'
 import {
   DASH_FORGE_REPO,
   PLATFORM_STORAGE,
   RUNNER_KEY_DEFAULTS,
   checkGithubRepo,
+  GithubCheckError,
+  mirrorCliCommands,
+  type MirrorCliSettings,
   costCapProblem,
   ACTION_COST_CAP,
   defaultCostCap,
@@ -57,7 +65,7 @@ import {
   type MirrorStorage,
   type UsableMirrorStorage,
 } from '@/lib/mirror/wizard'
-import { refsFingerprint, type MirrorProgress, type RunnerKeyRecord } from '@/lib/mirror/progress'
+import { refsFingerprint, type MirrorProgress, type MirrorWay, type RunnerKeyRecord } from '@/lib/mirror/progress'
 import { cn, errorMessage } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
 
@@ -82,36 +90,43 @@ function mib(kib: number): string {
 // 1. GitHub repository
 // ---------------------------------------------------------------------------
 
-export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; onDone: (repo: GithubRepo) => void }): JSX.Element {
-  const [text, setText] = useState(initial ? `${initial.owner}/${initial.name}` : '')
+export function GithubStep({ initial, way = 'action', prefill = null, settled = true, onDone }: {
+  initial: GithubRepo | null
+  way?: MirrorWay
+  prefill?: string | null
+  settled?: boolean
+  onDone: (repo: GithubRepo) => void
+}): JSX.Element {
+  const [text, setText] = useState(initial ? `${initial.owner}/${initial.name}` : prefill ?? '')
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [privateSource, setPrivateSource] = useState(false)
   const [found, setFound] = useState<GithubRepo | null>(initial)
-  // The rights acknowledgement is per repository checked: another check asks again (LEG-10).
   const [acknowledged, setAcknowledged] = useState(false)
-  // `/mirror/?repo=owner/name` (from a GitHub address with no mirror yet) fills the box in, after
-  // hydration so the static page and the first client render agree.
-  useEffect(() => {
-    if (initial !== null) return
-    const wanted = new URLSearchParams(window.location.search).get('repo')
-    if (wanted) setText((t) => (t === '' ? wanted : t))
-    // Once, on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const check = async (): Promise<void> => {
+  const autoChecked = useRef(false)
+  const check = useCallback(async (input: string): Promise<void> => {
     setError(null)
+    setPrivateSource(false)
     setFound(null)
     setAcknowledged(false)
     setChecking(true)
     try {
-      setFound(await checkGithubRepo(parseGithubRepo(text)))
+      setFound(await checkGithubRepo(parseGithubRepo(input)))
     } catch (e) {
       setError(errorMessage(e))
+      setPrivateSource(e instanceof GithubCheckError && (e.kind === 'private' || e.kind === 'not-found'))
     } finally {
       setChecking(false)
     }
-  }
+  }, [])
+
+  // A URL checks only after auth and saved progress settle, and never answers the step.
+  useEffect(() => {
+    if (!settled || initial !== null || !prefill || autoChecked.current) return
+    autoChecked.current = true
+    setText(prefill)
+    void check(prefill)
+  }, [settled, initial, prefill, check])
 
   return (
     <>
@@ -119,7 +134,7 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
         className="flex flex-col gap-2 sm:flex-row sm:items-end"
         onSubmit={(e) => {
           e.preventDefault()
-          void check()
+          void check(text)
         }}
       >
         <div className="min-w-0 flex-1">
@@ -133,6 +148,9 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
       </form>
       <Hint>Public repositories only. Asked from your browser, anonymously: no GitHub sign-in, and nothing passes through a Forge server (there is none).</Hint>
       {error ? <Hint tone="danger">{error}</Hint> : null}
+      {way === 'cli' && privateSource ? (
+        <Hint>Private on GitHub? This page can&apos;t check it. <a href={DOCS.mirrorPrivate} className="underline">The guide shows how to copy one into a private Forge repo.</a></Hint>
+      ) : null}
       {found ? (
         <div className="space-y-3 rounded-md border border-verify/30 bg-verify/5 p-3" data-testid="mirror-github-found">
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-dense">
@@ -147,16 +165,31 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
           {found.sizeKib === 0 ? <Hint tone="caution">GitHub reports it as empty: the first run has nothing to push until something is pushed there.</Hint> : null}
           <LicenseLine repo={found} />
           <Hint>{LFS_NOTE}</Hint>
-          <label className="flex items-start gap-2 text-dense" data-testid="mirror-rights">
+          <AlreadyMirrored github={found} />
+          {way === 'action' ? <label className="flex items-start gap-2 text-dense" data-testid="mirror-rights">
             <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={acknowledged} onChange={(e) => setAcknowledged(e.target.checked)} />
             <span>{RIGHTS_ACKNOWLEDGEMENT}</span>
-          </label>
-          <Button variant="primary" disabled={!acknowledged} onClick={() => onDone(found)}>
-            Mirror {found.owner}/{found.name}
+          </label> : null}
+          <Button variant="primary" disabled={way === 'action' && !acknowledged} onClick={() => onDone(found)}>
+            {way === 'cli' ? 'Continue' : `Mirror ${found.owner}/${found.name}`}
           </Button>
         </div>
       ) : null}
     </>
+  )
+}
+
+/** A mirror claim is information, never a reason to stop someone making their own copy. */
+function AlreadyMirrored({ github }: { github: GithubRepo }): JSX.Element | null {
+  const { sdk, network } = useSdk()
+  const found = useAsync(() => reposNamed(sdk!, github.name.toLowerCase(), { network, pages: MIRROR_NAMED_PAGES }), [sdk !== null, network, github.owner, github.name], { enabled: sdk !== null })
+  const match = found.data ? matchUpstream(github.owner, github.name, found.data) : null
+  if (!match || match.mirrors.length === 0) return null
+  return (
+    <Hint>
+      {match.partial ? 'At least ' : ''}{match.mirrors.length} Forge repos say they mirror github.com/{github.owner}/{github.name}.{' '}
+      <Link href={`/github.com/${github.owner}/${github.name}/`} className="underline">See them</Link>. Anyone can keep their own copy.
+    </Hint>
   )
 }
 
@@ -389,7 +422,7 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
           <span>
             <span className="font-medium">Dash Platform</span>{' '}
             <span className="text-anvil-500 dark:text-anvil-400">
-              nothing to set up; permanent; about {PUSH_COST_DASH.perMib} DASH per MiB
+              nothing to set up · permanent · about {PUSH_COST_DASH.perMib} DASH per MiB
               {github.sizeKib > 0 ? `, so about ${platformDash < 0.01 ? '0.01' : platformDash.toFixed(2)} DASH for this repository's first push` : ''}
             </span>
           </span>
@@ -415,7 +448,7 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
           <summary className="cursor-pointer font-medium">CORS for {cors.bucket}: needed for the web to read it</summary>
           <p className="my-2 text-[12px] text-anvil-500 dark:text-anvil-400">{cors.where}</p>
           <CopyBlock text={cors.text} label="Copy the CORS policy" />
-          <Hint>The Action itself needs no CORS; readers of the mirror in a browser do. The storage test checks it.</Hint>
+          <Hint>The Action itself needs no CORS. Readers of the mirror in a browser do. The storage test checks it.</Hint>
         </details>
       ) : null}
 
@@ -436,6 +469,7 @@ export function KeyStep({
   record,
   secret,
   suggestedBudget,
+  onMakingChange,
   onCreated,
   onDone,
 }: {
@@ -444,6 +478,7 @@ export function KeyStep({
   record: RunnerKeyRecord | null
   /** The budget to start from (more than the default when the mirror stores packs on Platform). */
   suggestedBudget: string
+  onMakingChange?: (making: boolean) => void
   /** The new key's `dfk1:` value, while this tab holds it (it is never stored). */
   secret: string | null
   onCreated: (record: RunnerKeyRecord, secret: string) => void
@@ -457,7 +492,8 @@ export function KeyStep({
   const [days, setDays] = useState(String(RUNNER_KEY_DEFAULTS.days))
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
-  const [otherWay, setOtherWay] = useState(false)
+  const [keyWay, setKeyWay] = useState<'make' | 'own'>('make')
+  useEffect(() => onMakingChange?.(keyWay === 'make'), [keyWay, onMakingChange])
 
   let credits: bigint | null = null
   let budgetError: string | null = null
@@ -498,7 +534,7 @@ export function KeyStep({
             Secret name: <span className="font-mono">DASH_FORGE_KEY</span>
           </p>
           <SecretValue label="the DASH_FORGE_KEY value" value={secret} />
-          <Hint tone="caution">Shown once: it is not stored in this browser. Copy it into GitHub now; if it is lost, make another.</Hint>
+          <Hint tone="caution">Shown once: it is not stored in this browser. Copy it into GitHub now. If it is lost, make another.</Hint>
         </div>
         <div className="flex flex-wrap gap-2">
           <LinkButton href={newSecretUrl(github)} testId="mirror-secret-link">
@@ -521,48 +557,55 @@ export function KeyStep({
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
         The Action signs with its own key. If it leaks, it can spend at most its budget, only on Forge, and only until it expires. Dash Platform enforces those limits.
       </p>
-      {record && record.keyId >= 0 ? (
-        <Hint tone="caution">
-          Key {record.keyId} was made earlier and shown once. If it is not saved in GitHub, make another here (key {record.keyId} then signs nothing: nobody holds it).
-        </Hint>
-      ) : null}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div>
-          <Field label="Budget (DASH)" htmlFor="runner-budget" hint="The most the key can ever spend.">
-            <Input id="runner-budget" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={budgetError !== null} />
-          </Field>
-          {budgetError ? <Hint tone="danger">{budgetError}</Hint> : null}
+      <fieldset className="flex flex-wrap gap-4">
+        <legend className="sr-only">Runner key</legend>
+        <label className="flex items-center gap-2 text-dense">
+          <input type="radio" name="mirror-key-way" checked={keyWay === 'make'} onChange={() => setKeyWay('make')} className="accent-forge-700" /> Make one here
+        </label>
+        <label className="flex items-center gap-2 text-dense">
+          <input type="radio" name="mirror-key-way" checked={keyWay === 'own'} onChange={() => setKeyWay('own')} className="accent-forge-700" /> Add DASH_FORGE_KEY yourself
+        </label>
+      </fieldset>
+      {keyWay === 'own' ? (
+        <div className="space-y-2">
+          <Hint>Sign dg in as {shortIdentity(identity)} first. A key of another identity needs its own access to this repo.</Hint>
+          <CopyRow text={`dg auth export --new-key --budget ${RUNNER_KEY_DEFAULTS.budgetDash} --expires ${RUNNER_KEY_DEFAULTS.days}d --format dfk1 --reveal-secrets -o runner.dfk1 ${dgNetworkFlags(ACTIVE_NETWORK)}`} label="Copy the dg auth export command" />
+          <Hint>The file&apos;s one line is the secret. Paste it as DASH_FORGE_KEY, then delete the file.</Hint>
+          <Button variant="outline" onClick={() => onDone({ keyId: -1, budgetCredits: '0', expiresAt: 0, saved: true })}>I added DASH_FORGE_KEY</Button>
         </div>
-        <div>
-          <Field label="Expires after (days)" htmlFor="runner-days" hint={`Until ${formatDate(until)}.`}>
-            <Input id="runner-days" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={daysError !== null} />
-          </Field>
-          {daysError ? <Hint tone="danger">Pick {daysError}.</Hint> : null}
-        </div>
-      </div>
-      {master.element}
-      <CostPreview cost={fee} />
-      <Hint>The fee registers the key; its budget is a cap, not a charge. Your master key signs this one update and is not stored.</Hint>
-      {tooPoor ? <Hint tone="caution">Your identity&apos;s balance is below the fee. Top it up first.</Hint> : null}
-      {master.error ? <Hint tone="danger">{master.error}</Hint> : null}
-      {error ? <Hint tone="danger">{error}</Hint> : null}
-      <Button variant="primary" loading={isLoading} disabled={!master.ready || credits === null || daysError !== null || tooPoor} onClick={() => void create()}>
-        Sign once &amp; create the runner key
-      </Button>
-      <div className="border-t border-anvil-100 pt-3 dark:border-anvil-850">
-        <button type="button" className="text-dense text-forge-700 underline-offset-2 hover:underline dark:text-forge-400" aria-expanded={otherWay} onClick={() => setOtherWay(!otherWay)}>
-          I have a runner key already, or I&apos;ll make one with dg
-        </button>
-        {otherWay ? (
-          <div className="mt-2 space-y-2">
-            <CopyRow text={`dg auth export --new-key --budget ${RUNNER_KEY_DEFAULTS.budgetDash} --expires ${RUNNER_KEY_DEFAULTS.days}d --format dfk1 --reveal-secrets -o runner.dfk1`} label="Copy the dg auth export command" />
-            <Hint>The file&apos;s one line is the secret. Paste it as DASH_FORGE_KEY, then delete the file.</Hint>
-            <Button variant="outline" onClick={() => onDone({ keyId: -1, budgetCredits: '0', expiresAt: 0, saved: true })}>
-              I added DASH_FORGE_KEY myself
-            </Button>
+      ) : (
+        <div className="space-y-3">
+          <Hint>Signed in with a wallet? Add DASH_FORGE_KEY yourself with dg.</Hint>
+          {record && record.keyId >= 0 ? (
+            <Hint tone="caution">
+              Key {record.keyId} was made earlier and shown once. If it is not saved in GitHub, make another here (key {record.keyId} then signs nothing: nobody holds it).
+            </Hint>
+          ) : null}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Field label="Budget (DASH)" htmlFor="runner-budget" hint="The most the key can ever spend.">
+                <Input id="runner-budget" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={budgetError !== null} />
+              </Field>
+              {budgetError ? <Hint tone="danger">{budgetError}</Hint> : null}
+            </div>
+            <div>
+              <Field label="Expires after (days)" htmlFor="runner-days" hint={`Until ${formatDate(until)}.`}>
+                <Input id="runner-days" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={daysError !== null} />
+              </Field>
+              {daysError ? <Hint tone="danger">Pick {daysError}.</Hint> : null}
+            </div>
           </div>
-        ) : null}
-      </div>
+          {master.element}
+          <CostPreview cost={fee} />
+          <Hint>The fee registers the key. Its budget is a cap, not a charge. Your master key signs this one update and is not stored.</Hint>
+          {tooPoor ? <Hint tone="caution">Your identity&apos;s balance is below the fee. Top it up first.</Hint> : null}
+          {master.error ? <Hint tone="danger">{master.error}</Hint> : null}
+          {error ? <Hint tone="danger">{error}</Hint> : null}
+          <Button variant="primary" loading={isLoading} disabled={!master.ready || credits === null || daysError !== null || tooPoor} onClick={() => void create()}>
+            Sign once &amp; create the runner key
+          </Button>
+        </div>
+      )}
     </>
   )
 }
@@ -681,12 +724,12 @@ export function WorkflowStep({
             {capError ? <Hint tone="danger">{capError}</Hint> : null}
             {overBudget && runnerKey ? (
               <Hint tone="caution">
-                More than the runner key&apos;s whole budget ({creditsAsDash(Number(runnerKey.budgetCredits))} DASH): a run that needs it stops when the key runs out. Make a key with a larger budget in step 4.
+                More than the runner key&apos;s whole budget ({creditsAsDash(Number(runnerKey.budgetCredits))} DASH): a run that needs it stops when the key runs out. Make a key with a larger budget in the runner key step.
               </Hint>
             ) : null}
           </div>
           <div>
-            <Field label="Dash Forge commit" htmlFor="mirror-commit" hint={BUILD_COMMIT ? 'The commit this site was built from.' : 'The latest on master; pin one you have reviewed.'}>
+            <Field label="Dash Forge commit" htmlFor="mirror-commit" hint={BUILD_COMMIT ? 'The commit this site was built from.' : 'The latest on master. Pin one you have reviewed.'}>
               <Input id="mirror-commit" value={commit} onChange={(e) => setCommit(e.target.value)} className="font-mono text-[12px]" spellCheck={false} autoComplete="off" />
             </Field>
             {master.error && commit === '' ? <Hint tone="danger">Could not read the latest commit from GitHub: {master.error}. Paste one.</Hint> : null}
@@ -842,7 +885,7 @@ export function WaitStep({
         <Loader2 className="h-4 w-4 animate-spin text-forge-600" aria-hidden /> Waiting for the first mirror run to push to <span className="font-mono">{repo.name}</span>…
       </p>
       <Hint>
-        Checking Platform every {POLL_MS / 1000} s{progress.startedAt > 0 ? `; ${minutes(now - progress.startedAt)} since you opened this page` : ''}. The first run compiles Dash Forge&apos;s tools before it mirrors.
+        Checking Platform every {POLL_MS / 1000} s{progress.startedAt > 0 ? `, ${minutes(now - progress.startedAt)} since you opened this page` : ''}. The first run compiles Dash Forge&apos;s tools before it mirrors.
       </Hint>
       {sdk === null ? <Hint>Connecting to Dash Platform…</Hint> : null}
       {unchanged > 0 ? (
@@ -871,5 +914,126 @@ export function WaitStep({
         </ul>
       </details>
     </div>
+  )
+}
+
+/** The first answer determines which steps follow. */
+export function WayStep({ initial, onDone }: { initial: MirrorWay | null; onDone: (way: MirrorWay) => void }): JSX.Element {
+  const [way, setWay] = useState<MirrorWay>(initial ?? 'action')
+  return (
+    <>
+      <fieldset className="grid gap-3 sm:grid-cols-2">
+        <legend className="sr-only">Do you maintain the repo on GitHub?</legend>
+        {([
+          ['action', 'Yes: keep it in sync automatically', 'Needs write access on GitHub', 'A GitHub Action in the repo mirrors every push. Setting it up adds a workflow file and secrets to the GitHub repo.', 'You sign in here. The Action is optional: you can create the Forge repo now and add the Action later.'],
+          ['cli', 'No, or I want a one-time copy: use the command line', 'Anyone', 'dg import copies the repo from your computer. Run it again whenever you want the copy brought up to date.', 'This page signs nothing. dg signs and pays from your identity.'],
+        ] as const).map(([value, title, badge, body, foot]) => (
+          <label key={value} className={cn('flex cursor-pointer flex-col gap-3 rounded-md border p-3', way === value ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750')}>
+            <span className="flex items-start gap-2 text-dense font-medium">
+              <input type="radio" name="mirror-way" value={value} checked={way === value} onChange={() => setWay(value)} className="mt-1 accent-forge-700" />
+              {title}
+            </span>
+            <span className="w-fit rounded bg-surface-raised px-2 py-1 text-[12px] text-fg-muted">{badge}</span>
+            <span className="text-dense">{body}</span>
+            <span className="mt-auto text-[12px] text-fg-muted">{foot}</span>
+          </label>
+        ))}
+      </fieldset>
+      <Button variant="primary" onClick={() => onDone(way)}>Continue</Button>
+    </>
+  )
+}
+
+export function ActionStep({ onDone }: { onDone: (later: boolean) => void }): JSX.Element {
+  return (
+    <>
+      <p className="text-dense">Set up the Action now?</p>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" onClick={() => onDone(false)}>Set it up now</Button>
+        <Button variant="outline" onClick={() => onDone(true)}>Later</Button>
+      </div>
+      <Hint>Create the Action whenever you like. This page picks up where you stopped.</Hint>
+    </>
+  )
+}
+
+/** Shared by the public CLI path and the ready card's existing, owner-qualified repo. */
+export function CliStep({ github, settings, onSettings, ownerId }: {
+  github: GithubRepo
+  settings: MirrorCliSettings
+  onSettings: (settings: MirrorCliSettings) => void
+  ownerId?: string
+}): JSX.Element {
+  let nameError: string | null = null
+  try {
+    normalizeRepoName(settings.name)
+  } catch (e) {
+    nameError = errorMessage(e)
+  }
+  const capError = costCapProblem(settings.cap)
+  const commands = nameError === null && capError === null ? mirrorCliCommands({ github, ...settings, ownerId }) : null
+  const alias = `/github.com/${github.owner}/${github.name}/`
+  return (
+    <div className="space-y-4" data-testid="mirror-cli">
+      <fieldset className="space-y-3">
+        <legend className="mb-2 text-dense font-medium">Settings</legend>
+        <Field label="Forge repo name" htmlFor="mirror-cli-name">
+          <Input id="mirror-cli-name" value={settings.name} readOnly={ownerId !== undefined} onChange={(e) => onSettings({ ...settings, name: e.target.value })} className="font-mono" autoCapitalize="off" autoComplete="off" spellCheck={false} aria-invalid={nameError !== null} />
+        </Field>
+        {nameError ? <Hint tone="danger">{nameError}</Hint> : null}
+        <label className="flex items-start gap-2 text-dense">
+          <input type="checkbox" checked={settings.collab} onChange={(e) => onSettings({ ...settings, collab: e.target.checked })} className="mt-1 accent-forge-700" />
+          <span>Issues and pull requests too<span className="block text-[12px] text-fg-muted">Takes longer and costs more on a busy repo. Every issue, comment and review becomes a permanent public copy.</span></span>
+        </label>
+        <Field label="Spending cap (DASH)" htmlFor="mirror-cli-cap" hint="dg shows the estimate and asks before it writes. It stops before spending more than this.">
+          <Input id="mirror-cli-cap" value={settings.cap} onChange={(e) => onSettings({ ...settings, cap: e.target.value })} inputMode="decimal" className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
+        </Field>
+        {capError ? <Hint tone="danger">{capError}</Hint> : null}
+      </fieldset>
+      {commands ? (
+        <>
+          <section className="space-y-2" aria-label="Install and sign in">
+            <h3 className="text-dense font-medium">a. Once: install and sign in</h3>
+            <p className="text-dense">You need dg and git-remote-dash (<a href={DOCS.quickStart} className="underline">install</a>), and the GitHub CLI, logged in.</p>
+            {ownerId ? <Hint>Sign dg in as {shortIdentity(ownerId)} to fill this repo.</Hint> : null}
+            <CopyRow text={commands.login} label="Copy the dg sign-in command" />
+            <Hint>New to Dash? <code>{commands.newIdentity}</code> makes an identity.</Hint>
+            <CopyRow text={commands.githubLogin} label="Copy the GitHub sign-in command" />
+          </section>
+          <section className="space-y-2" aria-label="Copy the repo">
+            <h3 className="text-dense font-medium">b. Copy it</h3>
+            <CopyRow text={commands.copy} label="Copy the import command" />
+            <Hint>Your git data goes to Dash Platform unless you <a href={DOCS.storage} className="underline">set your own storage for dg first</a>.</Hint>
+            <CopyRow text={commands.storage} label="Copy the storage command" />
+            <Hint>If you already have a repo with this name, dg import writes into it and replaces its branches and tags.</Hint>
+          </section>
+          <section className="space-y-2" aria-label="Bring it up to date">
+            <h3 className="text-dense font-medium">c. Bring it up to date</h3>
+            <p className="text-dense">Run the same command again. It copies only what changed, and costs nothing when nothing changed. To run it on a schedule, see <a href={DOCS.mirrorKeepInSync} className="underline">Keep it in sync</a>.</p>
+          </section>
+          <p className="text-dense">When it&apos;s done: dg prints the repo&apos;s address. Copies with the GitHub name also appear at <Link href={alias} className="break-all text-forge-700 underline dark:text-forge-400">{alias}</Link>.</p>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+export function ReadyCard({ identity, github, repo, onSetup }: {
+  identity: string
+  github: GithubRepo
+  repo: { name: string }
+  onSetup: () => void
+}): JSX.Element {
+  const [settings, setSettings] = useState<MirrorCliSettings>({ name: repo.name, collab: false, cap: '0.2' })
+  return (
+    <li className="space-y-4 rounded-lg border border-verify/30 bg-white p-4 dark:bg-anvil-900" data-testid="mirror-ready">
+      <h2 className="text-prose">Your Forge repo is ready</h2>
+      <div className="flex flex-wrap gap-2">
+        <Link href={`/repo/?owner=${encodeURIComponent(identity)}&name=${encodeURIComponent(repo.name)}`} className={linkButtonClass(true)}>Open {repo.name}</Link>
+        <Button variant="outline" onClick={onSetup}>Set up the Action</Button>
+      </div>
+      <h3 className="text-dense font-medium">Fill it now from the command line</h3>
+      <CliStep github={github} settings={settings} onSettings={setSettings} ownerId={identity} />
+    </li>
   )
 }
