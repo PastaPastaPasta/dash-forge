@@ -282,7 +282,7 @@ export function MirrorWizard(): JSX.Element {
       <>
         <CliStep github={progress.github} settings={cliSettings} onSettings={setCli} />
         <div className="space-y-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
-          <button type="button" className="text-dense text-forge-700 underline dark:text-forge-400" onClick={() => update({ way: 'action' })}>Maintain it on GitHub? Keep it in sync automatically instead.</button>
+          <button type="button" className="inline-flex items-center text-left text-dense text-forge-700 underline dark:text-forge-400 coarse:min-h-11" onClick={() => update({ way: 'action' })}>Maintain it on GitHub? Keep it in sync automatically instead.</button>
           <div><Button variant="ghost" size="sm" onClick={restart}>Start over</Button></div>
         </div>
       </>

@@ -322,6 +322,8 @@ describe('GitHub links', () => {
   it('lists DASH_FORGE_KEY first, then the storage secrets', () => {
     expect(workflowSecrets(OPTIONS.storage).map((s) => s.name)).toEqual(['DASH_FORGE_KEY', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'])
     expect(workflowSecrets(PLATFORM_STORAGE).map((s) => s.name)).toEqual(['DASH_FORGE_KEY'])
+    // The runner key's step number depends on the path taken: the hint names no step.
+    expect(workflowSecrets(PLATFORM_STORAGE)[0]!.what).not.toMatch(/step \d/)
   })
 })
 
