@@ -13,6 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useUiStore } from '@/hooks/use-ui-store'
+import { FIAT_RATES_KEY, FIAT_SETTINGS_KEY } from '@/lib/fiat/store'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const EXPIRES = Date.UTC(2026, 11, 29)
@@ -53,6 +54,10 @@ afterEach(() => {
   act(() => useUiStore.getState().closeTopUp())
   act(() => root.unmount())
   host.remove()
+  localStorage.removeItem(FIAT_RATES_KEY)
+  localStorage.removeItem(FIAT_SETTINGS_KEY)
+  window.dispatchEvent(new StorageEvent('storage', { key: FIAT_RATES_KEY }))
+  window.dispatchEvent(new StorageEvent('storage', { key: FIAT_SETTINGS_KEY }))
 })
 
 describe('the top-up sheet', () => {
@@ -82,6 +87,21 @@ describe('the top-up sheet', () => {
     // The balance does not cap a key with less left than it (QW2-035).
     expect(q('[data-testid="key-funds-line"]')!.textContent).not.toMatch(/capped/)
     expect(q('[data-testid="top-up-coverage"]')!.textContent).toMatch(/covers about \d+\.$/)
+  })
+
+  it('puts fiat beside the issue price before describing how many issues the funds cover', () => {
+    localStorage.setItem(FIAT_RATES_KEY, JSON.stringify({ v: 1, source: 'ctx', fetchedAt: Date.now(), rates: { USD: 40 } }))
+    localStorage.setItem(FIAT_SETTINGS_KEY, JSON.stringify({ v: 1, enabled: true, currency: 'USD' }))
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: FIAT_RATES_KEY }))
+      window.dispatchEvent(new StorageEvent('storage', { key: FIAT_SETTINGS_KEY }))
+      useUiStore.getState().openTopUp()
+    })
+    const text = q('[data-testid="top-up-coverage"]')!.textContent
+    expect(text).toMatch(/^About [\d.]+ DASH \(≈ \$0\.05(?: on mainnet)?\) covers an issue; what you can spend now covers about \d+\.$/)
+    const budget = q('[data-testid="key-funds-line"]')!
+    expect(budget.querySelectorAll('[data-testid="fiat-note"]')).toHaveLength(1)
+    expect(budget.textContent).toContain('0.04 DASH (≈ $1.60')
   })
 
   // The test build reads the default network, testnet: its faucets show without NEXT_PUBLIC_FORGE_DEV (WEB-05).

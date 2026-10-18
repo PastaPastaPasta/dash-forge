@@ -15,11 +15,11 @@
  * unmounts, and the buttons are disabled while a run is active.
  */
 
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { PushCostText, PushStorageHint } from '@/components/ui/push-cost-text'
 import { FiatNote } from '@/components/ui/fiat-note'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
@@ -118,7 +118,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     resumeRef.current = el
   }, [])
   // Cleared as soon as a run starts (start() empties it).
-  const [discardWarning, setDiscardWarning] = useState<React.ReactNode>(null)
+  const [discardWarning, setDiscardWarning] = useState<ReactNode>(null)
   const { fields, protection, problem } = useProtection()
   const words = mnemonic?.split(' ') ?? []
   const run = useRef<AbortController | null>(null)
@@ -479,7 +479,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         <div className="space-y-3" data-testid="signin-failed">
           <ErrorBox error={error} />
           <p className="text-dense text-anvil-600 dark:text-anvil-300">
-            Discard this creation and start again: new words and a new deposit of at least 0.02 DASH.
+            Discard this creation and start again: new words and a new deposit of at least {MIN_DEPOSIT_DUFFS / 1e8} DASH<FiatNote dash={MIN_DEPOSIT_DUFFS / 1e8} />.
           </p>
           {discardWarning ? <p className="text-dense text-caution-700 dark:text-caution-400">{discardWarning}</p> : null}
           <Button variant="outline" className="w-full" onClick={discard}>

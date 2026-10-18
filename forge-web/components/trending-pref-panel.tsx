@@ -10,9 +10,9 @@
  * repo created inside the window, on read), so the panel says so instead of offering the toggle.
  */
 
+import { useState } from 'react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
-import { useState } from 'react'
 
 import { useStarShape } from '@/hooks/use-star-shape'
 import { ACTIVE_NETWORK } from '@/lib/constants'

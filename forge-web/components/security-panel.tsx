@@ -7,13 +7,13 @@
  * Off: every page load starts locked, and nothing is kept between them.
  */
 
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
 import { askToUnlockEveryVisit } from '@/lib/auth/vault'
 import { KEPT_IDLE_MS, KEPT_TTL_MS } from '@/lib/auth/session-resume'
 import { errorMessage } from '@/lib/utils'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const HOUR_MS = 60 * 60 * 1000
 

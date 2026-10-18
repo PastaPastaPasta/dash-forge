@@ -8,7 +8,6 @@
 import { COPY, MAKE_PUBLIC_TOTAL_STEPS, MakePublicError, type MakePublicCheck, type MakePublicMode, type MakePublicRef, type MakePublicStep } from '../repo/make-public'
 import { shortRef } from '../repo/ref-admin'
 import { errorMessage } from '../utils'
-import { aboutDash } from './audience'
 import { plural } from './format'
 
 /** How the dialog names each mode. */
@@ -106,11 +105,6 @@ export function staysPrivateLine(check: Pick<MakePublicCheck, 'census' | 'enviro
 /** Clients that can't read a repo made public. */
 export function oldClientsLine(minClientVersion: string): string {
   return `People on Forge older than ${minClientVersion} can't clone it until they update.`
-}
-
-/** The cost of a mode: its writes, plus the code's storage on Platform. */
-export function costLine(estimate: { readonly credits: number; readonly storageCredits: number }): string {
-  return `Costs about ${aboutDash(estimate.credits)}, plus storing the code: about ${aboutDash(estimate.storageCredits)} on Platform, or nothing extra with your own storage.`
 }
 
 /** E812 for one environment (DESIGN §10), and the commands that fix it. */

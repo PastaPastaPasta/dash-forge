@@ -13,10 +13,10 @@
  * refused before anything is signed: the change would leave them saved for the wrong people.
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useMemo, useState, type ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 import type { RepoHome } from '@/lib/view'
 import { previewCredits, type CostPreview } from '@/lib/sdk'
@@ -26,11 +26,12 @@ import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useEnvWriter, useEnvironments, useRepoPeople } from '@/hooks/use-environments'
 import { exposureFor } from '@/lib/env/loader'
 import { MemberChangeFailed, planMemberChange, planPins, runMemberChange, type MemberChange, type MemberChangeOutcome, type MemberEnvPlan } from '@/lib/env/member-change'
-import { branchLine, branchNoKeyLines, branchesNotUpdatedLines, letterOutcomeLine, notUpdatedLine, outcomeLine, pinLine, planHeadline } from '@/lib/env/plan-view'
+import { branchLineParts, branchNoKeyLines, branchesNotUpdatedLines, letterOutcomeLine, notUpdatedLine, outcomeLine, pinLine, planHeadlineParts } from '@/lib/env/plan-view'
 import { exposureLine, unreadableLine } from '@/lib/env/view'
 import type { Exposure } from '@/lib/env'
 import { EnvChangeDialog, type EnvChangeMode } from '@/components/repo/environment-editor'
 import { Button } from '@/components/ui/button'
+import { creditsAsDash } from '@/lib/view/format'
 import { shortId } from '@/lib/utils'
 
 /** How the page names an identity in a sentence. */
@@ -207,11 +208,11 @@ export function MemberEnvPlanView({ flow }: { flow: MemberEnvFlow }): JSX.Elemen
     <WithNames
       ids={idsOf(plan, null)}
       use={(name) => {
-        const headline = planHeadline(plan, name)
+        const headline = planHeadlineParts(plan, name)
         const who = name(plan.change.member)
         return (
           <div className="space-y-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="member-env-plan">
-            {headline !== null ? <p data-testid="member-env-headline">{headline}<FiatNote dash={creditsToDash(plan.credits)} /></p> : null}
+            {headline !== null ? <p data-testid="member-env-headline">{headline.before}{creditsAsDash(headline.credits)} DASH<FiatNote dash={creditsToDash(headline.credits)} />{headline.after}</p> : null}
             {pins.length > 0 ? (
               <ul className="list-disc space-y-1 pl-5 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="member-env-pins">
                 {pins.map((p, i) => (
@@ -228,16 +229,19 @@ export function MemberEnvPlanView({ flow }: { flow: MemberEnvFlow }): JSX.Elemen
             ) : null}
             {branches.length > 0 ? (
               <ul className="list-disc space-y-1 pl-5 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="member-branch-letters">
-                {branches.map((b) => (
-                  <li key={b.name}>
-                    {branchLine(b, name)}<FiatNote dash={creditsToDash(b.credits)} />
-                    {branchNoKeyLines(b, name).map((l) => (
-                      <span key={l} className="block text-caution-700 dark:text-caution-400">
-                        {l}
-                      </span>
-                    ))}
-                  </li>
-                ))}
+                {branches.map((b) => {
+                  const cost = branchLineParts(b, name)
+                  return (
+                    <li key={b.name}>
+                      {cost.before}{creditsAsDash(cost.credits)} DASH<FiatNote dash={creditsToDash(cost.credits)} />{cost.after}
+                      {branchNoKeyLines(b, name).map((l) => (
+                        <span key={l} className="block text-caution-700 dark:text-caution-400">
+                          {l}
+                        </span>
+                      ))}
+                    </li>
+                  )
+                })}
               </ul>
             ) : null}
             {branchNotes.length > 0 ? (

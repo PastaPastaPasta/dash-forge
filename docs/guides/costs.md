@@ -298,7 +298,6 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 - **The Mirror Action** has a per-run `cost-cap` (0.05 DASH by default) and reports what each run spent in the job summary.
 - **`dg cost audit`** totals what an identity has spent on Forge, from proved document counts (not a local ledger — see [above](#what-each-action-costs)); `--since` narrows the window, `--json` for scripting.
 
-
 ## Prices in the web app
 
 **Settings → Prices** chooses the currency shown beside DASH costs and can turn prices off.
@@ -309,3 +308,7 @@ an available rate it shows DASH alone. Providers see your IP address, standard b
 and that the request comes from this site. Turning prices off stops rate requests. On test
 networks, costs say “on mainnet”; free test balances have no cash value and get no fiat figure.
 Settings → Spend values use today's price, rather than the price when the write happened.
+
+The CLI still uses the fixed US$30 per DASH estimate described above until live CLI rates land.
+Rates have no refresh timer: an idle page rechecks expiry when rendered or made visible again;
+the “updated” age changes on render.

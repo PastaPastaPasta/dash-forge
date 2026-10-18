@@ -20,11 +20,11 @@
  * The caller mounts this only while it is open: closing drops what was typed or given.
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { CheckCircle2, Copy, Loader2, XCircle } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'

@@ -6,9 +6,9 @@
  * browser's storage is kept (TS-17).
  */
 
-import { KeyBudgetText } from '@/components/funds-summary'
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, HardDrive, KeyRound, LifeBuoy, Pencil, ShieldOff } from 'lucide-react'
+import { KeyBudgetText } from '@/components/funds-summary'
 import { useAuth } from '@/contexts/auth-context'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'

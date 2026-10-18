@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test'
+import { openSignIn } from './helpers'
 import { FIAT_PROVIDER_HOSTS } from '../lib/fiat/providers'
 
+// Requires a build with NEXT_PUBLIC_FIAT_RATE_URL=/__e2e/fiat-rates.json, including when
+// E2E_SKIP_BUILD=1 reuses an existing build; plain pnpm build output cannot run this spec.
 // Read-only and independent of Platform fixtures: all egress is served locally or aborted.
 test.beforeEach(async ({ page, baseURL }) => {
   await page.route('**/*', (route) => {
@@ -34,7 +37,7 @@ test('costs show their mainnet equivalent and follow the selected currency', asy
   await page.evaluate(() => localStorage.removeItem('forge:fiat-rates:v1'))
   rates.length = 0
   await page.goto('/start/')
-  await expect(page.getByRole('heading', { name: 'Getting started' })).toBeVisible()
+  await openSignIn(page, page.getByTestId('tile-import'))
   await expect(page.getByTestId('fiat-note')).toHaveCount(0)
   expect(rates).toEqual([])
 })
@@ -51,7 +54,7 @@ test('prices off before hydration makes no rate request', async ({ page }) => {
   await page.goto('/settings/')
   await expect(page.getByTestId('fiat-enabled')).not.toBeChecked()
   await page.goto('/start/')
-  await expect(page.getByRole('heading', { name: 'Getting started' })).toBeVisible()
+  await openSignIn(page, page.getByTestId('tile-import'))
   await expect(page.getByTestId('fiat-note')).toHaveCount(0)
   expect(requests).toEqual([])
 })

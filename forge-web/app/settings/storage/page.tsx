@@ -2,7 +2,6 @@
 
 /** `/settings/storage` — bring your own storage (`ux-dx-spec.md` §3.1). */
 
-import { FiatNote } from '@/components/ui/fiat-note'
 import Link from 'next/link'
 import { HardDrive, MonitorSmartphone } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
@@ -11,6 +10,7 @@ import { EmptyState } from '@/components/ui/states'
 import { StorageWizard } from '@/components/storage/storage-wizard'
 import { useAuth } from '@/contexts/auth-context'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 export default function StorageSettingsPage(): JSX.Element {
   const { identity } = useAuth()

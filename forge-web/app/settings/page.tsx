@@ -5,10 +5,9 @@
  * Appearance and the IPFS gateways are this browser's own, so they show signed out too.
  */
 
-import { PricesPanel } from '@/components/prices-panel'
-import { FiatNote } from '@/components/ui/fiat-note'
 import Link from 'next/link'
 import { Lock, Wallet } from 'lucide-react'
+import { PricesPanel } from '@/components/prices-panel'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { EmptyState } from '@/components/ui/states'
@@ -32,6 +31,7 @@ import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash } from '@/lib/view/format'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NOTIFY_URL } from '@/lib/notify/config'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 export default function SettingsPage(): JSX.Element {
   const { identity, balance, locked } = useAuth()
@@ -89,8 +89,7 @@ export default function SettingsPage(): JSX.Element {
             action={<SignInButton />}
           />
           {appearance}
-
-        {prices}
+          {prices}
           {gateways}
           {quorumService}
         </div>

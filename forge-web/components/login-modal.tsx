@@ -19,12 +19,12 @@
  * deployed".
  */
 
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import Link from 'next/link'
+import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { PushCostText } from '@/components/ui/push-cost-text'
 import { FiatNote } from '@/components/ui/fiat-note'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
-import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
@@ -253,7 +253,7 @@ function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number
 }
 
 /** The sheet's description line for a view. */
-function describeView(view: View, limitedKeys: boolean): React.ReactNode {
+function describeView(view: View, limitedKeys: boolean): ReactNode {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet sends this browser a key it derives for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
@@ -370,7 +370,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
       ) : null}
       {walletFirst ? walletTile : null}
       <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet." onClick={() => onPick('create')} pausedReason={pausedReason} />
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.</p>
+      <p data-testid="tile-create-cost" className="text-[12px] text-anvil-500 dark:text-anvil-400">About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.</p>
       <Tile
         testId="tile-import"
         icon={Upload}

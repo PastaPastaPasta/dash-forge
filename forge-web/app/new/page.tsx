@@ -21,7 +21,6 @@
  * On a network without forge-v2 the page shows "not deployed".
  */
 
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Check, Globe, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
@@ -69,6 +68,7 @@ import type { Visibility } from '@/lib/rules/v2'
 import { errorMessage } from '@/lib/utils'
 import { PRIVATE_BROWSER_LIMITS } from '@/lib/view/private-limits'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: string }[] = [
   { step: 'repo', label: 'The repo' },
@@ -388,7 +388,7 @@ export default function NewRepoPage(): JSX.Element {
               />
               <div className="min-w-0">
                 <label htmlFor="repo-members-only" className="text-dense font-medium">
-                  Turn on members-only content now <span className="font-normal text-anvil-500 dark:text-anvil-400">(about {aboutDash(MEMBERS_ONLY_CREDITS)}<FiatNote dash={creditsToDash(MEMBERS_ONLY_CREDITS)} />)</span>
+                  Turn on members-only content now <span className="font-normal text-anvil-500 dark:text-anvil-400">(about {aboutDash(MEMBERS_ONLY_CREDITS)}<FiatNote dash={creditsToDash(MEMBERS_ONLY_CREDITS)} variant="bare" prefix=", " />)</span>
                 </label>
                 <p id="repo-members-only-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
                   {keyMissing ? (

@@ -40,11 +40,11 @@ export function KeyFundsLine({ className }: { className?: string }): JSX.Element
   )
 }
 
-/** Both amounts are caps on spending, even on a test network. */
+/** Price the remaining budget once, including its mainnet equivalent on test networks. */
 export function KeyBudgetText({ remaining, total }: { remaining: bigint | null; total: bigint | null }): JSX.Element | null {
   if (total === null) return null
   return <>
-    {remaining === null ? '?' : <>{creditsAsDash(Number(remaining))} DASH<FiatNote dash={creditsToDash(Number(remaining))} kind="bound" /></>}
-    {' of '}{creditsAsDash(Number(total))} DASH<FiatNote dash={creditsToDash(Number(total))} kind="bound" />
+    {remaining === null ? '?' : <>{creditsAsDash(Number(remaining))} DASH<FiatNote dash={creditsToDash(Number(remaining))} /></>}
+    {' of '}{creditsAsDash(Number(total))} DASH
   </>
 }

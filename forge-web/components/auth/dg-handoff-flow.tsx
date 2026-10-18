@@ -10,7 +10,6 @@
  * closes or once a reply was opened: a reply only opens in the tab that asked for it.
  */
 
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -24,6 +23,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
 import { handoffCommand, handoffRequest, type HandoffRequest } from '@/lib/auth/key-handoff'
 import { errorMessage } from '@/lib/utils'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 /** A key this browser holds, which the new key replaces (disabled in the same update). */
 export interface HandoffTarget {

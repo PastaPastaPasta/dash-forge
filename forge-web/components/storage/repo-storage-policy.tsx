@@ -7,7 +7,6 @@
  * (the CLI keeps its equivalent in git config, `dash.storage`).
  */
 
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 import Link from 'next/link'
 import { HardDrive } from 'lucide-react'
@@ -17,6 +16,7 @@ import { useStorageConfig } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { PUSH_COST_DASH } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 export function RepoStoragePolicy({
   repoId,

@@ -35,7 +35,7 @@ export function accessOf(plan: MemberEnvPlan): { readonly gains: string[]; reado
  * The plan's headline (DESIGN §10): "Adding dana as a writer gives them access to 2 environments:
  * staging, ci. Saving them again costs about 0.004 DASH." `null` when it saves nothing.
  */
-export function planHeadline(plan: MemberEnvPlan, name: Name): string | null {
+export function planHeadlineParts(plan: MemberEnvPlan, name: Name): { before: string; credits: number; after: string } | null {
   const saves = planPins(plan).length
   if (saves === 0) return null
   const who = name(plan.change.member)
@@ -49,8 +49,14 @@ export function planHeadline(plan: MemberEnvPlan, name: Name): string | null {
   if (loses.length > 0) {
     parts.push(`${who} can no longer read ${loses.length === 1 ? loses[0] : `${count(loses.length, 'environment')} (${list(loses)})`} once it's saved again without them.`)
   }
-  parts.push(`Saving ${saves === 1 ? 'it' : `${count(saves, 'environment')}`} again costs about ${creditsAsDash(plan.credits)} DASH.`)
-  return parts.join(' ')
+  parts.push(`Saving ${saves === 1 ? 'it' : `${count(saves, 'environment')}`} again costs about `)
+  return { before: parts.join(' '), credits: plan.credits, after: '.' }
+}
+
+/** Plain-text headline for consumers without inline prices. */
+export function planHeadline(plan: MemberEnvPlan, name: Name): string | null {
+  const cost = planHeadlineParts(plan, name)
+  return cost === null ? null : `${cost.before}${creditsAsDash(cost.credits)} DASH${cost.after}`
 }
 
 /** One planned save, values never shown. */
@@ -123,9 +129,15 @@ function branchTitle(name: string, audience: BranchItem['audience']): string {
  * "fix-auth (Maintainers only): send its key to dana. About 0.0012 DASH." or "fix-auth
  * (Maintainers only): a new key for the 3 people left. About 0.0012 DASH."
  */
-export function branchLine(item: BranchItem, name: Name): string {
+export function branchLineParts(item: BranchItem, name: Name): { before: string; credits: number; after: string } {
   const what = item.action.kind === 'joiners' ? `send its key to ${item.action.people.map(name).join(', ')}` : `a new key for the ${item.now.length === 1 ? '1 person' : `${item.now.length} people`} left`
-  return `${branchTitle(item.name, item.audience)}: ${what}. About ${creditsAsDash(item.credits)} DASH.`
+  return { before: `${branchTitle(item.name, item.audience)}: ${what}. About `, credits: item.credits, after: '.' }
+}
+
+/** Plain-text branch line for consumers without inline prices. */
+export function branchLine(item: BranchItem, name: Name): string {
+  const cost = branchLineParts(item, name)
+  return `${cost.before}${creditsAsDash(cost.credits)} DASH${cost.after}`
 }
 
 /** The people a branch is for who can't be sent its key: "dana has no encryption key, so can't read fix-auth until they add one." */

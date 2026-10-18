@@ -5,7 +5,7 @@ import { ACTIVE_NETWORK, type Network } from '@/lib/constants'
 import { fiatText, type FiatKind } from '@/lib/fiat/format'
 import { cn } from '@/lib/utils'
 
-export function FiatNote({ dash, range, kind = 'estimate', network = ACTIVE_NETWORK.network, balance = false, variant = 'note', className }: {
+export function FiatNote({ dash, range, kind = 'estimate', network = ACTIVE_NETWORK.network, balance = false, variant = 'note', prefix = '', className }: {
   dash: number
   range?: number
   kind?: FiatKind
@@ -13,11 +13,12 @@ export function FiatNote({ dash, range, kind = 'estimate', network = ACTIVE_NETW
   /** Test balances have no cash value. Costs use their mainnet equivalent. */
   balance?: boolean
   variant?: 'note' | 'bare'
+  prefix?: string
   className?: string
 }): JSX.Element | null {
   const eligible = !balance || network === 'mainnet'
   const { settings, rate } = useFiat(eligible)
   const text = eligible ? fiatText(dash, { range, kind, network, rate, currency: settings.currency }) : null
   if (text === null) return null
-  return <span data-testid="fiat-note" className={cn('font-mono text-anvil-500 dark:text-anvil-400', className)}>{variant === 'bare' ? text : ` (${text})`}</span>
+  return <span data-testid="fiat-note" className={cn('font-mono text-anvil-500 dark:text-anvil-400', className)}>{prefix}{variant === 'bare' ? text : ` (${text})`}</span>
 }

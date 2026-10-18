@@ -8,13 +8,13 @@
  * stored. Also: lock now, and sign out + forget.
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { KeyBudgetText } from '@/components/funds-summary'
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useState } from 'react'
 import Link from 'next/link'
 import { GRANT_COPY, nextGrant } from '@/lib/auth/key-registration'
 import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { KeyBudgetText } from '@/components/funds-summary'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'

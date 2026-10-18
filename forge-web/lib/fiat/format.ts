@@ -36,8 +36,9 @@ export function fiatText(dash: number, opts: {
     if (lowText === formatted) return fiatText(dash, { ...opts, range: undefined })
     else if (low < unit) text = `≤ ${formatted}`
     else text = `${kind === 'exact' ? '' : '≈ '}${lowText}–${formatted}`
-  } else if (kind === 'bound') text = `≤ ${formatted}`
+  } else if (amount === 0) text = formatted
   else if (amount > 0 && amount < unit) text = `< ${formatFiat(unit, opts.currency)}`
+  else if (kind === 'bound') text = `≤ ${formatted}`
   else text = `${kind === 'estimate' ? '≈ ' : ''}${formatted}`
   return `${text}${opts.network === 'mainnet' ? '' : ' on mainnet'}`
 }

@@ -10,12 +10,11 @@
  * in, below `xl`, the jump box is a search button that opens that second row (QW2-073).
  */
 
-import { FiatNote } from '@/components/ui/fiat-note'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, BookOpen, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
@@ -39,6 +38,7 @@ import { consumePrehydrationIntent } from '@/lib/prehydration'
 import { isPageShortcut } from '@/lib/focus'
 import { bareRoute, pageTitle } from '@/lib/page-title'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const shown = (el: Element | null): boolean => el !== null && el.getClientRects().length > 0
 

@@ -4,7 +4,7 @@ import { FiatNote } from './fiat-note'
 /** The sign-in and funding copy, with each storage choice priced separately. */
 export function PushCostText(): JSX.Element {
   return (
-    <>{dashRange(PUSH_COST_DASH.byo)} DASH per push with your own storage<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} />, up to {PUSH_COST_DASH.platform.max}<FiatNote dash={PUSH_COST_DASH.platform.max} kind="bound" /> with packs on Platform, plus ~{PUSH_COST_DASH.perMib} DASH per MiB of code stored on Platform<FiatNote dash={PUSH_COST_DASH.perMib} /> (permanent)
+    <>{dashRange(PUSH_COST_DASH.byo)} DASH per push with your own storage<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} />, up to {PUSH_COST_DASH.platform.max}<FiatNote dash={PUSH_COST_DASH.platform.max} kind="bound" /> with packs on Platform, plus ~{PUSH_COST_DASH.perMib} DASH per MiB<FiatNote dash={PUSH_COST_DASH.perMib} /> of code stored on Platform (permanent)
     </>
   )
 }

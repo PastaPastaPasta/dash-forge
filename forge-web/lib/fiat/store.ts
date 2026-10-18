@@ -83,6 +83,7 @@ function initialize(): void {
 }
 
 export function getFiatSettings(): FiatSettings { return settings }
+// No timer fires at 24 h: the next render checks expiry, and becoming visible rechecks it.
 export function getFiatRates(): FiatRates | null {
   return settings.enabled && rates && Date.now() - rates.fetchedAt < USABLE_MS ? rates : null
 }

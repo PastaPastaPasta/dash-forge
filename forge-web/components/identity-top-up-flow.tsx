@@ -11,8 +11,6 @@
  * words resumes it.
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -31,6 +29,8 @@ import { creditsAsDash } from '@/lib/view/format'
 import { recordSpend, TOP_UP_KIND } from '@/lib/spend'
 import { errorMessage } from '@/lib/utils'
 import { PhraseWarning } from '@/components/auth/phrase-warning'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const STAGE_TEXT: Readonly<Record<TopUpStage, string>> = {
   'waiting-deposit': 'Watching for your deposit…',

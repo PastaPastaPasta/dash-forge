@@ -9,9 +9,7 @@
  * closing unmounts it and drops everything).
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { FiatNote } from '@/components/ui/fiat-note'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { create } from 'zustand'
 import { CheckCircle2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -26,6 +24,8 @@ import { KEY_LIMITS_UPDATE_CREDITS, previewCredits } from '@/lib/sdk'
 import type { KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -133,7 +133,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
     onClose()
   }
 
-  const dash = (c: bigint | null): React.ReactNode => c === null ? '—' : <>{creditsAsDash(Number(c))} DASH<FiatNote dash={creditsToDash(Number(c))} kind="bound" /></>
+  const dash = (c: bigint | null): ReactNode => c === null ? '—' : <>{creditsAsDash(Number(c))} DASH<FiatNote dash={creditsToDash(Number(c))} /></>
 
   return (
     <Dialog open onClose={closeDialog} title="Top up this browser's key" description="Same key, more budget or a later expiry.">

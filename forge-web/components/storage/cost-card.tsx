@@ -1,6 +1,8 @@
 /**
- * The cost comparison card of the storage wizard. Platform fees are measured per-push
- * manifest + ref costs; bucket prices are the providers' public list prices, rounded.
+ * The cost comparison card of the storage wizard (`ux-dx-spec.md` §3.1 step 5), always
+ * visible: what a repo costs with its packs in your bucket versus on Platform. Platform fees
+ * are the measured per-push manifest + ref costs; bucket prices are the providers' public
+ * list prices, rounded, and say so.
  */
 
 import type { ReactNode } from 'react'
@@ -22,7 +24,9 @@ export function CostCard(): JSX.Element {
   ]
   return (
     <section aria-labelledby="cost-card-title" className="rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
-      <h2 id="cost-card-title" className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">What it costs</h2>
+      <h2 id="cost-card-title" className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">
+        What it costs
+      </h2>
       <ScrollRegion label="Cost table" className="overflow-x-auto">
         <table className="w-full min-w-[34rem] text-left text-[12px]">
           <thead className="text-anvil-500 dark:text-anvil-400">

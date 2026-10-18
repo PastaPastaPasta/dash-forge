@@ -22,10 +22,10 @@
  * once the step under way settles (`make-public-inflight.ts`: never two runs side by side).
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AlertTriangle, Check, CirclePause, Globe, Loader2, Minus, X } from 'lucide-react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 import type { RepoHome } from '@/lib/view'
 import { aboutDash } from '@/lib/view/audience'

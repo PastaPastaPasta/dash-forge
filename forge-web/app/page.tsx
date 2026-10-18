@@ -9,11 +9,11 @@
  * and a push (CJ-1; the rest behind "Show all recent repos"), a clear empty/error state otherwise.
  */
 
-import { FiatNote } from '@/components/ui/fiat-note'
-import { creditsAsDash } from '@/lib/view/format'
 import Link from 'next/link'
 import { BookOpen, Coins, Compass, CopyPlus, ExternalLink, GitBranch, KeyRound, Lock, Plus, ShieldCheck, Upload } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { FiatNote } from '@/components/ui/fiat-note'
+import { creditsAsDash } from '@/lib/view/format'
 import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
@@ -143,7 +143,7 @@ export default function LandingPage(): JSX.Element {
             icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
             title="2. Fund it with a little DASH"
             body={
-              <>Every write costs a small fee, shown before you sign. {testNetwork ? <>On {networkName()} the DASH is free test money{faucet ? ', from the faucet' : ''}; on mainnet </> : 'On mainnet, '}an issue costs about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and a push {PUSH_COST_DASH.byo.min}–{PUSH_COST_DASH.platform.max} DASH<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.byo.min} network="mainnet" />. Reading is free.</>
+              <>Every write costs a small fee, shown before you sign. {testNetwork ? <>On {networkName()} the DASH is free test money{faucet ? ', from the faucet' : ''}; on mainnet </> : 'On mainnet, '}an issue costs about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and a push {PUSH_COST_DASH.byo.min}{'–\u2060'}{PUSH_COST_DASH.platform.max} DASH<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.byo.min} network="mainnet" />{testNetwork ? null : ", paid from your identity's credits"}. Reading is free.</>
             }
             link={faucet ? { href: faucet, label: `${networkName()} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
           />

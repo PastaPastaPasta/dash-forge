@@ -9,6 +9,7 @@ import { setFiatSettings } from '@/lib/fiat/store'
 export function PricesPanel(): JSX.Element {
   const { settings, rates, rate } = useFiat()
   const price = fiatText(1, { network: 'mainnet', rate, currency: settings.currency })
+  // Age updates on render; prices deliberately have no interval timer.
   const minutes = rates ? Math.max(0, Math.floor((Date.now() - rates.fetchedAt) / 60_000)) : 0
   const age = minutes === 0 ? 'just now' : minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} h ago`
   return (
@@ -24,7 +25,7 @@ export function PricesPanel(): JSX.Element {
         </select>
       </label>
       <p data-testid="fiat-provenance" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        {price && rates ? `1 DASH ${price} · from ${rates.source === 'ctx' ? 'CTX' : 'CoinGecko'} · updated ${age}` : 'unavailable right now'}
+        {!settings.enabled ? 'Prices are off' : price && rates ? `1 DASH ${price} · from ${rates.source === 'ctx' ? 'CTX' : 'CoinGecko'} · updated ${age}` : 'unavailable right now'}
       </p>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Prices from <a href="https://ctx.com/" target="_blank" rel="noreferrer noopener" className="underline">CTX</a>, with CoinGecko as a fallback.{' '}

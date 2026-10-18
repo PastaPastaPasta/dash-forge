@@ -7,12 +7,12 @@
  * linked at the end; the figures come from the same cost model the app quotes.
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { PushCostText, PushStorageHint } from '@/components/ui/push-cost-text'
-import { FiatNote } from '@/components/ui/fiat-note'
 import Link from 'next/link'
 import { BookOpen, Compass, Coins, ExternalLink, KeyRound, Terminal, UserRound } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { PushCostText, PushStorageHint } from '@/components/ui/push-cost-text'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { Button } from '@/components/ui/button'

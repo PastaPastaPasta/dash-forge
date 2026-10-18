@@ -2,7 +2,7 @@
   {"amount":0.00048,"rate":40,"currency":"USD","kind":"estimate","network":"mainnet","expected":"≈ $0.02"},
   {"amount":0.00048,"rate":40,"currency":"USD","kind":"estimate","network":"devnet","expected":"≈ $0.02 on mainnet"},
   {"amount":0.00048,"rate":40,"currency":"USD","kind":"estimate","network":"testnet","expected":"≈ $0.02 on mainnet"},
-  {"amount":0,"rate":40,"currency":"USD","kind":"estimate","network":"mainnet","expected":"≈ $0.00"},
+  {"amount":0,"rate":40,"currency":"USD","kind":"estimate","network":"mainnet","expected":"$0.00"},
   {"amount":0.00001,"rate":40,"currency":"USD","kind":"estimate","network":"mainnet","expected":"< $0.01"},
   {"amount":0.000625,"rate":40,"currency":"USD","kind":"bound","network":"mainnet","expected":"≤ $0.03"},
   {"amount":0.000625,"rate":40,"currency":"USD","kind":"exact","network":"mainnet","expected":"$0.03"},
@@ -22,5 +22,9 @@
   {"amount":0.00002,"range":0.00001,"rate":40,"currency":"USD","kind":"estimate","network":"mainnet","expected":"< $0.01"},
   {"amount":1,"rate":0,"currency":"USD","kind":"estimate","network":"mainnet","expected":null},
   {"amount":1,"rate":-2,"currency":"USD","kind":"estimate","network":"mainnet","expected":null},
-  {"amount":-0.01,"rate":40,"currency":"USD","kind":"estimate","network":"mainnet","expected":"≈ -$0.40"}
+  {"amount":-0.01,"rate":40,"currency":"USD","kind":"estimate","network":"mainnet","expected":"≈ -$0.40"},
+  {"amount":0.0001,"rate":40,"currency":"USD","kind":"bound","network":"mainnet","expected":"< $0.01"},
+  {"amount":0.01,"rate":40,"currency":"JPY","kind":"bound","network":"mainnet","expected":"< ¥1"},
+  {"amount":0,"rate":40,"currency":"USD","kind":"bound","network":"mainnet","expected":"$0.00"},
+  {"amount":0,"rate":40,"currency":"JPY","kind":"estimate","network":"devnet","expected":"¥0 on mainnet"}
 ]

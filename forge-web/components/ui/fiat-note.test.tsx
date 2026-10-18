@@ -5,6 +5,7 @@ import { renderToString } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FiatNote } from './fiat-note'
 import { CostPreview } from './cost-preview'
+import { PushCostText, PushStorageHint } from './push-cost-text'
 import { PricesPanel } from '../prices-panel'
 import { __setFiatFetchForTests, FIAT_RATES_KEY, FIAT_SETTINGS_KEY } from '@/lib/fiat/store'
 import { ACTIVE_NETWORK } from '@/lib/constants'
@@ -74,6 +75,21 @@ describe('FiatNote and CostPreview', () => {
     await render(<CostPreview cost={cost(48_000_000)} refund />)
     expect(host.textContent).toContain('Refund about+0.00048 DASH')
   })
+  it('funding copy prices each storage choice next to its DASH phrase (ECON-06)', async () => {
+    await render(<PushCostText />)
+    expect(host.textContent?.replaceAll(' on mainnet', '')).toBe(
+      '0.004–0.0055 DASH per push with your own storage (≈ $0.16–$0.22), up to 0.011 (≤ $0.44) with packs on Platform, plus ~0.39 DASH per MiB (≈ $15.60) of code stored on Platform (permanent)',
+    )
+    await render(<PushStorageHint />)
+    expect(host.textContent?.replaceAll(' on mainnet', '')).toBe('Pushing code? Add your own storage first, or deposit about 0.4 DASH per MiB (≈ $16.00).')
+  })
+  it('a bare note only adds its comma when a fiat value is available', async () => {
+    await render(<span>(about 0.00048 DASH<FiatNote dash={0.00048} network="mainnet" variant="bare" prefix=", " />)</span>)
+    expect(host.textContent).toBe('(about 0.00048 DASH, ≈ $0.02)')
+    const { setFiatSettings } = await import('@/lib/fiat/store')
+    await act(async () => setFiatSettings({ enabled: false }))
+    expect(host.textContent).toBe('(about 0.00048 DASH)')
+  })
   it('settings switch currency without fetching, then turn every note off', async () => {
     await render(<><PricesPanel /><CostPreview cost={cost(48_000_000)} /></>)
     const select = host.querySelector<HTMLSelectElement>('[data-testid="fiat-currency"]')!
@@ -83,6 +99,7 @@ describe('FiatNote and CostPreview', () => {
     const toggle = host.querySelector<HTMLInputElement>('[data-testid="fiat-enabled"]')!
     await act(async () => toggle.click())
     expect(host.querySelectorAll('[data-testid="fiat-note"]')).toHaveLength(0)
+    expect(host.querySelector('[data-testid="fiat-provenance"]')?.textContent).toBe('Prices are off')
     expect(fetcher).not.toHaveBeenCalled()
     expect(JSON.parse(localStorage.getItem(FIAT_SETTINGS_KEY)!)).toEqual({ v: 1, enabled: false, currency: 'EUR' })
   })

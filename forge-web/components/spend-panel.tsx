@@ -10,13 +10,12 @@
  * Both lists are stacked rows rather than wide tables, so they read on a 320 px phone.
  */
 
-import { creditsToDash } from '@/lib/sdk/cost'
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
+import { useFiat } from '@/hooks/use-fiat'
 import { useSdk } from '@/hooks/use-sdk'
 import { repoHref } from '@/hooks/use-query-param'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
@@ -38,6 +37,8 @@ import { measurementPending } from '@/lib/sdk/write'
 import { creditsAsDash, plural, timeAgo } from '@/lib/view/format'
 import { LoadingBlock } from '@/components/ui/states'
 import { cn, shortId } from '@/lib/utils'
+import { creditsToDash } from '@/lib/sdk/cost'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 /** A DASH amount; `signed` marks a positive one "+" too (a balance that grew, a top-up). */
 function Dash({ credits, signed = false, balance = false }: { credits: number; signed?: boolean; balance?: boolean }): JSX.Element {
@@ -46,8 +47,7 @@ function Dash({ credits, signed = false, balance = false }: { credits: number; s
   const sign = amount === '0' ? '' : credits < 0 ? '−' : signed && credits > 0 ? '+' : ''
   return (
     <span className="font-mono">
-      {sign}
-      {amount} DASH<FiatNote dash={creditsToDash(Math.abs(credits))} balance={balance} />
+      <span className="whitespace-nowrap">{sign}{amount} DASH</span><FiatNote dash={creditsToDash(Math.abs(credits))} balance={balance} />
     </span>
   )
 }
@@ -89,6 +89,7 @@ const SETTLE_READS = 4
 const SETTLE_WAIT_MS = 2000
 
 export function SpendPanel(): JSX.Element {
+  const { rate } = useFiat()
   const { identity, balance, balanceReadAt, refreshBalance } = useAuth()
   // Re-read with every balance read (a write's row lands just before its refresh), showing the
   // last ledger meanwhile rather than blanking the panel.
@@ -182,7 +183,7 @@ export function SpendPanel(): JSX.Element {
 
   return (
     <div className="space-y-4 text-dense" data-testid="spend-panel">
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">fiat at today&apos;s price</p>
+      {rate !== undefined ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Fiat amounts use today&apos;s price.</p> : null}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="text-[12px] text-anvil-500 dark:text-anvil-400">This month</div>

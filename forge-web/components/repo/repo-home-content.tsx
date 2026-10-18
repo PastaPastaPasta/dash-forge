@@ -9,7 +9,6 @@
  * {@link BrowseBoundary}.
  */
 
-import { FiatNote } from '@/components/ui/fiat-note'
 import { useCallback, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, FileText, GitCommit, Rocket } from 'lucide-react'
@@ -58,6 +57,7 @@ import { ForkSyncBar } from '@/components/repo/fork-sync'
 import { RecentPushBanner } from '@/components/repo/recent-push-banner'
 import { ownerLabel } from '@/lib/page-title'
 import { BeingMadePublicState } from '@/components/repo/conversion-status'
+import { FiatNote } from '@/components/ui/fiat-note'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
 const HOME_COMMIT_COUNT_CAP = 100
