@@ -11,6 +11,10 @@ use serde_json::{json, Value};
 
 use super::{node_error, FORGE_RPC_PATHS, KUBO_VERSION};
 
+fn default_swarm_port() -> u16 {
+    4001
+}
+
 fn default_link_origin() -> String {
     DEFAULT_ORIGIN.into()
 }
@@ -33,6 +37,8 @@ pub(crate) struct NodeConfig {
     pub gateway_port: u16,
     pub internal_api_port: u16,
     pub internal_gateway_port: u16,
+    #[serde(default = "default_swarm_port")]
+    pub swarm_port: u16,
     pub origins: Vec<String>,
     #[serde(default = "default_link_origin")]
     pub link_origin: String,
@@ -50,6 +56,7 @@ impl Default for NodeConfig {
             gateway_port: 8080,
             internal_api_port: 5101,
             internal_gateway_port: 8180,
+            swarm_port: default_swarm_port(),
             origins: vec![DEFAULT_ORIGIN.into()],
             link_origin: default_link_origin(),
             kubo_version: KUBO_VERSION.into(),
@@ -166,16 +173,17 @@ impl NodeConfig {
             self.gateway_port,
             self.internal_api_port,
             self.internal_gateway_port,
+            self.swarm_port,
         ];
         if ports.contains(&0)
             || ports
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
-                != 4
+                != 5
         {
             return Err(crate::errors::usage(
-                "the node's four ports must be distinct and nonzero",
+                "the node's five ports must be distinct and nonzero",
             ));
         }
         if !self.origins.iter().any(|o| o == DEFAULT_ORIGIN) {
@@ -369,6 +377,29 @@ pub fn validate_origin(origin: &str) -> Result<String> {
 }
 
 pub fn patch_config(config: &mut Value, node: &Node, tokens: &Tokens) {
+    // Preserve init's transports and address families, changing only tcp/udp ports.
+    // Kubo v0.43.1 config/init.go::addressesConfig includes TCP, QUIC v1,
+    // WebTransport and WebRTC Direct for both IPv4 and IPv6.
+    if let Some(addresses) = config
+        .get_mut("Addresses")
+        .and_then(|addresses| addresses.get_mut("Swarm"))
+        .and_then(Value::as_array_mut)
+    {
+        for address in addresses {
+            if let Some(value) = address.as_str() {
+                let mut parts: Vec<_> = value.split('/').map(str::to_owned).collect();
+                let mut replace_port = false;
+                for part in &mut parts {
+                    let transport = matches!(part.as_str(), "tcp" | "udp");
+                    if replace_port {
+                        *part = node.config.swarm_port.to_string();
+                    }
+                    replace_port = transport;
+                }
+                *address = json!(parts.join("/"));
+            }
+        }
+    }
     config["Addresses"]["API"] = json!(format!(
         "/ip4/127.0.0.1/tcp/{}",
         node.config.internal_api_port
@@ -427,8 +458,11 @@ pub async fn refuse_live_kubo(node: &Node) -> Result<()> {
     Ok(())
 }
 
-pub async fn configure(node: &Node, tokens: &Tokens) -> Result<()> {
+pub async fn configure(node: &mut Node, tokens: &Tokens, swarm_explicit: bool) -> Result<()> {
     refuse_live_kubo(node).await?;
+    // The caller has stopped our daemon; busy ports now belong to another process.
+    // Keep reservations alive until the offline config has been written.
+    let _ports = super::ports::select(&mut node.config, swarm_explicit)?;
     let path = node.repo().join("config");
     if !path.exists() {
         private_dir(&node.repo())?;
@@ -464,6 +498,64 @@ pub async fn configure(node: &Node, tokens: &Tokens) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn swarm_rewrite_keeps_kubo_0431_default_transports_and_address_families() {
+        // https://github.com/ipfs/kubo/blob/v0.43.1/config/init.go
+        let defaults = [
+            "/ip4/0.0.0.0/tcp/4001",
+            "/ip6/::/tcp/4001",
+            "/ip4/0.0.0.0/udp/4001/webrtc-direct",
+            "/ip4/0.0.0.0/udp/4001/quic-v1",
+            "/ip4/0.0.0.0/udp/4001/quic-v1/webtransport",
+            "/ip6/::/udp/4001/webrtc-direct",
+            "/ip6/::/udp/4001/quic-v1",
+            "/ip6/::/udp/4001/quic-v1/webtransport",
+        ];
+        let node = Node {
+            dir: PathBuf::new(),
+            config: NodeConfig {
+                swarm_port: 4401,
+                ..Default::default()
+            },
+        };
+        let tokens = Tokens {
+            forge: "test-forge".into(),
+            admin: "test-admin".into(),
+        };
+        let mut config = json!({"Addresses":{"Swarm":defaults}});
+        patch_config(&mut config, &node, &tokens);
+        assert_eq!(
+            config["Addresses"]["Swarm"],
+            json!(defaults.map(|address| address.replace("/4001", "/4401")))
+        );
+        // Repeated setup rewrites a previously selected port, and keeps custom transports.
+        config["Addresses"]["Swarm"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("/ip4/192.0.2.1/tcp/9876/ws"));
+        patch_config(&mut config, &node, &tokens);
+        assert_eq!(
+            config["Addresses"]["Swarm"][8],
+            "/ip4/192.0.2.1/tcp/4401/ws"
+        );
+    }
+
+    #[test]
+    fn legacy_nodes_default_swarm_port_and_new_choices_round_trip() {
+        let mut legacy = toml::Value::try_from(NodeConfig::default()).unwrap();
+        legacy.as_table_mut().unwrap().remove("swarmPort");
+        let mut config: NodeConfig = legacy.try_into().unwrap();
+        assert_eq!(config.swarm_port, 4001);
+        config.swarm_port = 4401;
+        let restored: NodeConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.swarm_port, 4401);
+        assert!(restored.validate().is_ok());
+        config.swarm_port = 0;
+        assert!(config.validate().is_err());
+        config.swarm_port = config.api_port;
+        assert!(config.validate().is_err());
+    }
+
     #[tokio::test]
     async fn live_repo_api_is_detected_even_when_it_refuses_auth() {
         let temp = tempfile::tempdir().unwrap();

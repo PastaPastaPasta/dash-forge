@@ -728,9 +728,9 @@ cmd('ipfs connect', 'A one-time connection code for this computer’s IPFS node.
     'connect': IPFS_CONNECT,
 }, ['connect'])
 cmd('ipfs status', 'The managed node’s owner-only status.', {
-    'kuboVersion': S, 'peerId': S, 'api': S, 'gateway': S, 'repoBytes': I, 'recursivePins': I,
+    'kuboVersion': S, 'peerId': S, 'api': S, 'gateway': S, 'swarmPort': I, 'repoBytes': I, 'recursivePins': I,
     'listenAddresses': SA, 'reachability': S, 'fix': nl(S), 'service': S, 'origins': SA, 'followed': OBJ,
-}, ['kuboVersion', 'peerId', 'api', 'gateway', 'repoBytes', 'recursivePins', 'listenAddresses',
+}, ['kuboVersion', 'peerId', 'api', 'gateway', 'swarmPort', 'repoBytes', 'recursivePins', 'listenAddresses',
     'reachability', 'fix', 'service', 'origins', 'followed'])
 for action in ('add', 'remove'):
     cmd(f'ipfs origin {action}', 'The websites allowed to connect to this node.', {'origins': SA}, ['origins'])

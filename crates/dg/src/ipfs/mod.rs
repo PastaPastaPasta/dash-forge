@@ -3,6 +3,7 @@ pub(crate) mod config;
 mod follow;
 mod install;
 mod pair;
+mod ports;
 mod proxy;
 mod serve;
 mod service;
@@ -97,6 +98,9 @@ pub struct UpArgs {
     /// Local read port (default: 8080, or the saved port).
     #[arg(long, value_name = "PORT")]
     gateway_port: Option<u16>,
+    /// Port other IPFS nodes use (default: 4001, or the saved port).
+    #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+    swarm_port: Option<u16>,
     /// Replace the node's access tokens; connect your browsers again afterwards.
     #[arg(long)]
     rotate_token: bool,
@@ -131,6 +135,7 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
                     value["kuboVersion"].as_str().unwrap_or("?"),
                     value["peerId"].as_str().unwrap_or("?")
                 );
+                println!("  Swarm port: {}", value["swarmPort"]);
                 println!("  Service: {}", value["service"].as_str().unwrap_or("?"));
                 println!(
                     "  Stored: {} bytes; {} recursive pins",
@@ -201,6 +206,9 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     if let Some(port) = args.gateway_port {
         node.config.gateway_port = port;
     }
+    if let Some(port) = args.swarm_port {
+        node.config.swarm_port = port;
+    }
     for origin in &args.origin {
         let origin = config::validate_origin(origin)?;
         if origin.starts_with("http:") {
@@ -232,7 +240,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     if node.dir.join("pair.json").exists() {
         std::fs::remove_file(node.dir.join("pair.json"))?;
     }
-    config::configure(&node, &tokens).await?;
+    config::configure(&mut node, &tokens, args.swarm_port.is_some()).await?;
     node.config.service = !args.no_service;
     node.save()?;
     // In --no-service mode, run a temporary supervisor for the same verification, then
@@ -433,7 +441,8 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
             node.config.set_link_origin(None)?;
         }
     }
-    config::configure(&node, &Tokens::load(&node)?).await?;
+    let tokens = Tokens::load(&node)?;
+    config::configure(&mut node, &tokens, false).await?;
     node.save()?;
     if node.config.service {
         check_public_ports(&node).await?;
@@ -604,6 +613,26 @@ fn print_connection(connection: &pair::Connection, opened: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swarm_port_flag_is_optional_and_nonzero() {
+        use clap::Parser as _;
+        for (flags, expected) in [
+            (vec!["dg", "ipfs", "up"], None),
+            (vec!["dg", "ipfs", "up", "--swarm-port", "4401"], Some(4401)),
+        ] {
+            let cli = crate::Cli::try_parse_from(flags).unwrap();
+            let crate::Command::Ipfs(IpfsCommand::Up(args)) = cli.command else {
+                panic!("expected ipfs up");
+            };
+            assert_eq!(args.swarm_port, expected);
+        }
+        for port in ["0", "65536", "invalid"] {
+            assert!(
+                crate::Cli::try_parse_from(["dg", "ipfs", "up", "--swarm-port", port]).is_err()
+            );
+        }
+    }
 
     #[tokio::test]
     async fn public_port_conflicts_name_the_corresponding_flag() {

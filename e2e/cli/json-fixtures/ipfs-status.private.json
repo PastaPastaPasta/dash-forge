@@ -14,13 +14,14 @@
     "peerId": "test-peer",
     "api": "http://127.0.0.1:5001",
     "gateway": "http://127.0.0.1:8080",
+    "swarmPort": 4401,
     "repoBytes": 2048,
     "recursivePins": 2,
     "listenAddresses": [
-      "/ip4/127.0.0.1/tcp/4001"
+      "/ip4/127.0.0.1/tcp/4401"
     ],
     "reachability": "private-only",
-    "fix": "forward TCP+UDP 4001 to this machine",
+    "fix": "forward TCP+UDP 4401 to this machine",
     "service": "manual",
     "origins": [
       "https://forge.dashhq.org"

@@ -69,12 +69,14 @@ pub async fn collect(node: &Node) -> Result<Value> {
             .iter()
             .any(|a| a.as_str().is_some_and(public_address))
     });
+    let fix =
+        (!public).then(|| format!("forward TCP+UDP {} to this machine", node.config.swarm_port));
     Ok(json!({
-        "kuboVersion":version["Version"], "peerId":id["ID"], "api":node.api(), "gateway":node.gateway(),
+        "kuboVersion":version["Version"], "peerId":id["ID"], "api":node.api(), "gateway":node.gateway(), "swarmPort":node.config.swarm_port,
         "repoBytes":repo["RepoSize"].as_u64().context("kubo repo size is missing")?,
         "recursivePins":pins["Keys"].as_object().map_or(0, serde_json::Map::len),
         "listenAddresses":listen["Strings"], "reachability":if public {"public addresses (reachability unverified)"} else {"private-only"},
-        "fix":if public {None} else {Some("forward TCP+UDP 4001 to this machine")},
+        "fix":fix,
         "service":service::state(node).await, "origins":node.config.origins, "followed":follow::followed(node)?,
     }))
 }
@@ -82,6 +84,32 @@ pub async fn collect(node: &Node) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn status_reports_the_saved_swarm_port_in_its_forwarding_fix() {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let node = Node {
+            dir: temp.path().to_owned(),
+            config: super::super::config::NodeConfig {
+                internal_api_port: listener.local_addr().unwrap().port(),
+                swarm_port: 4401,
+                ..Default::default()
+            },
+        };
+        Tokens::load_or_create(&node, false).unwrap();
+        let task = tokio::spawn(async move {
+            let router = axum::Router::new().fallback(|| async {
+                axum::Json(json!({"ID":"test-peer", "Version":"0.43.1", "RepoSize":0, "Keys":{}, "Strings":[], "Addresses":[]}))
+            });
+            axum::serve(listener, router).await.unwrap();
+        });
+        let status = Box::pin(collect(&node)).await.unwrap();
+        assert_eq!(status["swarmPort"], 4401);
+        assert_eq!(status["fix"], "forward TCP+UDP 4401 to this machine");
+        task.abort();
+        let _ = task.await;
+    }
+
     #[test]
     fn public_addresses_do_not_include_private_loopback_or_carrier_nat() {
         for a in [

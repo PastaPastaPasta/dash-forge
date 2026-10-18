@@ -68,13 +68,26 @@ The link `dg` prints still points at forge.dashhq.org. On your own address, open
 | `--name <name>` | The storage profile's name. The default is `kubo`, or the name this node already has. |
 | `--api-port <port>` | The port your browser and `dg` use (default 5001). |
 | `--gateway-port <port>` | The read port (default 8080). |
+| `--swarm-port <port>` | The TCP and UDP port other IPFS nodes use (default 4001, or the saved port). An explicitly chosen port must be free. Without this flag, `dg` picks a free port if the preferred one is busy. |
 | `--rotate-token` | Replace both tokens. The old ones stop working at once, so connect your browsers again with `dg ipfs connect`. |
 | `--no-service` | Don't install a login service. `dg` checks the node, then stops it. You start it with `dg ipfs serve` under your own supervisor. |
 | `--linger` | Linux: keep the service running when you are logged out. |
 | `--no-open` | Print the connect link; don't open a browser. |
 | `--json` | Print the result as JSON, including the connect link and code. |
 
-The four ports (the two public ones and two internal ones, 5101 and 8180) must all differ. If a profile called `kubo` already points somewhere else, `dg` stops and asks for another `--name`.
+The public API, public gateway, two internal ports and swarm port must all differ. The internal API and gateway prefer 5101 and 8180; if either is busy, `dg` picks a free loopback port. The chosen ports are saved in `node.toml` and reused on later runs while available. If a profile called `kubo` already points somewhere else, `dg` stops and asks for another `--name`.
+
+### Running next to IPFS Desktop
+
+IPFS Desktop and other kubo nodes commonly use public ports 5001/8080 and swarm port 4001. Keep that node running and give Forge different public ports:
+
+```sh
+dg ipfs up --name forge-kubo --api-port 5002 --gateway-port 8081
+```
+
+Forge uses its own repo and tokens. It selects another swarm port when 4001 is busy, and moves either internal port if needed. To choose the swarm port yourself, add `--swarm-port 4002` (it must be free for both TCP and UDP). `dg ipfs status` shows the selected swarm port and the router-forwarding hint uses that port.
+
+Two managed nodes under one user also need separate data and configuration directories (`XDG_DATA_HOME` and `XDG_CONFIG_HOME`), different public ports, and `--no-service`. Run each `dg ipfs serve` with its matching directory variables; the login-service name is shared.
 
 ### Where the files are
 
@@ -147,7 +160,7 @@ Two cautions, both from [Bring your own storage](bring-your-own-storage.md#ipfs-
 dg ipfs status
 ```
 
-shows the kubo version and peer id, whether the service is running, the bytes stored, the number of recursive pins (every pin on the node, not only Forge's), the allowed websites, the node's listen addresses, [reachability](#being-reachable) and the [followed repositories](#keep-it-up-to-date). `--json` gives the same as JSON.
+shows the kubo version and peer id, whether the service is running, the bytes stored, the number of recursive pins (every pin on the node, not only Forge's), the allowed websites, the node's swarm port and listen addresses, [reachability](#being-reachable) and the [followed repositories](#keep-it-up-to-date). `--json` gives the same as JSON.
 
 | Command | What it does |
 |---|---|
@@ -189,12 +202,12 @@ Other programs running as you can read `tokens.toml`. `dg` trusts your own accou
 
 ## Being reachable
 
-Other nodes need to dial yours to fetch what you hold. Forward **TCP and UDP port 4001** on your router to the computer running the node. Kubo also tries to open the port itself through UPnP, which many routers allow.
+Other nodes need to dial yours to fetch what you hold. Forward the **TCP and UDP swarm port shown by `dg ipfs status`** on your router to the computer running the node. It defaults to 4001, but can differ when you use `--swarm-port` or another program already holds that port. Kubo also tries to open the port itself through UPnP, which many routers allow.
 
 `dg ipfs status` reports one of two things:
 
 - `public addresses (reachability unverified)`: the node knows a public address for itself. That is a good sign, not a proof that others can connect.
-- `private-only`, with the fix `forward TCP+UDP 4001 to this machine`: the node only has private addresses, so people outside your network can't find it.
+- `private-only`, with a fix such as `forward TCP+UDP 4001 to this machine` (using your selected swarm port): the node only has private addresses, so people outside your network can't find it.
 
 Your bytes are safe on your disk either way. Being unreachable only means other people can't fetch them from you.
 
@@ -278,7 +291,8 @@ Private repositories need more care:
 | `no pinned kubo archive is available for this platform` | `dg ipfs up` supports macOS and Linux on arm64 and amd64, and Windows on amd64. |
 | `this profile name belongs to another storage address; choose a new name with --name` | A storage profile called `kubo` already points at a different node. Pick another `--name`. |
 | `could not bind the IPFS API port` | Something else uses port 5001 (or 8080). Run `dg ipfs up --api-port <port> --gateway-port <port>`. |
-| `the IPFS node did not become ready within 60 seconds` | Read `serve.log` in the node's directory. Check that nothing else uses the internal ports, 5101 and 8180. |
+| `the IPFS node did not become ready within 60 seconds` | Read `serve.log` in the node's directory. The selected internal and swarm ports are in `node.toml`; rerun `dg ipfs up` if another program has taken them. |
+| `IPFS swarm port <port> is already in use` | Choose a free TCP and UDP port with `--swarm-port`, or omit the flag to let `dg` choose. |
 | `the kubo repo is still in use` | A kubo started by hand holds the repo. Stop it and retry. |
 | `systemd's user service is unavailable` | Run `dg ipfs up --no-service`, then `dg ipfs serve` under your own supervisor. |
 | `could not start the IPFS login service` (macOS) | Run `dg ipfs up --no-service`, then `dg ipfs serve` yourself. |
@@ -292,6 +306,6 @@ Private repositories need more care:
 | `choose an IPFS storage profile before pinning` | No IPFS profile, or more than one. Run `dg ipfs up`, or pass `--profile <name>`. |
 | `only members can pin a private repo` | Sign in as a member. See [Privacy](#privacy). |
 | `some repository files could not be pinned` | Run the same command again. Each failed file is listed with its reason. If no copy can be read, the repository may have lost its stored bytes. |
-| `status` says `private-only` | [Forward TCP and UDP 4001](#being-reachable). |
+| `status` says `private-only` | [Forward the TCP and UDP port shown by status](#being-reachable). |
 
 Beyond that: a manual kubo setup, with the preflight proxy a browser needs, is in [Bring your own storage](bring-your-own-storage.md#set-up-kubo-by-hand), and kubo on a NAS is in [Storage on your home NAS](home-nas-storage.md#ipfs-kubo-on-the-nas).
