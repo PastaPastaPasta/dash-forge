@@ -2669,7 +2669,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Embargo(cmd) => Box::pin(embargo::run(ctx, cmd)).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
-        Command::Ipfs(cmd) => ipfs::run(ctx, cmd).await,
+        Command::Ipfs(cmd) => Box::pin(ipfs::run(ctx, cmd)).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
         Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,

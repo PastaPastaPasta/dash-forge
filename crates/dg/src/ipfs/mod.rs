@@ -110,7 +110,7 @@ pub enum OriginCommand {
 pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
     match command {
         IpfsCommand::Up(args) => up(ctx, args).await,
-        IpfsCommand::Serve => serve::run(ctx, Node::load()?).await,
+        IpfsCommand::Serve => Box::pin(serve::run(ctx, Node::load()?)).await,
         IpfsCommand::Status => {
             let value = status::collect(&Node::load()?).await?;
             ctx.emit(value.clone(), || {
@@ -142,14 +142,14 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
             let connection = pair::create(&node)?;
             let opened = open_link(&connection.link, *no_open || ctx.json).await;
             ctx.emit(json!({"connect":connection}), || {
-                print_connection(&connection, opened)
+                print_connection(&connection, opened);
             });
             Ok(())
         }
         IpfsCommand::Origin(command) => origin(ctx, command).await,
         IpfsCommand::Down { purge } => down(ctx, *purge).await,
         IpfsCommand::Ipfs { args } => passthrough(ctx, args).await,
-        IpfsCommand::Pin(args) => crate::ipfs_pin::run_pin(ctx, args).await,
+        IpfsCommand::Pin(args) => Box::pin(crate::ipfs_pin::run_pin(ctx, args)).await,
     }
 }
 
@@ -240,13 +240,12 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     let verified = verify(&node, &tokens, !ctx.json).await;
     if let Some(child) = temporary.as_mut() {
         let stopped = serve::stop(&node).await;
-        if stopped.is_ok() {
-            if tokio::time::timeout(Duration::from_secs(20), child.wait())
+        if stopped.is_ok()
+            && tokio::time::timeout(Duration::from_secs(20), child.wait())
                 .await
                 .is_err()
-            {
-                child.kill().await?;
-            }
+        {
+            child.kill().await?;
         }
         stopped?;
     }
@@ -284,10 +283,10 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     ctx.emit(value, || {
         println!(
             "IPFS node ready: kubo {version}, peer {peer_id}, {}.",
-            if !node.config.service {
-                "run `dg ipfs serve` to start it"
-            } else {
+            if node.config.service {
                 "starts at login"
+            } else {
+                "run `dg ipfs serve` to start it"
             }
         );
         println!(
@@ -393,7 +392,7 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
         eprintln!("Origins saved; run `dg ipfs serve` to restart the node.");
     }
     ctx.emit(json!({"origins":node.config.origins}), || {
-        println!("Allowed websites: {}", node.config.origins.join(", "))
+        println!("Allowed websites: {}", node.config.origins.join(", "));
     });
     Ok(())
 }
@@ -460,7 +459,7 @@ async fn down(ctx: &Ctx, purge: bool) -> Result<()> {
             } else {
                 ""
             }
-        )
+        );
     });
     Ok(())
 }

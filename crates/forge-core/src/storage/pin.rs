@@ -748,13 +748,12 @@ async fn pin_one(
     // Only writer-attested CIDs can be trusted without fetching the writer's bytes.
     if remote {
         for candidate in candidates.iter().filter(|c| c.swarm_allowed) {
-            match backend.remote_pin(&candidate.cid, &name).await {
-                Ok(_) => {
-                    return Ok(PinOutcome::Pinned {
-                        from: "pinning service".into(),
-                    })
-                }
-                Err(error) => last_error = error,
+            if let Err(error) = backend.remote_pin(&candidate.cid, &name).await {
+                last_error = error;
+            } else {
+                return Ok(PinOutcome::Pinned {
+                    from: "pinning service".into(),
+                });
             }
         }
     } else {
@@ -808,16 +807,15 @@ async fn pin_one(
             .saturating_add(target.size / 10)
             .saturating_add(1024 * 1024);
         for candidate in candidates.iter().filter(|c| c.swarm_allowed) {
-            match backend
+            if let Err(error) = backend
                 .pin_add_bounded(&candidate.cid, limit, opts.swarm_timeout)
                 .await
             {
-                Ok(()) => {
-                    return Ok(PinOutcome::Pinned {
-                        from: "IPFS swarm".into(),
-                    })
-                }
-                Err(error) => last_error = error,
+                last_error = error;
+            } else {
+                return Ok(PinOutcome::Pinned {
+                    from: "IPFS swarm".into(),
+                });
             }
         }
     }

@@ -17,11 +17,11 @@ use crate::context::Ctx;
 /// rather than as a spawned task because it borrows `ctx`; a stop drops it mid-refresh, and the
 /// next run resumes (already pinned files are skipped).
 async fn follow_loop(ctx: &Ctx) {
-    let mut interval = tokio::time::interval(Duration::from_secs(30 * 60));
+    let mut interval = tokio::time::interval(Duration::from_mins(30));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;
-        match crate::ipfs_pin::follow_tick(ctx).await {
+        match Box::pin(crate::ipfs_pin::follow_tick(ctx)).await {
             Ok(summary) if !summary.failed.is_empty() => {
                 tracing::warn!(failed = ?summary.failed, "IPFS follow refresh had failures");
             }
@@ -96,12 +96,11 @@ pub async fn run(ctx: &Ctx, node: Node) -> Result<()> {
         Ok::<(), anyhow::Error>(())
     })
     .await;
-    match drained {
-        Ok(result) => result?,
-        Err(_) => {
-            tasks.abort_all();
-            while tasks.join_next().await.is_some() {}
-        }
+    if let Ok(result) = drained {
+        result?;
+    } else {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
     }
     result
 }

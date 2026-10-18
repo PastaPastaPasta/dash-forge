@@ -283,7 +283,7 @@ async fn upstream_receives_only_selected_headers_and_uploads_stream() {
     let record = h.records.recv().await.unwrap();
     assert_eq!(record.bytes.len(), 128 * 1024);
     assert_eq!(record.method, Method::POST);
-    assert!(record.headers["authorization"] == "Bearer test-token");
+    assert_eq!(record.headers["authorization"], "Bearer test-token");
     assert_eq!(
         record.headers["content-type"],
         "multipart/form-data; boundary=test"
@@ -387,7 +387,7 @@ async fn pairing_requires_origin_and_consumes_codes() {
     assert_eq!(response.status(), StatusCode::OK);
     let payload: Value = response.json().await.unwrap();
     let expected_auth = format!("Bearer {}", h.state.tokens.forge);
-    assert!(payload["auth"].as_str() == Some(expected_auth.as_str()));
+    assert_eq!(payload["auth"].as_str(), Some(expected_auth.as_str()));
     assert_eq!(payload["peerId"], "test-peer");
     assert_eq!(payload["version"], "0.43.1");
     let response = h

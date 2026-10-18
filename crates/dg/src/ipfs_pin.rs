@@ -303,7 +303,7 @@ struct Finished {
 /// The command entry point R1 merges into its IPFS command dispatcher.
 pub async fn run_pin(ctx: &Ctx, args: &IpfsPinArgs) -> Result<()> {
     if args.all {
-        let summary = refresh(ctx, args, false).await?;
+        let summary = Box::pin(refresh(ctx, args, false)).await?;
         let body = json!({"status": "refreshed", "repos": summary.repos, "failed": summary.failed});
         if !summary.failed.is_empty() {
             return Err(crate::errors::reported(
@@ -324,7 +324,7 @@ pub async fn run_pin(ctx: &Ctx, args: &IpfsPinArgs) -> Result<()> {
         let network = ctx.network_label();
         update_follow(&ipfs_data_dir()?, |file| {
             file.repo
-                .retain(|r| r.network != network || r.repo_id != reader.repo.id())
+                .retain(|r| r.network != network || r.repo_id != reader.repo.id());
         })?;
         ctx.emit(
             json!({"status":"unfollowed", "repoId":reader.repo.id()}),
@@ -332,7 +332,7 @@ pub async fn run_pin(ctx: &Ctx, args: &IpfsPinArgs) -> Result<()> {
         );
         return Ok(());
     }
-    let finished = pin(ctx, args, false).await?;
+    let finished = Box::pin(pin(ctx, args, false)).await?;
     if !finished.report.failed.is_empty() {
         return Err(crate::errors::reported(
             UserError::new(codes::PARTIAL, "some repository files could not be pinned")
@@ -385,13 +385,13 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
         service.read_members_refs(&read.repo).await?;
     }
     let mut shared = std::collections::BTreeMap::new();
-    if let Some(branches) = read.shared_branches().await? {
+    if let Some(branches) = Box::pin(read.shared_branches()).await? {
         for branch in branches {
             shared.extend(branch.packs);
         }
     }
     let collab = read.collab();
-    let plan = pin_targets(
+    let plan = Box::pin(pin_targets(
         &service,
         &read.repo,
         &PinReaderContext {
@@ -400,7 +400,7 @@ async fn pin(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<Finished> {
             members,
             shared,
         },
-    )
+    ))
     .await?;
     let sensitive = read.repo.visibility == Visibility::Private || plan.needs_consent;
     if !args.dry_run {
@@ -551,14 +551,14 @@ pub struct FollowSummary {
 /// Called once at service start and every 30 minutes. Never writes progress to stdout.
 pub async fn follow_tick(ctx: &Ctx) -> Result<FollowSummary> {
     forge_core::sealed::forbid_prompts();
-    refresh(
+    Box::pin(refresh(
         ctx,
         &IpfsPinArgs {
             all: true,
             ..IpfsPinArgs::default()
         },
         true,
-    )
+    ))
     .await
 }
 
@@ -566,7 +566,7 @@ async fn refresh(ctx: &Ctx, args: &IpfsPinArgs, quiet: bool) -> Result<FollowSum
     let follows = followed_repos()?;
     let mut summary = FollowSummary::default();
     for entry in follows.repo {
-        let result = refresh_one(ctx, args, &entry, quiet).await;
+        let result = Box::pin(refresh_one(ctx, args, &entry, quiet)).await;
         let (blobs, last_error) = match &result {
             Ok(done) => (
                 done.report.pinned + done.report.already,
@@ -642,7 +642,7 @@ async fn refresh_one(
         verbose: args.verbose,
         ..IpfsPinArgs::default()
     };
-    pin(&run, &options, quiet).await
+    Box::pin(pin(&run, &options, quiet)).await
 }
 
 /// Optional parent pinning is attached to the fork's one result object.
@@ -652,14 +652,14 @@ pub struct ForkPinResult {
 }
 
 pub async fn pin_parent_after_fork(ctx: &Ctx, parent: &str) -> ForkPinResult {
-    let result = pin(
+    let result = Box::pin(pin(
         ctx,
         &IpfsPinArgs {
             repo: Some(parent.to_string()),
             ..IpfsPinArgs::default()
         },
         ctx.json,
-    )
+    ))
     .await;
     match result {
         Ok(done) => ForkPinResult {
@@ -739,7 +739,7 @@ mod tests {
             f.repo.push(FollowRepo {
                 network: "mainnet".into(),
                 ..entry.clone()
-            })
+            });
         })
         .unwrap();
         update_follow(dir.path(), |f| f.repo.retain(|r| r.network != "testnet")).unwrap();
@@ -833,9 +833,9 @@ mod tests {
                             last_error: None,
                             profile: None,
                             private_consent: false,
-                        })
+                        });
                     })
-                    .unwrap()
+                    .unwrap();
                 });
             }
         });

@@ -105,11 +105,16 @@ pub async fn install(node: &Node) -> Result<()> {
         "kubo/ipfs"
     };
     let result = tokio::process::Command::new("tar")
-        .arg(if target.ends_with(".zip") {
-            "-xf"
-        } else {
-            "-xzf"
-        })
+        .arg(
+            if std::path::Path::new(target)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+            {
+                "-xf"
+            } else {
+                "-xzf"
+            },
+        )
         .arg(download.path())
         .arg("-C")
         .arg(unpack.path())

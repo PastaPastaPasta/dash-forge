@@ -45,7 +45,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             name,
             default_branch_only,
             pin,
-        } => fork(ctx, repo, name.as_deref(), *default_branch_only, *pin).await,
+        } => Box::pin(fork(ctx, repo, name.as_deref(), *default_branch_only, *pin)).await,
         RepoCommand::Sync { repo, branch } => {
             crate::repo_sync::sync(ctx, repo, branch.as_deref()).await
         }
@@ -298,7 +298,13 @@ async fn fork(
     .await
     .context("forking the repository")?;
     let pinned = if pin && result.unreferenceable.is_empty() {
-        Some(crate::ipfs_pin::pin_parent_after_fork(ctx, &parent.display()).await)
+        Some(
+            Box::pin(crate::ipfs_pin::pin_parent_after_fork(
+                ctx,
+                &parent.display(),
+            ))
+            .await,
+        )
     } else {
         None
     };

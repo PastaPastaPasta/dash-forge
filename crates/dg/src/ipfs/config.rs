@@ -428,8 +428,14 @@ mod tests {
             config: NodeConfig::default(),
         };
         let tokens = Tokens::load_or_create(&node, false).unwrap();
-        assert!(tokens.forge == Tokens::load_or_create(&node, false).unwrap().forge);
-        assert!(tokens.forge != Tokens::load_or_create(&node, true).unwrap().forge);
+        assert_eq!(
+            tokens.forge,
+            Tokens::load_or_create(&node, false).unwrap().forge
+        );
+        assert_ne!(
+            tokens.forge,
+            Tokens::load_or_create(&node, true).unwrap().forge
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
