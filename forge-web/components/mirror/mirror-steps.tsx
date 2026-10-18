@@ -730,7 +730,7 @@ export function WorkflowStep({
             {capError ? <Hint tone="danger">{capError}</Hint> : null}
             {overBudget && runnerKey ? (
               <Hint tone="caution">
-                More than the runner key&apos;s whole budget ({creditsAsDash(Number(runnerKey.budgetCredits))} DASH<FiatNote dash={creditsToDash(Number(runnerKey.budgetCredits))} kind="bound" />): a run that needs it stops when the key runs out. Make a key with a larger budget in the runner key step.
+                More than the runner key&apos;s whole budget of {creditsAsDash(Number(runnerKey.budgetCredits))} DASH<FiatNote dash={creditsToDash(Number(runnerKey.budgetCredits))} kind="bound" />: a run that needs it stops when the key runs out. Make a key with a larger budget in the runner key step.
               </Hint>
             ) : null}
           </div>

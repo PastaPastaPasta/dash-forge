@@ -90,7 +90,7 @@ describe('mirror fiat costs and budgets', () => {
     expect(field('mirror-cost-cap').textContent).toContain("default of 0.05 DASH (≤ $2.00 on mainnet)")
     await fill('mirror-cost-cap', '0.75')
     expect(field('mirror-cost-cap').textContent).toContain('≤ $30.00 on mainnet')
-    expect(host.textContent).toContain("whole budget (0.5 DASH (≤ $20.00 on mainnet))")
+    expect(host.textContent).toContain("whole budget of 0.5 DASH (≤ $20.00 on mainnet): a run")
     expect(host.querySelector('[data-testid="mirror-yaml"] pre')?.textContent).toContain("cost-cap: '0.75'")
     expect(host.querySelector('[data-testid="mirror-yaml"] [data-testid="fiat-note"]')).toBeNull()
     await fill('mirror-cost-cap', 'no')
