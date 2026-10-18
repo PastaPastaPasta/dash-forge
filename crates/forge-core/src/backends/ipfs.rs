@@ -403,7 +403,7 @@ fn pin_progress(line: &[u8], cid: &str, max_bytes: u64) -> Result<bool> {
         let blocks = progress
             .as_u64()
             .ok_or_else(|| Error::Io("kubo pin/add returned an invalid block count".into()))?;
-        Some(blocks.saturating_mul(1024 * 1024))
+        Some(blocks.saturating_mul(256 * 1024))
     } else {
         None
     };
@@ -606,9 +606,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pin_progress_prefers_bytes_and_bounds_one_mib_blocks() {
+    fn pin_progress_prefers_bytes_and_bounds_256_kib_blocks() {
         let cid = "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq";
-        assert!(pin_progress(br#"{"Progress":2}"#, cid, 1024 * 1024).is_err());
+        assert!(pin_progress(br#"{"Progress":5}"#, cid, 1024 * 1024).is_err());
         assert!(!pin_progress(br#"{"Progress":1}"#, cid, 1024 * 1024).unwrap());
         assert!(!pin_progress(br#"{"Progress":100,"Bytes":10}"#, cid, 10).unwrap());
         assert!(pin_progress(br#"{"Bytes":11}"#, cid, 10).is_err());

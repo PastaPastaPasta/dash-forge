@@ -364,11 +364,11 @@ pub async fn pin_targets(
     });
     let mut mirrors = BTreeMap::new();
     for m in &writers {
-        if !mirrors.contains_key(&m.pack_hash) {
+        if let std::collections::btree_map::Entry::Vacant(entry) = mirrors.entry(m.pack_hash) {
             let uris = svc
                 .pin_mirror_uris(repo, &hex::encode(m.pack_hash), &roles)
                 .await?;
-            mirrors.insert(m.pack_hash, uris);
+            entry.insert(uris);
         }
     }
     for m in writers {
