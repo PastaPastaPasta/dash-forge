@@ -174,7 +174,6 @@ import { markMerged, recheckPageMerge } from '@/lib/view/merge-recheck'
 import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
-import { CopyRow } from '@/components/ui/copy-row'
 import { UnverifiedMergeNote } from '@/components/repo/unverified-merge-note'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
@@ -184,6 +183,7 @@ import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } fr
 import { ReviewDrawer, StaleHeadNote, useReviewDraft, type NewerThanHead } from '@/components/repo/review-drawer'
 import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSourceWrite, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
+import { PullSourceCheckout } from '@/components/repo/pull-source-checkout'
 import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
@@ -2560,19 +2560,25 @@ function PullPage({
                   </>
                 ) : null}
               </p>
-              {sync?.kind === 'deleted' ? (
-                // `dg pr checkout` fetches the source's branches, so with the branch gone it has
-                // nothing to fetch: a merged head is in the base's history, checked out by id.
-                <>
-                  <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="source-branch-deleted-note">
-                    The branch was deleted. The PR&apos;s head is <Oid value={pull.headOid} chars={7} copyable={false} />
-                    {merged ? `, in ${shortBranch(pull.mergeBaseRefName)}'s history:` : '.'}
-                  </p>
-                  {merged ? <CopyRow text={`git switch --detach ${gitHead}`} label="Copy the checkout command" className="mt-2" /> : null}
-                </>
-              ) : (
-                <CopyRow text={checkout} label="Copy the checkout command" className="mt-2" />
-              )}
+              <PullSourceCheckout
+                deleted={sync?.kind === 'deleted'}
+                sourceMissing={source.kind === 'missing'}
+                checkout={checkout}
+                headOid={gitHead}
+                merge={merged ? {
+                  oid: pull.mergeOid ?? '',
+                  headOid: mergeHead,
+                  baseBranch: shortBranch(pull.mergeBaseRefName),
+                  onBase: pull.state.mergeOnBase,
+                  content: mergeCheck.data,
+                } : null}
+                source={sourceRef || !crossRepo ? {
+                  ownerId: (sourceRef ?? repo).ownerId,
+                  name: (sourceRef ?? repo).name,
+                  reader: comparison.headOnly,
+                  readerKey: comparison.sidesKey,
+                } : null}
+              />
             </SidebarSection>
             {/* Lock conversation (GitHub: the rail's last entry): a member transition, for maintainers and writers. */}
             {isMember || thread.locked ? (
