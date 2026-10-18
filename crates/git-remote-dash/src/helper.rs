@@ -282,7 +282,12 @@ fn missing_ref_key_hints(view: &forge_core::refs::MembersView, keys: &MembersKey
     hints
 }
 
-fn branch_keys_unavailable(why: &str, remote: Option<&str>, names: Option<&[String]>) -> UserError {
+fn branch_keys_unavailable(
+    keys: &MembersKeys,
+    remote: Option<&str>,
+    names: Option<&[String]>,
+) -> UserError {
+    let why = keys.unavailable_reason();
     let list = names
         .unwrap_or_default()
         .iter()
@@ -308,8 +313,11 @@ fn branch_keys_unavailable(why: &str, remote: Option<&str>, names: Option<&[Stri
             ));
         }
     }
-    error.fix("unlock your encryption key, or ask the branch's maintainer to share its branch key again")
-    .note("nothing was fetched")
+    let fix = match keys {
+        MembersKeys::Held(_) => "ask the branch's maintainer to share its branch key again",
+        _ => "unlock your encryption key, or ask the branch's maintainer to share its branch key again",
+    };
+    error.fix(fix).note("nothing was fetched")
 }
 
 /// Choose a refusal without treating an unreadable or mixed ledger as narrower-only.
@@ -328,9 +336,142 @@ fn uncovered_refs_error(
     }
     if matches!(ledger, State::Present(l) if !l.is_empty() && l.commits.values().chain(l.packs.values()).all(|a| matches!(a, EntryAudience::Narrower(_))))
     {
-        return branch_keys_unavailable(keys.unavailable_reason(), remote, dropped);
+        return branch_keys_unavailable(keys, remote, dropped);
     }
     members::cannot_check_fetch(keys.unavailable_reason())
+}
+
+/// Members-key readers must not silently lose a locally held narrower branch.
+fn check_narrower_coverage(
+    covered: &BTreeSet<String>,
+    ledger: &forge_core::members_git::ledger::State,
+    local: &[(String, String)],
+    remote: Option<&str>,
+    keys: &MembersKeys,
+) -> Result<()> {
+    use forge_core::members_git::ledger::{EntryAudience, State};
+    let State::Present(ledger) = ledger else {
+        return Ok(());
+    };
+    // The ledger has no names. Only a local remote-tracking tip associates its recorded
+    // audience with a name; an unrelated narrower entry proves nothing about that name.
+    let dropped: Vec<String> = local
+        .iter()
+        .filter(|(name, oid)| {
+            !covered.contains(name)
+                && matches!(ledger.commits.get(oid), Some(EntryAudience::Narrower(_)))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    if dropped.is_empty() {
+        return Ok(());
+    }
+    Err(branch_keys_unavailable(keys, remote, Some(&dropped)).into())
+}
+
+/// The members-key caller's coverage decision, including whether local refs must be read.
+fn check_members_fetch_coverage(
+    check: bool,
+    remote: Option<&str>,
+    public: &[(String, RefState)],
+    members: &forge_core::refs::MembersView,
+    keys: &MembersKeys,
+    ledger: &forge_core::members_git::ledger::State,
+    read_local: impl FnOnce(&str) -> Option<Vec<(String, String)>>,
+) -> Result<()> {
+    if !check {
+        return Ok(());
+    }
+    // URL fetches write no remote-tracking refs: there is nothing for prune to drop.
+    let Some(remote) = remote.filter(|r| !r.is_empty() && !r.contains("://")) else {
+        return Ok(());
+    };
+    let local =
+        read_local(remote).context("reading this clone's remote-tracking branches before fetch")?;
+    // An OID may have been recorded Narrower because a different branch reused a public
+    // commit. Signed public names (including deletions) must not be mistaken for lost keys.
+    // Keep the base behavior for deletions opened with the members key as well: this accepts
+    // their deletion even if this ledger cannot prove which branch gave the tip its audience.
+    let covered = public
+        .iter()
+        .chain(&members.refs)
+        .map(|(name, _)| name.clone())
+        .collect();
+    check_narrower_coverage(&covered, ledger, &local, Some(remote), keys)
+}
+
+fn offered_shared_head(refs: &[(String, RefState)], name: &str, head: &str) -> bool {
+    refs.iter()
+        .any(|(n, state)| n == name && tip_oid(state).as_deref() == Some(head))
+}
+
+struct ReadableRefPlan {
+    refs: Vec<(String, RefState)>,
+    warnings: Vec<String>,
+}
+
+/// A missing pack is not a deletion: retain a held, servable tracking tip, otherwise
+/// leave the unavailable name out without blocking the other branches.
+fn readable_ref_plan(
+    refs: Vec<(String, RefState)>,
+    sealed: &BTreeSet<String>,
+    shared: &BTreeSet<String>,
+    local: &[(String, String)],
+    object_exists: impl Fn(&str) -> bool,
+) -> ReadableRefPlan {
+    let mut plan = ReadableRefPlan {
+        refs: Vec::new(),
+        warnings: Vec::new(),
+    };
+    for (name, state) in refs {
+        if !sealed.contains(&name) || tip_oid(&state).is_none_or(|tip| object_exists(&tip)) {
+            plan.refs.push((name, state));
+            continue;
+        }
+        let short = members::short(&name);
+        if let Some((_, oid)) = local
+            .iter()
+            .find(|(n, _)| n == &name)
+            .filter(|(_, oid)| object_exists(oid))
+        {
+            let remedy = if shared.contains(&name) {
+                "ask whoever shared it to share it again"
+            } else {
+                "whoever pushed it can push it again"
+            };
+            plan.warnings.push(format!("dash: warning: branch {short}: its newer tip didn't arrive; keeping the version this clone has ({remedy})"));
+            // Metadata is irrelevant to list_lines. Do not attach the new tip's author or
+            // timestamp to this local snapshot, or use it as evidence of another generation.
+            plan.refs.push((
+                name,
+                RefState::Resolved {
+                    oid: oid.clone(),
+                    author: String::new(),
+                    created_at: 0,
+                },
+            ));
+        } else if shared.contains(&name) {
+            plan.warnings.push(format!("dash: warning: {short} was shared with you, but its commits didn't arrive; ask whoever shared it to share it again"));
+        } else {
+            plan.warnings.push(format!("dash: warning: members-only branch {short} isn't fetched: no stored pack holds its commits (whoever pushed it can push it again)"));
+        }
+    }
+    plan
+}
+
+/// Read only this remote's local tracking tips, then apply the common availability policy.
+fn readable_member_refs(
+    refs: Vec<(String, RefState)>,
+    sealed: &BTreeSet<String>,
+    shared: &BTreeSet<String>,
+    remote: Option<&str>,
+) -> Vec<(String, RefState)> {
+    let local = members::remote_tracking_tips(remote).unwrap_or_default();
+    let plan = readable_ref_plan(refs, sealed, shared, &local, LocalRepo::object_exists);
+    for warning in plan.warnings {
+        eprintln!("{warning}");
+    }
+    plan.refs
 }
 
 /// Pure list policy for readers without a members key. Only the public fold's tips may be
@@ -355,15 +496,7 @@ fn shared_ref_plan(
     };
     let opened = opened.filter(|_| ring.is_some());
     let mut refs = opened.map_or_else(|| public.to_vec(), |m| m.refs.clone());
-    let mut covered: BTreeSet<String> = live_names(&refs).into_iter().map(str::to_owned).collect();
-    if let Some(ring) = ring {
-        // A decrypted deletion is checked too: a letter alone never covers a missing ref.
-        covered.extend(
-            refs.iter()
-                .filter(|(n, _)| ring.get(n).is_some())
-                .map(|(n, _)| n.clone()),
-        );
-    }
+    let mut covered = covered_ref_names(&refs, ring.as_deref());
     for b in shared {
         covered.insert(b.name.clone());
         refs.push((
@@ -382,6 +515,20 @@ fn shared_ref_plan(
         shared_names: shared.iter().map(|b| b.name.clone()).collect(),
         branch_keys: opened.is_some(),
     }
+}
+
+/// Match the branch-key-only coverage policy: live tips and deletions whose branch key
+/// is held are covered; a key letter alone or an unopened public update is not.
+fn covered_ref_names(
+    refs: &[(String, RefState)],
+    ring: Option<&forge_core::private::branch_key::BranchRing>,
+) -> BTreeSet<String> {
+    refs.iter()
+        .filter(|(name, state)| {
+            tip_oid(state).is_some() || ring.is_some_and(|r| r.get(name).is_some())
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// What a fetch of members-only branches needs from the `list` before it.
@@ -694,6 +841,15 @@ impl Helper {
                 .shared_or_public(&state, view.public, Some(m), &keys, holds, for_push)
                 .await;
         }
+        check_members_fetch_coverage(
+            holds && !for_push,
+            self.remote.as_deref(),
+            &view.public,
+            &m,
+            &keys,
+            &members::read_ledger(),
+            |remote| members::remote_tracking_tips(Some(remote)),
+        )?;
         let defer = if for_push {
             false
         } else {
@@ -737,27 +893,20 @@ impl Helper {
             decryptable: m.decryptable,
             narrower,
         });
-        // The members-only packs come first, so a members-only branch no stored pack holds (a
-        // ref update written without its pack) is left out with a warning instead of failing the
-        // whole fetch with "bad object". A clone that already holds its commits keeps it. The
-        // first members-only fetch into a repository that has refs reads them in its `fetch`
-        // instead (`defer`): a branch with no pack then fails that fetch, and the next one (hook
-        // in place) leaves it out.
+        // Read members-only packs before answering the list; a missing new tip keeps a
+        // servable local tracking tip, so prune cannot mistake it for a deleted branch.
+        // With defer, the first fetch fails on a pack-less branch; the next leaves it out if unheld.
         if defer {
             return Ok(m.refs);
         }
         self.fetch_packs(&[], &OptionState::default(), true, true)
             .await?;
-        let (kept, dropped): (Vec<_>, Vec<_>) = m.refs.into_iter().partition(|(n, s)| {
-            !m.members_only.contains(n) || tip_oid(s).is_none_or(|t| LocalRepo::object_exists(&t))
-        });
-        for (name, _) in &dropped {
-            eprintln!(
-                "dash: warning: members-only branch {} isn't fetched: no stored pack holds its commits (whoever pushed it can push it again)",
-                members::short(name)
-            );
-        }
-        Ok(kept)
+        Ok(readable_member_refs(
+            m.refs,
+            &m.members_only,
+            &BTreeSet::new(),
+            self.remote.as_deref(),
+        ))
     }
 
     /// The refs of a PUBLIC repository with members-only branches for a reader whose members key
@@ -885,24 +1034,19 @@ impl Helper {
             }
         }
         if read_now {
-            if let Some(m) = &opened {
-                plan.refs.retain(|(name, state)| {
-                    let keep = !m.members_only.contains(name) || tip_oid(state).is_none_or(|tip| LocalRepo::object_exists(&tip));
-                    if !keep {
-                        eprintln!("dash: warning: members-only branch {} isn't fetched: no stored pack holds its commits (whoever pushed it can push it again)", members::short(name));
-                    }
-                    keep
-                });
-            }
+            let mut sealed = opened
+                .as_ref()
+                .map(|m| m.members_only.clone())
+                .unwrap_or_default();
+            let shared_names: BTreeSet<String> = shared.iter().map(|b| b.name.clone()).collect();
+            sealed.extend(shared_names.iter().cloned());
+            plan.refs =
+                readable_member_refs(plan.refs, &sealed, &shared_names, self.remote.as_deref());
         }
         let mut given = Vec::new();
         for b in shared {
-            if read_now && !LocalRepo::object_exists(&b.head) {
-                eprintln!(
-                    "dash: warning: {} was shared with you, but its commits didn't arrive; ask whoever shared it to share it again",
-                    members::short(&b.name)
-                );
-                plan.refs.retain(|(n, _)| n != &b.name);
+            // The availability policy already warned about an omitted or retained old tip.
+            if read_now && !offered_shared_head(&plan.refs, &b.name, &b.head) {
                 continue;
             }
             eprintln!(
