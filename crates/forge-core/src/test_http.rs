@@ -14,6 +14,8 @@ pub struct Seen {
     pub method: String,
     /// Request path and query.
     pub path: String,
+    /// Request bytes (the stub consumes content-length bodies before routing).
+    pub body: Vec<u8>,
     /// Header lines, names lower-cased, in order.
     pub headers: Vec<(String, String)>,
 }
@@ -93,10 +95,11 @@ pub fn serve(
                     headers.push((n.trim().to_ascii_lowercase(), v.trim().to_string()));
                 }
             }
-            let seen = Seen {
+            let mut seen = Seen {
                 method,
                 path,
                 headers,
+                body: Vec::new(),
             };
             let len: usize = seen
                 .header("content-length")
@@ -104,6 +107,7 @@ pub fn serve(
                 .unwrap_or(0);
             let mut body = vec![0u8; len];
             let _ = reader.read_exact(&mut body);
+            seen.body = body;
             let reply = route(&seen);
             let head_request = seen.method == "HEAD";
             seen_log.lock().unwrap().push(seen);

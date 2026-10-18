@@ -227,7 +227,10 @@ impl IpfsBackend {
 
     /// Whether `cid` is pinned (recursively) on the kubo node.
     pub async fn is_pinned(&self, cid: &str) -> Result<bool> {
-        let req = self.rpc(&format!("pin/ls?arg={cid}&type=recursive"))?;
+        Self::cid_of(&Uri(format!("ipfs://{cid}")))?;
+        let req = self
+            .rpc("pin/ls")?
+            .query(&[("arg", cid), ("type", "recursive")]);
         match self.rpc_text("pin/ls", req).await {
             Ok(body) => {
                 let value: serde_json::Value = serde_json::from_str(&body)?;
@@ -312,7 +315,8 @@ impl IpfsBackend {
 
     /// Unpin `cid` (used by `dg storage test` to clean up its probe).
     pub async fn unpin(&self, cid: &str) -> Result<()> {
-        let req = self.rpc(&format!("pin/rm?arg={cid}"))?;
+        Self::cid_of(&Uri(format!("ipfs://{cid}")))?;
+        let req = self.rpc("pin/rm")?.query(&[("arg", cid)]);
         match self.rpc_text("pin/rm", req).await {
             Ok(_) => Ok(()),
             Err(Error::Io(msg)) if msg.contains("not pinned") => Ok(()),
@@ -383,14 +387,15 @@ fn pin_progress(line: &[u8], cid: &str, max_bytes: u64) -> Result<bool> {
         return Ok(false);
     }
     let value: serde_json::Value = serde_json::from_slice(line)?;
-    if value
-        .get("Progress")
-        .and_then(serde_json::Value::as_u64)
-        .is_some_and(|n| n.saturating_mul(262_144) > max_bytes)
-    {
-        return Err(Error::Io(
-            "IPFS swarm pin exceeded the recorded size limit".into(),
-        ));
+    if let Some(progress) = value.get("Progress") {
+        let blocks = progress
+            .as_u64()
+            .ok_or_else(|| Error::Io("kubo pin/add returned an invalid block count".into()))?;
+        if blocks.saturating_mul(262_144) > max_bytes {
+            return Err(Error::Io(
+                "IPFS swarm pin exceeded the recorded size limit".into(),
+            ));
+        }
     }
     if value.get("Message").is_some() || value.get("Error").is_some() {
         return Err(Error::Io("kubo pin/add reported an error".into()));

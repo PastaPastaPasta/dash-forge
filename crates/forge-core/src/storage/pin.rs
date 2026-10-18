@@ -145,7 +145,7 @@ fn add_targets(
             plan.targets.push(PinTarget {
                 cid,
                 size,
-                sha256: sha256.to_string(),
+                sha256: sha256.to_ascii_lowercase(),
                 what: what.clone(),
                 copies: Vec::new(),
                 uris: uris.to_vec(),
@@ -172,13 +172,7 @@ pub fn plan_targets(input: &PinInput) -> PinPlan {
             .filter(|m| authorized(&input.owner, &m.owner, &input.roles))
             .min_by_key(|m| {
                 (
-                    if m.owner == input.owner
-                        || input.roles.get(&m.owner) == Some(&Role::Maintainer)
-                    {
-                        0
-                    } else {
-                        1
-                    },
+                    m.owner != input.owner && input.roles.get(&m.owner) != Some(&Role::Maintainer),
                     m.created_at,
                     &m.id,
                 )
@@ -268,11 +262,7 @@ pub async fn pin_targets(
         .collect();
     writers.sort_by_key(|m| {
         (
-            if m.owner_id == repo.owner_id() || roles.get(&m.owner_id) == Some(&Role::Maintainer) {
-                0
-            } else {
-                1
-            },
+            m.owner_id != repo.owner_id() && roles.get(&m.owner_id) != Some(&Role::Maintainer),
             m.created_at,
             &m.document_id,
         )
@@ -281,10 +271,15 @@ pub async fn pin_targets(
         if visibility.contains_key(&m.pack_hash) {
             continue;
         }
-        let copies: Vec<_> = manifests
+        let bounded_copies: Vec<_> = manifests
             .iter()
             .filter(|c| c.pack_hash == m.pack_hash && c.kind == m.kind)
+            .map(|c| PackManifestInfo {
+                size_bytes: m.size_bytes,
+                ..c.clone()
+            })
             .collect();
+        let copies: Vec<_> = bounded_copies.iter().collect();
         let members_kind = m.kind >= u64::from(crate::pack::KIND_SEALED_BASE);
         let maybe_sealed = repo.visibility == Visibility::Private
             || members_kind
@@ -319,6 +314,15 @@ pub async fn pin_targets(
                         };
                         keys.is_some_and(|k| k.epoch_keys(epoch).is_some())
                             || ctx.shared.contains_key(&m.pack_hash)
+                    }
+                    crate::private::Head::OtherVersion(version)
+                        if members_kind && version == crate::private::branch_key::PACK_VERSION =>
+                    {
+                        ctx.members
+                            .as_ref()
+                            .and_then(|k| k.branch_ring())
+                            .zip(crate::private::branch_key::sniff_kcv(&head))
+                            .is_some_and(|(ring, kcv)| ring.branch_of_kcv(kcv).is_some())
                     }
                     _ => false,
                 };
@@ -372,13 +376,37 @@ pub async fn pin_targets(
             sensitive,
         });
     }
+    let mut mirror_rows = Vec::new();
+    for row in &rows {
+        if !row.readable || !authorized(repo.owner_id(), &row.owner, &roles) {
+            continue;
+        }
+        if mirror_rows
+            .iter()
+            .any(|m: &PinManifest| m.sha256 == row.sha256)
+        {
+            continue;
+        }
+        let uris = svc.pin_mirror_uris(repo, &row.sha256, &roles).await?;
+        mirror_rows.push(PinManifest {
+            id: format!("mirror:{}", row.id),
+            owner: String::new(),
+            uris,
+            ..row.clone()
+        });
+    }
+    rows.extend(mirror_rows.into_iter().filter(|m| !m.uris.is_empty()));
     let releases = ctx.collab.releases(repo).await?;
     let mut release_rows = Vec::new();
     for release in releases.current.iter().chain(&releases.previous) {
         if !authorized(repo.owner_id(), &release.publisher, &roles) {
             continue;
         }
-        let assets = if let Some(sealed) = &release.sealed {
+        let assets = if let Some(sealed) = release
+            .sealed
+            .as_ref()
+            .filter(|s| s.fields.asset_manifest.is_some())
+        {
             ctx.collab
                 .release_manifest(repo, &sealed.fields)
                 .await?
@@ -424,7 +452,10 @@ pub async fn pin_targets(
             target.copies = manifests
                 .iter()
                 .filter(|m| hex::encode(m.pack_hash) == target.sha256 && m.kind == *kind)
-                .cloned()
+                .map(|m| PackManifestInfo {
+                    size_bytes: target.size,
+                    ..m.clone()
+                })
                 .collect();
         }
     }
@@ -467,19 +498,10 @@ impl PinReader for RepoPinReader<'_> {
         }
         let contract = self.service.repo_contract(self.repo).await?;
         let copies: Vec<_> = target.copies.iter().collect();
-        let (bytes, served) = self
+        let (bytes, from, _) = self
             .service
-            .fetch_best_copy_or_mirror(self.repo, &contract, &copies, &self.roles, self.reader)
+            .fetch_pin_copy_or_mirror(self.repo, &contract, &copies, &self.roles, self.reader)
             .await?;
-        let from = served
-            .uris
-            .iter()
-            .find_map(|u| {
-                reqwest::Url::parse(u)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_owned))
-            })
-            .unwrap_or_else(|| "recorded copy".into());
         Ok(PinBytes { bytes, from })
     }
 }
@@ -546,6 +568,7 @@ async fn pin_one(
     reader: &impl PinReader,
     opts: &PinOptions,
 ) -> Result<PinOutcome> {
+    IpfsBackend::cid_of(&Uri(format!("ipfs://{}", target.cid)))?;
     if backend.config().pinning.is_some() {
         let name = format!(
             "{}:{}",
@@ -925,5 +948,74 @@ mod tests {
         ] {
             assert_eq!(cid(uri), None);
         }
+    }
+
+    #[tokio::test]
+    async fn swarm_timeout_unpins_before_returning() {
+        let (url, log) = serve(|request| {
+            if request.path.starts_with("/api/v0/pin/add?") {
+                std::thread::sleep(Duration::from_millis(100));
+                Reply::new(200, "{\"Pins\":[\"bafySlow\"]}\n")
+            } else {
+                Reply::new(200, "{}")
+            }
+        });
+        let backend = IpfsBackend::new(IpfsConfig::local(&url, &url));
+        let error = backend
+            .pin_add_bounded("bafySlow", 1024, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.path.starts_with("/api/v0/pin/rm?")));
+    }
+
+    #[tokio::test]
+    async fn pinning_service_uses_only_its_cid_api_and_a_stable_name() {
+        let t = target(b"remote");
+        let (url, log) = serve(|request| {
+            if request.method == "GET" {
+                Reply::new(200, "{\"results\":[]}")
+            } else {
+                Reply::new(200, "{\"requestid\":\"remote1\",\"status\":\"pinned\"}")
+            }
+        });
+        let backend = IpfsBackend::new(IpfsConfig {
+            api: None,
+            api_auth: None,
+            gateway: String::new(),
+            pinning: Some(crate::backends::ipfs::PinningServiceConfig {
+                endpoint: url,
+                token: crate::keystore::Secret::new("local-test-token"),
+                timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(1),
+            }),
+        });
+        let report = pin_repo(
+            &PinPlan {
+                targets: vec![t],
+                ..PinPlan::default()
+            },
+            &backend,
+            &Bytes(Vec::new()),
+            &PinOptions {
+                remote_name: "forge:owner/repo".into(),
+                ..PinOptions::default()
+            },
+            |_| {},
+        )
+        .await;
+        assert_eq!(report.pinned, 1);
+        let requests = log.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().all(|r| r.path.starts_with("/pins")));
+        let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert!(body["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("forge:owner/repo:"));
     }
 }
