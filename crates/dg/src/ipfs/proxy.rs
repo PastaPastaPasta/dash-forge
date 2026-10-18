@@ -46,6 +46,19 @@ pub fn gateway_router(state: Arc<Proxy>) -> Router {
     Router::new().fallback(gateway).with_state(state)
 }
 
+pub async fn healthy(client: &reqwest::Client, base: &str) -> bool {
+    let Ok(response) = client.get(format!("{base}/dash-forge/health")).send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    response
+        .json::<Value>()
+        .await
+        .is_ok_and(|value| value["dashForge"] == true && value["version"].as_str().is_some())
+}
+
 fn one_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let mut values = headers.get_all(name).iter();
     let first = values.next()?.to_str().ok()?;
@@ -76,9 +89,6 @@ fn cors(response: &mut Response, origin: &str, gateway: bool) {
         response
             .headers_mut()
             .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-        response
-            .headers_mut()
-            .insert(header::VARY, HeaderValue::from_static("Origin"));
         if gateway {
             response.headers_mut().insert(
                 header::ACCESS_CONTROL_EXPOSE_HEADERS,
@@ -118,9 +128,43 @@ fn preflight(origin: Option<&str>, gateway: bool) -> Response {
     response
 }
 
-async fn rpc(State(state): State<Arc<Proxy>>, request: Request) -> Response {
+fn response_headers(mut response: Response, gateway: bool) -> Response {
+    response
+        .headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Origin"));
+    if gateway {
+        response.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox"),
+        );
+        response.headers_mut().insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
+    }
+    response
+}
+
+fn health(request: &Request) -> Option<Response> {
+    (request.uri().path() == "/dash-forge/health").then(|| {
+        if request.method() == Method::GET {
+            Json(json!({"dashForge":true,"version":env!("CARGO_PKG_VERSION")})).into_response()
+        } else {
+            StatusCode::NOT_FOUND.into_response()
+        }
+    })
+}
+
+async fn rpc(state: State<Arc<Proxy>>, request: Request) -> Response {
+    response_headers(rpc_inner(state, request).await, false)
+}
+
+async fn rpc_inner(State(state): State<Arc<Proxy>>, request: Request) -> Response {
     if !host_ok(request.headers(), state.node.config.api_port) {
         return StatusCode::MISDIRECTED_REQUEST.into_response();
+    }
+    if let Some(response) = health(&request) {
+        return response;
     }
     let origin = allowed_origin(request.headers(), &state.node).map(str::to_owned);
     if request.headers().contains_key(header::ORIGIN) && origin.is_none() {
@@ -151,11 +195,27 @@ fn gateway_path(path: &str) -> bool {
         .is_some_and(|cid| !cid.is_empty() && cid.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
-async fn gateway(State(state): State<Arc<Proxy>>, request: Request) -> Response {
+async fn gateway(state: State<Arc<Proxy>>, request: Request) -> Response {
+    response_headers(gateway_inner(state, request).await, true)
+}
+
+async fn gateway_inner(State(state): State<Arc<Proxy>>, request: Request) -> Response {
     if !host_ok(request.headers(), state.node.config.gateway_port) {
         return StatusCode::MISDIRECTED_REQUEST.into_response();
     }
     let origin = allowed_origin(request.headers(), &state.node).map(str::to_owned);
+    if request.headers().contains_key("sec-fetch-site")
+        && !matches!(
+            one_header(request.headers(), "sec-fetch-site"),
+            Some("same-origin" | "none")
+        )
+        && origin.is_none()
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if let Some(response) = health(&request) {
+        return response;
+    }
     let mut response = if request.method() == Method::OPTIONS {
         preflight(origin.as_deref(), true)
     } else if !gateway_path(request.uri().path()) {
@@ -169,6 +229,32 @@ async fn gateway(State(state): State<Arc<Proxy>>, request: Request) -> Response 
         cors(&mut response, &origin, true);
     }
     response
+}
+
+/// Keep redirects on the same loopback authority. Kubo subdomain redirects and
+/// network-path references must never navigate the browser to another host.
+fn safe_location(location: &str, host: &str) -> bool {
+    if location.is_empty()
+        || location.starts_with("//")
+        || location.contains('\\')
+        || location.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let Ok(base) = reqwest::Url::parse(&format!("http://{host}/")) else {
+        return false;
+    };
+    if let Ok(url) = reqwest::Url::parse(location) {
+        url.origin() == base.origin()
+            && gateway_path(url.path())
+            && url.username().is_empty()
+            && url.password().is_none()
+    } else {
+        !location.starts_with(['?', '#'])
+            && base
+                .join(location)
+                .is_ok_and(|url| url.origin() == base.origin())
+    }
 }
 
 async fn forward(state: &Proxy, request: Request, gateway: bool) -> Response {
@@ -201,6 +287,9 @@ async fn forward(state: &Proxy, request: Request, gateway: bool) -> Response {
         }
     }
     // Construct a fresh request, never copying Origin, Referer or the incoming Host.
+    let host = one_header(request.headers(), "host")
+        .unwrap_or_default()
+        .to_owned();
     let body = reqwest::Body::wrap_stream(request.into_body().into_data_stream());
     let Ok(upstream) = upstream.body(body).send().await else {
         return StatusCode::BAD_GATEWAY.into_response();
@@ -224,6 +313,16 @@ async fn forward(state: &Proxy, request: Request, gateway: bool) -> Response {
             response = response.header(name, value);
         }
     }
+    if gateway && upstream.status().is_redirection() {
+        if let Some(location) = upstream.headers().get(header::LOCATION) {
+            if location
+                .to_str()
+                .is_ok_and(|value| safe_location(value, &host))
+            {
+                response = response.header(header::LOCATION, location);
+            }
+        }
+    }
     response
         .body(Body::from_stream(upstream.bytes_stream()))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
@@ -239,6 +338,22 @@ async fn pairing(state: &Proxy, request: Request) -> Response {
     let Some(code) = body["code"].as_str() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    let mut identity = state.identity.lock().await;
+    if identity.is_none() {
+        let (Ok(id), Ok(version)) = tokio::join!(
+            super::status::admin_rpc(&state.node, &state.tokens, "id"),
+            super::status::admin_rpc(&state.node, &state.tokens, "version")
+        ) else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        let (Some(id), Some(version)) = (id["ID"].as_str(), version["Version"].as_str()) else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        *identity = Some((id.into(), version.into()));
+    }
+    let Some((peer_id, version)) = identity.as_ref() else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
     match pair::consume(&state.node, code, pair::now()) {
         Ok(pair::Verdict::Gone) => return StatusCode::GONE.into_response(),
         Ok(pair::Verdict::Wrong) => {
@@ -247,22 +362,6 @@ async fn pairing(state: &Proxy, request: Request) -> Response {
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
         Ok(pair::Verdict::Success) => {}
     }
-    let mut identity = state.identity.lock().await;
-    if identity.is_none() {
-        let (Ok(id), Ok(version)) = tokio::join!(
-            super::status::admin_rpc(&state.node, &state.tokens, "id"),
-            super::status::admin_rpc(&state.node, &state.tokens, "version")
-        ) else {
-            return StatusCode::BAD_GATEWAY.into_response();
-        };
-        let (Some(id), Some(version)) = (id["ID"].as_str(), version["Version"].as_str()) else {
-            return StatusCode::BAD_GATEWAY.into_response();
-        };
-        *identity = Some((id.into(), version.into()));
-    }
-    let Some((peer_id, version)) = identity.as_ref() else {
-        return StatusCode::BAD_GATEWAY.into_response();
-    };
     Json(json!({"name":state.node.config.name, "api":state.node.api(), "gateway":state.node.gateway(), "auth":format!("Bearer {}", state.tokens.forge), "peerId":peer_id, "version":version})).into_response()
 }
 

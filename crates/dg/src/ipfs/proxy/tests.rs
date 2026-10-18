@@ -52,6 +52,14 @@ async fn stub(State(state): State<Upstream>, request: Request) -> Response {
             });
         return Response::new(Body::from_stream(stream));
     }
+    if path == "/ipfs/redirect" {
+        let mut response = StatusCode::FOUND.into_response();
+        let location = parts.uri.query().unwrap_or("/ipfs/bafytest/");
+        response
+            .headers_mut()
+            .insert(header::LOCATION, HeaderValue::from_str(location).unwrap());
+        return response;
+    }
     let value = match path.as_str() {
         "/api/v0/id" => json!({"ID":"test-peer"}),
         "/api/v0/version" => json!({"Version":"0.43.1"}),
@@ -125,6 +133,7 @@ impl Harness {
             state,
             client: reqwest::Client::builder()
                 .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap(),
@@ -208,6 +217,7 @@ async fn rpc_boundary_table_and_preflight_headers() {
         }
         let response = request.send().await.unwrap();
         assert_eq!(response.status().as_u16(), expected, "{method} {path}");
+        assert_eq!(response.headers()["vary"], "Origin");
         if expected == 204 {
             let headers = response.headers();
             assert_eq!(headers["access-control-allow-origin"], ORIGIN);
@@ -325,6 +335,9 @@ async fn gateway_is_read_only_and_cors_is_scoped() {
         }
         let response = request.send().await.unwrap();
         assert_eq!(response.status().as_u16(), expected);
+        assert_eq!(response.headers()["vary"], "Origin");
+        assert_eq!(response.headers()["content-security-policy"], "sandbox");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
         if expected == 200 {
             let record = h.records.recv().await.unwrap();
             assert_eq!(record.headers["range"], "bytes=0-1");
@@ -486,4 +499,154 @@ async fn content_length_and_each_loopback_host_are_preserved_or_rewritten() {
             format!("127.0.0.1:{}", h.node.config.internal_api_port)
         );
     }
+}
+
+#[tokio::test]
+async fn health_is_local_host_checked_and_never_cors_enabled() {
+    let h = Harness::new().await;
+    for base in [h.node.api(), h.node.gateway()] {
+        assert!(healthy(&h.client, &base).await);
+        for origin in [None, Some(ORIGIN), Some("https://evil.test")] {
+            let mut request = h.client.get(format!("{base}/dash-forge/health"));
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["vary"], "Origin");
+            assert!(!response
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+            assert_eq!(
+                response.json::<Value>().await.unwrap(),
+                json!({"dashForge":true,"version":env!("CARGO_PKG_VERSION")})
+            );
+        }
+        let response = h
+            .client
+            .get(format!("{base}/dash-forge/health"))
+            .header("host", "evil.test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+        let response = h
+            .client
+            .request(Method::OPTIONS, format!("{base}/dash-forge/health"))
+            .header("origin", ORIGIN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(!response
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+    }
+    assert!(!healthy(&h.client, &h.node.internal_api()).await);
+}
+
+#[tokio::test]
+async fn gateway_fetch_metadata_blocks_foreign_navigation_and_subresources() {
+    let h = Harness::new().await;
+    for (site, origin, expected) in [
+        ("cross-site", None, StatusCode::FORBIDDEN),
+        ("same-site", None, StatusCode::FORBIDDEN),
+        (
+            "cross-site",
+            Some("https://evil.test"),
+            StatusCode::FORBIDDEN,
+        ),
+        ("cross-site", Some(ORIGIN), StatusCode::OK),
+        ("same-origin", None, StatusCode::OK),
+        ("none", None, StatusCode::OK),
+    ] {
+        let mut request = h
+            .client
+            .get(format!("{}/ipfs/bafytest", h.node.gateway()))
+            .header("sec-fetch-site", site);
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), expected);
+        assert_eq!(response.headers()["vary"], "Origin");
+        assert_eq!(response.headers()["content-security-policy"], "sandbox");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    }
+    let response = h
+        .client
+        .get(format!("{}/ipfs/bafytest", h.node.gateway()))
+        .header("host", "evil.test")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+    assert_eq!(response.headers()["content-security-policy"], "sandbox");
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+}
+
+#[tokio::test]
+async fn gateway_redirects_preserve_only_safe_locations() {
+    let h = Harness::new().await;
+    let host = format!("127.0.0.1:{}", h.node.config.gateway_port);
+    let local = format!("http://{host}/ipfs/bafytest/");
+    for (location, allowed) in [
+        ("/ipfs/bafytest/", true),
+        ("file.txt", true),
+        ("../file.txt", true),
+        (local.as_str(), true),
+        ("//evil.test/ipfs/x", false),
+        ("https://evil.test/ipfs/x", false),
+        ("javascript:alert(1)", false),
+        ("http://127.0.0.1:1/ipfs/x", false),
+        ("/\\evil.test/ipfs/x", false),
+    ] {
+        assert_eq!(safe_location(location, &host), allowed, "{location}");
+        // Put the redirect target in the query for the local fixture (all values here
+        // are valid URI query characters except the backslash case, tested above).
+        if location.contains('\\') {
+            continue;
+        }
+        let response = h
+            .client
+            .get(format!("{}/ipfs/redirect?{location}", h.node.gateway()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            allowed.then_some(location)
+        );
+        assert_eq!(response.headers()["content-security-policy"], "sandbox");
+    }
+    assert!(!safe_location(&format!("http://{host}/debug/vars"), &host));
+}
+
+#[tokio::test]
+async fn unavailable_identity_does_not_burn_pairing_code() {
+    let mut h = Harness::new().await;
+    h.tasks[0].abort();
+    let _ = h.tasks.remove(0).await;
+    let connection = pair::create(&h.node).unwrap();
+    let path = h.node.dir.join("pair.json");
+    let before = std::fs::read(&path).unwrap();
+    let response = h
+        .client
+        .post(format!("{}/dash-forge/pair", h.node.api()))
+        .header("origin", ORIGIN)
+        .json(&json!({"code":connection.code}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert!(h.state.identity.lock().await.is_none());
+    assert!(matches!(
+        pair::consume(&h.node, &connection.code, pair::now()).unwrap(),
+        pair::Verdict::Success
+    ));
 }
