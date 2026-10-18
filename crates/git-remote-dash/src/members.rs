@@ -989,19 +989,35 @@ pub fn public_view_drops_branches(remote: Option<&str>, public_live: &BTreeSet<&
 /// The branches (`refs/heads/<b>`) under `refs/remotes/<remote>/` that `live` lacks, or `None`
 /// when it cannot tell (a URL fetch, git failing).
 pub fn dropped_branches(remote: Option<&str>, live: &BTreeSet<&str>) -> Option<Vec<String>> {
+    Some(
+        remote_tracking_tips(remote)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| !live.contains(name.as_str()))
+            .collect(),
+    )
+}
+
+/// Local knowledge only: remote-tracking branch names and their current object ids.
+/// `None` means the remote is unnamed or git could not read its refs.
+pub fn remote_tracking_tips(remote: Option<&str>) -> Option<Vec<(String, String)>> {
     let remote = remote.filter(|r| !r.is_empty() && !r.contains("://"))?;
     let prefix = format!("refs/remotes/{remote}/");
     let out = std::process::Command::new("git")
-        .args(["for-each-ref", "--format=%(refname)", &prefix])
+        .args(["for-each-ref", "--format=%(refname) %(objectname)", &prefix])
         .output()
         .ok()?;
+    if !out.status.success() {
+        return None;
+    }
     Some(
         String::from_utf8_lossy(&out.stdout)
             .lines()
-            .filter_map(|r| r.strip_prefix(&prefix))
-            .filter(|b| *b != "HEAD")
-            .map(|b| format!("refs/heads/{b}"))
-            .filter(|b| !live.contains(b.as_str()))
+            .filter_map(|line| {
+                let (name, oid) = line.split_once(' ')?;
+                let branch = name.strip_prefix(&prefix).filter(|b| *b != "HEAD")?;
+                Some((format!("refs/heads/{branch}"), oid.to_owned()))
+            })
             .collect(),
     )
 }

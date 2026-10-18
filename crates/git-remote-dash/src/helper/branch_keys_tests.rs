@@ -329,8 +329,7 @@ fn missing_members_and_branch_keys_have_distinct_hints() {
     let error = super::skipped_packs_needed(&repo(), true, &[skipped]);
     assert!(error.cause.unwrap().contains("no key for this branch"));
     assert!(error.fix[0].contains("share its branch key"));
-    let error =
-        super::branch_keys_unavailable("no members key has been shared with you", None, None);
+    let error = super::branch_keys_unavailable(&MembersKeys::from_keyring(keyring()), None, None);
     assert_eq!(
         error.code,
         forge_core::user_error::codes::CANNOT_CHECK_MEMBERS_ONLY
@@ -514,11 +513,7 @@ fn keyless_nonmember_keeps_the_not_a_member_reason() {
 #[test]
 fn narrower_refusal_preserves_unlock_reason_and_local_names() {
     let keys = MembersKeys::Locked("the passphrase is wrong".into());
-    let error = super::branch_keys_unavailable(
-        keys.unavailable_reason(),
-        Some("origin"),
-        Some(&[BRANCH.into()]),
-    );
+    let error = super::branch_keys_unavailable(&keys, Some("origin"), Some(&[BRANCH.into()]));
     assert!(error
         .cause
         .as_deref()
@@ -939,4 +934,474 @@ fn fetch_without_branch_pack_token_keeps_members_audience() {
         &BTreeSet::new(),
     );
     assert!(error.message.contains("can't fetch members-only branches"));
+}
+
+#[test]
+fn members_key_coverage_refuses_only_locally_recorded_narrower_names() {
+    use forge_core::members_git::ledger::{EntryAudience, Ledger, State};
+    let keys = MembersKeys::Held(keyring());
+    let old_tip = hex::encode([2; 20]);
+    let local = vec![(BRANCH.into(), old_tip.clone())];
+    let ledger = Ledger {
+        commits: [
+            (
+                old_tip.clone(),
+                EntryAudience::Narrower("branch:fixture".into()),
+            ),
+            (hex::encode([3; 20]), EntryAudience::Members),
+        ]
+        .into(),
+        packs: [(hex::encode([4; 32]), EntryAudience::Members)].into(),
+    };
+    let present = State::Present(ledger.clone());
+    let err =
+        super::check_narrower_coverage(&BTreeSet::new(), &present, &local, Some("origin"), &keys)
+            .expect_err("members-key path must refuse dropping a locally held narrower branch")
+            .downcast::<forge_core::user_error::UserError>()
+            .expect("preserve the coded error and its fixes");
+    assert_eq!(
+        err.code,
+        forge_core::user_error::codes::CANNOT_CHECK_MEMBERS_ONLY
+    );
+    assert!(err.message.contains("sec/maintainers"));
+    assert!(err
+        .cause
+        .unwrap()
+        .contains("no longer opens with your keys"));
+    assert!(err
+        .fix
+        .iter()
+        .any(|f| f.contains("git branch -dr origin/sec/maintainers")));
+    for state in [
+        State::Absent,
+        State::Unknown,
+        State::Present(Ledger::default()),
+        State::Present(Ledger {
+            commits: [(old_tip.clone(), EntryAudience::Members)].into(),
+            ..ledger.clone()
+        }),
+    ] {
+        assert!(super::check_narrower_coverage(
+            &BTreeSet::new(),
+            &state,
+            &local,
+            Some("origin"),
+            &keys
+        )
+        .is_ok());
+    }
+    // An unrelated narrower entry never makes an unrecorded local branch narrower.
+    let unrelated = vec![(BRANCH.into(), hex::encode([5; 20]))];
+    assert!(super::check_narrower_coverage(
+        &BTreeSet::new(),
+        &present,
+        &unrelated,
+        Some("origin"),
+        &keys
+    )
+    .is_ok());
+    // Authenticated deletions are covered, as on the branch-key-only path.
+    let deleted = vec![(BRANCH.into(), RefState::Unborn)];
+    let ring = ring(vec![BranchKey::from_bytes([7; 32])]);
+    let covered = super::covered_ref_names(&deleted, Some(&ring));
+    assert!(
+        super::check_narrower_coverage(&covered, &present, &local, Some("origin"), &keys).is_ok()
+    );
+    let unopened = super::covered_ref_names(&deleted, None);
+    assert!(
+        super::check_narrower_coverage(&unopened, &present, &local, Some("origin"), &keys).is_err()
+    );
+    let readable = vec![(
+        BRANCH.into(),
+        RefState::Resolved {
+            oid: old_tip,
+            author: "reader".into(),
+            created_at: 1,
+        },
+    )];
+    assert!(super::check_narrower_coverage(
+        &super::covered_ref_names(&readable, None),
+        &present,
+        &local,
+        Some("origin"),
+        &keys
+    )
+    .is_ok());
+    assert!(
+        super::check_narrower_coverage(&BTreeSet::new(), &present, &[], Some("origin"), &keys)
+            .is_ok()
+    );
+}
+
+#[test]
+fn readable_tip_deletion_and_public_refs_keep_their_existing_policy() {
+    let refs = missing_tip_refs();
+    let sealed = BTreeSet::from([BRANCH.into()]);
+    let plan = super::readable_ref_plan(refs.clone(), &sealed, &BTreeSet::new(), &[], |_| true);
+    assert_eq!(plan.refs, refs);
+    assert!(plan.warnings.is_empty());
+    let deleted = vec![(BRANCH.into(), RefState::Unborn)];
+    let plan = super::readable_ref_plan(deleted.clone(), &sealed, &BTreeSet::new(), &[], |_| false);
+    assert_eq!(plan.refs, deleted);
+    assert!(plan.warnings.is_empty());
+    // Public tips may arrive with the public packs during the later fetch.
+    let plan = super::readable_ref_plan(
+        refs.clone(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &[],
+        |_| false,
+    );
+    assert_eq!(plan.refs, refs);
+    assert!(plan.warnings.is_empty());
+}
+
+#[test]
+fn members_key_coverage_uses_local_remote_names_and_drop_hint_recovers() {
+    use forge_core::members_git::ledger::{EntryAudience, Ledger, State};
+    if !ledger_test_worker("members_key_coverage_uses_local_remote_names_and_drop_hint_recovers") {
+        return;
+    }
+    let dir = std::env::current_dir().unwrap();
+    let tip = String::from_utf8(git(
+        &dir,
+        &["hash-object", "-w", "--stdin"],
+        Some(b"local tip"),
+    ))
+    .unwrap()
+    .trim()
+    .to_owned();
+    git(
+        &dir,
+        &["update-ref", "refs/remotes/origin/sec/maintainers", &tip],
+        None,
+    );
+    git(
+        &dir,
+        &["update-ref", "refs/remotes/other/unrelated", &tip],
+        None,
+    );
+    git(
+        &dir,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/sec/maintainers",
+        ],
+        None,
+    );
+    let ledger = State::Present(Ledger {
+        commits: [(
+            tip.clone(),
+            EntryAudience::Narrower("branch:fixture".into()),
+        )]
+        .into(),
+        ..Ledger::default()
+    });
+    let local = crate::members::remote_tracking_tips(Some("origin")).unwrap();
+    assert_eq!(local, vec![(BRANCH.into(), tip.clone())]);
+    let err = super::check_narrower_coverage(
+        &BTreeSet::new(),
+        &ledger,
+        &local,
+        Some("origin"),
+        &MembersKeys::Held(keyring()),
+    )
+    .unwrap_err();
+    let err = err
+        .downcast::<forge_core::user_error::UserError>()
+        .expect("preserve the coded error");
+    assert!(err
+        .fix
+        .iter()
+        .any(|f| f.contains("git branch -dr origin/sec/maintainers")));
+    // The refused list leaves the existing tracking branch untouched.
+    assert_eq!(
+        crate::members::remote_tracking_tips(Some("origin")).unwrap(),
+        local
+    );
+    git(&dir, &["branch", "-dr", "origin/sec/maintainers"], None);
+    let local = crate::members::remote_tracking_tips(Some("origin")).unwrap();
+    assert!(local.is_empty());
+    assert!(super::check_narrower_coverage(
+        &BTreeSet::new(),
+        &ledger,
+        &local,
+        Some("origin"),
+        &MembersKeys::Held(keyring())
+    )
+    .is_ok());
+    assert!(crate::members::remote_tracking_tips(None).is_none());
+    assert!(crate::members::remote_tracking_tips(Some("dash://owner/repo")).is_none());
+}
+
+fn missing_tip_refs() -> Vec<(String, RefState)> {
+    vec![(
+        BRANCH.into(),
+        RefState::Resolved {
+            oid: hex::encode([9; 20]),
+            author: "writer".into(),
+            created_at: 2,
+        },
+    )]
+}
+
+#[test]
+fn unheld_missing_tip_is_omitted_without_blocking_other_refs() {
+    for shared in [BTreeSet::new(), BTreeSet::from([BRANCH.into()])] {
+        let public = (
+            "refs/heads/main".into(),
+            RefState::Resolved {
+                oid: hex::encode([1; 20]),
+                author: "owner".into(),
+                created_at: 1,
+            },
+        );
+        let mut refs = missing_tip_refs();
+        refs.push(public.clone());
+        let plan =
+            super::readable_ref_plan(refs, &BTreeSet::from([BRANCH.into()]), &shared, &[], |_| {
+                false
+            });
+        assert_eq!(plan.refs, vec![public]);
+        let warning = if shared.is_empty() {
+            "dash: warning: members-only branch sec/maintainers isn't fetched: no stored pack holds its commits (whoever pushed it can push it again)"
+        } else {
+            "dash: warning: sec/maintainers was shared with you, but its commits didn't arrive; ask whoever shared it to share it again"
+        };
+        assert_eq!(plan.warnings, [warning]);
+    }
+}
+
+#[test]
+fn held_missing_tip_with_missing_local_objects_is_omitted() {
+    let local = vec![(BRANCH.into(), hex::encode([2; 20]))];
+    let plan = super::readable_ref_plan(
+        missing_tip_refs(),
+        &BTreeSet::from([BRANCH.into()]),
+        &BTreeSet::new(),
+        &local,
+        |_| false,
+    );
+    assert!(
+        plan.refs.is_empty(),
+        "never advertise a tip without its objects"
+    );
+    assert_eq!(plan.warnings, ["dash: warning: members-only branch sec/maintainers isn't fetched: no stored pack holds its commits (whoever pushed it can push it again)"]);
+}
+
+#[test]
+fn planned_local_tip_survives_fetch_prune_in_a_git_transport_fixture() {
+    if !ledger_test_worker("planned_local_tip_survives_fetch_prune_in_a_git_transport_fixture") {
+        return;
+    }
+    let dir = std::env::current_dir().unwrap();
+    let (pack, tip) = git_pack();
+    git(&dir, &["index-pack", "--stdin"], Some(&pack));
+    let remote = tempfile::tempdir().unwrap();
+    git(remote.path(), &["init", "--bare", "-q"], None);
+    git(remote.path(), &["index-pack", "--stdin"], Some(&pack));
+    git(
+        &dir,
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        None,
+    );
+    for shared in [BTreeSet::new(), BTreeSet::from([BRANCH.into()])] {
+        git(
+            &dir,
+            &["update-ref", "refs/remotes/origin/sec/maintainers", &tip],
+            None,
+        );
+        let local = crate::members::remote_tracking_tips(Some("origin")).unwrap();
+        let plan = super::readable_ref_plan(
+            missing_tip_refs(),
+            &BTreeSet::from([BRANCH.into()]),
+            &shared,
+            &local,
+            crate::git::LocalRepo::object_exists,
+        );
+        assert_eq!(super::remote_tip(&plan.refs, BRANCH), Some(tip.clone()));
+        let remedy = if shared.is_empty() {
+            "whoever pushed it can push it again"
+        } else {
+            "ask whoever shared it to share it again"
+        };
+        assert_eq!(plan.warnings, [format!("dash: warning: branch sec/maintainers: its newer tip didn't arrive; keeping the version this clone has ({remedy})")]);
+        // Materialize exactly the policy's advertised refs in a local Git transport fixture.
+        for (name, state) in &plan.refs {
+            git(
+                remote.path(),
+                &["update-ref", name, &super::tip_oid(state).unwrap()],
+                None,
+            );
+        }
+        git(&dir, &["fetch", "--prune", "origin"], None);
+        assert_eq!(
+            crate::members::remote_tracking_tips(Some("origin")).unwrap(),
+            local,
+            "fetch --prune must keep the held branch at its servable tracking tip"
+        );
+        // Control: this fixture really does prune when a name is absent from the advertisement.
+        git(remote.path(), &["update-ref", "-d", BRANCH], None);
+        git(&dir, &["fetch", "--prune", "origin"], None);
+        assert!(crate::members::remote_tracking_tips(Some("origin"))
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn round4_members_caller_skips_unnamed_remote_but_checks_named_failures() {
+    use forge_core::members_git::ledger::{EntryAudience, Ledger, State};
+    let keys = MembersKeys::Held(keyring());
+    let ledger = State::Present(Ledger {
+        commits: [(
+            hex::encode([2; 20]),
+            EntryAudience::Narrower("branch:fixture".into()),
+        )]
+        .into(),
+        ..Ledger::default()
+    });
+    let view = forge_core::refs::MembersView::default();
+    for remote in [None, Some(""), Some("dash://owner/repo")] {
+        let called = std::cell::Cell::new(false);
+        let result =
+            super::check_members_fetch_coverage(true, remote, &[], &view, &keys, &ledger, |_| {
+                called.set(true);
+                None
+            });
+        assert!(
+            result.is_ok(),
+            "URL fetch/pull/list has no tracking refs to prune: {result:?}"
+        );
+        assert!(
+            !called.get(),
+            "unnamed remotes must not try to read tracking refs"
+        );
+    }
+    let err = super::check_members_fetch_coverage(
+        true,
+        Some("origin"),
+        &[],
+        &view,
+        &keys,
+        &ledger,
+        |_| None,
+    )
+    .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("reading this clone's remote-tracking branches"));
+    for check in [false, true] {
+        let called = std::cell::Cell::new(false);
+        super::check_members_fetch_coverage(
+            check,
+            Some("origin"),
+            &[],
+            &view,
+            &keys,
+            &ledger,
+            |remote| {
+                assert_eq!(remote, "origin");
+                called.set(true);
+                Some(Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(called.get(), check);
+    }
+}
+
+#[test]
+fn round4_members_caller_covers_deleted_public_and_opened_members_names() {
+    use forge_core::members_git::ledger::{EntryAudience, Ledger, State};
+    let keys = MembersKeys::Held(keyring());
+    let oid = hex::encode([2; 20]);
+    let ledger = State::Present(Ledger {
+        commits: [(
+            oid.clone(),
+            EntryAudience::Narrower("branch:fixture".into()),
+        )]
+        .into(),
+        ..Ledger::default()
+    });
+    let name = "refs/heads/feature-x";
+    let deleted = vec![(name.into(), RefState::Unborn)];
+    let local = vec![(name.into(), oid)];
+    let empty = forge_core::refs::MembersView::default();
+    super::check_members_fetch_coverage(
+        true,
+        Some("origin"),
+        &deleted,
+        &empty,
+        &keys,
+        &ledger,
+        |_| Some(local.clone()),
+    )
+    .expect("a signed public deletion must not be mistaken for losing a narrower key");
+    let opened = forge_core::refs::MembersView {
+        refs: deleted,
+        ..Default::default()
+    };
+    super::check_members_fetch_coverage(true, Some("origin"), &[], &opened, &keys, &ledger, |_| {
+        Some(local.clone())
+    })
+    .expect("a deletion opened with the members key retains the base behavior");
+    assert!(
+        super::check_members_fetch_coverage(
+            true,
+            Some("origin"),
+            &[],
+            &empty,
+            &keys,
+            &ledger,
+            |_| Some(local)
+        )
+        .is_err(),
+        "a genuinely uncovered locally recorded narrower name still refuses"
+    );
+}
+
+#[test]
+fn round4_shared_notice_finds_the_shared_head_after_a_deletion() {
+    let head = hex::encode([2; 20]);
+    let refs = vec![
+        (BRANCH.into(), RefState::Unborn),
+        (
+            BRANCH.into(),
+            RefState::Resolved {
+                oid: head.clone(),
+                author: "sharer".into(),
+                created_at: 2,
+            },
+        ),
+    ];
+    assert!(super::offered_shared_head(&refs, BRANCH, &head));
+    assert!(!super::offered_shared_head(
+        &refs,
+        BRANCH,
+        &hex::encode([3; 20])
+    ));
+    assert!(!super::offered_shared_head(&refs[..1], BRANCH, &head));
+}
+
+#[test]
+fn round4_held_key_refusal_suggests_sharing_without_unlocking() {
+    let keys = MembersKeys::Held(keyring());
+    let error = super::branch_keys_unavailable(&keys, Some("origin"), Some(&[BRANCH.into()]));
+    assert!(error
+        .fix
+        .iter()
+        .any(|fix| fix.contains("share its branch key again")));
+    assert!(!error.fix.iter().any(|fix| fix.contains("unlock")));
+    let locked = MembersKeys::Locked("the passphrase is wrong".into());
+    let error = super::branch_keys_unavailable(&locked, Some("origin"), Some(&[BRANCH.into()]));
+    assert!(error
+        .fix
+        .iter()
+        .any(|fix| fix.contains("unlock your encryption key")));
+    let nonmember =
+        MembersKeys::from_keyring(Arc::new(Keyring::keyless_for_tests(REPO, BOT, Vec::new())));
+    let error = super::branch_keys_unavailable(&nonmember, Some("origin"), Some(&[BRANCH.into()]));
+    assert!(error.cause.unwrap().contains("you are not a member"));
 }

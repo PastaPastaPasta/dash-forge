@@ -601,6 +601,8 @@ It has two triggers. A **push** to a public branch is refused when the repositor
 
 **What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
 
+Even with the members key unlocked, a fetch refuses with E806 if a remote-tracking branch's tip is recorded as narrower in this clone's readable sealed-object ledger and its name is absent, or deleted by an update you can't authenticate with its branch key. It says `can't fetch: no key for previously fetched branches is available (sec/example)`, explains that the branch no longer opens with your keys, and offers `git branch -dr origin/sec/example` to forget it here or asks you to have its maintainer share its branch key again. Because the members key is already unlocked, this refusal does not suggest unlocking it. Public names in any state and deletions opened with the members key are covered, as are deletions opened with the branch key. URL fetches skip this local coverage check because they write no remote-tracking refs. This check uses local names and recorded tips; it does not link unreadable generations or claim that a newer generation exists.
+
 ## E809
 
 **Branch is already public.** You asked for a members-only branch with a name that is already public. Nothing already pushed can be hidden, so Forge doesn't offer to hide it.
