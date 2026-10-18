@@ -9,12 +9,19 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: answers.sdk, network: 'devnet' }) }))
+vi.mock('@/lib/view/discovery', () => ({ MIRROR_NAMED_PAGES: 5, reposNamed: async () => answers.named }))
+
 import type { GithubRepo } from '@/lib/mirror/wizard'
 
-const answers = vi.hoisted(() => ({ next: null as unknown }))
+const answers = vi.hoisted(() => ({ next: null as unknown, checks: 0, sdk: null as unknown, named: { repos: [] as unknown[], more: false } }))
 vi.mock('@/lib/mirror/wizard', async (orig) => ({
   ...(await orig<typeof import('@/lib/mirror/wizard')>()),
-  checkGithubRepo: async () => answers.next,
+  checkGithubRepo: async () => {
+    answers.checks++
+    if (answers.next instanceof Error) throw answers.next
+    return answers.next
+  },
 }))
 
 const { GithubStep } = await import('./mirror-steps')
@@ -37,6 +44,10 @@ const repo = (over: Partial<GithubRepo> = {}): GithubRepo => ({
 let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
+  answers.checks = 0
+  answers.sdk = null
+  answers.named = { repos: [], more: false }
+  window.history.replaceState(null, '', '/mirror/')
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -117,4 +128,74 @@ describe('GithubStep', () => {
     await check(repo())
     expect(q('mirror-license')?.textContent).toMatch(/Mirror a repository you own, or one whose licence lets you copy it/)
   })
+})
+
+describe('GithubStep: the command line and URL prefill', () => {
+  it('needs Continue but no rights checkbox on the CLI path', async () => {
+    const done = vi.fn()
+    await act(async () => root.render(<GithubStep initial={repo()} way="cli" onDone={done} />))
+    expect(q('mirror-rights')).toBeNull()
+    const button = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Continue')!
+    expect(button.disabled).toBe(false)
+    expect(done).not.toHaveBeenCalled()
+    await act(async () => button.click())
+    expect(done).toHaveBeenCalledWith(repo())
+  })
+
+  it('checks a URL prefill once, after progress settles, without answering', async () => {
+    answers.next = repo()
+    const done = vi.fn()
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/project" settled={false} onDone={done} />))
+    expect(q('mirror-github-found')).toBeNull()
+    expect(answers.checks).toBe(0)
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/project" settled onDone={done} />))
+    expect(q('mirror-github-found')).not.toBeNull()
+    expect(done).not.toHaveBeenCalled()
+    expect(host.querySelector<HTMLInputElement>('#mirror-github')!.value).toBe('alice/project')
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/project" settled onDone={done} />))
+    expect(answers.checks).toBe(1)
+  })
+})
+
+describe('GithubStep: informational hints', () => {
+  it('links private sources to the private import guide', async () => {
+    const { GithubCheckError } = await import('@/lib/mirror/wizard')
+    answers.next = new GithubCheckError('not-found', 'not found, or it is private. The wizard mirrors public repositories only.')
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/private" onDone={() => undefined} />))
+    expect(host.textContent).toContain("This page can't check private GitHub repositories.")
+    expect(host.querySelector('a[href$="#into-a-private-repository"]')).not.toBeNull()
+    expect(host.textContent).not.toContain('The wizard mirrors public repositories')
+    // A 404 can also be a typo: the person is told to check the name.
+    expect(host.textContent).toContain('Check its owner and name.')
+  })
+
+  it('does not suggest a typo when GitHub says the repository is private', async () => {
+    const { GithubCheckError } = await import('@/lib/mirror/wizard')
+    answers.next = new GithubCheckError('private', 'is not public. The wizard mirrors public repositories only.')
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/private" onDone={() => undefined} />))
+    expect(host.textContent).toContain("This page can't check private GitHub repositories.")
+    expect(host.textContent).not.toContain('Check its owner and name.')
+  })
+
+  it.each([[1, false], [1, true], [2, false], [2, true]] as const)('shows %s mirror claims without blocking, partial=%s', async (count, more) => {
+    answers.sdk = {}
+    answers.named = { more, repos: Array.from({ length: count }, (_, i) => ({ key: `r${i}`, ownerId: `owner${i}`, slug: 'project', visibility: 'public', description: 'Mirror of github.com/alice/project' })) }
+    await check(repo())
+    expect(host.textContent).toContain(`${more ? 'At least ' : ''}${count} Forge ${count === 1 ? 'repo says it mirrors' : 'repos say they mirror'} github.com/alice/project`)
+    expect(host.textContent).toContain('Anyone can keep their own copy.')
+    expect(host.querySelector('a[href^="/github.com/alice/project"]')).not.toBeNull()
+  })
+})
+
+
+it('keeps text typed before progress settles instead of auto-checking the URL prefill', async () => {
+  await act(async () => root.render(<GithubStep initial={null} prefill="alice/project" settled={false} onDone={() => undefined} />))
+  const input = host.querySelector<HTMLInputElement>('#mirror-github')!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'bob/typed')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => root.render(<GithubStep initial={null} prefill="alice/project" settled onDone={() => undefined} />))
+  expect(input.value).toBe('bob/typed')
+  expect(answers.checks).toBe(0)
 })

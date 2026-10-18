@@ -5,12 +5,15 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { idbPut } from '../idb'
 import type { ResolvedRef } from '../repo/refs'
-import { EMPTY_PROGRESS, refsFingerprint, resumed, withAnswer, type MirrorProgress } from './progress'
+import { EMPTY_PROGRESS, loadMirrorProgress, saveMirrorProgress, clearMirrorProgress, refsFingerprint, resumed, withAnswer, type MirrorProgress } from './progress'
 import type { GithubRepo } from './wizard'
 
 const gh = (name: string): GithubRepo => ({ owner: 'alice', name, description: '', defaultBranch: 'main', sizeKib: 1, archived: false, fork: false, htmlUrl: '' })
 const DONE: MirrorProgress = {
+  way: 'action',
+  actionLater: false,
   github: gh('project'),
   rightsAcknowledged: true,
   repo: { repoId: 'R1', name: 'project' },
@@ -59,7 +62,7 @@ describe('withAnswer', () => {
 
 describe('resumed', () => {
   it("starts over for an identity with nothing saved, never carrying another identity's answers", () => {
-    expect(resumed(DONE, null, 999)).toEqual({ ...EMPTY_PROGRESS, github: gh('project'), rightsAcknowledged: true, startedAt: 100 })
+    expect(resumed(DONE, null, 999)).toEqual({ ...EMPTY_PROGRESS, way: 'action', github: gh('project'), rightsAcknowledged: true, startedAt: 100 })
     expect(resumed(EMPTY_PROGRESS, null, 999)).toEqual({ ...EMPTY_PROGRESS, startedAt: 999 })
   })
 
@@ -88,5 +91,35 @@ describe('refsFingerprint', () => {
     expect(refsFingerprint([ref('refs/tags/v1', 'bb'), ref('refs/heads/main', 'aa')])).toBe(a)
     expect(refsFingerprint([ref('refs/heads/main', 'ac'), ref('refs/tags/v1', 'bb')])).not.toBe(a)
     expect(refsFingerprint([])).toBe('')
+  })
+})
+
+describe('path answers and resume', () => {
+  it('changes paths and Action timing without clearing any existing answers', () => {
+    expect(withAnswer(DONE, { way: 'cli' })).toEqual({ ...DONE, way: 'cli' })
+    expect(withAnswer(DONE, { actionLater: true })).toEqual({ ...DONE, actionLater: true })
+  })
+
+  it('keeps the way chosen before sign-in ahead of a saved way', () => {
+    expect(resumed({ ...EMPTY_PROGRESS, way: 'cli' }, DONE, 999)).toEqual({ ...DONE, way: 'cli' })
+    expect(resumed({ ...EMPTY_PROGRESS, way: 'cli' }, null, 999)).toEqual({ ...EMPTY_PROGRESS, way: 'cli', startedAt: 999 })
+  })
+
+  it('migrates old acknowledged progress and keeps a running Action at its current step', async () => {
+    const { way: _way, actionLater: _later, ...old } = DONE
+    await idbPut('journal', 'mirror-wizard:test:old', old)
+    expect(await loadMirrorProgress('test', 'old')).toEqual(DONE)
+    await idbPut('journal', 'mirror-wizard:test:old', { ...old, storage: null, runnerKey: null, workflowAdded: false })
+    expect(await loadMirrorProgress('test', 'old')).toMatchObject({ way: 'action', actionLater: null })
+    await idbPut('journal', 'mirror-wizard:test:old', { ...old, rightsAcknowledged: false })
+    expect(await loadMirrorProgress('test', 'old')).toMatchObject({ way: null, actionLater: null })
+  })
+
+  it('round-trips new progress without migrating explicit null answers, and clears it', async () => {
+    const p = { ...DONE, way: null, actionLater: null }
+    await saveMirrorProgress('test', 'new', p)
+    expect(await loadMirrorProgress('test', 'new')).toEqual(p)
+    await clearMirrorProgress('test', 'new')
+    expect(await loadMirrorProgress('test', 'new')).toBeNull()
   })
 })

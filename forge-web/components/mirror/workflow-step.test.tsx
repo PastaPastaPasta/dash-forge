@@ -46,7 +46,7 @@ afterEach(() => {
 
 async function render(): Promise<void> {
   await act(async () => {
-    root.render(<WorkflowStep identity="IdentityAAA" github={GITHUB} repoName="project" storage={S3} profile={null} secret={null} runnerKey={null} onDone={() => undefined} />)
+    root.render(<WorkflowStep identity="IdentityAAA" github={GITHUB} repoName="project" storage={S3} profile={null} secret={null} runnerKey={{ keyId: 1, budgetCredits: '1', expiresAt: 1, saved: true }} onDone={() => undefined} />)
   })
   await act(async () => {
     await new Promise((r) => setTimeout(r, 0))
@@ -63,6 +63,8 @@ describe('WorkflowStep defaults (QW4-045)', () => {
     expect(yaml()).toContain("sync: 'code,releases'")
     expect(yaml()).not.toContain('pull_request_target')
     expect(yaml()).toContain("cost-cap: '0.1'")
+    expect(host.textContent).toContain('Make a key with a larger budget in the runner key step.')
+    expect(host.textContent).not.toContain('in step 4')
     expect(host.textContent).toMatch(/above the Action's default of 0\.05 DASH because the first run copies everything/)
     await act(async () => collabBox().click())
     expect(yaml()).toContain("sync: 'code,releases,labels,issues,prs'")

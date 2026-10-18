@@ -8,9 +8,12 @@ import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
+import { NETWORKS } from '../constants'
+import { shellWord } from '../view/repo-commands'
 import type { StorageProfile } from '../storage/profiles'
 import {
   GithubCheckError,
+  mirrorCliCommands,
   PLATFORM_STORAGE,
   checkGithubRepo,
   costCapProblem,
@@ -361,5 +364,43 @@ describe('licenseNotice (LEG-10)', () => {
   })
   it('does not say "no licence" of a repository saved before the licence was read', () => {
     expect(licenseNotice({})).toEqual({ label: null, warn: true, unread: true })
+  })
+})
+
+describe('mirrorCliCommands', () => {
+  const options = { github: { owner: 'alice', name: 'Project' }, name: 'project', collab: false, cap: '0.2', config: { ...NETWORKS.devnet, network: 'devnet' as const, devnetName: 'sakura' } }
+
+  it('copies code and releases to dg’s own identity on the selected network', () => {
+    const c = mirrorCliCommands(options)
+    expect(c.copy).toBe("dg import github.com/alice/Project --repo project --sync code,releases --max-spend 0.2 --network devnet --devnet-name sakura")
+    expect(c.copy).not.toMatch(/--state|--dry-run|--yes|--i-have-the-rights/)
+    expect(c.login).toBe('dg auth login <identity file> --network devnet --devnet-name sakura')
+    expect(c.newIdentity).toBe('dg auth new --network devnet --devnet-name sakura')
+    expect(c.githubLogin).toBe('gh auth login')
+    expect(mirrorCliCommands({ ...options, cap: '1000' }).login).toContain('--budget 1000')
+  })
+
+  it('adds a state file only for collaboration, and raises both auth budgets above 0.25', () => {
+    const c = mirrorCliCommands({ ...options, collab: true, cap: '0.3' })
+    expect(c.copy).toContain('--sync all --max-spend 0.3 --state project.sync.json')
+    expect(c.login).toContain('<identity file> --budget 0.3 --network')
+    expect(c.newIdentity).toContain('dg auth new --budget 0.3 --network')
+    expect(mirrorCliCommands({ ...options, cap: '0.25' }).login).not.toContain('--budget')
+  })
+
+  it('qualifies the ready card destination and supports networks without a devnet name', () => {
+    const c = mirrorCliCommands({ ...options, ownerId: ID, config: NETWORKS.mainnet })
+    expect(c.copy).toContain(`--repo ${ID}/project`)
+    expect(c.copy).toContain('--network mainnet')
+    expect(c.copy).not.toContain('--devnet-name')
+  })
+
+  it('refuses invalid names and caps, and quotes source and owner values as shell words', () => {
+    for (const name of ['', '.github', 'a/b', 'a;whoami']) expect(() => mirrorCliCommands({ ...options, name })).toThrow(/repo name/)
+    for (const cap of ['0', '-1', 'NaN', '1e3', '1;whoami', '5000', '1000.00000001']) expect(() => mirrorCliCommands({ ...options, cap })).toThrow()
+    const ownerId = "someone'$(whoami)"
+    const github = { owner: 'alice;whoami', name: 'Project' }
+    expect(mirrorCliCommands({ ...options, github, ownerId }).copy).toContain(shellWord(`github.com/${github.owner}/Project`))
+    expect(mirrorCliCommands({ ...options, github, ownerId }).copy).toContain(`--repo ${shellWord(`${ownerId}/project`)}`)
   })
 })

@@ -17,6 +17,7 @@ export function StepCard({
   state,
   summary,
   onChange,
+  optional = false,
   children,
 }: {
   n: number
@@ -25,6 +26,7 @@ export function StepCard({
   state: StepState
   summary?: React.ReactNode
   onChange?: () => void
+  optional?: boolean
   children?: React.ReactNode
 }): JSX.Element {
   return (
@@ -53,6 +55,7 @@ export function StepCard({
           <h2 className={cn('text-prose', state === 'todo' ? 'text-anvil-500 dark:text-anvil-400' : 'text-anvil-900 dark:text-anvil-50')}>
             <span className="sr-only">Step {n}: </span>
             {title}
+            {optional ? <span className="ml-2 text-[12px] font-normal text-fg-muted">Optional</span> : null}
           </h2>
           {state === 'done' && summary ? <div className="mt-0.5 break-words text-dense text-anvil-600 dark:text-anvil-300">{summary}</div> : null}
         </div>

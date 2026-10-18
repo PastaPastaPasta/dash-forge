@@ -17,6 +17,8 @@ export const DOCS = {
   movingFromGithub: `${GUIDES}/moving-from-github.md`,
   storage: `${GUIDES}/bring-your-own-storage.md`,
   mirror: `${GUIDES}/mirror-a-github-repo.md`,
+  mirrorKeepInSync: `${GUIDES}/mirror-a-github-repo.md#3-keep-it-in-sync-without-the-action`,
+  mirrorPrivate: `${GUIDES}/mirror-a-github-repo.md#into-a-private-repository`,
   /** Which rules Dash Platform enforces and which the Forge apps apply (the EnforcedBy chip). */
   enforcement: `${GUIDES}/collaborating.md#who-enforces-what`,
   /** What the move to a new devnet (bonsia to sakura) loses and keeps, and how to re-push (the devnet notice). */
