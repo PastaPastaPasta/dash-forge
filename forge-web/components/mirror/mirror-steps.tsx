@@ -101,13 +101,14 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
   const [text, setText] = useState(initial ? `${initial.owner}/${initial.name}` : prefill ?? '')
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [privateSource, setPrivateSource] = useState(false)
+  // Path B only: GitHub would not show it publicly (private, or no such repo).
+  const [hidden, setHidden] = useState<'private' | 'not-found' | null>(null)
   const [found, setFound] = useState<GithubRepo | null>(initial)
   const [acknowledged, setAcknowledged] = useState(false)
   const autoChecked = useRef(false)
   const check = useCallback(async (input: string): Promise<void> => {
     setError(null)
-    setPrivateSource(false)
+    setHidden(null)
     setFound(null)
     setAcknowledged(false)
     setChecking(true)
@@ -115,7 +116,7 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
       setFound(await checkGithubRepo(parseGithubRepo(input)))
     } catch (e) {
       setError(errorMessage(e))
-      setPrivateSource(e instanceof GithubCheckError && (e.kind === 'private' || e.kind === 'not-found'))
+      setHidden(e instanceof GithubCheckError && (e.kind === 'private' || e.kind === 'not-found') ? e.kind : null)
     } finally {
       setChecking(false)
     }
@@ -148,8 +149,9 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
         </Button>
       </form>
       <Hint>Public repositories only. Asked from your browser, anonymously: no GitHub sign-in, and nothing passes through a Forge server (there is none).</Hint>
-      {error && !(way === 'cli' && privateSource) ? <Hint tone="danger">{error}</Hint> : null}
-      {way === 'cli' && privateSource ? (
+      {error && !(way === 'cli' && hidden !== null) ? <Hint tone="danger">{error}</Hint> : null}
+      {way === 'cli' && hidden === 'not-found' ? <Hint tone="danger">GitHub doesn&apos;t show this repo publicly. Check its owner and name.</Hint> : null}
+      {way === 'cli' && hidden !== null ? (
         <Hint>This page can&apos;t check private GitHub repositories. <a href={DOCS.mirrorPrivate} className="underline">The guide shows how to copy one into a private Forge repo.</a></Hint>
       ) : null}
       {found ? (

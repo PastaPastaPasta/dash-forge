@@ -165,6 +165,16 @@ describe('GithubStep: informational hints', () => {
     expect(host.textContent).toContain("This page can't check private GitHub repositories.")
     expect(host.querySelector('a[href$="#into-a-private-repository"]')).not.toBeNull()
     expect(host.textContent).not.toContain('The wizard mirrors public repositories')
+    // A 404 can also be a typo: the person is told to check the name.
+    expect(host.textContent).toContain('Check its owner and name.')
+  })
+
+  it('does not suggest a typo when GitHub says the repository is private', async () => {
+    const { GithubCheckError } = await import('@/lib/mirror/wizard')
+    answers.next = new GithubCheckError('private', 'is not public. The wizard mirrors public repositories only.')
+    await act(async () => root.render(<GithubStep initial={null} way="cli" prefill="alice/private" onDone={() => undefined} />))
+    expect(host.textContent).toContain("This page can't check private GitHub repositories.")
+    expect(host.textContent).not.toContain('Check its owner and name.')
   })
 
   it.each([[1, false], [1, true], [2, false], [2, true]] as const)('shows %s mirror claims without blocking, partial=%s', async (count, more) => {
