@@ -344,9 +344,13 @@ function LogBody({
     restored.current = true
     // Used once: a later visit by a plain link starts at the top.
     const key = scrollKey(pathname, params)
-    const y = Number(sessionStorage.getItem(key))
-    sessionStorage.removeItem(key)
-    if (y > 0) window.scrollTo(0, y)
+    try {
+      const y = Number(sessionStorage.getItem(key))
+      sessionStorage.removeItem(key)
+      if (y > 0) window.scrollTo(0, y)
+    } catch {
+      // Scroll restoration is optional when this browser disables session storage.
+    }
   }, [state.loading, state.pages, state.next, wanted, pathname, params])
   const older = (): void => {
     const q = new URLSearchParams(params.toString())
@@ -355,7 +359,13 @@ function LogBody({
     loadMore(state.next)
   }
   // Leaving for a commit (or anywhere): keep the position for Back.
-  const keepScroll = (): void => sessionStorage.setItem(scrollKey(pathname, params), String(Math.round(window.scrollY)))
+  const keepScroll = (): void => {
+    try {
+      sessionStorage.setItem(scrollKey(pathname, params), String(Math.round(window.scrollY)))
+    } catch {
+      // A full or disabled store must not interrupt a commit link.
+    }
+  }
 
   if (state.error !== null && state.entries.length === 0) return <ErrorState message={state.error} onRetry={retry} />
   if (state.entries.length === 0 && state.loading) return <LoadingBlock label={path ? `Walking the history of ${path}` : 'Walking history'} />
