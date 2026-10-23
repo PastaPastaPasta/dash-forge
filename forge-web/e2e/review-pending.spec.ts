@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { dgEnv, idFile, idOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { dgEnv, idFile, idOrEmpty, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * Pending reviews, ranges, resolution and comment edits in the browser (review-parity spec §7
@@ -31,11 +31,11 @@ import { dgEnv, idFile, idOf, runAxe, shot, signedIn, unlock, waitForRepoResolve
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!process.env['E2E_IDENTITY_DIR'], "set E2E_IDENTITY_DIR to this spec's own identities (never the shared fixtures)")
 test.skip(!process.env['E2E_BIN_DIR'], 'set E2E_BIN_DIR to a directory holding dg and git-remote-dash')
-test.skip(!!process.env['E2E_IDENTITY_DIR'] && !existsSync(idFile('CONTRIB')), 'OWNER / CONTRIB / COLLAB identity files not found')
+test.skip(!!process.env['E2E_IDENTITY_DIR'] && ['OWNER', 'CONTRIB', 'COLLAB'].some((role) => !existsSync(idFile(role))), 'OWNER / CONTRIB / COLLAB identity files not found')
 test.describe.configure({ mode: 'serial', timeout: 360_000 })
 
 const BIN = process.env['E2E_BIN_DIR'] ?? ''
-const ids = process.env['E2E_IDENTITY_DIR'] ? { owner: idOf('OWNER'), contrib: idOf('CONTRIB'), collab: idOf('COLLAB') } : { owner: '', contrib: '', collab: '' }
+const ids = process.env['E2E_IDENTITY_DIR'] ? { owner: idOrEmpty('OWNER'), contrib: idOrEmpty('CONTRIB'), collab: idOrEmpty('COLLAB') } : { owner: '', contrib: '', collab: '' }
 const RUN = process.env['E2E_RUN'] ?? Date.now().toString(36)
 const REPO = `review-pending-${RUN}`
 const FORK = `review-pending-fork-${RUN}`

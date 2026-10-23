@@ -30,16 +30,16 @@ test.describe.configure({ mode: 'serial', timeout: 300_000 })
 const OWNER = (): string => String((JSON.parse(readFileSync(idFile('MAINTAINER'), 'utf8')) as { identityId: string }).identityId)
 const releasesPath = (): string => `/repo/releases/?owner=${OWNER()}&name=forge-v2-empty`
 const TAG = `e2e-${Date.now().toString(36)}`
-const BACKUP = `${stateFile('MAINTAINER')}.bak-new-release`
+const backup = (): string => `${stateFile('MAINTAINER')}.bak-new-release`
 
 test.beforeAll(() => {
-  if (existsSync(stateFile('MAINTAINER'))) copyFileSync(stateFile('MAINTAINER'), BACKUP)
+  if (existsSync(stateFile('MAINTAINER'))) copyFileSync(stateFile('MAINTAINER'), backup())
 })
 
 test.afterAll(() => {
-  if (existsSync(BACKUP)) {
-    copyFileSync(BACKUP, stateFile('MAINTAINER'))
-    rmSync(BACKUP)
+  if (existsSync(backup())) {
+    copyFileSync(backup(), stateFile('MAINTAINER'))
+    rmSync(backup())
   } else if (existsSync(stateFile('MAINTAINER'))) {
     // First run: there was no saved state; do not leave the tunnel-backed profile behind.
     rmSync(stateFile('MAINTAINER'))
