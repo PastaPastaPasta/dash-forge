@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { atRoute, dgEnv, idFile, idOf, PASSPHRASE, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { atRoute, dgEnv, idFile, idOf, idOrEmpty, PASSPHRASE, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -37,13 +37,13 @@ const PUBLIC = (process.env['E2E_PUBLIC_MINIO'] ?? '').replace(/\/+$/, '')
 const BIN = process.env['E2E_BIN_DIR'] ?? ''
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!process.env['E2E_IDENTITY_DIR'], "set E2E_IDENTITY_DIR to this spec's own identities (never the shared fixtures)")
-test.skip(!!process.env['E2E_IDENTITY_DIR'] && !existsSync(idFile('CONTRIB')), 'OWNER / CONTRIB identity files not found')
+test.skip(!!process.env['E2E_IDENTITY_DIR'] && ['OWNER', 'CONTRIB'].some((role) => !existsSync(idFile(role))), 'OWNER / CONTRIB identity files not found')
 test.skip(!BIN || !existsSync(join(BIN, 'dg')), 'set E2E_BIN_DIR to a directory holding dg and git-remote-dash')
 test.skip(!PUBLIC.startsWith('https://'), 'set E2E_PUBLIC_MINIO to a public https URL for the forge-byo bucket')
 test.describe.configure({ mode: 'serial', timeout: 420_000 })
 
 const RUN = Date.now().toString(36)
-const OWNER = process.env['E2E_IDENTITY_DIR'] ? idOf('OWNER') : ''
+const OWNER = process.env['E2E_IDENTITY_DIR'] ? idOrEmpty('OWNER') : ''
 const REPO = `g5g18-${RUN}`
 const SLUG = `${OWNER}/${REPO}`
 const REMOTE = `dash://${SLUG}`

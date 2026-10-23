@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { dgEnv, idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { dgEnv, idFile, idOf, idOrEmpty, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * Repository settings, live on a devnet (QA D-503: no product path wrote `config` after a repo
@@ -32,11 +32,11 @@ import { dgEnv, idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!process.env['E2E_IDENTITY_DIR'], "set E2E_IDENTITY_DIR to this spec's own identities (never the shared fixtures)")
 test.skip(!process.env['E2E_BIN_DIR'], 'set E2E_BIN_DIR to a directory holding dg and git-remote-dash')
-test.skip(!!process.env['E2E_IDENTITY_DIR'] && !existsSync(idFile('COLLAB')), 'OWNER / COLLAB identity files not found')
+test.skip(!!process.env['E2E_IDENTITY_DIR'] && ['OWNER', 'COLLAB'].some((role) => !existsSync(idFile(role))), 'OWNER / COLLAB identity files not found')
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 
 const BIN = process.env['E2E_BIN_DIR'] ?? ''
-const OWNER = process.env['E2E_IDENTITY_DIR'] ? idOf('OWNER') : ''
+const OWNER = process.env['E2E_IDENTITY_DIR'] ? idOrEmpty('OWNER') : ''
 const REPO = `settings-${Date.now().toString(36)}`
 const SLUG = `${OWNER}/${REPO}`
 const REMOTE = `dash://${SLUG}`

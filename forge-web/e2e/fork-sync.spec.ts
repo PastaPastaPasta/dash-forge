@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DAPI_METHOD, dgEnv, idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { DAPI_METHOD, dgEnv, idFile, idOrEmpty, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * Sync fork (P1-4), live on a devnet with the spec's own identities (real spend, about
@@ -27,11 +27,11 @@ import { DAPI_METHOD, dgEnv, idFile, idOf, shot, signedIn, unlock, waitForRepoRe
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!process.env['E2E_IDENTITY_DIR'], "set E2E_IDENTITY_DIR to this spec's own identities (never the shared fixtures)")
 test.skip(!process.env['E2E_BIN_DIR'], 'set E2E_BIN_DIR to a directory holding dg and git-remote-dash')
-test.skip(!!process.env['E2E_IDENTITY_DIR'] && !existsSync(idFile('CONTRIB')), 'OWNER / CONTRIB identity files not found')
+test.skip(!!process.env['E2E_IDENTITY_DIR'] && ['OWNER', 'CONTRIB'].some((role) => !existsSync(idFile(role))), 'OWNER / CONTRIB identity files not found')
 test.describe.configure({ mode: 'serial', timeout: 600_000 })
 
 const BIN = process.env['E2E_BIN_DIR'] ?? ''
-const ids = process.env['E2E_IDENTITY_DIR'] ? { owner: idOf('OWNER'), contrib: idOf('CONTRIB') } : { owner: '', contrib: '' }
+const ids = process.env['E2E_IDENTITY_DIR'] ? { owner: idOrEmpty('OWNER'), contrib: idOrEmpty('CONTRIB') } : { owner: '', contrib: '' }
 const RUN = process.env['E2E_RUN'] ?? Date.now().toString(36)
 const REPO = `fork-sync-${RUN}`
 const FORK = `fork-sync-fork-${RUN}`

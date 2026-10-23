@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DAPI_METHOD, dgEnv, idFile, idOf, shot, signedIn, waitForRepoResolved } from './helpers'
+import { DAPI_METHOD, dgEnv, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
 
 /**
  * Branch and tag administration from the browser (P1-4), live on a devnet with the spec's own
@@ -26,11 +26,11 @@ import { DAPI_METHOD, dgEnv, idFile, idOf, shot, signedIn, waitForRepoResolved }
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!process.env['E2E_IDENTITY_DIR'], "set E2E_IDENTITY_DIR to this spec's own identities (never the shared fixtures)")
 test.skip(!process.env['E2E_BIN_DIR'], 'set E2E_BIN_DIR to a directory holding dg and git-remote-dash')
-test.skip(!!process.env['E2E_IDENTITY_DIR'] && !existsSync(idFile('COLLAB')), 'OWNER / COLLAB identity files not found')
+test.skip(!!process.env['E2E_IDENTITY_DIR'] && ['OWNER', 'COLLAB'].some((role) => !existsSync(idFile(role))), 'OWNER / COLLAB identity files not found')
 test.describe.configure({ mode: 'serial', timeout: 600_000 })
 
 const BIN = process.env['E2E_BIN_DIR'] ?? ''
-const ids = process.env['E2E_IDENTITY_DIR'] ? { owner: idOf('OWNER'), collab: idOf('COLLAB') } : { owner: '', collab: '' }
+const ids = process.env['E2E_IDENTITY_DIR'] ? { owner: idOrEmpty('OWNER'), collab: idOrEmpty('COLLAB') } : { owner: '', collab: '' }
 const RUN = process.env['E2E_RUN'] ?? Date.now().toString(36)
 const REPO = `ref-admin-${RUN}`
 const SLUG = `${ids.owner}/${REPO}`
