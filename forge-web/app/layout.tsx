@@ -47,9 +47,9 @@ export const viewport: Viewport = {
 const ASSETS = process.env.FORGE_IPFS_BUILD === '1' ? '' : `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/`
 
 // CSP is delivered via <meta> so it survives static export (yappr pattern).
-// - script 'wasm-unsafe-eval': the evo-sdk WASM runtime. JS 'unsafe-eval' is not granted
-//   (verified: reads, writes and sign-in run without it). 'unsafe-inline' stays for Next's
-//   inline bootstrap scripts.
+// - script 'wasm-unsafe-eval': the evo-sdk WASM runtime. JS 'unsafe-eval' is granted only
+//   in development for Next's dev bundle; production reads, writes and sign-in do not need
+//   it. 'unsafe-inline' stays for Next's inline bootstrap scripts.
 // - frame-ancestors is not here: browsers ignore it in a <meta> CSP (and log an error on every
 //   page). The host must send it as a header; GitHub Pages cannot, so Cloudflare in front of it
 //   has to (docs/hosting.md §7).
@@ -63,7 +63,7 @@ const ASSETS = process.env.FORGE_IPFS_BUILD === '1' ? '' : `${process.env.NEXT_P
 // - worker-src blob:: materialization / search / pack workers run off-main-thread.
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",
+  `script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'${process.env.NODE_ENV === 'development' ? " 'unsafe-eval'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https: blob:",
   "font-src 'self'",

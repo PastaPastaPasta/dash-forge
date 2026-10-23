@@ -71,8 +71,17 @@ async function tapBeforeHydration(page: Page, path: string): Promise<void> {
 }
 
 test.describe('a tap before hydration', () => {
+  test('the static export keeps JavaScript eval out of its CSP', async ({ page }) => {
+    await page.goto('/start/', { waitUntil: 'load' })
+    const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
+    const scriptSrc = policy?.split(';').find((directive) => directive.trim().startsWith('script-src '))?.trim()
+    expect(scriptSrc).toBe("script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'")
+  })
+
   test('the head script runs under the page CSP (no refusal)', async ({ page }) => {
     const csp = cspErrors(page)
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(String(error)))
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
     expect(await page.evaluate((k) => typeof (window as unknown as Record<string, unknown>)[k], '__forgePrehydration')).toBe('object')
     await expect(signInButton(page)).toBeVisible()
@@ -81,6 +90,7 @@ test.describe('a tap before hydration', () => {
     // host's own analytics beacon (Cloudflare injects it on forge.dashhq.org) is refused by the
     // page CSP on purpose; it is not the app's.
     expect(csp.filter((t) => !/frame-ancestors/i.test(t) && !/static\.cloudflareinsights\.com/.test(t))).toEqual([])
+    expect(errors).toEqual([])
   })
 
   test('Sign in on a static page opens the sheet once the app is ready', async ({ page }) => {
