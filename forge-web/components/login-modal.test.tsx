@@ -44,9 +44,17 @@ const auth = {
 /** The unfinished identity creation this browser holds, if any. */
 let journal: { depositAddress: string } | undefined
 
+/** Whether Platform answers (a fake connection); off, the wallet tile still shows, as offline. */
+let platformUp = false
+/** Whether the chain supports App Connect v2. */
+let v2Available = false
 vi.mock('@/lib/auth/connect', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/connect')>()),
-  connectPlatform: () => Promise.reject(new Error('offline in tests')),
+  connectPlatform: () => (platformUp ? Promise.resolve({}) : Promise.reject(new Error('offline in tests'))),
+}))
+vi.mock('@/lib/auth/app-connect-v2', async (orig) => ({
+  ...(await orig<typeof import('@/lib/auth/app-connect-v2')>()),
+  appConnectV2Available: async () => v2Available,
 }))
 /** Whether Dash Wallet can answer here (testnet); false mutes its tile, as on a devnet. */
 let walletSupported: boolean | null = null
@@ -142,6 +150,8 @@ beforeEach(() => {
   auth.storage = null
   journal = undefined
   walletSupported = null
+  platformUp = false
+  v2Available = false
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
   Element.prototype.scrollIntoView = vi.fn()
@@ -433,5 +443,47 @@ describe('Q5-C04: the key lifetime is worded for each path', () => {
     await click(byText('All options'))
     await click(q('[data-testid="tile-import"]'))
     expect(host.ownerDocument.body.textContent).toContain('for 90 days by default (up to a year)')
+  })
+})
+
+describe('App Connect v2 in the sheet', () => {
+  const tileOrder = (): (string | undefined)[] => [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].map((t) => t.dataset['testid'])
+
+  it('puts the wallet tile first where v2 is on offer, and says one approval covers Forge', async () => {
+    auth.vaults = []
+    walletSupported = false
+    platformUp = true
+    v2Available = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
+    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
+    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/approve once for all of Forge/)
+  })
+
+  it('keeps the wallet tile last where no wallet can answer and v2 is not on offer', async () => {
+    auth.vaults = []
+    walletSupported = false
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder().slice(0, 4)).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBe('true')
+  })
+
+  it('opens the renewal in the wallet on its own view, with the identity file as the other way', async () => {
+    auth.identity = ID
+    auth.keyId = 6
+    auth.storage = 'vault'
+    auth.unlockScope = 'full'
+    act(() => useUiStore.getState().openLogin('wallet-renew'))
+    await flush()
+    const body = host.ownerDocument.body.textContent ?? ''
+    expect(body).toMatch(/Renew this browser's key in your wallet/)
+    expect(body).not.toMatch(/Sign in to Dash Forge/)
+    expect(byText(/All options/)).toBeNull()
+    expect(q('[data-testid="wallet-renew-prepare"]')).not.toBeNull()
+    await click(q('[data-testid="renew-with-file-instead"]'))
+    expect(q('[data-testid="wallet-renew-prepare"]')).toBeNull()
+    expect(host.ownerDocument.body.textContent).toMatch(/Disables key #6 and registers/)
   })
 })
