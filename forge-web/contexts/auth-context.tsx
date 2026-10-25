@@ -354,9 +354,26 @@ export function AuthProvider({
     setLastIdentity(readLastIdentity(network))
   }, [network, sessionIdentity, vaults])
 
-  // Read in the browser only (it depends on the page's address): hidden until then.
+  // Read in the browser only (it depends on the page's address): hidden until then. Where the
+  // page allows passkeys, the forge-meta Platform serves is read once, and only while someone
+  // could use them (signed in, or the sign-in sheet open), so a page that never connects to
+  // Platform does not start to for this. Hidden until that read says the vault is deployed.
+  const loginOpen = useUiStore((s) => s.loginOpen)
+  const passkeysWanted = sessionIdentity !== null || loginOpen
   const [platformPasskeyProblem, setPlatformPasskeyProblem] = useState<string | null>(PASSKEYS_NOT_CHECKED)
-  useEffect(() => setPlatformPasskeyProblem(controller.platformPasskeyProblem()), [controller])
+  useEffect(() => {
+    const sync = controller.platformPasskeyProblem()
+    if (sync !== null) {
+      setPlatformPasskeyProblem(sync)
+      return
+    }
+    if (!passkeysWanted) return
+    let live = true
+    void controller.checkPlatformPasskeys().then((problem) => live && setPlatformPasskeyProblem(problem))
+    return () => {
+      live = false
+    }
+  }, [controller, passkeysWanted])
 
   const locked = session === null && !resuming && vaults.length > 0
   const value = useMemo<AuthContextValue>(

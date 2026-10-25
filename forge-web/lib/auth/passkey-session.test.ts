@@ -452,6 +452,73 @@ describe('passkeys that hold a key on Platform', () => {
     expect(await readMarkers(NET, ID)).toEqual([])
   }, 30_000)
 
+  it('keeps the key with the origin "passkey": renewable in a wallet or with the identity file', async () => {
+    const c = await signIn(keys[1]!)
+    await c.addPlatformPasskey()
+    const next = await newDevice(c)
+    const session = await next.signInWithPasskey()
+    // Who made the key is unknown on this device (a wallet, or the master key through dg or the file).
+    expect(session.origin).toBe('passkey')
+    expect((await listVaults(NET)).find((v) => v.identityId === ID)).toMatchObject({ keyId: 5 })
+    // Wallet renewal is open to it, like a wallet-granted key's.
+    expect(await next.walletRenewalRequest()).toMatchObject({ identityHint: ID, replacesKeyId: 5 })
+    // A master-key renewal makes it an ordinary Forge key again.
+    keys.push(groupKey(20))
+    await next.importIdentity({ fileText: '{}' }, PASSKEY, undefined, { renew: true })
+    expect(next.getState().session?.origin).toBeUndefined()
+  }, 30_000)
+
+  it('stays hidden until the deployed forge-meta has the vault entry type', async () => {
+    let deployed = false
+    const reads: string[] = []
+    const make1 = (): AuthController =>
+      new AuthController(async () => sdk, NET, {
+        port: () => port,
+        adapter: () => adapter,
+        location: () => ({ hostname: 'forge.dashhq.org', pathname: '/' }),
+        available: () => true,
+        deployed: async (_sdk, meta) => {
+          reads.push(meta)
+          return deployed
+        },
+      })
+    const c = make1()
+    // Before the read the page and network allow it; the read says the type is not there yet.
+    expect(c.platformPasskeyProblem()).toBeNull()
+    expect(await c.checkPlatformPasskeys()).toMatch(/aren't available on this network yet/)
+    expect(c.platformPasskeyProblem()).toMatch(/aren't available on this network yet/)
+    expect(reads).toEqual([FORGE.meta])
+    await expect(c.signInWithPasskey()).rejects.toMatchObject({ code: 'unavailable' })
+    expect(adapter.calls.get).toHaveLength(0)
+    // Once forge-meta is updated, a fresh page load sees it.
+    deployed = true
+    const later = make1()
+    expect(await later.checkPlatformPasskeys()).toBeNull()
+    expect(later.platformPasskeyProblem()).toBeNull()
+    // An answer of "there" is remembered; no second read.
+    expect(await later.checkPlatformPasskeys()).toBeNull()
+    expect(reads).toHaveLength(2)
+  })
+
+  it('treats a failed read as a problem, and asks again next time', async () => {
+    let fail = true
+    const c = new AuthController(async () => sdk, NET, {
+      port: () => port,
+      adapter: () => adapter,
+      location: () => ({ hostname: 'forge.dashhq.org', pathname: '/' }),
+      available: () => true,
+      deployed: async () => {
+        if (fail) throw new Error('offline')
+        return true
+      },
+    })
+    expect(await c.checkPlatformPasskeys()).toMatch(/Couldn't check whether passkeys/)
+    // Nothing was decided: the controls stay hidden, but the vault is not marked as missing.
+    expect(c.platformPasskeyProblem()).toBeNull()
+    fail = false
+    expect(await c.checkPlatformPasskeys()).toBeNull()
+  })
+
   it('leaves a wallet grant with no spending limit out of the passkey, and says how many', async () => {
     // A v1 wallet's one-contract grant: no budget, no expiry (its entry ciphertext would be public for good).
     const v1: FakeKey = { ...groupKey(6), contractBounds: { toJSON: () => ({ $type: 'singleContract', id: FORGE.collab }) }, totalBudget: undefined, expiresAt: undefined }

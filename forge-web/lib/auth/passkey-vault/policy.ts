@@ -15,6 +15,9 @@ import { passkeysAvailable, sharedOriginProblem } from '../vault'
 /** The only relying party ids a vault passkey is made for. */
 const PASSKEY_VAULT_RP_IDS: readonly string[] = ['forge.dashhq.org', 'localhost']
 
+/** Why the controls are hidden on a network without forge-meta, or whose forge-meta has no `vaultEntry` yet. */
+export const PASSKEYS_NOT_DEPLOYED = "Passkeys that work on your other devices aren't available on this network yet."
+
 type PageLocation = { readonly hostname: string; readonly pathname: string }
 
 const currentLocation = (): PageLocation | null => (typeof window === 'undefined' ? null : window.location)
@@ -35,7 +38,7 @@ export function passkeyVaultRpId(location: PageLocation | null = currentLocation
  * when they are. The vault's entries live in forge-meta: a network without it has none.
  */
 export function passkeyVaultProblem(forge: Pick<ForgeIds, 'meta'> | null, location: PageLocation | null = currentLocation(), available: () => boolean = passkeysAvailable): string | null {
-  if (forge?.meta === undefined) return "Passkeys that work on your other devices aren't available on this network yet."
+  if (forge?.meta === undefined) return PASSKEYS_NOT_DEPLOYED
   if (location === null || !available()) return "This browser can't use passkeys on this page."
   const shared = sharedOriginProblem(location)
   if (shared !== null) return shared

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { affordability, fundsNotice, fundsState, issueCoverage, LOW_BALANCE_CREDITS, nextFundsChange, renewFix } from './funds'
+import { affordability, fundsNotice, fundsState, issueCoverage, LOW_BALANCE_CREDITS, nextFundsChange, renewableInWallet, renewFix } from './funds'
 import { previewCreate } from '../sdk/cost'
 import { balanceSettled, estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 
@@ -74,6 +74,12 @@ describe('fundsNotice (the low-balance banner, ux-dx-spec §4)', () => {
     expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW), 'dg')).toMatchObject({ fix: 'renew-key' })
     expect(renewFix('app-connect')).toBe('renew-in-wallet')
     expect(renewFix(null)).toBe('renew-key')
+    // A key a passkey restored: who made it is unknown, so both renewals are offered.
+    expect(renewFix('passkey')).toBe('renew-either')
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW), 'passkey')).toMatchObject({ key: 'low:key-expiry', fix: 'renew-either' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW), 'passkey')).toMatchObject({ key: 'empty:key-budget', fix: 'renew-either' })
+    expect(fundsNotice(fundsState(BigInt(LOW_BALANCE_CREDITS - 1), null, NOW), 'passkey')).toMatchObject({ fix: 'top-up' })
+    expect(['app-connect', 'passkey', 'dg', null, undefined].map(renewableInWallet)).toEqual([true, true, false, false, false])
   })
 })
 

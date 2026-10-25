@@ -81,7 +81,8 @@ import {
   type VaultPort,
 } from '../vendor/platform-auth/passkey-vault'
 import { clearPending, dropMarker, forgetPasskeyRecords, markerFor, ownMarkerFor, putMarker, readMarkers, readPending, writePending, type PasskeyMarker } from './passkey-vault/markers'
-import { passkeyVaultProblem, passkeyVaultRpId } from './passkey-vault/policy'
+import { vaultEntryDeployed } from './passkey-vault/deployed'
+import { PASSKEYS_NOT_DEPLOYED, passkeyVaultProblem, passkeyVaultRpId } from './passkey-vault/policy'
 import { credentialBytes, credentialName, forgeVaultPort } from './passkey-vault/port'
 import {
   PlatformPasskeyError,
@@ -206,8 +207,9 @@ export interface AuthSession {
   readonly storage: 'vault' | 'session'
   /**
    * Where the stored key came from when this browser did not register it: `app-connect` (a
-   * wallet's App Connect grant: renew it in the wallet, {@link AuthController.walletRenewalRequest})
-   * or `dg`. Absent for a key registered here with the master key.
+   * wallet's App Connect grant: renew it in the wallet, {@link AuthController.walletRenewalRequest}),
+   * `dg`, or `passkey` (restored from a passkey: it may be a wallet's or the master key's, so
+   * either renewal is offered). Absent for a key registered here with the master key.
    */
   readonly origin?: KeyOrigin
   /** Which Forge contracts this session's keys can sign on. */
@@ -330,6 +332,8 @@ export interface PasskeyDeps {
   readonly location?: () => { readonly hostname: string; readonly pathname: string } | null
   /** Whether the browser can do WebAuthn here. Default: `passkeysAvailable`. */
   readonly available?: () => boolean
+  /** Whether the deployed forge-meta has the vault's entry type. Default: a proved contract fetch. */
+  readonly deployed?: (sdk: EvoSDK, metaId: string) => Promise<boolean>
 }
 
 /** Delete keys an earlier build left in plain localStorage. */
@@ -612,7 +616,7 @@ export class AuthController {
         // A wallet's App Connect key starts no write in its last minutes: one signed now could
         // reach a block after it expired (APP_CONNECT_PROFILE.md). Renew it in the wallet.
         const expiresAt = current.keyLimits?.expiresAt
-        if (current.origin === 'app-connect' && expiresAt != null && expiresAt - Date.now() <= APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS) {
+        if ((current.origin === 'app-connect' || current.origin === 'passkey') && expiresAt != null && expiresAt - Date.now() <= APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS) {
           throw new KeyUnusableError('expired')
         }
         noteSessionUse(network)
@@ -1357,7 +1361,7 @@ export class AuthController {
    */
   async walletRenewalRequest(options: { readonly callbackUrl?: (requestHash: Uint8Array) => string | null } = {}): Promise<WalletRenewalRequest> {
     const session = this.state.session
-    if (!session || session.storage !== 'vault' || session.origin !== 'app-connect' || session.keyId === undefined) {
+    if (!session || session.storage !== 'vault' || (session.origin !== 'app-connect' && session.origin !== 'passkey') || session.keyId === undefined) {
       throw new Error('Only a key your wallet granted can be renewed in your wallet. Renew it with your identity file or recovery phrase instead.')
     }
     const { identityId, keyId } = session
@@ -2062,7 +2066,38 @@ export class AuthController {
    * The UI hides the feature while it is not null.
    */
   platformPasskeyProblem(): string | null {
-    return passkeyVaultProblem(NETWORKS[this.network].v2, this.pageLocation(), this.passkeyDeps.available)
+    const problem = passkeyVaultProblem(NETWORKS[this.network].v2, this.pageLocation(), this.passkeyDeps.available)
+    // The page and network allow it; the deployed forge-meta may not have the vault yet.
+    return problem ?? (this.vaultDeployed === false ? PASSKEYS_NOT_DEPLOYED : null)
+  }
+
+  /** Whether the deployed forge-meta declares the vault's entry type: null until read (never cached when a read fails). */
+  private vaultDeployed: boolean | null = null
+  private vaultDeployedRead: Promise<void> | null = null
+
+  /**
+   * {@link platformPasskeyProblem}, after reading the forge-meta Platform serves for the vault's
+   * entry type (once; a read that fails is not remembered). The UI shows passkey controls only
+   * when this is null: the sign-in and the Settings section stay hidden, not broken, until the
+   * deployed contract has the type. A failed read is a problem too, so nothing shows unverified.
+   */
+  async checkPlatformPasskeys(): Promise<string | null> {
+    const problem = this.platformPasskeyProblem()
+    if (problem !== null || this.vaultDeployed === true) return problem
+    const meta = NETWORKS[this.network].v2?.meta
+    if (meta === undefined) return PASSKEYS_NOT_DEPLOYED
+    this.vaultDeployedRead ??= (async () => {
+      const sdk = await this.getSdk()
+      this.vaultDeployed = await (this.passkeyDeps.deployed ?? vaultEntryDeployed)(sdk, meta)
+    })().finally(() => {
+      this.vaultDeployedRead = null
+    })
+    try {
+      await this.vaultDeployedRead
+    } catch {
+      return "Couldn't check whether passkeys that work on your other devices are available. Reload to try again."
+    }
+    return this.platformPasskeyProblem()
   }
 
   /** forge-meta, where the vault's entries live; throws when this network has none. */
@@ -2326,7 +2361,7 @@ export class AuthController {
         this.step('Saving the key with your passkey')
         let committed: StoreOutcome
         try {
-          committed = await this.commitKey(secret, protection, { expectHeldKeyId: null })
+          committed = await this.commitKey(secret, protection, { expectHeldKeyId: null, origin: 'passkey' })
         } catch (e) {
           if (e instanceof VaultChangedError) throw new PlatformPasskeyError('Another tab saved a key for this identity meanwhile. Unlock it instead.', 'held')
           throw e

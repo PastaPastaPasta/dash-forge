@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useUiStore } from '@/hooks/use-ui-store'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const session = vi.hoisted(() => ({ origin: null as 'app-connect' | null, reason: 'key-expiry' as 'key-expiry' | 'key-budget' | 'balance', level: 'low' as 'low' | 'empty' }))
+const session = vi.hoisted(() => ({ origin: null as 'app-connect' | 'passkey' | null, reason: 'key-expiry' as 'key-expiry' | 'key-budget' | 'balance', level: 'low' as 'low' | 'empty' }))
 
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
@@ -56,6 +56,24 @@ describe('the low-funds banner', () => {
     expect(main().textContent).toBe('Renew in your wallet')
     act(() => main().click())
     expect(useUiStore.getState().loginView).toBe('wallet-renew')
+  })
+
+  it('offers both renewals for a key a passkey restored (its maker is unknown)', async () => {
+    session.origin = 'passkey'
+    await show()
+    expect(main().textContent).toBe('Renew in your wallet')
+    const withFile = host.querySelector<HTMLButtonElement>('[data-testid="low-funds-renew-with-file"]')!
+    expect(withFile.textContent).toBe('Renew with identity file')
+    act(() => main().click())
+    expect(useUiStore.getState().loginView).toBe('wallet-renew')
+    act(() => withFile.click())
+    expect(useUiStore.getState().loginView).toBe('import')
+  })
+
+  it('a wallet-granted key shows no second button', async () => {
+    session.origin = 'app-connect'
+    await show()
+    expect(host.querySelector('[data-testid="low-funds-renew-with-file"]')).toBeNull()
   })
 
   it('also for an empty budget', async () => {

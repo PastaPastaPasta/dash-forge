@@ -19,7 +19,7 @@ const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const EXPIRES = Date.UTC(2026, 11, 29)
 
 /** Where the signed-in key came from: `app-connect` for a wallet's grant. */
-const session = vi.hoisted(() => ({ origin: null as 'app-connect' | null }))
+const session = vi.hoisted(() => ({ origin: null as 'app-connect' | 'passkey' | null }))
 
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
@@ -171,5 +171,21 @@ describe('the top-up sheet for a key a wallet granted (App Connect)', () => {
     act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
     expect(byText('Renew key')).not.toBeNull()
     expect(byText('Renew in your wallet')).toBeNull()
+  })
+})
+
+describe('the top-up sheet for a key a passkey restored (unknown origin)', () => {
+  const byText = (text: string): HTMLElement | null => [...document.querySelectorAll<HTMLElement>('button')].find((b) => b.textContent?.trim() === text) ?? null
+
+  it('offers the wallet and the identity file side by side, and says why', () => {
+    session.origin = 'passkey'
+    act(() => root.render(<><FundsPill /><TopUpSheet /></>))
+    act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
+    expect(document.querySelector('[data-testid="top-up-sheet"]')!.textContent).toMatch(/passkey brought this key here, so Forge can't tell who made it/)
+    expect(byText('Renew in your wallet')).not.toBeNull()
+    expect(byText('Renew with identity file')).not.toBeNull()
+    expect(byText('Renew key')).toBeNull()
+    act(() => byText('Renew in your wallet')!.click())
+    expect(useUiStore.getState().loginView).toBe('wallet-renew')
   })
 })

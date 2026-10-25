@@ -24,7 +24,7 @@ import { IdentityTopUpFlow } from '@/components/identity-top-up-flow'
 import { KeyBudgetText, KeyFundsLine } from '@/components/funds-summary'
 import { faucetUrls } from '@/lib/faucets'
 import { typicalIssueCredits } from '@/lib/sdk'
-import { issueCoverageParts, type KeyLimits } from '@/lib/view/funds'
+import { issueCoverageParts, renewableInWallet, type KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -85,7 +85,9 @@ export function TopUpSheet(): JSX.Element | null {
   const canTopUpKey = reason.blocker === 'key-budget' && storage === 'vault' && keyLimits?.total != null
   // A key a wallet granted through App Connect is renewed in that wallet; the identity file or
   // recovery phrase still works (the master key can renew any Forge browser key).
-  const inWallet = origin === 'app-connect' && storage === 'vault'
+  const inWallet = renewableInWallet(origin) && storage === 'vault'
+  // A key a passkey restored: the wallet may have made it, or the master key did. Said so.
+  const fromPasskey = origin === 'passkey' && storage === 'vault'
   const renewVia = (view: 'import' | 'wallet-renew'): void => {
     close()
     openLogin(view)
@@ -107,7 +109,9 @@ export function TopUpSheet(): JSX.Element | null {
           <>
             {inWallet ? (
               <p>
-                Your wallet gave this browser its key, so renew it there: the wallet adds a new key and disables this one.
+                {fromPasskey
+                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew it there: the wallet adds a new key and disables this one."
+                  : 'Your wallet gave this browser its key, so renew it there: the wallet adds a new key and disables this one.'}
                 {canTopUpKey ? ' You can also add budget to this key with your identity file or recovery phrase.' : ' Your identity file or recovery phrase works too.'}
               </p>
             ) : canTopUpKey ? (
