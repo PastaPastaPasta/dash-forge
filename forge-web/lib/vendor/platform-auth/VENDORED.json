@@ -1,0 +1,41 @@
+{
+  "modules": {
+    "app-connect": {
+      "commit": "a627708db82112d20f76d81a99c8b94559933686",
+      "dirty": false,
+      "externals": [
+        "@noble/hashes",
+        "@noble/secp256k1"
+      ],
+      "files": {
+        "crypto.test.ts": "sha256-d1db62d5588808fbe3d95479ee94a542383430f5896bb8db849d977fe3cea84a",
+        "crypto.ts": "sha256-784e0783422169408509127259fab81d05998ace48794dcc5f96febe69df17a3",
+        "errors.test.ts": "sha256-6c276d5d02f8a2e0c83c818591bf92c3f90aa144f8f38f0c9dcb459678440a92",
+        "errors.ts": "sha256-eac0717f11776499f2587ccd7fa18caf32815bf2adb70509dddfa95c9cf2a892",
+        "group.ts": "sha256-5e81144f70e143d295cba89fe5858cf0e9c8f7093fda4f6996a8942feab37fd9",
+        "index.ts": "sha256-d828cc4a68526d7ac82a39c9263fa7ae10ab6c237fe74621bdd31b12d4c7b611",
+        "poller.test.ts": "sha256-c930fe802ba78b6e118a470fadc3c7c5b7889889c30eb250fc7a8a078fc1ca25",
+        "poller.ts": "sha256-8e2f989e309ab4dbd75a5932a1bc0c7b5589fbeee8085a96c2734059a77b93d3",
+        "primitives.test.ts": "sha256-4df9f7c1fa30a175754b4cda1dcfbd6e2cc24b943c3fb9efdbbb84a01b2383d8",
+        "primitives.ts": "sha256-0ee5552233134bd198ee0c7f4333ec642ede80815b28f2e9031601399e19161d",
+        "request.test.ts": "sha256-26d581128c7c8812d97b7a8f83dbd7c6f3fcaa165cf5fd327d4691771792ef1c",
+        "request.ts": "sha256-4d2be8fc81782d8eb76a998e2c53a81c5b375f3cac178f3da2679bc13481e56e",
+        "session.test.ts": "sha256-9820c0fdcbc808fbfb51c3a95d19589ea79a2c0d1cfcffcae46e01618125f728",
+        "session.ts": "sha256-7c7437fbbbc121ddad3ba8a5291c303b784abc2df14bbc32ee0806cfd2952418",
+        "test-helpers.ts": "sha256-b6386cbd941dbcd235e225e2f9285f3af67bd784ffb9e56b95385b392ff087e2",
+        "types.ts": "sha256-f15dd07645db675d2a00c253c5b85e2f367c75f6a35e3486817918315f10084a",
+        "vectors.json": "sha256-014ba6465a8fb27d65c04c05b8131fad3c9902a008510696a85759b0eaa87515",
+        "vectors.test.ts": "sha256-bc543817d848c7090ec68ed0eca513bc42b4d4f0c178153658ada6cbc86c1ca4",
+        "verify.test.ts": "sha256-d36c16fcb15a40384327799e39974bd2a9b92f10e4b39eef6dd19428784cd203",
+        "verify.ts": "sha256-5272d8263e7efe719fab01e114785a867580e0d6785e66fdd92baa0bc10e5f72"
+      },
+      "ref": "feat/app-connect-module"
+    }
+  },
+  "note": "Owned by this repo, free to diverge. Run platform-auth tools/vendor.mjs status <dir>.",
+  "schema": 1,
+  "upstream": {
+    "package": "@pastapastapasta/platform-auth",
+    "repo": "https://github.com/PastaPastaPasta/platform-auth"
+  }
+}

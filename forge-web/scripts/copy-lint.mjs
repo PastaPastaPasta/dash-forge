@@ -13,7 +13,7 @@
 // whole file with `// copy-lint-ignore-file: <reason>` as its first line.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
@@ -53,11 +53,19 @@ export const RULES = [
   { id: 'lazy-plural', pattern: /\w\(s\)/, why: 'use plural() instead of "(s)"' },
 ]
 
-function walk(dir, files) {
+/**
+ * Directories, relative to the web root, that hold code copied in from another repo
+ * (lib/vendor, synced by platform-auth's tools/vendor.mjs). Their strings are that
+ * project's developer errors, not Forge copy, and editing them would only add drift.
+ */
+export const SKIP_DIRS = ['lib/vendor']
+
+function walk(dir, files, root) {
   for (const name of readdirSync(dir)) {
     const path = join(dir, name)
     if (statSync(path).isDirectory()) {
-      if (!/^(node_modules|__tests__|e2e|e2e-drill)$/.test(name)) walk(path, files)
+      const skip = /^(node_modules|__tests__|e2e|e2e-drill)$/.test(name) || SKIP_DIRS.includes(relative(root, path).split(sep).join('/'))
+      if (!skip) walk(path, files, root)
     } else if (/\.tsx?$/.test(name) && !/\.(test|spec)\.tsx?$|fixtures?\.tsx?$|\.d\.ts$/.test(name)) {
       files.push(path)
     }
@@ -199,7 +207,7 @@ export function extractFile(path, root = WEB_ROOT) {
 
 export function extractAll(root = WEB_ROOT, dirs = SOURCE_DIRS) {
   const files = []
-  for (const d of dirs) if (existsSync(join(root, d))) walk(join(root, d), files)
+  for (const d of dirs) if (existsSync(join(root, d))) walk(join(root, d), files, root)
   return files.sort().flatMap((f) => extractFile(f, root))
 }
 

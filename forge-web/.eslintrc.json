@@ -63,6 +63,20 @@
           ]
         }]
       }
+    },
+    {
+      "files": ["**/*.ts", "**/*.tsx"],
+      "excludedFiles": ["**/*.test.ts", "**/*.test.tsx", "lib/auth/wallet-sim.ts"],
+      "rules": {
+        "@typescript-eslint/no-restricted-imports": ["error", {
+          "patterns": [
+            {
+              "group": ["**/vendor/platform-auth/app-connect/test-helpers", "**/vendor/platform-auth/app-connect/test-helpers.*", "./test-helpers", "./test-helpers.*"],
+              "message": "The vendored App Connect test-helpers build vector requests from fixed seeds: tests and lib/auth/wallet-sim.ts only."
+            }
+          ]
+        }]
+      }
     }
   ],
   "ignorePatterns": [
