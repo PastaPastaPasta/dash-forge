@@ -28,12 +28,19 @@ const OLD_HOME: Readonly<Record<string, string>> = {
   profile: 'COMMUNITY',
   follow: 'COMMUNITY',
 }
+// UPDATE-2 (the passkey vault): in forge-meta only; the three-contract set has no home for it.
+const FOUR_CONTRACT_ONLY: ReadonlySet<string> = new Set(['vaultEntry'])
 
 describe('the layout follows the deployment record', () => {
-  it('forge-meta holds the seven moved types only on a four-contract set', () => {
-    expect([...META_TYPES].sort()).toEqual(Object.keys(OLD_HOME).sort())
+  it('forge-meta holds the seven moved types, and vaultEntry, only on a four-contract set', () => {
+    expect([...META_TYPES].sort()).toEqual([...Object.keys(OLD_HOME), ...FOUR_CONTRACT_ONLY].sort())
     for (const t of META_TYPES) {
-      expect(contractOf(THREE, t), t).toBe(OLD_HOME[t])
+      if (FOUR_CONTRACT_ONLY.has(t)) {
+        expect(() => contractOf(THREE, t), t).toThrow(/no Forge contract holds/)
+        expect(contractKindOfType(t, THREE), t).toBeNull()
+      } else {
+        expect(contractOf(THREE, t), t).toBe(OLD_HOME[t])
+      }
       expect(contractOf(FOUR, t), t).toBe('META')
       expect(writeContractKind(FOUR, t), t).toBe('meta')
       // Without the network's ids the answer is the three-contract home.

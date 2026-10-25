@@ -38,6 +38,12 @@
   "expect": "absent"
  },
  {
+  "item": "U2",
+  "name": "no vaultEntry type",
+  "type": "vaultEntry",
+  "expect": "absent"
+ },
+ {
   "item": "EVK",
   "name": "no byKind index",
   "type": "event",

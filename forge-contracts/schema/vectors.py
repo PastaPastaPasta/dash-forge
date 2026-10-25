@@ -891,6 +891,46 @@ if F['repo_ban']:
 else:
     index('U1', 'no ban type', 'ban', None, False)
 
+# ---------------- UPDATE-2: the passkey vault's vaultEntry ----------------
+# A new type with no rule, so only its shapes refuse. That the authKeyId names an authentication key of
+# the owner is a reference, judged on chain (the live suite).
+CONTRACT_OF.update(vaultEntry='forge-community')
+if F['passkey_vault'] and F['layout_meta']:   # (build.py builds it with the four-contract layout only)
+    BASE['vaultEntry'] = {"credentialId": b(1, 32), "recipientKey": b(2, 32), "version": 1, "authKeyId": 1, "enc": b(3, 32),
+                          "sealed": b(4, 256)}
+    ok('base', 'vaultEntry ok', 'vaultEntry')
+    ok('U2', 'a credential id of 16 bytes', 'vaultEntry', credentialId=b(1, 16))
+    ok('U2', 'a credential id of 255 bytes', 'vaultEntry', credentialId=b(1, 255))
+    no('U2', 'a credential id of 15 bytes', 'vaultEntry', 'minItems', credentialId=b(1, 15))
+    no('U2', 'a credential id of 256 bytes', 'vaultEntry', 'maxItems', credentialId=b(1, 256))
+    no('U2', 'a recipient key of 31 bytes', 'vaultEntry', 'minItems', recipientKey=b(2, 31))
+    no('U2', 'a recipient key of 33 bytes', 'vaultEntry', 'maxItems', recipientKey=b(2, 33))
+    no('U2', 'an encapsulated key of 31 bytes', 'vaultEntry', 'minItems', enc=b(3, 31))
+    no('U2', 'an encapsulated key of 33 bytes', 'vaultEntry', 'maxItems', enc=b(3, 33))
+    ok('U2', 'a sealed bundle of the 32-byte minimum', 'vaultEntry', sealed=b(4, 32))
+    no('U2', 'a sealed bundle of 31 bytes', 'vaultEntry', 'minItems', sealed=b(4, 31))
+    no('U2', 'a sealed bundle of 257 bytes', 'vaultEntry', 'maxItems', sealed=b(4, 257))
+    ok('U2', 'version 255', 'vaultEntry', version=255)
+    no('U2', 'version 0', 'vaultEntry', 'minimum', version=0)
+    no('U2', 'version 256', 'vaultEntry', 'maximum', version=256)
+    ok('U2', 'authKeyId 0', 'vaultEntry', authKeyId=0)
+    ok('U2', 'authKeyId 4294967295', 'vaultEntry', authKeyId=4294967295)
+    no('U2', 'authKeyId -1', 'vaultEntry', 'minimum', authKeyId=-1)
+    no('U2', 'authKeyId 4294967296', 'vaultEntry', 'maximum', authKeyId=4294967296)
+    for _p in ('credentialId', 'recipientKey', 'version', 'authKeyId', 'enc', 'sealed'):
+        no('U2', f'an entry without {_p}', 'vaultEntry', 'required', **{_p: DROP})
+    no('U2', 'an entry with another property', 'vaultEntry', 'additionalProperties', label='phone')
+    # A re-seal replaces enc, sealed, version and authKeyId; which passkey and which recipient the entry is for never changes
+    _STORED = doc('vaultEntry')
+    replace('U2', 're-seal: enc, sealed, version and authKeyId change', 'vaultEntry', _STORED, None,
+            enc=b(7, 32), sealed=b(8, 256), version=2, authKeyId=3)
+    replace('U2', 'credentialId changed (immutable)', 'vaultEntry', _STORED, '40128', credentialId=b(9, 32))
+    replace('U2', 'recipientKey changed (immutable)', 'vaultEntry', _STORED, '40128', recipientKey=b(9, 32))
+    index('U2', 'one entry per owner and credential', 'vaultEntry', 'byCredential', True,
+          properties=['$ownerId', 'credentialId'], unique=True)
+else:
+    index('U2', 'no vaultEntry type', 'vaultEntry', None, False)
+
 # ---------------- the other mainnet-only rules (forge-v2.md §9.1) ----------------
 if F['mainnet_release_target']:
     no('MN', 'a public publish without targetOid', 'release', 'targetOnPublish', targetOid=DROP)

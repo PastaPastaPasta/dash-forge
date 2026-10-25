@@ -6,7 +6,8 @@
 //! here instead of hard-coding one, so the map lives in exactly one place.
 //!
 //! DESIGN rev 4.1 D44 adds a fourth contract, forge-meta, registered last: `repoKey`, `ban`,
-//! `label`, `topic`, `packMirror`, `profile` and `follow` ([`META_TYPES`]) move there. The
+//! `label`, `topic`, `packMirror`, `profile` and `follow` ([`META_TYPES`]) move there, and
+//! `vaultEntry` (UPDATE-2, the passkey vault) exists there only. The
 //! deployment record says which layout a network has (`v2.forgeMeta` present,
 //! [`ForgeIds::meta`]), so one build serves sakura's three-contract set and four-contract sets:
 //! [`ForgeIds::contract_of`] is the layout-aware map, [`ForgeContract::of`] the three-contract
@@ -86,8 +87,10 @@ pub const COMMUNITY_TYPES: [&str; 12] = [
 /// The types forge-meta holds on a four-contract set (D44). On a three-contract set they stay
 /// in [`CORE_TYPES`] (`label`, `topic`, `packMirror`), [`COLLAB_TYPES`] (`repoKey`, `ban`) and
 /// [`COMMUNITY_TYPES`] (`profile`, `follow`). None of them is read by a rule, total or derived
-/// index of its old contract, so the move changes no consensus rule.
-pub const META_TYPES: [&str; 7] = [
+/// index of its old contract, so the move changes no consensus rule. `vaultEntry` (UPDATE-2) is
+/// the exception: `build.py` builds it with the four-contract layout only, so it has no
+/// three-contract home and [`ForgeContract::of`] knows no contract for it.
+pub const META_TYPES: [&str; 8] = [
     "repoKey",
     "ban",
     "label",
@@ -95,6 +98,7 @@ pub const META_TYPES: [&str; 7] = [
     "packMirror",
     "profile",
     "follow",
+    "vaultEntry",
 ];
 
 /// The listed types a contract build may leave out: RC2's fused star (C1, a `build.py` flag)
@@ -415,7 +419,8 @@ mod tests {
             assert_eq!(four.contract_id_of(t), Some("META"), "{t}");
             assert_eq!(four.home(t), "META", "{t}");
             assert_ne!(three.contract_id_of(t), Some("META"), "{t}");
-            assert!(three.contract_id_of(t).is_some(), "{t}");
+            // (vaultEntry, UPDATE-2, is a four-contract type: no home in the three-contract set)
+            assert_eq!(three.contract_id_of(t).is_some(), t != "vaultEntry", "{t}");
         }
         for (t, old) in [
             ("repoKey", "COLLAB"),

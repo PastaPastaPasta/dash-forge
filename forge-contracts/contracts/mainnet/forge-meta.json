@@ -669,6 +669,85 @@
         "identityId"
       ],
       "additionalProperties": false
+    },
+    "vaultEntry": {
+      "type": "object",
+      "documentsMutable": true,
+      "canBeDeleted": true,
+      "properties": {
+        "credentialId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 16,
+          "maxItems": 255,
+          "position": 0
+        },
+        "recipientKey": {
+          "type": "bytes",
+          "size": 32,
+          "position": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "position": 2
+        },
+        "authKeyId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 3,
+          "refersTo": {
+            "type": "identityPublicKey",
+            "identityProperty": "$ownerId",
+            "keyRequirements": {
+              "purpose": "authentication"
+            }
+          }
+        },
+        "enc": {
+          "type": "bytes",
+          "size": 32,
+          "position": 4
+        },
+        "sealed": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 256,
+          "position": 5
+        }
+      },
+      "immutable": [
+        "credentialId",
+        "recipientKey"
+      ],
+      "indices": [
+        {
+          "name": "byCredential",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "credentialId": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$updatedAt",
+        "credentialId",
+        "recipientKey",
+        "version",
+        "authKeyId",
+        "enc",
+        "sealed"
+      ],
+      "additionalProperties": false
     }
   },
   "config": {

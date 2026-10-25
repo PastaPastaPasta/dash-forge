@@ -188,8 +188,11 @@ test('the deployment record picks the layout: forge-meta holds the moved types o
   const three = { core: 'C', collab: 'L', community: 'M' };
   const four = { ...three, meta: 'X' };
   for (const t of META_TYPES) {
-    assert.ok(CONTRACT_OF[t], `${t} has a three-contract home`);
-    assert.equal(contractOn(three, t), CONTRACT_OF[t], t);
+    // (vaultEntry, UPDATE-2, is a four-contract type: no home in the three-contract set)
+    if (t !== 'vaultEntry') {
+      assert.ok(CONTRACT_OF[t], `${t} has a three-contract home`);
+      assert.equal(contractOn(three, t), CONTRACT_OF[t], t);
+    }
     assert.equal(contractOn(four, t), 'meta', t);
   }
   for (const t of ['repo', 'issue', 'star', 'event']) assert.equal(contractOn(four, t), CONTRACT_OF[t], t);
