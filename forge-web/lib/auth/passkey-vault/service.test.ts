@@ -33,7 +33,9 @@ import {
   passkeyRows,
   platformPasskeyError,
   PlatformPasskeyError,
+  passkeyIsUseless,
   sealableSession,
+  vaultPasskeyFailure,
   verifyBundle,
   wipeSession,
   type ForgePasskeyVault,
@@ -273,5 +275,27 @@ describe('the passkeys of one identity', () => {
     expect(needsReseal({ authKeyId: 5 }, m, [5], 9)).toBe(true)
     expect(needsReseal({ authKeyId: 5 }, m, [5, 6], 10)).toBe(true)
     expect(needsReseal({ authKeyId: 5 }, null, [5, 6], null)).toBe(false)
+  })
+})
+
+describe('a WebAuthn failure', () => {
+  it('keeps its code through the browser adapter, in the browser vault’s words', () => {
+    const closed = vaultPasskeyFailure(new DOMException('The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/', 'NotAllowedError'), 'get')
+    expect(closed).toBeInstanceOf(PasskeyError)
+    expect(closed.code).toBe('cancelled')
+    expect(closed.message).not.toMatch(/w3\.org/)
+    expect(vaultPasskeyFailure(new DOMException('x', 'InvalidStateError'), 'create').code).toBe('exists')
+    expect(vaultPasskeyFailure(new DOMException('x', 'SecurityError'), 'create').code).toBe('unsupported')
+    expect(platformPasskeyError(vaultPasskeyFailure(new DOMException('x', 'SecurityError'), 'get'))).toMatchObject({ code: 'unavailable' })
+    const own = new PasskeyError('no prf', 'no-prf')
+    expect(vaultPasskeyFailure(own, 'get')).toBe(own)
+  })
+
+  it('drops a new passkey only when it can never hold the key', () => {
+    expect(passkeyIsUseless(new PasskeyError('x', 'no-prf'))).toBe(true)
+    expect(passkeyIsUseless(new VaultError('x', 'mismatch'))).toBe(true)
+    expect(passkeyIsUseless(new PasskeyError('x', 'cancelled'))).toBe(false)
+    expect(passkeyIsUseless(new PasskeyError('x', 'timeout'))).toBe(false)
+    expect(passkeyIsUseless(new Error('network'))).toBe(false)
   })
 })

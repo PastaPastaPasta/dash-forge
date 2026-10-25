@@ -25,6 +25,7 @@ import { APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS } from '../../vendor/platform-auth
 import {
   bytesEqual,
   checkSlots,
+  defaultPasskeyError,
   KeyPurpose,
   KeyType,
   matchKey,
@@ -34,6 +35,7 @@ import {
   VaultCryptoError,
   VaultError,
   wipe,
+  type CeremonyKind,
   type DropReason,
   type OnChainKey,
   type PasskeyAdapter,
@@ -42,7 +44,7 @@ import {
   type VaultEntryRecord,
   type VaultPort,
 } from '../../vendor/platform-auth/passkey-vault'
-import type { ExtraKey, VaultSecret } from '../vault'
+import { passkeyFailure, type ExtraKey, type VaultSecret } from '../vault'
 import { decodeWif, encodeWif } from '../wif'
 import type { PasskeyMarker } from './markers'
 import { FORGE_BUNDLE_CODEC, FORGE_BUNDLE_FORMAT, FORGE_BUNDLE_MAX_KEYS, FORGE_VAULT_PROFILE, PASSKEY_VAULT_RP_NAME } from './profile'
@@ -138,6 +140,28 @@ function slotZeroMessage(reason: DropReason | KeyProblem): string {
   }
 }
 
+/**
+ * The browser adapter's `mapError`: a WebAuthn rejection as the core's {@link PasskeyError}, so its
+ * code survives (a closed prompt is 'cancelled', an excluded authenticator 'exists'), worded as
+ * the browser vault words it (`passkeyFailure`).
+ */
+export function vaultPasskeyFailure(e: unknown, kind: CeremonyKind): PasskeyError {
+  if (e instanceof PasskeyError) return e
+  const coded = defaultPasskeyError(e)
+  const worded = passkeyFailure(e, kind)
+  return new PasskeyError(worded instanceof Error && worded !== e ? worded.message : coded.message, coded.code)
+}
+
+/**
+ * Whether a failed confirm proves the new passkey can never hold the key (no PRF, another
+ * identity's or vault's handle, another credential answered): it is dropped. Anything else (a closed
+ * prompt, a timeout) keeps it for "Check again".
+ */
+export function passkeyIsUseless(e: unknown): boolean {
+  if (e instanceof PasskeyError) return e.code === 'no-prf' || e.code === 'not-vault' || e.code === 'other-vault'
+  return e instanceof VaultError && (e.code === 'mismatch' || e.code === 'other-identity')
+}
+
 /** The core's errors in Forge's words. Anything else passes through (a failed read stays one). */
 export function platformPasskeyError(e: unknown): unknown {
   if (e instanceof PlatformPasskeyError) return e
@@ -153,7 +177,9 @@ export function platformPasskeyError(e: unknown): unknown {
         return new PlatformPasskeyError('This device already holds a passkey for this identity.', 'exists')
       case 'cancelled':
       case 'timeout':
-        return new PlatformPasskeyError('The passkey prompt was closed or timed out.', 'cancelled')
+        return new PlatformPasskeyError(e.message, 'cancelled')
+      case 'unsupported':
+        return new PlatformPasskeyError(e.message, 'unavailable')
       default:
         return new PlatformPasskeyError(e.message, 'failed')
     }
@@ -201,8 +227,8 @@ export function mainKeyProblem(k: OnChainKey | undefined, forge: ForgeIds, now: 
   if (k === undefined) return 'missing'
   if (k.purpose !== KeyPurpose.AUTHENTICATION || k.securityLevel !== SecurityLevel.HIGH || !isSigningType(k.type)) return 'shape'
   if (k.disabled) return 'disabled'
-  if (!groupBound(k, forge)) return 'unbound'
   if (k.totalBudget === undefined || k.expiresAt === undefined) return 'unlimited'
+  if (!groupBound(k, forge)) return 'unbound'
   if (expiring(k, now)) return 'expired'
   if (k.remainingBudget !== undefined && k.remainingBudget <= 0n) return 'spent'
   return null
@@ -260,18 +286,23 @@ export function verifyBundle(bundle: SlotBundle, keys: readonly OnChainKey[], o:
   }
   const extra: ExtraKey[] = []
   let encryption: OpenedKeys['encryption'] = null
-  for (const a of accepted) {
-    if (a.index === 0) continue
-    if (a.slot.purpose === KeyPurpose.ENCRYPTION) encryption = { keyId: a.slot.keyId, secret: a.slot.privateKey.slice() }
-    else extra.push({ contractId: grantContract(a.key, forge)!, keyId: a.slot.keyId, wif: encodeWif(a.slot.privateKey, network) })
-  }
-  return {
-    keyId: main.slot.keyId,
-    wif: encodeWif(main.slot.privateKey, network),
-    extra,
-    encryption,
-    keyIds: accepted.map((a) => a.slot.keyId),
-    dropped: dropped.length,
+  try {
+    for (const a of accepted) {
+      if (a.index === 0) continue
+      if (a.slot.purpose === KeyPurpose.ENCRYPTION) encryption = { keyId: a.slot.keyId, secret: a.slot.privateKey.slice() }
+      else extra.push({ contractId: grantContract(a.key, forge)!, keyId: a.slot.keyId, wif: encodeWif(a.slot.privateKey, network) })
+    }
+    return {
+      keyId: main.slot.keyId,
+      wif: encodeWif(main.slot.privateKey, network),
+      extra,
+      encryption,
+      keyIds: accepted.map((a) => a.slot.keyId),
+      dropped: dropped.length,
+    }
+  } catch (error) {
+    wipe(encryption?.secret)
+    throw error
   }
 }
 
@@ -283,6 +314,7 @@ export function verifyBundle(bundle: SlotBundle, keys: readonly OnChainKey[], o:
 function ineligibleMessage(problem: KeyProblem): string {
   switch (problem) {
     case 'unbound':
+      return "This sign-in's key isn't bound to Dash Forge's current contracts, so it can't be kept with a passkey. Renew it with your identity file or recovery phrase, then try again."
     case 'unlimited':
       return "This sign-in's key has no spending limit or expiry, so it can't be kept with a passkey. Renew it with your identity file or recovery phrase, or sign in with a wallet that grants a limited key, then try again."
     case 'expired':
@@ -363,6 +395,7 @@ export function sealableSession(o: {
     }
   } catch (error) {
     for (const s of slots) wipe(s.privateKey)
+    wipe(encryption?.privateKey)
     throw error
   }
   return { ownerId: o.ownerId.slice(), keys: encryption ? [...slots, encryption] : slots }

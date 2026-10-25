@@ -18,6 +18,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { NETWORKS } from '../constants'
 import { idbGet, resetMemoryStores } from '../idb'
 import type { WasmKey } from '../sdk/facade'
+import { UnconfirmedWriteError } from '../sdk/write'
 import {
   PasskeyError,
   prfInput,
@@ -35,6 +36,7 @@ import type { WalletKey } from './key-registration'
 import { readMarkers, readPending } from './passkey-vault/markers'
 import { FORGE_BUNDLE_CODEC, FORGE_BUNDLE_FORMAT, FORGE_VAULT_PROFILE } from './passkey-vault/profile'
 import { credentialName, onChainKeyOf } from './passkey-vault/port'
+import { vaultPasskeyFailure } from './passkey-vault/service'
 import { listVaults, releaseUnlocked, storeEncryptionKey } from './vault'
 import { encodeWif } from './wif'
 
@@ -55,7 +57,7 @@ vi.mock('../constants', async (orig) => {
   return { ...real, NETWORKS: { ...real.NETWORKS, devnet } }
 })
 vi.mock('./group-trust', async (orig) => ({ ...(await orig<typeof import('./group-trust')>()), assertGroupHolds: async () => ({ unknown: [], unchecked: [], notice: null }) }))
-vi.mock('../view/retry', () => ({ retryWhileMissing: async <T,>(read: () => Promise<T | null>) => read() }))
+vi.mock('../view/retry', () => ({ retryWhileMissing: async <T,>(read: () => Promise<T | null>) => read(), retryUntil: async <T,>(read: () => Promise<T>) => read() }))
 vi.mock('./wif', async (orig) => {
   const real = await orig<typeof import('./wif')>()
   return { ...real, controlsKey: (k: FakeKey, wif: string) => k.wif === wif }
@@ -152,8 +154,17 @@ const grantOf = (k: FakeKey): WalletKey => ({
 
 /** The core's in-memory port, reading the same keys as the fake chain (through the real mapping). */
 class ChainPort extends MemoryVaultPort {
+  /** The next create lands, but its answer is lost (an unconfirmed write). */
+  loseNextAnswer = false
   constructor(private readonly chain: () => FakeKey[]) {
     super()
+  }
+  override async put(o: Parameters<MemoryVaultPort['put']>[0]): Promise<void> {
+    await super.put(o)
+    if (this.loseNextAnswer) {
+      this.loseNextAnswer = false
+      throw new UnconfirmedWriteError('doc')
+    }
   }
   override async identityKeys(): Promise<OnChainKey[]> {
     return this.chain().flatMap((k) => {
@@ -389,6 +400,56 @@ describe('passkeys that hold a key on Platform', () => {
     await c.disableIdentityKey({ fileText: '{}' }, 6, { removePasskeys: true })
     expect(disabled).toEqual([[6]])
     expect(port.entries.map((e) => e.authKeyId)).toEqual([5])
+  }, 30_000)
+
+  it('keeps a passkey whose confirm the browser reports closed (a real NotAllowedError) for "Check again"', async () => {
+    const c = await signIn(keys[1]!)
+    let failGets = 1
+    const real = adapter
+    adapter = { ...real, get: async (o) => (failGets-- > 0 ? Promise.reject(vaultPasskeyFailure(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'), 'get')) : real.get(o)) }
+    await expect(c.addPlatformPasskey()).rejects.toMatchObject({ code: 'cancelled', message: expect.not.stringMatching(/w3\.org|not allowed/) })
+    expect(await c.pendingPlatformPasskey()).not.toBeNull()
+    expect(real.signalled).toEqual([])
+    // A second add waits for this one.
+    await expect(c.addPlatformPasskey()).rejects.toMatchObject({ code: 'pending' })
+  }, 30_000)
+
+  it('deletes an entry whose answer was lost before discarding its passkey, and never orphans one', async () => {
+    const c = await signIn(keys[1]!)
+    port.loseNextAnswer = true
+    await expect(c.addPlatformPasskey()).rejects.toMatchObject({ code: 'pending' })
+    expect(port.entries).toHaveLength(1)
+    expect(await c.pendingPlatformPasskey()).not.toBeNull()
+    await c.abandonPlatformPasskey()
+    expect(port.entries).toEqual([])
+    expect(adapter.signalled).toHaveLength(1)
+    expect(await c.pendingPlatformPasskey()).toBeNull()
+
+    // "Check again" over an entry that did land: re-sealed and marked, nothing dropped.
+    port.loseNextAnswer = true
+    await expect(c.addPlatformPasskey()).rejects.toMatchObject({ code: 'pending' })
+    await c.finishPlatformPasskey()
+    expect(port.entries).toHaveLength(1)
+    expect(await readMarkers(NET, ID)).toHaveLength(1)
+    expect(adapter.signalled).toHaveLength(1)
+  }, 30_000)
+
+  it('refuses an entry replaced under a passkey’s credential id (sealed to another key)', async () => {
+    const c = await signIn(keys[1]!)
+    await c.addPlatformPasskey()
+    port.entries[0]!.recipientKey = recipientFromPrf(sk(77)).publicKey
+    const next = await newDevice(c)
+    await expect(next.signInWithPasskey()).rejects.toMatchObject({ code: 'refused' })
+    expect(await listVaults(NET)).toEqual([])
+  }, 30_000)
+
+  it('writes no marker back after forgetting, even with a re-seal in flight', async () => {
+    const c = await signIn(keys[1]!)
+    await c.addPlatformPasskey()
+    keys.push(groupKey(20))
+    await c.importIdentity({ fileText: '{}' }, PASSKEY, undefined, { renew: true })
+    await c.forget(ID)
+    expect(await readMarkers(NET, ID)).toEqual([])
   }, 30_000)
 
   it('is not offered on another host', () => {
