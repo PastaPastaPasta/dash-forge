@@ -46,7 +46,7 @@ import {
 } from '../../vendor/platform-auth/passkey-vault'
 import { passkeyFailure, type ExtraKey, type VaultSecret } from '../vault'
 import { decodeWif, encodeWif } from '../wif'
-import type { PasskeyMarker } from './markers'
+import { ownMarkerFor, type PasskeyMarker } from './markers'
 import { FORGE_BUNDLE_CODEC, FORGE_BUNDLE_FORMAT, FORGE_BUNDLE_MAX_KEYS, FORGE_VAULT_PROFILE, PASSKEY_VAULT_RP_NAME } from './profile'
 import { credentialName } from './port'
 
@@ -54,7 +54,7 @@ import { credentialName } from './port'
  * A key that expires within this margin is not sealed and does not sign in: a session opened on
  * it could not sign anything (App Connect's last-minutes rule, `controller.ts` `writeAuth`).
  */
-export const PASSKEY_EXPIRY_MARGIN_MS = APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS
+const PASSKEY_EXPIRY_MARGIN_MS = APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS
 
 /** A Forge network with forge-meta, where `vaultEntry` lives. */
 export type VaultForgeIds = ForgeIds & { readonly meta: string }
@@ -209,9 +209,15 @@ export function platformPasskeyError(e: unknown): unknown {
 // ---------------------------------------------------------------------------
 
 /** Why a key may not be slot 0, beyond the core's shared checks. */
-export type KeyProblem = 'shape' | 'missing' | 'disabled' | 'expired' | 'spent' | 'unbound' | 'unlimited'
+type KeyProblem = 'shape' | 'missing' | 'disabled' | 'expired' | 'spent' | 'unbound' | 'unlimited'
 
 const isSigningType = (type: number): boolean => type === KeyType.ECDSA_SECP256K1 || type === KeyType.ECDSA_HASH160
+
+/** The shape of a key Forge signs with: AUTHENTICATION / HIGH, secp256k1 or its hash160. */
+const authShape = (k: OnChainKey): boolean => k.purpose === KeyPurpose.AUTHENTICATION && k.securityLevel === SecurityLevel.HIGH && isSigningType(k.type)
+
+/** Its budget is known to be spent (an unknown one is not). */
+const isSpent = (k: OnChainKey): boolean => k.remainingBudget !== undefined && k.remainingBudget <= 0n
 
 function groupBound(k: OnChainKey, forge: ForgeIds): boolean {
   return k.contractBounds?.kind === 'contractGroup' && bytesEqual(k.contractBounds.groupId, decodeIdentifier(forge.group))
@@ -223,14 +229,14 @@ const expiring = (k: OnChainKey, now: number): boolean => k.expiresAt !== undefi
  * Why `k` cannot be a passkey's main key (slot 0), or null: a live AUTHENTICATION / HIGH key bound
  * to Forge's contract group, with a budget left and an expiry still ahead.
  */
-export function mainKeyProblem(k: OnChainKey | undefined, forge: ForgeIds, now: number): KeyProblem | null {
+function mainKeyProblem(k: OnChainKey | undefined, forge: ForgeIds, now: number): KeyProblem | null {
   if (k === undefined) return 'missing'
-  if (k.purpose !== KeyPurpose.AUTHENTICATION || k.securityLevel !== SecurityLevel.HIGH || !isSigningType(k.type)) return 'shape'
+  if (!authShape(k)) return 'shape'
   if (k.disabled) return 'disabled'
   if (k.totalBudget === undefined || k.expiresAt === undefined) return 'unlimited'
   if (!groupBound(k, forge)) return 'unbound'
   if (expiring(k, now)) return 'expired'
-  if (k.remainingBudget !== undefined && k.remainingBudget <= 0n) return 'spent'
+  if (isSpent(k)) return 'spent'
   return null
 }
 
@@ -239,7 +245,7 @@ export function mainKeyProblem(k: OnChainKey | undefined, forge: ForgeIds, now: 
  * to one Forge contract (a shipped wallet's grant) or to Forge's group. Never an unbounded key, nor
  * one bound to a document type or to another app's contract.
  */
-export function grantContract(k: OnChainKey, forge: ForgeIds): string | null {
+function grantContract(k: OnChainKey, forge: ForgeIds): string | null {
   const b = k.contractBounds
   if (b?.kind === 'contractGroup') return groupBound(k, forge) ? forge.core : null
   if (b?.kind !== 'singleContract') return null
@@ -251,7 +257,7 @@ export function grantContract(k: OnChainKey, forge: ForgeIds): string | null {
  * Whether `k` is an encryption key Forge's private repos use (`../encryption-key`
  * `isUsableEncryptionKey`): ENCRYPTION / MEDIUM, secp256k1, enabled, unbound or bound to forge-core.
  */
-export function usableEncryption(k: OnChainKey, forge: ForgeIds): boolean {
+function usableEncryption(k: OnChainKey, forge: ForgeIds): boolean {
   if (k.purpose !== KeyPurpose.ENCRYPTION || k.securityLevel !== SecurityLevel.MEDIUM || k.type !== KeyType.ECDSA_SECP256K1 || k.disabled) return false
   const b = k.contractBounds
   return b === undefined || (b.kind !== 'contractGroup' && base58Encode(b.contractId) === forge.core)
@@ -331,7 +337,7 @@ function ineligibleMessage(problem: KeyProblem): string {
  * The wallet grants one bundle holds: one per Forge contract. With slot 0 and the encryption key
  * that fills the format's six slots.
  */
-export const MAX_GRANTS = FORGE_BUNDLE_MAX_KEYS - 2
+const MAX_GRANTS = FORGE_BUNDLE_MAX_KEYS - 2
 
 /** The private key of `wif`, when it is `k`'s; null (and nothing left in memory) otherwise. */
 function privateKeyOf(wif: string, k: OnChainKey): Uint8Array | null {
@@ -387,9 +393,7 @@ export function sealableSession(o: {
       if (slots.length > MAX_GRANTS || e.holdOnly) continue
       const k = byId(e.keyId)
       if (k === undefined || slots.some((s) => s.keyId === k.id)) continue
-      const live = k.purpose === KeyPurpose.AUTHENTICATION && k.securityLevel === SecurityLevel.HIGH && isSigningType(k.type) && !k.disabled && !expiring(k, now)
-      const spent = k.remainingBudget !== undefined && k.remainingBudget <= 0n
-      if (!live || spent || grantContract(k, forge) === null) continue
+      if (!authShape(k) || k.disabled || expiring(k, now) || isSpent(k) || grantContract(k, forge) === null) continue
       const sk = privateKeyOf(e.wif, k)
       if (sk !== null) slots.push(slotOf(k, sk))
     }
@@ -503,7 +507,7 @@ export function passkeyRows(o: {
 }): PlatformPasskeyRow[] {
   return o.entries
     .map((e) => {
-      const m = o.markers.find((x) => bytesEqual(x.credentialId, e.credentialId) && bytesEqual(x.recipientKey, e.recipientKey)) ?? null
+      const m = ownMarkerFor(o.markers, e)
       return {
         id: credentialName(e.credentialId),
         addedAt: e.createdAt ?? null,

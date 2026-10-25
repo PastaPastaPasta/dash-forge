@@ -33,7 +33,7 @@ import {
 import { base58Encode, decodeIdentifier } from '../base58'
 
 /** The most entries one read lists (Platform's page limit; the client's cap is 10). */
-export const VAULT_LIST_LIMIT = 100
+const VAULT_LIST_LIMIT = 100
 
 /** Bytes from a document field as the SDK's JSON gives them (base64), or as bytes. */
 function bytesOf(value: unknown): Uint8Array | null {
@@ -53,7 +53,7 @@ const msOf = (v: unknown): number | undefined => (typeof v === 'number' && Numbe
  * A `vaultEntry` row as the core's record, checked against the schema (`forge-meta.json`) and
  * the owner asked for. Throws on anything else.
  */
-export function entryOf(doc: PlainDocument, ownerId: Uint8Array): VaultEntryRecord {
+function entryOf(doc: PlainDocument, ownerId: Uint8Array): VaultEntryRecord {
   const owner = doc['$ownerId']
   const credentialId = bytesOf(doc['credentialId'])
   const recipientKey = bytesOf(doc['recipientKey'])
@@ -192,7 +192,9 @@ export function forgeVaultPort({ sdk, contractId, auth = null }: ForgeVaultPortO
       const identity = await api.identities.fetch(id)
       if (!identity) return null
       const budgeted = identity.publicKeys.filter((k) => k.totalBudget !== undefined).map((k) => k.keyId)
-      const budgets = budgeted.length > 0 ? await api.identities.keysRemainingBudgets(id, budgeted) : new Map<number, bigint | null>()
+      // Keyed by number whatever the SDK keys its map with (a bigint key would read as no budget).
+      const read = budgeted.length > 0 ? await api.identities.keysRemainingBudgets(id, budgeted) : new Map<number, bigint | null>()
+      const budgets = new Map([...read].map(([keyId, remaining]) => [Number(keyId), remaining] as const))
       return identity.publicKeys.flatMap((k) => {
         const key = onChainKeyOf(k, budgets.get(k.keyId))
         return key ? [key] : []

@@ -58,10 +58,16 @@ function isMarker(v: unknown): v is PasskeyMarker {
   )
 }
 
-/** This device's markers for `identityId` (a malformed one is ignored: it trusts nothing). */
+/** The well-formed markers of a stored value (a malformed one is ignored: it trusts nothing). */
+const validMarkers = (v: unknown): PasskeyMarker[] => (Array.isArray(v) ? v.filter(isMarker) : [])
+
+/** The markers of a stored value but the one of `credentialId`. */
+const withoutCredential = (v: unknown, credentialId: Uint8Array): PasskeyMarker[] => validMarkers(v).filter((m) => !bytesEqual(m.credentialId, credentialId))
+
+/** This device's markers for `identityId`. */
 export async function readMarkers(network: Network, identityId: string): Promise<PasskeyMarker[]> {
   const v = await idbGet<unknown>('vault', markersKey(network, identityId))
-  return Array.isArray(v) ? v.filter(isMarker).map((m) => ({ ...m, credentialId: new Uint8Array(m.credentialId), recipientKey: new Uint8Array(m.recipientKey) })) : []
+  return validMarkers(v).map((m) => ({ ...m, credentialId: new Uint8Array(m.credentialId), recipientKey: new Uint8Array(m.recipientKey) }))
 }
 
 /** The marker of `credentialId`, or null. */
@@ -69,20 +75,26 @@ export function markerFor(markers: readonly PasskeyMarker[], credentialId: Uint8
   return markers.find((m) => bytesEqual(m.credentialId, credentialId)) ?? null
 }
 
+/**
+ * The marker that makes `entry` this device's: the one of its credential, recording its recipient
+ * key. An entry replaced since (sealed to another key under the same credential id) has none.
+ */
+export function ownMarkerFor(markers: readonly PasskeyMarker[], entry: { readonly credentialId: Uint8Array; readonly recipientKey: Uint8Array }): PasskeyMarker | null {
+  const m = markerFor(markers, entry.credentialId)
+  return m !== null && bytesEqual(m.recipientKey, entry.recipientKey) ? m : null
+}
+
 /** Record (or replace) the marker of `marker.credentialId`, in one transaction with the others. */
 export async function putMarker(network: Network, identityId: string, marker: PasskeyMarker): Promise<void> {
   const at = markersKey(network, identityId)
-  await idbUpdate<unknown>('vault', at, (current) => {
-    const kept = (Array.isArray(current) ? current.filter(isMarker) : []).filter((m) => !bytesEqual(m.credentialId, marker.credentialId))
-    return [[at, [...kept, marker]]]
-  })
+  await idbUpdate<unknown>('vault', at, (current) => [[at, [...withoutCredential(current, marker.credentialId), marker]]])
 }
 
 /** Forget the marker of `credentialId` (its entry was removed). */
 export async function dropMarker(network: Network, identityId: string, credentialId: Uint8Array): Promise<void> {
   const at = markersKey(network, identityId)
   await idbUpdate<unknown>('vault', at, (current) => {
-    const kept = (Array.isArray(current) ? current.filter(isMarker) : []).filter((m) => !bytesEqual(m.credentialId, credentialId))
+    const kept = withoutCredential(current, credentialId)
     return [[at, kept.length > 0 ? kept : undefined]]
   })
 }

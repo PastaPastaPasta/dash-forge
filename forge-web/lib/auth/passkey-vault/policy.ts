@@ -13,7 +13,7 @@ import type { ForgeIds } from '../../deployments'
 import { passkeysAvailable, sharedOriginProblem } from '../vault'
 
 /** The only relying party ids a vault passkey is made for. */
-export const PASSKEY_VAULT_RP_IDS: readonly string[] = ['forge.dashhq.org', 'localhost']
+const PASSKEY_VAULT_RP_IDS: readonly string[] = ['forge.dashhq.org', 'localhost']
 
 type PageLocation = { readonly hostname: string; readonly pathname: string }
 
