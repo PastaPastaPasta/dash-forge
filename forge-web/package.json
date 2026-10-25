@@ -27,6 +27,7 @@
   "dependencies": {
     "@dashevo/evo-sdk": "5.0.0-rc.4",
     "@dashevo/wasm-sdk": "5.0.0-rc.4",
+    "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "@noble/secp256k1": "^3.2.0",
