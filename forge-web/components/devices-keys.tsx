@@ -17,6 +17,8 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { StepFailed } from '@/components/auth/step-status'
+import { PasskeysSection } from '@/components/auth/passkeys-section'
+import { RemovePasskeysOption, usePasskeysHolding } from '@/components/auth/remove-passkeys-option'
 import { Spinner } from '@/components/ui/states'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
@@ -81,6 +83,7 @@ export function DevicesKeys(): JSX.Element {
           </span>
         </div>
       ) : null}
+      <PasskeysSection />
       <LostDevice />
       <ThisBrowser identity={identity} />
       {disablingOthers ? (
@@ -211,11 +214,15 @@ function DisableKeyDialog({ row, label, onClose, onDone }: { row: KeyRow; label:
   const [submitError, setError] = useState<string | null>(null)
   const error = master.error ?? submitError
   const name = label ? `key #${row.keyId} (${label})` : `key #${row.keyId}`
+  // Passkeys on Platform that hold this key: removed first, while the key still signs.
+  const holding = usePasskeysHolding([row.keyId])
+  const [removePasskeys, setRemovePasskeys] = useState(true)
   const submit = async (): Promise<void> => {
     if (!master.ready || isLoading) return
     setError(null)
     try {
-      await controller.disableIdentityKey(master.take({ keep: true }), row.keyId)
+      const input = master.take({ keep: true })
+      await (holding !== null && removePasskeys ? controller.disableIdentityKey(input, row.keyId, { removePasskeys: true }) : controller.disableIdentityKey(input, row.keyId))
       master.clear()
       onDone()
     } catch (e) {
@@ -237,6 +244,7 @@ function DisableKeyDialog({ row, label, onClose, onDone }: { row: KeyRow; label:
           Your master key signs one identity update that disables this key on Platform. The device that held it can no longer write as you. The
           master key is used once and is not stored.
         </p>
+        {holding !== null ? <RemovePasskeysOption holding={holding} checked={removePasskeys} onChange={setRemovePasskeys} /> : null}
         {master.element}
         <ErrorBox error={error} />
         <CostPreview cost={previewCredits(KEY_DISABLE_CREDITS)} />

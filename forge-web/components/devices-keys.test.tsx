@@ -42,7 +42,9 @@ const rows: KeyRow[] = [
   row(14, 'other', { kind: 'other', bounds: 'contract group X' }),
 ]
 
+const passkeys = vi.hoisted(() => ({ problem: 'Checking whether passkeys work on this page.' as string | null, rows: [] as { id: string; keyId: number; encryptionKey: boolean }[] }))
 const auth = {
+  disableIdentityKey: vi.fn(async (_input: unknown, _keyId: number, _o?: unknown): Promise<boolean> => true),
   identityKeys: vi.fn(async (): Promise<KeyRow[]> => rows),
   disableOtherKeys: vi.fn(async (_input: unknown, onProgress?: (done: number, total: number) => void): Promise<number[]> => {
     onProgress?.(4, 4)
@@ -51,11 +53,21 @@ const auth = {
 }
 
 // One object for every render: the page reloads its keys whenever the controller changes.
+const listPlatformPasskeys = async () => passkeys.rows
+const none = async () => null
 const session = {
   identity: ID,
   isLoading: false,
   newKeys: [],
-  controller: { identityKeys: auth.identityKeys, disableOtherKeys: auth.disableOtherKeys },
+  storage: 'vault' as const,
+  get platformPasskeyProblem() {
+    return passkeys.problem
+  },
+  vaults: [],
+  listPlatformPasskeys,
+  pendingPlatformPasskey: none,
+  platformPasskeyLeftOut: async () => 0,
+  controller: { identityKeys: auth.identityKeys, disableOtherKeys: auth.disableOtherKeys, disableIdentityKey: auth.disableIdentityKey },
 }
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => session }))
 
@@ -75,6 +87,9 @@ const render = async (): Promise<void> => {
 }
 
 beforeEach(() => {
+  passkeys.problem = 'Checking whether passkeys work on this page.'
+  passkeys.rows = []
+  auth.disableIdentityKey.mockClear()
   resetMemoryStores()
   localStorage.clear()
   auth.identityKeys.mockClear()
@@ -135,5 +150,53 @@ describe('Disable all other keys', () => {
     auth.identityKeys.mockResolvedValueOnce(rows.filter((r) => [0, 4, 9, 12].includes(r.keyId)))
     await render()
     expect(host.querySelector('[data-testid="disable-others"]')).toBeNull()
+  })
+})
+
+describe('Disable one key, and the passkeys that hold it', () => {
+  const settle = async (): Promise<void> => {
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+  const disableRow = async (keyId: number): Promise<void> => {
+    await render()
+    await act(async () => host.querySelector<HTMLButtonElement>(`[data-key-id="${keyId}"] [data-testid="key-disable"]`)!.click())
+    await settle()
+  }
+  const sign = async (): Promise<void> => {
+    act(() => button(/^Recovery phrase$/).click())
+    act(() => type(document.querySelector('[data-testid="disable-key-dialog"] textarea')!, WORDS))
+    await act(async () => button(/Sign once & disable/).click())
+  }
+
+  it('shows the passkeys section only where passkeys are offered', async () => {
+    await render()
+    expect(host.querySelector('[data-testid="passkeys-section"]')).toBeNull()
+    passkeys.problem = null
+    act(() => root.unmount())
+    root = createRoot(host)
+    await render()
+    await settle()
+    expect(host.querySelector('[data-testid="passkeys-section"]')).not.toBeNull()
+  })
+
+  it('offers to remove the passkeys that hold the key, and sends the choice with the disable', async () => {
+    passkeys.problem = null
+    passkeys.rows = [{ id: 'a', keyId: 10, encryptionKey: false }, { id: 'b', keyId: 9, encryptionKey: false }]
+    await disableRow(10)
+    expect(document.querySelector('[data-testid="remove-passkeys-option"]')!.textContent).toMatch(/Also remove the passkey that holds this key/)
+    await sign()
+    expect(auth.disableIdentityKey).toHaveBeenCalledWith({ mnemonic: WORDS }, 10, { removePasskeys: true })
+  })
+
+  it('disables as before when no passkey holds the key', async () => {
+    passkeys.problem = null
+    passkeys.rows = [{ id: 'b', keyId: 9, encryptionKey: false }]
+    await disableRow(10)
+    expect(document.querySelector('[data-testid="remove-passkeys-option"]')).toBeNull()
+    await sign()
+    expect(auth.disableIdentityKey).toHaveBeenCalledWith({ mnemonic: WORDS }, 10)
   })
 })
