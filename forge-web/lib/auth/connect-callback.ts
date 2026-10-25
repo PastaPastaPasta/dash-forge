@@ -76,6 +76,12 @@ export const CALLBACK_STATUS_COPY: Readonly<Record<string, { readonly title: str
   failed: { title: "Your wallet couldn't finish", body: 'It approved, but adding the key failed. Go back to Forge and start again.' },
 }
 
+/** The words for a status the wallet reported, or undefined for `ok` and any status not in the table. */
+export function callbackStatusCopy(status: string | null): { readonly title: string; readonly body: string } | undefined {
+  // Own keys only: `ac=constructor` matches the status pattern and must not read Object.prototype.
+  return status !== null && Object.prototype.hasOwnProperty.call(CALLBACK_STATUS_COPY, status) ? CALLBACK_STATUS_COPY[status] : undefined
+}
+
 /**
  * The deep link's `cb` for a request, or null when none can work: not an https site, an IPFS
  * build, or a page served from another origin than {@link SITE_URL} (BroadcastChannel reaches

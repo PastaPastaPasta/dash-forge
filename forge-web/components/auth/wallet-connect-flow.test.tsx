@@ -384,6 +384,37 @@ describe('WalletConnectFlow: App Connect v2, the edges', () => {
     expect(v2.awaited).toBe(0)
   })
 
+  it('takes a failed v2 request off screen and keeps the older code reachable', async () => {
+    v2.available = true
+    v2.holdV1 = true
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
+    await flush()
+    expect(q('qr-value')).not.toBeNull()
+    await act(async () => v2.pending!.reject(new Error('The key your wallet sent has no spending limit or no expiry.')))
+    await flush()
+    // The spent code is gone; the error stands with Try again and a way to the older code.
+    expect(q('qr-value')).toBeNull()
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('no spending limit')
+    await act(async () => q('older-code-error')!.click())
+    await flush()
+    expect(v2.calls).toContain('v1-request')
+  })
+
+  it('offers the older code when the group read keeps failing, and does not read the group again for it', async () => {
+    v2.available = true
+    v2.holdV1 = true
+    checkGroup.mockRejectedValue(new Error('Reading the contract group timed out'))
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
+    await flush()
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('timed out')
+    checkGroup.mockClear()
+    await act(async () => q('older-code-error')!.click())
+    await flush()
+    expect(v2.calls).toContain('v1-request')
+    expect(checkGroup).not.toHaveBeenCalled()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
   it('says what the wallet reported when it returns with a decline', async () => {
     v2.available = true
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
@@ -540,8 +571,7 @@ describe('WalletConnectFlow: renew in the wallet that granted the key', () => {
   it('closing the sheet with the new key unstored ends the renewal', async () => {
     auth.identity = ID
     adoptWalletKeys.mockRejectedValue(new Error('The vault is locked.'))
-    const onUnlock = vi.fn()
-    act(() => root.render(<WalletConnectFlow mode="renew" onDone={vi.fn()} onUnlock={onUnlock} />))
+    act(() => root.render(<WalletConnectFlow mode="renew" onDone={vi.fn()} />))
     await flush()
     fillProtection()
     await act(async () => byText('Continue to your wallet').click())
@@ -550,10 +580,34 @@ describe('WalletConnectFlow: renew in the wallet that granted the key', () => {
     await flush()
     expect(q('wallet-renew-store')).not.toBeNull()
     expect(host.querySelector('[role="alert"]')!.textContent).toContain('vault is locked')
-    await act(async () => byText('Unlock').click())
-    expect(onUnlock).toHaveBeenCalled()
+    // Not a way out that unmounts the flow (it would drop the key): only a retry.
+    expect(byText('Unlock')).toBeUndefined()
     expect(endWalletRenewal).not.toHaveBeenCalled()
     act(() => root.unmount())
+    expect(endWalletRenewal).toHaveBeenCalledTimes(1)
+    root = createRoot(host)
+  })
+
+  it('closing the sheet while the new key is being stored leaves the mark to that attempt', async () => {
+    auth.identity = ID
+    let fail: (e: Error) => void = () => undefined
+    adoptWalletKeys.mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          fail = reject
+        }),
+    )
+    act(() => root.render(<WalletConnectFlow mode="renew" onDone={vi.fn()} />))
+    await flush()
+    fillProtection()
+    await act(async () => byText('Continue to your wallet').click())
+    await flush()
+    await act(async () => v2.pending!.resolve(V2_GRANT))
+    await flush()
+    act(() => root.unmount())
+    // Mid-store: another tab must keep treating the old key as replaced.
+    expect(endWalletRenewal).not.toHaveBeenCalled()
+    await act(async () => fail(new Error('Another tab changed the key stored meanwhile.')))
     expect(endWalletRenewal).toHaveBeenCalledTimes(1)
     root = createRoot(host)
   })

@@ -4,6 +4,7 @@ import { buildAppConnectUri, parseAppConnectUri } from '../vendor/platform-auth/
 import {
   CALLBACK_CHANNEL,
   CALLBACK_STATUS_COPY,
+  callbackStatusCopy,
   connectCallbackUrl,
   isConnectCallbackAck,
   isConnectCallbackMessage,
@@ -77,6 +78,14 @@ describe('parseConnectCallback', () => {
   it('drops a status of the wrong shape', () => {
     expect(parseConnectCallback(`?r=${HEX}&ac=<script>`)).toEqual({ requestHash: HEX, status: null })
     expect(parseConnectCallback(`?r=${HEX}&ac=averyveryverylongstatus`)).toEqual({ requestHash: HEX, status: null })
+  })
+
+  it("looks a status up in the table's own entries only", () => {
+    expect(callbackStatusCopy('declined')?.title).toBe('Sign-in declined')
+    expect(callbackStatusCopy('ok')).toBeUndefined()
+    expect(callbackStatusCopy(null)).toBeUndefined()
+    // These match the status pattern but are not statuses.
+    for (const inherited of ['constructor', 'toString', 'valueOf', 'hasownproperty']) expect(callbackStatusCopy(inherited)).toBeUndefined()
   })
 
   it('has words for every status the profile defines besides ok', () => {

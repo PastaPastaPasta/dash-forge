@@ -80,7 +80,7 @@ import {
   type V2LoginRequest,
 } from '@/lib/auth/app-connect-v2'
 import { connectionId } from '@/lib/auth/connection-id'
-import { CALLBACK_STATUS_COPY, connectCallbackUrl, listenForCallback } from '@/lib/auth/connect-callback'
+import { callbackStatusCopy, connectCallbackUrl, listenForCallback } from '@/lib/auth/connect-callback'
 import { defaultLimits } from '@/lib/auth/limited-key'
 import { GRANT_COPY, isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
 import { contractKind, type ForgeIds } from '@/lib/deployments'
@@ -265,12 +265,16 @@ export function WalletConnectFlow({
   const openLogin = useUiStore((s) => s.openLogin)
   // The sheet closes with a renewal's new key unstored (the old one is already disabled): no key
   // is being replaced after all, so other tabs stop expecting one.
-  useEffect(
-    () => () => {
-      if (renewalReq.current) latest.current.controller.endWalletRenewal(renewalReq.current)
-    },
-    [],
-  )
+  const mounted = useRef(true)
+  /** A renewal's new key is being stored now: the mark ends with that attempt, not with the sheet. */
+  const storing = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      if (renewalReq.current && !storing.current) latest.current.controller.endWalletRenewal(renewalReq.current)
+    }
+  }, [])
 
   // A reloaded tab holds the signing key only: storing the wallet's keys over the stored key
   // (carrying its grants and settings across) needs the vault open. Unlock, then carry on.
@@ -282,10 +286,17 @@ export function WalletConnectFlow({
    */
   const finish = async (discard: boolean, renewalUnlock?: { passphrase: string } | 'passkey', drop = false): Promise<void> => {
     const g = grant.current
-    if (!protection || !g) return
+    // A renewal stores with the protection chosen before its code showed (its fields are gone).
+    const chosen = (mode === 'renew' ? renewProtection.current : null) ?? protection
+    if (!g) return
+    if (!chosen) {
+      setError('Choose how to protect the new key first.')
+      return
+    }
     setError(null)
+    storing.current = renewalReq.current !== null
     try {
-      await adoptWalletKeys(g.identityId, g.keys, protection, {
+      await adoptWalletKeys(g.identityId, g.keys, chosen, {
         discardPendingRenewal: discard,
         ...(renewalUnlock ? { renewalUnlock } : {}),
         ...(drop ? { dropUnopened: true } : {}),
@@ -308,6 +319,13 @@ export function WalletConnectFlow({
         void finish(discard, renewalUnlock, drop)
       })
       else setError(errorMessage(e))
+      // The sheet closed while this was storing, so nothing will retry: the old key is not being replaced.
+      if (!mounted.current && renewalReq.current) {
+        latest.current.controller.endWalletRenewal(renewalReq.current)
+        renewalReq.current = null
+      }
+    } finally {
+      storing.current = false
     }
   }
 
@@ -338,12 +356,11 @@ export function WalletConnectFlow({
         }
         // App Connect v2 first where the network and the chain allow it, unless the user asked
         // for the older code (a wallet without v2 refuses a v2 request).
-        if (mode === 'login') {
+        if (mode === 'login' && !olderCode) {
           setPreparing('Checking what your wallet can answer')
           const v2 = await v2Offer(sdk)
           if (signal.aborted) return
-          setV2Offered(v2.available)
-          if (v2.available && !olderCode) {
+          if (v2.available) {
             await runV2Login(sdk, forge, signal, v2.notice)
             return
           }
@@ -398,20 +415,29 @@ export function WalletConnectFlow({
       } catch (e) {
         if (signal.aborted || isAbort(e)) return
         if (e instanceof RequestExpired) setStep({ kind: 'expired' })
-        else setError(errorMessage(e))
+        else {
+          // A v2 request that failed is spent (its key is gone): it must not stay up to be scanned.
+          setStep((cur) => (cur?.kind === 'request' && cur.v2 ? null : cur))
+          setError(errorMessage(e))
+        }
       }
     })()
 
     /** Whether a v2 request can be offered here, and the group check's notice for the confirm step. */
     async function v2Offer(sdk: Sdk): Promise<{ available: boolean; notice: string | null }> {
       if (!(await appConnectV2Available(sdk, ACTIVE_NETWORK.network))) return { available: false, notice: null }
+      // On offer here from now on: if what follows fails, the older code is still one click away.
+      if (!signal.aborted) setV2Offered(true)
       try {
         // Forge's own group check, before any code shows.
         const check = await latest.current.controller.checkGroup()
         return { available: true, notice: check.notice }
       } catch (e) {
         // Only Forge's refusal of the group means "no v2 here"; a failed read is shown, with Try again.
-        if (errorMessage(e).startsWith('refusing to bind')) return { available: false, notice: null }
+        if (errorMessage(e).startsWith('refusing to bind')) {
+          if (!signal.aborted) setV2Offered(false)
+          return { available: false, notice: null }
+        }
         throw e
       }
     }
@@ -488,7 +514,11 @@ export function WalletConnectFlow({
     // `attempt` restarts the whole request (a new ephemeral key and QR).
   }, [attempt, forge, target, mode, grantFor, dropGrant, grantWhat, olderCode, renewGo, needsUnlock])
 
-  const restart = useCallback(() => setAttempt((a) => a + 1), [])
+  const restart = useCallback(() => {
+    // The spent request goes off screen; the next one replaces it.
+    setStep(null)
+    setAttempt((a) => a + 1)
+  }, [])
   /** Switch between the v2 and the older code: the old request goes off screen at once (its key is spent). */
   const switchCode = (older: boolean): void => {
     setStep(null)
@@ -597,11 +627,6 @@ export function WalletConnectFlow({
           <Button variant="primary" loading={isLoading} onClick={() => void finish(false)}>
             Store the new key
           </Button>
-          {onUnlock ? (
-            <Button variant="outline" onClick={onUnlock}>
-              Unlock
-            </Button>
-          ) : null}
         </div>
       </div>
     )
@@ -691,7 +716,7 @@ export function WalletConnectFlow({
   // Where no released wallet can answer (a devnet, mainnet), that comes first and the wallet
   // link is secondary: a big primary button that cannot work is a dead end (QW2-029).
   const v2 = step?.kind === 'request' ? step.v2 : undefined
-  const reportedCopy = step?.kind === 'request' && reported !== null ? CALLBACK_STATUS_COPY[reported] : undefined
+  const reportedCopy = step?.kind === 'request' ? callbackStatusCopy(reported) : undefined
   // The phone's deep link may carry the callback the QR leaves out.
   const linkUri = step?.kind === 'request' && step.linkUri ? step.linkUri : uri
   // A v2 request is the one on offer where it shows, so its link leads even where no released
@@ -777,6 +802,11 @@ export function WalletConnectFlow({
         <Button variant="outline" className="w-full" onClick={restart}>
           <RefreshCw className="h-4 w-4" aria-hidden /> Try again
         </Button>
+      ) : null}
+      {mode === 'login' && error && v2Offered && !olderCode ? (
+        <button type="button" data-testid="older-code-error" onClick={() => switchCode(true)} className={TEXT_BUTTON}>
+          Show the older code instead
+        </button>
       ) : null}
     </div>
   )

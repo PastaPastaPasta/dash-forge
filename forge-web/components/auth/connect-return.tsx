@@ -18,7 +18,7 @@ import { Spinner } from '@/components/ui/states'
 import {
   ACK_WAIT_MS,
   CALLBACK_CHANNEL,
-  CALLBACK_STATUS_COPY,
+  callbackStatusCopy,
   isConnectCallbackAck,
   parseConnectCallback,
   type ConnectCallbackMessage,
@@ -42,7 +42,7 @@ export function ConnectReturn(): JSX.Element {
     }
     // The wallet reported a failure: said at once. The tab that showed the code is told too, so it
     // can stop waiting for an answer that will not come.
-    const failure = callback.status !== null ? CALLBACK_STATUS_COPY[callback.status] : undefined
+    const failure = callbackStatusCopy(callback.status)
     const fallback: View = {
       kind: 'status',
       title: 'Go back to Forge',
