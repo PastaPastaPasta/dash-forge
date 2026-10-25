@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { affordability, fundsNotice, fundsState, issueCoverage, LOW_BALANCE_CREDITS, nextFundsChange } from './funds'
+import { affordability, fundsNotice, fundsState, issueCoverage, LOW_BALANCE_CREDITS, nextFundsChange, renewFix } from './funds'
 import { previewCreate } from '../sdk/cost'
 import { balanceSettled, estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 
@@ -65,6 +65,15 @@ describe('fundsNotice (the low-balance banner, ux-dx-spec §4)', () => {
     expect(empty?.message).toMatch(/writes are off/)
     expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, -1), NOW))).toMatchObject({ key: 'empty:key-expiry', fix: 'renew-key' })
     expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW))?.key).toBe('empty:key-budget')
+  })
+  it('sends a key a wallet granted through App Connect to the wallet to renew, at the same thresholds', () => {
+    expect(fundsNotice(fundsState(10n ** 11n, key(900_000_000n, 90 * DAY), NOW), 'app-connect')).toMatchObject({ key: 'low:key-budget', fix: 'renew-in-wallet' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW), 'app-connect')).toMatchObject({ key: 'low:key-expiry', fix: 'renew-in-wallet' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 8 * DAY), NOW), 'app-connect')).toBeNull()
+    expect(fundsNotice(fundsState(BigInt(LOW_BALANCE_CREDITS - 1), null, NOW), 'app-connect')).toMatchObject({ fix: 'top-up' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW), 'dg')).toMatchObject({ fix: 'renew-key' })
+    expect(renewFix('app-connect')).toBe('renew-in-wallet')
+    expect(renewFix(null)).toBe('renew-key')
   })
 })
 

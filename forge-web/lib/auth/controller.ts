@@ -16,6 +16,11 @@
  * {@link MissingGrantError} (the UI then asks the wallet for that contract) rather than sign a
  * write consensus would refuse and charge for.
  *
+ * A wallet that speaks App Connect v2 (`./app-connect-v2`) grants one key bound to the Forge
+ * contract group, with a budget and an expiry: stored like any wallet key, with origin
+ * `app-connect`, so it is renewed in that wallet (the same connection id disables the old key)
+ * and is not used for a new write in the last minutes before it expires.
+ *
  * The controller's observable state never carries key material. `writeAuth.getSigningKeyWif()`
  * reads the unlocked key at signing time and throws once the vault is locked.
  *
@@ -31,7 +36,10 @@ import { errorMessage, shortId } from '../utils'
 import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
-import { SECURITY_LEVEL, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
+import { KeyUnusableError, SECURITY_LEVEL, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
+import { APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS } from '../vendor/platform-auth/app-connect'
+import { newV2LoginRequest, readChainClock, type V2LoginRequest } from './app-connect-v2'
+import { clearWalletRenewal, connectionId, markWalletRenewal, walletRenewalInFlight } from './connection-id'
 import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, NAME_REGISTER_CREDITS, NAME_REGISTER_FLOOR_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
@@ -96,6 +104,8 @@ import {
   watchOtherTabs,
   clearSignedWrites,
   storeInVault,
+  storedOrigin,
+  isKeyOrigin,
   VaultChangedError,
   stageInVault,
   hasStaged,
@@ -111,6 +121,7 @@ import {
   unlockWithPassphrase,
   unlockedSecret,
   type ExtraKey,
+  type KeyOrigin,
   type Protection,
   type StoreOutcome,
   type VaultInfo,
@@ -120,6 +131,18 @@ import {
 /** A chain key as the new-key alert reads it. */
 function watched(k: WasmKey): WatchedKey {
   return { keyId: k.keyId, purpose: k.purposeNumber, level: k.securityLevelNumber, disabled: k.disabledAt !== undefined }
+}
+
+/**
+ * How long a wallet renewal's mark outlives its request: the answer arrives at the latest when the
+ * request expires, and checking and storing the new key take a little longer.
+ */
+const WALLET_RENEWAL_GRACE_MS = 5 * 60 * 1000
+
+/** A wallet renewal's request: a v2 request naming the identity, and the key it replaces. */
+export interface WalletRenewalRequest extends V2LoginRequest {
+  readonly identityHint: string
+  readonly replacesKeyId: number
 }
 
 /** The notice when a renewal could not carry the encryption key over. */
@@ -143,6 +166,12 @@ export interface AuthSession {
   readonly keyId?: number
   /** `vault`: a stored limited key; `session`: a tab-only key (advanced raw key). */
   readonly storage: 'vault' | 'session'
+  /**
+   * Where the stored key came from when this browser did not register it: `app-connect` (a
+   * wallet's App Connect grant: renew it in the wallet, {@link AuthController.walletRenewalRequest})
+   * or `dg`. Absent for a key registered here with the master key.
+   */
+  readonly origin?: KeyOrigin
   /** Which Forge contracts this session's keys can sign on. */
   readonly grants?: { readonly core: boolean; readonly collab: boolean; readonly community: boolean; readonly meta: boolean }
   /**
@@ -292,6 +321,7 @@ function parseHint(v: unknown, secret: VaultSecret, network: Network): { session
   const s = h?.session
   if (typeof s !== 'object' || s === null || s.identityId !== secret.identityId || s.network !== network || s.storage !== 'vault' || s.keyId !== secret.keyId) return null
   if (typeof s.balance !== 'string' || !/^\d+$/.test(s.balance)) return null
+  if (s.origin !== undefined && !isKeyOrigin(s.origin)) return null
   const main = h?.scopes?.main ?? null
   const extra = h?.scopes?.extra
   if ((main !== null && !isScope(main)) || !Array.isArray(extra)) return null
@@ -348,18 +378,34 @@ export class AuthController {
     }
   }
 
-  /** This tab's key was replaced by another tab's renewal: drop it here and pick up the new one. */
+  /**
+   * This tab's key was replaced by another tab's renewal: drop it here and pick up the new one.
+   * While a wallet renewal of it is still in flight the new key is not stored yet, so nothing
+   * changes: the renewing tab (perhaps this one) still needs its unlock to store the new key and
+   * carry the storage settings and encryption key over, and its keep then announces the new key
+   * to every other tab ({@link attach}). Until then a write fails on the disabled key as usual.
+   */
   private async supersede(): Promise<void> {
+    const session = this.state.session
+    if (session?.keyId !== undefined && walletRenewalInFlight(this.networkKey, session.identityId, session.keyId)) return
     this.abandonSignIn()
     await this.resume()
   }
 
+  /** The deployment key of this controller's network (`testnet`, `devnet-sakura`). */
+  private get networkKey(): string {
+    return NETWORKS[this.network].key
+  }
+
   /**
    * Whether this tab's key for `identityId` is no longer the one this browser stores (another
-   * tab renewed it): then its failure on chain is expected, and no reason to lock other tabs.
+   * tab renewed it), or is being replaced by a wallet renewal (`./connection-id`: the wallet
+   * disables it in the update that adds the new key, a moment before the renewing tab stores
+   * that one): then its failure on chain is expected, and no reason to lock other tabs.
    */
   private async superseded(identityId: string, keyId: number | undefined): Promise<boolean> {
     if (keyId === undefined) return false
+    if (walletRenewalInFlight(this.networkKey, identityId, keyId)) return true
     const stored = await storedKeyId(this.network, identityId).catch(() => null)
     return stored !== null && stored !== keyId
   }
@@ -512,6 +558,12 @@ export class AuthController {
         throw new WriteAuthError(`this browser's key signs only Dash Forge writes${contractId ? ` (not ${contractId})` : ''}`)
       }
       if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) {
+        // A wallet's App Connect key starts no write in its last minutes: one signed now could
+        // reach a block after it expired (APP_CONNECT_PROFILE.md). Renew it in the wallet.
+        const expiresAt = current.keyLimits?.expiresAt
+        if (current.origin === 'app-connect' && expiresAt != null && expiresAt - Date.now() <= APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS) {
+          throw new KeyUnusableError('expired')
+        }
         noteSessionUse(network)
         return secret.wif
       }
@@ -596,11 +648,13 @@ export class AuthController {
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
       if (!match) throw keyFailure(identity, secret.keyId)
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
-      let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded'> = {}
+      let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded' | 'origin'> = {}
       if (storage === 'vault') {
         const forge = NETWORKS[this.network].v2
         if (!forge) throw new KeyNotUsableError(new NotDeployedError(NETWORKS[this.network]).message)
         extra = await this.verifyScopes(identity, secret, match.keyId, forge)
+        const origin = await storedOrigin(this.network, secret.identityId, secret.keyId).catch(() => null)
+        if (origin !== null) extra = { ...extra, origin }
       }
       // Held to be disabled later: listed while still live on the identity.
       const heldOnly = (secret.extra ?? [])
@@ -1092,13 +1146,17 @@ export class AuthController {
 
   /**
    * Adopt the keys a wallet granted (verified on chain by the caller): the first is the vault's
-   * main key, each further one is kept as the grant for the contract it covers.
+   * main key, each further one is kept as the grant for the contract it covers. An App Connect v2
+   * grant (`origin: 'app-connect'`, `./app-connect-v2` `awaitV2Grant`) is one group-bound key;
+   * its origin is stored with it, and a wallet renewal of this browser's key ends once it is stored.
    */
   async adoptWalletKeys(
     identityId: string,
     keys: readonly WalletKey[],
     protection: Protection,
     options: {
+      /** Where the keys came from: `app-connect` for an App Connect v2 grant. */
+      readonly origin?: 'app-connect'
       /** Give up this device's unfinished renewal (the user chose the wallet). */
       readonly discardPendingRenewal?: boolean
       /** The renewal's own passphrase or passkey, when the protection chosen here is not it. */
@@ -1125,7 +1183,7 @@ export class AuthController {
       // that stores it. As this identity's one writer: no other tab's stage is dropped instead.
       return serialized(identityId, async () => {
         try {
-          return await this.storeWalletKeys(identityId, main, rest, forge, protection, withCopies)
+          return await this.storeWalletKeys(identityId, main, rest, forge, protection, withCopies, previous?.keyId ?? null)
         } finally {
           forgetPasskeyOutputs()
         }
@@ -1140,7 +1198,10 @@ export class AuthController {
     forge: ForgeIds,
     protection: Protection,
     options: Parameters<AuthController['adoptWalletKeys']>[3] = {},
+    /** The key id of the record found for this identity before the answer (null: none). */
+    previousKeyId: number | null = null,
   ): Promise<AuthSession> {
+    const appConnect = options.origin === 'app-connect'
     const pending = await stagedInfo(this.network, identityId)
     let given: ExtraKey | null = null
     if (pending !== null) {
@@ -1155,12 +1216,33 @@ export class AuthController {
     // beside the new ones (a returning login keeps its forge-collab grant; a key the new
     // grant supersedes is still held, so a later revoke can disable it). Stale ones fall
     // out at the next unlock.
+    //
+    // An App Connect grant disables the key of the wallet's previous grant for this browser (the
+    // same connection id): a held key the chain shows disabled is dropped, since there is nothing
+    // left to disable, and keeping it would make every later sign-in over a locked vault ask to
+    // unlock a key that no longer opens anything.
     const fresh = new Set([main.keyId, ...rest.map((k) => k.keyId)])
+    const disabled = appConnect ? await this.disabledKeyIds(identityId) : new Set<number>()
     const held: ExtraKey[] = this.heldKeys(identityId).map((h) => ('contractId' in h ? h : { contractId: forge.core, keyId: h.keyId, wif: h.wif }))
-    const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
+    const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && !disabled.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
     const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
     const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
-    const stored = await storeInVault(this.network, secret, protection, pending !== null ? { dropStagedKeyId: pending.keyId } : {})
+    let stored: StoreOutcome
+    try {
+      stored = await storeInVault(this.network, secret, protection, {
+        ...(pending !== null ? { dropStagedKeyId: pending.keyId } : {}),
+        ...(options.origin !== undefined ? { origin: options.origin } : {}),
+        // A wallet approval can take minutes: a key another tab stored meanwhile (a master-key
+        // renewal) is not overwritten unseen.
+        ...(appConnect ? { expectHeldKeyId: previousKeyId } : {}),
+      })
+    } catch (e) {
+      if (!(e instanceof VaultChangedError)) throw e
+      throw new WriteAuthError(`Another tab changed the key stored for ${shortId(identityId)} meanwhile, so the key your wallet just granted was not stored. Disable it in your wallet's connections, then sign in again.`)
+    }
+    // The new key is this browser's now: another tab that finds the old one disabled has been
+    // superseded by the stored key id alone.
+    if (appConnect) clearWalletRenewal(this.networkKey, identityId, previousKeyId)
     const encryption = await this.keepWalletEncryptionKey(identityId, forge, options)
     // Keys the vault could not carry over (by id, from its stored entries) are not reported only
     // when the wallet's own keys put every one of them back.
@@ -1171,11 +1253,22 @@ export class AuthController {
       'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
       encryption.notice,
     )
+    // A shipped wallet registers an encryption key right after each auth key; a v2 grant does not.
+    const walletKeys = appConnect ? [] : [main.keyId, ...rest.map((k) => k.keyId)]
     try {
-      return await this.open(secret, 'vault', main.limits ?? undefined, true, [main.keyId, ...rest.map((k) => k.keyId)])
+      return await this.open(secret, 'vault', main.limits ?? undefined, true, walletKeys)
     } catch (e) {
       throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
     }
+  }
+
+  /**
+   * The ids of `identityId`'s keys the chain shows disabled (positive evidence only: a read that
+   * fails, or a key not shown, disables nothing here).
+   */
+  private async disabledKeyIds(identityId: string): Promise<Set<number>> {
+    const identity = await authSdk(await this.getSdk()).identities.fetch(identityId).catch(() => undefined)
+    return new Set((identity?.publicKeys ?? []).filter((k) => k.disabledAt !== undefined).map((k) => k.keyId))
   }
 
   /**
@@ -1199,6 +1292,80 @@ export class AuthController {
     } catch (e) {
       return { outcome: null, notice: `Members-only and private content could not be enabled: ${errorMessage(e)}` }
     }
+  }
+
+  /**
+   * Start renewing this session's key in the wallet that granted it (origin `app-connect`): an App
+   * Connect v2 request naming this identity (`IDENTITY_HINT`) with this browser's connection id,
+   * so the wallet disables the current key in the update that adds the new one. Until the new key
+   * is stored ({@link adoptWalletKeys} with origin `app-connect`) or {@link endWalletRenewal}, the
+   * current key is marked as being replaced: another tab that finds it disabled drops it quietly
+   * instead of locking every tab. Choose the protection (passphrase or passkey) before showing the
+   * code, so that window stays short; the mark lapses on its own a while after the request does.
+   * Needs the whole vault open in this tab, as storing the new key does.
+   */
+  async walletRenewalRequest(options: { readonly callbackUrl?: (requestHash: Uint8Array) => string | null } = {}): Promise<WalletRenewalRequest> {
+    const session = this.state.session
+    if (!session || session.storage !== 'vault' || session.origin !== 'app-connect' || session.keyId === undefined) {
+      throw new Error('Only a key your wallet granted can be renewed in your wallet. Renew it with your identity file or recovery phrase instead.')
+    }
+    const { identityId, keyId } = session
+    this.requireFullUnlock(identityId)
+    const forge = NETWORKS[this.network].v2
+    if (!forge) throw new NotDeployedError(NETWORKS[this.network])
+    // The new key is bound to the group as the first one was: check it still holds (throws).
+    await this.checkGroup()
+    const { timeMs } = await readChainClock(await this.getSdk())
+    const req = newV2LoginRequest(this.network, forge, {
+      connectionId: connectionId(this.networkKey),
+      chainNow: timeMs,
+      identityHint: identityId,
+      ...(options.callbackUrl ? { callbackUrl: options.callbackUrl } : {}),
+    })
+    markWalletRenewal(this.networkKey, identityId, keyId, req.expiresAt + WALLET_RENEWAL_GRACE_MS)
+    return { ...req, identityHint: identityId, replacesKeyId: keyId }
+  }
+
+  /**
+   * A wallet renewal ended without a new key (cancelled, expired, refused): drop its mark, unless
+   * it is another renewal's (another tab's, of another key).
+   */
+  endWalletRenewal(req: Pick<WalletRenewalRequest, 'identityHint' | 'replacesKeyId'>): void {
+    if (req.identityHint !== null) clearWalletRenewal(this.networkKey, req.identityHint, req.replacesKeyId)
+  }
+
+  /**
+   * Why a v2 wallet sign-in cannot start now, or null. Any approval disables the key of the
+   * wallet's previous grant for this browser (its connection id) before Forge sees the answer, and
+   * nobody knows beforehand which identity will answer: a locked vault holding keys a master-key
+   * update could not otherwise disable (wallet keys) must be unlocked first, while it still opens.
+   */
+  async walletSignInBlocker(): Promise<string | null> {
+    const sdk = await this.getSdk()
+    for (const v of await listVaults(this.network)) {
+      if (v.staged === true) continue
+      try {
+        await this.assertUnlockedIfWalletKeys(sdk, v.identityId, v.keyId)
+      } catch (e) {
+        if (e instanceof VaultLockedError) return e.message
+        throw e
+      }
+    }
+    return null
+  }
+
+  /**
+   * Check the session's keys on chain again (App Connect's `invalidate`: a write was refused as
+   * outside its key's bounds, 20014): the scopes, limits and balance are read afresh, and a key
+   * found disabled or expired ends the session as on unlock. A read that fails rejects and keeps
+   * the session as it was.
+   */
+  async recheckSession(): Promise<AuthSession | null> {
+    const session = this.state.session
+    if (!session || session.storage !== 'vault') return session
+    const secret = unlockedSecret(this.network, session.identityId)
+    if (!secret) return null
+    return this.open(secret, 'vault', undefined, false)
   }
 
   /**
@@ -1808,6 +1975,9 @@ export class AuthController {
   async forget(identityId: string): Promise<void> {
     if (this.state.session?.identityId === identityId) this.logout()
     forgetKeySnapshot(this.network, identityId)
+    // The connection id stays (APP_CONNECT_PROFILE.md): a fresh one would leave the wallet's key
+    // for this browser live. A renewal mark has nothing left to protect.
+    clearWalletRenewal(this.networkKey, identityId)
     await forgetVault(this.network, identityId)
     forgetLastIdentity(this.network, identityId)
     clearDrafts(identityId)

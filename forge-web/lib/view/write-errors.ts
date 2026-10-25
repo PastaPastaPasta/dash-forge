@@ -10,9 +10,17 @@
  * Every message has the style guide's three beats (§C rule 8): what happened, whether you were
  * charged, what to do next. Platform's error code appears only where no sentence explains the
  * refusal, as the last words, so a bug report can quote it.
+ *
+ * A session whose key a wallet granted through App Connect (origin `app-connect`) reads a key
+ * refusal as App Connect does (`classifyAppConnectError`): a spent or expired key (`renew`) opens
+ * the same sheet, which offers the wallet first; a disabled or missing key (`logout`) says the
+ * wallet revoked this browser's access, and the session locks as for any disabled key; a write
+ * outside the key's bounds (`invalidate`) asks for the session's keys to be checked again
+ * (`recheck`); a level refusal (`handoff`) cannot happen to a Forge write and reads as any refusal.
  */
 
 import { isUnreachableError } from '../sdk/unreachable'
+import { classifyAppConnectError } from '../vendor/platform-auth/app-connect'
 import {
   BUDGET_EXCEEDED_CODE,
   CONTEST_FULL_CODE,
@@ -51,6 +59,22 @@ export interface WriteFailure {
   readonly message: string
   /** The sheet that fixes it (renew or top up), or null when there is none to offer. */
   readonly sheet: TopUpReason | null
+  /**
+   * The session's keys must be checked on chain again before the next write (App Connect's
+   * `invalidate`): `AuthController.recheckSession`.
+   */
+  readonly recheck?: true
+}
+
+/** The session a write failed in, where it changes the fix or the words. */
+export interface WriteContext {
+  /** The session signs with a key a wallet granted through App Connect (origin `app-connect`). */
+  readonly appConnect?: boolean
+}
+
+/** A wallet that granted the key through App Connect took it back (disabled, or removed). */
+function walletRevoked(charged: string): string {
+  return `Your wallet revoked this browser's access. ${charged} Sign in with your wallet again to keep writing.`
 }
 
 const KEY_BLOCKER: Readonly<Record<KeyUnusableReason, TopUpReason['blocker']>> = {
@@ -182,14 +206,23 @@ const NO_ANSWER = /failed to fetch|fetch failed|networkerror|network error|load 
 /** A write that could not reach Platform ({@link NO_ANSWER}). */
 export const UNREACHABLE_WRITE = "Couldn't reach Dash Platform, so this change may not have been sent. Check your connection, then try again."
 
-export function writeFailure(e: unknown): WriteFailure {
+export function writeFailure(e: unknown, context: WriteContext = {}): WriteFailure {
   const out = (message: string, sheet: TopUpReason | null = null): WriteFailure => ({ message, sheet })
   // Plain sentences of their own: may still land, was superseded, or another write holds the lock.
   if (e instanceof UnconfirmedWriteError || e instanceof SupersededWriteError || e instanceof WriterBusyError) return out(e.message)
   if (e instanceof KeyUnusableError) {
-    return out(e.message, { blocker: KEY_BLOCKER[e.reason] })
+    const sheet = { blocker: KEY_BLOCKER[e.reason] }
+    // Found before signing (nothing was sent). Only a key shown disabled was revoked: one not
+    // shown at all may be a node that has not seen a renewal's new key yet.
+    if (context.appConnect && e.reason === 'disabled') return out(walletRevoked(chargedSentence(false)), sheet)
+    return out(e.message, sheet)
   }
   if (e instanceof ConsensusRefusal) {
+    const appConnect = context.appConnect ? classifyAppConnectError(e.code) : null
+    if (appConnect?.action === 'logout') {
+      return out(walletRevoked(chargedSentence(e.feeCharged)), { blocker: appConnect.failure === 'key-missing' ? 'key-missing' : 'key-disabled' })
+    }
+    if (appConnect?.action === 'invalidate') return { ...out(refusalSentence(e)), recheck: true }
     const { remaining, balance, required } = e.figures
     if (e.isKeyLimit) {
       if (EXPIRY_CODES.has(e.code)) return out("This browser's key has expired. You weren't charged. Renew the key to continue.", { blocker: 'key-expiry' })
