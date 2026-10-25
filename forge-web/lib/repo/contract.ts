@@ -51,6 +51,8 @@ export const DOC = {
   profile: 'profile',
   runner: 'runner',
   topic: 'topic',
+  /** A passkey-sealed copy of a session's keys (forge-meta only; `lib/auth/passkey-vault`). */
+  vaultEntry: 'vaultEntry',
 } as const
 
 export { withVis } from '../layout'
