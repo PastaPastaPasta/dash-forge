@@ -110,7 +110,7 @@ export function TopUpSheet(): JSX.Element | null {
             {inWallet ? (
               <p>
                 {fromPasskey
-                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew it there: the wallet adds a new key and disables this one."
+                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew it there. It adds a new key, and this one stays live until you disable it in Devices & keys."
                   : 'Your wallet gave this browser its key, so renew it there: the wallet adds a new key and disables this one.'}
                 {canTopUpKey ? ' You can also add budget to this key with your identity file or recovery phrase.' : ' Your identity file or recovery phrase works too.'}
               </p>

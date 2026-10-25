@@ -88,6 +88,8 @@ describe('the passkey offer', () => {
     ['the key has no limits', () => (session.unlimited = true)],
     ['the key has no budget', () => (session.keyLimits = null)],
     ['the key never expires', () => (session.keyLimits = { remaining: 4n, total: 5n, expiresAt: null })],
+    ['the key has expired', () => (session.keyLimits = { remaining: 4n, total: 5n, expiresAt: Date.now() - 1 })],
+    ['the key has no budget left', () => (session.keyLimits = { remaining: 0n, total: 5n, expiresAt: Date.now() + 86_400_000 })],
   ])('does not show when %s', async (_why, change) => {
     change()
     await mount()

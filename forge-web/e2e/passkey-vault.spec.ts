@@ -250,8 +250,15 @@ test.describe('live (real spend)', () => {
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
     await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
     await page.getByRole('button', { name: /renew this browser's key/i }).click()
+    // The reload above left this tab holding only the signing key: a renewal asks it to unlock
+    // first (one passkey gesture, which the virtual authenticator approves), then carries on.
+    const unlockFirst = page.getByTestId('renew-unlock')
+    if (await unlockFirst.waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false)) {
+      await unlockFirst.getByRole('button', { name: /unlock with passkey/i }).click()
+    }
     await expect(page.getByTestId('key-id')).not.toHaveAttribute('data-key-id', keyId!, { timeout: 180_000 })
-    await page.goto('/settings/keys/', { waitUntil: 'domcontentloaded' })
+    // Client-side, not a reload: the re-seal runs in this tab after the renewal and a reload could cut it off.
+    await page.getByTestId('devices-keys-link').click()
     await expect(page.getByTestId('passkeys-section')).toBeVisible({ timeout: 60_000 })
     await expect(mine).toHaveCount(1, { timeout: 60_000 })
     await expect(mine).not.toContainText(/needs update/i, { timeout: 120_000 })
@@ -260,8 +267,8 @@ test.describe('live (real spend)', () => {
     // Remove it: the entry goes from Platform, and the list is empty.
     await mine.getByTestId('passkey-remove').click()
     await page.getByTestId('confirm-action').click()
-    await expect(page.getByTestId('passkey-row')).toHaveCount(0, { timeout: 180_000 })
-    await expect(page.getByTestId('passkeys-empty')).toBeVisible()
+    // Passkeys an earlier run left behind (rows of "Another device") are not this test's to count.
+    await expect(mine).toHaveCount(0, { timeout: 180_000 })
     await shot(page, 'passkey-vault-06-removed')
   })
 })

@@ -43,7 +43,7 @@ import { clearWalletRenewal, connectionId, markWalletRenewal, walletRenewalInFli
 import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, NAME_REGISTER_CREDITS, NAME_REGISTER_FLOOR_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
-import type { KeyLimits } from '../view/funds'
+import { renewableInWallet, type KeyLimits } from '../view/funds'
 import { controlsKey, normalizeToWif } from './wif'
 import { base58Encode, decodeIdentifier } from './base58'
 import { retryUntil, retryWhileMissing } from '../view/retry'
@@ -616,7 +616,7 @@ export class AuthController {
         // A wallet's App Connect key starts no write in its last minutes: one signed now could
         // reach a block after it expired (APP_CONNECT_PROFILE.md). Renew it in the wallet.
         const expiresAt = current.keyLimits?.expiresAt
-        if ((current.origin === 'app-connect' || current.origin === 'passkey') && expiresAt != null && expiresAt - Date.now() <= APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS) {
+        if (renewableInWallet(current.origin) && expiresAt != null && expiresAt - Date.now() <= APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS) {
           throw new KeyUnusableError('expired')
         }
         noteSessionUse(network)
@@ -1278,8 +1278,15 @@ export class AuthController {
     // unlock a key that no longer opens anything.
     const fresh = new Set([main.keyId, ...rest.map((k) => k.keyId)])
     const disabled = appConnect ? await this.disabledKeyIds(identityId) : new Set<number>()
+    // A key a passkey brought here is not this browser's wallet grant, so the wallet does not
+    // disable it with the renewal (it only replaces this browser's own connection): it stays live
+    // for the device that made it, held here never to sign, so the next renewal or revoke disables
+    // it and no passkey keeps it.
+    const replacedPasskeyKey = appConnect && previousKeyId !== null && (await storedOrigin(this.network, identityId, previousKeyId).catch(() => null)) === 'passkey' ? previousKeyId : null
     const held: ExtraKey[] = this.heldKeys(identityId).map((h) => ('contractId' in h ? h : { contractId: forge.core, keyId: h.keyId, wif: h.wif }))
-    const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && !disabled.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
+    const kept = [...held, ...(given ? [given] : [])]
+      .filter((h, i, all) => !fresh.has(h.keyId) && !disabled.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
+      .map((h) => (h.keyId === replacedPasskeyKey ? { ...h, holdOnly: true as const } : h))
     const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
     const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
     let stored: StoreOutcome
@@ -1361,7 +1368,7 @@ export class AuthController {
    */
   async walletRenewalRequest(options: { readonly callbackUrl?: (requestHash: Uint8Array) => string | null } = {}): Promise<WalletRenewalRequest> {
     const session = this.state.session
-    if (!session || session.storage !== 'vault' || (session.origin !== 'app-connect' && session.origin !== 'passkey') || session.keyId === undefined) {
+    if (!session || session.storage !== 'vault' || !renewableInWallet(session.origin) || session.keyId === undefined) {
       throw new Error('Only a key your wallet granted can be renewed in your wallet. Renew it with your identity file or recovery phrase instead.')
     }
     const { identityId, keyId } = session
@@ -1716,8 +1723,9 @@ export class AuthController {
       await this.assertUnlockedIfWalletKeys(sdk, identityId, stored.keyId)
       const masterWif = await this.masterWifFor(identityId, input)
       const held = this.heldKeys(identityId)
-      // The passkeys holding these keys are deleted first, signed by this key while it is live.
-      if (options.removePasskeys === true) await this.removePasskeysNaming(identityId, [stored.keyId, ...held.map((k) => k.keyId)])
+      // The passkeys holding these keys are deleted first, signed by this key while it is live. A
+      // delete that fails never stops the key from being disabled: a lost device's key comes first.
+      const notRemoved = options.removePasskeys === true ? await this.removePasskeysBeforeDisable(identityId, [stored.keyId, ...held.map((k) => k.keyId)]) : null
       await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
         this.charged(identityId, 'key:revoke', () => stored.keyId, () =>
           held.length > 1 || (held.length === 1 && this.state.session?.unlimited)
@@ -1727,6 +1735,7 @@ export class AuthController {
         ),
       )
       await this.forget(identityId)
+      if (notRemoved !== null) this.setState({ notice: notRemoved })
     })
   }
 
@@ -1957,12 +1966,13 @@ export class AuthController {
       if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
       const { identityId } = session
       const masterWif = await this.masterWifFor(identityId, input)
-      if (options.removePasskeys === true) await this.removePasskeysNaming(identityId, [keyId])
+      const notRemoved = options.removePasskeys === true ? await this.removePasskeysBeforeDisable(identityId, [keyId]) : null
       const sdk = await this.getSdk()
       const sent = await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
         this.charged(identityId, 'key:revoke', () => keyId, () => disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: [keyId], allowed: (k) => DISABLEABLE.has(keyRole(k, forge)) })),
       )
       if (this.state.newKeys?.some((k) => k.keyId === keyId)) this.setState({ newKeys: this.state.newKeys.filter((k) => k.keyId !== keyId) })
+      if (notRemoved !== null) this.setState({ notice: notRemoved })
       return sent
     })
   }
@@ -2482,6 +2492,22 @@ export class AuthController {
     }
   }
 
+  /**
+   * {@link removePasskeysNaming} before a key is disabled, where a failure must not stop the
+   * disable (this browser's own key may be spent or about to expire, Platform may be slow): it
+   * returns what to tell the user once the key is disabled, or null. A locked tab still throws,
+   * as the disable needs the whole vault too.
+   */
+  private async removePasskeysBeforeDisable(identityId: string, keyIds: readonly number[]): Promise<string | null> {
+    try {
+      await this.removePasskeysNaming(identityId, keyIds)
+      return null
+    } catch (e) {
+      if (e instanceof UnlockNeededError || e instanceof VaultLockedError) throw e
+      return `The key was disabled, but the passkeys that hold it could not be removed: ${errorMessage(e)}. Remove them in Settings → Devices & keys.`
+    }
+  }
+
   /** Delete the identity's passkeys whose entries name one of `keyIds` (before those keys are disabled). */
   private async removePasskeysNaming(identityId: string, keyIds: readonly number[]): Promise<void> {
     if (this.state.session?.identityId !== identityId || this.state.session.storage !== 'vault') {
@@ -2541,6 +2567,12 @@ export class AuthController {
         if (!needsReseal(entry, marker, authIds, usableEncryptionId)) continue
         // Another device's (or a replaced) entry: only a prompt for that passkey may re-seal it.
         if (marker === null) {
+          needUpdate += 1
+          continue
+        }
+        // The encryption key changed (often because a passkey may have leaked): the new one goes
+        // into an entry only when the user updates that passkey, never silently.
+        if (marker.encryptionKeyId !== undefined && marker.encryptionKeyId !== usableEncryptionId) {
           needUpdate += 1
           continue
         }

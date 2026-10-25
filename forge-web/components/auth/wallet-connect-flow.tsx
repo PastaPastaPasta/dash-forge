@@ -194,7 +194,7 @@ export function WalletConnectFlow({
   /** Open the sheet's Unlock view (a v2 sign-in that must wait for a locked wallet key to be opened). */
   onUnlock?: () => void
 }): JSX.Element {
-  const { adoptWalletKeys, addWalletGrant, identity, isLoading, vaults, unlockScope, controller } = useAuth()
+  const { adoptWalletKeys, addWalletGrant, identity, isLoading, vaults, unlockScope, controller, origin } = useAuth()
   // Read when the request starts (a scope change must not restart a running request).
   const scopeRef = useRef(unlockScope)
   scopeRef.current = unlockScope
@@ -537,8 +537,9 @@ export function WalletConnectFlow({
     return (
       <div className="space-y-3" data-testid="wallet-renew-prepare">
         <p className="text-dense">
-          Your wallet gave this browser its key. A new request goes to the same wallet: when you approve, it adds a new key and disables the
-          current one.
+          {origin === 'passkey'
+            ? 'A passkey brought this key here. If a wallet made it, approve a new request in that wallet: it adds a new key, and this one stays live until you disable it in Devices & keys.'
+            : 'Your wallet gave this browser its key. A new request goes to the same wallet: when you approve, it adds a new key and disables the current one.'}
         </p>
         <p className="text-dense" data-testid="approval-terms">
           <ApprovalTerms budget={defaults.budgetCredits} expiresAt={defaults.expiresAt} />
@@ -619,7 +620,7 @@ export function WalletConnectFlow({
   if (step?.kind === 'renew-store') {
     return (
       <div className="space-y-3" data-testid="wallet-renew-store">
-        <p className="text-dense">Your wallet gave this browser a new key and disabled the old one. Forge has not stored the new key yet.</p>
+        <p className="text-dense">{origin === 'passkey' ? 'Your wallet gave this browser a new key. Forge has not stored the new key yet.' : 'Your wallet gave this browser a new key and disabled the old one. Forge has not stored the new key yet.'}</p>
         {pendingRenewalUi}
         {unlockFirst ? <UnlockMore title="Unlock this tab to store the new key" testId="wallet-unlock" then={unlockFirst} /> : null}
         <ErrorBox error={error} />

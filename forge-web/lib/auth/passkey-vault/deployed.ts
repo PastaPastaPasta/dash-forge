@@ -15,7 +15,7 @@ import { authSdk } from '../../sdk/facade'
 import { isContractMissingError } from '../../sdk/contract-missing'
 
 /** The document type the vault's entries are. */
-export const VAULT_ENTRY_TYPE = 'vaultEntry'
+const VAULT_ENTRY_TYPE = 'vaultEntry'
 
 /** The document types a fetched contract declares (the wasm contract's `schemas`, else its JSON). */
 function documentTypesOf(contract: unknown): readonly string[] {

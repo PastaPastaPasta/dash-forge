@@ -5,7 +5,7 @@
  * as a button. Shared with the passkey sign-in, which keeps its progress and errors beside it.
  */
 
-import type { Wallet } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export function Tile({
@@ -18,7 +18,7 @@ export function Tile({
   highlight = false,
   pausedReason = null,
 }: {
-  icon: typeof Wallet
+  icon: LucideIcon
   title: string
   body: string
   onClick: () => void

@@ -6,7 +6,7 @@ Status: implemented in the web app and inert until forge-meta on a network has t
 
 A passkey added in the web app holds a copy of the browser's current session keys, encrypted to that passkey, in a public `vaultEntry` on Platform. On another device, **Sign in with a passkey** reads the entry, decrypts it with the passkey, checks every key in it against the identity, and keeps the session in that browser's own vault under the same passkey.
 
-**Passkeys move a session. They do not recover an account.** The keys inside are the ordinary limited keys Forge signs with: they have a budget and an expiry (at most a year), and they stop working when they expire, run out or are disabled. Getting a new key still takes the identity file, the recovery phrase or the wallet that granted the old one. A passkey cannot create, renew or top up anything; it only carries across the key you already have.
+**Passkeys move a session. They do not recover an account.** The keys inside are the ordinary limited keys Forge signs with: they have a budget and an expiry (a key Forge registers lasts at most a year; a wallet may ask for other limits), and they stop working when they expire, run out or are disabled. Getting a new key still takes the identity file, the recovery phrase or the wallet that granted the old one. A passkey cannot create, renew or top up anything; it only carries across the key you already have.
 
 ## Why the entries are public
 
@@ -50,11 +50,11 @@ The keys then go into the browser vault, protected by the same passkey (its loca
 
 **List and remove**: each passkey shows when it was added, "This device" or "Another device", the key it holds and that key's state, and **Needs update** when it holds an older key. Removing deletes the entry (the deposit comes back) and tells the passkey provider only about this device's own credentials. The key it held stays live.
 
-**Re-seal**: when this tab changes its keys (a renewal, a new wallet grant, an imported encryption key) the entries this device made are encrypted again, without a prompt, but only if the recipient key on Platform is the one this device recorded. Other devices' entries show **Needs update**, which asks that passkey once: the key it derives must be the entry's recipient key before anything is sealed to it.
+**Re-seal**: when this tab changes its keys (a renewal, a new wallet grant, an imported encryption key) the entries this device made are encrypted again, without a prompt, but only if the recipient key on Platform is the one this device recorded. A new encryption key is never added silently: an entry that held the old one shows **Needs update**, and you tick the encryption key again when you update that passkey (the usual reason to replace it is a suspected leak). Other devices' entries show **Needs update**, which asks that passkey once: the key it derives must be the entry's recipient key before anything is sealed to it.
 
-**Revoke and disable**: the dialogs that disable a key offer to delete the passkeys that name it first, while the key can still sign.
+**Revoke and disable**: the dialogs that disable a key offer to delete the passkeys that name it first, while the key can still sign. That step is best effort: if it fails (this browser's key has no budget left, or Platform is slow) the key is still disabled and the page says which passkeys to remove in Settings.
 
-**Renewing a restored key**: a passkey does not say who made the key (a wallet or the master key), so a session restored from one is stored with origin `passkey`, and renewal offers both **Renew in your wallet** and **Renew with identity file**. It also follows the wallet-key rule of starting no write in the key's last minutes.
+**Renewing a restored key**: a passkey does not say who made the key (a wallet or the master key), so a session restored from one is stored with origin `passkey`, and renewal offers both **Renew in your wallet** and **Renew with identity file**. It also follows the wallet-key rule of starting no write in the key's last minutes. A wallet only disables the key of its own earlier grant for the same browser, so renewing a passkey's key in a wallet leaves the restored key live: it is kept here never to sign, is never put into a passkey again, and the next renewal or revoke disables it.
 
 ## Threat model
 
@@ -63,13 +63,13 @@ The keys then go into the browser vault, protected by the same passkey (its loca
 **Stale entries.** A revoked, expired or spent key fails the check, and the sign-in says to sign in another way. Two things outlast it:
 
 - The encryption key inside stays readable to anyone holding the passkey, and the old ciphertexts stay public in the history for good. Removing the passkey does not lock that person out: the encryption key must be replaced too ([replacing it](../guides/identity-and-keys.md#replacing-it-after-a-lost-device)). That is why it is opt-in with a warning.
-- Expiry (at most a year) is the limit of what a passkey can do: it moves a session between devices; it does not recover an account.
+- Expiry is the limit of what a passkey can do: it moves a session between devices; it does not recover an account.
 
 **What is public.** The owner, how many passkeys there are, when each was written or changed, the credential id (its length can hint at the passkey provider) and the `authKeyId`, which says which of the identity's keys is the main one. The fixed size hides how many keys an entry holds and whether it holds a wallet's key or Forge's own.
 
 **Shared devices.** Every device uses the same key and the same budget, so one device can spend what the others would, and disabling the key signs all of them out. The passkeys section says so. Spending is capped by the key's budget whatever a leaked passkey does.
 
-**A leaked passkey.** Whoever holds the passkey and can read the public entry gets the keys inside: a group-bound key with a budget and an expiry, and possibly an encryption key. They cannot get a master key, a key without limits, or anything that outlives the expiry. Disable the key (Devices & keys, or Revoke) and delete the entry.
+**A leaked passkey.** Whoever holds the passkey and can read the public entry gets the keys inside: a group-bound key with a budget and an expiry, and possibly an encryption key. They cannot get a master key, a key without limits, or anything that outlives the expiry. **A top-up of the key (more budget or a later expiry) reaches every passkey that holds it**, because the passkey holds the key, not a copy of its limits: disable the key when a passkey may have leaked, rather than topping it up. Disable the key (Devices & keys, or Revoke) and delete the entry.
 
 **XSS.** A script injected into the page could ask the user's passkey to seal keys to an attacker without a separate prompt for the attacker's key. It could already read an unlocked key and sign with it, so the exposure is the same; the page's CSP is the defence ([hosting.md](../hosting.md#7-security-headers)).
 

@@ -23,6 +23,8 @@ export function usePasskeysHolding(keyIds: readonly number[]): { readonly count:
   useEffect(() => {
     if (identity === null || storage !== 'vault' || platformPasskeyProblem !== null) return
     const ids = wanted === '' ? [] : wanted.split(',').map(Number)
+    // Other keys than the ones last read: nothing to offer until this read answers.
+    setFound(null)
     let live = true
     // A read that fails offers nothing: the key is still disabled, and its passkeys can be removed in Settings.
     listPlatformPasskeys().then(

@@ -75,7 +75,7 @@ export function LoginModal(): JSX.Element {
   const requestedGrant = useUiStore((s) => s.loginGrantFor) ?? 'collab'
   const intent = useUiStore((s) => s.loginIntent)
   const close = useUiStore((s) => s.closeLogin)
-  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys, grants } = useAuth()
+  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys, grants, origin } = useAuth()
   const [view, setView] = useState<View | null>(null)
   // The guided grants after a wallet sign-in (FEAT-04): `walletDone` waits for the new session's
   // grants to land, `guide` is the sequence once it runs. Neither outlives the sheet.
@@ -152,7 +152,7 @@ export function LoginModal(): JSX.Element {
   const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' || view === 'wallet-renew' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
-  const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
+  const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys, origin === 'passkey')
   const title = titleFor(view, grantTitle, intent?.action)
 
   return (
@@ -278,10 +278,15 @@ function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number
 }
 
 /** The sheet's description line for a view. */
-function describeView(view: View, limitedKeys: boolean): ReactNode {
+function describeView(view: View, limitedKeys: boolean, fromPasskey = false): ReactNode {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet gives this browser a key for Dash Forge. Your recovery phrase and master key stay on the phone.'
-  if (view === 'wallet-renew') return 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
+  if (view === 'wallet-renew') {
+    // A key a passkey brought here is not this browser's own wallet grant: the wallet adds a new one and leaves it.
+    return fromPasskey
+      ? 'Your wallet adds a new key for this browser. The current key stays live until you disable it in Devices & keys. Your recovery phrase and master key stay on the phone.'
+      : 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
+  }
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
   const base = <>at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge</>
   // Import, renew and dg offer a lifetime picker; creating an identity does not.

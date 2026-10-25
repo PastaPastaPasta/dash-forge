@@ -281,7 +281,7 @@ export function usableEncryptionKeyOf(keys: readonly OnChainKey[], forge: ForgeI
 /** Forge's rule for a slot that passed the core's checks (shape, live, unexpired, budget, match). */
 function acceptSlot(slot: Readonly<SlotKey>, k: OnChainKey, index: number, forge: ForgeIds, now: number): boolean {
   if (index === 0) return mainKeyProblem(k, forge, now) === null
-  if (slot.purpose === KeyPurpose.AUTHENTICATION) return isLimited(k) && grantContract(k, forge) !== null
+  if (slot.purpose === KeyPurpose.AUTHENTICATION) return authShape(k) && isLimited(k) && grantContract(k, forge) !== null
   return usableEncryption(k, forge)
 }
 

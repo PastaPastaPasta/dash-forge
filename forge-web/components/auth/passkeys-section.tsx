@@ -26,7 +26,7 @@ import { ErrorBox } from '@/components/auth/protection-fields'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
 import { UnlockNeededError } from '@/lib/auth/controller'
-import type { PlatformPasskeyRow } from '@/lib/auth/passkey-vault/service'
+import { PlatformPasskeyError, type PlatformPasskeyRow } from '@/lib/auth/passkey-vault/service'
 import { DOCS } from '@/lib/docs-links'
 import { previewCreate, previewDelete } from '@/lib/sdk/cost'
 import { formatDate } from '@/lib/view/format'
@@ -38,7 +38,8 @@ export const PASSKEYS_ANCHOR = 'passkeys'
 export function PasskeysSection(): JSX.Element | null {
   const { identity, storage, platformPasskeyProblem } = useAuth()
   if (identity === null || storage !== 'vault' || platformPasskeyProblem !== null) return null
-  return <PasskeysPanel />
+  // Keyed by identity: another identity's passkeys never show under this one's.
+  return <PasskeysPanel key={identity} />
 }
 
 /** Words for the key a passkey holds and its state. */
@@ -56,8 +57,7 @@ function keyWords(row: PlatformPasskeyRow): string {
 }
 
 function PasskeysPanel(): JSX.Element {
-  const auth = useAuth()
-  const { listPlatformPasskeys, pendingPlatformPasskey, platformPasskeyLeftOut, removePlatformPasskey, resealPlatformPasskeys, finishPlatformPasskey, abandonPlatformPasskey } = auth
+  const { listPlatformPasskeys, pendingPlatformPasskey, platformPasskeyLeftOut, removePlatformPasskey, resealPlatformPasskeys, finishPlatformPasskey, abandonPlatformPasskey } = useAuth()
   const [rows, setRows] = useState<PlatformPasskeyRow[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
@@ -97,9 +97,7 @@ function PasskeysPanel(): JSX.Element {
   const remove = async (row: PlatformPasskeyRow): Promise<void> => {
     const ok = await confirm({
       title: 'Remove this passkey?',
-      body: row.thisDevice
-        ? 'It stops signing in on other devices. The key it held keeps working, and so does anything already copied from it. Its deposit comes back.'
-        : "It stops signing in on the device that made it. The key it held keeps working, and so does anything already copied from it. Its deposit comes back.",
+      body: 'It stops signing anyone in on new devices. The key it held keeps working, and so does anything already copied from it. Its deposit comes back.',
       confirmLabel: 'Remove passkey',
     })
     if (ok) await attempt(`remove:${row.id}`, () => removePlatformPasskey(row.id))
@@ -128,7 +126,7 @@ function PasskeysPanel(): JSX.Element {
         A passkey moves this sign-in to another device. It doesn&apos;t recover an account: when the key expires, renew it with your identity file or recovery phrase.
       </p>
       <p className="text-anvil-700 dark:text-anvil-200" data-testid="passkeys-shared">
-        Every device shares the same key and budget, so disabling the key signs them all out.{' '}
+        Every device shares the same key and budget, so disabling the key signs them all out. Renewing it replaces the key for every device too.{' '}
         <a href={`${DOCS.identity}#passkeys`} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
           How passkeys work →
         </a>
@@ -270,7 +268,7 @@ function AddPasskeyDialog({ leftOut, onClose }: { leftOut: number; onClose: () =
       onClose()
     } catch (e) {
       if (e instanceof UnlockNeededError) setNeedsUnlock(true)
-      else if ((e as { code?: unknown } | null)?.code === 'pending') {
+      else if (e instanceof PlatformPasskeyError && e.code === 'pending') {
         // Made, not seen yet: the section offers "Check again".
         onClose()
         return

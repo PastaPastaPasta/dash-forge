@@ -452,6 +452,53 @@ describe('passkeys that hold a key on Platform', () => {
     expect(await readMarkers(NET, ID)).toEqual([])
   }, 30_000)
 
+  it('still disables a key when the passkeys that hold it cannot be removed first, and says so', async () => {
+    keys.push(groupKey(6))
+    const c = await signIn(keys[1]!)
+    await plant([{ keyId: 6 }])
+    // This browser's key can no longer sign the deletes.
+    port.remove = async () => {
+      throw new Error('the key has no budget left')
+    }
+    await c.disableIdentityKey({ fileText: '{}' }, 6, { removePasskeys: true })
+    expect(disabled).toEqual([[6]])
+    expect(c.getState().notice).toMatch(/The key was disabled, but the passkeys that hold it could not be removed: the key has no budget left/)
+  }, 30_000)
+
+  it('does not add a changed encryption key to an entry silently: it waits for that passkey’s update', async () => {
+    keys.push({ ...groupKey(9), purposeNumber: 1, securityLevelNumber: 3, contractBounds: undefined, totalBudget: undefined, expiresAt: undefined })
+    const c = await signIn(keys[1]!)
+    await storeEncryptionKey(NET, ID, 9, sk(9))
+    await c.addPlatformPasskey({ includeEncryptionKey: true })
+    expect((await readMarkers(NET, ID))[0]).toMatchObject({ encryptionKeyId: 9 })
+    // A newer encryption key on the identity, held here too.
+    keys.push({ ...groupKey(10), purposeNumber: 1, securityLevelNumber: 3, contractBounds: undefined, totalBudget: undefined, expiresAt: undefined })
+    await storeEncryptionKey(NET, ID, 10, sk(10))
+    port.writes.length = 0
+    expect(await c.resealPlatformPasskeys()).toEqual({ resealed: 0, needUpdate: 1 })
+    expect(port.writes).toEqual([])
+    // Updating that passkey on purpose, with the choice made again, does put it in.
+    const [row] = await c.listPlatformPasskeys()
+    expect(await c.resealPlatformPasskeys({ id: row!.id, includeEncryptionKey: true })).toEqual({ resealed: 1, needUpdate: 0 })
+    expect((await readMarkers(NET, ID))[0]).toMatchObject({ encryptionKeyId: 10 })
+  }, 30_000)
+
+  it('renewing a passkey’s key in a wallet keeps the old key live, held only: no passkey seals it again', async () => {
+    const c = await signIn(keys[1]!)
+    await c.addPlatformPasskey()
+    const next = await newDevice(c)
+    await next.signInWithPasskey()
+    // The wallet's new key; the old one (key 5) is another browser's grant, so it is not disabled.
+    keys.push(groupKey(6))
+    await next.adoptWalletKeys(ID, [grantOf(keys[2]!)], PASSKEY, { origin: 'app-connect' })
+    expect(next.writeAuth!.getSigningKeyWif(FORGE.core)).toBe(wifOf(6))
+    // The old key is held beside the new one, never to sign and never sealed into a passkey.
+    await next.addPlatformPasskey()
+    const sealed = (await readMarkers(NET, ID)).flatMap((m) => m.keyIds)
+    expect(sealed).not.toContain(5)
+    expect(sealed).toContain(6)
+  }, 60_000)
+
   it('keeps the key with the origin "passkey": renewable in a wallet or with the identity file', async () => {
     const c = await signIn(keys[1]!)
     await c.addPlatformPasskey()

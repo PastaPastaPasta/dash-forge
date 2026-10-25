@@ -38,7 +38,10 @@ export function PasskeyOffer(): JSX.Element | null {
     !unlimitedKey &&
     !unboundedKey &&
     keyLimits?.total != null &&
-    keyLimits.expiresAt !== null
+    keyLimits.expiresAt !== null &&
+    // A spent or expired key would be refused when added: no offer for it.
+    keyLimits.expiresAt > Date.now() &&
+    (keyLimits.remaining === null || keyLimits.remaining > 0n)
   useEffect(() => {
     if (!eligible || identity === null || asked.current === identity) return
     asked.current = identity

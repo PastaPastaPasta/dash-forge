@@ -99,15 +99,15 @@ export function issueCoverage(spendable: bigint | null, issueCredits: number, da
  */
 export type FundsFix = 'top-up' | 'renew-key' | 'renew-in-wallet' | 'renew-either'
 
-/** How "Renew" goes for a session: in the wallet for a key it granted, either way for a passkey's. */
-export function renewFix(origin: string | null | undefined): 'renew-key' | 'renew-in-wallet' | 'renew-either' {
-  if (origin === 'app-connect') return 'renew-in-wallet'
-  return origin === 'passkey' ? 'renew-either' : 'renew-key'
-}
-
 /** Whether a session's key can be renewed in a wallet: one it granted, or one a passkey restored. */
 export function renewableInWallet(origin: string | null | undefined): boolean {
-  return renewFix(origin) !== 'renew-key'
+  return origin === 'app-connect' || origin === 'passkey'
+}
+
+/** How "Renew" goes for a session: in the wallet for a key it granted, either way for a passkey's. */
+export function renewFix(origin: string | null | undefined): 'renew-key' | 'renew-in-wallet' | 'renew-either' {
+  if (!renewableInWallet(origin)) return 'renew-key'
+  return origin === 'passkey' ? 'renew-either' : 'renew-in-wallet'
 }
 
 /**
