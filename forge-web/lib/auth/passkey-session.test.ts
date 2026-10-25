@@ -452,6 +452,22 @@ describe('passkeys that hold a key on Platform', () => {
     expect(await readMarkers(NET, ID)).toEqual([])
   }, 30_000)
 
+  it('leaves a wallet grant with no spending limit out of the passkey, and says how many', async () => {
+    // A v1 wallet's one-contract grant: no budget, no expiry (its entry ciphertext would be public for good).
+    const v1: FakeKey = { ...groupKey(6), contractBounds: { toJSON: () => ({ $type: 'singleContract', id: FORGE.collab }) }, totalBudget: undefined, expiresAt: undefined }
+    keys.push(v1)
+    const c = await signIn(keys[1]!)
+    await c.addWalletGrant(ID, { keyId: 6, wif: v1.wif, scope: { core: false, collab: true, community: false, meta: false, unbounded: false }, limits: null }, FORGE.collab)
+    expect(await c.platformPasskeyLeftOut()).toBe(1)
+    await c.addPlatformPasskey()
+    expect(port.entries).toHaveLength(1)
+    expect((await readMarkers(NET, ID))[0]?.keyIds).toEqual([5])
+    // Nothing is left out for a session that holds no such key.
+    const plain = await newDevice(c)
+    await plain.adoptWalletKeys(ID, [grantOf(keys[1]!)], PASSKEY, { origin: 'app-connect' })
+    expect(await plain.platformPasskeyLeftOut()).toBe(0)
+  }, 30_000)
+
   it('is not offered on another host', () => {
     const c = new AuthController(async () => sdk, NET, { port: () => port, adapter: () => adapter, location: () => ({ hostname: 'evil.dashhq.org', pathname: '/' }), available: () => true })
     expect(c.platformPasskeyProblem()).toMatch(/Forge’s own address/)

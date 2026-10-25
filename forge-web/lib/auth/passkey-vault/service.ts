@@ -7,8 +7,10 @@
  *   with a budget and an expiry (a Forge limited key, or an App Connect v2 wallet key). A key with
  *   no bounds, no budget or no expiry, or bound to one contract (a shipped wallet's) is never
  *   sealed: a passkey moves a capped session to another device, nothing more;
- * - then the live per-contract wallet grants this browser holds (never one held only to be
- *   disabled later);
+ * - then the live per-contract wallet grants this browser holds that are budgeted AND expiring
+ *   (never one held only to be disabled later). Entry ciphertexts are public on chain for good, so
+ *   a leaked passkey must never yield a key with no spending limit or no expiry: a v1 wallet's
+ *   unlimited one-contract grant stays on the device that holds it;
  * - then, only when the user chose it, the identity's usable encryption key. It cannot be taken
  *   back from an entry already written: removing the passkey does not lock its holder out.
  * Never MASTER, CRITICAL or TRANSFER keys, and never a pasted tab-only key.
@@ -63,6 +65,11 @@ export type VaultForgeIds = ForgeIds & { readonly meta: string }
 export interface SealableSession {
   readonly ownerId: Uint8Array
   readonly keys: readonly SlotKey[]
+  /**
+   * How many live wallet grants this browser holds that were left out only because they have no
+   * budget or no expiry (they stay on this device); the UI says so.
+   */
+  readonly leftOut?: number
 }
 
 /** Overwrite every private key a {@link SealableSession} holds. */
@@ -223,6 +230,9 @@ function groupBound(k: OnChainKey, forge: ForgeIds): boolean {
   return k.contractBounds?.kind === 'contractGroup' && bytesEqual(k.contractBounds.groupId, decodeIdentifier(forge.group))
 }
 
+/** A budget and an expiry were set on the key: the only extra keys a passkey may hold. */
+const isLimited = (k: OnChainKey): boolean => k.totalBudget !== undefined && k.expiresAt !== undefined
+
 const expiring = (k: OnChainKey, now: number): boolean => k.expiresAt !== undefined && k.expiresAt - now <= PASSKEY_EXPIRY_MARGIN_MS
 
 /**
@@ -271,7 +281,7 @@ export function usableEncryptionKeyOf(keys: readonly OnChainKey[], forge: ForgeI
 /** Forge's rule for a slot that passed the core's checks (shape, live, unexpired, budget, match). */
 function acceptSlot(slot: Readonly<SlotKey>, k: OnChainKey, index: number, forge: ForgeIds, now: number): boolean {
   if (index === 0) return mainKeyProblem(k, forge, now) === null
-  if (slot.purpose === KeyPurpose.AUTHENTICATION) return grantContract(k, forge) !== null
+  if (slot.purpose === KeyPurpose.AUTHENTICATION) return isLimited(k) && grantContract(k, forge) !== null
   return usableEncryption(k, forge)
 }
 
@@ -357,8 +367,8 @@ const slotOf = (k: OnChainKey, privateKey: Uint8Array): SlotKey => ({ purpose: k
 /**
  * The keys a session seals, checked against the identity's keys read just now: slot 0 the main
  * key (throws {@link PlatformPasskeyError} 'ineligible' when it may not be), then each live wallet
- * grant this browser holds that Forge would sign with (at most {@link MAX_GRANTS}, in the vault's
- * order, newest first), then the encryption key when given (it must be the identity's usable one). The caller wipes the
+ * grant this browser holds that Forge would sign with and that has a budget and an expiry (at most
+ * {@link MAX_GRANTS}, in the vault's order, newest first), then the encryption key when given (it must be the identity's usable one). The caller wipes the
  * result ({@link wipeSession}) and its own `encryption.secret`.
  */
 export function sealableSession(o: {
@@ -378,6 +388,7 @@ export function sealableSession(o: {
   if (mainSk === null) throw new PlatformPasskeyError(ineligibleMessage('shape'), 'ineligible')
   const slots: SlotKey[] = [slotOf(main, mainSk)]
   let encryption: SlotKey | null = null
+  let leftOut = 0
   try {
     if (o.encryption) {
       const k = byId(o.encryption.keyId)
@@ -394,6 +405,11 @@ export function sealableSession(o: {
       const k = byId(e.keyId)
       if (k === undefined || slots.some((s) => s.keyId === k.id)) continue
       if (!authShape(k) || k.disabled || expiring(k, now) || isSpent(k) || grantContract(k, forge) === null) continue
+      // Budgeted AND expiring only: this entry's ciphertext is public for good.
+      if (!isLimited(k)) {
+        leftOut += 1
+        continue
+      }
       const sk = privateKeyOf(e.wif, k)
       if (sk !== null) slots.push(slotOf(k, sk))
     }
@@ -402,7 +418,7 @@ export function sealableSession(o: {
     wipe(encryption?.privateKey)
     throw error
   }
-  return { ownerId: o.ownerId.slice(), keys: encryption ? [...slots, encryption] : slots }
+  return { ownerId: o.ownerId.slice(), keys: encryption ? [...slots, encryption] : slots, ...(leftOut > 0 ? { leftOut } : {}) }
 }
 
 // ---------------------------------------------------------------------------

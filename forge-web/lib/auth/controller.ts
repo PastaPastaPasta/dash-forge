@@ -2398,6 +2398,28 @@ export class AuthController {
   }
 
   /**
+   * How many of this browser's wallet keys a passkey leaves out because they have no spending
+   * limit or no expiry (an entry's ciphertext is public for good, so a leaked passkey never yields
+   * such a key): they work on this device only. 0 when nothing is left out, or it cannot be told
+   * (a locked or resumed tab, Platform unreachable). Reads only.
+   */
+  async platformPasskeyLeftOut(): Promise<number> {
+    try {
+      const session = this.vaultSession()
+      const secret = this.unlockedVaultSecret(session.identityId)
+      if (secret === null || (secret.extra?.length ?? 0) === 0) return 0
+      const ownerId = decodeIdentifier(session.identityId)
+      const keys = await (await this.readPort()).identityKeys(ownerId)
+      if (keys === null) return 0
+      const sealed = sealableSession({ ownerId, secret, keys, forge: this.vaultForge(), now: Date.now() })
+      wipeSession(sealed)
+      return sealed.leftOut ?? 0
+    } catch {
+      return 0
+    }
+  }
+
+  /**
    * Delete one of the identity's passkeys (`id` from {@link listPlatformPasskeys}); its deposit is
    * refunded. Only a passkey this device made or signed in with is reported to its provider as
    * unused: another device's credential id is not this browser's to judge. The key it held stays

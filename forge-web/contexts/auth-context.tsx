@@ -164,6 +164,8 @@ interface AuthContextValue {
   /** The identity's passkeys for Devices & keys. */
   listPlatformPasskeys: AuthController['listPlatformPasskeys']
   removePlatformPasskey: AuthController['removePlatformPasskey']
+  /** How many of this browser's wallet keys a passkey leaves out (no spending limit or expiry). */
+  platformPasskeyLeftOut: AuthController['platformPasskeyLeftOut']
   /** Re-seal this device's passkeys (no prompt), or one passkey by id (one prompt): "Needs update". */
   resealPlatformPasskeys: AuthController['resealPlatformPasskeys']
   reloadVaults: () => void
@@ -284,6 +286,7 @@ export function AuthProvider({
       abandonPlatformPasskey: controller.abandonPlatformPasskey.bind(controller),
       listPlatformPasskeys: controller.listPlatformPasskeys.bind(controller),
       removePlatformPasskey: controller.removePlatformPasskey.bind(controller),
+      platformPasskeyLeftOut: controller.platformPasskeyLeftOut.bind(controller),
       resealPlatformPasskeys: controller.resealPlatformPasskeys.bind(controller),
     }),
     [controller, withReload],

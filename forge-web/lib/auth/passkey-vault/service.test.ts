@@ -62,8 +62,11 @@ function key(id: number, over: Partial<OnChainKey> = {}): OnChainKey {
 /** A Forge limited key (or v2 wallet key): group-bound, budgeted, expiring. */
 const limited = (id: number, over: Partial<OnChainKey> = {}) =>
   key(id, { contractBounds: { kind: 'contractGroup', groupId: id32(15) }, totalBudget: 5_000_000_000n, remainingBudget: 4_000_000_000n, expiresAt: NOW + 90 * DAY, ...over })
-/** A shipped wallet's grant: bound to one contract, no budget, no expiry. */
-const grant = (id: number, contract: number) => key(id, { contractBounds: { kind: 'singleContract', contractId: id32(contract) } })
+/** A per-contract wallet grant a passkey may hold: bound to one contract, budgeted and expiring. */
+const grant = (id: number, contract: number, over: Partial<OnChainKey> = {}) =>
+  key(id, { contractBounds: { kind: 'singleContract', contractId: id32(contract) }, totalBudget: 5_000_000_000n, remainingBudget: 4_000_000_000n, expiresAt: NOW + 90 * DAY, ...over })
+/** A v1 wallet's grant: bound to one contract with no budget and no expiry. */
+const unlimitedGrant = (id: number, contract: number) => key(id, { contractBounds: { kind: 'singleContract', contractId: id32(contract) } })
 const encryptionKey = (id: number, over: Partial<OnChainKey> = {}) => key(id, { purpose: KeyPurpose.ENCRYPTION, securityLevel: SecurityLevel.MEDIUM, ...over })
 
 const slot = (k: OnChainKey, privateKey = sk(k.id)): SlotKey => ({ purpose: k.purpose, securityLevel: k.securityLevel, keyType: k.type, keyId: k.id, privateKey })
@@ -165,6 +168,21 @@ describe('a Forge passkey', () => {
     expect(() => sealableSession({ ownerId: OWNER, secret: { identityId: IDENTITY, keyId: 5, wif: wifOf(6) }, keys, forge: FORGE, now: NOW })).toThrow(PlatformPasskeyError)
   })
 
+  it('leaves out grants without a spending limit or an expiry, and counts them for the UI', () => {
+    const keys = [limited(5), grant(6, 12), unlimitedGrant(7, 13), grant(8, 11, { totalBudget: undefined, remainingBudget: undefined }), grant(9, 11, { expiresAt: undefined })]
+    const extra = [6, 7, 8, 9].map((n, i) => ({ contractId: [FORGE.collab, FORGE.community, FORGE.core, FORGE.core][i]!, keyId: n, wif: wifOf(n) }))
+    const s = sealableSession({ ownerId: OWNER, secret: { identityId: IDENTITY, keyId: 5, wif: wifOf(5), extra }, keys, forge: FORGE, now: NOW })
+    expect(s.keys.map((k) => k.keyId)).toEqual([5, 6])
+    expect(s.leftOut).toBe(3)
+    // Nothing left out: nothing to say.
+    const all = sealableSession({ ownerId: OWNER, secret: { identityId: IDENTITY, keyId: 5, wif: wifOf(5), extra: extra.slice(0, 1) }, keys, forge: FORGE, now: NOW })
+    expect(all.leftOut).toBeUndefined()
+    // Held-only and disabled keys are not "left out for a missing limit": they were never going in.
+    const held = sealableSession({ ownerId: OWNER, secret: { identityId: IDENTITY, keyId: 5, wif: wifOf(5), extra: [{ ...extra[1]!, holdOnly: true as const }] }, keys, forge: FORGE, now: NOW })
+    expect(held.leftOut).toBeUndefined()
+    for (const x of [s, all, held]) wipeSession(x)
+  })
+
   it('leaves out held-only, unbounded, foreign, disabled, uncontrolled and surplus grants', () => {
     const keys = [limited(5), grant(6, 12), key(7), grant(8, 99), grant(9, 13), grant(10, 11), grant(20, 11), grant(21, 11), grant(22, 11), grant(23, 11), grant(24, 11)]
     keys[4] = { ...keys[4]!, disabled: true }
@@ -210,6 +228,14 @@ describe('signing in with a passkey refuses a planted entry', () => {
     await plant([slot(limited(5)), slot(grant(6, 12)), slot(key(7)), slot(grant(10, 12), sk(11)), slot(encryptionKey(9))])
     const opened = await vault.open()
     expect(opened.result).toMatchObject({ keyId: 5, extra: [], encryption: null, keyIds: [5], dropped: 4 })
+  })
+
+  it('drops a planted grant with no spending limit or no expiry, even when the key is the identity’s', async () => {
+    port.setKeys(OWNER, [limited(5), unlimitedGrant(6, 12), grant(7, 13, { expiresAt: undefined }), grant(8, 11)])
+    await plant([slot(limited(5)), slot(unlimitedGrant(6, 12)), slot(grant(7, 13)), slot(grant(8, 11))])
+    const opened = await vault.open()
+    expect(opened.result).toMatchObject({ keyId: 5, keyIds: [5, 8], dropped: 2 })
+    expect(opened.result.extra).toEqual([{ contractId: FORGE.core, keyId: 8, wif: wifOf(8) }])
   })
 
   it('returns copies: the bundle the core wipes takes nothing the sign-in keeps', () => {
