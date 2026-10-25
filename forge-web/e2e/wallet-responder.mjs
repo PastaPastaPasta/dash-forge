@@ -88,7 +88,8 @@ function derived(login, identityId) {
 }
 
 // `devnet` is the devnet's name, or '' on testnet (the e2e convention: network.ts E2E_DEVNET).
-async function connect(devnet) {
+// Exported for the App Connect v2 responder (wallet-responder-v2.ts), which talks to the same chain.
+export async function connect(devnet) {
   const evo = await import(node('@dashevo/evo-sdk/dist/evo-sdk.module.js'))
   const testnet = devnet === ''
   const dep = JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/${testnet ? 'testnet' : `devnet-${devnet}`}.json`), 'utf8'))
