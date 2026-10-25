@@ -298,6 +298,18 @@ CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key i
 
 **Storage.** The vault lives in the browser's storage, which a browser may clear under storage pressure, and Safari clears after 7 days without a visit. Forge asks the browser to keep it when it stores a key (`navigator.storage.persist()`), and Devices & keys says whether it agreed. If the vault is cleared, sign in again with `dg`, your identity file or your recovery phrase.
 
+## Passkeys for other devices
+
+A passkey added in the web app lets another device sign in without your identity file. **Settings → Devices & keys → Passkeys for other devices → Add a passkey** makes the passkey, confirms it with a second prompt, and stores a copy of this browser's keys, encrypted to that passkey, on Platform. On the other device, **Sign in with a passkey** opens them and keeps the session in that browser under the same passkey. It works at <https://forge.dashhq.org> only (and `localhost` for development), and only once the network's forge-meta has the passkey vault.
+
+- **It moves a session. It doesn't recover an account.** The keys it carries are the limited keys you already have, with their budget and expiry. When the key expires or is disabled, the passkey stops working: renew with your identity file or recovery phrase (or in the wallet that granted it).
+- **Every device shares the same key and budget.** Disabling the key signs all of them out. The list says which passkey is this device's and which key each holds; **Needs update** appears when a passkey holds an older key after a renewal, and asks that passkey once to save the new one.
+- **Keys without a spending limit stay on this device only.** A passkey holds a key only if it has a budget and an expiry, because the encrypted copy is public on Platform for good. A v1 wallet's unlimited per-contract key is left out; the page counts how many.
+- **Your encryption key is not included unless you tick it.** Once written, it can't be taken back: removing the passkey later does not lock out anyone who has it. Replace the encryption key too ([above](#replacing-it-after-a-lost-device)).
+- **Removing a passkey** deletes its entry (the deposit comes back); the key it held keeps working. Revoking or disabling a key offers to remove the passkeys that hold it first.
+
+Adding the first passkey costs about 0.0005 DASH from the key's budget ([costs](costs.md#passkeys-for-other-devices)). The threat model is in [passkey vault](../security/passkey-vault.md).
+
 ## The browser vault and its limits
 
 The limited key is stored in IndexedDB, encrypted with AES-256-GCM. The data key is wrapped by a passkey's PRF output (stretched with HKDF), by Argon2id of your passphrase (64 MiB, 3 passes, 16-byte salt), or by both. Each ciphertext is bound to its network and identity.
