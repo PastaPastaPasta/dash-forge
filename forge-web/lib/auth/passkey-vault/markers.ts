@@ -39,7 +39,9 @@ export interface PendingPasskey {
 const markersKey = (network: Network, identityId: string): string => `pv-own:${network}:${identityId}`
 const pendingKey = (network: Network, identityId: string): string => `pv-pending:${network}:${identityId}`
 
-const isBytes = (v: unknown, length?: number): v is Uint8Array => v instanceof Uint8Array && (length === undefined || v.length === length)
+/** A Uint8Array from any realm (a structured clone may come back from another one). */
+const isBytes = (v: unknown, length?: number): v is Uint8Array =>
+  Object.prototype.toString.call(v) === '[object Uint8Array]' && (length === undefined || (v as Uint8Array).length === length)
 const isKeyId = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
 
 function isMarker(v: unknown): v is PasskeyMarker {
@@ -59,7 +61,7 @@ function isMarker(v: unknown): v is PasskeyMarker {
 /** This device's markers for `identityId` (a malformed one is ignored: it trusts nothing). */
 export async function readMarkers(network: Network, identityId: string): Promise<PasskeyMarker[]> {
   const v = await idbGet<unknown>('vault', markersKey(network, identityId))
-  return Array.isArray(v) ? v.filter(isMarker) : []
+  return Array.isArray(v) ? v.filter(isMarker).map((m) => ({ ...m, credentialId: new Uint8Array(m.credentialId), recipientKey: new Uint8Array(m.recipientKey) })) : []
 }
 
 /** The marker of `credentialId`, or null. */
@@ -88,7 +90,7 @@ export async function dropMarker(network: Network, identityId: string, credentia
 /** The enrolment of `identityId` that has not finished, or null. */
 export async function readPending(network: Network, identityId: string): Promise<PendingPasskey | null> {
   const v = await idbGet<Partial<PendingPasskey>>('vault', pendingKey(network, identityId))
-  return v && isBytes(v.ownerId, 32) && isBytes(v.credentialId) ? { ownerId: v.ownerId, credentialId: v.credentialId } : null
+  return v && isBytes(v.ownerId, 32) && isBytes(v.credentialId) ? { ownerId: new Uint8Array(v.ownerId), credentialId: new Uint8Array(v.credentialId) } : null
 }
 
 /** Record an enrolment until it is stored and seen (one per identity: a newer one replaces it). */
@@ -101,7 +103,7 @@ export async function writePending(network: Network, identityId: string, pending
 export async function clearPending(network: Network, identityId: string, credentialId?: Uint8Array): Promise<void> {
   const at = pendingKey(network, identityId)
   await idbUpdate<Partial<PendingPasskey>>('vault', at, (current) =>
-    credentialId === undefined || (current?.credentialId instanceof Uint8Array && bytesEqual(current.credentialId, credentialId)) ? [[at, undefined]] : [],
+    credentialId === undefined || (isBytes(current?.credentialId) && bytesEqual(current.credentialId, credentialId)) ? [[at, undefined]] : [],
   )
 }
 

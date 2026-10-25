@@ -36,7 +36,7 @@ import { errorMessage, shortId } from '../utils'
 import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
-import { KeyUnusableError, SECURITY_LEVEL, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
+import { ConsensusRefusal, KeyUnusableError, SECURITY_LEVEL, UnconfirmedWriteError, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS } from '../vendor/platform-auth/app-connect'
 import { newV2LoginRequest, readChainClock, type V2LoginRequest } from './app-connect-v2'
 import { clearWalletRenewal, connectionId, markWalletRenewal, walletRenewalInFlight } from './connection-id'
@@ -45,7 +45,7 @@ import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
 import type { KeyLimits } from '../view/funds'
 import { controlsKey, normalizeToWif } from './wif'
-import { decodeIdentifier } from './base58'
+import { base58Encode, decodeIdentifier } from './base58'
 import { retryWhileMissing } from '../view/retry'
 import { authKeysFromFile, identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { NoUsernameKeyError, registerUsername, usernameKeysFromPhrase } from './username-register'
@@ -67,6 +67,38 @@ import { acknowledgeKeys, checkKeys, forgetKeySnapshot, type WatchedKey } from '
 import { DISABLEABLE, chunkKeyIds, keyRole, keyRows, otherKeysToDisable, type KeyRow } from './devices'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import {
+  KeyPurpose,
+  VaultError,
+  browserPasskeyAdapter,
+  bytesEqual,
+  wipe,
+  type ConfirmTarget,
+  type ConfirmedPasskey,
+  type OnChainKey,
+  type PasskeyAdapter,
+  type VaultEntryRecord,
+  type VaultPort,
+} from '../vendor/platform-auth/passkey-vault'
+import { clearPending, dropMarker, forgetPasskeyRecords, markerFor, putMarker, readMarkers, readPending, writePending, type PasskeyMarker } from './passkey-vault/markers'
+import { passkeyVaultProblem, passkeyVaultRpId } from './passkey-vault/policy'
+import { credentialBytes, credentialName, forgeVaultPort } from './passkey-vault/port'
+import {
+  PlatformPasskeyError,
+  forgePasskeyVault,
+  needsReseal,
+  passkeyRows,
+  platformPasskeyError,
+  sealableSession,
+  usableEncryptionKeyOf,
+  wipeOpened,
+  wipeSession,
+  type ForgePasskeyVault,
+  type OpenedKeys,
+  type PlatformPasskeyRow,
+  type SealableSession,
+  type VaultForgeIds,
+} from './passkey-vault/service'
+import {
   WrongMasterKeyError,
   disableHeldKeys,
   disableIdentityKeys,
@@ -83,8 +115,12 @@ import {
   type TopUpRequest,
 } from './limited-key'
 import {
+  EncryptionKeyNotHeldError,
+  PASSKEY_TIMEOUT_MS,
   VaultLockedError,
   addExtraKey,
+  passkeyFailure,
+  withEncryptionKey,
   forgetVault,
   hasExtraKeys,
   holdForSession,
@@ -282,6 +318,18 @@ export type MasterInput = { fileText: string } | { mnemonic: string }
 /** How the SDK is obtained — injected so the controller stays testable and SSR-safe. */
 export type SdkProvider = () => Promise<EvoSDK>
 
+/** What passkeys that hold a key on Platform run on (`./passkey-vault`); tests replace them. */
+export interface PasskeyDeps {
+  /** The vault's chain port. Default: proved reads and Forge's write helpers over the SDK. */
+  readonly port?: (sdk: EvoSDK, contractId: string, auth: WriteAuth | null) => VaultPort
+  /** WebAuthn. Default: the browser's, with the vault's timeout and Forge's prompt messages. */
+  readonly adapter?: () => PasskeyAdapter
+  /** The page's address. Default: `window.location`. */
+  readonly location?: () => { readonly hostname: string; readonly pathname: string } | null
+  /** Whether the browser can do WebAuthn here. Default: `passkeysAvailable`. */
+  readonly available?: () => boolean
+}
+
 /** Delete keys an earlier build left in plain localStorage. */
 export function purgeLegacyKeystore(): void {
   if (typeof window === 'undefined') return
@@ -340,6 +388,7 @@ export class AuthController {
   constructor(
     private readonly getSdk: SdkProvider,
     private readonly network: Network = DEFAULT_NETWORK,
+    private readonly passkeyDeps: PasskeyDeps = {},
   ) {
     purgeLegacyKeystore()
   }
@@ -996,7 +1045,7 @@ export class AuthController {
         this.step('Setting up members-only content')
         await this.enableEncryption(identityId, material)
       }
-      return session
+      return this.keyChanged(session)
       } finally {
         if (material !== null && 'keys' in material) wipeMaterial(material)
       }
@@ -1116,7 +1165,7 @@ export class AuthController {
       }
       // Kept: the request is spent. Until then a failed check can be retried with the same reply.
       request.wipe()
-      return session
+      return this.keyChanged(session)
     })
   }
 
@@ -1256,7 +1305,7 @@ export class AuthController {
     // A shipped wallet registers an encryption key right after each auth key; a v2 grant does not.
     const walletKeys = appConnect ? [] : [main.keyId, ...rest.map((k) => k.keyId)]
     try {
-      return await this.open(secret, 'vault', main.limits ?? undefined, true, walletKeys)
+      return this.keyChanged(await this.open(secret, 'vault', main.limits ?? undefined, true, walletKeys))
     } catch (e) {
       throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
     }
@@ -1417,7 +1466,7 @@ export class AuthController {
       if (!secret) throw new VaultLockedError('unlock to continue')
       if (method !== null) {
         const { secret: finished } = await this.finishStagedRenewal(identityId, method)
-        if (finished) return this.open(finished, 'vault')
+        if (finished) return this.keyChanged(await this.open(finished, 'vault'))
       }
       return this.open(secret, 'vault', limits)
     })
@@ -1437,7 +1486,7 @@ export class AuthController {
           ? await unlockWithPasskey(this.network, identityId, (why) => this.step(why))
           : await unlockWithPassphrase(this.network, identityId, method.passphrase)
       const { secret: finished, status } = await this.finishStagedRenewal(identityId, method)
-      if (finished) return this.open(finished, 'vault')
+      if (finished) return this.keyChanged(await this.open(finished, 'vault'))
       const main = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
       if (main === undefined || secret.keyId !== main.keyId) {
         // What opened is the staged key, not adopted: no session to open with it. Say why. (Only
@@ -1649,8 +1698,10 @@ export class AuthController {
   /**
    * Disable this device's key for `identityId` on chain (the identity file or phrase supplies
    * the master key, used once), then forget it here. Forgetting alone does not revoke.
+   * `removePasskeys`: first delete the passkeys that hold the keys being disabled, signed by this
+   * key while it is still live (a stale passkey would only fail its sign-in, but its entry stays).
    */
-  async revokeStored(identityId: string, input: MasterInput): Promise<void> {
+  async revokeStored(identityId: string, input: MasterInput, options: { readonly removePasskeys?: boolean } = {}): Promise<void> {
     return this.run(async () => {
       const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       if (!stored) throw new Error('no key for this identity is stored here')
@@ -1659,6 +1710,8 @@ export class AuthController {
       await this.assertUnlockedIfWalletKeys(sdk, identityId, stored.keyId)
       const masterWif = await this.masterWifFor(identityId, input)
       const held = this.heldKeys(identityId)
+      // The passkeys holding these keys are deleted first, signed by this key while it is live.
+      if (options.removePasskeys === true) await this.removePasskeysNaming(identityId, [stored.keyId, ...held.map((k) => k.keyId)])
       await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
         this.charged(identityId, 'key:revoke', () => stored.keyId, () =>
           held.length > 1 || (held.length === 1 && this.state.session?.unlimited)
@@ -1886,9 +1939,10 @@ export class AuthController {
   /**
    * Disable one of the identity's keys (a lost device's, a key nobody here added) with the master
    * key, from the identity file or the recovery phrase. This browser's own key goes through
-   * {@link revokeStored}, which also forgets it here.
+   * {@link revokeStored}, which also forgets it here. `removePasskeys`: first delete the passkeys
+   * that hold that key (signed by this browser's key; {@link listPlatformPasskeys} says which).
    */
-  async disableIdentityKey(input: MasterInput, keyId: number): Promise<boolean> {
+  async disableIdentityKey(input: MasterInput, keyId: number, options: { readonly removePasskeys?: boolean } = {}): Promise<boolean> {
     return this.run(async () => {
       const session = this.state.session
       if (session === null) throw new Error('sign in first')
@@ -1897,6 +1951,7 @@ export class AuthController {
       if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
       const { identityId } = session
       const masterWif = await this.masterWifFor(identityId, input)
+      if (options.removePasskeys === true) await this.removePasskeysNaming(identityId, [keyId])
       const sdk = await this.getSdk()
       const sent = await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
         this.charged(identityId, 'key:revoke', () => keyId, () => disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: [keyId], allowed: (k) => DISABLEABLE.has(keyRole(k, forge)) })),
@@ -1968,7 +2023,7 @@ export class AuthController {
   /**
    * Delete the stored key of `identityId` from this device (ending its session if open), and
    * what this browser recorded for the identity: its spend ledger, its notifications inbox, its
-   * comment drafts and the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
+   * comment drafts, its passkey markers and the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
    * the top-up records (`topUpRecords`, QW3-034: an unfinished top-up, and where the next one
    * starts), which the forget and revoke confirmations name.
    */
@@ -1978,11 +2033,489 @@ export class AuthController {
     // The connection id stays (APP_CONNECT_PROFILE.md): a fresh one would leave the wallet's key
     // for this browser live. A renewal mark has nothing left to protect.
     clearWalletRenewal(this.networkKey, identityId)
+    // This device's passkey markers go too: nothing here vouches for a passkey any more.
+    await forgetPasskeyRecords(this.network, identityId)
     await forgetVault(this.network, identityId)
     forgetLastIdentity(this.network, identityId)
     clearDrafts(identityId)
     await Promise.allSettled([clearLedger(this.network, identityId), clearInbox(this.network, identityId)])
   }
+
+  // ---------------------------------------------------------------------------
+  // Passkeys that hold a key on Platform (`./passkey-vault`, PLAN-passkey-vault.md §3)
+  // ---------------------------------------------------------------------------
+
+  /** The background re-seal the last key change started (it never rejects). */
+  private passkeyReseal: Promise<void> = Promise.resolve()
+
+  private pageLocation(): { readonly hostname: string; readonly pathname: string } | null {
+    if (this.passkeyDeps.location) return this.passkeyDeps.location()
+    return typeof window === 'undefined' ? null : window.location
+  }
+
+  /**
+   * Why passkeys that work on the user's other devices are not offered here (a sentence), or null.
+   * The UI hides the feature while it is not null.
+   */
+  platformPasskeyProblem(): string | null {
+    return passkeyVaultProblem(NETWORKS[this.network].v2, this.pageLocation(), this.passkeyDeps.available)
+  }
+
+  /** forge-meta, where the vault's entries live; throws when this network has none. */
+  private vaultForge(): VaultForgeIds {
+    const forge = NETWORKS[this.network].v2
+    if (forge?.meta === undefined) throw new PlatformPasskeyError(passkeyVaultProblem(forge) ?? 'Passkeys are not available here.', 'unavailable')
+    return { ...forge, meta: forge.meta }
+  }
+
+  /** The vault's chain port: reads with proofs, and writes signed by `auth` when given. */
+  private passkeyPort(sdk: EvoSDK, forge: VaultForgeIds, auth: WriteAuth | null): VaultPort {
+    return this.passkeyDeps.port?.(sdk, forge.meta, auth) ?? forgeVaultPort({ sdk, contractId: forge.meta, auth })
+  }
+
+  /** The passkey vault on this page; throws {@link PlatformPasskeyError} 'unavailable' where it is not offered. */
+  private passkeyVault(sdk: EvoSDK, auth: WriteAuth | null): { readonly vault: ForgePasskeyVault; readonly port: VaultPort; readonly forge: VaultForgeIds } {
+    const forge = this.vaultForge()
+    const problem = this.platformPasskeyProblem()
+    const rpId = passkeyVaultRpId(this.pageLocation())
+    if (problem !== null || rpId === null) throw new PlatformPasskeyError(problem ?? 'Passkeys are not available here.', 'unavailable')
+    const port = this.passkeyPort(sdk, forge, auth)
+    const adapter = this.passkeyDeps.adapter?.() ?? browserPasskeyAdapter({ timeoutMs: PASSKEY_TIMEOUT_MS, mapError: passkeyFailure })
+    return { vault: forgePasskeyVault({ port, adapter, rpId, forge, network: this.network }), port, forge }
+  }
+
+  /** The session's signer for the vault's writes; their cost reaches the ledger like any charge. */
+  private passkeyWriter(identityId: string): WriteAuth {
+    const auth = this.writeAuth
+    if (auth === null || auth.identityId !== identityId) throw new WriteAuthError('this browser is signed out — sign in to sign')
+    return { ...auth, onSpend: (e) => this.spendListener?.(e) }
+  }
+
+  /**
+   * The identity whose passkeys an add or re-seal manages: a stored key's session with the whole
+   * vault open in this tab (wallet grants and the encryption key are sealed too). A resumed tab
+   * throws {@link UnlockNeededError}: `unlockMore`, then try again.
+   */
+  private passkeyOwner(): string {
+    const session = this.state.session
+    if (session === null || session.storage !== 'vault') throw new PlatformPasskeyError('Sign in with a key this browser keeps first.', 'ineligible')
+    this.requireFullUnlock(session.identityId)
+    if (this.unlockedVaultSecret(session.identityId) === null) throw new VaultLockedError("unlock this browser's key first")
+    return session.identityId
+  }
+
+  /**
+   * A copy of the identity's usable encryption key from this browser's vault, for a passkey the
+   * user chose to add it to (it cannot be taken back from an entry once written). The caller wipes it.
+   */
+  private async encryptionForPasskey(identityId: string, keys: readonly OnChainKey[], forge: VaultForgeIds): Promise<{ keyId: number; secret: Uint8Array }> {
+    const usable = usableEncryptionKeyOf(keys, forge)
+    const missing = new PlatformPasskeyError(
+      "This browser doesn't hold your identity's current encryption key. Import it in Settings → Members-only and private content first, or add the passkey without it.",
+      'ineligible',
+    )
+    if (usable === null) throw missing
+    try {
+      return await withEncryptionKey(this.network, identityId, async (keyId, secret) => ({ keyId, secret: secret.slice() }), usable.id)
+    } catch (e) {
+      if (e instanceof EncryptionKeyNotHeldError || e instanceof VaultLockedError) throw missing
+      throw e
+    }
+  }
+
+  /**
+   * What this session seals, against the identity's keys read now with proofs (`sealableSession`).
+   * The caller wipes `session`.
+   */
+  private async sealable(identityId: string, port: VaultPort, forge: VaultForgeIds, withEncryption: boolean): Promise<{ session: SealableSession; keys: OnChainKey[] }> {
+    const secret = this.unlockedVaultSecret(identityId)
+    if (secret === null) throw new VaultLockedError("unlock this browser's key first")
+    const ownerId = decodeIdentifier(identityId)
+    const keys = await port.identityKeys(ownerId)
+    if (keys === null) throw new PlatformPasskeyError(`Platform doesn't show identity ${shortId(identityId)}.`, 'failed')
+    const encryption = withEncryption ? await this.encryptionForPasskey(identityId, keys, forge) : null
+    try {
+      return { session: sealableSession({ ownerId, secret, keys, forge, now: Date.now(), encryption }), keys }
+    } finally {
+      if (encryption) wipe(encryption.secret)
+    }
+  }
+
+  /** What a marker records of a sealed session: its key ids in slot order, and its encryption key. */
+
+  /**
+   * Add a passkey that holds this session's key on Platform, so another device signs in with it
+   * (PLAN-passkey-vault.md §3 "Enrolment"). Two prompts: make the passkey, then confirm it. Its
+   * entry holds the main key, the live wallet grants and, with `includeEncryptionKey`, the
+   * encryption key (default off: an entry once written can't be taken back, so removing the passkey
+   * doesn't lock its holder out of private content). Needs the whole vault open in this tab, no
+   * unfinished key renewal, a budgeted Forge key, and fewer than 10 passkeys. Its write is paid
+   * from the key's budget. A passkey made but not yet seen on Platform is kept for
+   * {@link finishPlatformPasskey} ("Check again"), across reloads.
+   */
+  async addPlatformPasskey(options: { readonly includeEncryptionKey?: boolean; readonly userName?: string } = {}): Promise<void> {
+    const identityId = this.passkeyOwner()
+    if ((await stagedInfo(this.network, identityId)) !== null) {
+      throw new PlatformPasskeyError("Finish or discard this device's unfinished key renewal first (Settings → This browser's key).", 'ineligible')
+    }
+    const sdk = await this.getSdk()
+    const { vault, port, forge } = this.passkeyVault(sdk, this.passkeyWriter(identityId))
+    // Before any prompt: this session's keys must be ones a passkey may hold.
+    wipeSession((await this.sealable(identityId, port, forge, options.includeEncryptionKey === true)).session)
+    const ownerId = decodeIdentifier(identityId)
+    let pending: ConfirmTarget
+    try {
+      pending = await vault.enroll({ ownerId, keys: [] }, { userName: options.userName ?? shortId(identityId) })
+    } catch (e) {
+      throw platformPasskeyError(e)
+    }
+    try {
+      await writePending(this.network, identityId, pending)
+    } catch (e) {
+      await vault.abandon({ credentialId: pending.credentialId, createPrf: pending.createPrf ?? null }).catch(() => undefined)
+      throw e
+    }
+    await this.storePasskey(identityId, vault, port, forge, pending, options.includeEncryptionKey === true)
+  }
+
+  /** The passkey an add left unfinished on this device (made, not yet seen on Platform), or null. */
+  async pendingPlatformPasskey(): Promise<{ readonly id: string } | null> {
+    const identityId = this.state.session?.identityId
+    if (identityId === undefined) return null
+    const pending = await readPending(this.network, identityId)
+    return pending === null ? null : { id: credentialName(pending.credentialId) }
+  }
+
+  /**
+   * "Check again" for {@link pendingPlatformPasskey}: confirm the passkey (one prompt), seal this
+   * session to it (or re-seal its entry, if the first write landed) and wait until Platform shows it.
+   */
+  async finishPlatformPasskey(options: { readonly includeEncryptionKey?: boolean } = {}): Promise<void> {
+    const identityId = this.passkeyOwner()
+    const pending = await readPending(this.network, identityId)
+    if (pending === null || !bytesEqual(pending.ownerId, decodeIdentifier(identityId))) throw new PlatformPasskeyError('No passkey is waiting to be added here.', 'no-entry')
+    const sdk = await this.getSdk()
+    const { vault, port, forge } = this.passkeyVault(sdk, this.passkeyWriter(identityId))
+    await this.storePasskey(identityId, vault, port, forge, { ownerId: pending.ownerId, credentialId: pending.credentialId }, options.includeEncryptionKey === true)
+  }
+
+  /** Give up {@link pendingPlatformPasskey}: forgotten here, and the passkey provider told it is unused. */
+  async abandonPlatformPasskey(): Promise<void> {
+    const identityId = this.state.session?.identityId
+    if (identityId === undefined) return
+    const pending = await readPending(this.network, identityId)
+    if (pending === null) return
+    if (this.platformPasskeyProblem() === null) {
+      const { vault } = this.passkeyVault(await this.getSdk(), null)
+      await vault.abandon({ credentialId: pending.credentialId, createPrf: null }).catch(() => undefined)
+    }
+    await clearPending(this.network, identityId, pending.credentialId)
+  }
+
+  /** Forget an unfinished passkey and tell its provider it is unused (nothing of it was stored). */
+  private async dropPendingPasskey(identityId: string, vault: ForgePasskeyVault, target: ConfirmTarget): Promise<void> {
+    await vault.abandon({ credentialId: target.credentialId, createPrf: target.createPrf ?? null }).catch(() => undefined)
+    await clearPending(this.network, identityId, target.credentialId).catch(() => undefined)
+  }
+
+  /**
+   * Confirm `target` (a prompt limited to it), seal this session to it, write, wait until Platform
+   * shows it, then mark it this device's. A closed prompt or a write not seen yet keeps it pending;
+   * a passkey that can never hold the key (no PRF, another identity's, refused) is dropped.
+   */
+  private async storePasskey(identityId: string, vault: ForgePasskeyVault, port: VaultPort, forge: VaultForgeIds, target: ConfirmTarget, withEncryption: boolean): Promise<void> {
+    let confirmed: ConfirmedPasskey
+    try {
+      confirmed = await vault.confirm(target)
+    } catch (e) {
+      const mapped = platformPasskeyError(e)
+      if (!(mapped instanceof PlatformPasskeyError && mapped.code === 'cancelled')) await this.dropPendingPasskey(identityId, vault, target)
+      throw mapped
+    } finally {
+      // Not needed again: "Check again" confirms against the entry, without it.
+      wipe(target.createPrf)
+    }
+    let facts: Pick<PasskeyMarker, 'keyIds' | 'encryptionKeyId'>
+    try {
+      const { session } = await this.sealable(identityId, port, forge, withEncryption)
+      facts = sealedFacts(session)
+      try {
+        await vault.store(session, confirmed)
+      } finally {
+        wipeSession(session)
+      }
+    } catch (e) {
+      // Refused, over the cap, or keys a passkey may not hold: nothing landed, and trying again
+      // would not change that. Anything else (a read that failed, a write not seen) may still land.
+      if (e instanceof ConsensusRefusal || e instanceof PlatformPasskeyError || (e instanceof VaultError && e.code === 'too-many')) await this.dropPendingPasskey(identityId, vault, target)
+      if (e instanceof UnconfirmedWriteError) throw new PlatformPasskeyError("The passkey was added, but Platform doesn't show it yet. Check again in a minute.", 'pending')
+      throw platformPasskeyError(e)
+    }
+    try {
+      await vault.waitForEntry(target.ownerId, target.credentialId, confirmed.recipientKey)
+    } catch (e) {
+      throw platformPasskeyError(e)
+    }
+    await putMarker(this.network, identityId, { credentialId: target.credentialId.slice(), recipientKey: confirmed.recipientKey.slice(), ...facts, addedAt: Date.now() })
+    await clearPending(this.network, identityId, target.credentialId)
+  }
+
+  /**
+   * Sign in on a new device with a passkey that holds a key on Platform (PLAN-passkey-vault.md §3):
+   * one prompt for any of this site's passkeys, the entry it names opened with its PRF output and
+   * every key checked against the identity read with proofs, then kept in this browser's vault
+   * protected by the same passkey (its local key is HKDF-derived from that PRF output under the
+   * vault's own label). Refuses ({@link PlatformPasskeyError} 'held') when this browser already
+   * keeps a key for the identity: unlock that one instead. A passkey this browser made for its own
+   * vault only is 'not-vault'.
+   */
+  async signInWithPasskey(): Promise<AuthSession> {
+    return this.run(async () => {
+      this.step('Connecting to Dash Platform')
+      const sdk = await this.getSdk()
+      const { vault } = this.passkeyVault(sdk, null)
+      this.step('Waiting for your passkey')
+      let opened: Awaited<ReturnType<ForgePasskeyVault['open']>>
+      try {
+        opened = await vault.open({ keepPrfOutput: true })
+      } catch (e) {
+        throw platformPasskeyError(e)
+      }
+      const keys: OpenedKeys = opened.result
+      const prfOutput = opened.prfOutput
+      try {
+        if (prfOutput === null) throw new PlatformPasskeyError('The passkey gave no key.', 'failed')
+        const identityId = base58Encode(opened.ownerId)
+        const held = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
+        if (held !== undefined) {
+          throw new PlatformPasskeyError(
+            held.keyId === keys.keyId ? 'This browser already keeps this key. Unlock it instead.' : 'This browser already keeps another key for this identity. Unlock it instead.',
+            'held',
+          )
+        }
+        const secret: VaultSecret = { identityId, keyId: keys.keyId, wif: keys.wif, ...(keys.extra.length > 0 ? { extra: keys.extra } : {}) }
+        // The same credential protects the browser vault: its PRF input is the salt.
+        const protection: Protection = { passkey: { credentialId: opened.credentialId, prfSalt: vault.prfInput, output: prfOutput } }
+        this.step('Saving the key with your passkey')
+        let committed: StoreOutcome
+        try {
+          committed = await this.commitKey(secret, protection, { expectHeldKeyId: null })
+        } catch (e) {
+          if (e instanceof VaultChangedError) throw new PlatformPasskeyError('Another tab saved a key for this identity meanwhile. Unlock it instead.', 'held')
+          throw e
+        }
+        if (committed.readBackFailed) {
+          this.setState({ notice: "Signed in, but this browser may not keep the key after it closes (its storage did not read back). Keep your identity file or recovery phrase handy." })
+        }
+        const core = NETWORKS[this.network].v2?.core
+        if (keys.encryption !== null && core !== undefined) {
+          this.step('Setting up members-only content')
+          // Checked against the identity again and sealed into the vault; wipes its copy.
+          await adoptEncryptionKey(sdk, this.network, identityId, core, keys.encryption.secret.slice()).catch((e: unknown) => {
+            this.setState({ notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}.` })
+          })
+        }
+        let session: AuthSession
+        try {
+          session = await this.open(secret, 'vault')
+        } catch (e) {
+          throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
+        }
+        // Opened here with its own PRF output: this device's passkey from now on.
+        await putMarker(this.network, identityId, {
+          credentialId: opened.credentialId.slice(),
+          recipientKey: opened.entry.recipientKey.slice(),
+          keyIds: keys.keyIds,
+          ...(keys.encryption !== null ? { encryptionKeyId: keys.encryption.keyId } : {}),
+          addedAt: Date.now(),
+        }).catch(() => undefined)
+        return session
+      } finally {
+        wipe(prfOutput)
+        wipeOpened(keys)
+      }
+    })
+  }
+
+  /** The key ids this session would seal now (slot 0 first), or just its main key's when the rest is locked. */
+  private sessionAuthIds(session: AuthSession, keys: readonly OnChainKey[], forge: VaultForgeIds): { readonly ids: readonly number[]; readonly mainOnly: boolean } {
+    const secret = this.unlockedVaultSecret(session.identityId)
+    if (secret !== null) {
+      try {
+        const s = sealableSession({ ownerId: decodeIdentifier(session.identityId), secret, keys, forge, now: Date.now() })
+        const ids = s.keys.map((k) => k.keyId)
+        wipeSession(s)
+        return { ids, mainOnly: false }
+      } catch {
+        /* a key no passkey may hold: only its id is compared */
+      }
+    }
+    return { ids: session.keyId !== undefined ? [session.keyId] : [], mainOnly: true }
+  }
+
+  /**
+   * The signed-in identity's passkeys, for Settings → Devices & keys: when each was added, whether
+   * it is this device's, the key it holds and that key's state, and whether it needs an update
+   * (it holds an older key or other grants than this session's). Reads only, with proofs.
+   */
+  async listPlatformPasskeys(): Promise<PlatformPasskeyRow[]> {
+    const session = this.state.session
+    if (session === null || session.storage !== 'vault') throw new PlatformPasskeyError('Sign in with a key this browser keeps first.', 'ineligible')
+    const forge = this.vaultForge()
+    const port = this.passkeyPort(await this.getSdk(), forge, null)
+    const ownerId = decodeIdentifier(session.identityId)
+    const [entries, keys, markers] = await Promise.all([port.list(ownerId), port.identityKeys(ownerId), readMarkers(this.network, session.identityId)])
+    const onChain = keys ?? []
+    const auth = this.sessionAuthIds(session, onChain, forge)
+    return passkeyRows({ entries, markers, keys: onChain, authIds: auth.ids, mainOnly: auth.mainOnly, usableEncryptionId: usableEncryptionKeyOf(onChain, forge)?.id ?? null, now: Date.now() })
+  }
+
+  /**
+   * Delete one of the identity's passkeys (`id` from {@link listPlatformPasskeys}); its deposit is
+   * refunded. Only a passkey this device made or signed in with is reported to its provider as
+   * unused: another device's credential id is not this browser's to judge. The key it held stays
+   * live, and so does anything already copied from it: removing a passkey revokes nothing.
+   */
+  async removePlatformPasskey(id: string): Promise<void> {
+    const session = this.state.session
+    if (session === null || session.storage !== 'vault') throw new PlatformPasskeyError('Sign in with a key this browser keeps first.', 'ineligible')
+    const { identityId } = session
+    const credentialId = credentialBytes(id)
+    const entry = await this.passkeyPort(await this.getSdk(), this.vaultForge(), null).byCredential(decodeIdentifier(identityId), credentialId)
+    if (entry !== null) await this.removePasskeyEntries(identityId, [entry])
+    else await dropMarker(this.network, identityId, credentialId)
+  }
+
+  /** Delete `entries` as `identityId`'s session, signalling this device's own credentials only. */
+  private async removePasskeyEntries(identityId: string, entries: readonly VaultEntryRecord[]): Promise<void> {
+    const sdk = await this.getSdk()
+    const writer = this.passkeyWriter(identityId)
+    const markers = await readMarkers(this.network, identityId)
+    // Where the vault is not offered (no relying party here), entries are still deleted, unsignalled.
+    const vault = this.platformPasskeyProblem() === null ? this.passkeyVault(sdk, writer).vault : null
+    const port = this.passkeyPort(sdk, this.vaultForge(), writer)
+    for (const entry of entries) {
+      const thisDevice = markerFor(markers, entry.credentialId) !== null
+      if (vault !== null) await vault.remove(entry, { thisDevice })
+      else await port.remove({ ownerId: entry.ownerId, entry })
+      await dropMarker(this.network, identityId, entry.credentialId)
+    }
+  }
+
+  /** Delete the identity's passkeys whose entries name one of `keyIds` (before those keys are disabled). */
+  private async removePasskeysNaming(identityId: string, keyIds: readonly number[]): Promise<void> {
+    if (this.state.session?.identityId !== identityId || this.state.session.storage !== 'vault') {
+      throw new PlatformPasskeyError('Sign in first: removing the passkeys that hold this key needs it to sign.', 'ineligible')
+    }
+    const port = this.passkeyPort(await this.getSdk(), this.vaultForge(), null)
+    const naming = (await port.list(decodeIdentifier(identityId))).filter((e) => keyIds.includes(e.authKeyId))
+    await this.removePasskeyEntries(identityId, naming)
+  }
+
+  /**
+   * Seal this session's keys again into the identity's passkeys (after a key change: a renewal, a
+   * new wallet grant, a new encryption key).
+   * - Without `id`: every passkey this device made or signed in with whose entry is still sealed to
+   *   the recipient key this device recorded for it, and needs it (no prompt). Entries of other
+   *   devices are only counted (`needUpdate`): they show "Needs update".
+   * - With `id` (from {@link listPlatformPasskeys}): one prompt limited to that passkey, whose
+   *   derived key must be its entry's, then a re-seal (`includeEncryptionKey`: with the encryption key).
+   * Each re-seal is a paid replace of the entry. Needs the whole vault open in this tab.
+   */
+  async resealPlatformPasskeys(options: { readonly id?: string; readonly includeEncryptionKey?: boolean } = {}): Promise<{ readonly resealed: number; readonly needUpdate: number }> {
+    const session = this.state.session
+    if (session === null || session.storage !== 'vault') throw new PlatformPasskeyError('Sign in with a key this browser keeps first.', 'ineligible')
+    const markers = await readMarkers(this.network, session.identityId)
+    // Nothing this device made: no read, no write (a key change on a device without passkeys).
+    if (options.id === undefined && markers.length === 0) return { resealed: 0, needUpdate: 0 }
+    const identityId = this.passkeyOwner()
+    const sdk = await this.getSdk()
+    const { vault, port, forge } = this.passkeyVault(sdk, this.passkeyWriter(identityId))
+    const ownerId = decodeIdentifier(identityId)
+    const entries = await port.list(ownerId)
+    if (options.id !== undefined) {
+      const credentialId = credentialBytes(options.id)
+      const entry = entries.find((e) => bytesEqual(e.credentialId, credentialId))
+      if (entry === undefined) throw new PlatformPasskeyError('That passkey is not on Platform any more.', 'no-entry')
+      let confirmed: ConfirmedPasskey
+      try {
+        confirmed = await vault.confirm({ ownerId, credentialId, recipientKey: entry.recipientKey })
+      } catch (e) {
+        throw platformPasskeyError(e)
+      }
+      const { session: sealed } = await this.sealable(identityId, port, forge, options.includeEncryptionKey === true)
+      try {
+        await vault.reseal(entry, sealed, { trustedRecipient: confirmed })
+        const marker = markerFor(markers, credentialId)
+        if (marker !== null && bytesEqual(marker.recipientKey, entry.recipientKey)) {
+          await putMarker(this.network, identityId, resealedMarker(marker, sealed))
+        }
+      } catch (e) {
+        throw platformPasskeyError(e)
+      } finally {
+        wipeSession(sealed)
+      }
+      return { resealed: 1, needUpdate: 0 }
+    }
+    const plain = await this.sealable(identityId, port, forge, false)
+    const authIds = plain.session.keys.map((k) => k.keyId)
+    const usableEncryptionId = usableEncryptionKeyOf(plain.keys, forge)?.id ?? null
+    let withEncryption: SealableSession | null | undefined
+    let resealed = 0
+    let needUpdate = 0
+    try {
+      for (const entry of entries) {
+        const marker = markers.find((m) => bytesEqual(m.credentialId, entry.credentialId) && bytesEqual(m.recipientKey, entry.recipientKey)) ?? null
+        if (!needsReseal(entry, marker, authIds, usableEncryptionId)) continue
+        // Another device's (or a replaced) entry: only a prompt for that passkey may re-seal it.
+        if (marker === null) {
+          needUpdate += 1
+          continue
+        }
+        // An entry that held the encryption key gets the current one, when this browser holds it.
+        if (marker.encryptionKeyId !== undefined && withEncryption === undefined) {
+          withEncryption = await this.sealable(identityId, port, forge, true).then((r) => r.session, () => null)
+        }
+        const sealed = marker.encryptionKeyId !== undefined && withEncryption ? withEncryption : plain.session
+        // Only this device's own record vouches for the recipient key, never the entry read back.
+        const trusted = vault.trustMarker({ ownerId, credentialId: marker.credentialId, recipientKey: marker.recipientKey })
+        await vault.reseal(entry, sealed, { trustedRecipient: trusted })
+        await putMarker(this.network, identityId, resealedMarker(marker, sealed))
+        resealed += 1
+      }
+    } finally {
+      wipeSession(plain.session)
+      if (withEncryption) wipeSession(withEncryption)
+    }
+    return { resealed, needUpdate }
+  }
+
+  /**
+   * A key change in this tab (a renewal, a new grant, a finished staged renewal): re-seal this
+   * device's own passkeys in the background. Never fails the step that changed the key; an entry
+   * left behind shows "Needs update".
+   */
+  private keyChanged(session: AuthSession): AuthSession {
+    if (session.storage === 'vault' && this.platformPasskeyProblem() === null) {
+      this.passkeyReseal = this.passkeyReseal.then(() => this.resealPlatformPasskeys()).then(
+        () => undefined,
+        () => undefined,
+      )
+    }
+    return session
+  }
+}
+
+/** What a marker records of a sealed session: its key ids in slot order, and its encryption key. */
+function sealedFacts(session: SealableSession): Pick<PasskeyMarker, 'keyIds' | 'encryptionKeyId'> {
+  const enc = session.keys.find((k) => k.purpose === KeyPurpose.ENCRYPTION)
+  return { keyIds: session.keys.map((k) => k.keyId), ...(enc ? { encryptionKeyId: enc.keyId } : {}) }
+}
+
+/** `marker` after a re-seal of `session` to it: what it holds now. */
+function resealedMarker(marker: PasskeyMarker, session: SealableSession): PasskeyMarker {
+  const { encryptionKeyId: _before, keyIds: _was, ...kept } = marker
+  return { ...kept, ...sealedFacts(session) }
 }
 
 /** An identity file for another identity than the one signed in here (QW3-028). */

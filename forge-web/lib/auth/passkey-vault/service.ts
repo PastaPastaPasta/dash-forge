@@ -463,6 +463,8 @@ export function passkeyRows(o: {
   readonly markers: readonly PasskeyMarker[]
   readonly keys: readonly OnChainKey[]
   readonly authIds: readonly number[]
+  /** Only `authIds[0]` is known (the rest of the vault is locked): only the main key is compared. */
+  readonly mainOnly?: boolean
   readonly usableEncryptionId: number | null
   readonly now: number
 }): PlatformPasskeyRow[] {
@@ -480,7 +482,7 @@ export function passkeyRows(o: {
           o.now,
         ),
         current: e.authKeyId === o.authIds[0],
-        needsUpdate: needsReseal(e, m, o.authIds, o.usableEncryptionId),
+        needsUpdate: needsReseal(e, o.mainOnly === true ? null : m, o.authIds, o.usableEncryptionId),
         encryptionKey: m?.encryptionKeyId !== undefined,
       }
     })

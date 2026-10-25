@@ -137,20 +137,44 @@ interface AuthContextValue {
   logout: () => void
   /** Delete the stored key of `identityId` from this device (does not revoke it on chain). */
   forget: (identityId: string) => Promise<void>
-  /** Disable this device's key on chain with the master key (file or phrase), then forget it. */
-  revokeStored: (identityId: string, input: MasterInput) => Promise<void>
+  /**
+   * Disable this device's key on chain with the master key (file or phrase), then forget it.
+   * `removePasskeys`: first delete the passkeys that hold it (offer it when any does).
+   */
+  revokeStored: (identityId: string, input: MasterInput, options?: { readonly removePasskeys?: boolean }) => Promise<void>
   /** Raise this browser key's budget / expiry in place (the master key signs once). */
   topUpKey: (input: MasterInput, request: TopUpRequest) => Promise<KeyLimits>
   /** Register a CI runner key (not stored here; shown once). The master key signs once. */
   createRunnerKey: (input: MasterInput, request: LimitedKeyRequest) => Promise<LimitedKey>
   /** Register the DPNS username `label` (#452): the identity's own key (file or phrase) signs once. Resolves `label.dash`. */
   registerUsername: (input: MasterInput, label: string) => Promise<string>
+  /**
+   * Why passkeys that work on the user's other devices are not offered on this page, or null when
+   * they are. Hide the passkey sign-in and the passkeys section while it is not null.
+   */
+  readonly platformPasskeyProblem: string | null
+  /** Sign in on a new device with a passkey that holds a key on Platform. */
+  signInWithPasskey: () => Promise<void>
+  /** Add a passkey holding this session's key (two prompts). See {@link AuthController.addPlatformPasskey}. */
+  addPlatformPasskey: AuthController['addPlatformPasskey']
+  /** The passkey an add left unfinished here ("Check again"), or null. */
+  pendingPlatformPasskey: AuthController['pendingPlatformPasskey']
+  finishPlatformPasskey: AuthController['finishPlatformPasskey']
+  abandonPlatformPasskey: AuthController['abandonPlatformPasskey']
+  /** The identity's passkeys for Devices & keys. */
+  listPlatformPasskeys: AuthController['listPlatformPasskeys']
+  removePlatformPasskey: AuthController['removePlatformPasskey']
+  /** Re-seal this device's passkeys (no prompt), or one passkey by id (one prompt): "Needs update". */
+  resealPlatformPasskeys: AuthController['resealPlatformPasskeys']
   reloadVaults: () => void
   /** The headless controller (identity creation stores its key before registering it). */
   readonly controller: AuthController
 }
 
 const NO_KEYS: readonly WatchedKey[] = []
+
+/** Before the page's address is read: passkeys that hold a key on Platform stay hidden. */
+const PASSKEYS_NOT_CHECKED = 'Checking whether passkeys work on this page.'
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
@@ -253,6 +277,14 @@ export function AuthProvider({
       topUpKey: (input: MasterInput, request: TopUpRequest) => controller.topUpKey(input, request),
       createRunnerKey: (input: MasterInput, request: LimitedKeyRequest) => controller.createRunnerKey(input, request),
       registerUsername: (input: MasterInput, label: string) => controller.registerUsername(input, label),
+      signInWithPasskey: withReload(controller.signInWithPasskey.bind(controller)),
+      addPlatformPasskey: controller.addPlatformPasskey.bind(controller),
+      pendingPlatformPasskey: controller.pendingPlatformPasskey.bind(controller),
+      finishPlatformPasskey: controller.finishPlatformPasskey.bind(controller),
+      abandonPlatformPasskey: controller.abandonPlatformPasskey.bind(controller),
+      listPlatformPasskeys: controller.listPlatformPasskeys.bind(controller),
+      removePlatformPasskey: controller.removePlatformPasskey.bind(controller),
+      resealPlatformPasskeys: controller.resealPlatformPasskeys.bind(controller),
     }),
     [controller, withReload],
   )
@@ -319,6 +351,10 @@ export function AuthProvider({
     setLastIdentity(readLastIdentity(network))
   }, [network, sessionIdentity, vaults])
 
+  // Read in the browser only (it depends on the page's address): hidden until then.
+  const [platformPasskeyProblem, setPlatformPasskeyProblem] = useState<string | null>(PASSKEYS_NOT_CHECKED)
+  useEffect(() => setPlatformPasskeyProblem(controller.platformPasskeyProblem()), [controller])
+
   const locked = session === null && !resuming && vaults.length > 0
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -348,11 +384,12 @@ export function AuthProvider({
       lockedIdentity: locked ? lockedIdentityOf(vaults, lastIdentity) : null,
       unlockScope: session === null ? null : state.scope ?? null,
       newKeys: session === null ? NO_KEYS : state.newKeys ?? NO_KEYS,
+      platformPasskeyProblem,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.newKeys, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, lastIdentity, locked, platformPasskeyProblem, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.newKeys, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
