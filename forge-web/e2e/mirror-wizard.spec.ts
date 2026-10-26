@@ -339,10 +339,11 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   expect(url.searchParams.get('value')?.trim()).toBe(yaml.trim())
   await shot(page, 'mirror-06-workflow')
   expect(yaml).not.toContain('pull_request_target')
-  // Issues and PRs, ticked: their triggers come; unticked, they go again.
+  // Issues and PRs, ticked: synced by the daily run, never by a trigger a stranger can fire;
+  // unticked, they go again.
   const collab = wf.getByRole('checkbox', { name: /Mirror issues and pull requests too/ })
   await collab.check()
-  await expect(page.getByTestId('mirror-yaml')).toContainText('pull_request_target')
+  await expect(page.getByTestId('mirror-yaml')).not.toContainText('pull_request_target')
   await expect(page.getByTestId('mirror-yaml')).toContainText("sync: 'code,releases,labels,issues,prs'")
   await collab.uncheck()
   await expect(page.getByTestId('mirror-yaml')).not.toContainText('pull_request_target')

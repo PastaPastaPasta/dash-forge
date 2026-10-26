@@ -186,6 +186,9 @@ bad INPUT_NETWORK=devnet INPUT_DEVNET_NAME='x@y'
 bad INPUT_INSTALL=yes
 good INPUT_INSTALL=true INPUT_VERSION=''
 good INPUT_BUILD_CACHE=false
+good INPUT_ALLOW_UNLIMITED_KEY=true
+good INPUT_ALLOW_UNLIMITED_KEY=false
+bad INPUT_ALLOW_UNLIMITED_KEY=yes
 good INPUT_I_HAVE_THE_RIGHTS=true
 good INPUT_I_HAVE_THE_RIGHTS=false
 good INPUT_I_HAVE_THE_RIGHTS=''
@@ -239,9 +242,20 @@ expect args '--devnet-name'
 expect args '--dry-run'
 reject args 'dash.storage'
 
+case="mirror json refused without the opt-in"
+if mirror DASH_FORGE_KEY='{"identityId":"Id1","identityKeys":[{"privateKeyWif":"cJSONsecret"}]}'; then
+    fail "an identity file (no key budget) was accepted"
+fi
+expect log "allow-unlimited-key: true"
+[ ! -e "$tmp/args" ] || fail "forge-import ran anyway"
+[ ! -e "$tmp/identity.json" ] || fail "the identity file was written"
+if mirror DASH_FORGE_KEY='{"identityId":"Id1"}' INPUT_ALLOW_UNLIMITED_KEY=false; then
+    fail "allow-unlimited-key false accepted an identity file"
+fi
+
 case="mirror json + s3"
 mirror DASH_FORGE_KEY='{"identityId":"Id1","identityKeys":[{"privateKeyWif":"cJSONsecret"}]}' \
-    INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.example INPUT_S3_BUCKET=b \
+    INPUT_ALLOW_UNLIMITED_KEY=true INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.example INPUT_S3_BUCKET=b \
     S3_ACCESS_KEY_ID=AK S3_SECRET_ACCESS_KEY=SK INPUT_DRY_RUN=false || fail "exited $?"
 expect log '::add-mask::cJSONsecret'
 expect env "DASH_FORGE_KEY=$tmp/identity.json"
