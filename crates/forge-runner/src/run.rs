@@ -1123,14 +1123,15 @@ impl RunCtx<'_> {
 
     /// A completed `failure` for a reason the runner found itself (bad YAML, a refused job):
     /// the check run says why, and nothing ran. Returns the check's name.
-    fn refuse(&self, file: &Path, id: &str, name: &str, why: &str) -> String {
+    /// Fails when the report could not be delivered ([`report_completed`]).
+    fn refuse(&self, file: &Path, id: &str, name: &str, why: &str) -> Result<String> {
         let r = self.sealed(Report {
             conclusion: Some("failure"),
             summary: Some(format!("forge-runner did not run this: {why}")),
             ..self.report_of(file, id, name, "completed")
         });
-        report(self.cfg, &r);
-        r.name
+        report_completed(self.cfg, &r)?;
+        Ok(r.name)
     }
 }
 
@@ -1376,7 +1377,7 @@ pub fn run(
     };
     for b in &plan.broken {
         let name = format!("{} (invalid workflow)", b.file.display());
-        let name = ctx.refuse(&b.file, "", &name, &b.reason);
+        let name = ctx.refuse(&b.file, "", &name, &b.reason)?;
         ran.checks.push((name, "failure"));
     }
     if !plan.path_filtered.is_empty() {
@@ -1571,8 +1572,8 @@ fn checks_to_skip(policy: &serde_json::Value, alone: bool) -> Option<BTreeSet<St
 /// for it (`only`), and never when a workflow that runs here reports the same name. Other
 /// checks get nothing: each report is a paid write.
 ///
-/// Called before any workflow runs: a report that fails twice fails the run, which is tried
-/// again on the next poll rather than leaving the check undecided.
+/// Called before any workflow runs: a report that cannot be delivered ([`report_completed`])
+/// fails the run, which is tried again on the next poll rather than leaving the check undecided.
 fn skip_filtered(
     c: &RunCtx<'_>,
     plan: &workflow::Plan,
@@ -1602,9 +1603,7 @@ fn skip_filtered(
                 summary: Some(summary),
                 ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
             });
-            if !report(c.cfg, &r) && !report(c.cfg, &r) {
-                bail!("the check {name:?} could not be reported");
-            }
+            report_completed(c.cfg, &r)?;
             ran.checks.push((r.name, conclusion));
         }
     }
@@ -1624,12 +1623,14 @@ fn run_workflow(
         wf.jobs.iter().partition(|j| j.refused.is_some());
     for j in &refused {
         let why = j.refused.as_deref().unwrap_or("");
-        let name = c.refuse(&wf.file, &j.id, &j.check_name, why);
+        let name = c.refuse(&wf.file, &j.id, &j.check_name, why)?;
         ran.checks.push((name, "failure"));
     }
     if runnable.is_empty() {
         return Ok(());
     }
+    // Best-effort: the completed report below creates the run if these did not land, and it
+    // is the one a failed delivery fails the run for.
     for status in ["queued", "in_progress"] {
         for j in &runnable {
             report(c.cfg, &c.report_of(&wf.file, &j.id, &j.check_name, status));
@@ -1695,6 +1696,7 @@ fn run_workflow(
             .map(|(_, v)| v.as_str())
             .chain(given.masks()),
     );
+    let mut unreported = Vec::new();
     for j in runnable {
         let outcome = results.outcome(&j.id);
         let conclusion = outcome.conclusion(timed_out);
@@ -1727,14 +1729,39 @@ fn run_workflow(
             artifacts: files,
             ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
         });
-        report_completed(c.cfg, &r);
+        if let Err(e) = report_completed(c.cfg, &r) {
+            eprintln!("forge-runner: {e:#}");
+            unreported.push(r.name.clone());
+        }
         ran.checks.push((r.name, conclusion));
+    }
+    // The jobs ran, but a check nobody can see is not done: the push is tried again.
+    if !unreported.is_empty() {
+        bail!(
+            "{} of {} could not be reported: {}",
+            if unreported.len() == 1 {
+                "the result"
+            } else {
+                "the results"
+            },
+            wf.file.display(),
+            unreported.join(", ")
+        );
     }
     Ok(())
 }
 
-/// Report a job's result. A failed artifact upload must not leave the run in progress for good:
-/// if the report with artifacts fails, report the result again without them, and say so.
+/// The waits between attempts at a check's completed report ([`report_completed`]).
+const REPORT_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+];
+
+/// Report a job's result, retried with backoff ([`REPORT_BACKOFF`]); an error when no attempt
+/// landed, so the caller does not count the run as done. A failed artifact upload must not
+/// leave the run in progress for good: when the report with artifacts fails twice, the later
+/// retries report the result without them, and say so.
 ///
 /// The first report may have landed anyway (a timeout that "may still land"). A retry that
 /// reads the run as completed continues it, and RC2 forge-community freezes a completed run's
@@ -1742,20 +1769,45 @@ fn run_workflow(
 /// (`forge_core::ci::EVIDENCE_FIELDS`), so the retry records nothing new instead of being
 /// refused with 40128. A retry that reads a node still a block behind is refused (40128, or a
 /// stale revision); the run then stands as the first report recorded it.
-fn report_completed(cfg: &Config, r: &Report<'_>) {
-    if !report(cfg, r) && !r.artifacts.is_empty() {
-        report(
-            cfg,
-            &Report {
-                artifacts: Vec::new(),
-                summary: r
-                    .summary
-                    .as_ref()
-                    .map(|s| format!("{s}; artifacts not recorded: their upload failed")),
-                ..r.clone()
-            },
-        );
+fn report_completed(cfg: &Config, r: &Report<'_>) -> Result<()> {
+    deliver(r, &REPORT_BACKOFF, |r| report(cfg, r), std::thread::sleep)
+}
+
+/// [`report_completed`] over `send` (true: the report landed), waiting with `sleep` for each of
+/// `backoff` before the next attempt.
+fn deliver(
+    r: &Report<'_>,
+    backoff: &[Duration],
+    mut send: impl FnMut(&Report<'_>) -> bool,
+    mut sleep: impl FnMut(Duration),
+) -> Result<()> {
+    if send(r) {
+        return Ok(());
     }
+    let without_artifacts = (!r.artifacts.is_empty()).then(|| Report {
+        artifacts: Vec::new(),
+        summary: r
+            .summary
+            .as_ref()
+            .map(|s| format!("{s}; artifacts not recorded: their upload failed")),
+        ..r.clone()
+    });
+    for (i, wait) in backoff.iter().enumerate() {
+        sleep(*wait);
+        // once more as it was (the failure may have been the network), then without artifacts
+        let retry = match (i, &without_artifacts) {
+            (1.., Some(bare)) => bare,
+            _ => r,
+        };
+        if send(retry) {
+            return Ok(());
+        }
+    }
+    bail!(
+        "the check {:?} could not be reported ({} attempts)",
+        r.name,
+        backoff.len() + 1
+    )
 }
 
 /// Each job's artifacts from act's server directory `dir` (zipped into `out`): at most
@@ -2031,6 +2083,75 @@ pub fn reset_toolcache(cfg: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn completed(artifacts: Vec<PathBuf>) -> Report<'static> {
+        Report {
+            repo: "a/b",
+            oid: "abc",
+            name: "ci / build".into(),
+            external_id: "x".into(),
+            status: "completed",
+            conclusion: Some("success"),
+            summary: Some("forge-runner: success".into()),
+            log: None,
+            artifacts,
+            members_branch: None,
+        }
+    }
+
+    /// A completed report that fails is retried after each wait, without its artifacts once
+    /// the report carrying them failed twice; one that never lands is an error, so the push is
+    /// tried again instead of being counted done.
+    #[test]
+    fn a_completed_report_is_retried_with_backoff_and_fails_the_run_when_it_never_lands() {
+        let backoff = [Duration::from_secs(1), Duration::from_secs(2)];
+        // Lands on the third attempt; the retries carry no artifacts and say so.
+        let mut sent = Vec::new();
+        let mut waits = Vec::new();
+        let r = completed(vec![PathBuf::from("a.zip")]);
+        deliver(
+            &r,
+            &backoff,
+            |r| {
+                sent.push((r.artifacts.len(), r.summary.clone().unwrap_or_default()));
+                sent.len() == 3
+            },
+            |d| waits.push(d),
+        )
+        .unwrap();
+        assert_eq!(waits, backoff);
+        assert_eq!((sent[0].0, sent[1].0), (1, 1));
+        assert!(sent[2..]
+            .iter()
+            .all(|(n, s)| *n == 0 && s.ends_with("artifacts not recorded: their upload failed")));
+        // No artifacts: retried all the same (it used to give up after one attempt).
+        let mut tries = 0;
+        let e = deliver(
+            &completed(Vec::new()),
+            &backoff,
+            |_| {
+                tries += 1;
+                false
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(tries, 3);
+        assert!(
+            e.to_string().contains("could not be reported (3 attempts)"),
+            "{e}"
+        );
+        // The first attempt landing waits for nothing.
+        let mut waited = false;
+        deliver(
+            &completed(Vec::new()),
+            &backoff,
+            |_| true,
+            |_| waited = true,
+        )
+        .unwrap();
+        assert!(!waited);
+    }
 
     fn cfg(extra: &str) -> Config {
         Config::parse(&format!(
