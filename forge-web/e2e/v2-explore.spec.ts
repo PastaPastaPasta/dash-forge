@@ -34,7 +34,12 @@ test('x1. explore lists recent repos, trending, most starred and most forked, an
   await expect(recent.locator('a[href*="/repo"]').first()).toBeVisible({ timeout: 60_000 })
   // Trending and Most starred are proved ranked reads (C-1); no "needs an indexer" note.
   await expect(page.getByTestId('trending-note')).toHaveCount(0)
-  await expect(page.getByTestId('explore-trending').getByRole('heading', { name: /Trending (this week|today)/ })).toBeVisible()
+  const trending = page.getByTestId('explore-trending')
+  await expect(trending.getByRole('heading', { name: /Trending (this week|today)/ })).toBeVisible()
+  // Its time-range read lands in a fresh tab, though it can be the page's first query: the SDK
+  // learns the protocol version (14 or more for `timeRange`) before the page queries.
+  await expect(trending.getByTestId('ranked-row').first().or(trending.getByText(/^No repo has \d+ new stars/))).toBeVisible({ timeout: 60_000 })
+  await expect(trending.getByText('That read did not land')).toHaveCount(0)
   await expect(page.getByTestId('explore-most-starred').getByRole('heading', { name: 'Most starred' })).toBeVisible()
   // Most forked (ranked repo.forkOf, fresh core): the repos that are not forks form the index's
   // null group, which is never shown as a row.

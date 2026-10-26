@@ -27,9 +27,11 @@
  * failure never falls back to unverified reads.
  *
  * What a new connection takes over from the one it replaces:
- *   - the protocol version: wasm-sdk already seeds each new SDK at the version the last one
- *     learned (`protocol_version_store`, mainnet/testnet; a devnet's floor is current), and the
- *     handle's `version()` never reports lower than a version a connection proved;
+ *   - the protocol version: wasm-sdk seeds each new SDK at the version the last one learned
+ *     (`protocol_version_store`, in localStorage, mainnet/testnet; a devnet's floor is current),
+ *     the handle's `version()` never reports lower than a version a connection proved, and a
+ *     connection below the deployment's version learns it before it goes live (without a
+ *     store every connection starts at the built-in floor; {@link learnVersion});
  *   - which bundled contract snapshots turned out outdated: those are fetched, not seeded
  *     again. It preloads only the contracts pages used recently, not every id ever named.
  * A refreshed connection is installed only while no write is running and the last one ended
@@ -88,7 +90,14 @@ export interface EvoSdkConfig {
 export interface Connection {
   readonly sdk: EvoSDK
   readonly seeded: Map<string, number>
+  /** The warm-up's version read, when it was still running as the connection went live ({@link learnVersion}). */
+  readonly warming?: Promise<unknown>
+  /** The seeded contracts' latest versions, when the warm-up read them ({@link revalidateSeeded} uses them). */
+  readonly latest?: LatestVersions
 }
+
+/** What `getDataContractsLatestVersions` answers: each contract's current version. */
+type LatestVersions = Awaited<ReturnType<EvoSDK['contracts']['getLatestVersions']>>
 
 /** What a new connection takes over from the one it replaces. */
 export interface Carry {
@@ -228,6 +237,11 @@ function versionOf(sdk: EvoSDK): number | undefined {
  * frees a retired connection once its last call returned, {@link EvoSdkService.retire}).
  */
 function dispose(connection: Connection): void {
+  // The warm-up's read still borrows the SDK: free it once that read settles.
+  if (connection.warming !== undefined) {
+    void connection.warming.then(() => dispose({ sdk: connection.sdk, seeded: connection.seeded }))
+    return
+  }
   try {
     ;(connection.sdk.wasm as unknown as { free?: () => void }).free?.()
   } catch {
@@ -1050,13 +1064,16 @@ async function preload(sdk: EvoSDK, contractIds: readonly string[]): Promise<voi
  * Add the deployment's contract snapshots (`contract-seed.ts`) to the SDK's contract cache,
  * so no page spends a `getDataContract` request on them. `outdated` snapshots (an earlier
  * connection found the network had moved on) and any that fail to decode are skipped:
- * {@link preload} fetches those.
+ * {@link preload} fetches those. Also returns the protocol version the snapshots were
+ * serialized at, the one the deployment needs (deploy-v2 registers only on a network at it):
+ * the network runs at least that one ({@link learnVersion}).
  */
-async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<string>): Promise<Map<string, number>> {
+async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<string>): Promise<{ seeded: Map<string, number>; floor: number }> {
   const seeded = new Map<string, number>()
   const snapshots = await loadContractSnapshots(deploymentKey).catch(() => ({}))
+  const floor = Math.max(0, ...Object.values(snapshots).map((s) => s.platformVersion))
   const entries = Object.entries(snapshots).filter(([id]) => !outdated.has(id))
-  if (entries.length === 0) return seeded
+  if (entries.length === 0) return { seeded, floor }
   const { DataContract } = await import('@dashevo/evo-sdk')
   for (const [id, snapshot] of entries) {
     try {
@@ -1066,7 +1083,53 @@ async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<st
       // Fall back to fetching this one.
     }
   }
-  return seeded
+  return { seeded, floor }
+}
+
+/** How long the warm-up waits for {@link learnVersion}'s request before going live without it. */
+export const LEARN_VERSION_MS = 5_000
+
+/**
+ * Make sure `sdk` knows the network's protocol version before any page queries. A new SDK
+ * starts at its built-in floor (rc.8: 13 on testnet) unless wasm-sdk's store in localStorage
+ * has a learned one, and learns the real one from the first proved response. With every
+ * contract seeded, connecting sends none, so a page's first query is built at the floor, and
+ * one the floor does not support (a `timeRange` query below 14) is refused before it is sent.
+ * One proved request, only when the SDK is below `floor`, teaches it: the seeded contracts'
+ * latest versions, the question {@link revalidateSeeded} asks next, so it is not asked twice
+ * (DPNS's, which every network has, when nothing was seeded). A failure, or no answer within
+ * {@link LEARN_VERSION_MS}, is left to the reads, which learn the version too: the connect never
+ * waits on it longer. Returns the answer, or the read when it is still running then, so the SDK
+ * is not freed under it ({@link dispose}).
+ */
+async function learnVersion(
+  sdk: EvoSDK,
+  floor: number,
+  contractIds: readonly string[],
+): Promise<{ readonly latest?: LatestVersions; readonly running?: Promise<unknown> }> {
+  if ((versionOf(sdk) ?? 0) >= floor) return {}
+  let settled = false
+  let latest: LatestVersions | undefined
+  const read = sdk.contracts
+    .getLatestVersions({ contractIds: [...contractIds] })
+    .then((answer) => {
+      latest = answer
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      settled = true
+    })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([
+    read,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, LEARN_VERSION_MS)
+    }),
+  ])
+  clearTimeout(timer)
+  // (Wrapped: an async function returning the promise itself would wait for it.)
+  if (!settled) return { running: read }
+  return latest !== undefined ? { latest } : {}
 }
 
 /**
@@ -1074,7 +1137,8 @@ async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<st
  * `getDataContractsLatestVersions`) and refetch any that moved on, e.g. forge-collab after a
  * contract update. The SDK also refetches on its own once a document carries a newer
  * `$contractVersion`; this catches the update before any such document is read. Runs at
- * most once per {@link SEED_CHECK_MS} per profile while the versions keep matching.
+ * most once per {@link SEED_CHECK_MS} per profile while the versions keep matching, and asks
+ * nothing when the warm-up already read the versions ({@link learnVersion}).
  *
  * Each refetch is a stale-contract refresh ({@link refreshStale}): the page's first reads run
  * alongside this check, and one that fails on the old contract meanwhile joins the refetch in
@@ -1086,7 +1150,7 @@ export async function revalidateSeeded(connection: Connection, deploymentKey: st
   const versions = JSON.stringify([...seeded].sort())
   if (Date.now() - lastSeedCheck(deploymentKey, versions) < SEED_CHECK_MS) return
   try {
-    const latest = await sdk.contracts.getLatestVersions({ contractIds: [...seeded.keys()] })
+    const latest = connection.latest ?? (await sdk.contracts.getLatestVersions({ contractIds: [...seeded.keys()] }))
     let current = true
     for (const [id, version] of [...seeded]) {
       const now = latest.get(id)?.version
@@ -1326,11 +1390,18 @@ async function connectAndWarm(
   step(signal, sdk)
   // Seed the bundled contracts, then preload what is still missing, BEFORE the connection goes
   // live so callers never see an unwarmed SDK.
-  const seeded = await seed(sdk, NETWORKS[config.network].key, carry.outdated)
+  const { seeded, floor } = await seed(sdk, NETWORKS[config.network].key, carry.outdated)
   step(signal, sdk)
   await preload(sdk, config.contractIds.filter((id) => !seeded.has(id)))
   step(signal, sdk)
-  return { sdk, seeded }
+  const ids = seeded.size > 0 ? [...seeded.keys()] : [NETWORKS[config.network].dpnsContractId]
+  const { latest, running } = await learnVersion(sdk, floor, ids)
+  const connection: Connection = { sdk, seeded, ...(running !== undefined ? { warming: running } : {}), ...(latest !== undefined ? { latest } : {}) }
+  if (signal.aborted) {
+    dispose(connection)
+    throw new Error('the connect was abandoned')
+  }
+  return connection
 }
 
 /** The process-wide evo-sdk service singleton. */

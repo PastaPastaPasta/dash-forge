@@ -12,6 +12,8 @@ const recorded = vi.hoisted(() => ({
   snapshots: vi.fn(async () => ({})),
   emptyTestnet: false,
   gate: vi.fn(),
+  version: 14,
+  latest: vi.fn(async (_q: { contractIds: string[] }) => new Map()),
 }))
 vi.mock('./budget', () => ({ installDapiFetchGate: recorded.gate, dapiBudget: { retryAfterMs: () => 0 } }))
 vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmProgress: () => () => undefined }))
@@ -30,18 +32,19 @@ vi.mock('../constants', async (importOriginal) => {
 })
 vi.mock('@dashevo/evo-sdk', () => ({
   ensureInitialized: async () => undefined,
+  DataContract: { fromBase64: () => ({}) },
   EvoSDK: class {
     constructor(options: EvoSDKOptions) { recorded.options.push(options) }
     connect = async () => undefined
-    contracts = { fetch: recorded.fetch, getLatestVersions: async () => new Map() }
+    contracts = { fetch: recorded.fetch, getLatestVersions: recorded.latest, addKnown: async () => true }
     wasm = { free: recorded.free }
-    version = () => 14
+    version = () => recorded.version
   },
 }))
 
 import testnetDeployment from '../../../forge-contracts/deployments/testnet.json'
 import { NETWORKS, type Network } from '../constants'
-import { EvoSdkService } from './service'
+import { EvoSdkService, LEARN_VERSION_MS } from './service'
 
 const services: EvoSdkService[] = []
 beforeEach(() => {
@@ -49,9 +52,11 @@ beforeEach(() => {
   recorded.options.length = 0
   recorded.emptyTestnet = false
   recorded.fetch.mockReset().mockResolvedValue({})
-  recorded.snapshots.mockClear()
+  recorded.snapshots.mockReset().mockResolvedValue({})
   recorded.free.mockClear()
   recorded.gate.mockClear()
+  recorded.version = 14
+  recorded.latest.mockReset().mockResolvedValue(new Map())
 })
 afterEach(() => {
   services.splice(0).forEach((service) => service.cleanup())
@@ -110,5 +115,76 @@ describe('trusted SDK endpoint selection', () => {
       ...(NETWORKS.devnet.quorumBaseUrl !== null ? { quorumUrl: NETWORKS.devnet.quorumBaseUrl } : {}),
     })
     expect(recorded.gate).toHaveBeenCalledWith(NETWORKS.devnet.dapiAddresses)
+  })
+})
+
+describe('the protocol version before the first query', () => {
+  const CORE = 'D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9'
+  beforeEach(() => {
+    recorded.snapshots.mockResolvedValue({ [CORE]: { version: 1, platformVersion: 14, bytes: '' } })
+  })
+
+  /**
+   * Connect, noting each `getLatestVersions`: its ids, and whether a connection was live then.
+   * (No localStorage here, so the seeded-snapshot check after going live is always due.)
+   */
+  async function connectNoting(network: Network): Promise<{ ids: string[]; live: boolean }[]> {
+    const service = new EvoSdkService()
+    services.push(service)
+    const calls: { ids: string[]; live: boolean }[] = []
+    recorded.latest.mockImplementation(async ({ contractIds }) => {
+      calls.push({ ids: contractIds, live: service.generation > 0 })
+      recorded.version = 14
+      return new Map([[CORE, { version: 1 }]])
+    })
+    await service.initialize({ network, contractIds: [] })
+    await vi.advanceTimersByTimeAsync(0)
+    return calls
+  }
+
+  it('a new SDK below the snapshots\' version learns it from one proved read before going live', async () => {
+    // rc.8 starts a testnet SDK at 13; with every contract seeded, nothing else would teach it 14.
+    // The read asks the seeded-snapshot check's question, so that check sends nothing of its own.
+    recorded.version = 13
+    expect(await connectNoting('testnet')).toEqual([{ ids: [CORE], live: false }])
+  })
+
+  it('an SDK already at that version, or with no snapshots, sends nothing before going live', async () => {
+    // Only the seeded-snapshot check, after going live.
+    expect(await connectNoting('testnet')).toEqual([{ ids: [CORE], live: true }])
+
+    recorded.version = 13
+    recorded.snapshots.mockResolvedValue({})
+    expect(await connectNoting('testnet')).toEqual([])
+  })
+
+  it('a read that fails or does not answer does not hold up the connect', async () => {
+    recorded.version = 13
+    recorded.latest.mockRejectedValue(new Error('no available addresses'))
+    const failed = new EvoSdkService()
+    services.push(failed)
+    await failed.initialize({ network: 'testnet', contractIds: [] })
+    expect(failed.getStatus().phase).toBe('ready')
+
+    let answer!: () => void
+    const late = new Promise<Map<string, unknown>>((resolve) => (answer = () => resolve(new Map())))
+    // Only the warm-up's read hangs (the seeded-snapshot check after going live is tracked anyway).
+    recorded.latest.mockReset().mockReturnValueOnce(late).mockResolvedValue(new Map())
+    const hung = new EvoSdkService()
+    const connecting = hung.initialize({ network: 'testnet', contractIds: [] })
+    await vi.waitFor(() => expect(recorded.latest).toHaveBeenCalledWith({ contractIds: [CORE] }))
+    expect(hung.getStatus().phase).not.toBe('ready')
+    await vi.advanceTimersByTimeAsync(LEARN_VERSION_MS)
+    await connecting
+    expect(hung.getStatus().phase).toBe('ready')
+
+    // The read it stopped waiting for still borrows the SDK: retiring the connection frees it
+    // only once that read settles (a wasm `free()` under a running call traps).
+    recorded.free.mockClear()
+    hung.cleanup()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(recorded.free).not.toHaveBeenCalled()
+    answer()
+    await vi.waitFor(() => expect(recorded.free).toHaveBeenCalledTimes(1))
   })
 })
