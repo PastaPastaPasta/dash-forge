@@ -3247,58 +3247,49 @@ impl Writer<'_> {
             .await;
         }
         let members_results = self.members_batch(planned, &members).await;
-        let landed = landed_before || members_results.iter().any(Result::is_ok);
+        let landed = landed_before || members_results.landed;
         if public.is_empty() {
-            return settle_ref_writes(planned, &members, members_results, landed_before);
+            return settle_ref_writes(planned, &members, members_results.results, landed);
         }
-        settle_ref_writes(planned, &members, members_results, true)?;
+        settle_ref_writes(planned, &members, members_results.results, true)?;
         write_batch(self.svc, self.repo, planned, &public, self.progress, landed).await
     }
 
     /// Write the sealed refs `planned[sealed[..]]`: the members-only ones under the writer's
     /// members key, the narrower ones under their branch keys (phase 3F). One result per ref, in
     /// order.
-    async fn members_batch(
-        &self,
-        planned: &[Planned],
-        sealed: &[usize],
-    ) -> Vec<forge_core::Result<String>> {
+    async fn members_batch(&self, planned: &[Planned], sealed: &[usize]) -> PerRef {
         let (narrower, members): (Vec<usize>, Vec<usize>) =
             sealed.iter().partition(|&&i| planned[i].narrower());
         let mut by_index: BTreeMap<usize, forge_core::Result<String>> = BTreeMap::new();
+        let mut landed = false;
         if !members.is_empty() {
-            by_index.extend(
-                members
-                    .iter()
-                    .copied()
-                    .zip(self.lane_batch(planned, &members).await),
-            );
+            let lane = self.lane_batch(planned, &members).await;
+            landed |= lane.landed;
+            by_index.extend(members.iter().copied().zip(lane.results));
         }
         if !narrower.is_empty() {
-            by_index.extend(
-                narrower
-                    .iter()
-                    .copied()
-                    .zip(self.branch_batch(planned, &narrower).await),
-            );
+            let branch = self.branch_batch(planned, &narrower).await;
+            landed |= branch.landed;
+            by_index.extend(narrower.iter().copied().zip(branch.results));
         }
-        sealed
-            .iter()
-            .map(|i| by_index.remove(i).expect("one result per ref"))
-            .collect()
+        PerRef {
+            results: sealed
+                .iter()
+                .map(|i| by_index.remove(i).expect("one result per ref"))
+                .collect(),
+            landed,
+        }
     }
 
     /// Write narrower refs `planned[narrower[..]]` under their branches' current generations.
-    async fn branch_batch(
-        &self,
-        planned: &[Planned],
-        narrower: &[usize],
-    ) -> Vec<forge_core::Result<String>> {
-        let fail_all = |why: String| {
-            narrower
+    async fn branch_batch(&self, planned: &[Planned], narrower: &[usize]) -> PerRef {
+        let fail_all = |why: String| PerRef {
+            results: narrower
                 .iter()
                 .map(|_| Err(forge_core::Error::Config(why.clone())))
-                .collect()
+                .collect(),
+            landed: false,
         };
         let Some(ring) = self.ring else {
             return fail_all("the branch key isn't available".into());
@@ -3325,16 +3316,13 @@ impl Writer<'_> {
     }
 
     /// Write members-only refs `planned[members[..]]` under the members key.
-    async fn lane_batch(
-        &self,
-        planned: &[Planned],
-        members: &[usize],
-    ) -> Vec<forge_core::Result<String>> {
-        let fail_all = |why: String| {
-            members
+    async fn lane_batch(&self, planned: &[Planned], members: &[usize]) -> PerRef {
+        let fail_all = |why: String| PerRef {
+            results: members
                 .iter()
                 .map(|_| Err(forge_core::Error::Config(why.clone())))
-                .collect()
+                .collect(),
+            landed: false,
         };
         let Some(lane) = self.lane else {
             return fail_all("the members key isn't available".into());
@@ -3378,20 +3366,46 @@ impl RefWrites {
     /// One result per ref from the writes' (in order; shorter when a sequential write stopped
     /// at its failure): its own update's id when every one of its updates landed, else the
     /// first failure. A ref none of whose updates was attempted has none.
-    fn per_ref(&self, results: Vec<forge_core::Result<String>>) -> Vec<forge_core::Result<String>> {
-        let mut out: Vec<forge_core::Result<String>> = Vec::with_capacity(results.len());
+    ///
+    /// A ref whose own update landed but one of whose settling updates failed is partly
+    /// written: Platform reads it at the new commit and still diverged, and git, seeing the
+    /// remote at that commit, then has nothing to push. Its failure says which head is still
+    /// live and how to settle it, and `landed` counts it, so the push reads its refs back.
+    fn per_ref(&self, results: Vec<forge_core::Result<String>>) -> PerRef {
+        let mut out = PerRef {
+            results: Vec::with_capacity(results.len()),
+            landed: false,
+        };
         for (k, r) in results.into_iter().enumerate() {
-            match out.last_mut() {
+            out.landed |= r.is_ok();
+            match out.results.last_mut() {
                 Some(last) if !self.is_own(k) => {
                     if let (Ok(_), Err(e)) = (&*last, r) {
-                        *last = Err(e);
+                        let head = self.writes[k]
+                            .prev_oid
+                            .as_deref()
+                            .map(hex::encode)
+                            .unwrap_or_default();
+                        *last = Err(forge_core::Error::Platform(format!(
+                            "the push landed, but the update settling the concurrent head {} failed ({e}); \
+                             the branch still reads as diverged. Any new commit on top of this one, \
+                             pushed as usual, settles it",
+                            &head[..head.len().min(12)]
+                        )));
                     }
                 }
-                _ => out.push(r),
+                _ => out.results.push(r),
             }
         }
         out
     }
+}
+
+/// [`RefWrites::per_ref`]: one result per ref, and whether any write of the batch landed (a ref
+/// can be partly written and still fail).
+struct PerRef {
+    results: Vec<forge_core::Result<String>>,
+    landed: bool,
 }
 
 /// The ref writes of `planned[accepted[..]]`.
@@ -3475,7 +3489,8 @@ async fn write_batch(
     if let Some(written) = fail_after {
         bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
     }
-    settle_ref_writes(planned, accepted, writes.per_ref(results), landed_before)
+    let per = writes.per_ref(results);
+    settle_ref_writes(planned, accepted, per.results, landed_before || per.landed)
 }
 
 /// Fold a batch's per-ref `results` (for `planned[accepted[i]]`, in order; shorter when a
@@ -7286,7 +7301,7 @@ mod tests {
     use super::{
         default_branch_hint, history_tip_landed, lazy_blob_packs, role_denied, PushHistory,
     };
-    use super::{fast_forward, finalize_outcomes, ref_writes, remote_heads, RefWrites};
+    use super::{fast_forward, finalize_outcomes, ref_writes, remote_heads, PerRef, RefWrites};
     use forge_core::members_git::Audience;
 
     #[test]
@@ -7536,30 +7551,69 @@ mod tests {
     #[test]
     fn a_settling_refs_updates_report_as_one_result() {
         let fail = |w: &str| forge_core::Error::Config(w.into());
+        let write = |prev: u8| forge_core::repo::RefWrite {
+            ref_name: "refs/heads/main".into(),
+            new_oid: vec![0xcc; 20],
+            prev_oid: Some(vec![prev; 20]),
+            force: false,
+        };
         let writes = RefWrites {
-            writes: Vec::new(),
+            writes: vec![write(0xaa), write(0xbb), write(0x11)],
             of: vec![0, 0, 1],
         };
-        let ids = |r: Vec<forge_core::Result<String>>| -> Vec<std::result::Result<String, String>> {
-            r.into_iter()
-                .map(|r| r.map_err(|e| e.to_string()))
-                .collect()
+        let ids = |r: PerRef| -> (Vec<std::result::Result<String, String>>, bool) {
+            (
+                r.results
+                    .into_iter()
+                    .map(|r| r.map_err(|e| e.to_string()))
+                    .collect(),
+                r.landed,
+            )
         };
         assert_eq!(
             ids(writes.per_ref(vec![Ok("a".into()), Ok("a2".into()), Ok("b".into())])),
-            [Ok("a".to_string()), Ok("b".to_string())]
+            (vec![Ok("a".to_string()), Ok("b".to_string())], true)
         );
-        let got = ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost")), Ok("b".into())]));
+        // the ref's own update landed and its settling one failed: partly written, the failure
+        // names the head still live and how to settle it, and the batch counts as landed
+        let (got, landed) =
+            ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost")), Ok("b".into())]));
+        let e = got[0].as_ref().unwrap_err();
+        assert!(e.contains("lost") && e.contains("bbbbbbbbbbbb"), "{e}");
         assert!(
-            got[0].as_ref().is_err_and(|e| e.contains("lost")),
-            "{got:?}"
+            e.contains("still reads as diverged") && e.contains("Any new commit on top"),
+            "{e}"
         );
         assert_eq!(got[1], Ok("b".to_string()));
-        // sequential: stopped at the settling update's failure, ref 1 never attempted
-        let got = ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost"))]));
+        assert!(landed);
+        // sequential: stopped at the settling update's failure, ref 1 never attempted; the own
+        // update still landed
+        let (got, landed) = ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost"))]));
         assert_eq!(got.len(), 1);
         assert!(got[0].is_err());
+        assert!(landed);
+        // nothing landed
+        let (_, landed) = ids(writes.per_ref(vec![Err(fail("refused"))]));
+        assert!(!landed);
         assert!(writes.is_own(0) && !writes.is_own(1) && writes.is_own(2));
+    }
+
+    /// A one-ref push whose own update landed but whose settling update failed is not a
+    /// whole-push failure (nothing written): the ref is rejected with the settling advice and
+    /// the push reads its refs back.
+    #[test]
+    fn a_partly_written_settlement_is_rejected_not_reported_as_nothing_written() {
+        let mut p = vec![planned("refs/heads/main")];
+        let partly = Err(forge_core::Error::Platform(
+            "the push landed, but the update settling the concurrent head bbbbbbbbbbbb failed"
+                .into(),
+        ));
+        // landed_before false, but the batch's own update landed (PerRef::landed)
+        settle_ref_writes(&mut p, &[0], vec![partly], true).unwrap();
+        assert!(p[0]
+            .reject
+            .as_deref()
+            .is_some_and(|r| r.contains("settling the concurrent head")));
     }
 
     /// CodeRabbit (PR #127): a batch where some refs landed and one failed rejects only the
