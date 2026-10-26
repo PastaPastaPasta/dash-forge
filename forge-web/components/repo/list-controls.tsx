@@ -454,6 +454,16 @@ export function LabelFilter({ labels, selected, onChange }: { labels: readonly L
   )
 }
 
+/** Said under a list whose label definitions could not all be read (`labelsComplete` false): the filter and chips are partial. */
+export function LabelsIncompleteNote({ complete }: { complete: boolean | undefined }): JSX.Element | null {
+  if (complete !== false) return null
+  return (
+    <p className="mt-2 text-[12px] text-danger-700 dark:text-danger-400" data-testid="labels-incomplete">
+      This repository has too many label definitions to read them all, so the label filter and label colours are unverified: some labels may be missing or out of date.
+    </p>
+  )
+}
+
 /** Author / assignee filter: anyone, me, an identity id, or (assignee) nobody. */
 export function PersonFilter({
   label,

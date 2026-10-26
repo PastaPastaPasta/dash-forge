@@ -171,6 +171,8 @@ export interface PullListPage {
   /** False when a shown PR's member events could not be read completely: its labels and assignees are unverified (states are proved). */
   readonly stateComplete: boolean
   readonly labels: readonly LabelDef[]
+  /** False when the label definitions could not be read completely: {@link labels} is partial and may be out of date. */
+  readonly labelsComplete: boolean
   readonly hidden: number
   readonly hiddenBy: HiddenCounts
   /** How many PRs are members-only, by state (closed: merged too), once every PR was read (else null). */
@@ -342,6 +344,7 @@ export async function queryPulls(
     searchedOf: searchedOfPage(selected, total ?? bound?.patches ?? null),
     stateComplete: logsVerified(index, rows),
     labels: index.labels,
+    labelsComplete: index.labelsComplete,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
     membersOnly: membersOnlyOfIndex(index, 'patch'),

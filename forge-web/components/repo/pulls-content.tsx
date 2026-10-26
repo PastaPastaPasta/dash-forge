@@ -60,6 +60,7 @@ import {
   filterCount,
   LabelChipFilter,
   LabelFilter,
+  LabelsIncompleteNote,
   MilestoneFilter,
   Pager,
   PastLastPage,
@@ -292,6 +293,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       </div>
 
       <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" onMore={reload} oldest={query.sort === 'oldest'} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
+      <LabelsIncompleteNote complete={data?.labelsComplete} />
       {data !== null && !data.stateComplete ? (
         <p className="mt-2 text-[12px] text-danger-700 dark:text-danger-400">
           Some of these pull requests have too many events to read completely, so their labels and assignees are unverified.
