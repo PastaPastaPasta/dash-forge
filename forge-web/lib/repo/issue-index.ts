@@ -217,6 +217,8 @@ export interface IssueListPage {
    */
   readonly pinsUnread: boolean
   readonly labels: readonly LabelDef[]
+  /** False when the label definitions could not be read completely: {@link labels} is partial and may be out of date. */
+  readonly labelsComplete: boolean
   readonly hidden: number
   /** `hidden` by reason (private repos: shown to maintainers). */
   readonly hiddenBy: HiddenCounts
@@ -449,6 +451,7 @@ export async function queryIssues(
     searchedOf: searchedOfPage(selected, total ?? bound?.issues ?? null),
     stateComplete: logsVerified(index, [...rows, ...(pinnedNow ?? [])]),
     labels: index.labels,
+    labelsComplete: index.labelsComplete,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
     membersOnly: membersOnlyOfIndex(index, 'issue'),

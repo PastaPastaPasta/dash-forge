@@ -167,6 +167,7 @@ beforeEach(() => {
     searchedOf: null,
     stateComplete: true,
     labels: [{ name: 'bug', color: '#d73a4a' } as never],
+    labelsComplete: true,
     hidden: 0,
     hiddenBy: { malformed: 0, sealed: 0 } as never,
   }

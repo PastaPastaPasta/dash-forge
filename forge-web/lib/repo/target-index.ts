@@ -127,6 +127,11 @@ export interface ListIndex<Row extends RowExtras> {
   /** The feed ran past a bounded read (the issue list's pinned issues): not read again for them. */
   feedLong?: boolean
   readonly labels: LabelDef[]
+  /**
+   * False when the label definitions outgrew their read ({@link LABEL_PAGES}): {@link labels} is
+   * only the first page's, so a label may be missing or shown as an older definition. Lists say so.
+   */
+  readonly labelsComplete: boolean
   readonly rows: Map<string, Row>
   /** What each row was built from. */
   readonly sources: Map<string, RowSource>
@@ -448,6 +453,24 @@ async function readChunk<Row extends RowExtras>(
   return docs
 }
 
+/** Pages of label definitions a list index reads. */
+export const LABEL_PAGES = 10
+
+/**
+ * The label definitions (newest per name) from the composite's `first` page and, when it was full,
+ * the rest, at most {@link LABEL_PAGES} pages. Past that `complete` is false and the definitions are
+ * the first page's alone: a partial read is never presented as the repository's labels.
+ */
+export async function completeLabels(sdk: EvoSDK, query: DocumentQuery, first: readonly PlainDocument[]): Promise<{ labels: LabelDef[]; complete: boolean }> {
+  if (first.length < CHUNK) return { labels: newestLabels([...first]), complete: true }
+  try {
+    return { labels: newestLabels(await queryAllDocuments(sdk, query, { firstPage: first, maxPages: LABEL_PAGES })), complete: true }
+  } catch (e) {
+    if (!(e instanceof IncompleteReadError)) throw e
+    return { labels: newestLabels([...first]), complete: false }
+  }
+}
+
 /**
  * First load, ONE composite: the newest 100 rows with their comment counts, author names and
  * member events, and as siblings the label definitions and (`withFeed`, unless another reader
@@ -476,13 +499,7 @@ async function loadListIndex<Row extends RowExtras>(
   // The first chunk's states are read beside the rest of the labels, not after them.
   const codes = codesOf(sdk, repo, res.page)
   codes.catch(() => undefined)
-  let labelDocs = docsAt(res, EVENT_SUB + 1)
-  if (labelDocs.length >= CHUNK) {
-    labelDocs = await queryAllDocuments(sdk, labelQuery, { firstPage: labelDocs, maxPages: 10 }).catch((e: unknown) => {
-      if (e instanceof IncompleteReadError) return labelDocs
-      throw e
-    })
-  }
+  const labels = await completeLabels(sdk, labelQuery, docsAt(res, EVENT_SUB + 1))
   const index: ListIndex<Row> = {
     type,
     repo,
@@ -490,7 +507,8 @@ async function loadListIndex<Row extends RowExtras>(
     ...(feedSibling ? { feedFirst: docsAt(res, EVENT_SUB + 2) } : {}),
     ...(counts !== undefined ? { counts } : {}),
     epoch,
-    labels: newestLabels(labelDocs),
+    labels: labels.labels,
+    labelsComplete: labels.complete,
     rows: new Map(),
     sources: new Map(),
     unhydrated: new Set(),

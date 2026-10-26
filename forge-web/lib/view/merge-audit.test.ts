@@ -6,6 +6,14 @@ const readMemberships = vi.fn()
 vi.mock('../repo/members', async (orig) => ({ ...(await orig<typeof import('../repo/members')>()), readMemberships: (...a: unknown[]) => readMemberships(...a) }))
 vi.mock('../repo/settings', async (orig) => ({ ...(await orig<typeof import('../repo/settings')>()), readPolicyHistory: async () => [{ id: 'p1', createdAt: 1, policy: { requiredApprovals: 1, approverRole: 0, requireChecks: false, mergeMethods: 0 } }] }))
 
+const readMemberVerdictDocs = vi.fn()
+vi.mock('../repo/verdicts', async (orig) => ({ ...(await orig<typeof import('../repo/verdicts')>()), readMemberVerdictDocs: (...a: unknown[]) => readMemberVerdictDocs(...a) }))
+vi.mock('../repo/made-public', async (orig) => ({
+  ...(await orig<typeof import('../repo/made-public')>()),
+  contentGate: () => ({ admit: async (_type: string, doc: unknown) => ({ ok: true, doc, alerts: [] }) }),
+}))
+
+import { hexToBase64 } from '../sdk'
 import { auditMerge } from '../rules/merge-audit'
 import type { PullThread } from './issues-view'
 import { auditHeadline, auditRows, auditedMerge, mergeAuditInput, readMergeAudit } from './merge-audit'
@@ -101,6 +109,28 @@ describe('mergeAuditInput', () => {
     expect(readMemberships).toHaveBeenCalledTimes(1)
     expect(audit?.verdict).toBe('met')
     expect(audit?.mergerRole).toBe('maintainer')
+  })
+})
+
+// A PR padded with reviews: its page holds only the oldest and the member verdicts on its head.
+describe('rules at merge under a review flood', () => {
+  const verdictDoc = { $id: 'r7', $ownerId: 'maint2', $createdAt: 6_000_000, patchId: 'pr', verdict: 1, commitOid: hexToBase64(HEAD), vis: 'public', asMember: 'maint2' }
+
+  it('reads the member verdicts on the merged head when the page\'s review list was cut short', async () => {
+    readMemberVerdictDocs.mockReset()
+    readMemberVerdictDocs.mockResolvedValue([verdictDoc])
+    const t = { ...thread(), pull: { ...thread().pull, id: 'pr' }, reviews: [], reviewsIncomplete: true } as unknown as PullThread
+    const audit = await readMergeAudit({} as never, { visibility: 'public' } as never, t, async () => [], null)
+    expect(readMemberVerdictDocs).toHaveBeenCalledWith({}, { visibility: 'public' }, 'pr', HEAD)
+    expect(audit?.verdict).toBe('met')
+  })
+
+  it('reads nothing more when the list is complete', async () => {
+    readMemberVerdictDocs.mockReset()
+    const t = { ...thread(), reviews: [] } as unknown as PullThread
+    const audit = await readMergeAudit({} as never, { visibility: 'public' } as never, t, async () => [], null)
+    expect(readMemberVerdictDocs).not.toHaveBeenCalled()
+    expect(audit?.verdict).toBe('unmet')
   })
 })
 
