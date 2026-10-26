@@ -42,10 +42,11 @@ describe('deployments bundle', () => {
 })
 
 describe('resolveNetworks', () => {
-  it('defaults to testnet, which has no forge-v2 deployment', () => {
+  it('defaults to testnet, with the forge-v2 ids testnet.json records', () => {
     const { active, networks } = resolveNetworks({}, DEPLOYMENTS)
     expect(active).toBe('testnet')
-    if (DEPLOYMENTS['testnet'] === undefined) expect(networks.testnet.v2).toBeNull()
+    expect(networks.testnet.v2).toEqual(forgeV2Ids(DEPLOYMENTS['testnet']))
+    expect(networks.testnet.v2).not.toBeNull()
   })
 
   it('never borrows another network\'s ids', () => {
@@ -68,7 +69,7 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.84:1443')
   })
 
-  it('exposes the forge-v2 ids devnet-moutai.json records, and none for testnet', () => {
+  it('exposes the forge-v2 ids devnet-moutai.json records, and testnet its own', () => {
     const file = onDisk('devnet-moutai')
     const { networks } = resolveNetworks({ devnetName: 'moutai' }, DEPLOYMENTS)
     expect(networks.devnet.v2).toEqual({
@@ -77,7 +78,7 @@ describe('resolveNetworks', () => {
       community: file.v2.forgeCommunity?.contractId ?? file.v2.forgeCollab.contractId,
       group: file.v2.contractGroupId,
     })
-    expect(networks.testnet.v2).toBeNull()
+    expect(networks.testnet.v2).not.toEqual(networks.devnet.v2)
   })
 
   it('resolves devnet sakura: its 13 DAPI nodes and quorum service, with no contracts until its registration', () => {
