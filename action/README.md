@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge runs on devnet **sakura** (Forge's contracts are registered on Platform v5.0.0-beta.6), the network [forge.dashhq.org](https://forge.dashhq.org) runs on, and that is the Action's default network. It is not deployed on mainnet or testnet yet. Pin a release tag: at `@v0.1.0` the Action's `version` defaults to `0.1.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
+> **Status.** Forge runs on **testnet** (Forge's contracts are registered on Platform v5.0.0-rc.8), the network [forge.dashhq.org](https://forge.dashhq.org) runs on, and that is the Action's default network. It is not deployed on mainnet yet. Pin a release tag: at `@v0.1.0` the Action's `version` defaults to `0.1.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
 
 ## Quick start
 
@@ -35,8 +35,7 @@ jobs:
       - uses: PastaPastaPasta/dash-forge/action@v0.1.0
         with:
           repo: dash://<owner identity id>/project
-          network: devnet                # Forge's network today (the default)
-          devnet-name: sakura
+          network: testnet               # Forge's network today (the default)
           sync: code,releases
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com
@@ -75,8 +74,8 @@ This is opt-in, because it lets anyone spend your DASH. Anyone with a GitHub acc
 | Input | Default | |
 |---|---|---|
 | `repo` | *(required)* | Destination: `dash://<owner>/<name>`, `<owner>/<name>`, or a bare name (the signer's own). Created if missing when the signer is the owner. |
-| `network` | `devnet` | `mainnet`, `testnet` or `devnet`. The default is the network Forge is deployed on today; mainnet and testnet have no deployment yet. |
-| `devnet-name` | `sakura` | The devnet's name. Used only when `network` is `devnet`. |
+| `network` | `testnet` | `mainnet`, `testnet` or `devnet`. The default is the network Forge is deployed on today; mainnet has no deployment yet. |
+| `devnet-name` | empty | The devnet's name. Required when `network` is `devnet`, ignored otherwise. |
 | `sync` | `code,releases` | Comma list of `code`, `issues`, `prs`, `releases`, `labels`. |
 | `storage-kind` | `platform` | Where pack bytes go: `platform`, `s3` or `ipfs-pinning`. Refs, manifests, issues and PRs are always on Platform. |
 | `s3-endpoint`, `s3-region`, `s3-bucket`, `s3-public-url`, `s3-prefix` | | S3-compatible bucket (R2, B2, S3, MinIO). `s3-public-url` is the origin browsers read packs from. See [Bring your own storage](../docs/guides/bring-your-own-storage.md). |
@@ -187,4 +186,4 @@ A `partial` run adds a *Skipped (retried next run)* row and a warning. A failed 
 
 ## Development
 
-`bash action/test.sh` runs the offline tests (input validation, the defaults, the install choice and source build with stub tools, and summary rendering against `action/testdata/*.json`). `.github/workflows/mirror-action.yml` runs those tests together with actionlint and shellcheck on pull requests. On a weekly schedule, and on demand, it also runs a live mirror of `PastaPastaPasta/dash-faucet` into the reserved devnet fixture repository `mirror-ci-dash-faucet` ([e2e/README.md](../e2e/README.md)).
+`bash action/test.sh` runs the offline tests (input validation, the defaults, the install choice and source build with stub tools, and summary rendering against `action/testdata/*.json`). `.github/workflows/mirror-action.yml` runs those tests together with actionlint and shellcheck on pull requests. On a weekly schedule, and on demand, it also runs a live mirror of `PastaPastaPasta/dash-faucet` into the reserved fixture repository `mirror-ci-dash-faucet` ([e2e/README.md](../e2e/README.md)).
