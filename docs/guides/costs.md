@@ -246,14 +246,14 @@ Packs are git packfiles: delta-compressed and deflated, typically 20–35% of th
 
 ### Passkeys for other devices
 
-A passkey's entry is one small stored item, written with this browser's key (so it comes out of that key's budget, like any write). These are estimates from Yappr's measurements on a development network plus the extra bytes of Forge's fixed-size entry, not yet measured on testnet; the live test (`lib/auth/passkey-vault.live.test.ts`) prints what each step really cost.
+A passkey's entry is one small stored item, written with this browser's key (so it comes out of that key's budget, like any write). Measured on testnet with the live test (`lib/auth/passkey-vault.live.test.ts`), which prints what each step costs.
 
 | Action | About | Notes |
 |---|---|---|
 | First passkey on an identity | 0.0005 DASH | builds the identity's passkey list, so it costs more than the next ones |
 | Each later passkey | 0.0003 DASH | |
 | Update a passkey after a key change | 0.00003 DASH | a replace of its entry |
-| Remove a passkey | refunds about 0.0002–0.0003 DASH | deleting returns the deposit |
+| Remove a passkey | refunds about 0.0003–0.0004 DASH | deleting returns the deposit |
 | Sign in with a passkey | free | reads only |
 
 At most 10 passkeys per identity. An entry is always the same size, whatever keys it holds.

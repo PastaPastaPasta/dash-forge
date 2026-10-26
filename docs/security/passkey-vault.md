@@ -91,4 +91,4 @@ If forge-meta is ever re-registered with a new id (`--force-new`), every passkey
 - `forge-web/lib/auth/passkey-vault/*.test.ts` and `lib/auth/passkey-session.test.ts`: enrol, sign in, store locally, planted keys refused (not on the identity, disabled, expired, no budget, unbounded, foreign group, **extras without a budget or an expiry**), the "not-vault" and "other-vault" handles, the cap, re-seals that touch only this device's entries, removal that signals only this device's credentials, wiped buffers.
 - Component tests for the sign-in tile, the passkeys section, the one-time offer and the revoke and disable dialogs.
 - `forge-web/e2e/passkey-vault.spec.ts`: Chromium with a virtual authenticator (CDP `WebAuthn.addVirtualAuthenticator`, PRF) on `http://localhost`. The hermetic cases run anywhere; the full flow needs `E2E_WRITE=1` and a forge-meta with `vaultEntry`.
-- `forge-web/lib/auth/passkey-vault.live.test.ts` (`FORGE_LIVE=1`): a fake authenticator against sakura, printing each step's fee.
+- `forge-web/lib/auth/passkey-vault.live.test.ts` (`FORGE_LIVE=1`): a fake authenticator on testnet (or a devnet), printing each step's fee.

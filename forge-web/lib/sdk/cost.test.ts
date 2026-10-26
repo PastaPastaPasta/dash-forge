@@ -368,12 +368,12 @@ describe('testnet ECON-05 refund previews', () => {
   })
 })
 
-describe('a passkey entry (vaultEntry, not measured yet)', () => {
-  // Yappr's sakura figures (PLAN-passkey-vault.md §2): 28–31M later, 46–50M first, refunds 23–35M;
-  // Forge's longer ciphertext adds about 2–4M. Re-measured by the live test.
-  it('is priced above the estimates and refunds no more than their low end', () => {
-    expect(previewCreate('vaultEntry', {}, S).credits).toBeGreaterThanOrEqual(31_000_000 + 4_000_000)
-    expect(previewCreate('vaultEntry', {}, { ...S, author: true }).credits).toBeGreaterThanOrEqual(50_000_000 + 4_000_000)
-    expect(-previewDelete('vaultEntry').credits).toBeLessThanOrEqual(23_000_000)
+describe('a passkey entry (vaultEntry)', () => {
+  // Measured on testnet (2026-10-26, passkey-vault.live.test.ts): a later entry 33,110,400, an
+  // identity's first 51,513,300; the two deletes refunded 26,654,372 and 37,031,569.
+  it('is priced at or above what testnet charged and refunds no more than the lower refund', () => {
+    expect(previewCreate('vaultEntry', {}, S).credits).toBeGreaterThanOrEqual(33_110_400)
+    expect(previewCreate('vaultEntry', {}, { ...S, author: true }).credits).toBeGreaterThanOrEqual(51_513_300)
+    expect(-previewDelete('vaultEntry').credits).toBeLessThanOrEqual(26_654_372)
   })
 })
