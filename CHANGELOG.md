@@ -51,6 +51,7 @@ Members-only content in public repositories, Environments and the secret scan. P
 - **A partial clone's lazy blob fetch reads only the packs that hold the blobs** it needs, instead of downloading the whole repository again for each checkout, `git log -p` or blame.
 - **Issue and PR lists say when the repository's label definitions were not read completely**, instead of presenting the first page as all of them.
 - **A removed member's sealed author events on their own issues and PRs follow the late-content rule**, so they can no longer keep writing readable values under an old key.
+- **Trending loads in a fresh tab on testnet.** A new connection learns the network's protocol version before the first page query. Before, the SDK started at protocol 13 and refused Trending's time-range read with "requires protocol version 14+" until you clicked Try again.
 
 ## [0.1.0] - 2026-10-04
 
