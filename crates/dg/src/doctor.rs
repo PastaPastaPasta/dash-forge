@@ -1952,9 +1952,16 @@ mod tests {
 
     #[test]
     fn a_fresh_install_warns_instead_of_failing_on_testnet() {
-        // L-33: the quick start's first `dg doctor` (nothing configured) exited 1 with E104.
-        let testnet = NetworkSettings::default().resolve().unwrap();
-        let c = check_contracts(&testnet, true);
+        // L-33: the quick start's first `dg doctor` (nothing configured) exited 1 with E104, when the
+        // default network had no deployment. Testnet, the default, now has one; mainnet still has
+        // none, so it stands in for an undeployed default.
+        let mainnet = NetworkSettings {
+            network: Some("mainnet".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        let c = check_contracts(&mainnet, true);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
         assert!(
             c.fix
@@ -1965,8 +1972,11 @@ mod tests {
             "{:?}",
             c.fix
         );
-        // Chosen explicitly (`--network testnet`), it is still the failure it was.
-        assert_eq!(check_contracts(&testnet, false).status, Status::Fail);
+        // Chosen explicitly (`--network mainnet`), it is still the failure it was.
+        assert_eq!(check_contracts(&mainnet, false).status, Status::Fail);
+        // The default network, testnet, is deployed: nothing to warn about.
+        let testnet = NetworkSettings::default().resolve().unwrap();
+        assert_eq!(check_contracts(&testnet, false).status, Status::Ok);
     }
 
     #[test]

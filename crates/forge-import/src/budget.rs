@@ -1,6 +1,9 @@
 //! The spend cap, enforced before every write.
 //!
-//! `--max-spend` is a hard cap for one run. It is checked twice: up front against the whole
+//! `--max-spend` is a hard cap for one run; without it, the run is capped at the estimate it
+//! showed and the user confirmed ([`Budget::for_run`]), so no run spends past what was approved.
+//! The estimate is an upper bound (every write priced as its first), which is the headroom a run
+//! has over what it really costs. The cap is checked twice: up front against the whole
 //! estimate (refuse before any write), and again before **each** write against what this run
 //! has spent so far plus that write's own estimate. "Spent so far" is the larger of the sum of
 //! the estimates of the writes made and the identity's measured balance drop, so an
@@ -111,6 +114,8 @@ pub struct CapExceeded {
     pub next: u64,
     /// What the write was.
     pub what: String,
+    /// The cap is the confirmed estimate (no `--max-spend` was given).
+    pub confirmed: bool,
 }
 
 impl CapExceeded {
@@ -122,13 +127,24 @@ impl CapExceeded {
                 String::new()
             }
         };
+        let (cap, rerun) = if self.confirmed {
+            (
+                "the confirmed estimate",
+                "re-run to price what is left and confirm it, or pass --max-spend",
+            )
+        } else {
+            ("--max-spend", "re-run with a higher cap to continue")
+        };
         format!(
-            "--max-spend {:.6} DASH{} reached: spent {:.6} DASH{}, and {} would cost ~{:.6}{} more; \
-             stopped before writing it (re-run with a higher cap to continue; nothing is \
-             written twice)",
-            credits_to_dash(self.cap), note(self.cap),
-            credits_to_dash(self.spent), note(self.spent), self.what,
-            credits_to_dash(self.next), note(self.next)
+            "{cap} {:.6} DASH{} reached: spent {:.6} DASH{}, and {} would cost ~{:.6}{} more; \
+             stopped before writing it ({rerun}; nothing is written twice)",
+            credits_to_dash(self.cap),
+            note(self.cap),
+            credits_to_dash(self.spent),
+            note(self.spent),
+            self.what,
+            credits_to_dash(self.next),
+            note(self.next)
         )
     }
 }
@@ -193,6 +209,8 @@ impl std::error::Error for CapExceeded {}
 #[derive(Debug, Clone)]
 pub struct Budget {
     cap: Option<u64>,
+    /// `cap` is the estimate the user confirmed, not a `--max-spend` ([`Self::for_run`]).
+    confirmed: bool,
     estimated: u64,
     measured: u64,
     balance_start: Option<u64>,
@@ -210,12 +228,23 @@ impl Budget {
     pub fn new(cap: Option<u64>) -> Self {
         Self {
             cap,
+            confirmed: false,
             estimated: 0,
             measured: 0,
             balance_start: None,
             in_flight: 0,
             finished: 0,
             covered: 0,
+        }
+    }
+
+    /// The ledger of a run that showed `estimate` (credits) for confirmation: capped at
+    /// `max_spend` when given, else at that estimate. An uncapped run could spend past what the
+    /// user approved (an estimate that ran low, a source that grew between pricing and writing).
+    pub fn for_run(max_spend: Option<u64>, estimate: u64) -> Self {
+        Self {
+            confirmed: max_spend.is_none(),
+            ..Self::new(Some(max_spend.unwrap_or(estimate)))
         }
     }
 
@@ -276,6 +305,7 @@ impl Budget {
                     spent: 0,
                     next: estimate,
                     what: "this run".into(),
+                    confirmed: self.confirmed,
                 });
             }
         }
@@ -293,6 +323,7 @@ impl Budget {
                     spent,
                     next: credits,
                     what: what.into(),
+                    confirmed: self.confirmed,
                 });
             }
         }
@@ -371,6 +402,35 @@ mod tests {
         let cap = e.downcast_ref::<CapExceeded>().unwrap();
         assert_eq!((cap.spent, cap.next, cap.what.as_str()), (100, 1, "c"));
         assert_eq!(b.spent(), 100, "a refused write is not charged");
+    }
+
+    /// No `--max-spend`: the run is capped at the estimate the user confirmed, and a refusal
+    /// says so; `--max-spend` still overrides it.
+    #[test]
+    fn without_max_spend_the_confirmed_estimate_is_the_cap() {
+        let mut b = Budget::for_run(None, 100);
+        assert_eq!(b.remaining(), Some(100));
+        b.charge(90, "a").unwrap();
+        let e = b.charge(20, "the git push").unwrap_err();
+        let cap = e.downcast_ref::<CapExceeded>().unwrap();
+        assert!(cap.confirmed);
+        let text = e.to_string();
+        assert!(text.starts_with("the confirmed estimate "), "{text}");
+        assert!(text.contains("pass --max-spend"), "{text}");
+        // An estimate that ran low is caught by the measured drop too.
+        let mut b = Budget::for_run(None, 100);
+        b.start(1_000);
+        b.charge(50, "a").unwrap();
+        b.reconcile(880);
+        assert!(b.charge(1, "b").is_err());
+        // `--max-spend` overrides the estimate, either way.
+        let mut b = Budget::for_run(Some(500), 100);
+        b.charge(400, "a").unwrap();
+        let e = b.charge(200, "b").unwrap_err();
+        assert!(!e.downcast_ref::<CapExceeded>().unwrap().confirmed);
+        assert!(e.to_string().starts_with("--max-spend "), "{e}");
+        assert!(Budget::for_run(Some(50), 100).check_plan(100).is_err());
+        assert!(Budget::for_run(None, 100).check_plan(100).is_ok());
     }
 
     #[test]

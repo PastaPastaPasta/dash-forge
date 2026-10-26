@@ -21,7 +21,7 @@ export const DOCS = {
   mirrorPrivate: `${GUIDES}/mirror-a-github-repo.md#into-a-private-repository`,
   /** Which rules Dash Platform enforces and which the Forge apps apply (the EnforcedBy chip). */
   enforcement: `${GUIDES}/collaborating.md#who-enforces-what`,
-  /** What the move to a new devnet (bonsia to sakura) loses and keeps, and how to re-push (the devnet notice). */
+  /** What a move to another network (the last devnet to testnet) loses and keeps, and how to re-push (the devnet notice, /networks). */
   devnetMove: `${GUIDES}/devnet-move.md`,
   /** Which mixed-visibility features are beta, and the limits that apply to all of them (the Beta badge's link). */
   knownLimitations: `${GUIDES}/collaborating.md#known-limitations`,

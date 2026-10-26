@@ -13,6 +13,7 @@ import type { ForgeIds } from '../deployments'
 import { mockSdk, newSeen, type Doc, type Seen } from './drive-mock'
 import { invalidateRepoFeed, sharedRepoCounts } from './issues'
 import { queryIssues, type IssueSelection } from './issue-index'
+import { LABEL_PAGES } from './target-index'
 import type { RepoRef } from './contract'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
@@ -285,5 +286,29 @@ describe('issue index', () => {
     expect(page.openCount).toBe(11)
     expect(page.closedCount).toBe(1)
     expect(seen.composites).toHaveLength(1)
+  })
+})
+
+describe('label definitions', () => {
+  /** A repo whose `n` label definitions are each a distinct name. */
+  function labelled(n: number, repoId: string) {
+    const f = fresh(12, repoId)
+    f.store['CORE']!['label'] = Array.from({ length: n }, (_, i) => ({ $id: `l${i}`, $createdAt: i + 1, repoId, name: `label-${String(i).padStart(5, '0')}`, color: '#d73a4a' }))
+    return f
+  }
+
+  it('reads every definition past the first page', async () => {
+    const { sdk, repo } = labelled(150, 'BTJPjCLCnRaJQkqakpcdLYFsaHgFf5XSEBNxFCyYBteH')
+    const page = await queryIssues(sdk, repo, base, 12, 'devnet')
+    expect(page.labelsComplete).toBe(true)
+    expect(page.labels).toHaveLength(150)
+  })
+
+  it('says so when the definitions outgrow the read, rather than presenting the first page as all of them', async () => {
+    const { sdk, repo } = labelled(100 * LABEL_PAGES + 1, '9sGUjxras61DAe457iUfbJcKTfVT7qVj16PJ3xstqMKr')
+    const page = await queryIssues(sdk, repo, base, 12, 'devnet')
+    expect(page.labelsComplete).toBe(false)
+    expect(page.labels).toHaveLength(100)
+    expect(page.rows.length).toBeGreaterThan(0)
   })
 })

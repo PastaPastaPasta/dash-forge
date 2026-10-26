@@ -131,7 +131,7 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub network: Option<NetworkArg>,
 
-    /// Devnet name (e.g. `sakura`); implies `--network devnet`.
+    /// Devnet name (e.g. `my-devnet`); implies `--network devnet`.
     #[arg(long, global = true, value_name = "NAME")]
     pub devnet_name: Option<String>,
 
@@ -1815,6 +1815,11 @@ pub struct PrMergeArgs {
     /// tip when the head is already in it).
     #[arg(long = "merge-oid", requires = "event_only")]
     pub merge_oid: Option<String>,
+    /// With --override-policy, on a merged PR: record the policy bypass of its merge, when the
+    /// merge's own record of it did not land (E106). The rules not met now are recorded; nothing
+    /// else is written.
+    #[arg(long = "record-bypass", requires = "override_policy")]
+    pub record_bypass: bool,
 }
 
 /// `dg pr create` arguments.
@@ -3296,15 +3301,14 @@ mod tests {
         // --version also names the contract set per network; a retired devnet is left out.
         let long = Cli::command().render_long_version();
         assert!(long.starts_with(&v.trim_end().to_string()), "{long}");
-        let sakura = forge_core::network::deployment("devnet-sakura")
-            .unwrap()
-            .unwrap();
-        let group = sakura.v2.unwrap().group;
+        let testnet = forge_core::network::deployment("testnet").unwrap().unwrap();
+        let group = testnet.v2.unwrap().group;
         assert!(
-            long.contains(&format!("devnet-sakura   contract group {group}")),
+            long.contains(&format!("testnet         contract group {group}")),
             "{long}"
         );
         assert!(!long.contains("devnet-moutai"), "{long}");
+        assert!(!long.contains("devnet-sakura"), "{long}");
     }
 
     #[test]

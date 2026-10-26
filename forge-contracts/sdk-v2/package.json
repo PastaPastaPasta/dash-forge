@@ -6,6 +6,6 @@
   "description": "Pinned Platform SDK for scripts/deploy-v2.mjs and scripts/seed-v2-fixture.mjs (protocol 14).",
   "type": "module",
   "dependencies": {
-    "@dashevo/evo-sdk": "5.0.0-rc.4"
+    "@dashevo/evo-sdk": "5.0.0-rc.8"
   }
 }

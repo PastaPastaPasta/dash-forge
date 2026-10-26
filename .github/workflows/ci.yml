@@ -54,6 +54,22 @@ jobs:
           persist-credentials: false
       - run: tools/check-sdk-pins.sh
 
+  # Launch criterion L10: no user-facing "sakura" (the devnet Forge left for testnet) outside
+  # history and developer pages. The allowlist is in the script.
+  no-devnet-copy:
+    name: no devnet copy (L10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: shellcheck tools/audit/no-devnet-copy.sh
+      - run: tools/audit/no-devnet-copy.sh --self-test
+      - run: tools/audit/no-devnet-copy.sh
+
   web:
     name: web
     runs-on: ubuntu-latest

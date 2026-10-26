@@ -75,7 +75,10 @@ const PH = b58(randomBytes(32)); // a pack hash with no chunks
 const now = Date.now();
 
 const results = [];
-async function probe(label, kind, query, prop) {
+// A shape no client sends may be refused outright (Platform 5.0.0-rc.8 refuses a proved sum whose
+// where clause is not exactly a summable index's properties, where rc.4 proved 0): `refusal` is the
+// refusal that is acceptable for it. A proof of 0 still passes; any other error fails.
+async function probe(label, kind, query, prop, { refusal } = {}) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const fn = { count: 'countWithProof', sum: 'sumWithProof', average: 'averageWithProof' }[kind];
@@ -93,8 +96,9 @@ async function probe(label, kind, query, prop) {
         sdk = await connect();
         continue;
       }
-      results.push({ label, kind, pass: false, got: `error: ${msg.slice(0, 400)}` });
-      console.error(`FAIL ${label}: ${msg.slice(0, 300)}`);
+      const refused = refusal !== undefined && refusal.test(msg);
+      results.push({ label, kind, pass: refused, ...(refused ? { refused: true } : {}), got: `error: ${msg.slice(0, 400)}` });
+      console.error(`${refused ? 'PASS (refused; no client sends this shape)' : 'FAIL'} ${label}: ${msg.slice(0, 300)}`);
       return;
     }
   }
@@ -135,13 +139,18 @@ await probe('PR-list dots: headOid in [...] outcome >= 0 groupBy [headOid, outco
 await probe('check outcomes per head, one outcome ==', 'count', q('checkRun', [['repoId', '==', R], ['headOid', '==', H], ['outcome', '==', 1]]));
 
 // ---- forge-core: releases, packs, topics, repos ----
-await probe('release count (F4), ungrouped range sum over perTag, repoId ==', 'sum', q('release', [['repoId', '==', R]]), 'delta');
-await probe('release count (F4), carrier repoId in [R] groupBy repoId', 'sum', q('release', [['repoId', 'in', [R]]], { groupBy: ['repoId'] }), 'delta');
+// perTag is (repoId, tagName): repoId alone is not a summable index's properties, so these two are
+// refused on rc.8; releases.ts sends the tagName > "" carrier below instead
+const NOT_SUMMABLE = /prove sum requires a `summable/;
+await probe('release count (F4), ungrouped range sum over perTag, repoId ==', 'sum', q('release', [['repoId', '==', R]]), 'delta', { refusal: NOT_SUMMABLE });
+await probe('release count (F4), carrier repoId in [R] groupBy repoId', 'sum', q('release', [['repoId', 'in', [R]]], { groupBy: ['repoId'] }), 'delta', { refusal: NOT_SUMMABLE });
 await probe('release count (F4), ungrouped range repoId == tagName > ""', 'sum', q('release', [['repoId', '==', R], ['tagName', '>', '']]), 'delta');
 await probe('release count (F4), carrier repoId in [R] tagName > "" groupBy repoId', 'sum', q('release', [['repoId', 'in', [R]], ['tagName', '>', '']], { groupBy: ['repoId'] }), 'delta');
 await probe('release count (F4), per tag: repoId == tagName > "" groupBy tagName', 'sum', q('release', [['repoId', '==', R], ['tagName', '>', '']], { groupBy: ['tagName'] }), 'delta');
 await probe('one tag live? point sum repoId == tagName ==', 'sum', q('release', [['repoId', '==', R], ['tagName', '==', 'v1.0.0']]), 'delta');
+await probe('one tag live? (writes.ts readTagLive) repoId == tagName in [t] groupBy tagName', 'sum', q('release', [['repoId', '==', R], ['tagName', 'in', ['v1.0.0']]], { orderBy: [['tagName', 'asc']], groupBy: ['tagName'] }), 'delta');
 await probe('pack bytes (bytes summable), storage == 0, kind in [...] groupBy kind', 'sum', q('packManifest', [['repoId', '==', R], ['storage', '==', 0], ['kind', 'in', [0, 1, 2, 3, 4, 5]]], { groupBy: ['kind'] }), 'sizeBytes');
+await probe('git pack bytes (packs.ts readGitPackBytes) storage in [0, 1] kind == 0 groupBy storage', 'sum', q('packManifest', [['repoId', '==', R], ['storage', 'in', [0, 1]], ['kind', '==', 0]], { orderBy: [['storage', 'asc']], groupBy: ['storage'] }), 'sizeBytes');
 await probe('pack bytes, one kind: repoId == storage == kind ==', 'sum', q('packManifest', [['repoId', '==', R], ['storage', '==', 0], ['kind', '==', 0]]), 'sizeBytes');
 await probe('pack count (created rangeCountable), repoId ==', 'count', q('packManifest', [['repoId', '==', R]]));
 await probe('chunk count and seq sum of a pack (perPack averageable)', 'average', q('chunk', [['repoId', '==', R], ['$ownerId', '==', A], ['packHash', '==', PH]]), 'seq');

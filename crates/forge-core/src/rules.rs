@@ -285,6 +285,13 @@ pub fn tip_of(state: &RefState) -> Option<String> {
 /// force supersedes everything older than it. A push that only fast-forwards *one* side
 /// of a race leaves the other side live, so the ref stays diverged — which is the
 /// correct, if easily overlooked, reading of §2.3.
+///
+/// **Readers fold with identity ancestry** (`|a, b| a == b`): most hold no commits (the relay,
+/// a gateway, `dg` outside a clone), and one that holds them must not read a ref differently
+/// from one that does not. So in practice a merge supersedes a racing head only through
+/// `prevOid`, and one update records one. A pusher whose merge contains every live head writes
+/// one update per head, each naming it ([`settling_prev_oids`]); the fold then settles the race
+/// for every reader alike.
 pub fn resolve_ref(
     updates: &[RefUpdate],
     config_history: &[ConfigDoc],
@@ -351,6 +358,30 @@ pub fn live_heads(
         });
     }
     heads
+}
+
+/// The `prevOid`s a non-forced move of a ref to `new_oid` records, one update each, so that
+/// every reader's fold leaves `new_oid` the ref's only head: each of its live `heads` (newest
+/// first, as [`live_heads`] lists them) but `new_oid` itself. A resolved ref has one head, a
+/// diverged one several; a merge of a race names every head it merged, since readers fold with
+/// identity ancestry ([`resolve_ref`]) and one update names one `prevOid`.
+///
+/// `is_ancestor` is the pusher's commit graph. A head `new_oid` does not contain is never
+/// named, since that would drop its commits from the branch for every reader: `Err` returns
+/// the first such head, which the pusher must merge first (or force).
+pub fn settling_prev_oids<'a>(
+    heads: &'a [Oid],
+    new_oid: &str,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> Result<Vec<&'a str>, &'a str> {
+    let mut prevs = Vec::with_capacity(heads.len());
+    for head in heads.iter().filter(|h| *h != new_oid) {
+        if !is_ancestor(head, new_oid) {
+            return Err(head);
+        }
+        prevs.push(head.as_str());
+    }
+    Ok(prevs)
 }
 
 /// Every tip `ref_name_hash` has validly pointed at (non-null `newOid` of a valid update), and
@@ -1357,10 +1388,10 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 mod tests {
     use super::{
         aud, bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name, embargo,
-        is_legal_ref_name, long_body, matches_protected, merge_base_tips,
-        missing_default_protection, overlay_tree, pr_base_tips, resolve_ref, routes_protected, v2,
-        Ancestry, ConfigDoc, Event, EventKind, FlatIndex, IssueState, MergeBaseTips, PrState,
-        RefState, RefUpdate, TreeDiff, Verdict,
+        is_legal_ref_name, live_heads, long_body, matches_protected, merge_base_tips,
+        missing_default_protection, overlay_tree, pr_base_tips, resolve_ref, routes_protected,
+        settling_prev_oids, v2, Ancestry, ConfigDoc, Event, EventKind, FlatIndex, IssueState,
+        MergeBaseTips, Oid, PrState, RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -4100,6 +4131,166 @@ mod tests {
             }
         }
         assert!(checked > 80_000);
+    }
+
+    /// One update of `refs/heads/main` (hash `H`) for the merge-settles-race tests.
+    fn main_update(id: &str, prev: &str, new: &str, author: &str, at: u64) -> RefUpdate {
+        RefUpdate {
+            id: id.into(),
+            ref_name_hash: "H".into(),
+            ref_name: "refs/heads/main".into(),
+            prev_oid: prev.into(),
+            new_oid: new.into(),
+            force: false,
+            protected: false,
+            author: author.into(),
+            created_at: at,
+        }
+    }
+
+    /// The race readers saw stuck (heads B and A off P0): carol fetches, merges both into M and
+    /// pushes normally. Readers fold with identity ancestry, so one update naming B leaves A
+    /// live; the second update naming A settles it, in either order and in one block or two.
+    #[test]
+    fn a_merge_naming_every_head_settles_the_race() {
+        let same = |a: &str, b: &str| a == b;
+        let race = vec![
+            main_update("u0", "0", "P0", "alice", 50),
+            main_update("u1", "P0", "A", "alice", 100),
+            main_update("u2", "P0", "B", "bob", 200),
+        ];
+        let heads: Vec<Oid> = live_heads(&race, &[], "H", same)
+            .into_iter()
+            .map(|h| h.oid)
+            .collect();
+        assert_eq!(heads, ["B", "A"]);
+        let prevs = settling_prev_oids(&heads, "M", |_, _| true).expect("M merges both");
+        assert_eq!(prevs, ["B", "A"]);
+
+        let mut one_side = race.clone();
+        one_side.push(main_update("u3", "B", "M", "carol", 300));
+        match resolve_ref(&one_side, &[], "H", same) {
+            RefState::Diverged { heads } => {
+                let tips: Vec<&str> = heads.iter().map(|h| h.oid.as_str()).collect();
+                assert_eq!(tips, ["M", "A"], "A is never dropped without being named");
+            }
+            other => panic!("one prevOid settles one head only: {other:?}"),
+        }
+
+        for (b_at, a_at, b_id, a_id) in [
+            (300, 301, "u3", "u4"),
+            (301, 300, "u3", "u4"),
+            (300, 300, "u3", "u4"),
+            (300, 300, "u4", "u3"),
+        ] {
+            let mut merged = race.clone();
+            merged.push(main_update(b_id, "B", "M", "carol", b_at));
+            merged.push(main_update(a_id, "A", "M", "carol", a_at));
+            assert_eq!(
+                resolve_ref(&merged, &[], "H", same),
+                RefState::Resolved {
+                    oid: "M".into(),
+                    author: "carol".into(),
+                    created_at: b_at.max(a_at),
+                },
+                "{b_at} {a_at} {b_id} {a_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn settling_prev_oids_refuses_a_head_the_tip_does_not_contain() {
+        let heads: Vec<Oid> = vec!["C".into(), "M".into(), "A".into()];
+        let graph = |a: &str, d: &str| matches!((a, d), ("C" | "A", "M"));
+        // `M` itself is already a head: nothing to name for it.
+        assert_eq!(settling_prev_oids(&heads, "M", graph), Ok(vec!["C", "A"]));
+        // A tip on one side only: the other head would be lost.
+        let only_c = |a: &str, d: &str| a == "C" && d == "N";
+        assert_eq!(settling_prev_oids(&heads, "N", only_c), Err("M"));
+        // A resolved ref: its one tip, the ordinary fast-forward's `prevOid`.
+        assert_eq!(
+            settling_prev_oids(&["C".into()], "N", only_c),
+            Ok(vec!["C"])
+        );
+        assert_eq!(settling_prev_oids(&[], "N", only_c), Ok(vec![]));
+    }
+
+    /// The merge-settles-race property, over every short history of the D-600 property's
+    /// shapes: whatever live heads the identity fold leaves, a tip containing all of them,
+    /// written as one update per [`settling_prev_oids`] entry (in one block, any id order, or
+    /// spread over two), resolves to that tip for every reader. Dropping any one of those
+    /// updates leaves its head live: a head is never superseded without being named.
+    #[test]
+    fn merging_every_live_head_resolves_and_never_drops_an_unnamed_one() {
+        const OIDS: [&str; 4] = ["A", "B", "C", "0"];
+        let same = |a: &str, b: &str| a == b;
+        let mk = |i: usize, code: usize| -> RefUpdate {
+            let mut u = main_update(
+                &format!("u{i}"),
+                OIDS[(code / 4) % 4],
+                OIDS[code % 4],
+                "a",
+                100 * (i as u64 / 2 + 1) + 100 * ((code / 32) as u64 % 2),
+            );
+            u.force = (code / 16) % 2 == 1;
+            u
+        };
+        let mut diverged = 0u32;
+        for a in 0..64 {
+            for b in 0..64 {
+                for c in (0..64).step_by(3) {
+                    let history = vec![mk(0, a), mk(1, b), mk(2, c)];
+                    let heads: Vec<Oid> = live_heads(&history, &[], "H", same)
+                        .into_iter()
+                        .map(|h| h.oid)
+                        .collect();
+                    let prevs = settling_prev_oids(&heads, "M", |_, _| true).expect("M has all");
+                    for layout in 0..3u64 {
+                        let settle: Vec<RefUpdate> = prevs
+                            .iter()
+                            .enumerate()
+                            .map(|(k, prev)| {
+                                // 0: one block, ids ascending; 1: one block, ids descending;
+                                // 2: one block per update.
+                                let id = match layout {
+                                    1 => format!("s{}", 9 - k),
+                                    _ => format!("s{k}"),
+                                };
+                                let at = 1_000 + if layout == 2 { k as u64 } else { 0 };
+                                main_update(&id, prev, "M", "m", at)
+                            })
+                            .collect();
+                        let all: Vec<RefUpdate> = history.iter().chain(&settle).cloned().collect();
+                        if heads.is_empty() {
+                            continue; // unborn: a push creates it, naming nothing
+                        }
+                        let got = resolve_ref(&all, &[], "H", same);
+                        assert!(
+                            matches!(&got, RefState::Resolved { oid, .. } if oid == "M"),
+                            "{history:?} {settle:?}: {got:?}"
+                        );
+                        if prevs.len() < 2 {
+                            continue;
+                        }
+                        diverged += 1;
+                        for (skip, named) in prevs.iter().enumerate() {
+                            let partial: Vec<RefUpdate> = history
+                                .iter()
+                                .chain(settle.iter().take(skip))
+                                .chain(settle.iter().skip(skip + 1))
+                                .cloned()
+                                .collect();
+                            let left = live_heads(&partial, &[], "H", same);
+                            assert!(
+                                left.iter().any(|h| h.oid == *named),
+                                "{partial:?}: {named} was dropped unnamed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(diverged > 1_000, "{diverged}");
     }
 
     /// The causal order's invariant, exhaustively over one-block histories of five updates on

@@ -8,7 +8,7 @@
 # from that tag. Between releases master still pins the latest release, so a workflow on
 # master's scripts that needs master's binaries sets `install: 'source'`.
 #
-# The network defaults to the devnet the hosted site (forge.dashhq.org) targets: Forge's
+# The network defaults to testnet, which the hosted site (forge.dashhq.org) targets: Forge's
 # contracts are registered there, and not on mainnet yet (forge-contracts/deployments/).
 name: Dash Forge mirror
 description: Mirror a GitHub repository into Dash Forge (Dash Platform), idempotently and under a per-run cost cap.
@@ -22,11 +22,11 @@ inputs:
     description: "Destination Forge repository: dash://<owner>/<name>, <owner>/<name>, or a bare name (the signer's own; created if missing)."
     required: true
   network:
-    description: "mainnet, testnet or devnet. The default is the devnet the hosted site targets; Forge is not deployed on mainnet yet."
-    default: devnet
+    description: "mainnet, testnet or devnet. The default is testnet, which the hosted site targets; Forge is not deployed on mainnet yet."
+    default: testnet
   devnet-name:
-    description: "Devnet name, used only when network is devnet."
-    default: sakura
+    description: "Devnet name, required when network is devnet and ignored otherwise."
+    default: ""
   sync:
     description: "Comma list of code,issues,prs,releases,labels."
     default: code,releases
@@ -68,6 +68,9 @@ inputs:
     default: "false"
   fail-on-partial:
     description: "true: fail the step when some items were skipped (status partial). Default: a warning, since the next run retries them."
+    default: "false"
+  allow-unlimited-key:
+    description: "true: accept an identity file as DASH_FORGE_KEY. Its keys have no spending budget, so runs (which anyone who can open an issue or PR may trigger) can spend up to cost-cap each until the balance is gone. Default false: only a dfk1: runner key, whose budget Platform enforces."
     default: "false"
   github-repo:
     description: "GitHub repository to mirror (owner/repo)."
@@ -129,6 +132,7 @@ runs:
         INPUT_STATE_CACHE: ${{ inputs.state-cache }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
         INPUT_I_HAVE_THE_RIGHTS: ${{ inputs.i-have-the-rights }}
+        INPUT_ALLOW_UNLIMITED_KEY: ${{ inputs.allow-unlimited-key }}
       run: bash "$GITHUB_ACTION_PATH/validate.sh"
 
     # A fresh directory per invocation: two mirrors in one job, or a failed earlier
@@ -244,6 +248,7 @@ runs:
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
         INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
         INPUT_I_HAVE_THE_RIGHTS: ${{ inputs.i-have-the-rights }}
+        INPUT_ALLOW_UNLIMITED_KEY: ${{ inputs.allow-unlimited-key }}
         FORGE_BIN_DIR: ${{ inputs.install != 'false' && steps.paths.outputs.bin || '' }}
         FORGE_SUMMARY: ${{ steps.paths.outputs.summary }}
         FORGE_STATE: ${{ steps.paths.outputs.state }}

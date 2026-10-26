@@ -1,0 +1,75 @@
+{
+  "probes": {
+    "A": "Es9gzyGLpbbDZALfE9kMTNnav8zrDvRW9GmQKDJFtQex",
+    "B": "8TsDMkft4DfBBo1mm7RVaJX4FqePuYXtCGMxQ8oLa5de"
+  },
+  "fees": {
+    "chunk": {
+      "with": 471670250,
+      "without": 471369780,
+      "addedPercent": 0.06,
+      "pairedMedianCredits": 305300,
+      "pairedMedianPercent": 0.06,
+      "samples": {
+        "A": [
+          463479540,
+          470150060,
+          476523640,
+          476527760
+        ],
+        "B": [
+          463187140,
+          469851220,
+          476218340,
+          476222420
+        ]
+      }
+    },
+    "star": {
+      "with": 47396735,
+      "without": 47005235,
+      "addedPercent": 0.83,
+      "pairedMedianCredits": 167040,
+      "pairedMedianPercent": 0.36,
+      "samples": {
+        "A": [
+          53926180,
+          44316540,
+          45659660,
+          45684560
+        ],
+        "B": [
+          52854820,
+          44155960,
+          45492640,
+          45517520
+        ]
+      }
+    },
+    "checkRun": {
+      "with": 112614545,
+      "without": 90812945,
+      "addedPercent": 24.01,
+      "pairedMedianCredits": 21801600,
+      "pairedMedianPercent": 24.01,
+      "samples": {
+        "A": [
+          112340480,
+          112573280,
+          112738200,
+          112806220
+        ],
+        "B": [
+          90538880,
+          90771680,
+          90936600,
+          91004620
+        ]
+      }
+    }
+  },
+  "gates": {
+    "D-3 chunk documentsCountable <= +5 %": true,
+    "COMM-9 star byOwner countable <= +5 %": true
+  }
+}

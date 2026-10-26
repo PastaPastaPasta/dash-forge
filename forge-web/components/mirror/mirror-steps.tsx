@@ -745,7 +745,7 @@ export function WorkflowStep({
           <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={collab} onChange={(e) => setCollab(e.target.checked)} />
           <span>
             Mirror issues and pull requests too
-            <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Anyone who opens one makes a run spend, up to the cap. Leave this off for a busy repo. Code and releases still sync.</span>
+            <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">The daily run copies them. Anyone who opens one makes that run spend, up to the cap. Leave this off for a busy repo. Code and releases still sync.</span>
           </span>
         </label>
         {yaml.error ? <Hint tone="danger">{yaml.error}</Hint> : null}

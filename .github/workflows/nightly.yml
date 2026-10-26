@@ -1,13 +1,15 @@
-name: Devnet Nightly
+name: Testnet Nightly
 
-# Nightly certification against LIVE devnet sakura, where forge-v2 (Platform protocol 14) is
-# deployed. Testnet and mainnet still run protocol 13 and have no forge-v2 deployment;
-# testnet runs resume here once protocol 14 reaches testnet and forge-v2 is deployed there.
+# Nightly certification against LIVE testnet, where forge-v2 (Platform protocol 14) is registered
+# (2026-10-26, forge-contracts/deployments/testnet.json). Testnet is a production network:
+# everything the suites write there is permanent, so the write runs are opted in explicitly
+# (E2E_LIVE_TARGET=1, --production testnet) and sign only with the fresh fixture identities below,
+# never the July-era pool or the deployer (e2e/cli/config.sh).
 #
 # The suites this drives:
-#   * forge-web/e2e/          — Playwright on a sakura build: v2 read paths, fallback browse,
+#   * forge-web/e2e/          — Playwright on a testnet build: v2 read paths, fallback browse,
 #                               zero-backend, a11y, against the forge-v2 read fixture
-#   * e2e/cli/run.sh          — the CLI scenarios on sakura (e2e/README.md lists them):
+#   * e2e/cli/run.sh          — the CLI scenarios on testnet (e2e/README.md lists them):
 #                               clone/push round-trip, non-ff, ref delete, revoked-writer push,
 #                               non-member push, third-party verify, depth+filter, issue
 #                               lifecycle, PR from a fork with a real merge, release asset,
@@ -16,25 +18,35 @@ name: Devnet Nightly
 #                               runner for the scenarios that store packs locally (11, 13, 20).
 #
 # They split by what they need:
-#   * The READ-ONLY browser specs need only a network path to sakura DAPI and the read
+#   * The READ-ONLY browser specs need only a network path to testnet DAPI and the read
 #     fixture (`forge-v2-demo`, seeded by forge-contracts/scripts/seed-v2-fixture.mjs;
 #     e2e/README.md reserves it), so they run unconditionally and their failure fails this
-#     workflow. The seed job runs first when the fixture secrets exist; it is idempotent (an
-#     existing fixture is left alone).
-#   * The CLI suite needs FUNDED fixture identities, which cannot live in a fork's PR
-#     context. A separate `fixtures` probe job decides whether it runs, so when the secrets
-#     are absent the suite job's conclusion is literally `skipped` rather than a green job
-#     with everything gated out — a distinction any badge or alert rule can see.
-#   * The browser WRITE specs (v2-writes, v2-auth) spend real devnet funds and v2-auth needs
-#     the devnet faucet key; they run by hand (`E2E_WRITE=1`, see forge-web/e2e/).
+#     workflow. A spec that reads the fixture skips until forge-contracts/deployments/
+#     fixtures/testnet.json is committed: the seed job uploads that file as an artifact
+#     (`read-fixture-testnet`) for a maintainer to commit. The seed job runs first when the
+#     fixture secrets exist; it is idempotent (an existing fixture is left alone).
+#   * The CLI suite needs FUNDED fixture identities and a funding key for the scenarios that
+#     mint, which cannot live in a fork's PR context. A separate `fixtures` probe job decides
+#     whether it runs, so when the secrets are absent the suite job's conclusion is literally
+#     `skipped` rather than a green job with everything gated out — a distinction any badge or
+#     alert rule can see.
+#   * The browser WRITE specs (v2-writes, v2-auth) run by hand (`E2E_WRITE=1` with
+#     `E2E_LIVE_TARGET=1`, see forge-web/e2e/).
+#   * verify-app checks the hosted site on its own: nothing waits for it, so its failure never
+#     skips the other jobs. It fails while Cloudflare injects its Web Analytics beacon into the
+#     HTML (an operator setting, docs/hosting.md §6), not on a code change.
 #
-# Fixture identity secrets (e2e/cli/config.sh names the roles):
-#   FORGE_SAKURA_IDENTITY_OWNER      - owns the e2e-cli repo and the read fixture's demo repo
-#   FORGE_SAKURA_IDENTITY_MAINTAINER - maintainer of the demo repo, owner of forge-v2-empty
-#   FORGE_SAKURA_IDENTITY_COLLAB     - added as a writer, then removed (scenario 04)
-#   FORGE_SAKURA_IDENTITY_CONTRIB    - never a member (scenario 05)
-# Each holds the bridge-format identity JSON that `dg` reads from
-# ~/.config/dash-forge/test-identities/devnet-sakura/<ROLE>.identity.json.
+# Fixture secrets (e2e/cli/config.sh names the roles):
+#   FORGE_TESTNET_IDENTITY_OWNER      - owns the e2e-cli repo and the read fixture's demo repo
+#   FORGE_TESTNET_IDENTITY_MAINTAINER - maintainer of the demo repo, owner of forge-v2-empty
+#   FORGE_TESTNET_IDENTITY_COLLAB     - added as a writer, then removed (scenario 04)
+#   FORGE_TESTNET_IDENTITY_CONTRIB    - never a member (scenario 05)
+#   FORGE_TESTNET_MINT_FUNDING_WIF    - a testnet wallet key (WIF) the minting scenarios spend
+#                                       from (19, 24, 25, 26, 33, 36); on testnet they FAIL
+#                                       without it, so the CLI suite needs it too
+# Each identity secret holds the bridge-format identity JSON that `dg` reads from
+# ~/.config/dash-forge/test-identities/testnet-scratch/<ROLE>.identity.json. They must be fresh
+# identities, never the July-era testnet pool (config.sh refuses those ids).
 
 on:
   workflow_dispatch:
@@ -42,12 +54,12 @@ on:
     - cron: "0 6 * * *"
 
 concurrency:
-  group: devnet-nightly
+  group: testnet-nightly
   cancel-in-progress: false
 
 jobs:
   web-read-paths:
-    name: playwright (read-only, live devnet sakura)
+    name: playwright (read-only, live testnet)
     # Reads the read fixture (e2e/README.md), so it waits for the seed job — but still runs
     # when that job is skipped (no secrets: the fixture is read as it stands) or failed (the
     # specs then say what is wrong with it).
@@ -59,7 +71,7 @@ jobs:
       run:
         working-directory: forge-web
     env:
-      E2E_DEVNET: sakura
+      E2E_NETWORK: testnet
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
@@ -72,10 +84,9 @@ jobs:
           cache-dependency-path: forge-web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - name: Build for devnet sakura
+      - name: Build for testnet
         env:
-          NEXT_PUBLIC_NETWORK: devnet
-          NEXT_PUBLIC_DEVNET_NAME: sakura
+          NEXT_PUBLIC_NETWORK: testnet
           NEXT_PUBLIC_FIAT_RATE_URL: /__e2e/fiat-rates.json
         run: pnpm build
       # E2E_SKIP_BUILD reuses the `out/` just built — the Playwright webServer would
@@ -106,21 +117,22 @@ jobs:
       - name: Probe
         id: probe
         env:
-          FORGE_SAKURA_IDENTITY_OWNER: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
-          FORGE_SAKURA_IDENTITY_MAINTAINER: ${{ secrets.FORGE_SAKURA_IDENTITY_MAINTAINER }}
-          FORGE_SAKURA_IDENTITY_COLLAB: ${{ secrets.FORGE_SAKURA_IDENTITY_COLLAB }}
-          FORGE_SAKURA_IDENTITY_CONTRIB: ${{ secrets.FORGE_SAKURA_IDENTITY_CONTRIB }}
+          FORGE_TESTNET_IDENTITY_OWNER: ${{ secrets.FORGE_TESTNET_IDENTITY_OWNER }}
+          FORGE_TESTNET_IDENTITY_MAINTAINER: ${{ secrets.FORGE_TESTNET_IDENTITY_MAINTAINER }}
+          FORGE_TESTNET_IDENTITY_COLLAB: ${{ secrets.FORGE_TESTNET_IDENTITY_COLLAB }}
+          FORGE_TESTNET_IDENTITY_CONTRIB: ${{ secrets.FORGE_TESTNET_IDENTITY_CONTRIB }}
+          FORGE_TESTNET_MINT_FUNDING_WIF: ${{ secrets.FORGE_TESTNET_MINT_FUNDING_WIF }}
         run: |
-          if [ -n "$FORGE_SAKURA_IDENTITY_OWNER" ] && [ -n "$FORGE_SAKURA_IDENTITY_MAINTAINER" ] \
-             && [ -n "$FORGE_SAKURA_IDENTITY_COLLAB" ] && [ -n "$FORGE_SAKURA_IDENTITY_CONTRIB" ]; then
+          if [ -n "$FORGE_TESTNET_IDENTITY_OWNER" ] && [ -n "$FORGE_TESTNET_IDENTITY_MAINTAINER" ] \
+             && [ -n "$FORGE_TESTNET_IDENTITY_COLLAB" ] && [ -n "$FORGE_TESTNET_IDENTITY_CONTRIB" ]; then
             echo "seeder=true" >> "$GITHUB_OUTPUT"
           else
             echo "seeder=false" >> "$GITHUB_OUTPUT"
           fi
           missing=()
           # Report the SECRET names an operator has to create, not internal aliases.
-          for name in FORGE_SAKURA_IDENTITY_OWNER FORGE_SAKURA_IDENTITY_COLLAB \
-                      FORGE_SAKURA_IDENTITY_CONTRIB; do
+          for name in FORGE_TESTNET_IDENTITY_OWNER FORGE_TESTNET_IDENTITY_COLLAB \
+                      FORGE_TESTNET_IDENTITY_CONTRIB FORGE_TESTNET_MINT_FUNDING_WIF; do
             [ -z "${!name}" ] && missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
@@ -130,8 +142,9 @@ jobs:
               echo
               echo "Missing repository secrets: \`${missing[*]}\`."
               echo
-              echo "These identities must exist and be funded on devnet sakura for the CLI"
-              echo "suite to run. The suite job below reports SKIPPED — it is **not** a passing"
+              echo "These identities must exist and be funded on testnet, with a funded testnet"
+              echo "wallet key for the minting scenarios, for the CLI suite to run. The suite"
+              echo "job below reports SKIPPED — it is **not** a passing"
               echo "run. See \`e2e/cli/config.sh\` for the role pool and"
               echo "\`docs/testing/e2e-test-plan.md\` for provisioning."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -161,24 +174,36 @@ jobs:
       # The keys live only in this step's environment, not the job's.
       - name: Materialize the fixture identities
         env:
-          ID_OWNER_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
-          ID_MAINTAINER_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_MAINTAINER }}
-          ID_COLLAB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_COLLAB }}
-          ID_CONTRIB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_CONTRIB }}
+          ID_OWNER_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_OWNER }}
+          ID_MAINTAINER_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_MAINTAINER }}
+          ID_COLLAB_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_COLLAB }}
+          ID_CONTRIB_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_CONTRIB }}
         run: |
-          dir="${HOME}/.config/dash-forge/test-identities/devnet-sakura"
+          dir="${HOME}/.config/dash-forge/test-identities/testnet-scratch"
           mkdir -p "$dir" && chmod 700 "$dir"
           printf '%s' "$ID_OWNER_JSON"      > "$dir/OWNER.identity.json"
           printf '%s' "$ID_MAINTAINER_JSON" > "$dir/MAINTAINER.identity.json"
           printf '%s' "$ID_COLLAB_JSON"     > "$dir/COLLAB.identity.json"
           printf '%s' "$ID_CONTRIB_JSON"    > "$dir/CONTRIB.identity.json"
           chmod 600 "$dir"/*.identity.json
+      # --production testnet: the read fixture is the one sanctioned write to the live
+      # registration from this job (CONT-V-01, QA-14).
       - name: Seed
         timeout-minutes: 15
-        run: node forge-contracts/scripts/seed-v2-fixture.mjs --network devnet --devnet-name sakura
+        run: |
+          node forge-contracts/scripts/seed-v2-fixture.mjs --network testnet --production testnet \
+            --identities "${HOME}/.config/dash-forge/test-identities/testnet-scratch" \
+            --summary "${RUNNER_TEMP}/fixtures/testnet.json"
+      # Written only when this run seeded; commit it as forge-contracts/deployments/fixtures/testnet.json.
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: read-fixture-testnet
+          path: ${{ runner.temp }}/fixtures/testnet.json
+          retention-days: 30
+          if-no-files-found: ignore
 
   cli-suite:
-    name: cli e2e (live devnet sakura)
+    name: cli e2e (live testnet)
     # After the seed job: both sign as OWNER, and two signers on one identity at once
     # collide on its contract nonce.
     needs: [fixtures, seed-read-fixture]
@@ -189,9 +214,13 @@ jobs:
     timeout-minutes: 95
     env:
       DASH_FORGE_FIAT: "off"
-      ID_OWNER_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
-      ID_COLLAB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_COLLAB }}
-      ID_CONTRIB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_CONTRIB }}
+      # e2e/cli/config.sh: testnet, written knowingly (QA-14), with the identities and the
+      # funding key the next step writes (its default E2E_IDENTITY_DIR, testnet-scratch).
+      DASH_FORGE_NETWORK: testnet
+      E2E_LIVE_TARGET: '1'
+      ID_OWNER_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_OWNER }}
+      ID_COLLAB_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_COLLAB }}
+      ID_CONTRIB_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_CONTRIB }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -230,14 +259,20 @@ jobs:
         with:
           shared-key: e2e-cli
 
-      - name: Materialize fixture identities
+      # The funding key lives only in this step's environment; the suite reads it from the file
+      # (config.sh accepts a testnet key named testnet-funding.wif).
+      - name: Materialize fixture identities and the funding key
+        env:
+          MINT_FUNDING_WIF: ${{ secrets.FORGE_TESTNET_MINT_FUNDING_WIF }}
         run: |
           dir="${HOME}/.config/dash-forge/test-identities"
-          mkdir -p "$dir/devnet-sakura" && chmod 700 "$dir" "$dir/devnet-sakura"
-          printf '%s' "$ID_OWNER_JSON"    > "$dir/devnet-sakura/OWNER.identity.json"
-          printf '%s' "$ID_COLLAB_JSON"   > "$dir/devnet-sakura/COLLAB.identity.json"
-          printf '%s' "$ID_CONTRIB_JSON"  > "$dir/devnet-sakura/CONTRIB.identity.json"
-          chmod 600 "$dir"/devnet-sakura/*.identity.json
+          mkdir -p "$dir/testnet-scratch" && chmod 700 "$dir" "$dir/testnet-scratch"
+          printf '%s' "$ID_OWNER_JSON"    > "$dir/testnet-scratch/OWNER.identity.json"
+          printf '%s' "$ID_COLLAB_JSON"   > "$dir/testnet-scratch/COLLAB.identity.json"
+          printf '%s' "$ID_CONTRIB_JSON"  > "$dir/testnet-scratch/CONTRIB.identity.json"
+          printf '%s' "$MINT_FUNDING_WIF" > "$dir/testnet-funding.wif"
+          chmod 600 "$dir"/testnet-scratch/*.identity.json "$dir/testnet-funding.wif"
+          echo "E2E_MINT_FUNDING=$dir/testnet-funding.wif" >> "$GITHUB_ENV"
 
       # Built in its own step so a slow (cache-miss) build cannot eat into the suite's time
       # budget below; run.sh picks the binaries up from target/debug.

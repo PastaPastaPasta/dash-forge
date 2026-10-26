@@ -809,11 +809,12 @@ pub async fn dismiss(
     reason: &str,
 ) -> Result<()> {
     let pr = open_pr(ctx, repo, number, "review not dismissed").await?;
-    let reviews =
+    // One fetch, not the PR's whole review list: anyone can pad that past a complete read.
+    let review =
         pr.s.collab()
-            .reviews(&pr.s.repo, &pr.view.patch.document_id)
+            .review_by_id(&pr.s.repo, &pr.view.patch.document_id, review_id)
             .await?;
-    let Some(r) = reviews.iter().find(|r| r.document_id == review_id) else {
+    let Some(r) = review.as_ref() else {
         return Err(crate::errors::not_found(
             format!("review {review_id} is not on PR #{number}"),
             format!("`dg pr view {repo} {number} --json` lists its reviews (`reviews[].id`)"),

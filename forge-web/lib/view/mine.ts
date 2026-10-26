@@ -61,7 +61,7 @@ export type TargetDoc = z.infer<typeof targetDoc>
 const repoDoc = baseDoc.extend({ name: z.string().min(1), visibility: z.string().optional() })
 
 /** Parse every document that fits `schema`; drop (never cast) the rest. */
-export function parseDocs<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, docs: readonly PlainDocument[]): T[] {
+export function parseDocs<T>(schema: z.ZodType<T, unknown>, docs: readonly PlainDocument[]): T[] {
   const out: T[] = []
   for (const d of docs) {
     const r = schema.safeParse(d)

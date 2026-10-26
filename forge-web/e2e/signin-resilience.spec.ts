@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { encodeWif } from '../lib/auth/wif'
 import { PASSPHRASE, shot } from './helpers'
+import { E2E_NETWORK } from './network'
 
 /**
  * No spinner in the sign-in sheet waits forever (owner report: "Sign in → Create" showed a
@@ -252,8 +253,9 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
   const blank = `${baseURL}/__seed__/`
   await page.route(blank, (r) => r.fulfill({ contentType: 'text/html', body: '<!doctype html><title>seed</title>' }))
   await page.goto(blank)
+  // (keyed by the network the build serves: `create-identity:<network>`, lib/auth/create-identity.ts)
   await page.evaluate(
-    () =>
+    (network) =>
       new Promise<void>((resolve, reject) => {
         const req = indexedDB.open('dash-forge', 2)
         req.onupgradeneeded = () => {
@@ -264,8 +266,8 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
         req.onsuccess = () => {
           const tx = req.result.transaction('journal', 'readwrite')
           tx.objectStore('journal').put(
-            { network: 'devnet', depositAddress: 'yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf', identityId: null, lockTxid: null, lockRaw: null, startedAt: Date.now() },
-            'create-identity:devnet',
+            { network, depositAddress: 'yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf', identityId: null, lockTxid: null, lockRaw: null, startedAt: Date.now() },
+            `create-identity:${network}`,
           )
           tx.oncomplete = () => {
             req.result.close()
@@ -275,6 +277,7 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
         }
         req.onerror = () => reject(req.error)
       }),
+    E2E_NETWORK,
   )
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   await openSheet(page, 'create')

@@ -1385,6 +1385,25 @@ impl Helper {
         if only_members {
             git_packs.retain(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
         }
+        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
+        // A partial clone's lazy fetch of blobs the catalog places: only the packs that hold
+        // them, and exactly those blobs (crate::catalog). Anything else reads every pack.
+        let lazy = lazy_blob_packs(
+            git_dir.as_deref(),
+            conn.repo.id(),
+            options,
+            incremental,
+            &git_packs,
+            &want_oids,
+        );
+        if let Some(holding) = &lazy {
+            tracing::info!(
+                wants = want_oids.len(),
+                packs = holding.len(),
+                "lazy fetch: reading only the packs that hold the wanted blobs"
+            );
+            git_packs.retain(|m| holding.contains(&m.pack_hash));
+        }
         let members_packs = manifests
             .iter()
             .any(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
@@ -1398,8 +1417,9 @@ impl Helper {
         // Download + verify every pack (M1: whole-repo packs; the want-set is served by the
         // union of stored packs, and git dedups objects it already has). Every push adds a
         // pack, so this grows with the repo's push count; downloading them one at a time
-        // took ~50 s for the nightly's 56-pack test repo, per fetch — and a partial clone
-        // fetches twice. `buffered` keeps a bounded window in flight and preserves order.
+        // took ~50 s for the nightly's 56-pack test repo, per fetch. (A partial clone's lazy
+        // blob fetches read only the packs the catalog says hold them, `lazy` above.)
+        // `buffered` keeps a bounded window in flight and preserves order.
         // Each pack comes from the first of its recorded copies that hash-verifies —
         // external URIs raced with the configured IPFS gateways — with Platform chunks as
         // the last resort.
@@ -1471,7 +1491,6 @@ impl Helper {
         {
             progress.note(&line);
         }
-        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
         let indexed: Vec<[u8; 32]> = fetched
             .iter()
             .filter(|(_, g)| matches!(g, Got::Bytes { .. }))
@@ -1490,25 +1509,36 @@ impl Helper {
                 .collect();
             members::record(&sh.heads, &packs)?;
         }
-        let shas = index_fetched(
-            fetched.into_iter().map(|(_, g)| g).collect(),
-            &want_oids,
+        let into = Indexing {
+            want_oids: &want_oids,
             options,
-            repo,
-            packs.len(),
-            parent.as_deref(),
-        )?;
-        // Record the packs indexed whole (not a partial clone's filtered subset), so the next
-        // fetch downloads only what is new.
-        if let (None, Some(d)) = (&options.filter, git_dir.as_deref()) {
-            let mut have = have;
-            for h in indexed {
-                have.insert(h);
+            repo_ref: repo,
+            total: packs.len(),
+            parent: parent.as_deref(),
+            exact: lazy.is_some(),
+        };
+        let done = index_fetched(fetched, &into)?;
+        match (&options.filter, git_dir.as_deref()) {
+            // Record the packs indexed whole (not a partial clone's filtered subset), so the
+            // next fetch downloads only what is new.
+            (None, Some(d)) => {
+                let mut have = have;
+                for h in indexed {
+                    have.insert(h);
+                }
+                have.save(d, conn.repo.id());
             }
-            have.save(d, conn.repo.id());
+            // A partial clone records which blobs each pack it read holds, so a lazy fetch of
+            // them reads only those packs.
+            (Some(_), Some(d)) => {
+                for (h, blobs) in &done.catalog {
+                    crate::catalog::record(d, conn.repo.id(), *h, blobs);
+                }
+            }
+            (_, None) => {}
         }
         Ok(FetchReport {
-            indexed: shas,
+            indexed: done.shas,
             members_packs,
         })
     }
@@ -1546,14 +1576,15 @@ impl Helper {
         // Resolve the storage policy before touching the network when this push stores
         // objects: a typo in dash.storage or a missing profile must fail the push before
         // anything is built or paid for. A delete-only push stores nothing, so a broken
-        // storage.toml must not block it.
+        // storage.toml must not block it; its ref updates are paid for, so the cost guard's
+        // settings still apply.
         let push_policy = if specs.iter().any(|s| !s.src.is_empty()) {
-            Some(
-                PushPolicy::load_for_push(self.remote.as_deref(), options)
-                    .context("reading the storage policy (dash.storage / dash.replicas)")?,
-            )
+            PushPolicy::load_for_push(self.remote.as_deref(), options)
+                .context("reading the storage policy (dash.storage / dash.replicas)")?
         } else {
-            None
+            PushPolicy::guard_only(self.remote.as_deref()).context(
+                "reading the cost guard's settings (dash.costWarnThreshold / dash.confirm)",
+            )?
         };
         self.ensure_signer().await?;
         if !dry_run {
@@ -1662,12 +1693,22 @@ impl Helper {
             return Ok(refused);
         }
         // Narrower branches (phase 3F): their letters first (a new branch's key, an audience that
-        // changed since the last letter), then the keys this push seals under, read again.
+        // changed since the last letter), then the keys this push seals under, read again. The
+        // letters are paid for before the cost guard weighs the rest (its refusal says so).
+        let mut letters_written = false;
         let ring = if public_repo
             && !dry_run
             && planned.iter().any(|p| p.reject.is_none() && p.narrower())
         {
-            prepare_narrower(conn, &svc, &mut planned, &view, &new_branches).await
+            prepare_narrower(
+                conn,
+                &svc,
+                &mut planned,
+                &view,
+                &new_branches,
+                &mut letters_written,
+            )
+            .await
         } else {
             view.ring.clone()
         };
@@ -1706,9 +1747,14 @@ impl Helper {
         }
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
-        let mut est_credits = push_fees::estimate_ref_updates(
-            planned.iter().filter(|p| p.reject.is_none()).count() as u64,
-        );
+        // A merge that settles a diverged ref writes one update per head it contains.
+        let ref_updates: usize = planned
+            .iter()
+            .filter(|p| p.reject.is_none())
+            .map(Planned::writes)
+            .sum();
+        let mut est_credits = push_fees::estimate_ref_updates(ref_updates as u64);
+        let accepted = planned.iter().any(|p| p.reject.is_none());
 
         // Build + upload the packs covering all accepted, non-delete updates: one public pack
         // whose delta bases are public tips only, then one members-only pack per members-only
@@ -1748,55 +1794,54 @@ impl Helper {
         } else {
             None
         };
-        let ctx = match (want_tips.is_empty(), push_policy.as_ref()) {
-            (false, Some(push_policy)) => Some(PushContext {
-                svc: &svc,
-                repo: &conn.repo,
-                repo_label,
-                refs: planned
-                    .iter()
-                    .filter(|p| p.reject.is_none())
-                    .map(|p| progress::short_ref(&p.spec.dst))
-                    .collect(),
-                git_dir: &git_dir,
-                policy: push_policy,
-                progress,
-                dry_run,
-                identity: conn.identity().id(),
-                sealed: std::cell::RefCell::default(),
-                members_sealed: std::cell::RefCell::default(),
-                history_cost: std::cell::Cell::new(history.as_ref().map(|h| h.prepared.cost())),
-                history_fallback: history
+        // Every push that writes a ref has a context: its ref updates are paid for and guarded
+        // with the rest of it, deletes and ref-only pushes too.
+        let ctx = accepted.then(|| PushContext {
+            svc: &svc,
+            repo: &conn.repo,
+            repo_label,
+            refs: planned
+                .iter()
+                .filter(|p| p.reject.is_none())
+                .map(|p| progress::short_ref(&p.spec.dst))
+                .collect(),
+            ref_updates,
+            git_dir: &git_dir,
+            policy: &push_policy,
+            progress,
+            dry_run,
+            identity: conn.identity().id(),
+            sealed: std::cell::RefCell::default(),
+            members_sealed: std::cell::RefCell::default(),
+            history_cost: std::cell::Cell::new(history.as_ref().map(|h| h.prepared.cost())),
+            history_fallback: history
+                .as_ref()
+                .and_then(|h| h.prepared.fallback())
+                .map(PreparedHistory::cost),
+            history_on_fallback: std::cell::Cell::new(false),
+            approved: std::cell::Cell::new(0),
+            letters_written,
+            stored_a_pack: std::cell::Cell::new(false),
+            funds: Funds::new(
+                &conn.client,
+                conn.signer
                     .as_ref()
-                    .and_then(|h| h.prepared.fallback())
-                    .map(PreparedHistory::cost),
-                history_on_fallback: std::cell::Cell::new(false),
-                stored_a_pack: std::cell::Cell::new(false),
-                funds: Funds::new(
-                    &conn.client,
-                    conn.signer
-                        .as_ref()
-                        .expect("the push path loads the signer first"),
-                    &self.target.network,
-                ),
-            }),
-            _ => None,
-        };
+                    .expect("the push path loads the signer first"),
+                &self.target.network,
+            ),
+        });
         if let Some(ctx) = &ctx {
-            // Storage first. Any error here — the policy's N not met, the cost guard
-            // refusing, the manifest write failing — returns before a single ref update
-            // is written, so no ref can point at history the policy did not store. A dry
-            // run builds the pack and prints the plan, then stops.
-            if !public_want.is_empty() {
-                if let Some(up) = upload_push_pack(ctx, &public_want, &have_bases).await? {
-                    est_credits = up.est_credits;
-                    pending_index = up.index;
-                    history_paid = up.history;
-                }
-            }
-            sealed_cache = ctx.sealed.take();
-            let mut members_packs = Vec::new();
-            let mut narrower_packs: BTreeMap<String, Vec<[u8; 32]>> = BTreeMap::new();
+            // Every pack is built and priced first, then the cost guard weighs the whole push
+            // (packs, ref updates, indexes) once, then the packs are stored. Any error here —
+            // the guard refusing, the policy's N not met, a manifest write failing — returns
+            // before a single ref update is written, so no ref can point at history the policy
+            // did not store. A dry run builds the packs and prints the plan, then stops.
+            let public = if public_want.is_empty() {
+                PublicPack::None
+            } else {
+                prepare_push_pack(ctx, &public_want, &have_bases).await?
+            };
+            let mut members = Vec::new();
             for job in &members_jobs {
                 let audience = planned
                     .iter()
@@ -1808,16 +1853,31 @@ impl Helper {
                     ),
                     _ => PackSealer::Members(lane.as_ref()),
                 };
-                if let Some((hash, credits)) = upload_members_pack(ctx, pack_key, job).await? {
+                if let Some(m) = prepare_members_pack(ctx, pack_key, job).await? {
+                    members.push((m, audience));
+                }
+            }
+            let mut members_packs = Vec::new();
+            let mut narrower_packs: BTreeMap<String, Vec<[u8; 32]>> = BTreeMap::new();
+            if !dry_run {
+                let packs: Vec<&MembersPack<'_>> = members.iter().map(|(m, _)| m).collect();
+                let approved = approve_push(ctx, &public, &packs).await?;
+                if let Some(up) = store_push_pack(ctx, public, &approved).await? {
+                    pending_index = up.index;
+                    history_paid = up.history;
+                }
+                for (m, audience) in members {
+                    let hash = store_members_pack(ctx, m).await?;
                     match audience {
                         Some(Audience::Narrower(token)) => {
                             narrower_packs.entry(token).or_default().push(hash);
                         }
                         _ => members_packs.push(hash),
                     }
-                    est_credits += credits;
                 }
+                est_credits = ctx.approved.get();
             }
+            sealed_cache = ctx.sealed.take();
             // The members-only tips this push publishes to members, recorded before any ref
             // names them (D21: the clone's ledger lists every members-only commit it pushed);
             // a narrower branch's under its own ledger token.
@@ -2598,29 +2658,52 @@ struct Unreadable {
     error: String,
 }
 
+/// What [`index_fetched`] needs besides the packs.
+struct Indexing<'a> {
+    want_oids: &'a [String],
+    options: &'a OptionState,
+    repo_ref: &'a RepoRef,
+    /// How many packs the fetch chose (for E503's wording).
+    total: usize,
+    /// The repository a fork's missing packs may be in (E503's hint).
+    parent: Option<&'a str>,
+    /// A partial clone's lazy fetch of catalogued blobs ([`crate::catalog::cover`]): pack
+    /// exactly the wants, no walk.
+    exact: bool,
+}
+
+/// What [`index_fetched`] did.
+struct IndexReport {
+    /// The packs it indexed into the local odb, by git's pack name.
+    shas: Vec<String>,
+    /// A partial clone's: the blobs of each downloaded pack, by stored hash ([`crate::catalog`]).
+    catalog: Vec<([u8; 32], Vec<String>)>,
+}
+
 /// Index a fetch's downloaded packs into the local odb (for a `--filter` partial clone:
 /// through a scratch repo that applies the filter, then as a promisor pack). When packs were
 /// set aside and the wanted history is incomplete without them, fail before git's own
 /// connectivity check says only "did not send all necessary objects": E503
 /// ([`packs_unreadable`]) when any was unreadable, else E510 ([`hidden_packs_needed`]) when
 /// only packs the late-content rule hides are missing.
-fn index_fetched(
-    fetched: Vec<Got>,
-    want_oids: &[String],
-    options: &OptionState,
-    repo_ref: &RepoRef,
-    total: usize,
-    parent: Option<&str>,
-) -> Result<Vec<String>> {
+fn index_fetched(fetched: Vec<([u8; 32], Got)>, into: &Indexing<'_>) -> Result<IndexReport> {
+    let Indexing {
+        want_oids,
+        options,
+        repo_ref,
+        total,
+        parent,
+        exact,
+    } = *into;
     let display = repo_ref.display();
     let repo = display.as_str();
     let mut downloaded = Vec::new();
     let mut unreadable = Vec::new();
     let mut hidden = Vec::new();
     let mut skipped = Vec::new();
-    for got in fetched {
+    for (hash, got) in fetched {
         match got {
-            Got::Bytes { bytes, .. } => downloaded.push(bytes),
+            Got::Bytes { bytes, .. } => downloaded.push((hash, bytes)),
             Got::Unreadable(u) => unreadable.push(u),
             Got::Hidden(u) => hidden.push(u),
             Got::Skipped(s) => skipped.push(s),
@@ -2652,14 +2735,29 @@ fn index_fetched(
     let mut unchecked = Vec::new();
     if let Some(filter) = options.filter.as_deref() {
         let scratch = ScratchRepo::init()?;
-        for bytes in &downloaded {
-            unchecked.extend(scratch.index_pack(bytes)?.unchecked);
+        let mut catalog = Vec::with_capacity(downloaded.len());
+        for (hash, bytes) in &downloaded {
+            let indexed = scratch.index_pack(bytes)?;
+            unchecked.extend(indexed.unchecked);
+            // Without a catalog entry a later lazy fetch only reads more packs.
+            match scratch.blobs_of(&indexed.sha) {
+                Ok(blobs) => catalog.push((*hash, blobs)),
+                Err(e) => tracing::warn!(error = %e, "could not list a pack's blobs"),
+            }
         }
         scratch.check_blobs(&unchecked)?;
         if want_oids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(IndexReport {
+                shas: Vec::new(),
+                catalog,
+            });
         }
-        let filtered = match scratch.pack_filtered(want_oids, Some(filter)) {
+        let filtered = if exact {
+            scratch.pack_exact(want_oids)
+        } else {
+            scratch.pack_filtered(want_oids, Some(filter))
+        };
+        let filtered = match filtered {
             Ok(f) => f,
             Err(e) if blames_set_aside_packs(set_aside, &e) => {
                 tracing::debug!(error = %e, "filtered repack failed");
@@ -2670,10 +2768,13 @@ fn index_fetched(
         let sha = LocalRepo::index_pack(&filtered)?.sha;
         LocalRepo::write_promisor_marker(&sha)?;
         tracing::info!(filter, pack = %sha, "indexed filtered promisor pack");
-        return Ok(vec![sha]);
+        return Ok(IndexReport {
+            shas: vec![sha],
+            catalog,
+        });
     }
     let mut shas = Vec::with_capacity(downloaded.len());
-    for bytes in &downloaded {
+    for (_, bytes) in &downloaded {
         let indexed = LocalRepo::index_pack(bytes)?;
         tracing::info!(pack = %indexed.sha, "indexed pack into local odb");
         unchecked.extend(indexed.unchecked);
@@ -2683,7 +2784,10 @@ fn index_fetched(
     if set_aside && !want_oids.is_empty() && LocalRepo::history_has_gaps(want_oids) {
         return Err(incomplete());
     }
-    Ok(shas)
+    Ok(IndexReport {
+        shas,
+        catalog: Vec::new(),
+    })
 }
 
 /// Whether a failed filtered repack is explained by the packs this fetch set aside: only when
@@ -2959,6 +3063,25 @@ fn wants_already_local(wants: &[Want], options: &OptionState) -> bool {
         && wants.iter().all(|w| LocalRepo::object_exists(&w.oid))
 }
 
+/// A partial clone's lazy fetch of blobs [`crate::catalog`] places: the packs, of `git_packs`,
+/// that hold them, so only those are downloaded and exactly the wants packed. `None`, read every
+/// pack, for any other fetch: outside a clone, unfiltered, the full pass, nothing wanted (the
+/// members-only pass of a `list`), or a want no catalogued pack holds (a commit or tree, or a
+/// blob of a pack no filtered fetch read yet).
+fn lazy_blob_packs(
+    git_dir: Option<&std::path::Path>,
+    repo_id: &str,
+    options: &OptionState,
+    incremental: bool,
+    git_packs: &[forge_core::repo::PackManifestInfo],
+    want_oids: &[String],
+) -> Option<Vec<[u8; 32]>> {
+    let git_dir =
+        git_dir.filter(|_| incremental && options.filter.is_some() && !want_oids.is_empty())?;
+    let catalog = crate::catalog::load(git_dir, repo_id, git_packs.iter().map(|m| m.pack_hash));
+    crate::catalog::cover(&catalog, want_oids)
+}
+
 /// The git packs a fetch downloads: every stored kind-0 pack (and, for a reader holding the
 /// members key, every members-only kind-64 pack), less those `held` records.
 ///
@@ -3124,58 +3247,49 @@ impl Writer<'_> {
             .await;
         }
         let members_results = self.members_batch(planned, &members).await;
-        let landed = landed_before || members_results.iter().any(Result::is_ok);
+        let landed = landed_before || members_results.landed;
         if public.is_empty() {
-            return settle_ref_writes(planned, &members, members_results, landed_before);
+            return settle_ref_writes(planned, &members, members_results.results, landed);
         }
-        settle_ref_writes(planned, &members, members_results, true)?;
+        settle_ref_writes(planned, &members, members_results.results, true)?;
         write_batch(self.svc, self.repo, planned, &public, self.progress, landed).await
     }
 
     /// Write the sealed refs `planned[sealed[..]]`: the members-only ones under the writer's
     /// members key, the narrower ones under their branch keys (phase 3F). One result per ref, in
     /// order.
-    async fn members_batch(
-        &self,
-        planned: &[Planned],
-        sealed: &[usize],
-    ) -> Vec<forge_core::Result<String>> {
+    async fn members_batch(&self, planned: &[Planned], sealed: &[usize]) -> PerRef {
         let (narrower, members): (Vec<usize>, Vec<usize>) =
             sealed.iter().partition(|&&i| planned[i].narrower());
         let mut by_index: BTreeMap<usize, forge_core::Result<String>> = BTreeMap::new();
+        let mut landed = false;
         if !members.is_empty() {
-            by_index.extend(
-                members
-                    .iter()
-                    .copied()
-                    .zip(self.lane_batch(planned, &members).await),
-            );
+            let lane = self.lane_batch(planned, &members).await;
+            landed |= lane.landed;
+            by_index.extend(members.iter().copied().zip(lane.results));
         }
         if !narrower.is_empty() {
-            by_index.extend(
-                narrower
-                    .iter()
-                    .copied()
-                    .zip(self.branch_batch(planned, &narrower).await),
-            );
+            let branch = self.branch_batch(planned, &narrower).await;
+            landed |= branch.landed;
+            by_index.extend(narrower.iter().copied().zip(branch.results));
         }
-        sealed
-            .iter()
-            .map(|i| by_index.remove(i).expect("one result per ref"))
-            .collect()
+        PerRef {
+            results: sealed
+                .iter()
+                .map(|i| by_index.remove(i).expect("one result per ref"))
+                .collect(),
+            landed,
+        }
     }
 
     /// Write narrower refs `planned[narrower[..]]` under their branches' current generations.
-    async fn branch_batch(
-        &self,
-        planned: &[Planned],
-        narrower: &[usize],
-    ) -> Vec<forge_core::Result<String>> {
-        let fail_all = |why: String| {
-            narrower
+    async fn branch_batch(&self, planned: &[Planned], narrower: &[usize]) -> PerRef {
+        let fail_all = |why: String| PerRef {
+            results: narrower
                 .iter()
                 .map(|_| Err(forge_core::Error::Config(why.clone())))
-                .collect()
+                .collect(),
+            landed: false,
         };
         let Some(ring) = self.ring else {
             return fail_all("the branch key isn't available".into());
@@ -3186,29 +3300,29 @@ impl Writer<'_> {
         };
         let result = self
             .svc
-            .write_branch_ref_updates(self.repo, ring, &writes, |i| {
-                let p = &planned[narrower[i]];
-                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-                self.progress.emit(&text, &event);
+            .write_branch_ref_updates(self.repo, ring, &writes.writes, |k| {
+                if writes.is_own(k) {
+                    let p = &planned[narrower[writes.of[k]]];
+                    let (text, event) =
+                        progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                    self.progress.emit(&text, &event);
+                }
             })
             .await;
         match result {
-            Ok(results) => results,
+            Ok(results) => writes.per_ref(results),
             Err(e) => fail_all(e.to_string()),
         }
     }
 
     /// Write members-only refs `planned[members[..]]` under the members key.
-    async fn lane_batch(
-        &self,
-        planned: &[Planned],
-        members: &[usize],
-    ) -> Vec<forge_core::Result<String>> {
-        let fail_all = |why: String| {
-            members
+    async fn lane_batch(&self, planned: &[Planned], members: &[usize]) -> PerRef {
+        let fail_all = |why: String| PerRef {
+            results: members
                 .iter()
                 .map(|_| Err(forge_core::Error::Config(why.clone())))
-                .collect()
+                .collect(),
+            landed: false,
         };
         let Some(lane) = self.lane else {
             return fail_all("the members key isn't available".into());
@@ -3219,36 +3333,106 @@ impl Writer<'_> {
         };
         let result = self
             .svc
-            .write_members_ref_updates(self.repo, lane, &writes, |i| {
-                let p = &planned[members[i]];
-                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-                self.progress.emit(&text, &event);
+            .write_members_ref_updates(self.repo, lane, &writes.writes, |k| {
+                if writes.is_own(k) {
+                    let p = &planned[members[writes.of[k]]];
+                    let (text, event) =
+                        progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                    self.progress.emit(&text, &event);
+                }
             })
             .await;
         match result {
-            Ok(results) => results,
+            Ok(results) => writes.per_ref(results),
             Err(e) => fail_all(e.to_string()),
         }
     }
 }
 
+/// The ref updates of a batch ([`ref_writes`]): each ref's own, then one more per head it
+/// settles ([`Planned::settles`]); `of[k]` is the position in the batch of the ref `writes[k]`
+/// is for.
+struct RefWrites {
+    writes: Vec<forge_core::repo::RefWrite>,
+    of: Vec<usize>,
+}
+
+impl RefWrites {
+    /// Whether `writes[k]` is its ref's own update (the one progress reports as it lands).
+    fn is_own(&self, k: usize) -> bool {
+        k == 0 || self.of[k - 1] != self.of[k]
+    }
+
+    /// One result per ref from the writes' (in order; shorter when a sequential write stopped
+    /// at its failure): its own update's id when every one of its updates landed, else the
+    /// first failure. A ref none of whose updates was attempted has none.
+    ///
+    /// A ref whose own update landed but one of whose settling updates failed is partly
+    /// written: Platform reads it at the new commit and still diverged, and git, seeing the
+    /// remote at that commit, then has nothing to push. Its failure says which head is still
+    /// live and how to settle it, and `landed` counts it, so the push reads its refs back.
+    fn per_ref(&self, results: Vec<forge_core::Result<String>>) -> PerRef {
+        let mut out = PerRef {
+            results: Vec::with_capacity(results.len()),
+            landed: false,
+        };
+        for (k, r) in results.into_iter().enumerate() {
+            out.landed |= r.is_ok();
+            match out.results.last_mut() {
+                Some(last) if !self.is_own(k) => {
+                    if let (Ok(_), Err(e)) = (&*last, r) {
+                        let head = self.writes[k]
+                            .prev_oid
+                            .as_deref()
+                            .map(hex::encode)
+                            .unwrap_or_default();
+                        *last = Err(forge_core::Error::Platform(format!(
+                            "the push landed, but the update settling the concurrent head {} failed ({e}); \
+                             the branch still reads as diverged. Any new commit on top of this one, \
+                             pushed as usual, settles it",
+                            &head[..head.len().min(12)]
+                        )));
+                    }
+                }
+                _ => out.results.push(r),
+            }
+        }
+        out
+    }
+}
+
+/// [`RefWrites::per_ref`]: one result per ref, and whether any write of the batch landed (a ref
+/// can be partly written and still fail).
+struct PerRef {
+    results: Vec<forge_core::Result<String>>,
+    landed: bool,
+}
+
 /// The ref writes of `planned[accepted[..]]`.
-fn ref_writes(planned: &[Planned], accepted: &[usize]) -> Result<Vec<forge_core::repo::RefWrite>> {
-    accepted
-        .iter()
-        .map(|&i| {
-            let p = &planned[i];
-            Ok(forge_core::repo::RefWrite {
+fn ref_writes(planned: &[Planned], accepted: &[usize]) -> Result<RefWrites> {
+    let mut out = RefWrites {
+        writes: Vec::new(),
+        of: Vec::new(),
+    };
+    for (at, &i) in accepted.iter().enumerate() {
+        let p = &planned[i];
+        let new_oid = match &p.new_oid {
+            Some(oid) => oid_to_bytes(oid)?,
+            None => vec![0u8; 20], // delete = zero oid
+        };
+        let prevs = std::iter::once(p.prev_oid.as_deref())
+            .chain(p.settles.iter().map(|h| Some(h.as_str())));
+        for prev in prevs {
+            out.writes.push(forge_core::repo::RefWrite {
                 ref_name: p.spec.dst.clone(),
-                new_oid: match &p.new_oid {
-                    Some(oid) => oid_to_bytes(oid)?,
-                    None => vec![0u8; 20], // delete = zero oid
-                },
-                prev_oid: p.prev_oid.as_deref().map(oid_to_bytes).transpose()?,
+                new_oid: new_oid.clone(),
+                prev_oid: prev.map(oid_to_bytes).transpose()?,
                 force: p.spec.force,
-            })
-        })
-        .collect()
+            });
+            out.of.push(at);
+        }
+    }
+    Ok(out)
 }
 
 /// Write the public refs `planned[accepted[..]]` in one batch and settle it
@@ -3271,19 +3455,21 @@ async fn write_batch(
     let fail_after = std::env::var("DASH_FORGE_FAIL_AFTER_REFS")
         .ok()
         .and_then(|n| n.parse::<usize>().ok())
-        .filter(|n| *n < writes.len());
+        .filter(|n| *n < writes.writes.len());
     #[cfg(feature = "test-hooks")]
-    let batch = &writes[..fail_after.unwrap_or(writes.len())];
+    let batch = &writes.writes[..fail_after.unwrap_or(writes.writes.len())];
     #[cfg(not(feature = "test-hooks"))]
-    let batch = &writes[..];
+    let batch = &writes.writes[..];
     // One config read for the whole push; a public repository's updates go in parallel
-    // (P-6). Each is reported as it lands.
+    // (P-6). Each ref is reported as its own update lands.
     let results = {
         let planned = &*planned;
-        svc.write_ref_updates(repo, batch, |i| {
-            let p = &planned[accepted[i]];
-            let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-            progress.emit(&text, &event);
+        svc.write_ref_updates(repo, batch, |k| {
+            if writes.is_own(k) {
+                let p = &planned[accepted[writes.of[k]]];
+                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                progress.emit(&text, &event);
+            }
         })
         .await
     };
@@ -3303,7 +3489,8 @@ async fn write_batch(
     if let Some(written) = fail_after {
         bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
     }
-    settle_ref_writes(planned, accepted, results, landed_before)
+    let per = writes.per_ref(results);
+    settle_ref_writes(planned, accepted, per.results, landed_before || per.landed)
 }
 
 /// Fold a batch's per-ref `results` (for `planned[accepted[i]]`, in order; shorter when a
@@ -3370,6 +3557,16 @@ fn remote_tip(refs: &[(String, RefState)], name: &str) -> Option<String> {
     refs.iter()
         .find(|(n, _)| n == name)
         .and_then(|(_, s)| tip_oid(s))
+}
+
+/// Every live head of `name` within a resolved ref list, newest first: one for a resolved ref,
+/// several for a diverged one, none for an unborn or absent one.
+fn remote_heads(refs: &[(String, RefState)], name: &str) -> Vec<String> {
+    match refs.iter().find(|(n, _)| n == name).map(|(_, s)| s) {
+        Some(RefState::Resolved { oid, .. }) => vec![oid.clone()],
+        Some(RefState::Diverged { heads }) => heads.iter().map(|h| h.oid.clone()).collect(),
+        Some(RefState::Unborn) | None => Vec::new(),
+    }
 }
 
 /// The `list` answer for `refs`: `<oid> <refname>` per resolved ref, then (for a fetch
@@ -3442,6 +3639,10 @@ struct Planned {
     new_oid: Option<String>,
     /// Recorded previous tip (`None` = ref did not exist remotely).
     prev_oid: Option<String>,
+    /// The diverged ref's other live heads this update merged: each is written as one more
+    /// update of the same tip naming it as `prevOid`, so the race settles for every reader
+    /// (`forge_core::rules::settling_prev_oids`).
+    settles: Vec<String>,
     /// Set when the spec is rejected before any write (e.g. non-fast-forward).
     reject: Option<String>,
     /// Who the ref is for (DESIGN D12): public unless a public repository's push decided it is
@@ -3450,6 +3651,11 @@ struct Planned {
 }
 
 impl Planned {
+    /// How many ref updates writing it takes.
+    fn writes(&self) -> usize {
+        1 + self.settles.len()
+    }
+
     /// A members-only ref of a public repository (sealed under the members key).
     fn members(&self) -> bool {
         self.audience == Audience::Members
@@ -3468,7 +3674,9 @@ impl Planned {
 
 /// Decide accept/reject for every refspec up front (no writes): deletions and new refs are
 /// accepted; an update is accepted iff forced, a no-op, or a fast-forward — otherwise
-/// rejected as `non-fast-forward` (§2.3 / PRD 02). A `--force-with-lease` expectation
+/// rejected as `non-fast-forward` (§2.3 / PRD 02). On a diverged ref a fast-forward contains
+/// every live head (a merge of the race), and settles it with one more update per head beyond
+/// the tip ([`Planned::settles`]). A `--force-with-lease` expectation
 /// ([`OptionState::lease`]) accepts any update while the ref still points where the lease
 /// says, and rejects it as `stale info` (git's words) otherwise. A new ref that git clients could
 /// not hold next to an existing one (`feature` and `feature/x`, or `Foo` and `foo`) is refused
@@ -3486,7 +3694,8 @@ fn plan_pushes(
         // `prevOid`, which supersedes that tip without `force` (`resolve_ref`). Platform has no
         // compare-and-swap, so an update that lands from elsewhere before this one is not
         // overwritten: the ref reads as diverged and the read-back reports the push as lost. A
-        // ref that is already diverged takes a forced write, the only one that settles it.
+        // ref that is already diverged takes a forced write: the lease names one head, and only
+        // a force settles the others whatever the new tip contains.
         let diverged = remote_refs
             .iter()
             .any(|(n, s)| n == &spec.dst && matches!(s, RefState::Diverged { .. }));
@@ -3503,6 +3712,7 @@ fn plan_pushes(
                 spec,
                 new_oid: None,
                 prev_oid: prev,
+                settles: Vec::new(),
                 reject: Some(reject),
                 audience: Audience::Public,
             });
@@ -3514,6 +3724,7 @@ fn plan_pushes(
                 spec,
                 new_oid: None,
                 prev_oid: prev,
+                settles: Vec::new(),
                 reject: None,
                 audience: Audience::Public,
             });
@@ -3525,28 +3736,66 @@ fn plan_pushes(
                 spec,
                 new_oid: None,
                 prev_oid: prev,
+                settles: Vec::new(),
                 reject,
                 audience: Audience::Public,
             });
             continue;
         };
-        let reject = prev.as_ref().and_then(|tip| {
-            let fast_forward = spec.force
-                || lease.is_some()
-                || tip == &new_oid
-                || LocalRepo::is_ancestor(tip, &new_oid);
-            (!fast_forward).then(|| "non-fast-forward".to_string())
-        });
+        // An update moves off every live head it contains: the tip (`prevOid`), and on a
+        // diverged ref each other head too, one update apiece. One that leaves out a head would
+        // only add another, so it is refused before anything is paid for.
+        let (settles, reject) = if spec.force || lease.is_some() {
+            (Vec::new(), None)
+        } else {
+            let heads = remote_heads(remote_refs, &spec.dst);
+            match fast_forward(&spec.dst, &heads, &new_oid, LocalRepo::is_ancestor) {
+                Ok(settles) => (settles, None),
+                Err(reject) => (Vec::new(), Some(reject)),
+            }
+        };
         planned.push(Planned {
             spec,
             new_oid: Some(new_oid),
             prev_oid: prev,
+            settles,
             reject,
             audience: Audience::Public,
         });
     }
     reject_collisions(&mut planned, remote_refs);
     planned
+}
+
+/// [`plan_pushes`]'s check of a non-forced update of `dst` to `new_oid` against the ref's live
+/// `heads` (newest first; the first is the tip it records as `prevOid`), with the clone's commit
+/// graph: the further heads it settles ([`Planned::settles`]), or why it is refused.
+fn fast_forward(
+    dst: &str,
+    heads: &[String],
+    new_oid: &str,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> std::result::Result<Vec<String>, String> {
+    let contains = |a: &str, b: &str| a == b || is_ancestor(a, b);
+    match forge_core::rules::settling_prev_oids(heads, new_oid, contains) {
+        Ok(prevs) => Ok(prevs
+            .into_iter()
+            .filter(|h| Some(*h) != heads.first().map(String::as_str))
+            .map(str::to_owned)
+            .collect()),
+        Err(_) if heads.len() < 2 => Err("non-fast-forward".to_string()),
+        Err(head) => Err(diverged_reject(dst, head)),
+    }
+}
+
+/// The refusal of a push to a diverged ref whose tip does not contain `head`, one of its live
+/// heads: writing it would leave the ref diverged. `list` advertises only the newest head, so
+/// the refusal names the head by oid, which a fetch of that oid brings into the clone.
+fn diverged_reject(dst: &str, head: &str) -> String {
+    format!(
+        "non-fast-forward: {} has diverged and this push does not contain its other head {head}; fetch it (git fetch <remote> {head}), merge it and push again",
+        progress::short_ref(dst),
+    )
 }
 
 /// What a member view says about narrower branches, by ledger token ([`narrower_facts`]).
@@ -3630,6 +3879,7 @@ async fn prepare_narrower(
     planned: &mut [Planned],
     view: &PushView,
     new_branches: &BTreeMap<String, NewBranch>,
+    wrote: &mut bool,
 ) -> Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>> {
     let reject_narrower = |planned: &mut [Planned], why: &str| {
         for p in planned
@@ -3650,7 +3900,6 @@ async fn prepare_narrower(
     let owner = repo.owner_id();
     let me = conn.identity().id();
     let members = kr.members();
-    let mut wrote = false;
     let accepted = |planned: &[Planned], dst: &str| {
         planned
             .iter()
@@ -3672,7 +3921,7 @@ async fn prepare_narrower(
         let held = view.ring.as_ref().and_then(|r| r.get(dst));
         match first_letter(svc, repo, dst, nb, held, &audience, &people).await {
             Ok(Some(w)) => {
-                wrote = true;
+                *wrote = true;
                 expect.insert(dst.clone(), w.top_kcv);
                 say_letter(dst, &audience, &w);
             }
@@ -3719,7 +3968,7 @@ async fn prepare_narrower(
             };
             match done {
                 Ok(Some(w)) => {
-                    wrote = true;
+                    *wrote = true;
                     expect.insert(dst.clone(), w.top_kcv);
                     say_letter(&dst, &b.audience, &w);
                 }
@@ -3732,7 +3981,7 @@ async fn prepare_narrower(
             }
         }
     }
-    if !wrote {
+    if !*wrote {
         return view.ring.clone();
     }
     let ring = match forge_core::narrow::read_ring(svc, repo, members).await {
@@ -4416,21 +4665,56 @@ fn members_pack_jobs(
     forge_core::members_git::plan::plan(public_tips, &prev, &batch).members
 }
 
-/// Build, seal (under the members key's write epoch, or a narrower branch's key), store and
-/// record (kind 64) one members-only pack (DESIGN §4.3 "Packs"), as [`upload_push_pack`] stores a
-/// public one: priced and guarded first, stored per the policy, its manifest written before any
-/// ref names it. A members-key pack's browse index (kind 65, [`publish_members_index`]) follows
-/// it to the same places. `Some((packHash,
-/// credits))` when a pack was stored (or an earlier push's is reused); `None` when it adds no
-/// objects or in a dry run.
-async fn upload_members_pack(
+/// A members-only branch's pack, built, sealed and priced ([`prepare_members_pack`]): nothing
+/// stored or paid for until the push is approved ([`approve_push`], [`store_members_pack`]).
+struct MembersPack<'l> {
+    built: BuiltPack,
+    /// The members key's lane its browse index is sealed under: none for a narrower branch's
+    /// pack (a members-key index would show every member its object ids).
+    index_lane: Option<&'l forge_core::private::Lane>,
+    /// An earlier push recorded this exact pack: it is not stored again.
+    reused: bool,
+    /// The push journal of its Platform chunks.
+    jpath: std::path::PathBuf,
+    /// What an interrupted push already stored of it.
+    resumed: Resumed,
+}
+
+impl MembersPack<'_> {
+    /// What storing it adds to the push (sealed, with its browse index; no refs), credits, and
+    /// the bytes it still uploads: nothing for a pack an earlier push recorded.
+    fn quote(&self, ctx: &PushContext<'_>) -> (u64, u64) {
+        if self.reused {
+            return (0, 0);
+        }
+        let est = self.estimate(ctx, ctx.policy.resolved.platform);
+        (
+            est.total().saturating_sub(self.resumed.credits),
+            (self.built.stored.len() as u64).saturating_sub(self.resumed.bytes),
+        )
+    }
+
+    fn estimate(&self, ctx: &PushContext<'_>, platform_bytes: bool) -> push_fees::PushEstimate {
+        members_pack_estimate(
+            ctx,
+            self.built.plain_len,
+            self.built.objects(),
+            platform_bytes,
+        )
+    }
+}
+
+/// Build and seal (under the members key's write epoch, or a narrower branch's key) one
+/// members-only pack (DESIGN §4.3 "Packs"), as [`prepare_push_pack`] builds a public one, and
+/// price it. `None` when it adds no objects, or in a dry run (which prints its price).
+async fn prepare_members_pack<'l>(
     ctx: &PushContext<'_>,
-    pack_key: PackSealer<'_>,
+    pack_key: PackSealer<'l>,
     job: &forge_core::members_git::plan::MembersPackJob,
-) -> Result<Option<([u8; 32], u64)>> {
+) -> Result<Option<MembersPack<'l>>> {
     let want: Vec<&str> = job.want.iter().map(String::as_str).collect();
     let have: Vec<&str> = job.have.iter().map(String::as_str).collect();
-    let pack =
+    let mut pack =
         build_pack(ctx.git_dir, &want, &have).context("building the members-only branch's pack")?;
     let objects = pack.parsed.object_count() as u64;
     let plain_bytes = pack.bytes.len() as u64;
@@ -4463,37 +4747,56 @@ async fn upload_members_pack(
         return Ok(None);
     }
     // the browse index is sealed as its pack is: under the members key only. A narrower branch's
-    // pack gets none (a members-key index would show every member its object ids); browsers
-    // read it whole, with that branch's key
+    // pack gets none; browsers read it whole, with that branch's key
     let index_lane = match &pack_key {
         PackSealer::Members(lane) => *lane,
         PackSealer::Branch(_) => None,
     };
-    let sealed = seal_members_pack(ctx, pack_key, &pack.bytes)?;
-    let job = PackJob::new(&sealed, plain_bytes, objects, 0)?;
-    if reuse_recorded(ctx, &job).await?.is_some() {
-        return Ok(Some((job.pack_hash, 0)));
-    }
-    let estimate = members_pack_estimate(ctx, plain_bytes, objects, resolved.platform);
+    let stored = seal_members_pack(ctx, pack_key, &pack.bytes)?;
+    // only its sealed bytes are stored; the plaintext's index is all the browse index needs
+    pack.bytes = Vec::new();
+    let built = BuiltPack {
+        pack,
+        plain_len: plain_bytes,
+        stored,
+        index_objects: 0,
+    };
+    let job = built.job()?;
+    let reused = already_recorded(ctx, &job).await?;
     let jpath = crate::journal::journal_path(
         ctx.git_dir,
         ctx.repo.id(),
         &ctx.identity,
         &job.meta.pack_hash,
     );
-    let resumed = resumed_chunks(ctx, &job, &jpath);
+    let resumed = if reused {
+        Resumed::default()
+    } else {
+        resumed_chunks(ctx, &job, &jpath)
+    };
     resumed.say(ctx, job.chunk_count);
-    let quote = estimate.total().saturating_sub(resumed.credits);
-    policy::enforce_pack(
-        quote,
-        (job.bytes.len() as u64).saturating_sub(resumed.bytes),
-        ctx.policy,
-        resolved.platform,
-        ctx.refusal_note(),
-    )?;
-    ctx.require_funds(quote).await?;
+    Ok(Some(MembersPack {
+        built,
+        index_lane,
+        reused,
+        jpath,
+        resumed,
+    }))
+}
+
+/// Store and record (kind 64) a members-only pack the push approved, as [`store_push_pack`]
+/// stores a public one: stored per the policy, its manifest written before any ref names it. A
+/// members-key pack's browse index (kind 65, [`publish_members_index`]) follows it to the same
+/// places. Its `packHash`, whether it was stored now or an earlier push's is reused.
+async fn store_members_pack(ctx: &PushContext<'_>, m: MembersPack<'_>) -> Result<[u8; 32]> {
+    let job = m.built.job()?;
+    if m.reused {
+        return Ok(job.pack_hash);
+    }
     let externals = external_targets(ctx)?;
-    let replication = store_pack(ctx, &job, &externals, &jpath).await?;
+    let on_platform = |platform| m.estimate(ctx, platform).total();
+    let fallback_extra = on_platform(true).saturating_sub(on_platform(false));
+    let replication = store_pack(ctx, &job, &externals, &m.jpath, fallback_extra).await?;
     ctx.stored_a_pack.set(true);
     record_pack_kind(
         ctx,
@@ -4503,16 +4806,15 @@ async fn upload_members_pack(
     )
     .await?;
     crate::fetched::FetchedPacks::record(ctx.git_dir, ctx.repo.id(), job.pack_hash);
-    retire_journal(ctx, &jpath, &replication);
-    let actual = members_pack_estimate(ctx, plain_bytes, objects, replication.has_platform());
+    retire_journal(ctx, &m.jpath, &replication);
     let stored = StoredWith {
         replication,
         externals,
     };
-    if let Some(lane) = index_lane {
-        publish_members_index(ctx, lane, &pack.parsed, job.pack_hash, &stored).await;
+    if let Some(lane) = m.index_lane {
+        publish_members_index(ctx, lane, &m.built.pack.parsed, job.pack_hash, &stored).await;
     }
-    Ok(Some((job.pack_hash, actual.total())))
+    Ok(job.pack_hash)
 }
 
 /// Publish the browse index of the members-only pack `pack_hash` just stored (kind 65,
@@ -4798,7 +5100,7 @@ fn reject_collisions(planned: &mut [Planned], remote_refs: &[(String, RefState)]
     }
 }
 
-/// What [`upload_push_pack`] needs from the push.
+/// What storing a push needs from it ([`prepare_push_pack`], [`approve_push`]).
 struct PushContext<'a> {
     svc: &'a RepoService<'a>,
     repo: &'a RepoRef,
@@ -4806,6 +5108,9 @@ struct PushContext<'a> {
     repo_label: String,
     /// Short names of the refs this push updates.
     refs: Vec<String>,
+    /// How many ref updates it writes: one per ref, and one more per diverged head a ref
+    /// settles ([`Planned::writes`]).
+    ref_updates: usize,
     git_dir: &'a std::path::Path,
     policy: &'a PushPolicy,
     progress: Progress,
@@ -4828,8 +5133,14 @@ struct PushContext<'a> {
     /// The cost guard declined the full index and the fallback delta is priced instead: the
     /// push publishes the delta.
     history_on_fallback: std::cell::Cell<bool>,
-    /// A pack of this push is already stored (and paid for): a later pack's refusal must not
-    /// say nothing was paid.
+    /// What the cost guard approved for the whole push, credits ([`approve_push`]); a Platform
+    /// fallback that is approved later adds its price.
+    approved: std::cell::Cell<u64>,
+    /// The push sent branch key letters (a new branch for fewer people, an audience that
+    /// changed) before its cost guard: those are paid for whatever the guard decides.
+    letters_written: bool,
+    /// A pack of this push is stored (and paid for): a later Platform fallback's refusal must
+    /// not say nothing was paid.
     stored_a_pack: std::cell::Cell<bool>,
     /// What the pre-flight affordability check reads ([`PushContext::require_funds`]).
     funds: Funds<'a>,
@@ -4906,16 +5217,24 @@ fn history_price(ctx: &PushContext<'_>, external: u64, platform: bool) -> u64 {
         .map_or(0, |c| c.credits(sealed, external, platform))
 }
 
+/// The history index published on its own (a push with no pack of its own), to `replication`'s
+/// places and priced for them.
+fn history_alone_price(ctx: &PushContext<'_>, replication: &Replication) -> u64 {
+    let external = replication.replicas.iter().filter(|r| !r.platform).count() as u64;
+    history_price(ctx, external, replication.has_platform())
+}
+
 impl PushContext<'_> {
     /// A status line for the user (git shows the helper's stderr, `dash: `-prefixed).
     fn say(&self, line: &str) {
         self.progress.note(line);
     }
 
-    /// The note for a refusal before the next pack: whether an earlier pack was already paid.
+    /// The note of a refusal before anything of the push is stored: nothing paid, unless the
+    /// push sent branch key letters first.
     fn refusal_note(&self) -> &'static str {
-        if self.stored_a_pack.get() {
-            policy::NOTE_EARLIER_PACK_STORED
+        if self.letters_written {
+            policy::NOTE_ONLY_LETTERS_PAID
         } else {
             policy::NOTE_NOTHING_STORED
         }
@@ -4960,19 +5279,122 @@ impl PushContext<'_> {
     }
 }
 
+/// A pack built and sealed for this push: nothing stored or paid for yet.
+struct BuiltPack {
+    /// The plaintext pack (its parsed index feeds the browse index). A members-only pack keeps
+    /// no plaintext bytes once sealed: a push holds every one of them until it is approved.
+    pack: forge_core::pack::Pack,
+    /// The plaintext pack's size.
+    plain_len: u64,
+    /// The bytes stored: sealed in a private repository and for a members-only branch.
+    stored: Vec<u8>,
+    /// Objects the browse index published with it covers ([`folded_index_objects`]).
+    index_objects: u64,
+}
+
+impl BuiltPack {
+    fn objects(&self) -> u64 {
+        self.pack.parsed.object_count() as u64
+    }
+
+    fn job(&self) -> Result<PackJob<'_>> {
+        PackJob::new(&self.stored, self.objects())
+    }
+
+    /// The on-chain cost of a push storing it, with its ref updates and the history index
+    /// published with it, with (or without) Platform storing the bytes. The plaintext size is
+    /// what the estimate seals itself, so a dry run (which seals nothing) and a push price the same.
+    fn estimate(&self, ctx: &PushContext<'_>, platform_bytes: bool) -> push_fees::PushEstimate {
+        let mut est = push_fees::estimate_push(&push_fees::PushShape {
+            pack_bytes: self.plain_len,
+            objects: self.objects(),
+            index_objects: self.index_objects,
+            refs: ctx.ref_updates as u64,
+            external_targets: ctx.policy.resolved.external.len() as u64,
+            platform_bytes,
+            sealed: ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
+        });
+        // The history index this push publishes with the pack (its manifest and chunks).
+        est.metadata_credits += history_credits(ctx, platform_bytes);
+        est
+    }
+}
+
+/// What a push does with its public pack, decided before anything is paid for
+/// ([`prepare_push_pack`]); stored once the whole push is approved ([`store_push_pack`]).
+enum PublicPack {
+    /// No pack: the push has no public ref to store objects for, or it is a dry run (which
+    /// printed its plan).
+    None,
+    /// No new objects (a ref at a commit already stored): only the refs, and the history index
+    /// on its own when the default branch moves.
+    Empty,
+    /// An earlier push recorded this exact pack (a retry after a push that stored it, then
+    /// failed at its refs): it is not stored again, nor paid for (D-601).
+    Reused {
+        built: BuiltPack,
+        pack_hash: [u8; 32],
+        /// Where its recorded copies are: the history index goes there.
+        replication: Replication,
+        externals: Vec<ExternalTarget>,
+        /// Its browse index, when no fragment covers it yet (that push died before its index).
+        index: Option<MissingIndex>,
+    },
+    /// Store it.
+    Store {
+        built: BuiltPack,
+        externals: Vec<ExternalTarget>,
+        jpath: std::path::PathBuf,
+        resumed: Resumed,
+    },
+}
+
+impl PublicPack {
+    /// What it adds to the push ([`policy::PushQuote`]; the refs are counted by the caller):
+    /// `(required, optional, pack bytes still to upload, Platform stores bytes)`. A stored pack's
+    /// price includes the history index published with it, read from `ctx` each time (a declined
+    /// due full index is replaced by its delta, [`take_history_fallback`]).
+    fn quote(&self, ctx: &PushContext<'_>) -> (u64, u64, u64, bool) {
+        let resolved = &ctx.policy.resolved;
+        match self {
+            Self::None => (0, 0, 0, false),
+            Self::Empty => {
+                let history = history_alone_price(ctx, &policy_replication(ctx));
+                (0, history, 0, history > 0 && resolved.platform)
+            }
+            Self::Reused {
+                replication, index, ..
+            } => {
+                let optional =
+                    history_alone_price(ctx, replication) + index.as_ref().map_or(0, |i| i.credits);
+                (0, optional, 0, optional > 0 && replication.has_platform())
+            }
+            Self::Store { built, resumed, .. } => {
+                let refs = push_fees::estimate_ref_updates(ctx.ref_updates as u64);
+                let est = built.estimate(ctx, resolved.platform);
+                (
+                    est.total()
+                        .saturating_sub(refs)
+                        .saturating_sub(resumed.credits),
+                    0,
+                    (built.stored.len() as u64).saturating_sub(resumed.bytes),
+                    resolved.platform,
+                )
+            }
+        }
+    }
+}
+
 /// Build one self-contained pack for `want_tips` (excluding remote tips already local as
-/// thin-pack bases), store it according to the repo's storage policy, and record the
-/// `packManifest`. Returns only once the policy's N copies are confirmed and the manifest
-/// has landed; every failure before that is an error, and the caller writes no refs.
-/// `Some(credits)`: the on-chain estimate for what this push stored (the summary line's
-/// fallback when the balance has not moved yet).
-// Build, price, guard, store and record, in that order; the steps are their own functions.
+/// thin-pack bases), print the plan and what it costs, and decide what the push does with it:
+/// store it, reuse an earlier push's record of it, or nothing. Nothing is stored or paid for here.
+// Build, plan, price and look up, in that order; the steps are their own functions.
 #[allow(clippy::too_many_lines)]
-async fn upload_push_pack(
+async fn prepare_push_pack(
     ctx: &PushContext<'_>,
     want_tips: &[String],
     have_bases: &[String],
-) -> Result<Option<Uploaded>> {
+) -> Result<PublicPack> {
     let want_refs: Vec<&str> = want_tips.iter().map(String::as_str).collect();
     let base_refs: Vec<&str> = have_bases.iter().map(String::as_str).collect();
     let pack = build_pack(ctx.git_dir, &want_refs, &base_refs)
@@ -4983,7 +5405,8 @@ async fn upload_push_pack(
     // Storing that pack would charge for 32 bytes of nothing AND permanently occupy a
     // packRef no index row can ever reference: browse coverage is proved from rows, so the
     // repo would read as index-behind until someone paid for a repack. The `refUpdate` the
-    // caller actually wanted still lands; only the empty pack is skipped.
+    // caller actually wanted still lands (priced and guarded with the push); only the empty
+    // pack is skipped.
     // Plan: what is pushed. A dry run always shows it (seeing it is the point of asking).
     let progress = Progress {
         enabled: ctx.progress.enabled || ctx.dry_run,
@@ -5001,24 +5424,36 @@ async fn upload_push_pack(
     if pack.parsed.object_count() == 0 {
         tracing::info!("push adds no new objects; skipping pack upload and browse index");
         // A fast-forward to a commit already stored still moves the default branch: its history
-        // index goes where the policy stores (priced on top of the refs).
-        if ctx.dry_run || ctx.history_cost.get().is_none() {
-            return Ok(None);
+        // index goes where the policy stores (priced on top of the refs). A dry run prices the
+        // two, as a pack's dry run does (`dg pr merge` quotes the push from it).
+        if !ctx.dry_run {
+            return Ok(PublicPack::Empty);
         }
-        let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
-        let (est_credits, history) = history_alone(ctx, refs_only, policy_replication(ctx))?;
-        return Ok(Some(Uploaded {
-            est_credits,
-            index: None,
-            history,
-        }));
+        let history = ctx.history_cost.get();
+        let (text, event) = progress::platform_line(&PlatformWrites {
+            chunks: 0,
+            manifests: history.map_or(0, |c| c.manifests()),
+            ref_updates: ctx.ref_updates,
+            est_credits: push_fees::estimate_ref_updates(ctx.ref_updates as u64)
+                + history_alone_price(ctx, &policy_replication(ctx)),
+            history_bytes: history.map_or(0, |c| c.plain_len()),
+        });
+        progress.emit(&format!("{text} (dry run: nothing stored)"), &event);
+        return Ok(PublicPack::None);
     }
 
     // A private repository stores the pack sealed under the current write epoch, resolved
     // now (§5.3: anchors re-read before every write). Every artifact is sealed (§3); the
     // browse index still indexes the plaintext pack (its offsets are plaintext offsets).
     let stored = seal_for_push(ctx, &pack.bytes).await?;
-    let job = PackJob::for_push(ctx, &stored, &pack).await?;
+    let index_objects = folded_index_objects(ctx, pack.parsed.object_count() as u64).await;
+    let built = BuiltPack {
+        plain_len: pack.bytes.len() as u64,
+        pack,
+        stored,
+        index_objects,
+    };
+    let job = built.job()?;
     let resolved = &ctx.policy.resolved;
     tracing::info!(
         pack_hash = %job.meta.pack_hash,
@@ -5030,7 +5465,7 @@ async fn upload_push_pack(
     );
 
     // What goes where, and what it costs, BEFORE anything is paid for.
-    let estimate = job.estimate(ctx, resolved.platform);
+    let estimate = built.estimate(ctx, resolved.platform);
     let jpath = crate::journal::journal_path(
         ctx.git_dir,
         ctx.repo.id(),
@@ -5042,57 +5477,151 @@ async fn upload_push_pack(
     let (text, event) =
         progress::targets_line(resolved, estimate.total().saturating_sub(resumed.credits));
     progress.emit(&text, &event);
-    let platform_writes = |est: &push_fees::PushEstimate, stores_pack: bool| {
-        progress::platform_line(&PlatformWrites {
-            chunks: if stores_pack { job.chunk_count } else { 0 },
-            manifests: 2 + ctx.history_cost.get().map_or(0, |c| c.manifests()),
-            ref_updates: ctx.refs.len(),
-            est_credits: est.total(),
-            history_bytes: ctx.history_cost.get().map_or(0, |c| c.plain_len()),
-        })
-    };
     if ctx.dry_run {
-        let full = platform_writes(&estimate, resolved.platform);
-        let (text, event) = dry_run_writes(ctx, &job, &pack.bytes, progress, full).await;
+        let full = platform_writes(ctx, &job, &estimate, resolved.platform);
+        let (text, event) = dry_run_writes(ctx, &job, &built.pack.bytes, progress, full).await;
         progress.emit(&format!("{text} (dry run: nothing stored)"), &event);
-        return Ok(None);
+        return Ok(PublicPack::None);
     }
     // Resolve every secret BEFORE asking the user to pay: a missing env var must fail
     // here, not after a "y" at the cost prompt.
     let externals = external_targets(ctx)?;
-    if let Some(refs_only) = reuse_recorded(ctx, &job).await? {
+    // Decided BEFORE the cost guard, so the guard weighs what this push actually pays: a retry
+    // capped below the pack's price is not refused for it (D-601). The kept sealed bytes stay
+    // until the refs land ([`forget_sealed`]): this push may still fail at its refs.
+    if already_recorded(ctx, &job).await? {
         let replication = recorded_replication(ctx, &job).await;
-        let (est_credits, history) = history_alone(ctx, refs_only, replication)?;
-        return Ok(Some(Uploaded {
-            est_credits,
-            index: missing_index(ctx, &job, pack.parsed, externals).await,
-            history,
-        }));
+        let index = missing_index(ctx, &job).await;
+        let pack_hash = job.pack_hash;
+        return Ok(PublicPack::Reused {
+            built,
+            pack_hash,
+            replication,
+            externals,
+            index,
+        });
     }
     resumed.say(ctx, job.chunk_count);
-    let remaining = |e: &push_fees::PushEstimate| e.total().saturating_sub(resumed.credits);
-    let remaining_bytes = (job.bytes.len() as u64).saturating_sub(resumed.bytes);
-    // A declined due full history index: ask again with its cheaper delta (review L8), but only
-    // when the price is what declined (not the unchosen-storage rule, which the delta leaves).
-    let note = ctx.refusal_note();
-    let mut quote = remaining(&estimate);
-    let guarded = policy::enforce_pack(quote, remaining_bytes, ctx.policy, resolved.platform, note);
-    if let Err(e) = guarded {
-        if !policy::over_threshold(quote, ctx.policy) || !take_history_fallback(ctx) {
-            return Err(e.into());
-        }
-        let delta = job.estimate(ctx, resolved.platform);
-        quote = remaining(&delta);
-        policy::enforce_pack(quote, remaining_bytes, ctx.policy, resolved.platform, note)?;
-    }
-    ctx.require_funds(quote).await?;
+    Ok(PublicPack::Store {
+        built,
+        externals,
+        jpath,
+        resumed,
+    })
+}
 
-    let replication = store_pack(ctx, &job, &externals, &jpath).await?;
+/// The push's `platform` line: what it writes on Platform and its estimate.
+fn platform_writes(
+    ctx: &PushContext<'_>,
+    job: &PackJob<'_>,
+    est: &push_fees::PushEstimate,
+    stores_pack: bool,
+) -> (String, serde_json::Value) {
+    progress::platform_line(&PlatformWrites {
+        chunks: if stores_pack { job.chunk_count } else { 0 },
+        manifests: 2 + ctx.history_cost.get().map_or(0, |c| c.manifests()),
+        ref_updates: ctx.ref_updates,
+        est_credits: est.total(),
+        history_bytes: ctx.history_cost.get().map_or(0, |c| c.plain_len()),
+    })
+}
+
+/// Weigh the whole push before its first paid write: its ref updates (deletes too), the public
+/// pack and every members-only pack it stores, and the indexes it publishes, in one question
+/// (under `dash.confirm=always`, one prompt), then check the identity and its key can pay for
+/// all of it (E401 / E402). A push whose packs each pass but together do not is refused before
+/// any of them is stored. What the guard approved is kept in `ctx.approved`.
+async fn approve_push(
+    ctx: &PushContext<'_>,
+    public: &PublicPack,
+    members: &[&MembersPack<'_>],
+) -> Result<policy::Approved> {
+    let refs = push_fees::estimate_ref_updates(ctx.ref_updates as u64);
+    let (members_credits, members_bytes) = members
+        .iter()
+        .map(|m| m.quote(ctx))
+        .fold((0, 0), |(c, b), (mc, mb)| (c + mc, b + mb));
+    if members.iter().any(|m| !m.reused) || matches!(public, PublicPack::Store { .. }) {
+        // a missing secret fails here, before the question, not after a "y"
+        external_targets(ctx)?;
+    }
+    let quote = || {
+        let (required, optional, bytes, platform) = public.quote(ctx);
+        policy::PushQuote {
+            required: refs + required + members_credits,
+            optional,
+            pack_bytes: bytes + members_bytes,
+            platform: platform || (members_bytes > 0 && ctx.policy.resolved.platform),
+        }
+    };
+    let approved = policy::enforce_push(ctx.policy, ctx.refusal_note(), quote, || {
+        take_history_fallback(ctx)
+    })?;
+    ctx.require_funds(approved.credits).await?;
+    ctx.approved.set(approved.credits);
+    Ok(approved)
+}
+
+/// Store the public pack of an approved push, and record its `packManifest`. Returns only once
+/// the policy's N copies are confirmed and the manifest has landed; every failure before that is
+/// an error, and the caller writes no refs. `None` when there is no public pack.
+async fn store_push_pack(
+    ctx: &PushContext<'_>,
+    public: PublicPack,
+    approved: &policy::Approved,
+) -> Result<Option<Uploaded>> {
+    let (built, externals, jpath) = match public {
+        PublicPack::None => return Ok(None),
+        PublicPack::Empty => {
+            return Ok(Some(Uploaded {
+                index: None,
+                history: history_alone(ctx, approved, policy_replication(ctx)),
+            }))
+        }
+        PublicPack::Reused {
+            built,
+            pack_hash,
+            replication,
+            externals,
+            index,
+        } => {
+            let index = match (index, &approved.declined) {
+                (Some(i), None) => Some(PendingIndex {
+                    pack_hash,
+                    parsed: built.pack.parsed,
+                    replication: i.replication,
+                    externals,
+                }),
+                (Some(_), Some(why)) => {
+                    index_skipped(
+                        ctx,
+                        &reindex_skip(format!("the cost guard declined it: {why}")),
+                    );
+                    None
+                }
+                (None, _) => None,
+            };
+            return Ok(Some(Uploaded {
+                index,
+                history: history_alone(ctx, approved, replication),
+            }));
+        }
+        PublicPack::Store {
+            built,
+            externals,
+            jpath,
+            resumed: _,
+        } => (built, externals, jpath),
+    };
+    let job = built.job()?;
+    let on_platform = |platform| built.estimate(ctx, platform).total();
+    let fallback_extra = on_platform(true).saturating_sub(on_platform(false));
+    let replication = store_pack(ctx, &job, &externals, &jpath, fallback_extra).await?;
     ctx.stored_a_pack.set(true);
     let stored_on_platform = replication.has_platform();
-    let actual_estimate = job.estimate(ctx, stored_on_platform);
-    let (text, event) = platform_writes(&actual_estimate, stored_on_platform);
-    progress.emit(&text, &event);
+    let actual_estimate = built.estimate(ctx, stored_on_platform);
+    let (text, event) = platform_writes(ctx, &job, &actual_estimate, stored_on_platform);
+    ctx.progress.emit(&text, &event);
     // Keep this clone's copy of an externally stored pack (.git/dash/packs/<sha256>.pack)
     // BEFORE the manifest names it: if every external copy is later lost — or this push
     // dies between the manifest and the refs — `dg reseed --from-local` can restore the
@@ -5111,11 +5640,11 @@ async fn upload_push_pack(
     crate::fetched::FetchedPacks::record(ctx.git_dir, ctx.repo.id(), job.pack_hash);
 
     retire_journal(ctx, &jpath, &replication);
+    let pack_hash = job.pack_hash;
     Ok(Some(Uploaded {
-        est_credits: actual_estimate.total(),
         index: Some(PendingIndex {
-            pack_hash: job.pack_hash,
-            parsed: pack.parsed,
+            pack_hash,
+            parsed: built.pack.parsed,
             replication,
             externals,
         }),
@@ -5142,15 +5671,19 @@ fn retire_journal(ctx: &PushContext<'_>, jpath: &std::path::Path, replication: &
     }
 }
 
+/// The browse index an earlier push's recorded pack still lacks.
+struct MissingIndex {
+    /// Where the pack's recorded copies are: the index goes there.
+    replication: Replication,
+    /// What publishing it costs, credits: an optional part of the push's price.
+    credits: u64,
+}
+
 /// The browse index still owed for a pack an earlier push recorded: that push may have died
 /// between its manifest and its index (D-920). This clone holds the same pack, so it is
-/// published now if no fragment covers it, to where the recorded copies are.
-async fn missing_index(
-    ctx: &PushContext<'_>,
-    job: &PackJob<'_>,
-    parsed: forge_core::pack::ParsedPack,
-    externals: Vec<ExternalTarget>,
-) -> Option<PendingIndex> {
+/// published with this push if no fragment covers it, to where the recorded copies are, priced
+/// with the push ([`approve_push`]).
+async fn missing_index(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Option<MissingIndex> {
     match ctx.svc.is_pack_indexed(ctx.repo, job.pack_hash).await {
         Ok(true) => None,
         Ok(false) => {
@@ -5178,23 +5711,9 @@ async fn missing_index(
             });
             // One manifest (the index's), not the push's two; no pack bytes.
             let credits = index_cost.chunk_credits + index_cost.metadata_credits / 2;
-            if let Err(e) = policy::enforce(
-                credits + push_fees::estimate_ref_updates(ctx.refs.len() as u64),
-                ctx.policy,
-                replication.has_platform(),
-                policy::NOTE_NOTHING_STORED,
-            ) {
-                index_skipped(
-                    ctx,
-                    &reindex_skip(format!("the cost guard declined it: {e}")),
-                );
-                return None;
-            }
-            Some(PendingIndex {
-                pack_hash: job.pack_hash,
-                parsed,
+            Some(MissingIndex {
                 replication,
-                externals,
+                credits,
             })
         }
         // Unknown whether it is indexed: say so with the fix (`dg repo reindex` checks again and
@@ -5248,10 +5767,8 @@ async fn recorded_replication(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Repli
     }
 }
 
-/// What [`upload_push_pack`] stored.
+/// What [`store_push_pack`] stored.
 struct Uploaded {
-    /// The on-chain estimate for it (the summary line's fallback).
-    est_credits: u64,
     /// The browse index to publish once the refs have landed (none when the pack was already
     /// recorded by an earlier push).
     index: Option<PendingIndex>,
@@ -5369,31 +5886,10 @@ struct PackJob<'a> {
     pack_hash: [u8; 32],
     object_count: u64,
     chunk_count: u32,
-    /// The plaintext pack's size (`bytes` is sealed in a private repository; a dry run seals
-    /// nothing): what the estimate seals itself, so a dry run and a push price the same.
-    plain_bytes: u64,
-    /// Objects the browse index this push publishes covers ([`folded_index_objects`]).
-    index_objects: u64,
 }
 
 impl<'a> PackJob<'a> {
-    /// The job for `pack`, stored as `stored` (sealed in a private repository).
-    async fn for_push(
-        ctx: &PushContext<'_>,
-        stored: &'a [u8],
-        pack: &forge_core::pack::Pack,
-    ) -> Result<Self> {
-        let objects = pack.parsed.object_count() as u64;
-        let index_objects = folded_index_objects(ctx, objects).await;
-        Self::new(stored, pack.bytes.len() as u64, objects, index_objects)
-    }
-
-    fn new(
-        bytes: &'a [u8],
-        plain_bytes: u64,
-        object_count: u64,
-        index_objects: u64,
-    ) -> Result<Self> {
+    fn new(bytes: &'a [u8], object_count: u64) -> Result<Self> {
         let meta = PackMeta::for_bytes(bytes);
         let pack_hash = meta.pack_hash_bytes()?;
         let chunks = split(bytes).len();
@@ -5405,25 +5901,7 @@ impl<'a> PackJob<'a> {
             pack_hash,
             object_count,
             chunk_count,
-            plain_bytes,
-            index_objects,
         })
-    }
-
-    /// The on-chain cost of this push with (or without) Platform storing the bytes.
-    fn estimate(&self, ctx: &PushContext<'_>, platform_bytes: bool) -> push_fees::PushEstimate {
-        let mut est = push_fees::estimate_push(&push_fees::PushShape {
-            pack_bytes: self.plain_bytes,
-            objects: self.object_count,
-            index_objects: self.index_objects,
-            refs: ctx.refs.len() as u64,
-            external_targets: ctx.policy.resolved.external.len() as u64,
-            platform_bytes,
-            sealed: ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
-        });
-        // The history index this push publishes with the pack (its manifest and chunks).
-        est.metadata_credits += history_credits(ctx, platform_bytes);
-        est
     }
 }
 
@@ -5526,6 +6004,7 @@ async fn store_pack(
     job: &PackJob<'_>,
     externals: &[ExternalTarget],
     jpath: &std::path::Path,
+    fallback_extra: u64,
 ) -> Result<Replication> {
     let resolved = &ctx.policy.resolved;
     let journal_store = crate::journal::FileJournalStore::new(jpath.to_path_buf());
@@ -5590,21 +6069,24 @@ async fn store_pack(
     }
 
     // The external copies could not meet N: keep what did confirm, and add the on-chain
-    // copy the user opted into as the fallback (costed and guarded like any paid write).
+    // copy the user opted into as the fallback (costed and guarded like any paid write: the
+    // whole push again, with what storing this pack on Platform adds, `fallback_extra`).
     ctx.say(&err.to_string());
-    let fallback_cost = job.estimate(ctx, true);
-    ctx.progress.priced_note(fallback_cost.total(), |note| {
+    ctx.progress.priced_note(fallback_extra, |note| {
         format!(
-            "dash.platformFallback: storing the pack on Platform instead, est. {} DASH{note}",
-            dash(fallback_cost.total())
+            "dash.platformFallback: storing the pack on Platform instead adds est. {} DASH{note}",
+            dash(fallback_extra)
         )
     });
-    policy::enforce(
-        fallback_cost.total(),
-        ctx.policy,
-        true,
-        policy::NOTE_NOTHING_PAID_ON_PLATFORM,
-    )?;
+    let total = ctx.approved.get().saturating_add(fallback_extra);
+    let note = if ctx.stored_a_pack.get() {
+        policy::NOTE_FALLBACK_AFTER_A_PACK
+    } else {
+        policy::NOTE_NOTHING_PAID_ON_PLATFORM
+    };
+    policy::enforce(total, ctx.policy, true, note)?;
+    ctx.require_funds(fallback_extra).await?;
+    ctx.approved.set(total);
     let fallback = platform_target();
     let fallback = Observed::new(&fallback, &report);
     let chain_rep = replicate(&[&fallback as &dyn StorageTarget], job.bytes, &job.meta, 1)
@@ -5719,25 +6201,10 @@ async fn dry_run_writes(
     progress::platform_line(&PlatformWrites {
         chunks: 0,
         manifests: ctx.history_cost.get().map_or(0, |c| c.manifests()),
-        ref_updates: ctx.refs.len(),
-        est_credits: push_fees::estimate_ref_updates(ctx.refs.len() as u64) + history,
+        ref_updates: ctx.ref_updates,
+        est_credits: push_fees::estimate_ref_updates(ctx.ref_updates as u64) + history,
         history_bytes: ctx.history_cost.get().map_or(0, |c| c.plain_len()),
     })
-}
-
-/// An earlier push may already have recorded this exact pack (a retry after a push that
-/// stored it, then failed at its refs). Decided BEFORE the cost guard, so the guard weighs what
-/// this push actually pays, the refs only: a retry capped below the pack's price is not refused
-/// for it (D-601). `Some(price of the refs)` when the pack is reused.
-async fn reuse_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<Option<u64>> {
-    if !already_recorded(ctx, job).await? {
-        return Ok(None);
-    }
-    // The caller guards the refs (with the history index, one question) and publishes the
-    // pack's browse index when no fragment covers it yet (a push that recorded the pack and died
-    // before its index). The kept sealed bytes stay until the refs land ([`forget_sealed`]): this
-    // push may still fail at its refs.
-    Ok(Some(push_fees::estimate_ref_updates(ctx.refs.len() as u64)))
 }
 
 /// Whether this identity already wrote a `packManifest` for this pack (one indexed read, no
@@ -6064,37 +6531,23 @@ fn default_branch_hint() -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
-/// A push that stores no pack of its own pays for its refs; the history index is one more write
-/// on top of them, to `replication`'s places and priced for them. One question weighs both
-/// (under `dash.confirm=always`, one prompt, not one per write). A guard that declines them
-/// together is asked again for the refs alone: then the index is skipped with a
-/// `historySkipped` event and left to `dg repo reindex`, and the refs still land. A guard that
-/// declines the refs alone refuses the push, as before. Returns the push's price and where the
-/// index goes.
+/// Where the history index of a push that stores no pack of its own goes: to `replication`'s
+/// places, as [`PublicPack::quote`] priced it, when the cost guard approved it with the push.
+/// A guard that declined the push with it approved the refs alone: then the index is skipped with
+/// a `historySkipped` event and left to `dg repo reindex`, and the refs still land.
 fn history_alone(
     ctx: &PushContext<'_>,
-    refs_only: u64,
+    approved: &policy::Approved,
     replication: Replication,
-) -> Result<(u64, HistoryTarget)> {
+) -> HistoryTarget {
     if ctx.history_cost.get().is_none() {
-        policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
-        return Ok((refs_only, HistoryTarget::None));
+        return HistoryTarget::None;
     }
-    let platform = replication.has_platform();
-    let external = replication.replicas.iter().filter(|r| !r.platform).count() as u64;
-    let with_history = || refs_only + history_price(ctx, external, platform);
-    let note = policy::NOTE_NOTHING_STORED;
-    // A declined due full history index: ask again with its cheaper delta (review L8).
-    let mut outcome = policy::enforce(with_history(), ctx.policy, platform, note);
-    if outcome.is_err() && take_history_fallback(ctx) {
-        outcome = policy::enforce(with_history(), ctx.policy, platform, note);
-    }
-    match outcome {
-        Ok(()) => Ok((with_history(), HistoryTarget::Alone(replication))),
-        Err(e) => {
-            policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
-            history_skipped(ctx, &format!("the cost guard declined it: {}", e.message));
-            Ok((refs_only, HistoryTarget::None))
+    match &approved.declined {
+        None => HistoryTarget::Alone(replication),
+        Some(why) => {
+            history_skipped(ctx, &format!("the cost guard declined it: {why}"));
+            HistoryTarget::None
         }
     }
 }
@@ -6845,7 +7298,10 @@ mod tests {
         settle_ref_writes, skipped_packs_needed, write_denied, Planned, PushOutcome, PushSpec,
         Unreadable,
     };
-    use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
+    use super::{
+        default_branch_hint, history_tip_landed, lazy_blob_packs, role_denied, PushHistory,
+    };
+    use super::{fast_forward, finalize_outcomes, ref_writes, remote_heads, PerRef, RefWrites};
     use forge_core::members_git::Audience;
 
     #[test]
@@ -6900,6 +7356,7 @@ mod tests {
             },
             new_oid: None,
             prev_oid: Some("a".repeat(40)),
+            settles: Vec::new(),
             reject: None,
             audience: Audience::Public,
         };
@@ -6944,9 +7401,219 @@ mod tests {
             },
             new_oid: Some("1".repeat(40)),
             prev_oid: None,
+            settles: Vec::new(),
             reject: None,
             audience: Audience::Public,
         }
+    }
+
+    /// The ref updates `writes` would land as, by `author` in one block at `at`.
+    fn landed_as(writes: &RefWrites, author: &str, at: u64) -> Vec<forge_core::rules::RefUpdate> {
+        writes
+            .writes
+            .iter()
+            .enumerate()
+            .map(|(k, w)| forge_core::rules::RefUpdate {
+                id: format!("{author}{k}"),
+                ref_name_hash: "H".into(),
+                ref_name: w.ref_name.clone(),
+                prev_oid: w.prev_oid.as_deref().map(hex::encode).unwrap_or_default(),
+                new_oid: hex::encode(&w.new_oid),
+                force: w.force,
+                protected: false,
+                author: author.into(),
+                created_at: at,
+            })
+            .collect()
+    }
+
+    /// The stuck race: alice and bob pushed off X at once (heads Y, Z), carol fetched, merged
+    /// both into M and pushed without `--force`. The push names both heads, one update each, so
+    /// every reader's fold (identity ancestry: no commits needed) resolves `main` to M and the
+    /// push reports ok. The single update an older helper wrote leaves Z live: a lost race.
+    #[test]
+    fn a_merge_of_every_diverged_head_settles_the_race_for_every_reader() {
+        use forge_core::rules::{resolve_ref, RefState, RefUpdate};
+        let (x, z, y, m) = (
+            "a".repeat(40),
+            "b".repeat(40),
+            "c".repeat(40),
+            "d".repeat(40),
+        );
+        let dst = "refs/heads/main";
+        let update = |id: &str, prev: &str, new: &str, at: u64| RefUpdate {
+            id: id.into(),
+            ref_name_hash: "H".into(),
+            ref_name: dst.into(),
+            prev_oid: prev.into(),
+            new_oid: new.into(),
+            force: false,
+            protected: false,
+            author: id.into(),
+            created_at: at,
+        };
+        let race = vec![
+            update("owner", "", &x, 50),
+            update("alice", &x, &z, 100),
+            update("bob", &x, &y, 200),
+        ];
+        let same = |a: &str, b: &str| a == b;
+        let heads = remote_heads(&[(dst.into(), resolve_ref(&race, &[], "H", same))], dst);
+        assert_eq!(heads, [y.clone(), z.clone()]);
+        let graph = |a: &str, d: &str| d == m && [&x, &y, &z].iter().any(|h| *h == a);
+
+        let mut merge = planned(dst);
+        merge.new_oid = Some(m.clone());
+        merge.prev_oid = Some(heads[0].clone());
+        merge.settles = fast_forward(dst, &heads, &m, graph).expect("M merges both heads");
+        assert_eq!(merge.settles, std::slice::from_ref(&z));
+        assert_eq!(merge.writes(), 2);
+        let writes = ref_writes(std::slice::from_ref(&merge), &[0]).unwrap();
+        let prevs: Vec<String> = writes
+            .writes
+            .iter()
+            .map(|w| hex::encode(w.prev_oid.as_ref().unwrap()))
+            .collect();
+        assert_eq!(prevs, [y.clone(), z.clone()]);
+        assert!(writes
+            .writes
+            .iter()
+            .all(|w| !w.force && hex::encode(&w.new_oid) == m));
+
+        let landed: Vec<RefUpdate> = race
+            .iter()
+            .cloned()
+            .chain(landed_as(&writes, "carol", 300))
+            .collect();
+        let state = resolve_ref(&landed, &[], "H", same);
+        assert!(
+            matches!(&state, RefState::Resolved { oid, .. } if *oid == m),
+            "{state:?}"
+        );
+        let outcome = finalize_outcomes(vec![merge], &[(dst.into(), state)], false);
+        assert_eq!(outcome[0].wire(), format!("ok {dst}"));
+
+        // Before: the merge's one update named only the tip it saw.
+        let mut old = planned(dst);
+        old.new_oid = Some(m.clone());
+        old.prev_oid = Some(y.clone());
+        let one = ref_writes(std::slice::from_ref(&old), &[0]).unwrap();
+        let landed: Vec<RefUpdate> = race
+            .iter()
+            .cloned()
+            .chain(landed_as(&one, "carol", 300))
+            .collect();
+        let state = resolve_ref(&landed, &[], "H", same);
+        assert!(matches!(&state, RefState::Diverged { heads } if heads.len() == 2));
+        let outcome = finalize_outcomes(vec![old], &[(dst.into(), state)], false);
+        assert!(
+            outcome[0].wire().contains("lost concurrent race"),
+            "{}",
+            outcome[0].wire()
+        );
+    }
+
+    /// A push that contains only one side of a race would add a head and settle nothing: it is
+    /// refused before anything is written, naming the head to merge. On a resolved ref the
+    /// check is git's plain fast-forward.
+    #[test]
+    fn a_push_containing_one_side_of_a_race_is_refused_before_it_is_paid_for() {
+        let (z, y, n) = ("b".repeat(40), "c".repeat(40), "e".repeat(40));
+        let dst = "refs/heads/main";
+        let only_y = |a: &str, d: &str| a == y && d == n;
+        let heads = [y.clone(), z.clone()];
+        let why = fast_forward(dst, &heads, &n, only_y).unwrap_err();
+        assert!(
+            why.starts_with("non-fast-forward: main has diverged"),
+            "{why}"
+        );
+        assert!(why.contains(&format!("git fetch <remote> {z}")), "{why}");
+        // The other side alone is refused the same way, naming the newest head.
+        let only_z = |a: &str, d: &str| a == z && d == n;
+        assert!(fast_forward(dst, &heads, &n, only_z)
+            .unwrap_err()
+            .contains(&y));
+        // A resolved ref: a fast-forward records its tip and settles nothing more.
+        assert_eq!(
+            fast_forward(dst, std::slice::from_ref(&y), &n, only_y),
+            Ok(vec![])
+        );
+        assert_eq!(
+            fast_forward(dst, std::slice::from_ref(&z), &n, only_y),
+            Err("non-fast-forward".to_string())
+        );
+        assert_eq!(fast_forward(dst, &[], &n, only_y), Ok(vec![]));
+    }
+
+    /// A ref that settles a race writes several updates; the batch's results fold back to one
+    /// per ref: its own update's id when all landed, else its first failure, and none for a ref
+    /// a sequential write never reached.
+    #[test]
+    fn a_settling_refs_updates_report_as_one_result() {
+        let fail = |w: &str| forge_core::Error::Config(w.into());
+        let write = |prev: u8| forge_core::repo::RefWrite {
+            ref_name: "refs/heads/main".into(),
+            new_oid: vec![0xcc; 20],
+            prev_oid: Some(vec![prev; 20]),
+            force: false,
+        };
+        let writes = RefWrites {
+            writes: vec![write(0xaa), write(0xbb), write(0x11)],
+            of: vec![0, 0, 1],
+        };
+        let ids = |r: PerRef| -> (Vec<std::result::Result<String, String>>, bool) {
+            (
+                r.results
+                    .into_iter()
+                    .map(|r| r.map_err(|e| e.to_string()))
+                    .collect(),
+                r.landed,
+            )
+        };
+        assert_eq!(
+            ids(writes.per_ref(vec![Ok("a".into()), Ok("a2".into()), Ok("b".into())])),
+            (vec![Ok("a".to_string()), Ok("b".to_string())], true)
+        );
+        // the ref's own update landed and its settling one failed: partly written, the failure
+        // names the head still live and how to settle it, and the batch counts as landed
+        let (got, landed) =
+            ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost")), Ok("b".into())]));
+        let e = got[0].as_ref().unwrap_err();
+        assert!(e.contains("lost") && e.contains("bbbbbbbbbbbb"), "{e}");
+        assert!(
+            e.contains("still reads as diverged") && e.contains("Any new commit on top"),
+            "{e}"
+        );
+        assert_eq!(got[1], Ok("b".to_string()));
+        assert!(landed);
+        // sequential: stopped at the settling update's failure, ref 1 never attempted; the own
+        // update still landed
+        let (got, landed) = ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost"))]));
+        assert_eq!(got.len(), 1);
+        assert!(got[0].is_err());
+        assert!(landed);
+        // nothing landed
+        let (_, landed) = ids(writes.per_ref(vec![Err(fail("refused"))]));
+        assert!(!landed);
+        assert!(writes.is_own(0) && !writes.is_own(1) && writes.is_own(2));
+    }
+
+    /// A one-ref push whose own update landed but whose settling update failed is not a
+    /// whole-push failure (nothing written): the ref is rejected with the settling advice and
+    /// the push reads its refs back.
+    #[test]
+    fn a_partly_written_settlement_is_rejected_not_reported_as_nothing_written() {
+        let mut p = vec![planned("refs/heads/main")];
+        let partly = Err(forge_core::Error::Platform(
+            "the push landed, but the update settling the concurrent head bbbbbbbbbbbb failed"
+                .into(),
+        ));
+        // landed_before false, but the batch's own update landed (PerRef::landed)
+        settle_ref_writes(&mut p, &[0], vec![partly], true).unwrap();
+        assert!(p[0]
+            .reject
+            .as_deref()
+            .is_some_and(|r| r.contains("settling the concurrent head")));
     }
 
     /// CodeRabbit (PR #127): a batch where some refs landed and one failed rejects only the
@@ -7042,6 +7709,7 @@ mod tests {
             },
             new_oid: None,
             prev_oid: Some("2".repeat(40)),
+            settles: Vec::new(),
             reject: None,
             audience: Audience::Public,
         };
@@ -7091,6 +7759,54 @@ mod tests {
             ..Default::default()
         };
         assert!(incremental_fetch_complete(true, &filtered, &wants, || true));
+    }
+
+    #[test]
+    fn a_partial_clones_lazy_blob_fetch_reads_only_the_packs_that_hold_the_blobs() {
+        let git_dir = tempfile::tempdir().unwrap();
+        let d = Some(git_dir.path());
+        let packs: Vec<_> = (1..=3).map(|h| manifest(h, "o", &[])).collect();
+        let (b1, b2, tree) = ("1".repeat(40), "2".repeat(40), "3".repeat(40));
+        crate::catalog::record(git_dir.path(), "r", [1; 32], std::slice::from_ref(&b1));
+        crate::catalog::record(git_dir.path(), "r", [2; 32], std::slice::from_ref(&b2));
+        // pack 3 was pushed after the clone: not catalogued
+        let filtered = crate::options::OptionState {
+            filter: Some("blob:none".into()),
+            ..Default::default()
+        };
+        let lazy = |o: &crate::options::OptionState, incremental: bool, wants: &[String]| {
+            lazy_blob_packs(d, "r", o, incremental, &packs, wants)
+        };
+        assert_eq!(
+            lazy(&filtered, true, std::slice::from_ref(&b2)),
+            Some(vec![[2; 32]])
+        );
+        assert_eq!(
+            lazy(&filtered, true, &[b1.clone(), b2.clone()]),
+            Some(vec![[1; 32], [2; 32]])
+        );
+        // Every pack is read for a want no catalogued pack holds, on the full pass, for an
+        // unfiltered fetch, for nothing wanted, and outside a clone.
+        assert_eq!(lazy(&filtered, true, &[b1.clone(), tree]), None);
+        assert_eq!(lazy(&filtered, false, std::slice::from_ref(&b2)), None);
+        assert_eq!(
+            lazy(
+                &crate::options::OptionState::default(),
+                true,
+                std::slice::from_ref(&b2)
+            ),
+            None
+        );
+        assert_eq!(lazy(&filtered, true, &[]), None);
+        assert_eq!(
+            lazy_blob_packs(None, "r", &filtered, true, &packs, &[b2]),
+            None
+        );
+        // Only the packs the repository still lists: a catalogued pack no longer stored is not chosen.
+        assert_eq!(
+            lazy_blob_packs(d, "r", &filtered, true, &packs[1..], &[b1]),
+            None
+        );
     }
 
     #[test]
@@ -7801,6 +8517,54 @@ mod tests {
         assert!(indexed.contains(".is_pack_indexed(ctx.repo"), "{indexed}");
         for b in [stored, indexed] {
             assert!(!b.contains("mirror("), "{b}");
+        }
+    }
+
+    /// The cost guard weighs a push once, before its first paid write (source check): every
+    /// push that writes a ref gets a context, deletes and ref-only pushes too, and no pack is
+    /// guarded on its own. The one later question is a Platform fallback's, asked for the whole
+    /// push again with what the fallback adds.
+    #[test]
+    fn the_cost_guard_weighs_each_push_once_before_it_pays() {
+        let src = include_str!("helper.rs");
+        let body = |from: &str| {
+            let at = src.find(from).unwrap_or_else(|| panic!("{from}"));
+            &src[at..at + src[at..].find("\n}\n").expect("its end")]
+        };
+        let guarded = |b: &str| b.contains("policy::enforce");
+        let approve = body("async fn approve_push<");
+        assert!(approve.contains("policy::enforce_push(") && approve.contains("require_funds("));
+        for f in [
+            "async fn prepare_push_pack(",
+            "async fn store_push_pack(",
+            "async fn prepare_members_pack<",
+            "async fn store_members_pack(",
+            "async fn missing_index(",
+        ] {
+            let b = body(f);
+            assert!(
+                !guarded(b) && !b.contains("require_funds("),
+                "{f} guards on its own"
+            );
+        }
+        let fallback = body("async fn store_pack(");
+        assert!(fallback.contains("ctx.approved.get().saturating_add(fallback_extra)"));
+        let push = {
+            let at = src.find("    async fn push_refs(").expect("push_refs");
+            &src[at..at + src[at..].find("\n    }\n").expect("its end")]
+        };
+        assert!(push.contains("let ctx = accepted.then(|| PushContext {"));
+        assert!(push.contains("PushPolicy::guard_only("));
+        let approve_at = push.find("approve_push(").unwrap();
+        for store in [
+            "store_push_pack(",
+            "store_members_pack(",
+            "write_ref_updates(",
+        ] {
+            assert!(
+                push.find(store).unwrap() > approve_at,
+                "{store} before the guard"
+            );
         }
     }
 

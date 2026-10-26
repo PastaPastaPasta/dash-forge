@@ -1,15 +1,16 @@
 name: Web e2e
 
 # The read-only Playwright suite on every PR that touches the web app or what it reads: the
-# app built for devnet sakura, served locally, reading the public read fixture (e2e/README.md)
-# through sakura's public DAPI. No secrets: every spec that signs or spends skips without
+# app built for testnet, served locally, reading the public read fixture (e2e/README.md)
+# through testnet's public DAPI. No secrets: every spec that signs or spends skips without
 # E2E_WRITE. It is the regression gate for the UI — a spec that a deliberate UI change made
-# stale fails in the PR that changed it, not in a nightly days later. A read the devnet
+# stale fails in the PR that changed it, not in a nightly days later. A read the network
 # rate-limits or drops is retried once (playwright.config.ts: `retries` under CI).
 #
-# It depends on sakura being up and seeded. When sakura is reset, this fails until the
-# fixture is redeployed (forge-contracts/scripts/seed-v2-fixture.mjs) and its summary
-# (forge-contracts/deployments/fixtures/devnet-sakura.json) committed, which is the signal.
+# It depends on testnet being up. The specs that read the fixture skip until it is seeded
+# (forge-contracts/scripts/seed-v2-fixture.mjs --production testnet; the Testnet Nightly's seed
+# job uploads the summary) and its summary (forge-contracts/deployments/fixtures/testnet.json)
+# committed.
 
 on:
   # No `paths:` filter on pull_request: the Playwright check is REQUIRED by branch protection,
@@ -75,7 +76,7 @@ jobs:
           fi
 
   playwright:
-    name: playwright (read-only, devnet sakura)
+    name: playwright (read-only, testnet)
     needs: changes
     # `!cancelled()` replaces the implicit success() so a FAILED `changes` job runs this job
     # (and fails it in the first step) instead of skipping it, since a skipped job satisfies a
@@ -91,7 +92,7 @@ jobs:
       run:
         working-directory: forge-web
     env:
-      E2E_DEVNET: sakura
+      E2E_NETWORK: testnet
     steps:
       # A failed `changes` job must not turn into a skipped (= passing) required check.
       - name: Fail when change detection did not succeed
@@ -116,28 +117,26 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Playwright browsers
         run: pnpm exec playwright install --with-deps chromium webkit
-      - name: Build for devnet sakura
+      - name: Build for testnet
         env:
-          NEXT_PUBLIC_NETWORK: devnet
-          NEXT_PUBLIC_DEVNET_NAME: sakura
+          NEXT_PUBLIC_NETWORK: testnet
           NEXT_PUBLIC_FIAT_RATE_URL: /__e2e/fiat-rates.json
         run: pnpm build
       # E2E_SKIP_BUILD serves the `out/` just built instead of building a second time. Both
       # projects run: chromium (every spec) and webkit (sign-in resilience).
-      # The "showcase repos" specs read imported mirrors that are not yet re-created on sakura:
-      # excluded until the re-mirror is announced (then drop the --grep-invert).
+      # The "showcase repos" specs read imported mirrors that are not yet created on testnet:
+      # excluded until the mirrors are imported and pinned (then drop the --grep-invert).
       - name: Playwright
         env:
           E2E_SKIP_BUILD: '1'
         run: pnpm exec playwright test --grep-invert "showcase repos"
       # The browse budgets on the dash mirror (page-budget.spec.ts bi-1, cb-1..cb-4): the requests
       # and bytes a large repo's code pages cost, which the read fixture is too small to show
-      # (QW4-003 regressed with nothing in CI to catch it). The mirror on sakura has no DPNS name,
-      # so its owner is named here; the specs skip without it. Sakura's Platform reset to
-      # 5.0.0-beta.2 (2026-10-06) took the mirror with it: set E2E_SHOWCASE_DASHPAY to the new
-      # mirror owner once the dash mirror is re-imported. Until then these specs skip.
+      # (QW4-003 regressed with nothing in CI to catch it). The mirror may have no DPNS name, so
+      # its owner is named here; the specs skip without it. Set E2E_SHOWCASE_DASHPAY to the
+      # mirror owner once the dash mirror is imported on testnet. Until then these specs skip.
       # Not run at all while E2E_SHOWCASE_DASHPAY (a repository variable) is unset: the specs
-      # would skip anyway, but the suite's devnet readiness guard first waits up to six minutes.
+      # would skip anyway, but the suite's readiness guard first waits up to six minutes.
       - name: Playwright (dash mirror budgets)
         if: (success() || failure()) && vars.E2E_SHOWCASE_DASHPAY != ''
         env:

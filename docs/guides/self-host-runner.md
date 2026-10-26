@@ -33,7 +33,7 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
 7. **Reads the re-run requests** written since the last poll (`dg ci reruns`, one query) and runs each one that counts, as [Re-runs](#re-runs) says. The first poll only records the time (five minutes back, so a clock running ahead hides no request).
 8. **Runs the schedules** whose time came since the last poll, with `schedule = true`, as [Schedules](#schedules) says.
 
-If a run could not start because the fetch or checkout failed, the next polls try it again, up to `attempts` (default 3). A run whose jobs did run is not repeated by a poll: a maintainer or writer [asks for a re-run](#re-runs), or you run `forge-runner run` by hand.
+If a run could not start because the fetch or checkout failed, the next polls try it again, up to `attempts` (default 3). A run whose jobs did run is not repeated by a poll: a maintainer or writer [asks for a re-run](#re-runs), or you run `forge-runner run` by hand. When a job's final report can't be delivered after its retries, the runner keeps the report (without artifacts, with a copy of its log, in `state_dir`) and resends it at the start of each poll until it lands. After 48 polls it gives up and prints the `dg ci report` command to send it by hand.
 
 ## Pull requests
 

@@ -32,7 +32,7 @@ This guide covers:
 
 ## The setup wizard
 
-Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. The hosted site runs on devnet sakura ([Which network](README.md#which-network)).
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. The hosted site runs on testnet ([Which network](README.md#which-network)).
 
 ### Automatic sync
 
@@ -77,11 +77,11 @@ For the Action, you need GitHub write access and a signed-in Dash identity as ab
 For command-line imports, you need:
 
 - `dg` and `git-remote-dash` for `dg import`. The standalone `forge-import` is optional. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Once a release is published, the [install script](../INSTALL.md#install-script-linux-and-macos) can fetch all three, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
-- A funded identity, signed in with `dg auth new` or `dg auth login` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)). `dg import` uses that stored key. The standalone `forge-import` does not read `dg`'s default: give it `--identity <source>` or `DASH_FORGE_KEY`, for example `DASH_FORGE_KEY=keychain:dash-forge/devnet-sakura/<identity id>` for the key `dg auth` keeps in the keychain ([key sources](identity-and-keys.md#where-keys-live-today)).
+- A funded identity, signed in with `dg auth new` or `dg auth login` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)). `dg import` uses that stored key. The standalone `forge-import` does not read `dg`'s default: give it `--identity <source>` or `DASH_FORGE_KEY`, for example `DASH_FORGE_KEY=keychain:dash-forge/testnet/<identity id>` for the key `dg auth` keeps in the keychain ([key sources](identity-and-keys.md#where-keys-live-today)).
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
 
-> **Network.** Forge runs on devnet sakura (`--network devnet --devnet-name sakura`), and comes to testnet and mainnet once Dash Platform v5 reaches them. See [Networks](../networks.md).
+> **Network.** Forge runs on testnet, the tools' default network, and comes to mainnet once Dash Platform v5 reaches it. See [Networks](../networks.md).
 
 > **Cost.** A first import is mostly git data plus one document per issue, PR, comment and review. The Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost about **0.078 DASH**; a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. Re-runs pay only for what is new, and nothing when nothing changed. `--dry-run` prices your repository before you spend anything.
 
@@ -106,13 +106,13 @@ The estimate follows the same policy. With your own storage, the git part costs 
 **Always start with a dry run.** It reads everything, compares it with what the destination already holds, and prints what it would write and what that would cost. It writes nothing:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name sakura --dry-run
+forge-import alice/project --network testnet --dry-run
 ```
 
 Then run it with a spending cap:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name sakura --max-spend 0.5 --state ./alice-project.sync.json --i-have-the-rights
+forge-import alice/project --network testnet --max-spend 0.5 --state ./alice-project.sync.json --i-have-the-rights
 ```
 
 **Before it writes: the rights acknowledgement.** A mirror is permanent on Dash Platform and carries other people's words: commit authors' names and emails travel in the pack objects, and issues, PRs, comments and reviews carry their authors' logins and text. Platform cannot delete any of it, and an author's later edit or deletion on GitHub is not carried over. So a real run prints what it is about to publish, together with the licence GitHub reports for the source (`MIT`, `none detected`, or not reported) and, when it can tell, whether the source belongs to the account in use, and then needs your say-so: `--i-have-the-rights`, or a "y" typed at a terminal. With no terminal and no flag it refuses, naming the flag. `--yes` confirms the cost only; it is not the acknowledgement. A dry run needs neither. The run warns when the source has no licence or belongs to someone else (the account in use is `gh`'s login, or `FORGE_IMPORT_ACCOUNT` when you set it). If you are not the owner and the licence does not allow it, do not mirror it. Dash Forge cannot take a mirror down; an owner's removal request can only be honoured on dashhq's hosted surfaces (`docs/hosted-curation.md`).
@@ -127,7 +127,7 @@ Useful flags (see `forge-import --help`):
 |---|---|
 | `--repo <owner/name or name>` | The destination. The default is the GitHub name, owned by you; it is created when missing. |
 | `--sync code,issues,prs,releases,labels` | What to mirror (default: all). |
-| `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. |
+| `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. Without `--max-spend`, the cap is the estimate the run prints (and asks you to confirm, unless `--yes`): a run never spends more than you approved, and one that would is stopped before that write; re-running prices what is left. |
 | `--state <file>` | Incremental state: the next run asks GitHub only for issues, PRs and comments updated since this run started. |
 | `--dry-run` | Price only. |
 | `--include-label-definitions` | A private destination only: mirror the label definitions too. Their names, colours and descriptions are not encrypted, so they are left out by default; the labels set on issues and PRs are encrypted either way. |
@@ -181,7 +181,7 @@ A signature or per-file checksum (`<file>.asc`, `.sig`, `.minisig`, `.sha256`, `
 
 ### Into a private repository
 
-A private GitHub source must not be copied into a public destination. Set your own storage for dg as above. Sign the GitHub CLI in with access to the source, create a private Forge repository first (`dg repo create project --private --network devnet --devnet-name sakura`), then pass its name with `dg import github.com/alice/project --repo project --network devnet --devnet-name sakura --max-spend 0.2`. Confirm the rights and estimate in the terminal. Raise dg's key budget if the cap needs more than its remaining budget. See [Private repositories](collaborating.md#private-repositories) for membership and encryption.
+A private GitHub source must not be copied into a public destination. Set your own storage for dg as above. Sign the GitHub CLI in with access to the source, create a private Forge repository first (`dg repo create project --private --network testnet`), then pass its name with `dg import github.com/alice/project --repo project --network testnet --max-spend 0.2`. Confirm the rights and estimate in the terminal. Raise dg's key budget if the cap needs more than its remaining budget. See [Private repositories](collaborating.md#private-repositories) for membership and encryption.
 
 Into a private repository, releases are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)) and have no 4,096-byte limit: every asset is listed in an encrypted asset list. Each asset the importer can download from its public URL, within the same 4 GiB per run and 1 GiB per release (a release's files are held in memory while they are encrypted), is checked against the size and digest the source records, encrypted and stored on your own storage (the policy set above). The others are listed as links to the source until a later run seals them (`assetsLinked`). The download sends no token, so a private source repository's assets stay links. The source link, publisher and publish date are encrypted too. A private import with releases therefore needs storage of your own: without it, a release with assets is skipped and the run ends `partial`. Storage still shows each asset's exact size, which can identify the public release it mirrors, and the run warns about it.
 
@@ -251,7 +251,7 @@ The Action signs with the `DASH_FORGE_KEY` repository secret (Settings → Secre
   jq '.identityKeys | length' ci-identity.json    # must print 1
   ```
 
-  Paste the file's contents as the secret. This lowers the risk but does not remove it: a leaked HIGH key can sign documents and spend the identity's credits until you disable it. Better still, use a **separate identity** with a small balance, added to the repository as a maintainer (`dg collab add <owner>/<repo> <ci identity id> --role maintainer`; a writer works too, but cannot publish releases). Then a leak costs only that balance. See [Identity and keys](identity-and-keys.md).
+  Paste the file's contents as the secret, and set `allow-unlimited-key: 'true'` on the Action's step: its keys have no budget, so the Action refuses an identity file without that input. This lowers the risk but does not remove it: a leaked HIGH key can sign documents and spend the identity's credits until you disable it. Better still, use a **separate identity** with a small balance, added to the repository as a maintainer (`dg collab add <owner>/<repo> <ci identity id> --role maintainer`; a writer works too, but cannot publish releases). Then a leak costs only that balance. See [Identity and keys](identity-and-keys.md).
 
 Add your storage secrets too, for example `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` (or `PINNING_TOKEN`).
 
@@ -262,10 +262,8 @@ Save this as `.github/workflows/forge-mirror.yml` in the GitHub repository. Repl
 ```yaml
 name: Forge mirror
 on:
+  # Only people with write access can start these (issue and PR events: see below).
   push: { branches: ['**'], tags: ['**'] }
-  issues: { types: [opened, edited, closed, reopened, labeled, unlabeled] }
-  issue_comment: { types: [created] }
-  pull_request_target: { types: [opened, edited, closed, reopened, synchronize] }
   release: { types: [published, edited] }
   schedule: [{ cron: '17 3 * * *' }]     # daily reconcile
   workflow_dispatch:
@@ -282,9 +280,8 @@ jobs:
         with:
           install: 'source'
           repo: dash://<owner identity id>/<repo name>
-          network: devnet                 # Forge's network today (also the Action's default)
-          devnet-name: sakura
-          sync: code,releases,issues,prs
+          network: testnet                # Forge's network today (also the Action's default)
+          sync: code,releases
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com
           s3-region: auto
@@ -298,7 +295,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-No `actions/checkout` step is needed: the Action keeps its own bare mirror of the GitHub repository and never runs code from it, so `pull_request_target` is safe here.
+No `actions/checkout` step is needed: the Action keeps its own bare mirror of the GitHub repository and never runs code from it.
+
+To mirror issues and pull requests too, add `issues,prs` to `sync`: the daily run picks them up. Anyone with a GitHub account can open one, and you pay to store it, so the workflow leaves out the `issues`, `issue_comment` and `pull_request_target` triggers that would start a paid run on every such event. The Action's README explains [that opt-in and its risk](../../action/README.md#mirroring-issues-and-pull-requests).
 
 Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to see the estimate before you spend anything.
 
@@ -307,7 +306,7 @@ Before you copy it:
 - **Pinned to a release tag (once a release is published),** the Action installs that release's `dg`, `git-remote-dash` and `forge-import` with [`install.sh`](../../install.sh): it checks each archive against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. The Action's `version` input defaults to the release it was cut with, so `@v<version>` installs that version. No release is published yet, so pin a commit with `install: 'source'` for now.
 - **Build from source (works today).** Pin a commit you have reviewed (all 40 characters) and set `install: 'source'`: the Action compiles the tools from the commit in `uses:` (Rust is preinstalled on `ubuntu-latest`; the Action installs a pinned, checksummed protoc). The first build takes several minutes, and the Action caches the compiled dependencies for later runs (that cache is trusted like any other cache of your repository; `build-cache: 'false'` turns it off). This is what [the setup wizard](#the-setup-wizard) writes, because the site runs `master`, which can be ahead of the latest release. [`.github/workflows/mirror-action.yml`](../../.github/workflows/mirror-action.yml) is this repository's own live test of the Action. To build the tools in your own steps instead, put them on `PATH` and set `install: 'false'`.
 - **Do not use `@master`.** The binaries run with your key, so following whatever `master` holds would hand the key to any future change there, and `master`'s scripts run with the latest release's binaries, which can be older than they expect.
-- **Forge runs on devnet sakura** ([Networks](../networks.md)). The Action's default network is the one the hosted site uses. Mainnet and testnet have no Forge deployment yet, so `network: mainnet` fails until one is registered.
+- **Forge runs on testnet** ([Networks](../networks.md)). The Action's default network is the one the hosted site uses. Mainnet has no Forge deployment yet, so `network: mainnet` fails until one is registered.
 - **Anyone who can open an issue or a PR can make a run spend**, up to `cost-cap` per event, until the key's budget or the identity's balance runs out. On a busy public repository, drop the event triggers and let the daily schedule do the work, or remove `issues,prs` from `sync`.
 - **Status.** `ok`, `dry_run` and `partial` succeed (`partial` with a warning, since the next run retries; `fail-on-partial: 'true'` fails it). `cap_exceeded` and `error` fail the step. The job summary shows what was written, the spend against the estimate, and the runner key's remaining budget and expiry.
 - Release assets are not copied. They are recorded by GitHub URL with a sha256: GitHub's digest when it reports one, otherwise one the importer computes by downloading the asset once (nothing is kept, and a re-run reuses the recorded hash). An asset that cannot be hashed is recorded without one, with a warning; `dg release download` and the web refuse to hand out such an asset unverified. GitHub's download links cannot be read by a web page (no CORS), so the web's release page links to them directly and offers to check the downloaded file against the hash.
@@ -324,7 +323,7 @@ Run the same import again whenever you like, from cron or another CI system, wit
 
 ```sh
 # crontab -e: every 15 minutes, code and issues, never more than 0.02 DASH a run
-*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network devnet --devnet-name sakura --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --i-have-the-rights --summary-json /srv/mirror/last-run.json
+*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network testnet --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --i-have-the-rights --summary-json /srv/mirror/last-run.json
 ```
 
 If you only want code, plain git does it with no importer at all:

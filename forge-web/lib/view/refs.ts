@@ -17,6 +17,14 @@ export function tipOidOf(ref: ResolvedRef | undefined): string | null {
   return null
 }
 
+/** Every live head of a ref, newest first: one when resolved, several when diverged, none when unborn. */
+export function headOidsOf(ref: ResolvedRef | undefined): string[] {
+  const s = ref?.state
+  if (s?.state === 'resolved') return [s.oid]
+  if (s?.state === 'diverged') return s.heads.map((h) => h.oid)
+  return []
+}
+
 /** Whether a resolved ref is in the diverged state (surface a warning in the UI). */
 export function isDiverged(ref: ResolvedRef | undefined): boolean {
   return ref?.state.state === 'diverged'

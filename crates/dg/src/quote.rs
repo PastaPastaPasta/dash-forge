@@ -167,15 +167,16 @@ pub struct MergePush {
 
 /// The pack a merge uploads from a fork is priced at this size: a pull request's few commits
 /// are usually a few KiB (the fork-PR merge QA wave 3 measured charged 920.5M credits in all).
-/// A larger head costs more; `git push` prices it as it runs.
-const MERGE_PACK_BYTES: u64 = 4096;
+/// A larger head costs more; `git push` prices it as it runs, and under `--yes` refuses it
+/// (the quote is its cap, [`cap_dash`]).
+pub const MERGE_PACK_BYTES: u64 = 4096;
 /// The objects that pack is priced at (its browse index grows with them).
 const MERGE_PACK_OBJECTS: u64 = 16;
 
 /// What a push of one branch to a new commit writes: its ref update, its history index when
 /// the branch is the default one, and the pack and browse index of its new objects when it
-/// uploads one.
-fn branch_push(p: MergePush) -> u64 {
+/// uploads one. Under `--yes` it is the push's cap ([`cap_dash`]).
+pub fn merge_push(p: MergePush) -> u64 {
     let history = if p.history_index {
         2 * push_fees::history_index(HISTORY_PART_BYTES, false, 1, p.platform_bytes, false)
     } else {
@@ -203,7 +204,7 @@ fn branch_push(p: MergePush) -> u64 {
 /// index); and the source branch's delete when asked. New objects' pack comes on top (a
 /// fast-forward stores none; `git push` prices it as it runs).
 pub fn merge(push: Option<MergePush>, deletes_source: bool) -> u64 {
-    let push = push.map_or(0, branch_push);
+    let push = push.map_or(0, merge_push);
     let delete = if deletes_source {
         push_fees::estimate_ref_updates(1)
     } else {
@@ -212,15 +213,22 @@ pub fn merge(push: Option<MergePush>, deletes_source: bool) -> u64 {
     TRANSITION + push + delete
 }
 
-/// What `dg pr revert` writes: a new branch holding one new commit (its ref update, and the
-/// commit's pack, stored on Platform when `platform_bytes`), and a pull request carrying
-/// `text_bytes` of title, body and ref names.
-pub fn revert(platform_bytes: bool, text_bytes: u64) -> u64 {
-    branch_push(MergePush {
+/// How `dg pr revert` pushes its branch, as quoted when git-remote-dash cannot price it: one new
+/// commit, no history index. A pull request carrying its text ([`target_create`]) follows.
+pub fn revert_push(platform_bytes: bool) -> MergePush {
+    MergePush {
         history_index: false,
         platform_bytes,
         uploads_pack: true,
-    }) + target_create(text_bytes)
+    }
+}
+
+/// `credits` as the DASH string `dash.costWarnThreshold` takes, rounded UP to its 10⁻⁸ DASH, so
+/// a push the helper prices at exactly the quote passes (forge-import's cap rounds down: it is a
+/// budget's remainder, not a price a user approved).
+pub fn cap_dash(credits: u64) -> String {
+    let units = credits.div_ceil(1_000); // 1 DASH = 10¹¹ credits = 10⁸ units of 10³ credits
+    format!("{}.{:08}", units / 100_000_000, units % 100_000_000)
 }
 
 #[cfg(test)]

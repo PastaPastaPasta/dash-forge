@@ -363,7 +363,14 @@ pub(crate) async fn publish(ctx: &Ctx, a: &PublishArgs) -> Result<Outcome> {
     }
     confirm(ctx, &plan, history)?;
     // the push: through the helper, whose guard lets exactly this tip through for history
-    let mut argv = crate::pr::push_argv(ctx, &remote, &commit, &plan.base);
+    // its confirmation quotes no price for the push
+    let mut argv = crate::pr::push_argv(
+        ctx,
+        &remote,
+        &commit,
+        &plan.base,
+        crate::pr::YesCap::Unquoted,
+    );
     if history {
         let at = argv
             .iter()

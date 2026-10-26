@@ -21,7 +21,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { isRc1OidHex } from '../rules'
-import { countDocumentsGrouped, hexToBase64, uintOfGroupKey, type GroupedQuery } from '../sdk'
+import { countDocumentsGrouped, hexToBase64, queryAllDocuments, uintOfGroupKey, type DocumentQuery, type GroupedQuery, type PlainDocument } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { repoSource } from './source'
 import { VERDICT_INT } from './writes'
@@ -69,4 +69,38 @@ export async function readProvedVerdicts(sdk: EvoSDK, repo: RepoRef, patchId: st
     else if (verdict === VERDICT_INT.requestChanges) changesRequested += n
   }
   return { headOid: head, approvals, changesRequested }
+}
+
+/** The `verdicts` read of `patchId`'s reviews with `verdict` on `headOid`: every field of the index pinned. */
+export function memberVerdictQuery(repo: RepoRef, patchId: string, headOid: string, verdict: number): DocumentQuery {
+  return repoSource(repo).targetQuery(DOC.review, {
+    where: [
+      ['patchId', '==', patchId],
+      ['commitOid', '==', hexToBase64(headOid)],
+      ['verdict', '==', verdict],
+    ],
+    orderBy: [
+      ['patchId', 'asc'],
+      ['commitOid', 'asc'],
+      ['verdict', 'asc'],
+    ],
+  })
+}
+
+/**
+ * Every member verdict document (approve or request changes) on `patchId`'s `headOid`, complete
+ * and unopened: the only reviews the approval fold (`countApprovals`) can count on that head, so
+ * the fold over them is the fold over every review of the PR. Parity: forge-core
+ * `Collab::member_verdicts`.
+ *
+ * Reviews are un-gated: anyone can pad a PR's full review list past any read, and the merge gate
+ * must not depend on that list. Consensus admits verdicts 1 and 2 only from a maintainer or role-1
+ * writer (`memberVerdict`; a non-member's are 4 and 5), so a non-member cannot add to this read.
+ * One complete equality read per verdict; none when no review can name `headOid`.
+ */
+export async function readMemberVerdictDocs(sdk: EvoSDK, repo: RepoRef, patchId: string, headOid: string): Promise<PlainDocument[]> {
+  const head = headOid.toLowerCase()
+  if (patchId === '' || !isRc1OidHex(head)) return []
+  const reads = [VERDICT_INT.approve, VERDICT_INT.requestChanges].map((v) => queryAllDocuments(sdk, memberVerdictQuery(repo, patchId, head, v)))
+  return (await Promise.all(reads)).flat()
 }

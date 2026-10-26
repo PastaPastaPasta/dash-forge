@@ -132,7 +132,7 @@ export function parseDapiAddresses(list: string): string[] {
 function validateDevnetName(name: string): void {
   const reserved = ['mainnet', 'testnet', 'devnet', 'local', 'regtest']
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(name) || reserved.includes(name.toLowerCase())) {
-    throw new Error(`invalid NEXT_PUBLIC_DEVNET_NAME "${name}": use letters, digits and inner hyphens (e.g. sakura)`)
+    throw new Error(`invalid NEXT_PUBLIC_DEVNET_NAME "${name}": use letters, digits and inner hyphens (e.g. my-devnet)`)
   }
 }
 
@@ -154,7 +154,7 @@ export function resolveNetworks(
   const active: Network = kind
   if (active === 'devnet') {
     if (devnetName === null) {
-      throw new Error('NEXT_PUBLIC_NETWORK=devnet needs NEXT_PUBLIC_DEVNET_NAME (e.g. sakura)')
+      throw new Error('NEXT_PUBLIC_NETWORK=devnet needs NEXT_PUBLIC_DEVNET_NAME (e.g. my-devnet)')
     }
     validateDevnetName(devnetName)
   }

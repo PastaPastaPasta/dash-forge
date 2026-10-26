@@ -1,0 +1,1975 @@
+{
+  "network": "testnet",
+  "record": "/work/home/agent/forge-secrets/testnet/rehearsal/scratch-record.json",
+  "contracts": {
+    "core": "9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP",
+    "collab": "8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz",
+    "community": "68HtWxTtbgFjHNnkBXKP72J3ikxdieT2EY4bsuGz7Zpp",
+    "meta": "8qj74sQtGWq5Rwf5ihgNibD2tkwX61JLqvbkN2mhgcYT"
+  },
+  "run": "mvou0hlr",
+  "passed": 258,
+  "total": 258,
+  "infra": null,
+  "notRun": [
+    "reviewIndexToAuthor false: S2 reviews on the member's PRs feed",
+    "reviewIndexAuthor false: S3 the stranger's reviews feed"
+  ],
+  "fees": {
+    "repo": 89013840,
+    "maintainer": 46825640,
+    "consent": 41865660,
+    "writer": 47720100,
+    "refUpdate": 87629100,
+    "issue": 115613660,
+    "patch": 138908040,
+    "transition: author close": 71898140,
+    "transition: member reopen": 51619660,
+    "transition: member lock": 51954500,
+    "transition: member close": 45212360,
+    "comment": 58962780,
+    "transition: close with a reason": 45532020,
+    "transition: close as a duplicate": 45785880,
+    "transition: member draft (first on the PR)": 61640020,
+    "review": 65218140,
+    "transition: member merge": 53028540,
+    "comment: with a diff hunk": 53047640,
+    "chunk": 48589330,
+    "packManifest": 126670180,
+    "release": 72430380,
+    "topic": 70499300,
+    "runner": 55632900,
+    "checkRun": 124261980,
+    "policy": 36534980,
+    "star": 54252360,
+    "watch": 47632300,
+    "repoKey": 55619060,
+    "event": 74907740,
+    "event: no asMaintainer (fee baseline)": 78928080,
+    "event: hide (asMaintainer)": 66297840,
+    "writer: triage": 40511680,
+    "transition: triage close": 72780180,
+    "event: triage label": 75500720,
+    "refUpdate: with r": 88160780,
+    "transition: merge with r": 53448940,
+    "writer: reader": 40541580,
+    "release: with targetOid": 72824580,
+    "config: movedTo": 37985460,
+    "packMirror": 71541280,
+    "ban": 39796540,
+    "policy: requireCodeOwners": 34577140,
+    "profile: keyProofs": 24495720,
+    "profile: bot": 32400700,
+    "transition: closedByPr": 73057940,
+    "authorEvent: retarget": 58435760
+  },
+  "results": [
+    {
+      "item": "R-02",
+      "label": "public repo",
+      "expect": "ok",
+      "got": "ok 4Et9iLEriq75bqZuvsPd3pLGYbxhAWkVyH9UcC94aVfJ 89013840 credits",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "owner self-enrols as maintainer",
+      "expect": "ok",
+      "got": "ok HgiysGzHBa8dLZzSAoXwPaoqaCEVDCRozKXEAbG4mbQY 46825640 credits",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "private repo",
+      "expect": "ok",
+      "got": "ok GYA2pV5j9eGx5TFPmR3bVv9zrmNyV2Hp2neeTn5TZJkv",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "owner self-enrols in the private repo",
+      "expect": "ok",
+      "got": "ok Hi9L5dkpZPWnWgwbFFgD3jRAAhEzAvpts3bJivfQdFi8",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "member consents",
+      "expect": "ok",
+      "got": "ok HHQNawjo2Et7w5xHvzqDBhsiHPGmTz3xiQCg4tfEK29y 41865660 credits",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "consented writer",
+      "expect": "ok",
+      "got": "ok AiwbXMQSTM9UznTa1fGmcpeJAEbTFsHrA3di2MYMtS3v 47720100 credits",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "member document stamped private on a public repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "member document stamped public on a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "a stranger enrols itself as maintainer of someone else's repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's $ownerId does not agree with the referenced document's $ownerId (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "a consented writer enrols itself as maintainer",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's $ownerId does not agree with the referenced document's $ownerId (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "writer naming a consent that does not exist",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type consent, found by $ownerId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path consentBy",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "forced writer (no consentBy)",
+      "expect": "refused 10422 ownerOrConsented",
+      "got": "refused 10422",
+      "note": "A document of type \"writer\" breaks its propertyConstraints rule \"ownerOrConsented\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "a second consent for the same repo",
+      "expect": "refused 40105",
+      "got": "refused 40105",
+      "note": "state transition broadcast error: Document GwaRJEJGvm7xofi9CFoNDdUer1QouV5cfqRmGaZy9Pib has duplicate unique properties [\"repoId\", \"$ownerId\"] with other documents",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "consentBy naming another identity's consent",
+      "expect": "refused 10422 ownerOrConsented",
+      "got": "refused 10422",
+      "note": "A document of type \"writer\" breaks its propertyConstraints rule \"ownerOrConsented\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "stranger ref update (not a member)",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "member ref update stamped private",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "owner ref update stamped public on its private repo",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "member ref update",
+      "expect": "ok",
+      "got": "ok CwzCJdrSTgW9qTwmDmojkXfcPeMwFkpHBtdm5W9uXCtR 87629100 credits",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "config stamped private on a public repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "config stamped public on a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "config",
+      "expect": "ok",
+      "got": "ok A9HNy2uHgsCEsxVrAbMYDNTutavUpt9b51mZLWzBiykK",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "sealed private config",
+      "expect": "ok",
+      "got": "ok CbmPMWNiRrXP3qfs5SaAYi8axFb4ytvqChoYYcAwDpR1",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "public fork of a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's visibility does not agree with the referenced document's visibility (where on forkOf)",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "public fork of a public repo",
+      "expect": "ok",
+      "got": "ok DfHozKr1tqAH8cZtZUFyyyv4sTFooP16tCnQBNPTNKk1",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "member consents to the private repo",
+      "expect": "ok",
+      "got": "ok 7XiGxAhvkepeF8GFkwER88bDNUMi4v9a9Bb7PhNrYKJF",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "member becomes a writer of the private repo",
+      "expect": "ok",
+      "got": "ok EHywcbeH19WGkVSQZWnqsNtApd3rvgPXHW3cEyVQjUg9",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "wrap epoch 0 to the member",
+      "expect": "ok",
+      "got": "ok D7o2k6fo1zGaGwcyNAcrWHadCXPwxeeFVdJkaF6ASwMg",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "wrap to a non-encryption key of the member (40136)",
+      "expect": "refused 40136",
+      "got": "refused 40136",
+      "note": "state transition broadcast error: referenced public key 1 of identity EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu for repoKey.recipientKeyId has purpose authentication, the reference requires encryption",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "a writer's wrap (repoKey is maintainer-gated)",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "R-06",
+      "label": "member ref update on the private repo (sealed)",
+      "expect": "ok",
+      "got": "ok 5UgM1wSdyAvWPJPEFb3UQWkDYpi8vnA6UHoSVBomAq1V",
+      "pass": true
+    },
+    {
+      "item": "refs",
+      "label": "revoke: the owner deletes the writer document",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "wrap epoch 1 to the revoked member",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path memberId",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "the revoked member's ref update",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type writer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "the revoked member's chunk",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type writer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "refs",
+      "label": "a writer publishes a release (maintainer only)",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "refs",
+      "label": "a writer updates a protected ref (maintainer only)",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "issue at the wrong number (dense)",
+      "expect": "refused 10422 dense",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "issue #1 (stranger)",
+      "expect": "ok",
+      "got": "ok 96n1WdqTXJxXiF8Q7UgopAy8cZcdWWHzXaiuwG6qp9LU 115613660 credits",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "a stranger's issue stamped private (no aud: mainnet_aud)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: \"aud\" is a required property, path: ",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "a member's issue stamped private on a public repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "issue stamped public on a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a stranger's imported issue with its own asMember",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path asMember",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "member import with asMember",
+      "expect": "ok",
+      "got": "ok EVYAzeJntbRuep4q71gAdA3rVQbAt3WQax2GbAXg3ajM",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "PR at the wrong number (dense)",
+      "expect": "refused 10422 dense",
+      "got": "refused 10422",
+      "note": "A document of type \"patch\" breaks its propertyConstraints rule \"dense\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "PR #3",
+      "expect": "ok",
+      "got": "ok 9DQVeTEjyhBGJ1C1uepQQ2NCcWQWjDowVkAvhPY5rpoS 138908040 credits",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "stranger closes someone else's issue",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (own contract, document type patch, found by $ownerId, number, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "author locks (g_memberLock)",
+      "expect": "refused 10422 g_memberLock",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"g_memberLock\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "author closes its own issue (asAuthor = number)",
+      "expect": "ok",
+      "got": "ok 3614qe81R8FZzz6REESRSvNbEnBgx4aDbjGJAYqk77Pk 71898140 credits",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "second close (c1)",
+      "expect": "refused 10422 c1_closedAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c1_closedAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "member reopens",
+      "expect": "ok",
+      "got": "ok J2WPbQXdy2hSjfxUh5dQ9R13L1PSDmvzQe9LnssrR4pL 51619660 credits",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "member locks the issue",
+      "expect": "ok",
+      "got": "ok 9o9wShwocvLRMtkF66c2oCQYRPY3R7aqBxdPryaqHS6y 51954500 credits",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "double lock (c6)",
+      "expect": "refused 10422 c6_lockedAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c6_lockedAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "close while locked (c1 mod 16)",
+      "expect": "ok",
+      "got": "ok Bw4pVr6inua9kP2H2jc4d2qE52a8Vch7dB8r48EoS9p7 45212360 credits",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "stranger's comment on a locked thread (lockGate)",
+      "expect": "refused 10422 lockGate",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"lockGate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "member's comment on a locked thread (asMember)",
+      "expect": "ok",
+      "got": "ok 5z2uY34v3X9BR73zK8TvcLXA2i2DVKRGGg7xuD2x44ND",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "reopen while locked",
+      "expect": "ok",
+      "got": "ok GvUuv2LFuh3oZXahwrpmeJua5KQEEGKcKTqdN8dAuEf",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "unlock",
+      "expect": "ok",
+      "got": "ok G6NnVXKj9QbtGhaAikLrg9uCwWuwRQAV3fjExNH6htP4",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "unlock an unlocked issue (c6)",
+      "expect": "refused 10422 c6_lockedAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c6_lockedAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "stranger's comment after the unlock",
+      "expect": "ok",
+      "got": "ok UH4eiLAkFwGv6cLVEhhfP5wqTd7AA1cRa5AMFBKFqBR 58962780 credits",
+      "pass": true
+    },
+    {
+      "item": "QW-069",
+      "label": "close as not planned",
+      "expect": "ok",
+      "got": "ok DCntezrCevWu6oQveGPHGrp6ymBVMhrGecWNHkupt2E 45532020 credits",
+      "pass": true
+    },
+    {
+      "item": "QW-069",
+      "label": "reopen",
+      "expect": "ok",
+      "got": "ok 997B184h1EsL9BFqQtVKB9Mqe6axdEm7kpRgCGKH52H4",
+      "pass": true
+    },
+    {
+      "item": "QW-069",
+      "label": "close as a duplicate of #2",
+      "expect": "ok",
+      "got": "ok HoxJHqBv7eAHyPyHJiEPGmX9KsT5roanpXQgVRCHveGK 45785880 credits",
+      "pass": true
+    },
+    {
+      "item": "QW-069",
+      "label": "reopen after the duplicate close",
+      "expect": "ok",
+      "got": "ok FKJ5ymwubtJnN7UrYtLSSvXazQKxaSkgUKpBSMWwnfSZ",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "draft",
+      "expect": "ok",
+      "got": "ok 8yctUFkatsTR72qqXTCC2NicGDyTjQZJSxrnu9Wc1xBY 61640020 credits",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "merge a draft (c3)",
+      "expect": "refused 10422 c3_mergedAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c3_mergedAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "ready",
+      "expect": "ok",
+      "got": "ok FAoCjwWrV82aGovQpqjPB6n9up2dmpFGHFfFvQSqLuEm",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "PR lock",
+      "expect": "ok",
+      "got": "ok 5uBWBqwie3aboR5QRs8Fw9b21rWSyK1meEGJurX94KJw",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "stranger's review on a locked PR (lockGate)",
+      "expect": "refused 10422 lockGate",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"lockGate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-16",
+      "label": "the owner's approval on a locked PR (asMember)",
+      "expect": "ok",
+      "got": "ok GV2zdncvRDEb9Qhi1GNgod5ixrBBigintL9VEVdcXwA4 65218140 credits",
+      "pass": true
+    },
+    {
+      "item": "R-16",
+      "label": "a stranger's approve claiming membership",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path asMember",
+      "pass": true
+    },
+    {
+      "item": "R-15",
+      "label": "PR unlock",
+      "expect": "ok",
+      "got": "ok BY8MgWyxi7vpqFo3VznZ72BWrJEVesj4nDSbzghkJZ8Q",
+      "pass": true
+    },
+    {
+      "item": "R-16",
+      "label": "a stranger's approve (verdict 4)",
+      "expect": "ok",
+      "got": "ok CnDtk4g1BQSwPGv1CiKDWhscvTSV8FeA1Jebmcr8Z5BS",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "a stranger's review stamped private (no aud: p_sealedIfPrivate)",
+      "expect": "refused 10422 p_sealedIfPrivate",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"p_sealedIfPrivate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "a member's review stamped private on a public PR",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "merge",
+      "expect": "ok",
+      "got": "ok 4qgtu2oVaUvZupFH5nJoKETepSEUoJhFA3gGJv1WY22a 53028540 credits",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "reopen a merged PR (c2)",
+      "expect": "refused 10422 c2_openAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c2_openAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "draft a merged PR (c4)",
+      "expect": "refused 10422 c4_draftAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c4_draftAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "PR #4",
+      "expect": "ok",
+      "got": "ok 3qfx7AYS1Qx6QqAprKT3CzvVgJiRS9qWmk5EuwPCaHWY",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "draft-close of a PR that is no draft (c5)",
+      "expect": "refused 10422 c5_draftClosedAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c5_draftClosedAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "PR #4 draft",
+      "expect": "ok",
+      "got": "ok FbkT5mhRJKcQG22rF4qmfs6iijjALDmn2ifPnug4nzyX",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "plain close of a draft (c1)",
+      "expect": "refused 10422 c1_closedAfter",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"c1_closedAfter\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "close while draft (kind 16)",
+      "expect": "ok",
+      "got": "ok FoDTywaTP8NE1hfSMgGSJBH5Qzm4EqwrPXJqzPyhBQax",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "reopen while draft (kind 17)",
+      "expect": "ok",
+      "got": "ok CgQjJmzZtgzgDmKTcdxJAshNeHMmyficSiwwrRLXXeLj",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "ready, then close (kind 11)",
+      "expect": "ok",
+      "got": "ok G2vfPcLWZrRuoZiEkfu6GdTrCiQuLHSnmnG8CMexFuqE",
+      "pass": true
+    },
+    {
+      "item": "state",
+      "label": "PR close",
+      "expect": "ok",
+      "got": "ok FHL15zYS9hWqc7Vc2r49dXD8yV1sE8LvirTaxvCUBm1C",
+      "pass": true
+    },
+    {
+      "item": "§3.1",
+      "label": "grouped count by kind (absent kinds absent) and sum by target, proved",
+      "expect": "counts {\"10\":1,\"11\":1,\"12\":1,\"13\":1,\"01\":4,\"02\":4,\"03\":1,\"04\":1,\"0b\":1,\"0d\":1,\"0e\":2,\"0f\":2}, issue 0, PR 2",
+      "got": "counts {\"10\":1,\"11\":1,\"12\":1,\"13\":1,\"01\":4,\"02\":4,\"03\":1,\"04\":1,\"0b\":1,\"0d\":1,\"0e\":2,\"0f\":2} sums {\"78584a842c9e417fd5f78d1dcc6f2679f6a7c634c73d16d337548bbb6f4470c1\":0,\"7a0b079d90574254e08f362618cce1e58c414a8499c87c23971f5da1900c20e9\":2}",
+      "pass": true
+    },
+    {
+      "item": "R-14",
+      "label": "root comment",
+      "expect": "ok",
+      "got": "ok EANAEZNwHUMJz9nM6BXMK5SV6zQj7uaEGeQCT9FGBysx",
+      "pass": true
+    },
+    {
+      "item": "R-14",
+      "label": "reply to the root",
+      "expect": "ok",
+      "got": "ok 7MF5ovgawjMLs6KacTfBpzEATm81zLikyp1vDq3WMWZj",
+      "pass": true
+    },
+    {
+      "item": "R-14",
+      "label": "reply to a reply",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's noParent does not agree with the referenced document's replyTo (where on replyTo)",
+      "pass": true
+    },
+    {
+      "item": "R-14",
+      "label": "reply naming another issue's comment",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's targetId does not agree with the referenced document's targetId (where on replyTo)",
+      "pass": true
+    },
+    {
+      "item": "R-14",
+      "label": "reply to a comment that does not exist",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type comment) cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN not found for path replyTo",
+      "pass": true
+    },
+    {
+      "item": "QW2-010",
+      "label": "imported review comment with a hunk",
+      "expect": "ok",
+      "got": "ok 3trWHpwGkxMNNuGY5R6iuqnLGUMSPhnFTEybxev3iNqW 53047640 credits",
+      "pass": true
+    },
+    {
+      "item": "QW2-010",
+      "label": "a replace that changes the hunk (immutable)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'diffHunk' of document 3trWHpwGkxMNNuGY5R6iuqnLGUMSPhnFTEybxev3iNqW (type 'comment') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "chunk 0",
+      "expect": "ok",
+      "got": "ok BijVzSSxer6aoBqUB2Xr8nzkLXaos8J42PirvXFvfAeY 63056720 credits",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "chunk 1",
+      "expect": "ok",
+      "got": "ok 2VkXREnbwQXvh2AyiTVhf2gJeafyQbrabqSd298nBz7w 34121940 credits",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "manifest claiming 3 chunks over seqs {0,1}",
+      "expect": "refused 10422 platformChunks",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"platformChunks\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "stray-pack chunk 0",
+      "expect": "ok",
+      "got": "ok 2tq2TUtVMCeShnu332UT1zvuiruV7gjWYb6k1ofHDCzE",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "stray-pack chunk 1",
+      "expect": "ok",
+      "got": "ok B2sFeeoTM3opFartigK6zJ7jUov8tqiYruLSYSjQwNvw",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "stray-pack chunk 5",
+      "expect": "ok",
+      "got": "ok cce5fyjf3emtbWomvBiETebf4YNsx91Q1AYSp2ZgeHN",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "manifest over seqs {0,1,5} (n 3: sum 6 != 3)",
+      "expect": "refused 10422 platformChunks",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"platformChunks\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "manifest over seqs {0,1}",
+      "expect": "ok",
+      "got": "ok sTckBLTYxpn2JxHWxSPiah7kYmbB42bBM6xzBcJUTos 126670180 credits",
+      "pass": true
+    },
+    {
+      "item": "O-05",
+      "label": "external pack of 50 GB (i64 sizeBytes)",
+      "expect": "ok",
+      "got": "ok 5UmD5f8TzUyT7Nsg2VKABNweMvs8KqLZ6XN2HVcpziSR",
+      "pass": true
+    },
+    {
+      "item": "O-05",
+      "label": "external pack of 1 TiB",
+      "expect": "ok",
+      "got": "ok Fz6fLzvHveVVwS31D4cwzs17KuBy8ea1d9xZWpj7D4pC",
+      "pass": true
+    },
+    {
+      "item": "O-05",
+      "label": "proved sizeBytes sum over storage 1",
+      "expect": "1149511627776",
+      "got": "1149511627776",
+      "pass": true
+    },
+    {
+      "item": "push",
+      "label": "pack chunk 1 of 3",
+      "expect": "ok",
+      "got": "ok H487LhEZB8DyKCumDqGQoFcK2oSfK2fngACQdJ4fCFpG",
+      "pass": true
+    },
+    {
+      "item": "push",
+      "label": "pack chunk 2 of 3",
+      "expect": "ok",
+      "got": "ok GQa5KBb5ChTfdKG1um4ShovduSuhjtWgRa4hR2CALeSf",
+      "pass": true
+    },
+    {
+      "item": "push",
+      "label": "pack chunk 3 of 3",
+      "expect": "ok",
+      "got": "ok 3jjQ24hkBTzb79t4BcnUcQG51VPRPt3dsU7wvhbuWx4C",
+      "pass": true
+    },
+    {
+      "item": "push",
+      "label": "pack manifest (identifier packHash)",
+      "expect": "ok",
+      "got": "ok EsqupiNVDWqa5AnYjajp2xqtJu5Lw4PU4eCf3bqEFfxD",
+      "pass": true
+    },
+    {
+      "item": "push",
+      "label": "ref update to the pushed head",
+      "expect": "ok",
+      "got": "ok AcoxAiZGpyynBox6RPZ534A16rSbkRXgw5tnYt5PC2Aa",
+      "pass": true
+    },
+    {
+      "item": "push",
+      "label": "clone: manifest by identifier packHash, chunks in seq order, pack verifies and indexes",
+      "expect": "commit 05a886ee93a8",
+      "got": "3 chunks, 30748 B, sha ok, head commit",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "publish v1.0.0",
+      "expect": "ok",
+      "got": "ok 7RGMVuVisoBkzPtvzMmEcFw8tme5LfThqxN599scvQzr 72430380 credits",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "second publish while live (oneLive)",
+      "expect": "refused 10422 oneLive",
+      "got": "refused 10422",
+      "note": "A document of type \"release\" breaks its propertyConstraints rule \"oneLive\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "edit (delta 0)",
+      "expect": "ok",
+      "got": "ok 2u1GHQdUxMTJCg6vzvS58UTiQ7TUfZsD1iAHfeyXrbHu",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "unpublish (delta -1)",
+      "expect": "ok",
+      "got": "ok 9MGm6SSBBeSUT93ECBxyfyQFH7yzQbdyxPWrrATwqJ97",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "edit an unpublished tag (oneLive)",
+      "expect": "refused 10422 oneLive",
+      "got": "refused 10422",
+      "note": "A document of type \"release\" breaks its propertyConstraints rule \"oneLive\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "unpublish again (oneLive)",
+      "expect": "refused 10422 oneLive",
+      "got": "refused 10422",
+      "note": "A document of type \"release\" breaks its propertyConstraints rule \"oneLive\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "republish",
+      "expect": "ok",
+      "got": "ok GwDAYM8qp3ErAPYP7wCTq3n1tdYfvYB9c5jrtQomHcwN",
+      "pass": true
+    },
+    {
+      "item": "R-02",
+      "label": "release stamped private on a public repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "a sealed release that publishes (oneLive: sealed is delta 0)",
+      "expect": "refused 10422 oneLive",
+      "got": "refused 10422",
+      "note": "A document of type \"release\" breaks its propertyConstraints rule \"oneLive\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "a sealed release (delta 0)",
+      "expect": "ok",
+      "got": "ok CP3kgdqurSEigdnDb3ZVHyMu2StBCuUB251oj2SfuXiA",
+      "pass": true
+    },
+    {
+      "item": "O-04",
+      "label": "delete a release",
+      "expect": "refused 10404",
+      "got": "refused 10404",
+      "note": "Document transition action documents of type release can not be deleted is not supported",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "a topic on a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "a topic by someone other than the repo's owner",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's $ownerId does not agree with the referenced document's $ownerId (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 1",
+      "expect": "ok",
+      "got": "ok H3yTmDdpcZ33mt12UV1fWiGSHJ7Kb23cwufWJTHbpqS 70499300 credits",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 2",
+      "expect": "ok",
+      "got": "ok 39brXreUaYcqJ9HpzKwjaDh3vsDrFSHoBiWSi7jiG7W4",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 3",
+      "expect": "ok",
+      "got": "ok tsp8s5Mj9XpaUtP2cjub8haCJLeaFGoECqiHzHc6m3k",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 4",
+      "expect": "ok",
+      "got": "ok 6Sckh1Pvf64fMGZTyLTr6GaUwUoHuZJ977FXmiVhRrsM",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 5",
+      "expect": "ok",
+      "got": "ok 6ktniJjAwVxwfk2FpnMcGAHDZ4e73gWZxMREa2AXw1ya",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 6",
+      "expect": "ok",
+      "got": "ok Fxn8CeZcoJQBTzKYdPcRQxCRUm68wb1KEisQ63RafqvM",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 7",
+      "expect": "ok",
+      "got": "ok HGkDDrNK9VnbJgxxmKoo5q14hMvGvVsisMWTuKqYknWw",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 8",
+      "expect": "ok",
+      "got": "ok 8QZ8kTY5iPkWZcumYsTo8S1Zz3kQBqC12C1hXvykPYzi",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 9",
+      "expect": "ok",
+      "got": "ok GidnoLr2ub8P8n5ypP5eXNiYVJiFwupb5tjNnuvz7WoZ",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 10",
+      "expect": "ok",
+      "got": "ok AeWygJVdpy5V3xkdVdP5BTTV7mDZgBXr6zhtCdhBEVjA",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 11",
+      "expect": "ok",
+      "got": "ok 5QVNiZkrmxGbbc6v6xgvfUnELHEfXM1hijnbimrswFSu",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 12",
+      "expect": "ok",
+      "got": "ok 9R23V4wGULUZnFyLf43Uqt21xz7rBoCaCJ5cKc8B6irq",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 13",
+      "expect": "ok",
+      "got": "ok 5xZtR9CEEFfY1nnk1EU7xxMmuieyneXPpoKqhE62Y1YK",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 14",
+      "expect": "ok",
+      "got": "ok H5oSyZ1PArKMrNd5AkXmv9tYMsnwAEQJPL1HxuMApk2q",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 15",
+      "expect": "ok",
+      "got": "ok 68cirbVyyciv3zNhLujPmX2dm8ZvV5sSUcYRi5uM9Naj",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 16",
+      "expect": "ok",
+      "got": "ok 9P9SnPGzd91zYKpqXFs7gPzYoyZppryeb7zW8ZakjQEQ",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 17",
+      "expect": "ok",
+      "got": "ok Ar7WrzHArHMmp845ibe6bJyWMmdRMacon4fsJ5CrodCk",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 18",
+      "expect": "ok",
+      "got": "ok sHCqX5wMCvTvnSBDvobun6th3q1oUNEQ6YsexJSPVx1",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 19",
+      "expect": "ok",
+      "got": "ok Hbwv4XQH8Qi2fEujiAdQbpJJXxhM2LboGiaATrCamBcn",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "topic 20",
+      "expect": "ok",
+      "got": "ok GN6vEujvLyJpCJJFtWys1TLQpn161JH87TCGdY6gpLNE",
+      "pass": true
+    },
+    {
+      "item": "R-20",
+      "label": "the 21st topic (atMost20)",
+      "expect": "refused 10422 atMost20",
+      "got": "refused 10422",
+      "note": "A document of type \"topic\" breaks its propertyConstraints rule \"atMost20\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "O-02",
+      "label": "owner enrols a runner",
+      "expect": "ok",
+      "got": "ok HmjqjuTS6nvkHqTmuEm8xBGRrNJid5fW7ouV5z2fXay9 55632900 credits",
+      "pass": true
+    },
+    {
+      "item": "O-02",
+      "label": "a non-owner enrols a runner",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's $ownerId does not agree with the referenced document's $ownerId (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "O-02",
+      "label": "check run by the runner",
+      "expect": "ok",
+      "got": "ok HqCy5TxSr9QCDxZK4Kq7rHNa11kwMK8x8T8vUa71pFsq 124261980 credits",
+      "pass": true
+    },
+    {
+      "item": "O-02",
+      "label": "check run by a stranger",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "R-17",
+      "label": "completedAt far in the future (notFuture)",
+      "expect": "refused 10422 notFuture",
+      "got": "refused 10422",
+      "note": "A document of type \"checkRun\" breaks its propertyConstraints rule \"notFuture\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-18",
+      "label": "check run stamped private on a public repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "O-07",
+      "label": "queued run (outcome 0)",
+      "expect": "ok",
+      "got": "ok 5Po2gh9ssZYpkXBCYmXBUYmk5r6E9yku1e3X828arJzk",
+      "pass": true
+    },
+    {
+      "item": "D-5",
+      "label": "queued run to advance",
+      "expect": "ok",
+      "got": "ok 85jvgtAccKtrQJjWFiiUn9D7pD2d8ypCS6CdXJWr7PNX",
+      "pass": true
+    },
+    {
+      "item": "D-5",
+      "label": "queued -> in progress (sets startedAt)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "D-5",
+      "label": "a replace that moves startedAt (set once)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'startedAt' of document 85jvgtAccKtrQJjWFiiUn9D7pD2d8ypCS6CdXJWr7PNX (type 'checkRun') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "S1",
+      "label": "in progress -> completed with its log",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "S1",
+      "label": "a completed run's logUrl replaced",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'logUrl' of document 85jvgtAccKtrQJjWFiiUn9D7pD2d8ypCS6CdXJWr7PNX (type 'checkRun') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "R-08",
+      "label": "policy pinning the runner and a maintainer",
+      "expect": "ok",
+      "got": "ok 5uYHvPweqMbXxEtFoWC8BFiNxaFHq19tqSXQAvMXuySQ 36534980 credits",
+      "pass": true
+    },
+    {
+      "item": "R-08",
+      "label": "policy pinning a stranger",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path requiredCheckSources[0]",
+      "pass": true
+    },
+    {
+      "item": "O-07",
+      "label": "proved outcome count per head (groupBy outcome)",
+      "expect": "{\"00\":1,\"01\":1}",
+      "got": "{\"00\":1,\"01\":1}",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "star (the trending entry too)",
+      "expect": "ok",
+      "got": "ok A8kue2g7ZaVSjiRN4ZYgZzHvUNsycNq7Xtc8NJy7SC5u 54252360 credits",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "unstar (a delete with no $createdAt)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "star again inside the window",
+      "expect": "ok",
+      "got": "ok 5ny87pGdGxVaSBC58yxEp7CyAg2gHCB5EuYaXHTcfrHh",
+      "pass": true
+    },
+    {
+      "item": "COMM-9",
+      "label": "watch",
+      "expect": "ok",
+      "got": "ok 7GwqFDDoQfsdsWvU9agKvBNLRHPbt7fZdQChA9WWiBid 47632300 credits",
+      "pass": true
+    },
+    {
+      "item": "R-19",
+      "label": "webhook on a public repo",
+      "expect": "ok",
+      "got": "ok Cq8GHht4qrXVsQKeswmaFpcEoXCY82YoGEpDBjTYUooG",
+      "pass": true
+    },
+    {
+      "item": "R-19",
+      "label": "webhook stamped public on a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "wrap the repo key to a member (the owner)",
+      "expect": "ok",
+      "got": "ok BaHuuTu1ARoDsEgFz1Axf1TYV4YY56QEojFjXt53iPmH 55619060 credits",
+      "pass": true
+    },
+    {
+      "item": "R-13",
+      "label": "wrap to a non-member",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path memberId",
+      "pass": true
+    },
+    {
+      "item": "O-01",
+      "label": "label event (community -> collab issue)",
+      "expect": "ok",
+      "got": "ok 3VXaHbn3VJ9Z7HqJ2Mq1dGT9LK5BfSViYrfdMRXezb29 74907740 credits",
+      "pass": true
+    },
+    {
+      "item": "O-01",
+      "label": "event naming the wrong number",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz, document type patch) 96n1WdqTXJxXiF8Q7UgopAy8cZcdWWHzXaiuwG6qp9LU not found for path targetId",
+      "pass": true
+    },
+    {
+      "item": "O-01",
+      "label": "author's resolve (authorEvent across contracts)",
+      "expect": "ok",
+      "got": "ok 6qMsqxCwCB4w6dk7w4LF9RH4CPEVsyV29ayd9r2oMin",
+      "pass": true
+    },
+    {
+      "item": "O-01",
+      "label": "non-author's authorEvent",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz, document type patch, found by $ownerId, number, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "O-01",
+      "label": "milestone in community",
+      "expect": "ok",
+      "got": "ok GzFYfKgcU1XjXqixrRY5kfsm7oZCJQHpFjkZzmzbG2p6",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "a member event with a refId (fee baseline)",
+      "expect": "ok",
+      "got": "ok 8mcv7drGmUjXehgZJAYo2QMaoWWSUzrfkzikCmMoskPk 78928080 credits",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the owner hides a comment as spam",
+      "expect": "ok",
+      "got": "ok 96zCkhRX4qwVqRcywoEqVDegpL7JwB2AgYN26Xf6EPNm",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the owner hides a comment",
+      "expect": "ok",
+      "got": "ok 7hFDta1dMJtpXa3f495AmKbXQArTHH1PeVohVRCLyV7u 66297840 credits",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the owner unhides it",
+      "expect": "ok",
+      "got": "ok Hx5jXKApizh7pDJVod2vY9egs82GqzeebwnUoV5GYP72",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the owner hides the whole thread",
+      "expect": "ok",
+      "got": "ok EVzff3eXsUsVDx82taYUbquvGqjB3c5F9P3sRDCfNXWu",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "a hide without asMaintainer",
+      "expect": "refused 10422 hideByMaint",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"hideByMaint\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "a writer's hide",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path asMaintainer",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "a writer's hide naming the owner",
+      "expect": "refused 10422 hideByMaint",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"hideByMaint\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "a stranger's hide",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the member's own repo",
+      "expect": "ok",
+      "got": "ok FNqAsCYQHmTREeMU5NYo9QHkSxeyvkVr9tSj6gV9AEd",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the member self-enrols as its maintainer",
+      "expect": "ok",
+      "got": "ok EBcpaiiR51dFDht2VSpYevWTS61VwgMK4x7Asu2tCZr2",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "a maintainer of another repo hides here",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path asMaintainer",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the owner makes the member a maintainer",
+      "expect": "ok",
+      "got": "ok AJZYLKLbWKCaBoraTusLV5gqL6nCWAy5paSkVTA6AKAd",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the new maintainer hides a comment",
+      "expect": "ok",
+      "got": "ok EMEGx35WvReYGeX4iGFn8rZyNzbLcbDAL7nzGPDTdAMJ",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "a maintainer hide naming another maintainer",
+      "expect": "refused 10422 hideByMaint",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"hideByMaint\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the owner removes the member's maintainer document",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "MOD",
+      "label": "the removed maintainer hides",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path asMaintainer",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "second public repo",
+      "expect": "ok",
+      "got": "ok 3ZaAdYpxmKu3JESKQoq66CSJHLj1zvodtKic2QQJTMmw",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "owner self-enrols as maintainer",
+      "expect": "ok",
+      "got": "ok 8KxLCPcE3VPZA1wfvC4vSSRoWpguFz1w8aMhRvEUsG7K",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "member consents",
+      "expect": "ok",
+      "got": "ok 5rptQge3oKnq6ZBuESxNVddDzjCpaMcS3embg7iCGudZ",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the owner enrols the member as triage (role 2)",
+      "expect": "ok",
+      "got": "ok 5BmyC2EMmcVrTpcQ6Wvt5EVLNx8biu5wBURwaGYYSDXR 40511680 credits",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "issue #1 (owner)",
+      "expect": "ok",
+      "got": "ok ALK1HNmBzceijEHKsz7Ez8jSX4CWehLvk67VHMxXwahH",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "PR #2 (owner)",
+      "expect": "ok",
+      "got": "ok 6KXMJfdpxUnyN3TWvKeRd8xmDP6waq9LFFGzb9NYUtzV",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage closes an issue (r 2)",
+      "expect": "ok",
+      "got": "ok D5NYBvVnYtzrx39BeDKVYzRSKkhZCD8jqKhGP17DG5JP 72780180 credits",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage claiming r 1 (role mismatch)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (own contract, document type patch, found by $ownerId, number, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage reopens",
+      "expect": "ok",
+      "got": "ok Czn48etrbdriA7CXBCuvCEs7AaRBFfU8pvZDDaN7s4RQ",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage locks",
+      "expect": "ok",
+      "got": "ok GKTQ9oXrZndemiXjfQkmUceQq7fkS4FUossdPkJ6bkiK",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage unlocks",
+      "expect": "ok",
+      "got": "ok DjvgM53VP33kv8MNWErAAxzNGuWvJUyaEUJYYxfp9HZn",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage labels",
+      "expect": "ok",
+      "got": "ok 8Bfr8heh4FnvL11DSFgwqsEe1PJtBGPXipKQE6VTtyTp 75500720 credits",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage assigns",
+      "expect": "ok",
+      "got": "ok 5aJorsaTHdVB1uWhAupuz9madEaYafnpFEx7nw1KBTai",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage requests a review",
+      "expect": "ok",
+      "got": "ok 69QzcoLfDq3BxVAZYA8HEuxPoWTGZUYRz4yZRrV4pvjp",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage sets a milestone",
+      "expect": "ok",
+      "got": "ok exMgGES8WMk9i26LXH3qWDr2caa2gF6hE5aSd2Up4oG",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage creates a label",
+      "expect": "ok",
+      "got": "ok BZwmg7GNBUatwZtmjjr5wLpugHTmAbZizY5gchug843z",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage creates a milestone",
+      "expect": "ok",
+      "got": "ok CxNztd1wEz9ASSvmrVYziDF4mqVxd7T8UUauAC7xmtt6",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage closes the PR",
+      "expect": "ok",
+      "got": "ok CSbcU1Ysohubkokh2HBGyUdXx62cXHix9cwBbaZZYzYa",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage reopens the PR",
+      "expect": "ok",
+      "got": "ok 68ae4T5DVAi3uVZZvbBkfY52Q87nZMgVHuXqiMn8VRgo",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage merges (e_mergeOid)",
+      "expect": "refused 10422 e_mergeOid",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"e_mergeOid\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage merges claiming r 1 (role mismatch)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (own contract, document type patch, found by $ownerId, number, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage drafts (e_mergeOid)",
+      "expect": "refused 10422 e_mergeOid",
+      "got": "refused 10422",
+      "note": "A document of type \"transition\" breaks its propertyConstraints rule \"e_mergeOid\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage head update (t_triageKinds)",
+      "expect": "refused 10422 t_triageKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"t_triageKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage retarget (t_triageKinds)",
+      "expect": "refused 10422 t_triageKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"t_triageKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage pin (t_triageKinds)",
+      "expect": "refused 10422 t_triageKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"t_triageKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage head update claiming r 1 (role mismatch)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage pushes (refUpdate r 1, role mismatch)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage uploads a chunk (role mismatch)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"in\": [1, 4] } does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "triage posts a check run (role mismatch)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the owner pushes (r 1)",
+      "expect": "ok",
+      "got": "ok 19aQHZC23Swtn1W25zjoLYv8gc9ARojrau1jbaGMZEs 88160780 credits",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the owner merges (r 1)",
+      "expect": "ok",
+      "got": "ok CHvVmoJ78AY2YT748Mt17tYVe3y6CtqmgWAoosbzZxfx 53448940 credits",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "second private repo",
+      "expect": "ok",
+      "got": "ok 6pqNrDUinfBMqhB54HK4EL7mMMBHnU3rYTMnHSCSnY9b",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "owner self-enrols in it",
+      "expect": "ok",
+      "got": "ok 2GpHkizAAKG1gDui1EZykx7VfCFxzy8GErUpoMtXdZ1q",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "member consents to it",
+      "expect": "ok",
+      "got": "ok 2KKk5gAYr9CY2zMMr5FCBarEpWtDUkBokhEbUe2fXKug",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the owner enrols the member as reader (role 3)",
+      "expect": "ok",
+      "got": "ok CJRVcZUcN5h23SNueaSUCkArGdP3WC3Eqz2j6mb2z5dV 40541580 credits",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "a key wrap to the reader",
+      "expect": "ok",
+      "got": "ok DUtryfbge2DtA5wEVD5JEeAmbdA3YMuJkUYHPa7vGhrx",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the reader pushes (r 1)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the reader creates a label (r 2)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the reader creates a milestone (r 2)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the reader opens an issue (anyone may)",
+      "expect": "ok",
+      "got": "ok F9prAeAmXNXsEsc5L8Wht4dDbpt4Uh1pG4YU5uHqCDx4",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the reader closes its own issue as a member (r 2)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (own contract, document type patch, found by $ownerId, number, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the reader closes its own issue as the author (r 1)",
+      "expect": "ok",
+      "got": "ok AJUfcKxd7GeLKR8m7htBSzVQ8KfwgEfhq2AHxJsoxNas",
+      "pass": true
+    },
+    {
+      "item": "ROLES",
+      "label": "the reader labels its issue (r 2)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a repo for the UPDATE-1 cases",
+      "expect": "ok",
+      "got": "ok 9nmqUMbd1HeHCMRGmts7N3s19qTEqGmBzrqpU5msbMVj",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "owner self-enrols in it",
+      "expect": "ok",
+      "got": "ok 7c7RdsWejTdGrq2xh8kY4yvNaiUiFZQwrJehzXVKH7ff",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "member consents to it",
+      "expect": "ok",
+      "got": "ok C4UoQWFjVp6nLZcYBC7DBHZ9gdGvuxGW7GauDMHFMuCW",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "the owner enrols the member as writer",
+      "expect": "ok",
+      "got": "ok C9cC7P7QmAXLTCEhdrdGGkK3Cf3PGBy6iLBPrQT2RUsp",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a release naming the commit its tag points at (targetOid)",
+      "expect": "ok",
+      "got": "ok 3xnx3ytPYufTMmqhkmLFTU2KbBpSWqbqEmBt6opDX1CM 72824580 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a publish without targetOid (targetOnPublish)",
+      "expect": "refused 10422 targetOnPublish",
+      "got": "refused 10422",
+      "note": "A document of type \"release\" breaks its propertyConstraints rule \"targetOnPublish\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a targetOid of 19 bytes",
+      "expect": "refused 10101|10418|10419",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: [9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9] has less than 20 items, path: /targetOid",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a config pointing readers at a successor repo (movedTo)",
+      "expect": "ok",
+      "got": "ok ARh3fySfZdcrveTMb4qS7SYPY74pV4Dtq3hrs2d7uFMP 37985460 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a stranger records a copy of the repo's pack (packMirror)",
+      "expect": "ok",
+      "got": "ok 4Pe25LzfuPbYRYc3BF7JT1rmDZnRa7saDezSZDGVogSk 71541280 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a second mirror of the same pack, by another identity",
+      "expect": "ok",
+      "got": "ok 26Bw6znGykMY2jqq3Q6uWFU7sFQA5S9EcqF5FXgfPopJ",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "the same writer mirrors the same pack twice (unique byHash)",
+      "expect": "refused 40105",
+      "got": "refused 40105",
+      "note": "state transition broadcast error: Document 9yFxSQ5KR3GQVqMmxyEX3rbd7THcNPF6Xxpy1Qhmo3pr has duplicate unique properties [\"repoId\", \"packHash\", \"$ownerId\"] with other documents",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a file: mirror uri (https:// or ipfs:// only)",
+      "expect": "refused 10101|10403",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: \"file:///etc/passwd\" does not match \"^(https://[^[:space:]/?#@]+|ipfs://[A-Za-z0-9]+)([/?#][^[:space:]]*)?$\", path: /uris/0",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a mirror of a repo that does not exist",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type repo) p2Yicb86aZig616Eav2VWG9vuXR5mEqhtzshZYBxzsV not found for path repoId",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a maintainer bans an identity from the repo",
+      "expect": "ok",
+      "got": "ok DpbGSJ4Ea8uRDKf5yN4hvMf6HZx7FHCfVjrNFMmwbbE 39796540 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "the same maintainer bans it twice (unique byRepo)",
+      "expect": "refused 40105",
+      "got": "refused 40105",
+      "note": "state transition broadcast error: Document 54jypPnw8rtVoa6jFq8TkpMyX3Pu2EBth4Dumv9iJNey has duplicate unique properties [\"repoId\", \"identityId\", \"$ownerId\"] with other documents",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a writer bans (maintainer only)",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a stranger bans",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a merge policy requiring code-owner approval",
+      "expect": "ok",
+      "got": "ok CUb9tpCiLPUHRR6tMxhgCW57PdZggY6idW9nkDpaDDHv 34577140 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a profile with a key and its possession proof (keyProofs)",
+      "expect": "ok",
+      "got": "ok FjkyEpDrPHj19nphLab62nTKeKAxPvbtW89vsim9HMvg 24495720 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a bot's profile naming its operator (bot.operator)",
+      "expect": "ok",
+      "got": "ok A1iwxkVqeWUZZKp7Y4G7Aq45R758AXe9GqQztWtcRWFM 32400700 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a key proof that is not base64",
+      "expect": "refused 10101|10403",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: \"not base64!\" does not match \"^[A-Za-z0-9+/]*={0,2}$\", path: /keyProofs/0",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "issue #1",
+      "expect": "ok",
+      "got": "ok 5rY99KRyALS61X9YpwgjBaZqg99WMoCigVLsQtTz1w2n",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "PR #2 (by the member)",
+      "expect": "ok",
+      "got": "ok FSyaPSG4rx9KMYyzddocnj7v7mct5ZmW8AeFdifk2UaU",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a maintainer closes the issue as fixed by PR #2 (closedByPr)",
+      "expect": "ok",
+      "got": "ok HeNMkMfwdNdDgirNU5tz6UmXrW53yo9kdJbpbsXRo92U 73057940 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "the PR author retargets its PR (authorEvent kind 8 + value)",
+      "expect": "ok",
+      "got": "ok 3uLLDaGEk988NjQRZ6tud2RhJNqhiRM8uPaHaJgajpAR 58435760 credits",
+      "pass": true
+    },
+    {
+      "item": "U1",
+      "label": "a non-author's retarget",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz, document type patch, found by $ownerId, number, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path $ownerId",
+      "pass": true
+    }
+  ]
+}

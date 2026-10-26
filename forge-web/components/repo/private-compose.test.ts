@@ -9,7 +9,9 @@ import { describe, expect, it } from 'vitest'
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { EpochKeys, sealMembersDoc } from '@/lib/private'
-import { composeCost, membersEncBytes, privateWriteBlock } from './private-compose'
+import { fieldEstimate, longBodyCredits } from '@/lib/repo/long-body'
+import { previewReplace } from '@/lib/sdk'
+import { composeCost, editCost, membersEncBytes, privateWriteBlock } from './private-compose'
 
 const FORGE = { core: 'C', collab: 'L', community: 'L', group: 'G' }
 const PRIV: RepoRef = { forge: FORGE, repoId: 'R', ownerId: 'O', name: 'r', visibility: 'private' }
@@ -90,5 +92,30 @@ describe('the composer cost of members-only text (enc v0x03)', () => {
     const pub = composeCost(PUB, 'comment', { body: 'hello members' }, {}, 'public').credits
     const members = composeCost(PUB, 'comment', { body: 'hello members' }, {}, 'members').credits
     expect(members).toBeGreaterThan(pub)
+  })
+})
+
+describe('the cost of an edit (editCost)', () => {
+  it('is a plain replace when the body fits its field', () => {
+    expect(editCost(PUB, 'comment', { body: 'hi' })).toEqual(previewReplace('comment', { body: 'hi' }))
+    expect(editCost(PUB, 'issue', { title: 't', body: 'b' })).toEqual(previewReplace('issue', { title: 't', body: 'b' }))
+  })
+
+  it('adds the long body’s artifact over its field, as a new post is priced, so the confirm and its balance check see it', () => {
+    for (const repo of [PUB, PRIV]) {
+      const body = 'x'.repeat(9000)
+      const field = fieldEstimate(repo, 'comment', body)
+      expect(field.length).toBeLessThan(body.length)
+      const edit = editCost(repo, 'comment', { body })
+      // the replace writes the field (the first part and the trailer), and the artifact is the
+      // one `composeCost` adds for a new comment with this body
+      expect(edit.credits).toBe(previewReplace('comment', { body: field }).credits + longBodyCredits(repo, 9000))
+      expect(composeCost(repo, 'comment', { body }).credits).toBeGreaterThan(longBodyCredits(repo, 9000))
+      expect(edit.credits).toBeGreaterThan(previewReplace('comment', { body }).credits)
+    }
+    // an issue's or a PR's title leaves its body less room
+    const body = 'y'.repeat(5100)
+    expect(editCost(PRIV, 'issue', { title: 'a title', body }).credits).toBeGreaterThan(previewReplace('issue', { title: 'a title', body }).credits)
+    expect(editCost(PUB, 'patch', { title: 'a title', body: 'z'.repeat(6000) }).credits).toBeGreaterThan(longBodyCredits(PUB, 6000))
   })
 })

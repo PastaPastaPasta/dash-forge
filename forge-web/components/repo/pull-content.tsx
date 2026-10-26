@@ -118,7 +118,7 @@ import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type CodeOwnerStatus, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { pendingReruns, rerunCounts } from '@/lib/rules/ci-rerun'
-import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCredits, previewDelete, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { ForwardButton } from '@/components/repo/letter-picker'
@@ -161,7 +161,7 @@ import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, makePublicKeepsFields, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { CodeOwnersProvider, codeOwnerChangesIncomplete, useCodeOwnerStatus } from '@/components/repo/code-owners'
-import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
+import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, editCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
@@ -1433,17 +1433,17 @@ function PullPage({
           previewCreate('label', { name: pending.name, color: pending.color, description: pending.description }).credits + previewCreate('event', { value: pending.name }).credits,
         )
       case 'edit-pull':
-        return previewReplace('patch', { title: pending.title, body: pending.body })
+        return editCost(repo, 'patch', { title: pending.title, body: pending.body })
       case 'edit-comment':
-        return previewReplace('comment', { body: pending.body })
+        return editCost(repo, 'comment', { body: pending.body })
       case 'delete-comment':
         return previewDelete('comment')
       case 'make-public':
-        return previewReplace('comment', { body: thread.comments.find((x) => x.id === pending.id)?.body ?? '' })
+        return editCost(repo, 'comment', { body: thread.comments.find((x) => x.id === pending.id)?.body ?? '' })
       case 'make-review-public':
         return composeCost(repo, 'comment', { body: pending.text }, commentFirst)
       case 'make-pull-public':
-        return previewReplace('patch', { title: pull.title, body: pull.body })
+        return editCost(repo, 'patch', { title: pull.title, body: pull.body })
       default:
         return eventCost
     }
@@ -1973,6 +1973,11 @@ function PullPage({
               </>
               )}
               <HiddenNote hidden={totalHidden(thread.hidden)} what="comment or review" many="comments and reviews" home={home} by={thread.hidden} shown={thread.membersOnly.length} />
+              {thread.reviewsIncomplete === true ? (
+                <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="reviews-incomplete">
+                  This pull request has too many reviews to list them all. Only some are shown, with every member approval or change request on the current head, which is all the approvals count.
+                </p>
+              ) : null}
               <BundleAlertsNote alerts={thread.bundleAlerts} />
               {/* the timeline's members-only placeholders already offer a locked member the unlock */}
               <EventValuesNote counts={thread.eventValues} lane={home.lane} unlockShown={thread.membersOnly.length > 0} />

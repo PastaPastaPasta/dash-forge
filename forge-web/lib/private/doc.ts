@@ -901,7 +901,15 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   // A member `event` is gated at consensus (a removed member cannot write one), so the late rule,
   // about un-gated writes under a superseded key, does not apply; its schema carries no
   // `$createdAtBlockHeight` either (§8.1 step 7).
-  if (doc.type === 'event' || doc.type === 'authorEvent') return result
+  if (doc.type === 'event') return result
+  // An `authorEvent` is gated to its target's author, not to members, so a removed member keeps
+  // writing them on their own issues and PRs. Its schema carries no `$createdAtBlockHeight`
+  // either: without one it is judged as written after every cut-off, so a non-member's under a
+  // superseded or burned epoch is late (§8.1 step 7).
+  if (doc.type === 'authorEvent') {
+    const height = isHeight(doc.createdAtBlockHeight) ? doc.createdAtBlockHeight : Infinity
+    return isLate(ctx.anchors, ctx.members, doc.epoch, height, doc.ownerId, ctx.burned) ? unreadable('late') : result
+  }
   if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
   if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('late')
   // An edit re-seals the text: a late one (by a non-member, past the grace period) replaced the

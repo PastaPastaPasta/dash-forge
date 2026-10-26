@@ -43,11 +43,11 @@ inputs:
     description: "No longer has any effect: a private repository's check run cannot carry a log, so none is uploaded there."
     default: "false"
   network:
-    description: "mainnet, testnet or devnet. The default is the devnet the hosted site targets; Forge is not deployed on mainnet yet."
-    default: devnet
+    description: "mainnet, testnet or devnet. The default is testnet, which the hosted site targets; Forge is not deployed on mainnet yet."
+    default: testnet
   devnet-name:
-    description: "Devnet name, used only when network is devnet: lowercase letters, digits and -."
-    default: sakura
+    description: "Devnet name, required when network is devnet and ignored otherwise: lowercase letters, digits and -."
+    default: ""
   version:
     description: "Dash Forge release to install (the release this action version pins, kept equal to the workspace version). Empty: install 'true' builds dg from source."
     default: "0.1.0"
