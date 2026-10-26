@@ -124,31 +124,34 @@ describe('the protocol version before the first query', () => {
     recorded.snapshots.mockResolvedValue({ [CORE]: { version: 1, platformVersion: 14, bytes: '' } })
   })
 
-  const DPNS = NETWORKS.testnet.dpnsContractId
-
-  /** Connect, noting each `getLatestVersions` for DPNS and whether a connection was live then. */
-  async function connectNoting(network: Network): Promise<{ live: boolean }[]> {
+  /**
+   * Connect, noting each `getLatestVersions`: its ids, and whether a connection was live then.
+   * (No localStorage here, so the seeded-snapshot check after going live is always due.)
+   */
+  async function connectNoting(network: Network): Promise<{ ids: string[]; live: boolean }[]> {
     const service = new EvoSdkService()
     services.push(service)
-    const calls: { live: boolean }[] = []
+    const calls: { ids: string[]; live: boolean }[] = []
     recorded.latest.mockImplementation(async ({ contractIds }) => {
-      // (The seeded-snapshot check that follows going live asks for the seeded ids instead.)
-      if (contractIds.includes(DPNS)) calls.push({ live: service.generation > 0 })
+      calls.push({ ids: contractIds, live: service.generation > 0 })
       recorded.version = 14
-      return new Map()
+      return new Map([[CORE, { version: 1 }]])
     })
     await service.initialize({ network, contractIds: [] })
+    await vi.advanceTimersByTimeAsync(0)
     return calls
   }
 
   it('a new SDK below the snapshots\' version learns it from one proved read before going live', async () => {
     // rc.8 starts a testnet SDK at 13; with every contract seeded, nothing else would teach it 14.
+    // The read asks the seeded-snapshot check's question, so that check sends nothing of its own.
     recorded.version = 13
-    expect(await connectNoting('testnet')).toEqual([{ live: false }])
+    expect(await connectNoting('testnet')).toEqual([{ ids: [CORE], live: false }])
   })
 
   it('an SDK already at that version, or with no snapshots, sends nothing before going live', async () => {
-    expect(await connectNoting('testnet')).toEqual([])
+    // Only the seeded-snapshot check, after going live.
+    expect(await connectNoting('testnet')).toEqual([{ ids: [CORE], live: true }])
 
     recorded.version = 13
     recorded.snapshots.mockResolvedValue({})
@@ -166,10 +169,10 @@ describe('the protocol version before the first query', () => {
     let answer!: () => void
     const late = new Promise<Map<string, unknown>>((resolve) => (answer = () => resolve(new Map())))
     // Only the warm-up's read hangs (the seeded-snapshot check after going live is tracked anyway).
-    recorded.latest.mockReset().mockImplementation(async ({ contractIds }) => (contractIds.includes(DPNS) ? late : new Map()))
+    recorded.latest.mockReset().mockReturnValueOnce(late).mockResolvedValue(new Map())
     const hung = new EvoSdkService()
     const connecting = hung.initialize({ network: 'testnet', contractIds: [] })
-    await vi.waitFor(() => expect(recorded.latest).toHaveBeenCalledWith({ contractIds: [DPNS] }))
+    await vi.waitFor(() => expect(recorded.latest).toHaveBeenCalledWith({ contractIds: [CORE] }))
     expect(hung.getStatus().phase).not.toBe('ready')
     await vi.advanceTimersByTimeAsync(LEARN_VERSION_MS)
     await connecting

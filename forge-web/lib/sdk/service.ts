@@ -92,7 +92,12 @@ export interface Connection {
   readonly seeded: Map<string, number>
   /** The warm-up's version read, when it was still running as the connection went live ({@link learnVersion}). */
   readonly warming?: Promise<unknown>
+  /** The seeded contracts' latest versions, when the warm-up read them ({@link revalidateSeeded} uses them). */
+  readonly latest?: LatestVersions
 }
+
+/** What `getDataContractsLatestVersions` answers: each contract's current version. */
+type LatestVersions = Awaited<ReturnType<EvoSDK['contracts']['getLatestVersions']>>
 
 /** What a new connection takes over from the one it replaces. */
 export interface Carry {
@@ -1090,16 +1095,26 @@ export const LEARN_VERSION_MS = 5_000
  * has a learned one, and learns the real one from the first proved response. With every
  * contract seeded, connecting sends none, so a page's first query is built at the floor, and
  * one the floor does not support (a `timeRange` query below 14) is refused before it is sent.
- * One proved request (DPNS's latest version: every network has it), only when the SDK is below
- * `floor`, teaches it. A failure, or no answer within {@link LEARN_VERSION_MS}, is left to the
- * reads, which learn the version too: the connect never waits on it longer. Returns the read
- * when it is still running then, so the SDK is not freed under it ({@link dispose}).
+ * One proved request, only when the SDK is below `floor`, teaches it: the seeded contracts'
+ * latest versions, the question {@link revalidateSeeded} asks next, so it is not asked twice
+ * (DPNS's, which every network has, when nothing was seeded). A failure, or no answer within
+ * {@link LEARN_VERSION_MS}, is left to the reads, which learn the version too: the connect never
+ * waits on it longer. Returns the answer, or the read when it is still running then, so the SDK
+ * is not freed under it ({@link dispose}).
  */
-async function learnVersion(sdk: EvoSDK, floor: number, dpnsContractId: string): Promise<{ readonly running?: Promise<unknown> }> {
+async function learnVersion(
+  sdk: EvoSDK,
+  floor: number,
+  contractIds: readonly string[],
+): Promise<{ readonly latest?: LatestVersions; readonly running?: Promise<unknown> }> {
   if ((versionOf(sdk) ?? 0) >= floor) return {}
   let settled = false
+  let latest: LatestVersions | undefined
   const read = sdk.contracts
-    .getLatestVersions({ contractIds: [dpnsContractId] })
+    .getLatestVersions({ contractIds: [...contractIds] })
+    .then((answer) => {
+      latest = answer
+    })
     .catch(() => undefined)
     .finally(() => {
       settled = true
@@ -1113,7 +1128,8 @@ async function learnVersion(sdk: EvoSDK, floor: number, dpnsContractId: string):
   ])
   clearTimeout(timer)
   // (Wrapped: an async function returning the promise itself would wait for it.)
-  return settled ? {} : { running: read }
+  if (!settled) return { running: read }
+  return latest !== undefined ? { latest } : {}
 }
 
 /**
@@ -1121,7 +1137,8 @@ async function learnVersion(sdk: EvoSDK, floor: number, dpnsContractId: string):
  * `getDataContractsLatestVersions`) and refetch any that moved on, e.g. forge-collab after a
  * contract update. The SDK also refetches on its own once a document carries a newer
  * `$contractVersion`; this catches the update before any such document is read. Runs at
- * most once per {@link SEED_CHECK_MS} per profile while the versions keep matching.
+ * most once per {@link SEED_CHECK_MS} per profile while the versions keep matching, and asks
+ * nothing when the warm-up already read the versions ({@link learnVersion}).
  *
  * Each refetch is a stale-contract refresh ({@link refreshStale}): the page's first reads run
  * alongside this check, and one that fails on the old contract meanwhile joins the refetch in
@@ -1133,7 +1150,7 @@ export async function revalidateSeeded(connection: Connection, deploymentKey: st
   const versions = JSON.stringify([...seeded].sort())
   if (Date.now() - lastSeedCheck(deploymentKey, versions) < SEED_CHECK_MS) return
   try {
-    const latest = await sdk.contracts.getLatestVersions({ contractIds: [...seeded.keys()] })
+    const latest = connection.latest ?? (await sdk.contracts.getLatestVersions({ contractIds: [...seeded.keys()] }))
     let current = true
     for (const [id, version] of [...seeded]) {
       const now = latest.get(id)?.version
@@ -1377,8 +1394,9 @@ async function connectAndWarm(
   step(signal, sdk)
   await preload(sdk, config.contractIds.filter((id) => !seeded.has(id)))
   step(signal, sdk)
-  const { running } = await learnVersion(sdk, floor, NETWORKS[config.network].dpnsContractId)
-  const connection: Connection = { sdk, seeded, ...(running !== undefined ? { warming: running } : {}) }
+  const ids = seeded.size > 0 ? [...seeded.keys()] : [NETWORKS[config.network].dpnsContractId]
+  const { latest, running } = await learnVersion(sdk, floor, ids)
+  const connection: Connection = { sdk, seeded, ...(running !== undefined ? { warming: running } : {}), ...(latest !== undefined ? { latest } : {}) }
   if (signal.aborted) {
     dispose(connection)
     throw new Error('the connect was abandoned')
