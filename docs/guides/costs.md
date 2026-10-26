@@ -246,7 +246,7 @@ Packs are git packfiles: delta-compressed and deflated, typically 20–35% of th
 
 ### Passkeys for other devices
 
-A passkey's entry is one small stored item, written with this browser's key (so it comes out of that key's budget, like any write). These are estimates from Yappr's measurements on sakura plus the extra bytes of Forge's fixed-size entry; the live test (`lib/auth/passkey-vault.live.test.ts`) prints what each step really cost.
+A passkey's entry is one small stored item, written with this browser's key (so it comes out of that key's budget, like any write). These are estimates from Yappr's measurements on a development network plus the extra bytes of Forge's fixed-size entry, not yet measured on testnet; the live test (`lib/auth/passkey-vault.live.test.ts`) prints what each step really cost.
 
 | Action | About | Notes |
 |---|---|---|

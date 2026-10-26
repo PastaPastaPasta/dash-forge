@@ -41,6 +41,7 @@ ALLOW=(
   '^docs/dev/'
   '^docs/research/'
   '^docs/security/private-repos\.md$'   # the normative design, which names each contract set
+  '^docs/security/passkey-vault\.md$'   # its deployment status names each network's pending forge-meta update
   '^docs/testing/'
   '^docs/upstream/'
   # tests and their data

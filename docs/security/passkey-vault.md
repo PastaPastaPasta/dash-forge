@@ -1,6 +1,6 @@
 # Passkeys for other devices: the passkey vault and its threat model
 
-Status: implemented in the web app and inert until forge-meta on a network has the `vaultEntry` type. On devnet sakura that is the pending `deploy-v2.mjs --update meta` (see [Deployment status](#deployment-status)). The contract is [forge-v2.md §2](../contracts/forge-v2.md#forge-meta-mainnet-set-only), and the user-facing guide is [identity and keys](../guides/identity-and-keys.md#passkeys-for-other-devices).
+Status: implemented in the web app and inert until forge-meta on a network has the `vaultEntry` type. On testnet and devnet sakura that is a pending `deploy-v2.mjs --update meta` (see [Deployment status](#deployment-status)). The contract is [forge-v2.md §2](../contracts/forge-v2.md#forge-meta-mainnet-set-only), and the user-facing guide is [identity and keys](../guides/identity-and-keys.md#passkeys-for-other-devices).
 
 ## What it is
 
