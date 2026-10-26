@@ -1,6 +1,6 @@
 # Passkeys for other devices: the passkey vault and its threat model
 
-Status: implemented in the web app and inert until forge-meta on a network has the `vaultEntry` type. On testnet and devnet sakura that is a pending `deploy-v2.mjs --update meta` (see [Deployment status](#deployment-status)). The contract is [forge-v2.md §2](../contracts/forge-v2.md#forge-meta-mainnet-set-only), and the user-facing guide is [identity and keys](../guides/identity-and-keys.md#passkeys-for-other-devices).
+Status: implemented in the web app, and live wherever forge-meta has the `vaultEntry` type: on testnet since its forge-meta update to version 2 on 2026-10-26 (see [Deployment status](#deployment-status)). Elsewhere it stays hidden. The contract is [forge-v2.md §2](../contracts/forge-v2.md#forge-meta-mainnet-set-only), and the user-facing guide is [identity and keys](../guides/identity-and-keys.md#passkeys-for-other-devices).
 
 ## What it is
 
@@ -79,9 +79,13 @@ The keys then go into the browser vault, protected by the same passkey (its loca
 
 ## Deployment status
 
-The `vaultEntry` type is in the committed forge-meta (`forge-contracts/contracts/mainnet/forge-meta.json`) but **not yet on devnet sakura or testnet**. On each it is one `DataContractUpdate` of forge-meta, `deploy-v2.mjs --set mainnet --update meta` signed by that network's deployer (on testnet also with `--expect-sha256` over sums the owner signed), followed by `snapshot-contracts.mjs` for the network and a rehearsal that a group-bound limited key can write `vaultEntry`. Testnet lists the flag in its `since` (`build.py` `NETWORK_REGISTRATIONS`), so `--check` still reproduces what testnet registered. None of it has been run: each update needs the owner's approval. On mainnet the type is part of the registration set.
+The `vaultEntry` type is in the committed forge-meta (`forge-contracts/contracts/mainnet/forge-meta.json`).
 
-Until the update lands the feature is **inert**: the web app reads forge-meta from Platform (a proved fetch, which bypasses the bundled snapshot) and shows no passkey tile, no passkeys section and no offer while the contract has no `vaultEntry`. A read that fails also hides them. Nothing breaks and nothing is spent.
+- **Testnet: live.** forge-meta was updated in place to version 2 on 2026-10-26: one `DataContractUpdate`, `deploy-v2.mjs --set mainnet --update meta`, signed by the testnet deployer with `--expect-sha256`, then `snapshot-contracts.mjs`. The scratch set got the same update first. On both, the live test showed that a group-bound limited key writes `vaultEntry` ([evidence](../../forge-contracts/evidence/testnet/README.md#forge-meta-update-to-version-2-the-passkey-vault-2026-10-26)). Testnet lists the flag in its `since` (`build.py` `NETWORK_REGISTRATIONS`), so `--check` still reproduces what testnet registered.
+- **Devnet sakura: not updated.** It is retired and unreachable; the same update, signed by its deployer, would be needed if it came back.
+- **Mainnet:** the type is part of the registration set.
+
+Where forge-meta has no `vaultEntry`, the feature is **inert**: the web app reads forge-meta from Platform (a proved fetch, which bypasses the bundled snapshot) and shows no passkey tile, no passkeys section and no offer while the contract has no `vaultEntry`. A read that fails also hides them. Nothing breaks and nothing is spent.
 
 If forge-meta is ever re-registered with a new id (`--force-new`), every passkey stops working: the contract id is in the PRF input and in the user handle. The new contract starts empty, and each user adds passkeys again.
 
