@@ -474,7 +474,7 @@ describe('storeArtifact', () => {
       upload,
       publishIndex: null,
       verifyPack: async () => [],
-      readBaseTip: async () => base,
+      readBaseHeads: async () => [base],
       readBaseRef: async () => 'refs/heads/main',
       intent: 'merge:P',
     }

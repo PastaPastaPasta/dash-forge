@@ -1,0 +1,73 @@
+{
+  "name": "ref_diverged_merge_naming_every_head_resolves_without_ancestry",
+  "description": "Readers fold with identity ancestry: a merge of both racing heads, pushed as one update per head (each naming it as prevOid, same newOid), settles the race with no commit graph.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u0",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "P0",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 50
+      },
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "M",
+        "force": false,
+        "protected": false,
+        "author": "carol",
+        "createdAt": 300
+      },
+      {
+        "id": "u4",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "M",
+        "force": false,
+        "protected": false,
+        "author": "carol",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "M",
+    "author": "carol",
+    "createdAt": 300
+  }
+}

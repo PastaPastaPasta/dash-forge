@@ -144,8 +144,11 @@ export interface MergeRunDeps {
    * pack is complete). Checked before the upload; a non-empty answer stops the merge.
    */
   readonly verifyPack: (pack: Uint8Array, tip: string) => Promise<readonly string[]>
-  /** The base branch's current tip, read fresh (`''` when it has none), just before moving it. */
-  readonly readBaseTip: () => Promise<string>
+  /**
+   * The base branch's live heads, newest first, read fresh just before moving it: one when it
+   * resolves, several when concurrent pushes left it diverged, none when it has no tip.
+   */
+  readonly readBaseHeads: () => Promise<readonly string[]>
   /**
    * The PR's base as its newest retarget names it now (`PullView.mergeBaseRefName`), read
    * fresh just before the ref update and again before the merge transition: a retarget
@@ -367,7 +370,16 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     await checkBase('ref')
     // The merge was built on `run.baseTip`: if the branch has moved since, moving it now would
     // drop the commits pushed in between.
-    const tipNow = await attempt('ref', () => deps.readBaseTip())
+    const heads = await attempt('ref', () => deps.readBaseHeads())
+    // A diverged base: this merge contains one of its heads, and its one update names only that
+    // one, so every reader would still read the branch diverged (forge-core
+    // `rules::settling_prev_oids`). git settles it with a push that merges every head.
+    if (heads.length > 1) {
+      throw new MergeStopped(
+        `${branchName(deps.pull.baseRefName)} has diverged (${heads.length} heads from concurrent pushes); the pack stays stored and unused. Merge its heads with git and push, then merge again`,
+      )
+    }
+    const tipNow = heads[0] ?? ''
     if (tipNow !== run.baseTip) {
       throw new MergeStopped(`the base branch moved to ${tipNow.slice(0, 9) || '(deleted)'} since this merge was built; the pack stays stored and unused. Merge again`)
     }
