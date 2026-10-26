@@ -29,6 +29,16 @@ Members-only content in public repositories, Environments and the secret scan. P
 - `dg repo view` counts git packs only: `packCount` and `packBytes` (and the `packs:` line) no longer include browse indexes, history indexes, release-asset lists or long bodies. `dg storage status` still lists every artifact.
 - Notifications and `forge-relay` webhooks never carry members-only text: they say that something happened, by whom and where. An encrypted comment or review from someone who is not a member is not shown and notifies nobody.
 
+### Fixed
+
+- **`git push` asks before the whole push, not one pack at a time.** The cost guard weighs every pack (public and members-only), every index and every ref update together, once, before anything is paid. A push of tags or branches at commits already stored (`git push --tags`), and a push that only deletes, used to write its ref updates without a question: 300 tags is about 0.28 DASH.
+- **`dg pr merge --yes` approves the price it shows, and no more.** The merge is built before the question and priced by a dry run of its push. The push is then capped at that price: a dearer push is refused (E801) before anything is paid. `dg pr revert --yes` and `--delete-branch` work the same way.
+- **`dg pr merge --override-policy` fails (E106) when the merge landed but its policy-bypass record did not**, instead of printing "merged" and exiting 0. `--record-bypass` records the missing bypass.
+- **`dg import` and `forge-import` without `--max-spend` stop at the estimate you confirmed** instead of running uncapped.
+- **The Mirror Action's recommended workflow no longer runs on issue, comment and pull request events**, which anyone can trigger. Mirroring them is an opt-in that the README explains, with its risk. An identity file as `DASH_FORGE_KEY` (no key budget) is refused unless `allow-unlimited-key: 'true'`.
+- **forge-runner retries a check's final report** with backoff. If the report still doesn't land, the push is tried again instead of being marked done with the check left running.
+- **The web app prices an edit of a long issue, PR or comment with its long-body storage**, so the confirmation and its balance check show what the edit costs.
+
 ## [0.1.0] - 2026-10-04
 
 The first release. It targets devnet sakura (Dash Platform v5.0.0-beta.1, protocol 14) only;
