@@ -534,6 +534,8 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 **What to do:** add your own storage (`dg storage add`, then `dg storage use`) so packs go to your bucket and only the manifest and refs are paid on Platform. Or accept the price for this push with `git -c dash.confirm=never push`. If the price is what stopped it, you can also raise `dash.costWarnThreshold` (`off` turns the threshold off). If it was the 1 MiB rule (`dash.storage` unset), raising the threshold does not help: choose storage, or say Platform is what you want with `git config dash.storage platform`.
 
+`dg pr merge --yes`, `dg pr revert --yes` and the source-branch delete of `--delete-branch` hand the helper the push's share of the price they quoted as a hard cap: `--yes` approves that much and no more. A push that costs more (new objects over the few KiB a merge's pack is priced at, say) is refused with E801 before anything is stored or paid for. Run the command again without `--yes` to see the push's own price and confirm it.
+
 ## E802
 
 **Confirmation required.** A cost-bearing or destructive `dg` command needs confirmation, and it cannot prompt: `--json` mode, or stdin is not a terminal.
