@@ -81,8 +81,7 @@ shred -u /dev/shm/notify-keys.env
 Write `.env` next to `docker-compose.yml` (every variable is under [Settings](#settings)):
 
 ```sh
-FORGE_NOTIFY_NETWORK=devnet
-FORGE_NOTIFY_DEVNET_NAME=sakura
+FORGE_NOTIFY_NETWORK=testnet
 FORGE_NOTIFY_PUBLIC_URL=https://notify-forge.dashhq.org
 FORGE_NOTIFY_WEB_URL=https://forge.dashhq.org
 FORGE_NOTIFY_PRIVACY_URL=https://forge.dashhq.org/privacy/notify/
@@ -110,7 +109,7 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 | Variable | Default | What |
 |---|---|---|
 | `FORGE_NOTIFY_NETWORK` | forge-core's default | `mainnet`, `testnet` or `devnet`. Always set it. |
-| `FORGE_NOTIFY_DEVNET_NAME` | | The devnet's name (with `devnet`), e.g. `sakura` |
+| `FORGE_NOTIFY_DEVNET_NAME` | | The devnet's name (with `devnet`) |
 | `FORGE_NOTIFY_DAPI_ADDRESSES` | the network's seeds | Comma-separated DAPI addresses (devnets) |
 | `FORGE_NOTIFY_PUBLIC_URL` | (required) | This service's https URL. Mail links (confirm, unsubscribe) use it. |
 | `FORGE_NOTIFY_OPERATOR` | the public URL's host | The operator name signed requests must carry, shown to users. The web app signs only for the host it calls, so leave this unset unless you serve other clients. |
@@ -283,7 +282,7 @@ Mailpit catches mail, and a stub receives push:
 ```sh
 docker run -d --name notify-mailpit -p 127.0.0.1:18025:8025 -p 127.0.0.1:11025:1025 axllent/mailpit
 eval "$(forge-notify keys | grep '^FORGE')"    # local test keys only
-FORGE_NOTIFY_NETWORK=devnet FORGE_NOTIFY_DEVNET_NAME=sakura \
+FORGE_NOTIFY_NETWORK=testnet \
 FORGE_NOTIFY_PUBLIC_URL=http://127.0.0.1:18200 FORGE_NOTIFY_LISTEN=127.0.0.1:18200 \
 FORGE_NOTIFY_OPERATOR=notify.local FORGE_NOTIFY_ALLOWED_ORIGINS=http://127.0.0.1:4400 \
 FORGE_NOTIFY_DATA_DIR=/tmp/notify-data FORGE_NOTIFY_INSECURE_LOCAL=true \

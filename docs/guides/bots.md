@@ -28,7 +28,7 @@ A bot can be the same identity as a CI runner: a runner that reports checks need
 
 ## Where it works
 
-A bot is a member with the **Bot** role, and its push access is a contract document of its own. Both exist only where the network's contracts have them: the four-contract production set, which is the set to be registered on testnet and mainnet ([Deploying Forge to a network](../deploying-to-a-network.md)); Forge is registered on devnet sakura only today. On a network registered with the three-contract devnet set (devnet sakura today), `--role bot` is refused before anything is signed. A bot there is an identity outside the members, it cannot push, and it cannot post members-only. The web app's **Settings → Bots and runners** says "Bots can't push to this repo yet." there. That page tells you what your network supports.
+A bot is a member with the **Bot** role, and its push access is a contract document of its own. Both exist only where the network's contracts have them: the four-contract production set, which is registered on testnet and is the set to be registered on mainnet ([Deploying Forge to a network](../deploying-to-a-network.md)). On a network registered with the older three-contract devnet set, `--role bot` is refused before anything is signed. A bot there is an identity outside the members, it cannot push, and it cannot post members-only. The web app's **Settings → Bots and runners** says "Bots can't push to this repo yet." there. That page tells you what your network supports.
 
 | Part | `dg` | Web app |
 |---|---|---|
