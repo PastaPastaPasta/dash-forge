@@ -1,3 +1,6 @@
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
 import { test, expect, type Page } from '@playwright/test'
 
 /**
@@ -6,6 +9,9 @@ import { test, expect, type Page } from '@playwright/test'
  * every time (on a slow phone the window is a second or more). No devnet writes; the sign-in
  * sheet only has to open. Runs in Chromium and WebKit, on the static export.
  */
+
+/** scripts/csp-hashes.mjs, an ES module (the specs are compiled to CommonJS). */
+const cspHashes = (): Promise<typeof import('../scripts/csp-hashes.mjs')> => import(pathToFileURL(join(__dirname, '../scripts/csp-hashes.mjs')).href)
 
 const CHUNKS = /\/_next\/static\/chunks\/.*\.js(\?|$)/
 
@@ -71,11 +77,24 @@ async function tapBeforeHydration(page: Page, path: string): Promise<void> {
 }
 
 test.describe('a tap before hydration', () => {
-  test('the static export keeps JavaScript eval out of its CSP', async ({ page }) => {
+  test('the static export keeps JavaScript eval and unhashed inline scripts out of its CSP', async ({ page }) => {
     await page.goto('/start/', { waitUntil: 'load' })
-    const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')
-    const scriptSrc = policy?.split(';').find((directive) => directive.trim().startsWith('script-src '))?.trim()
-    expect(scriptSrc).toBe("script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'")
+    const policies = await page.locator('meta[http-equiv="Content-Security-Policy"]').evaluateAll((metas) => metas.map((m) => m.getAttribute('content') ?? ''))
+    const scriptSrc = policies.map((p) => p.split(';').find((directive) => directive.trim().startsWith('script-src '))?.trim())
+    // A browser enforces both: first the page's own inline scripts by hash (scripts/csp-hashes.mjs),
+    // then the layout's policy, whose 'unsafe-inline' the first one overrules.
+    expect(scriptSrc).toHaveLength(2)
+    expect(scriptSrc[0]).toMatch(/^script-src 'self' 'wasm-unsafe-eval'( 'sha256-[A-Za-z0-9+/]{43}=')+$/)
+    expect(scriptSrc[1]).toBe("script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'")
+  })
+
+  test('every exported page allows exactly its own inline scripts', async ({ request }) => {
+    const { cspProblem } = await cspHashes()
+    for (const path of ['/', '/start/', '/explore/', '/repo/', '/u/', '/settings/', '/404.html']) {
+      const response = await request.get(path)
+      expect(response.ok(), path).toBe(true)
+      expect(cspProblem(await response.text(), path)).toBeNull()
+    }
   })
 
   test('the head script runs under the page CSP (no refusal)', async ({ page }) => {
@@ -137,6 +156,19 @@ test.describe('a tap before hydration', () => {
       await route.fulfill({ response: res, body: html })
     })
     await tapBeforeHydration(page, '/explore/')
+  })
+
+  test('an inline script the host injects does not run; the page still hydrates', async ({ page }) => {
+    const csp = cspErrors(page)
+    await page.route(/\/explore\/(\?.*)?$/, async (route) => {
+      const res = await route.fetch()
+      const html = (await res.text()).replace('</head>', '<script>window.__injected=1</script></head>').replace('</body>', '<script>window.__injected=2</script></body>')
+      await route.fulfill({ response: res, body: html })
+    })
+    await page.goto('/explore/', { waitUntil: 'load' })
+    await expect.poll(() => signInButton(page).evaluate((el) => Object.keys(el).some((k) => k.startsWith('__reactProps'))), { timeout: 60_000 }).toBe(true)
+    expect(await page.evaluate(() => (window as unknown as { __injected?: number }).__injected)).toBeUndefined()
+    expect(csp.filter((t) => /inline script/i.test(t)).length).toBeGreaterThanOrEqual(2)
   })
 
   test('a script that fails to load clears the busy look (not only the timer)', async ({ page }) => {
