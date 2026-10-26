@@ -47,7 +47,8 @@ import {
   type TransitionView,
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
-import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
+import { readMemberVerdictDocs, readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
+import { dedupeById } from '../repo/refs'
 import { eventMarkOf, type EventMark } from '../repo/head-probe'
 import { closeReasonOf, currentCloseReason, isLocked, stateCode, statusOfCode, type ClosedAs } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
@@ -61,7 +62,7 @@ import type { AgentRequest } from '../rules/agent-request'
 import { embargoCounts, embargoOf, type Embargo } from '../rules/embargo'
 import { contentGate } from '../repo/made-public'
 import { HiddenTally, admitAll, placeholderShown, publicationMarks, viewAudience, type BundleAlert, type ContentGate, type PublicationMarks, type HiddenCounts, type LetterFacts, type MembersOnlyItem } from '../repo/private-content'
-import { queryAllDocuments, type PlainDocument } from '../sdk'
+import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
 import type { HiddenItems } from '../rules/moderation'
@@ -825,8 +826,14 @@ export interface PullThread {
   readonly timeline: TimelineItem[]
   /** Every comment, for placing inline threads on the diff. */
   readonly comments: readonly CommentView[]
-  /** Every readable review, oldest first. */
+  /** Every readable review, oldest first (see {@link reviewsIncomplete}). */
   readonly reviews: readonly ReviewView[]
+  /**
+   * The PR has more reviews than a page reads ({@link REVIEW_LIST_PAGES}): {@link reviews} is one
+   * page of them plus every member verdict on the head, which is all {@link approvals} counts.
+   * Absent: the list is complete.
+   */
+  readonly reviewsIncomplete?: true
   /**
    * The review fold with thread resolution (`foldPrReviewV2` over the PR's root comments):
    * head updates, requested reviewers, resolved threads, dismissals.
@@ -957,11 +964,11 @@ export async function loadPullOrMembersOnly(
       ? docs(i)
       : queryAllDocuments(sdk, source.targetQuery(type, { where: [[field, '==', id]], orderBy: [[field, 'asc'], ['$createdAt', 'asc']] }))
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
-  const [commentDocs, eventDocs, authorEventDocs, reviewDocs, transitionRows] = await Promise.all([
+  const [commentDocs, eventDocs, authorEventDocs, reviewList, transitionRows] = await Promise.all([
     complete(0, DOC.comment),
     complete(1, DOC.event),
     complete(2, DOC.authorEvent),
-    complete(3, DOC.review, 'patchId'),
+    docs(3).length < 100 ? { docs: docs(3), complete: true } : readReviewList(sdk, source.targetQuery(DOC.review, { where: [['patchId', '==', id]], orderBy: [['patchId', 'asc'], ['$createdAt', 'asc']] }), docs(3)),
     docs(8).length < 100 ? Promise.resolve(docs(8).map(transitionOf)) : readTransitions(sdk, repo, id),
   ])
   const transitions = sortTransitions(transitionRows)
@@ -974,7 +981,7 @@ export async function loadPullOrMembersOnly(
   const shownIds = [
     str(doc, '$ownerId'),
     ...commentDocs.map((c) => str(c, '$ownerId')),
-    ...reviewDocs.map((r) => str(r, '$ownerId')),
+    ...reviewList.docs.map((r) => str(r, '$ownerId')),
     ...transitions.map((t) => t.actor),
     ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
     ...(memberships ?? []).map((m) => m.identity),
@@ -988,6 +995,9 @@ export async function loadPullOrMembersOnly(
   // The proved verdict count needs the folded head: one grouped count, alongside what follows.
   // Display only, so a failed read shows nothing rather than failing the page.
   const verdictsRead = readProvedVerdicts(sdk, repo, id, pullRead.headOid).catch(() => null)
+  // A review list cut short still holds every review the approvals count: the member verdicts on
+  // the head, read on their own index (a non-member cannot add to them).
+  const reviewDocs = reviewList.complete ? reviewList.docs : dedupeById([...reviewList.docs, ...(await readMemberVerdictDocs(sdk, repo, id, pullRead.headOid))])
 
   const tally = new HiddenTally()
   const admittedComments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
@@ -1026,6 +1036,7 @@ export async function loadPullOrMembersOnly(
     timeline: mergeTimeline(shown.comments, log.events, log.authorEvents, shown.reviews, tally.total > 0, transitions),
     comments: shown.comments,
     reviews: shown.reviews,
+    ...(reviewList.complete ? {} : { reviewsIncomplete: true as const }),
     review,
     approvals: approvals?.approvals ?? null,
     verdicts,
@@ -1044,6 +1055,23 @@ export async function loadPullOrMembersOnly(
     locked: isLocked(transitions),
     // Every document read, the ones this reader cannot open too: the probe skips what it has seen.
     eventMark: eventMarkOf([...eventDocs, ...authorEventDocs]),
+  }
+}
+
+/** Pages of a PR's reviews the page reads for its list: reviews are un-gated, so anyone can pad them. */
+export const REVIEW_LIST_PAGES = 20
+
+/**
+ * A PR's reviews for its list, oldest first, at most {@link REVIEW_LIST_PAGES} pages: when there
+ * are more, `complete` is false and only `first` (the composite's page) is kept. The approvals
+ * never rest on this read alone (`readMemberVerdictDocs`).
+ */
+async function readReviewList(sdk: EvoSDK, query: DocumentQuery, first: PlainDocument[]): Promise<{ docs: PlainDocument[]; complete: boolean }> {
+  try {
+    return { docs: await queryAllDocuments(sdk, query, { maxPages: REVIEW_LIST_PAGES }), complete: true }
+  } catch (e) {
+    if (!(e instanceof IncompleteReadError)) throw e
+    return { docs: first, complete: false }
   }
 }
 

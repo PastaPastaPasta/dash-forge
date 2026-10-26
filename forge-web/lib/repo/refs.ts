@@ -158,7 +158,7 @@ export function rowsOfRef(rows: readonly PlainDocument[], refNameHashHex: string
 }
 
 /** Drop repeated `$id`s, keeping the first occurrence. */
-function dedupeById(rows: readonly PlainDocument[]): PlainDocument[] {
+export function dedupeById(rows: readonly PlainDocument[]): PlainDocument[] {
   const seen = new Set<string>()
   return rows.filter((d) => {
     const id = String(d['$id'])

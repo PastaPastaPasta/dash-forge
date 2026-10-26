@@ -1973,6 +1973,11 @@ function PullPage({
               </>
               )}
               <HiddenNote hidden={totalHidden(thread.hidden)} what="comment or review" many="comments and reviews" home={home} by={thread.hidden} shown={thread.membersOnly.length} />
+              {thread.reviewsIncomplete === true ? (
+                <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="reviews-incomplete">
+                  This pull request has too many reviews to list them all. Only some are shown, with every member approval or change request on the current head, which is all the approvals count.
+                </p>
+              ) : null}
               <BundleAlertsNote alerts={thread.bundleAlerts} />
               {/* the timeline's members-only placeholders already offer a locked member the unlock */}
               <EventValuesNote counts={thread.eventValues} lane={home.lane} unlockShown={thread.membersOnly.length > 0} />
