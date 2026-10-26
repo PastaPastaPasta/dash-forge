@@ -12,9 +12,9 @@
  *
  * A devnet Forge has left is a special case, not a generic reset: its deployment file is marked
  * `retired` (moutai, upgraded in place to Platform v4.2.0-beta.7; bonsia, retired for Platform v5),
- * every contract this build reads went with it, and the forge moved to devnet sakura rather than
+ * every contract this build reads went with it, and the forge moved to {@link FORGE_HOME} rather than
  * being redeployed there. This is gated on the same detected condition — a retired devnet's
- * contracts missing — not a date or the build's devnet notice, so a sakura build never matches it.
+ * contracts missing — not a date or the build's devnet notice, so a live network's build never matches it.
  */
 
 import { Unplug } from 'lucide-react'

@@ -428,7 +428,9 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
  * Which wallets can answer here, from the wallets' sources (docs/design/wallet-login.md,
  * "Compatibility matrix"). Nothing more is claimed: DashConnect is in both wallets' development
  * branches (dash-wallet `master`, dashwallet-ios `develop`), in neither's latest release
- * (v11.9.0, v9.0.2), and answers on testnet (plus devnets in internal iOS builds).
+ * (v11.9.0, v9.0.2), and answers on testnet (plus devnets in internal iOS builds). The iOS
+ * development build still pins testnet to protocol 13 while testnet runs 14, so Platform rejects
+ * its answer until that is fixed (issue #591).
  */
 export function WalletSupportNote(): JSX.Element {
   const { network, key } = ACTIVE_NETWORK
@@ -436,7 +438,7 @@ export function WalletSupportNote(): JSX.Element {
     return (
       <p role="note" data-testid="wallet-support" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
         {network === 'devnet'
-          ? `Dash Wallet support arrives when Forge is on testnet, where its sign-in feature works. No released wallet has it yet. On ${key}, only an internal iOS build can answer.`
+          ? `Dash Wallet sign-in (DashConnect) works on testnet only, and no released wallet has it yet. On ${key}, only an internal iOS build can answer.`
           : `No Dash Wallet build supports sign-in on ${key} yet: its sign-in feature (DashConnect) works on testnet only.`}{' '}
         Here, sign in with your identity file or recovery phrase, or create an identity in the browser.
       </p>
@@ -444,8 +446,8 @@ export function WalletSupportNote(): JSX.Element {
   }
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      Works with a testnet development build of the Dash Wallet app: More → Tools → Connections → Scan QR. No released version has it yet. On iOS, each
-      Forge contract needs its own approval.
+      Needs a testnet development build of the Dash Wallet app (More → Tools → Connections → Scan QR) updated for testnet&apos;s current Platform. No build
+      has that yet. On iOS, each Forge contract needs its own approval.
     </p>
   )
 }
