@@ -2,12 +2,12 @@ Rust crates in the Dash Platform SDK WebAssembly module
 ========================================================
 
 wasm_sdk_bg.wasm (npm package @dashevo/wasm-sdk) is the wasm-sdk crate of
-github.com/dashpay/platform, tag v5.0.0-rc.4, compiled to WebAssembly together with the Rust
+github.com/dashpay/platform, tag v5.0.0-rc.8, compiled to WebAssembly together with the Rust
 crates below, grouped by license, each with the license text as the crate ships it.
-Platform tag: v5.0.0-rc.4
+Platform tag: v5.0.0-rc.8
 
 Overview of licenses:
-  * MIT License (MIT): 292 crates
+  * MIT License (MIT): 288 crates
   * Unicode License v3 (Unicode-3.0): 19 crates
   * Apache License 2.0 (Apache-2.0): 15 crates
   * Creative Commons Zero v1.0 Universal (CC0-1.0): 14 crates
@@ -960,9 +960,9 @@ Used by:
   * dashcore 0.45.0 (https://github.com/dashevo/rust-dashcore/)
   * dashcore_hashes 0.45.0 (https://github.com/rust-dashcore/dash_hashes/)
   * key-wallet 0.45.0
-  * base58ck 0.1.100 (https://github.com/rust-bitcoin/rust-bitcoin/)
-  * bitcoin-io 0.1.100 (https://github.com/rust-bitcoin/rust-bitcoin)
-  * bitcoin_hashes 0.14.100 (https://github.com/rust-bitcoin/rust-bitcoin)
+  * base58ck 0.1.101 (https://github.com/rust-bitcoin/rust-bitcoin/)
+  * bitcoin-io 0.1.101 (https://github.com/rust-bitcoin/rust-bitcoin)
+  * bitcoin_hashes 0.14.101 (https://github.com/rust-bitcoin/rust-bitcoin)
 
 Creative Commons Legal Code
 
@@ -1259,7 +1259,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * grovedb-merk 6.1.0 (https://github.com/dashpay/grovedb)
+  * grovedb-merk 6.1.1 (https://github.com/dashpay/grovedb)
 
 // MIT LICENSE
 //
@@ -1306,7 +1306,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * grovedb 6.1.0 (https://github.com/dashpay/grovedb)
+  * grovedb 6.1.1 (https://github.com/dashpay/grovedb)
 
 // MIT LICENSE
 //
@@ -1348,7 +1348,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * grovedb-merk 6.1.0 (https://github.com/dashpay/grovedb)
+  * grovedb-merk 6.1.1 (https://github.com/dashpay/grovedb)
 
 // MIT LICENSE
 //
@@ -1403,7 +1403,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * drive 5.0.0-rc.4
+  * drive 5.0.0-rc.8
 
 // MIT LICENSE
 //
@@ -1457,7 +1457,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * grovedb-costs 6.1.0 (https://github.com/dashpay/grovedb)
+  * grovedb-costs 6.1.1 (https://github.com/dashpay/grovedb)
 
 // MIT LICENSE
 //
@@ -1510,7 +1510,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * drive 5.0.0-rc.4
+  * drive 5.0.0-rc.8
 
 // MIT LICENSE
 //
@@ -1550,7 +1550,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * grovedb-path 6.1.0 (https://github.com/dashpay/grovedb)
+  * grovedb-path 6.1.1 (https://github.com/dashpay/grovedb)
 
 // MIT LICENSE
 //
@@ -1944,6 +1944,7 @@ MIT License (MIT)
 
 Used by:
   * either 1.16.0 (https://github.com/rayon-rs/either)
+  * itertools 0.10.5 (https://github.com/rust-itertools/itertools)
   * itertools 0.13.0 (https://github.com/rust-itertools/itertools)
   * itertools 0.14.0 (https://github.com/rust-itertools/itertools)
   * serde_with 2.3.3 (https://github.com/jonasbb/serde_with)
@@ -3770,10 +3771,7 @@ Used by:
   * env_logger 0.11.10 (https://github.com/rust-cli/env_logger)
   * is_terminal_polyfill 1.70.2 (https://github.com/polyfill-rs/is_terminal_polyfill)
   * toml_datetime 0.6.11 (https://github.com/toml-rs/toml)
-  * toml_datetime 1.1.1+spec-1.1.0 (https://github.com/toml-rs/toml)
   * toml_edit 0.19.15 (https://github.com/toml-rs/toml)
-  * toml_edit 0.25.12+spec-1.1.0 (https://github.com/toml-rs/toml)
-  * toml_parser 1.1.2+spec-1.1.0 (https://github.com/toml-rs/toml)
 
 Copyright (c) Individual contributors
 
@@ -4118,7 +4116,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * rust_decimal 1.42.1 (https://github.com/paupino/rust-decimal)
+  * rust_decimal 1.43.0 (https://github.com/paupino/rust-decimal)
   * rust_decimal_macros 1.40.0 (https://github.com/paupino/rust-decimal)
 
 MIT License
@@ -4465,7 +4463,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dashpay-contract 5.0.0-rc.4
+  * dashpay-contract 5.0.0-rc.8
 
 MIT License
 
@@ -4558,13 +4556,13 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * grovedb-bulk-append-tree 6.1.0 (https://github.com/dashpay/grovedb)
-  * grovedb-dense-fixed-sized-merkle-tree 6.1.0 (https://github.com/dashpay/grovedb)
-  * grovedb-element 6.1.0 (https://github.com/dashpay/grovedb)
-  * grovedb-epoch-based-storage-flags 6.1.0 (https://github.com/dashpay/grovedb)
-  * grovedb-query 6.1.0 (https://github.com/dashpay/grovedb)
-  * grovedb-version 6.1.0 (https://github.com/dashpay/grovedb)
-  * grovedb-visualize 6.1.0 (https://github.com/dashpay/grovedb)
+  * grovedb-bulk-append-tree 6.1.1 (https://github.com/dashpay/grovedb)
+  * grovedb-dense-fixed-sized-merkle-tree 6.1.1 (https://github.com/dashpay/grovedb)
+  * grovedb-element 6.1.1 (https://github.com/dashpay/grovedb)
+  * grovedb-epoch-based-storage-flags 6.1.1 (https://github.com/dashpay/grovedb)
+  * grovedb-query 6.1.1 (https://github.com/dashpay/grovedb)
+  * grovedb-version 6.1.1 (https://github.com/dashpay/grovedb)
+  * grovedb-visualize 6.1.1 (https://github.com/dashpay/grovedb)
 
 MIT License
 
@@ -4781,7 +4779,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * grovedb-merkle-mountain-range 6.1.0 (https://github.com/dashpay/grovedb)
+  * grovedb-merkle-mountain-range 6.1.1 (https://github.com/dashpay/grovedb)
 
 MIT License
 
@@ -5036,7 +5034,7 @@ MIT License (MIT)
 Used by:
   * blsful 3.0.0 (https://github.com/mikelodder7/blsful)
   * vsss-rs 5.1.0 (https://github.com/mikelodder7/vsss-rs)
-  * anyhow 1.0.102 (https://github.com/dtolnay/anyhow)
+  * anyhow 1.0.104 (https://github.com/dtolnay/anyhow)
   * async-trait 0.1.89 (https://github.com/dtolnay/async-trait)
   * displaydoc 0.2.6 (https://github.com/yaahc/displaydoc)
   * elliptic-curve-tools 0.2.0 (https://github.com/mikelodder7/elliptic-curve-tools)
@@ -5053,7 +5051,6 @@ Used by:
   * pin-project-lite 0.2.17 (https://github.com/taiki-e/pin-project-lite)
   * pin-project 1.1.13 (https://github.com/taiki-e/pin-project)
   * proc-macro-crate 1.3.1 (https://github.com/bkchr/proc-macro-crate)
-  * proc-macro-crate 3.5.0 (https://github.com/bkchr/proc-macro-crate)
   * proc-macro2 1.0.106 (https://github.com/dtolnay/proc-macro2)
   * quote 1.0.45 (https://github.com/dtolnay/quote)
   * rustversion 1.0.22 (https://github.com/dtolnay/rustversion)
@@ -5141,7 +5138,6 @@ MIT License (MIT)
 
 Used by:
   * winnow 0.5.40 (https://github.com/winnow-rs/winnow)
-  * winnow 1.0.3 (https://github.com/winnow-rs/winnow)
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
@@ -5184,7 +5180,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * spin 0.10.0 (https://github.com/mvdnes/spin-rs.git)
+  * spin 0.10.1 (https://github.com/mvdnes/spin-rs.git)
 
 The MIT License (MIT)
 
@@ -5536,7 +5532,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dapi-grpc 5.0.0-rc.4
+  * dapi-grpc 5.0.0-rc.8
 
 The MIT License (MIT)
 
@@ -5566,25 +5562,25 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dash-platform-queries 5.0.0-rc.4
-  * data-contracts 5.0.0-rc.4
-  * dash-context-provider 5.0.0-rc.4
-  * rs-dapi-client 5.0.0-rc.4
-  * dash-async 5.0.0-rc.4
-  * dash-platform-macros 5.0.0-rc.4
-  * dpp 5.0.0-rc.4
-  * dpp-json-convertible-derive 5.0.0-rc.4
-  * drive-proof-verifier 5.0.0-rc.4
-  * platform-encryption 5.0.0-rc.4
-  * platform-serialization 5.0.0-rc.4
-  * platform-serialization-derive 5.0.0-rc.4
-  * platform-value 5.0.0-rc.4
-  * platform-version 5.0.0-rc.4
-  * platform-versioning 5.0.0-rc.4
-  * dash-sdk 5.0.0-rc.4
-  * rs-sdk-trusted-context-provider 5.0.0-rc.4
-  * wasm-dpp2 5.0.0-rc.4
-  * wasm-sdk 5.0.0-rc.4
+  * dash-platform-queries 5.0.0-rc.8
+  * data-contracts 5.0.0-rc.8
+  * dash-context-provider 5.0.0-rc.8
+  * rs-dapi-client 5.0.0-rc.8
+  * dash-async 5.0.0-rc.8
+  * dash-platform-macros 5.0.0-rc.8
+  * dpp 5.0.0-rc.8
+  * dpp-json-convertible-derive 5.0.0-rc.8
+  * drive-proof-verifier 5.0.0-rc.8
+  * platform-encryption 5.0.0-rc.8
+  * platform-serialization 5.0.0-rc.8
+  * platform-serialization-derive 5.0.0-rc.8
+  * platform-value 5.0.0-rc.8
+  * platform-version 5.0.0-rc.8
+  * platform-versioning 5.0.0-rc.8
+  * dash-sdk 5.0.0-rc.8
+  * rs-sdk-trusted-context-provider 5.0.0-rc.8
+  * wasm-dpp2 5.0.0-rc.8
+  * wasm-sdk 5.0.0-rc.8
 
 The MIT License (MIT)
 
@@ -5614,15 +5610,15 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * app-connect-contract 5.0.0-rc.4
-  * document-history-contract 5.0.0-rc.4
-  * dpns-contract 5.0.0-rc.4
-  * keyword-search-contract 5.0.0-rc.4
-  * masternode-reward-shares-contract 5.0.0-rc.4
-  * moderation-charters-contract 5.0.0-rc.4
-  * token-history-contract 5.0.0-rc.4
-  * wallet-utils-contract 5.0.0-rc.4
-  * withdrawals-contract 5.0.0-rc.4
+  * app-connect-contract 5.0.0-rc.8
+  * document-history-contract 5.0.0-rc.8
+  * dpns-contract 5.0.0-rc.8
+  * keyword-search-contract 5.0.0-rc.8
+  * masternode-reward-shares-contract 5.0.0-rc.8
+  * moderation-charters-contract 5.0.0-rc.8
+  * token-history-contract 5.0.0-rc.8
+  * wallet-utils-contract 5.0.0-rc.8
+  * withdrawals-contract 5.0.0-rc.8
 
 The MIT License (MIT)
 
