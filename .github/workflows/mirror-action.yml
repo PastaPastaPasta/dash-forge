@@ -2,7 +2,7 @@ name: Mirror Action
 
 # Tests the GitHub Mirror Action in action/.
 #   * static: actionlint, shellcheck and action/test.sh (offline). Every trigger.
-#   * live:   mirrors PastaPastaPasta/dash-faucet into the sakura OWNER fixture's
+#   * live:   mirrors PastaPastaPasta/dash-faucet into the testnet OWNER fixture's
 #             `mirror-ci-dash-faucet` repo (e2e/README.md reserves it), then runs the
 #             action again and requires that second run to write nothing and spend 0.
 #             Not on pull requests: it needs the funded fixture identity.
@@ -10,7 +10,7 @@ name: Mirror Action
 on:
   workflow_dispatch:
   schedule:
-    # Monday midday: well clear of the Devnet Nightly (06:00), which signs as the same
+    # Monday midday: well clear of the Testnet Nightly (06:00), which signs as the same
     # OWNER identity; two jobs signing at once can collide on identity nonces.
     - cron: "41 12 * * 1"
   pull_request:
@@ -72,18 +72,18 @@ jobs:
       - name: Probe
         id: probe
         env:
-          FORGE_SAKURA_IDENTITY_OWNER: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
+          FORGE_TESTNET_IDENTITY_OWNER: ${{ secrets.FORGE_TESTNET_IDENTITY_OWNER }}
         run: |
-          if [ -n "$FORGE_SAKURA_IDENTITY_OWNER" ]; then
+          if [ -n "$FORGE_TESTNET_IDENTITY_OWNER" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "### Live mirror test skipped: missing secret \`FORGE_SAKURA_IDENTITY_OWNER\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning title=Mirror Action live test skipped::missing secret FORGE_SAKURA_IDENTITY_OWNER"
+            echo "### Live mirror test skipped: missing secret \`FORGE_TESTNET_IDENTITY_OWNER\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Mirror Action live test skipped::missing secret FORGE_TESTNET_IDENTITY_OWNER"
           fi
 
   live:
-    name: live mirror (devnet sakura)
+    name: live mirror (testnet)
     needs: [static, fixtures]
     if: needs.fixtures.outputs.present == 'true'
     runs-on: ubuntu-latest
@@ -104,8 +104,7 @@ jobs:
         with:
           repo: mirror-ci-dash-faucet
           github-repo: PastaPastaPasta/dash-faucet
-          network: devnet
-          devnet-name: sakura
+          network: testnet
           sync: code,issues,prs,releases,labels
           storage-kind: platform
           cost-cap: '0.25'
@@ -113,7 +112,7 @@ jobs:
           # the owner identity's file (no key budget); the job runs only on schedule and dispatch
           allow-unlimited-key: 'true'
         env:
-          DASH_FORGE_KEY: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
+          DASH_FORGE_KEY: ${{ secrets.FORGE_TESTNET_IDENTITY_OWNER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Each invocation gets a fresh work dir and, with state-cache off, no sync state: the
@@ -125,8 +124,7 @@ jobs:
         with:
           repo: mirror-ci-dash-faucet
           github-repo: PastaPastaPasta/dash-faucet
-          network: devnet
-          devnet-name: sakura
+          network: testnet
           sync: code,issues,prs,releases,labels
           storage-kind: platform
           cost-cap: '0.25'
@@ -134,7 +132,7 @@ jobs:
           state-cache: 'false'
           allow-unlimited-key: 'true'
         env:
-          DASH_FORGE_KEY: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
+          DASH_FORGE_KEY: ${{ secrets.FORGE_TESTNET_IDENTITY_OWNER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assert the second run was idempotent
