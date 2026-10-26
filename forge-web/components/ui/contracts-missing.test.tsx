@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * The "contracts not on this network" state: plain words naming the network, devnet and mainnet
- * worded differently, a devnet the forge left (moutai, bonsia) worded as its move to sakura rather
+ * worded differently, a devnet the forge left (moutai, bonsia) worded as its move to testnet rather
  * than a generic reset, the raw error only under Details, and no endless retry.
  */
 
@@ -55,12 +55,12 @@ function render(config: NetworkConfig): { title: string; body: string; details: 
 }
 
 describe('ContractsMissingState', () => {
-  it('on a devnet the forge left (moutai, bonsia): says it moved to sakura, not a generic reset', () => {
+  it('on a devnet the forge left (moutai, bonsia): says it moved to testnet, not a generic reset', () => {
     for (const [config, name] of [[MOUTAI, 'Devnet moutai'], [BONSIA, 'Devnet bonsia']] as const) {
       const { title, body } = render(config)
       expect(title).toBe('Dash Forge moved to a new network')
       expect(body).toContain(`${name} was retired`)
-      expect(body).toContain('now runs on devnet sakura')
+      expect(body).toContain('now runs on testnet')
       expect(body).toContain('re-push your repos from your clones')
       expect(body).toContain('/mirror wizard')
       expect(body).not.toMatch(/reset/i)

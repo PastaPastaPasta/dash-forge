@@ -1,17 +1,17 @@
 name: Deploy forge-web to Pages
 
-# The hosted build (forge.dashhq.org) targets devnet sakura: forge-v2 needs Platform
-# protocol 14, which only the devnet runs today. The network is a build-time choice
-# (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME); override it with the repository variables
-# PAGES_NETWORK / PAGES_DEVNET_NAME (e.g. PAGES_NETWORK=testnet once forge-v2 is deployed
-# there) without editing this file. The header badge names the network the build reads.
+# The hosted build (forge.dashhq.org) targets testnet, where forge-v2 (Platform protocol 14) is
+# registered. The network is a build-time choice (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME);
+# override it with the repository variables PAGES_NETWORK / PAGES_DEVNET_NAME (PAGES_NETWORK=devnet
+# needs PAGES_DEVNET_NAME) without editing this file. The header badge names the network the build
+# reads.
 #
 # The "devnet is moving" notice (docs/archive/devnet-move.md) is switched the same way, with the
 # repository variable PAGES_DEVNET_NOTICE: unset (no banner), `upcoming` (a dismissible banner on
 # every page) or `moving` (a banner that stays, and writes are paused: the window before the build
 # for the new devnet). `moving` only applies to a build for a devnet whose deployment file is marked
-# `retired` (lib/devnet-notice.ts), so leaving it set cannot pause writes on the devnet Forge moved
-# to (sakura). PAGES_DEVNET_MOVE_TO (`testnet`, `mainnet` or `devnet-<name>`) names where an
+# `retired` (lib/devnet-notice.ts), so leaving it set cannot pause writes on a live network. A
+# testnet or mainnet build ignores both. PAGES_DEVNET_MOVE_TO (`testnet`, `mainnet` or `devnet-<name>`) names where an
 # `upcoming` move goes. Changing the variable takes effect on the next deploy
 # (run this workflow on master, or push to master); any other value fails the build. A tab opened before
 # the deploy keeps running the old build until it is reloaded, so it will not show the notice yet.
@@ -67,10 +67,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: forge-web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - name: Build (${{ vars.PAGES_NETWORK || 'devnet' }})
+      - name: Build (${{ vars.PAGES_NETWORK || 'testnet' }})
         env:
-          NEXT_PUBLIC_NETWORK: ${{ vars.PAGES_NETWORK || 'devnet' }}
-          NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'sakura') || '' }}
+          NEXT_PUBLIC_NETWORK: ${{ vars.PAGES_NETWORK || 'testnet' }}
+          NEXT_PUBLIC_DEVNET_NAME: ${{ vars.PAGES_NETWORK == 'devnet' && vars.PAGES_DEVNET_NAME || '' }}
           # Unset (below) when the variable is: no notice.
           NEXT_PUBLIC_DEVNET_NOTICE: ${{ vars.PAGES_DEVNET_NOTICE }}
           NEXT_PUBLIC_DEVNET_MOVE_TO: ${{ vars.PAGES_DEVNET_MOVE_TO }}

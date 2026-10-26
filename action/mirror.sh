@@ -34,6 +34,11 @@ case "$key" in
         export DASH_FORGE_KEY="$key"
         ;;
     '{'*)
+        # An identity file's keys have no budget: cost-cap is per run, so a run anyone can
+        # trigger (an issue, a comment, a pull request) could spend the whole balance, run
+        # after run. Only an explicit opt-in takes one.
+        [ "${INPUT_ALLOW_UNLIMITED_KEY:-false}" = true ] ||
+            die "DASH_FORGE_KEY is an identity file, whose keys have no spending budget: every run could spend up to cost-cap, and runs repeat, until the identity's balance is gone. Use a limited runner key instead (dg auth export --new-key --budget 0.5 --format dfk1; Platform caps what it can ever spend), or set 'allow-unlimited-key: true' on this step to accept the risk."
         jq -e 'type == "object"' >/dev/null 2>&1 <<<"$key" ||
             die "DASH_FORGE_KEY starts with '{' but is not valid JSON. Paste the whole identity file into the secret."
         # Mask every secret-looking string in the file, wherever it is nested.
@@ -59,7 +64,7 @@ gitcfg() {
     n=$((n + 1))
 }
 # No cost settings here: forge-import enforces --max-spend on every write itself, and
-# runs its pushes with `-c dash.confirm=never` after pricing them.
+# hands each push what the cap has left as the helper's hard cap (`dash.confirm=refuse`).
 
 export DASH_FORGE_STORAGE_CONFIG="$FORGE_STORAGE_CONFIG"
 rm -f "$DASH_FORGE_STORAGE_CONFIG"

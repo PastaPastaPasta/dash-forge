@@ -48,7 +48,7 @@ dg_as "$ID_OWNER" --yes --json ci runner new "$REPO" --runner "$RUNNER" -o "$KEY
 KEY_ID="$(jq_py "$LOG-new.json" 'd["keyId"]')"
 check "the key is bound to checkRun" assert_eq "checkRun" "$(jq_py "$LOG-new.json" 'd["boundTo"]["documentType"]')"
 check "enrolled" test "$(jq_py "$LOG-new.json" 'd["enrolled"] is not None')" = "True"
-check "key file is 0600" assert_eq "600" "$(stat -f '%Lp' "$KEYFILE" 2>/dev/null || stat -c '%a' "$KEYFILE")"
+check "key file is 0600" assert_eq "600" "$(stat -c '%a' "$KEYFILE" 2>/dev/null || stat -f '%Lp' "$KEYFILE")"
 check "key file is a dfk1 value for RUNNER" assert_file_contains "$KEYFILE" "dfk1:${DASH_FORGE_NETWORK}"
 if dg_read_retry "$ID_OWNER" "$LOG-list.json" "$LOG-list.err" --json ci runner list "$REPO"; then
   check "runner list names RUNNER" assert_eq "True" "$(jq_py "$LOG-list.json" "'$RUNNER_ID' in [r['identityId'] for r in d['runners']]")"

@@ -88,7 +88,7 @@ All in DASH, **measured on devnets** (to be re-measured on testnet); fiat figure
 
 | Scenario | Platform backend | External backend |
 |---|---|---|
-| Create a public repository (`repo` + owner's `maintainer` + first `config`), members-only content on (the default) | **~0.0027 DASH** one-time: ~0.0016 for the three documents plus ~0.0011 for the members-only key (measured on bonsia and sakura); not refundable, all are kept | same |
+| Create a public repository (`repo` + owner's `maintainer` + first `config`), members-only content on (the default) | **~0.0027 DASH** one-time: ~0.0016 for the three documents plus ~0.0011 for the members-only key (measured on Platform v4.2 and v5 devnets); not refundable, all are kept | same |
 | Create a private repository | ~0.0020 DASH (adds the key and the first anchor) | same |
 | Fork a repo | ~0.01 DASH for a small repository and 0.03 for a 36-pack one: one small manifest per pack and one ref update per branch; the parent's packs are referenced, never re-uploaded | same |
 | Push 100 KiB source delta (~30 KiB packed) | about 0.015–0.02 DASH (~$0.45–0.60): 0.33–0.36 DASH/MiB for the packed bytes plus ~0.004–0.011 for the manifests, ref update and history index. Permanent | ~0.004–0.0055 DASH (~$0.12–0.17): manifests and the ref update only |
@@ -96,7 +96,7 @@ All in DASH, **measured on devnets** (to be re-measured on testnet); fiat figure
 | Add a passkey for other devices, then sign in with it elsewhere | **~0.0005 DASH** for an identity's first (estimate: Yappr's 46–50M credits plus ~2–4M for Forge's larger 256-byte entry), ~0.0003 for each later one; re-sealing after a key change ~0.00003; removing one refunds ~0.0002–0.0003; signing in is free. Paid from the browser key's budget ([passkey vault](security/passkey-vault.md)) | same |
 | Remove one member from a 50-member repository with members-only content | ~0.035 DASH: the key is changed for the 49 who remain ([guides/costs.md](guides/costs.md#members-only-and-private-content)) | same |
 | Force-push away 10 MiB of history, then repack | nothing recovered; the repack adds a deposit for the consolidated pack | delete the old objects in your bucket |
-| Deployer: register the production set (once per network) | **~1.86 DASH for the four contracts** (0.5968 + 0.3963 + 0.5063 + 0.3636), measured on devnet sakura; ~1.73 DASH for the three-contract devnet set ([Deploying Forge to a network](deploying-to-a-network.md#4-what-it-costs), [forge-v2.md §7](contracts/forge-v2.md#7-measured-size-and-cost)) | same |
+| Deployer: register the production set (once per network) | **~1.86 DASH for the four contracts** (0.5968 + 0.3963 + 0.5063 + 0.3636), measured on a Platform v5 devnet, and 1.873 DASH on testnet (2026-10-26); ~1.73 DASH for the three-contract devnet set ([Deploying Forge to a network](deploying-to-a-network.md#4-what-it-costs), [forge-v2.md §7](contracts/forge-v2.md#7-measured-size-and-cost)) | same |
 
 ## 6. Fee-minimization checklist (encoded in defaults)
 

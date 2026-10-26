@@ -1,0 +1,73 @@
+{
+  "name": "ref_diverged_merge_naming_one_head_without_ancestry_stays_diverged",
+  "description": "Without a commit graph, a merge pushed as a single update naming one racing head supersedes only that head: the other stays live, never dropped unnamed.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u0",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "P0",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 50
+      },
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "M",
+        "force": false,
+        "protected": false,
+        "author": "carol",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "diverged",
+    "heads": [
+      {
+        "id": "u3",
+        "oid": "M",
+        "author": "carol",
+        "createdAt": 300
+      },
+      {
+        "id": "u1",
+        "oid": "A",
+        "author": "alice",
+        "createdAt": 100
+      }
+    ]
+  }
+}

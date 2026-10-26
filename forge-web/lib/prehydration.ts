@@ -28,11 +28,9 @@
  * - A capture-phase click handler added later (`onClickCapture`) on an ancestor of a replay
  *   button would never see a caught tap: this listener stops it first, on the document.
  *
- * CSP: it runs under `script-src 'unsafe-inline'`, which the layout's meta CSP grants for Next's
- * own inline bootstrap scripts (`self.__next_f.push(…)`). A `'sha256-…'` source for this script
- * alone cannot be added: a hash in `script-src` makes browsers ignore `'unsafe-inline'`, which
- * refuses Next's scripts and stops the app hydrating (checked in Chromium and WebKit on the
- * static export). A strict CSP needs every inline script hashed per page at export time.
+ * CSP: it is an inline script, allowed in production by its hash like Next's own inline scripts
+ * (scripts/csp-hashes.mjs adds a policy with every page's hashes after export); `next dev`
+ * allows `'unsafe-inline'`.
  */
 
 /** The window property the inline script keeps its state on. */

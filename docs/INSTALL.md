@@ -3,8 +3,8 @@
 > **No release is published yet.** Until one is, build from source:
 > [Build from source](#build-from-source) below has the commands. The prebuilt binaries
 > and the install script described here work once a release exists; until then the script
-> stops and points back to the source build. Forge runs on devnet sakura only; it is not on
-> testnet or mainnet yet. The version policy is in [VERSIONING.md](VERSIONING.md).
+> stops and points back to the source build. Forge runs on testnet, the tools' default
+> network; it is not on mainnet yet. The version policy is in [VERSIONING.md](VERSIONING.md).
 
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
 ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use

@@ -59,15 +59,16 @@ The apps read documents in pages and stop at a limit rather than guess. A result
 
 | What | Limit | Source |
 |---|---|---|
-| A push that costs more than | `dash.costWarnThreshold`, **0.05 DASH** by default, asks first; with no terminal it stops with [E801](errors.md#e801) | [Costs](guides/costs.md#seeing-costs-before-you-pay) |
-| Storing packs on Platform | a push that would store **more than 1 MiB** while `dash.storage` is unset asks first (they are permanent); raising the threshold does not lift this, choosing storage does | [E801](errors.md#e801) |
+| A push that costs more than | `dash.costWarnThreshold`, **0.05 DASH** by default, asks first; with no terminal it stops with [E801](errors.md#e801). The whole push counts, once, before anything is paid: every pack it stores and every ref update, deletes and tags at commits already stored too (`git push --tags` of 300 such tags costs about 0.28 DASH) | [Costs](guides/costs.md#seeing-costs-before-you-pay) |
+| Storing packs on Platform | a push that would store **more than 1 MiB** of packs in all while `dash.storage` is unset asks first (they are permanent); raising the threshold does not lift this, choosing storage does | [E801](errors.md#e801) |
 | The key's budget | a limited key spends at most its budget (0.25 DASH for `dg auth new`'s key, 0.05 for a browser key by default) ([E402](errors.md#e402)) | [Identity and keys](guides/identity-and-keys.md#limited-keys) |
 | Memory while indexing a fetched pack | none unless you set `dash.maxPackInput` (the gateway sets one) | [Gateway](hosting/forge-gateway.md) |
 | One identity writing from two places at once | two writers can pick the same nonce; one write is dropped ([E704](errors.md#e704)) | `docs/errors.md` |
 
 ## Not supported
 
-- **Shallow clones** (`--depth`, `--shallow-since`, `--shallow-exclude`) fail with [E205](errors.md#e205). Use `git clone --filter=blob:none`.
+- **Shallow clones** (`--depth`, `--shallow-since`, `--shallow-exclude`) fail with [E205](errors.md#e205). Use `git clone --filter=blob:none` for a smaller checkout (it saves disk, not download: see the next point).
+- **A partial clone does not download less than a full one.** A stored pack holds whole pushes, not single objects, so `git clone --filter=blob:none` reads every pack and keeps the commits and trees. The blobs git then fetches on demand (a checkout, `git log -p`, `git blame`) come only from the packs that hold them: the clone records which blobs each pack it read holds (`.git/dash/catalog/`). Every pack is still read again by a `git fetch` or `git pull` into a partial clone (a full clone reads only the new ones), by an on-demand fetch of a tree or commit (`--filter=tree:0`), and by one of a blob in a pack pushed since the clone last read every pack.
 - **Atomic pushes** (`git push --atomic`): each branch and tag is its own write.
 - **Git LFS objects.** A repository can hold LFS pointer files, but the large files are not stored: keep large binaries out of git, or attach them to releases.
 - **A git older than 2.44** cannot clone histories with malformed author lines ([E511](errors.md#e511)).

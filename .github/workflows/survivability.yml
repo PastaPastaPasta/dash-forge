@@ -206,8 +206,7 @@ jobs:
       # storage fixture, so it never reads a chain.
       - name: Build the static app (the IPFS variant the releases publish)
         env:
-          NEXT_PUBLIC_NETWORK: devnet
-          NEXT_PUBLIC_DEVNET_NAME: sakura
+          NEXT_PUBLIC_NETWORK: testnet
         run: pnpm build:ipfs
 
       - name: Playwright browser

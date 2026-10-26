@@ -12,6 +12,7 @@ import { after, test } from 'node:test';
 import { ROOM_MIN, SETS, b58encode, contractGroupId, contractId, formatSums, main, parseSums, recordedSet, setSums } from './deploy-v2.mjs';
 import { createFakePlatform, fakeIdentityFile } from './lib/fake-platform.mjs';
 import { recordProblems } from './lib/deployments-check.mjs';
+import { scratchStampError } from './lib/target.mjs';
 
 const MAX = 20480;
 const KEYS = ['forgeCore', 'forgeCollab', 'forgeCommunity', 'forgeMeta'];
@@ -358,7 +359,10 @@ test('--force-new on a scratch record has no guard', async () => {
   const scratch = join(t.dir, 'scratch', 'rehearsal.json');
   const argv = ['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--record', scratch, '--scratch-on', 'testnet'];
   await t.run([...argv, '--force-new']);
-  assert.equal(JSON.parse(readFileSync(scratch, 'utf8')).v2.contractsSet, 'mainnet');
+  const rec = JSON.parse(readFileSync(scratch, 'utf8'));
+  assert.equal(rec.v2.contractsSet, 'mainnet');
+  assert.equal(rec.v2.scratchOn, 'testnet', 'a committed-set rehearsal is stamped as scratch for the live suites');
+  assert.equal(scratchStampError(rec), null);
   assert.deepEqual(t.read(), TESTNET_SEED, 'the live testnet record is untouched');
   // a scratch record may not be under deployments/
   await assert.rejects(t.run([...argv.slice(0, 7), join(t.deploymentsRoot, 'rehearsal.json'), ...argv.slice(8)]), /scratch record lives outside/);

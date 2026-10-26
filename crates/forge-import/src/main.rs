@@ -63,7 +63,8 @@ struct RunArgs {
     work_dir: Option<PathBuf>,
 
     /// Hard cap for this run, in DASH: refused up front when the estimate exceeds it, and
-    /// checked again before every write against what the run has spent so far.
+    /// checked again before every write against what the run has spent so far. Default: the
+    /// run's estimate, the figure it shows (and asks you to confirm without `--yes`).
     #[arg(long, value_name = "DASH")]
     max_spend: Option<f64>,
 
@@ -123,7 +124,7 @@ struct NetArgs {
     #[arg(long, global = true, value_parser = ["testnet", "mainnet", "devnet"])]
     network: Option<String>,
 
-    /// Devnet name (e.g. `sakura`); implies `--network devnet`.
+    /// Devnet name (e.g. `my-devnet`); implies `--network devnet`.
     #[arg(long, global = true)]
     devnet_name: Option<String>,
 

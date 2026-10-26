@@ -126,13 +126,18 @@ export const isFourContract = (rec) => Boolean(rec?.v2?.forgeMeta?.contractId);
 
 /**
  * Why `rec` is not a scratch registration, or null when it is. deploy-v2 stamps a scratch run
- * (`--contracts <dir> --record <file>`) with `v2.contractsDir` and a committed-set run (the live
- * record) with `v2.contractsSet`. A record without the first, or with the second, was not written
- * by a scratch run.
+ * (`--contracts <dir> --record <file>`) with `v2.contractsDir` and a committed-set run with
+ * `v2.contractsSet`; a committed-set run into a scratch record (`--set mainnet --record <file>
+ * --scratch-on <network>`, the rehearsal deploying-to-a-network.md §2 describes) also carries
+ * `v2.scratchOn`, the network it rehearsed on. A record with neither scratch stamp, or with
+ * `contractsSet` and no `scratchOn` for its own network, was not written by a scratch run.
  */
 export function scratchStampError(rec) {
   const v2 = rec?.v2;
-  if (v2?.contractsSet !== undefined) return `it carries v2.contractsSet (${JSON.stringify(v2.contractsSet)}): the stamp of a committed-set run, i.e. a live registration`;
+  if (v2?.contractsSet !== undefined) {
+    if (typeof v2.scratchOn === 'string' && v2.scratchOn !== '' && v2.scratchOn === rec?.network) return null;
+    return `it carries v2.contractsSet (${JSON.stringify(v2.contractsSet)}) and no v2.scratchOn for its network: the stamp of a committed-set run, i.e. a live registration`;
+  }
   if (typeof v2?.contractsDir !== 'string' || v2.contractsDir === '') return 'it has no v2.contractsDir, the stamp `deploy-v2.mjs --contracts <dir> --record <file>` writes';
   return null;
 }
@@ -197,7 +202,7 @@ export function resolveTarget(args, { deploymentsDir = DEFAULT_DEPLOYMENTS_DIR, 
       if (why) {
         throw new Error(
           `--record ${args.record} is not a scratch record: ${why}. On ${network} a scratch registration is made with ` +
-            `\`deploy-v2.mjs --network ${network} --contracts <dir> --record <scratch.json>\`; a copy of ${liveFile} is the live registration.`,
+            `\`deploy-v2.mjs --network ${network} --set mainnet --record <scratch.json> --scratch-on ${network}\` (or \`--contracts <dir>\`); a copy of ${liveFile} is the live registration.`,
         );
       }
     }

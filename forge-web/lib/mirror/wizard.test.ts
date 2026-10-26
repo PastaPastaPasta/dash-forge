@@ -263,8 +263,11 @@ describe('workflowYaml', () => {
     expect(y).toContain("cost-cap: '0.1'")
     expect(y).toContain('DASH_FORGE_KEY: ${{ secrets.DASH_FORGE_KEY }}')
     expect(y).toContain('S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}')
-    expect(y).toContain('pull_request_target:')
-    // The job never checks out the mirrored repository (pull_request_target stays safe).
+    // Issues and PRs come with the daily run: no trigger a stranger can fire (an issue, a
+    // comment, a pull request) starts a paid run.
+    for (const t of ['  issues: {', 'issue_comment', 'pull_request_target']) expect(y).not.toContain(t)
+    expect(y).toContain("schedule: [{ cron: '17 3 * * *' }]")
+    // The job never checks out the mirrored repository.
     expect(y).not.toContain('actions/checkout')
     // Nothing the job runs can move: its one action is pinned by commit.
     const uses = [...y.matchAll(/uses: (\S+)/g)].map((m) => m[1])

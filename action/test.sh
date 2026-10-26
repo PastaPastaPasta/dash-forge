@@ -162,10 +162,10 @@ good INPUT_REPO=project INPUT_SYNC=code,issues,prs,releases,labels INPUT_COST_CA
 good INPUT_GITHUB_REPO=https://github.com/alice/project.js
 good INPUT_NETWORK=devnet INPUT_DEVNET_NAME=moutai
 expect vout 'devnet-name=moutai'
-# devnet-name has a default, so it is ignored (and not passed on) for the other networks.
-good INPUT_NETWORK=testnet INPUT_DEVNET_NAME=sakura
+# devnet-name is ignored (and not passed on) for the other networks.
+good INPUT_NETWORK=testnet INPUT_DEVNET_NAME=moutai
 expect vout 'devnet-name='
-reject vout 'sakura'
+reject vout 'moutai'
 good INPUT_INSTALL=source INPUT_VERSION=latest
 good INPUT_INSTALL=false INPUT_VERSION=''
 good INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.r2.cloudflarestorage.com INPUT_S3_BUCKET=forge
@@ -186,6 +186,9 @@ bad INPUT_NETWORK=devnet INPUT_DEVNET_NAME='x@y'
 bad INPUT_INSTALL=yes
 good INPUT_INSTALL=true INPUT_VERSION=''
 good INPUT_BUILD_CACHE=false
+good INPUT_ALLOW_UNLIMITED_KEY=true
+good INPUT_ALLOW_UNLIMITED_KEY=false
+bad INPUT_ALLOW_UNLIMITED_KEY=yes
 good INPUT_I_HAVE_THE_RIGHTS=true
 good INPUT_I_HAVE_THE_RIGHTS=false
 good INPUT_I_HAVE_THE_RIGHTS=''
@@ -239,9 +242,20 @@ expect args '--devnet-name'
 expect args '--dry-run'
 reject args 'dash.storage'
 
+case="mirror json refused without the opt-in"
+if mirror DASH_FORGE_KEY='{"identityId":"Id1","identityKeys":[{"privateKeyWif":"cJSONsecret"}]}'; then
+    fail "an identity file (no key budget) was accepted"
+fi
+expect log "allow-unlimited-key: true"
+[ ! -e "$tmp/args" ] || fail "forge-import ran anyway"
+[ ! -e "$tmp/identity.json" ] || fail "the identity file was written"
+if mirror DASH_FORGE_KEY='{"identityId":"Id1"}' INPUT_ALLOW_UNLIMITED_KEY=false; then
+    fail "allow-unlimited-key false accepted an identity file"
+fi
+
 case="mirror json + s3"
 mirror DASH_FORGE_KEY='{"identityId":"Id1","identityKeys":[{"privateKeyWif":"cJSONsecret"}]}' \
-    INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.example INPUT_S3_BUCKET=b \
+    INPUT_ALLOW_UNLIMITED_KEY=true INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.example INPUT_S3_BUCKET=b \
     S3_ACCESS_KEY_ID=AK S3_SECRET_ACCESS_KEY=SK INPUT_DRY_RUN=false || fail "exited $?"
 expect log '::add-mask::cJSONsecret'
 expect env "DASH_FORGE_KEY=$tmp/identity.json"
@@ -314,16 +328,17 @@ case="mirror s3 without secrets"
 if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3; then fail "accepted"; fi
 expect log 'S3_SECRET_ACCESS_KEY'
 
-# action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and the
+# action.yml's defaults: a network Forge is deployed on (testnet, the hosted site's), and the
 # release cut from this commit (the workspace version), which install 'true' downloads.
 case="action.yml defaults"
 default_of() {
     awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
 }
-[ "$(default_of network)" = devnet ] || fail "network defaults to '$(default_of network)'"
+[ "$(default_of network)" = testnet ] || fail "network defaults to '$(default_of network)'"
+grep -q '"v2"' "$here/../forge-contracts/deployments/testnet.json" ||
+    fail "no forge-v2 deployment for the default network testnet"
 devnet_default=$(default_of devnet-name)
-[ -f "$here/../forge-contracts/deployments/devnet-$devnet_default.json" ] ||
-    fail "no deployment for the default devnet '$devnet_default'"
+[ -z "$devnet_default" ] || fail "devnet-name defaults to '$devnet_default', not empty"
 [ "$(default_of install)" = true ] || fail "install defaults to '$(default_of install)'"
 # The release this Action version pins is the one cut from this commit: the workspace version.
 workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
@@ -332,7 +347,7 @@ workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/
 [ "$(default_of build-cache)" = true ] || fail "build-cache defaults to '$(default_of build-cache)'"
 # The defaults pass validation as they are.
 good INPUT_NETWORK="$(default_of network)" INPUT_DEVNET_NAME="$devnet_default" INPUT_VERSION="$(default_of version)"
-expect vout "devnet-name=$devnet_default"
+expect vout "devnet-name="
 
 # install-forge.sh with stub curl, cargo, protoc and uname, on a PATH without the real ones.
 ib="$tmp/ibin"

@@ -501,7 +501,8 @@ cmd('pr commits', 'The pull request\'s commits.', {
     'pr': I, 'baseOid': nl(S), 'headOid': S, 'total': I, 'truncated': B, 'commits': A(OBJ),
 }, ['pr', 'headOid', 'commits'])
 cmd('pr merge', 'A pull request merged (or a merge recorded).', {
-    'status': E('merged', 'merge_recorded', 'already_merged'), 'pr': I, 'method': S, 'mergeOid': S, 'transitionId': S,
+    'status': E('merged', 'merge_recorded', 'already_merged', 'bypass_recorded'), 'pr': I, 'method': S, 'mergeOid': S, 'transitionId': S,
+    'eventId': D('With --record-bypass: the policy-bypass event recorded.', S), 'bypassRecorded': B,
     'merged': B, 'mergeOnBase': ANY, 'branchDeleted': ANY, 'branchCheckNote': nl(S), 'bypassedRules': ANY,
     'checksNotPassing': ANY, 'closedIssues': ANY, 'linkedIssuesOmitted': ANY, 'linkedIssuesImported': ANY,
     'uncheckedFiles': D('With --event-only: files the base changed too, not checked for the pull request\'s change.', SA),

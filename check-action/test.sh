@@ -57,24 +57,25 @@ has "--conclusion=failure"
 
 case="explicit sha wins, dash url, devnet"
 resolve INPUT_JOB_STATUS=success PR_HEAD_SHA=$HEAD INPUT_SHA=ABCDEF0123456789ABCDEF0123456789ABCDEF01 INPUT_REPO=dash://alice/project \
-  INPUT_NETWORK=devnet INPUT_DEVNET_NAME=sakura || fail "exit $?"
+  INPUT_NETWORK=devnet INPUT_DEVNET_NAME=moutai || fail "exit $?"
 has "--sha=abcdef0123456789abcdef0123456789abcdef01"
 has "alice/project"
-has "--devnet-name=sakura"
+has "--devnet-name=moutai"
 
-case="the default devnet-name is ignored on another network, and an empty version builds from source"
-resolve INPUT_JOB_STATUS=success INPUT_NETWORK=testnet INPUT_DEVNET_NAME=sakura INPUT_INSTALL=true INPUT_VERSION= || fail "exit $?"
+case="devnet-name is ignored on another network, and an empty version builds from source"
+resolve INPUT_JOB_STATUS=success INPUT_NETWORK=testnet INPUT_DEVNET_NAME=moutai INPUT_INSTALL=true INPUT_VERSION= || fail "exit $?"
 has "--network=testnet"
 lacks_prefix "--devnet-name"
 
-# action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and the
+# action.yml's defaults: a network Forge is deployed on (testnet, the hosted site's), and the
 # release cut from this commit (the workspace version), which install 'true' downloads.
 case="action.yml defaults"
 default_of() {
   awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
 }
-[[ "$(default_of network)" == devnet ]] || fail "network defaults to '$(default_of network)'"
-[[ -f "$here/../forge-contracts/deployments/devnet-$(default_of devnet-name).json" ]] || fail "no deployment for the default devnet"
+[[ "$(default_of network)" == testnet ]] || fail "network defaults to '$(default_of network)'"
+grep -q '"v2"' "$here/../forge-contracts/deployments/testnet.json" || fail "no forge-v2 deployment for the default network testnet"
+[[ -z "$(default_of devnet-name)" ]] || fail "devnet-name defaults to '$(default_of devnet-name)', not empty"
 workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
 [[ -n "$workspace_version" && "$(default_of version)" == "$workspace_version" ]] ||
   fail "version defaults to '$(default_of version)', not the workspace version '$workspace_version'"

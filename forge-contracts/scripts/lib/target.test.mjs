@@ -190,6 +190,11 @@ describe('the scratch stamp (fail closed on testnet and mainnet)', () => {
     assert.match(scratchStampError({ v2: { contractsDir: '' } }), /no v2\.contractsDir/);
     assert.match(scratchStampError({ v2: { contractsDir: 7 } }), /no v2\.contractsDir/);
     assert.match(scratchStampError({ v2: { contractsSet: 'devnet' } }), /contractsSet/);
+    // a committed-set rehearsal (--set mainnet --record <file> --scratch-on <network>)
+    assert.equal(scratchStampError({ network: 'testnet', v2: { contractsSet: 'mainnet', scratchOn: 'testnet' } }), null);
+    assert.match(scratchStampError({ network: 'mainnet', v2: { contractsSet: 'mainnet', scratchOn: 'testnet' } }), /no v2\.scratchOn for its network/);
+    assert.match(scratchStampError({ network: 'testnet', v2: { contractsSet: 'mainnet', scratchOn: '' } }), /no v2\.scratchOn/);
+    assert.match(scratchStampError({ v2: { contractsSet: 'mainnet', scratchOn: 'testnet' } }), /no v2\.scratchOn/);
   });
   test('a devnet scratch record needs no stamp', () => {
     write(join(scratchDir, 'devnet-scratch.json'), { network: 'devnet', ...threeContracts('D_CORE', 'D_GROUP') });

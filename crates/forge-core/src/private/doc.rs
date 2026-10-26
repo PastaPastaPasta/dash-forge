@@ -993,10 +993,18 @@ pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened
         // a member `event` is gated at consensus (a removed member cannot write one), so the
         // late rule, which is about un-gated writes under a superseded key, does not apply;
         // its schema does not carry `$createdAtBlockHeight` either (§8.1 step 7)
-        Opened::Readable(fields)
-            if matches!(header.kind, DocKind::Event | DocKind::AuthorEvent) =>
-        {
-            Opened::Readable(fields)
+        Opened::Readable(fields) if header.kind == DocKind::Event => Opened::Readable(fields),
+        // an `authorEvent` is gated to its target's author, not to members, so a removed member
+        // keeps writing them on their own issues and PRs. Its schema carries no
+        // `$createdAtBlockHeight` either: without one it is judged as written after every
+        // cut-off, so a non-member's under a superseded or burned epoch is late (§8.1 step 7)
+        Opened::Readable(fields) if header.kind == DocKind::AuthorEvent => {
+            let height = header.created_at_block_height.unwrap_or(u64::MAX);
+            if ctx.is_late(header.epoch, height, &header.owner_id) {
+                Opened::Unreadable(Unreadable::Late)
+            } else {
+                Opened::Readable(fields)
+            }
         }
         Opened::Readable(fields) => {
             // step 7; `$createdAtBlockHeight` is required by the schema (§13), and without it

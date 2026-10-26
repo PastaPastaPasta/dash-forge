@@ -49,7 +49,13 @@ const ASSETS = process.env.FORGE_IPFS_BUILD === '1' ? '' : `${process.env.NEXT_P
 // CSP is delivered via <meta> so it survives static export (yappr pattern).
 // - script 'wasm-unsafe-eval': the evo-sdk WASM runtime. JS 'unsafe-eval' is granted only
 //   in development for Next's dev bundle; production reads, writes and sign-in do not need
-//   it. 'unsafe-inline' stays for Next's inline bootstrap scripts.
+//   it. 'unsafe-inline' here is not what a production page runs under: after export,
+//   scripts/csp-hashes.mjs puts a second CSP <meta> first in every page, whose script-src is
+//   these sources without 'unsafe-inline' plus the hash of each inline script in that page.
+//   A browser enforces both, so only the page's own inline scripts run, and one the host
+//   injects (Cloudflare does) is refused. The hashes cannot go in this <meta>: the RSC payload
+//   carries a copy of it inside the scripts being hashed, and React re-adds a <meta> that
+//   differs from its copy when the page hydrates. `next dev` gets this policy alone.
 // - frame-ancestors is not here: browsers ignore it in a <meta> CSP (and log an error on every
 //   page). The host must send it as a header; GitHub Pages cannot, so Cloudflare in front of it
 //   has to (docs/hosting.md §7).

@@ -29,7 +29,7 @@ use forge_core::rules::merge_check::{head_at, merge_content, MergeFacts, MergeVe
 use forge_core::rules::v2::{Audience, Role, Visibility};
 use forge_core::user_error::{codes, UserError};
 
-use super::{patch, push_argv, push_to, verify, Steps};
+use super::{patch, push_argv, push_to, verify, Steps, YesCap};
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, short};
@@ -511,7 +511,18 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     let body = revert_body(view.patch.number, &merge_oid, inv.landed);
     let text = (title.len() + body.len() + base_ref.len() + branch_ref.len()) as u64;
     let price = ctx.fiat_price();
-    let quote = crate::quote::revert(super::merge_stores_on_platform(), text);
+    let base_url = format!("dash://{}", handle.id());
+    // The push's price is the helper's own (a dry run of it); the calibrated quote stands in
+    // when it cannot be read. Under `--yes` the push is capped at it.
+    let (push_quote, priced) = match super::helper_price(ctx, dir, &base_url, &commit, &branch_ref)
+    {
+        Some(p) => (p, true),
+        None => (
+            crate::quote::merge_push(crate::quote::revert_push(super::merge_stores_on_platform())),
+            false,
+        ),
+    };
+    let quote = push_quote + crate::quote::target_create(text);
     if !ctx.json {
         eprintln!(
             "Open PR {:?} in {}: {short_branch} ({}) → {}",
@@ -522,15 +533,28 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
         );
     }
     ctx.confirm_or_cancel(&format!(
-        "Push {short_branch} and open the PR? (a branch push and one document, {}, plus Platform storage for the new commit)",
-        cost_line(quote, price)
+        "Push {short_branch} and open the PR? (a branch push and one document, {}{})",
+        cost_line(quote, price),
+        if priced {
+            String::new()
+        } else {
+            format!(
+                ", with up to {} KiB of new objects",
+                crate::quote::MERGE_PACK_BYTES / 1024
+            )
+        }
     ))?;
 
     let before = s.balance().await;
-    let base_url = format!("dash://{}", handle.id());
     if let Err(e) = push_to(
         dir,
-        &push_argv(ctx, &base_url, &commit, &branch_ref),
+        &push_argv(
+            ctx,
+            &base_url,
+            &commit,
+            &branch_ref,
+            YesCap::Quoted(push_quote),
+        ),
         &git::dash_env_signing(ctx)?,
         "revert failed",
     ) {

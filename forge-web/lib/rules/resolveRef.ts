@@ -246,6 +246,12 @@ export function displayRefName(
  * `updates` may contain updates for *other* refs; only those whose `refNameHash` equals
  * `refNameHash` participate. `configHistory` is the repo's full config timeline.
  * `isAncestor(a, b)` reports whether commit `a` is an ancestor of (or equal to) `b`.
+ *
+ * Readers pass no commit graph (identity ancestry, as forge-core's readers do), so every
+ * reader folds a ref alike whether or not it holds commits. A merge of a race then supersedes
+ * a racing head only by naming it as `prevOid`; a push that merged every head writes one
+ * update per head (forge-core `rules::settling_prev_oids`, vectors
+ * `resolve_ref__ref_diverged_merge_naming_*`).
  */
 export function resolveRef(
   updates: readonly RefUpdate[],

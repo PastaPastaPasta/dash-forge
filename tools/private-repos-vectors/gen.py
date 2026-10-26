@@ -340,6 +340,8 @@ COMMENT = dict(type="comment", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
 COMMENT_TLV = tlv((2, b"nit: rename"), (10, b"src/lib.rs"))
 EVENT = dict(type="event", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
 EVENT_TLV = tlv((15, b"bug"))
+AUTHOR_EVENT = dict(type="authorEvent", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
+AUTHOR_EVENT_TLV = tlv((15, b"refs/heads/release"))
 CONFIG0 = dict(type="config", ownerId=H(ownerId), epoch=0)
 CONFIG0_TLV = tlv((6, b"refs/heads/main"))
 CONFIG1 = dict(type="config", ownerId=H(ownerId), epoch=1)
@@ -762,6 +764,28 @@ def doc_open_vectors():
     v("event_without_height",
       "the event schema carries no $createdAtBlockHeight: a sealed event without one opens (content types "
       "without it are malformed).", EVENT, K0, EVENT_TLV, CTX0, readable({"eventValue": "bug"}), height=None)
+    retarget = readable({"eventValue": "refs/heads/release"})
+    v("author_event_late_without_height",
+      "an authorEvent is gated to its target's author, not to members, so a removed member keeps writing them; its "
+      "schema carries no $createdAtBlockHeight, so it is judged as written after every cut-off: under epoch 0, "
+      "superseded by epoch 1, by a non-member it is Unreadable(Late) (§8.2).",
+      AUTHOR_EVENT, K0, AUTHOR_EVENT_TLV, CTX01, unreadable("late"), height=None)
+    v("author_event_current_epoch_without_height",
+      "the same authorEvent under the newest epoch opens: no later key was ever stated.", AUTHOR_EVENT, K0,
+      AUTHOR_EVENT_TLV, CTX0, retarget, height=None)
+    v("author_event_from_current_member_without_height",
+      "under superseded epoch 0 by a current member it opens (the current-member exception).", AUTHOR_EVENT, K0,
+      AUTHOR_EVENT_TLV, ctx({0: K0, 1: K1}, {0: ("c0", 10), 1: ("c1", 1000)}, members=[H(ownerId)]), retarget,
+      height=None)
+    v("author_event_under_burned_epoch_late",
+      "an authorEvent under burned epoch 1 by a non-member is Unreadable(Late).", dict(AUTHOR_EVENT, epoch=1), K1,
+      AUTHOR_EVENT_TLV, ctx({0: K0, 1: K1}, {0: ("c0", 10), 1: ("c1", 1000)}, burned=[1]), unreadable("late"),
+      height=None)
+    v("author_event_within_grace",
+      "an authorEvent that does carry a height is judged by it: at exactly the epoch-1 anchor height + 240 it opens.",
+      AUTHOR_EVENT, K0, AUTHOR_EVENT_TLV, CTX01, retarget, height=1000 + GRACE_BLOCKS)
+    v("author_event_past_grace", "... and one block later it is Unreadable(Late).", AUTHOR_EVENT, K0,
+      AUTHOR_EVENT_TLV, CTX01, unreadable("late"), height=1000 + GRACE_BLOCKS + 1)
     v("tlv_nine_patterns", "more than 8 protectedPattern records are malformed.", dict(CONFIG0, id="c0-later"), K0,
       b"".join(rec(7, b"refs/heads/p") for _ in range(9)), CTX0, MALFORMED)
 

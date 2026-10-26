@@ -168,10 +168,11 @@ UPDATE2_FLAGS = ('passkey_vault',)
 # (`--check`). 'set' is 'mainnet' (the four-contract set, MAINNET_BUILT on) or 'devnet' (the three-contract set).
 # A post-registration flag must be added to that network's `since` in the SAME PR that adds the flag, or
 # `--check` fails (the same discipline as UPDATE1_FLAGS above). `since` can only name flags that were OFF at
-# registration; a flag that was on and is later turned off cannot be expressed (--check fails loudly). Empty until
-# the registration commit adds
-#   'testnet': {'set': 'mainnet', 'since': ()}
-NETWORK_REGISTRATIONS = {}
+# registration; a flag that was on and is later turned off cannot be expressed (--check fails loudly).
+NETWORK_REGISTRATIONS = {
+    # testnet (dash-testnet-51), Platform 5.0.0-rc.8, 2026-10-26: forge-core D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9
+    'testnet': {'set': 'mainnet', 'since': ('passkey_vault',)},
+}
 # ---- Mainnet-only (a fresh registration may add them; an update never can: rules, references and
 # required fields on existing types are frozen, forge-v2.md §9). Off in every devnet build; the mainnet
 # registration turns them on with --mainnet. Each is documented in docs/contracts/forge-v2.md §9.1.

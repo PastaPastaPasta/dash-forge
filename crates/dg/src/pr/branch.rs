@@ -26,7 +26,7 @@ use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use super::{open_pr, push_argv, push_to, scratch_with_pr, Pr, Steps, REF_UPDATE_CREDITS};
+use super::{open_pr, push_argv, push_to, scratch_with_pr, Pr, Steps, YesCap, REF_UPDATE_CREDITS};
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_line, safe, short};
@@ -217,7 +217,14 @@ async fn commit_push_move(
 ) -> Result<String> {
     let moved = async {
         let mut argv = vec!["-c".to_string(), "dash.prAutoSync=false".to_string()];
-        argv.extend(push_argv(ctx, &src.url, commit, &src.ref_name));
+        // its confirmation leaves the pack's storage out of the price: nothing to cap at
+        argv.extend(push_argv(
+            ctx,
+            &src.url,
+            commit,
+            &src.ref_name,
+            YesCap::Unquoted,
+        ));
         push_to(
             dir,
             &argv,
@@ -916,13 +923,15 @@ pub fn dependents_refusal(
 }
 
 /// Delete the source branch (a push of `:<ref>`).
-pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch) -> Result<()> {
+pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch, cap: YesCap) -> Result<()> {
     let scratch = super::scratch_repo()?;
     let dir = scratch.path();
     let mut argv = vec!["-c".to_string(), "dash.prAutoSync=false".to_string()];
-    if ctx.yes {
-        argv.extend(["-c".into(), "dash.confirm=never".into()]);
-    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    argv.extend(super::yes_args(
+        ctx.yes,
+        cap.within(super::user_refuse_cap(&cwd)),
+    ));
     argv.extend([
         "push".into(),
         "-q".into(),

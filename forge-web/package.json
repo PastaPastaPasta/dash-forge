@@ -15,8 +15,8 @@
   ],
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/third-party-licenses.mjs out && node scripts/build-manifest.mjs out",
-    "build:ipfs": "FORGE_IPFS_BUILD=1 next build && node scripts/ipfs-postbuild.mjs out && node scripts/third-party-licenses.mjs out && FORGE_IPFS_BUILD=1 node scripts/build-manifest.mjs out",
+    "build": "next build && node scripts/third-party-licenses.mjs out && node scripts/csp-hashes.mjs out && node scripts/build-manifest.mjs out",
+    "build:ipfs": "FORGE_IPFS_BUILD=1 next build && node scripts/ipfs-postbuild.mjs out && node scripts/third-party-licenses.mjs out && node scripts/csp-hashes.mjs out && FORGE_IPFS_BUILD=1 node scripts/build-manifest.mjs out",
     "lint": "next lint",
     "lint:copy": "node scripts/copy-lint.mjs",
     "typecheck": "tsc --noEmit",
@@ -25,8 +25,8 @@
     "vendor:status": "node ${PLATFORM_AUTH_DIR:-../../platform-auth}/tools/vendor.mjs status lib/vendor/platform-auth"
   },
   "dependencies": {
-    "@dashevo/evo-sdk": "5.0.0-rc.4",
-    "@dashevo/wasm-sdk": "5.0.0-rc.4",
+    "@dashevo/evo-sdk": "5.0.0-rc.8",
+    "@dashevo/wasm-sdk": "5.0.0-rc.8",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
@@ -45,7 +45,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.5.5",
-    "zod": "^3.24.1",
+    "zod": "^4.6.7",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

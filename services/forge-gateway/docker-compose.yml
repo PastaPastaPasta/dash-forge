@@ -18,8 +18,8 @@ services:
       - "127.0.0.1:${GATEWAY_HOST_PORT:-8080}:8080"
     environment:
       # The network (forge-core's variables, as for dg and git-remote-dash).
-      DASH_FORGE_NETWORK: ${DASH_FORGE_NETWORK:-devnet}
-      DASH_FORGE_DEVNET_NAME: ${DASH_FORGE_DEVNET_NAME:-sakura}
+      DASH_FORGE_NETWORK: ${DASH_FORGE_NETWORK:-testnet}
+      DASH_FORGE_DEVNET_NAME: ${DASH_FORGE_DEVNET_NAME:-}
       DASH_FORGE_DAPI_ADDRESSES: ${DASH_FORGE_DAPI_ADDRESSES:-}
       DASH_FORGE_QUORUM_URL: ${DASH_FORGE_QUORUM_URL:-}
       # Where it is reachable, and what it links to.

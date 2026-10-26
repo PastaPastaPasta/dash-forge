@@ -2215,6 +2215,9 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     view.patch.body = read.text().to_string();
+    if a.record_bypass {
+        return record_missing_bypass(ctx, &s, &view, number).await;
+    }
     if view.state.merged {
         ctx.emit(
             json!({ "status": "already_merged", "pr": number, "merged": true }),
@@ -2270,25 +2273,78 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     } else {
         Vec::new()
     };
-    // The push publishes a history index only into the default branch (an unread default
-    // counts as it, the dearer case).
-    let push = if event_only {
+    let mut steps = Steps::new(ctx.json);
+    if !ctx.json && !not_passing.is_empty() {
+        eprintln!(
+            "warning: some checks on the head are not passing: {} (`dg pr checks {repo} {number}` shows the runs)",
+            not_passing.join(", ")
+        );
+    }
+    if !ctx.json {
+        eprintln!(
+            "Merging PR #{number} of {} into {}{}",
+            handle.display(),
+            view.merge_base.ref_name,
+            match method {
+                Method::Squash => " (squash)",
+                Method::Rebase => " (rebase)",
+                Method::Merge => "",
+            }
+        );
+    }
+    // The git side first, in a scratch repository, before the price is shown: what the push
+    // costs (a fast-forward, a merge commit, a fork's commits, the browse index it folds) is the
+    // helper's own price for it, read from a dry run, and `--yes` caps the push at that price.
+    let built = if event_only {
         None
     } else {
-        let default = default_branch_of(&s, handle).await;
-        Some(crate::quote::MergePush {
-            history_index: default.is_none_or(|d| git::full_ref(&d) == view.merge_base.ref_name),
-            platform_bytes: merge_stores_on_platform(),
-            // A pull request from a fork: its commits go into the base as a new pack. A squash
-            // writes a new commit, uploaded the same way (QW4-046: it was left out). A merge
-            // commit is known only once planned: the prompt says new objects come on top.
-            // --no-ff writes a merge commit whatever the plan; a rebase writes new commits
-            // unless the head is already on the base tip.
-            uploads_pack: view.patch.source_repo_id != handle.id()
-                || method != Method::Merge
-                || a.no_ff,
-        })
+        let how = MergeHow {
+            method,
+            message: a.message.as_deref(),
+            no_ff: a.no_ff,
+            signer: &s.identity.id(),
+            policy: policy.as_ref(),
+        };
+        Some(
+            build_merge_push(ctx, handle, &view, &how, &mut steps).map_err(|e| {
+                crate::errors::reported(
+                    merge_failure(&e, number, repo),
+                    json!({ "status": "failed", "pr": number, "steps": steps.done }),
+                )
+            })?,
+        )
     };
+    let base_url = format!("dash://{}", handle.id());
+    let target = built
+        .as_ref()
+        .and_then(|b| b.target.as_deref().map(|t| (b, t)));
+    let price = target.and_then(|(b, t)| {
+        helper_price(
+            ctx,
+            b.scratch.path(),
+            &base_url,
+            t,
+            &view.merge_base.ref_name,
+        )
+    });
+    let (push_quote, priced) = match (target, price) {
+        (Some(_), Some(price)) => (price, true),
+        // The helper could not price it: the calibrated quote stands in (a pack of up to
+        // MERGE_PACK_BYTES; a bigger push is refused under `--yes`, asked otherwise).
+        (Some((_, t)), None) => {
+            let default = default_branch_of(&s, handle).await;
+            let push = crate::quote::MergePush {
+                history_index: default
+                    .is_none_or(|d| git::full_ref(&d) == view.merge_base.ref_name),
+                platform_bytes: merge_stores_on_platform(),
+                uploads_pack: view.patch.source_repo_id != handle.id() || t != view.head,
+            };
+            (crate::quote::merge_push(push), false)
+        }
+        // records only, or nothing to push
+        (None, _) => (0, true),
+    };
+    let pushes = target.is_some();
     // QW3-021: the open issues the description closes ("Fixes #12"), closed after the merge as
     // the web's merge box does (`--keep-linked-open` leaves them).
     let Linked {
@@ -2318,39 +2374,21 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     } else {
         crate::quote::event(bypass_value(&bypassed).len() as u64, false)
     };
-    let merge_quote = crate::quote::merge(push, delete.is_some())
+    let merge_quote = crate::quote::merge(None, delete.is_some())
+        + push_quote
         + crate::quote::TRANSITION * linked.len() as u64
         + bypass_quote;
-    let mut steps = Steps::new(ctx.json);
-    if !ctx.json && !not_passing.is_empty() {
-        eprintln!(
-            "warning: some checks on the head are not passing: {} (`dg pr checks {repo} {number}` shows the runs)",
-            not_passing.join(", ")
-        );
-    }
-    if !ctx.json {
-        eprintln!(
-            "Merging PR #{number} of {} into {}{}",
-            handle.display(),
-            view.merge_base.ref_name,
-            match method {
-                Method::Squash => " (squash)",
-                Method::Rebase => " (rebase)",
-                Method::Merge => "",
-            }
-        );
-    }
     ctx.confirm_or_cancel(&format!(
-        "Merge PR #{number}{}? ({}{}{}{}{}; {}, plus Platform storage for any new objects)",
+        "Merge PR #{number}{}? ({}{}{}{}{}; {}{})",
         if not_passing.is_empty() {
             String::new()
         } else {
             format!(" although {} not passing", plural_checks(not_passing.len()))
         },
-        if event_only {
-            "records the merge only"
-        } else {
+        if pushes {
             "pushes to the base branch, then records the merge"
+        } else {
+            "records the merge only"
         },
         if unchecked.is_empty() {
             String::new()
@@ -2364,31 +2402,44 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             ""
         },
         closes_phrase(&linked),
-        cost_line(merge_quote, ctx.fiat_price())
+        cost_line(merge_quote, ctx.fiat_price()),
+        if priced {
+            String::new()
+        } else {
+            format!(
+                ", with up to {} KiB of new objects",
+                crate::quote::MERGE_PACK_BYTES / 1024
+            )
+        }
     ))?;
 
     // What the merge costs: the push (the helper pays from this identity) and the events.
     let before = s.balance().await;
-    let merge_oid = if let Some(oid) = merge_oid {
-        steps.ok("plan", format!("record only, naming {}", short(&oid)));
-        oid
-    } else {
-        let how = MergeHow {
-            method,
-            message: a.message.as_deref(),
-            no_ff: a.no_ff,
-            signer: &s.identity.id(),
-            policy: policy.as_ref(),
-        };
-        match push_merge(ctx, handle, &view, &how, &mut steps) {
-            Ok(oid) => oid,
-            Err(e) => {
+    let merge_oid = match (merge_oid, built) {
+        (Some(oid), _) => {
+            steps.ok("plan", format!("record only, naming {}", short(&oid)));
+            oid
+        }
+        (
+            None,
+            Some(MergeBuild {
+                scratch,
+                target: Some(target),
+            }),
+        ) => {
+            // `--yes` approves the push's share of the quote, and no more ([`YesCap`]).
+            let cap = YesCap::Quoted(push_quote);
+            if let Err(e) = push_merge(ctx, &view, &mut steps, &scratch, &base_url, &target, cap) {
                 return Err(crate::errors::reported(
                     merge_failure(&e, number, repo),
                     json!({ "status": "failed", "pr": number, "steps": steps.done }),
-                ))
+                ));
             }
+            target
         }
+        // nothing to push: the base already holds the merge
+        (None, Some(MergeBuild { target: None, .. })) => view.base_tip.clone().unwrap_or_default(),
+        (None, None) => unreachable!("a merge that is not --event-only builds one"),
     };
 
     let transition_id = post_merge_event(&collab, handle, &view, &merge_oid, event_only, repo)
@@ -2407,25 +2458,10 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     // A maintainer's bypass is recorded on the PR as a policy-bypass `event` (kind 23), where
     // every reader sees it: GitHub's bypass is a timeline event the actor cannot delete, and an
     // `event` is immutable and non-deletable (a comment was neither). The merge stands if this
-    // fails; say so.
+    // fails; the command then fails once the rest is done, naming the re-run that records it.
+    let mut bypass_failed = None;
     if !bypassed.is_empty() {
-        let value = bypass_value(&bypassed);
-        let posted = async {
-            let oid = hex::decode(&merge_oid).context("merge oid")?;
-            Ok::<_, anyhow::Error>(
-                collab
-                    .post_event(
-                        handle,
-                        &view.patch.target(),
-                        forge_core::rules::EventKind::PolicyBypass,
-                        Some(&value),
-                        Some(&oid),
-                    )
-                    .await?,
-            )
-        }
-        .await;
-        match posted {
+        match post_bypass(&collab, handle, &view, &merge_oid, &bypassed).await {
             Ok(id) => steps.ok(
                 "bypass",
                 format!("recorded ({}) in event {}", bypassed.join("; "), short(&id)),
@@ -2437,13 +2473,14 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
                 steps
                     .done
                     .push(json!({ "step": "bypass", "ok": false, "detail": format!("{e:#}") }));
+                bypass_failed = Some(e);
             }
         }
     }
 
     let mut branch_deleted = false;
     if let Some(d) = &delete {
-        match branch::delete_source_branch(ctx, d) {
+        match branch::delete_source_branch(ctx, d, YesCap::Quoted(REF_UPDATE_CREDITS)) {
             Ok(()) => {
                 branch_deleted = true;
                 steps.ok("delete", format!("{} in {}", d.ref_name, d.repo_display));
@@ -2499,47 +2536,59 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let on_base = after.as_ref().and_then(|v| v.state.merge_on_base);
     let spent = s.spent_since(before).await;
     let price = ctx.fiat_price();
-    ctx.emit(
-        json!({
-            "status": if merged { "merged" } else { "merge_recorded" },
-            "pr": number,
-            "method": method.as_str(),
-            "mergeOid": merge_oid,
-            "transitionId": transition_id,
-            "merged": merged,
-            "mergeOnBase": on_base,
-            "branchDeleted": branch_deleted,
-            "branchCheckNote": branch_check_note,
-            "bypassedRules": bypassed,
-            "checksNotPassing": not_passing,
-            "uncheckedFiles": unchecked,
-            "closedIssues": closed_issues,
-            "linkedIssuesOmitted": omitted,
-            "linkedIssuesImported": imported,
-            "cost": cost_json(spent, price),
-            "steps": steps.done,
-        }),
-        || {
-            if !merged {
-                println!(
-                    "Recorded the merge of PR #{number} ({}); it does not read as merged yet \
-                     (the read may lag a block).",
-                    short(&merge_oid)
-                );
-            } else if on_base == Some(false) {
-                println!(
-                    "✓ merged PR #{number} ({}); note: {} is not (yet) a tip of {}, so \
-                     readers label the merge commit as not found on the base",
-                    short(&merge_oid),
-                    short(&merge_oid),
-                    view.merge_base.ref_name
-                );
-            } else {
-                println!("✓ merged PR #{number} ({})", short(&merge_oid));
-            }
+    let mut body = json!({
+        "status": if merged { "merged" } else { "merge_recorded" },
+        "pr": number,
+        "method": method.as_str(),
+        "mergeOid": merge_oid,
+        "transitionId": transition_id,
+        "merged": merged,
+        "mergeOnBase": on_base,
+        "branchDeleted": branch_deleted,
+        "branchCheckNote": branch_check_note,
+        "bypassedRules": bypassed,
+        "checksNotPassing": not_passing,
+        "uncheckedFiles": unchecked,
+        "closedIssues": closed_issues,
+        "linkedIssuesOmitted": omitted,
+        "linkedIssuesImported": imported,
+        "cost": cost_json(spent, price),
+        "steps": steps.done,
+    });
+    if let Some(e) = bypass_failed {
+        if !ctx.json {
+            println!(
+                "merged PR #{number} ({}), but its policy bypass is not recorded",
+                short(&merge_oid)
+            );
             println!("  cost: {}", cost_line(spent, price));
-        },
-    );
+        }
+        body["status"] = json!("merged_bypass_unrecorded");
+        return Err(crate::errors::reported(
+            bypass_unrecorded(&e, number, repo),
+            body,
+        ));
+    }
+    ctx.emit(body, || {
+        if !merged {
+            println!(
+                "Recorded the merge of PR #{number} ({}); it does not read as merged yet \
+                     (the read may lag a block).",
+                short(&merge_oid)
+            );
+        } else if on_base == Some(false) {
+            println!(
+                "✓ merged PR #{number} ({}); note: {} is not (yet) a tip of {}, so \
+                     readers label the merge commit as not found on the base",
+                short(&merge_oid),
+                short(&merge_oid),
+                view.merge_base.ref_name
+            );
+        } else {
+            println!("✓ merged PR #{number} ({})", short(&merge_oid));
+        }
+        println!("  cost: {}", cost_line(spent, price));
+    });
     Ok(())
 }
 
@@ -3014,12 +3063,72 @@ fn method_allowed(policy: &forge_core::rules::review::Policy, method: Option<u8>
     method.is_none_or(|m| policy.merge_methods == 0 || policy.merge_methods & m != 0)
 }
 
-/// The `git` argv of a merge's push to the base: the storage overrides as `-c`, no second cost
-/// prompt under `--yes` (the helper has no terminal here and would refuse with E801), and the
-/// helper's `allow-archived` push option under `--allow-archived` (else it refuses with E606).
+/// What a push `dg` runs under `--yes` may spend without asking (the helper has no terminal
+/// there, and would refuse with E801).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum YesCap {
+    /// The push's share of the price the command quoted, in credits: `--yes` approved that much,
+    /// so the helper's guard refuses (E801, before anything is stored) a push it prices higher.
+    Quoted(u64),
+    /// The command's confirmation quotes no price for its push: the guard is off, as before.
+    Unquoted,
+}
+
+impl YesCap {
+    /// `self`, kept under the user's own hard cap (`dash.confirm=refuse` with its threshold,
+    /// `user`, credits): `--yes` approves the quote, never more than a cap the user set, and does
+    /// not turn the user's cap off where the command quotes nothing.
+    pub(crate) fn within(self, user: Option<u64>) -> Self {
+        match (self, user) {
+            (Self::Quoted(q), Some(u)) => Self::Quoted(q.min(u)),
+            (Self::Unquoted, Some(u)) => Self::Quoted(u),
+            (cap, None) => cap,
+        }
+    }
+}
+
+/// The user's own hard cap, credits: `dash.confirm=refuse` and its `dash.costWarnThreshold`
+/// (0.05 DASH when unset), as git config reads them in `dir`. `None` in any other mode, or with
+/// the threshold `off`.
+pub(crate) fn user_refuse_cap(dir: &Path) -> Option<u64> {
+    let mode = git::config_get(dir, "dash.confirm")?;
+    if !mode.trim().eq_ignore_ascii_case("refuse") {
+        return None;
+    }
+    let dash = match git::config_get(dir, "dash.costWarnThreshold") {
+        Some(v) => forge_core::storage::policy::parse_cost_warn_threshold(&v).ok()??,
+        None => forge_core::storage::policy::DEFAULT_COST_WARN_THRESHOLD_DASH,
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    Some((dash * forge_core::cost::CREDITS_PER_DASH as f64).floor() as u64)
+}
+
+/// The `-c` arguments that hand `--yes` (`yes`) to the helper's cost guard, as `cap` allows.
+pub(crate) fn yes_args(yes: bool, cap: YesCap) -> Vec<String> {
+    match (yes, cap) {
+        (false, _) => Vec::new(),
+        // `refuse`: never a prompt; above the threshold the push fails before anything is paid
+        (true, YesCap::Quoted(credits)) => vec![
+            "-c".into(),
+            "dash.confirm=refuse".into(),
+            "-c".into(),
+            format!("dash.costWarnThreshold={}", crate::quote::cap_dash(credits)),
+        ],
+        (true, YesCap::Unquoted) => vec!["-c".into(), "dash.confirm=never".into()],
+    }
+}
+
+/// The `git` argv of a merge's push to the base: the storage overrides as `-c`, under `--yes`
+/// the quote as the helper's cap ([`yes_args`]), and the helper's `allow-archived` push option
+/// under `--allow-archived` (else it refuses with E606).
 fn merge_push_argv(
     overrides: Vec<String>,
     yes: bool,
+    cap: YesCap,
     allow_archived: bool,
     remote: &str,
     refspec: &str,
@@ -3029,9 +3138,7 @@ fn merge_push_argv(
         argv.push("-c".into());
         argv.push(kv);
     }
-    if yes {
-        argv.extend(["-c".into(), "dash.confirm=never".into()]);
-    }
+    argv.extend(yes_args(yes, cap));
     argv.extend(["push".into(), "-q".into()]);
     if allow_archived {
         argv.extend(["-o".into(), "allow-archived".into()]);
@@ -3509,6 +3616,120 @@ fn bypass_value(rules: &[String]) -> String {
     out
 }
 
+/// Post the policy-bypass event of the merge `merge_oid` naming the `bypassed` rules.
+async fn post_bypass(
+    collab: &Collab<'_>,
+    handle: &Repo,
+    view: &PatchView,
+    merge_oid: &str,
+    bypassed: &[String],
+) -> Result<String> {
+    let oid = hex::decode(merge_oid).context("merge oid")?;
+    Ok(collab
+        .post_event(
+            handle,
+            &view.patch.target(),
+            forge_core::rules::EventKind::PolicyBypass,
+            Some(&bypass_value(bypassed)),
+            Some(&oid),
+        )
+        .await?)
+}
+
+/// The error of a merge that landed while its policy-bypass record did not: the re-run with
+/// `--override-policy` records the bypass alone ([`record_missing_bypass`]).
+fn bypass_unrecorded(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
+    UserError::new(
+        codes::PARTIAL,
+        format!("PR #{number} is merged, but its policy bypass is not recorded"),
+    )
+    .cause(format!("posting the policy-bypass event failed: {e:#}"))
+    .fix(format!(
+        "record it: `dg pr merge {repo} {number} --override-policy --record-bypass` (writes the bypass event and nothing else)"
+    ))
+    .note("the merge stands; until the bypass is recorded, readers do not see that it bypassed the branch rules")
+}
+
+/// The merge of a merged PR that no policy-bypass event names, when it has one: `--record-bypass`
+/// records the bypass its merge did not.
+fn unrecorded_bypass_merge(view: &PatchView) -> Option<String> {
+    let oid = forge_core::rules::transition::merge_transition(&view.log.transitions)?
+        .oid
+        .clone()
+        .filter(|o| !o.is_empty())?;
+    let recorded = policy_bypasses(view).iter().any(|b| {
+        b.oid
+            .as_deref()
+            .is_some_and(|o| o.eq_ignore_ascii_case(&oid))
+    });
+    (!recorded).then_some(oid)
+}
+
+/// `dg pr merge --override-policy --record-bypass`: on a merged PR whose merge no bypass names,
+/// judge the branch rules as a merge would, and record the ones not met as the merge's
+/// policy-bypass event. Nothing to record when they are met now, or a bypass already names the
+/// merge; refused for a PR not merged.
+async fn record_missing_bypass(
+    ctx: &Ctx,
+    s: &Session,
+    view: &PatchView,
+    number: u64,
+) -> Result<()> {
+    if !view.state.merged {
+        return Err(crate::errors::usage(format!(
+            "PR #{number} is not merged: --record-bypass records the bypass of a merge that already landed"
+        )));
+    }
+    let Some(oid) = unrecorded_bypass_merge(view) else {
+        ctx.emit(
+            json!({ "status": "already_merged", "pr": number, "merged": true, "bypassRecorded": false }),
+            || println!("PR #{number} is merged, and its merge's policy bypass is already recorded (or it names no merge commit); nothing to do"),
+        );
+        return Ok(());
+    };
+    let oid = oid.as_str();
+    let (handle, collab) = (&s.repo, s.collab());
+    let MergeRights { bypassed, .. } =
+        require_merge_rights(ctx, s, handle, view, None, true).await?;
+    if bypassed.is_empty() {
+        ctx.emit(
+            json!({ "status": "already_merged", "pr": number, "merged": true, "bypassRecorded": false }),
+            || println!("PR #{number} is already merged and its branch rules are met; no bypass to record"),
+        );
+        return Ok(());
+    }
+    let quote = crate::quote::event(bypass_value(&bypassed).len() as u64, false);
+    ctx.confirm_or_cancel(&format!(
+        "PR #{number} is merged ({}) without a record of its policy bypass. Record it ({})? ({})",
+        short(oid),
+        bypassed.join("; "),
+        cost_line(quote, ctx.fiat_price())
+    ))?;
+    let before = s.balance().await;
+    let id = post_bypass(&collab, handle, view, oid, &bypassed).await?;
+    let spent = s.spent_since(before).await;
+    let price = ctx.fiat_price();
+    ctx.emit(
+        json!({
+            "status": "bypass_recorded",
+            "pr": number,
+            "mergeOid": oid,
+            "eventId": id,
+            "bypassedRules": bypassed,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ recorded the policy bypass of PR #{number}'s merge ({}) in event {}",
+                short(oid),
+                short(&id)
+            );
+            println!("  cost: {}", cost_line(spent, price));
+        },
+    );
+    Ok(())
+}
+
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
 pub(crate) fn merge_failure(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
     step_failure(e, number, repo, "merge failed", "no merge event was posted")
@@ -3542,19 +3763,24 @@ pub(crate) fn step_failure(
     .note(format!("{nothing} for PR #{number}"))
 }
 
-/// Do the git side of a merge in a throwaway repository and push the result to the base
-/// branch. Returns the oid the merge event names.
-fn push_merge(
+/// The git side of a merge, done before its price is shown ([`build_merge_push`]).
+struct MergeBuild {
+    /// The throwaway repository holding the base, the head and the merge.
+    scratch: tempfile::TempDir,
+    /// The commit to push to the base; `None` when the base already holds the merge.
+    target: Option<String>,
+}
+
+/// Fetch the base and the head into a throwaway repository and build the merge there
+/// ([`build_merge`]). Nothing is pushed or paid for.
+fn build_merge_push(
     ctx: &Ctx,
     handle: &Repo,
     view: &PatchView,
     how: &MergeHow<'_>,
     steps: &mut Steps,
-) -> Result<String> {
+) -> Result<MergeBuild> {
     let scratch = scratch_with_pr(ctx, handle, view)?;
-    let dir = scratch.path();
-    let base_ref = &view.merge_base.ref_name;
-    let base_url = format!("dash://{}", handle.id());
     steps.ok(
         "fetch",
         format!(
@@ -3563,21 +3789,69 @@ fn push_merge(
             short(&view.head)
         ),
     );
+    let target = build_merge(scratch.path(), handle, view, how, steps)?;
+    Ok(MergeBuild { scratch, target })
+}
 
-    let Some(target) = build_merge(dir, handle, view, how, steps)? else {
-        return Ok(view.base_tip.clone().unwrap_or_default());
-    };
-
+/// Push the merge `target` built in `scratch` to the base branch (`url`), under `cap`.
+fn push_merge(
+    ctx: &Ctx,
+    view: &PatchView,
+    steps: &mut Steps,
+    scratch: &tempfile::TempDir,
+    url: &str,
+    target: &str,
+    cap: YesCap,
+) -> Result<()> {
+    let base_ref = &view.merge_base.ref_name;
     // Push to the base. The helper refuses a writer's push to a protected ref before paying
     // (E601 naming maintainer) and routes a maintainer's to `protectedRefUpdate`.
     push_to(
-        dir,
-        &push_argv(ctx, &base_url, &target, base_ref),
+        scratch.path(),
+        &push_argv(ctx, url, target, base_ref, cap),
         &git::dash_env_signing(ctx)?,
         "merge failed",
     )?;
-    steps.ok("push", format!("{base_ref} → {}", short(&target)));
-    Ok(target)
+    steps.ok("push", format!("{base_ref} → {}", short(target)));
+    Ok(())
+}
+
+/// What git-remote-dash prices the push of `oid` to `dst` at `url` from `dir` at: a `--dry-run`
+/// of it, which builds the pack and prices it as the push will (the storage policy, the browse
+/// index it folds, the history index), and stores nothing. `None` when the dry run fails.
+pub(crate) fn helper_price(ctx: &Ctx, dir: &Path, url: &str, oid: &str, dst: &str) -> Option<u64> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut argv: Vec<String> = Vec::new();
+    for kv in git::storage_overrides(&cwd) {
+        argv.extend(["-c".into(), kv]);
+    }
+    argv.extend(["push".into(), "--dry-run".into(), "--porcelain".into()]);
+    if ctx.allow_archived {
+        argv.extend(["-o".into(), "allow-archived".into()]);
+    }
+    argv.extend([url.to_string(), format!("{oid}:{dst}")]);
+    let out = git::dash_env_signing(ctx)
+        .and_then(|env| env.git_command())
+        .ok()?
+        .current_dir(dir)
+        .args(&argv)
+        .env("GIT_DASH_JSON", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        tracing::debug!(
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "the push's dry run failed; quoting it from the calibrated figures"
+        );
+        return None;
+    }
+    let report = forge_import::gitsync::parse_push(
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    );
+    let fallback = crate::storage::push_policy_in(&cwd).is_ok_and(|p| p.platform_fallback);
+    Some(forge_import::gitsync::price_helper_estimate(report, fallback).est_credits)
 }
 
 /// Refuse a PR whose base ref or head could not safely reach git: the base must be a plain
@@ -3717,14 +3991,14 @@ pub(crate) fn merge_stores_on_platform() -> bool {
     policy.platform_fallback || resolved.is_none_or(|r| r.platform)
 }
 
-/// `git [-c storage…] [-c dash.confirm=never] push -q <url> <oid>:<ref>`: the user's storage
-/// settings, and `--yes` passed on so the helper's cost guard does not ask again (it has no
-/// terminal here and would refuse with E801).
-pub(crate) fn push_argv(ctx: &Ctx, url: &str, oid: &str, dst: &str) -> Vec<String> {
+/// `git [-c storage…] [-c dash.confirm…] push -q <url> <oid>:<ref>`: the user's storage
+/// settings, and `--yes` passed on to the helper's cost guard as `cap` allows ([`yes_args`]).
+pub(crate) fn push_argv(ctx: &Ctx, url: &str, oid: &str, dst: &str, cap: YesCap) -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     merge_push_argv(
         git::storage_overrides(&cwd),
         ctx.yes,
+        cap.within(user_refuse_cap(&cwd)),
         ctx.allow_archived,
         url,
         &format!("{oid}:{dst}"),
@@ -4090,7 +4364,16 @@ pub(crate) fn push_to(
     if out.status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(push_rejection(
+        argv,
+        &String::from_utf8_lossy(&out.stderr),
+        goal,
+    ))
+}
+
+/// The error of a failed `git push` run with `argv`, from its `stderr`: the helper's E-code and
+/// headline when it printed one.
+fn push_rejection(argv: &[String], stderr: &str, goal: &str) -> anyhow::Error {
     // The helper prints `dash: error: … [E601]` blocks; keep the code for the classifier.
     let mut lines: Vec<&str> = stderr
         .lines()
@@ -4115,11 +4398,18 @@ pub(crate) fn push_to(
             .trim()
             .to_string();
         let code = forge_core::user_error::catalogued(code).unwrap_or(codes::REJECTED);
-        return Err(UserError::new(code, format!("{goal}: {headline}"))
-            .cause(text.replace("dash: ", ""))
-            .into());
+        let u =
+            UserError::new(code, format!("{goal}: {headline}")).cause(text.replace("dash: ", ""));
+        // `--yes` capped the push at its quote ([`YesCap::Quoted`]) and the push costs more.
+        let capped = argv.iter().any(|a| a == "dash.confirm=refuse");
+        return if capped && code == codes::COST_GUARD {
+            u.fix("`--yes` approves only the price the command quoted, and this push costs more: run it again without `--yes` to see the push's own price and confirm it")
+        } else {
+            u
+        }
+        .into();
     }
-    anyhow::bail!("{goal}: git push failed: {text}")
+    anyhow::anyhow!("{goal}: git push failed: {text}")
 }
 
 // ---------------------------------------------------------------------------
@@ -4512,6 +4802,52 @@ pub(crate) mod tests {
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
+    }
+
+    /// A merge whose policy-bypass record failed fails the command (E106, not a ✓ and exit 0),
+    /// and names the re-run that records it; that re-run finds the merge no bypass names.
+    #[test]
+    fn an_unrecorded_bypass_fails_the_merge_with_the_rerun_that_records_it() {
+        let e = bypass_unrecorded(&anyhow::anyhow!("40120: refused"), 4, "alice/project");
+        assert_eq!(e.code, codes::PARTIAL);
+        let text = format!("{e:?}");
+        assert!(
+            text.contains("PR #4 is merged, but its policy bypass is not recorded"),
+            "{text}"
+        );
+        assert!(text.contains("40120: refused"), "{text}");
+        assert!(
+            text.contains("dg pr merge alice/project 4 --override-policy"),
+            "{text}"
+        );
+
+        let oid = "ab".repeat(20);
+        let mut v = view_with("refs/heads/main", &"2".repeat(40));
+        // Not merged: no merge to record a bypass for.
+        assert_eq!(unrecorded_bypass_merge(&v), None);
+        v.log.transitions.push(
+            serde_json::from_value(
+                json!({ "kind": forge_core::rules::transition::PR_MERGE, "oid": oid }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(unrecorded_bypass_merge(&v).as_deref(), Some(oid.as_str()));
+        // A bypass naming another commit is not this merge's.
+        let bypass = |named: &str| forge_core::rules::Event {
+            id: "e".into(),
+            target_id: "d".into(),
+            kind: forge_core::rules::EventKind::PolicyBypass,
+            actor: "m".into(),
+            value: Some("required approvals: 0 of 1".into()),
+            oid: Some(named.into()),
+            ref_id: None,
+            created_at: 1,
+        };
+        v.log.events.push(bypass(&"cd".repeat(20)));
+        assert_eq!(unrecorded_bypass_merge(&v).as_deref(), Some(oid.as_str()));
+        // Recorded (in any case of hex): nothing left to record.
+        v.log.events.push(bypass(&oid.to_ascii_uppercase()));
+        assert_eq!(unrecorded_bypass_merge(&v), None);
     }
 
     /// MIXE-13: the refusal sends a members-only base to git, not back to `dg publish`.
@@ -5349,6 +5685,7 @@ pub(crate) mod tests {
         let argv = merge_push_argv(
             vec!["dash.storage=platform".into()],
             true,
+            YesCap::Unquoted,
             true,
             "dash://R",
             "abc:refs/heads/main",
@@ -5368,8 +5705,85 @@ pub(crate) mod tests {
                 "abc:refs/heads/main"
             ]
         );
-        let plain = merge_push_argv(Vec::new(), false, false, "dash://R", "abc:refs/heads/main");
+        let plain = merge_push_argv(
+            Vec::new(),
+            false,
+            YesCap::Quoted(1),
+            false,
+            "dash://R",
+            "abc:refs/heads/main",
+        );
         assert_eq!(plain, ["push", "-q", "dash://R", "abc:refs/heads/main"]);
+    }
+
+    /// `dg pr merge --yes` approves the quoted push, not any push: the helper gets the quote as
+    /// its hard cap (`dash.confirm=refuse`, never `never`), rounded up to the threshold's 10⁻⁸
+    /// DASH so the quoted price itself passes.
+    #[test]
+    fn yes_hands_the_helper_the_quote_as_its_cap() {
+        let quote = crate::quote::merge_push(crate::quote::MergePush {
+            history_index: true,
+            platform_bytes: true,
+            uploads_pack: true,
+        });
+        let argv = merge_push_argv(
+            Vec::new(),
+            true,
+            YesCap::Quoted(quote),
+            false,
+            "dash://R",
+            "abc:refs/heads/main",
+        );
+        assert_eq!(
+            &argv[..4],
+            [
+                "-c",
+                "dash.confirm=refuse",
+                "-c",
+                &format!("dash.costWarnThreshold={}", crate::quote::cap_dash(quote))
+            ]
+        );
+        assert!(!argv.iter().any(|a| a == "dash.confirm=never"));
+        // The cap, read back as the helper reads it, admits the quote and nothing above it.
+        let t: f64 = crate::quote::cap_dash(quote).parse().unwrap();
+        let dash = |c: u64| forge_core::repo::credits_to_dash(c);
+        assert!(dash(quote) <= t);
+        assert!(dash(quote.next_multiple_of(1_000) + 1_000) > t);
+        assert_eq!(yes_args(false, YesCap::Quoted(quote)), Vec::<String>::new());
+        assert_eq!(
+            yes_args(true, YesCap::Unquoted),
+            ["-c", "dash.confirm=never"]
+        );
+        // A cap the user set (`dash.confirm=refuse`) is kept: the smaller of the two, and never
+        // turned off where the command quotes nothing.
+        assert_eq!(YesCap::Quoted(500).within(Some(300)), YesCap::Quoted(300));
+        assert_eq!(YesCap::Quoted(200).within(Some(300)), YesCap::Quoted(200));
+        assert_eq!(YesCap::Quoted(200).within(None), YesCap::Quoted(200));
+        assert_eq!(YesCap::Unquoted.within(Some(300)), YesCap::Quoted(300));
+        assert_eq!(YesCap::Unquoted.within(None), YesCap::Unquoted);
+        // A push over the cap is refused by the helper (E801), and the error says what `--yes`
+        // approved and how to see the real price.
+        let stderr = "dash: error: push stopped by the cost guard [E801]\ndash:   cause: this push would cost ~0.02 DASH, above dash.costWarnThreshold (0.0092); no terminal to confirm on\n";
+        let e = push_rejection(&argv, stderr, "merge failed");
+        let u = e.downcast_ref::<UserError>().unwrap();
+        assert_eq!(u.code, codes::COST_GUARD);
+        assert!(
+            u.fix
+                .iter()
+                .any(|f| f.contains("run it again without `--yes`")),
+            "{u:?}"
+        );
+        // Not capped (no --yes): the helper's own advice stands alone.
+        let plain = merge_push_argv(
+            Vec::new(),
+            false,
+            YesCap::Quoted(quote),
+            false,
+            "dash://R",
+            "a:b",
+        );
+        let e = push_rejection(&plain, stderr, "merge failed");
+        assert!(e.downcast_ref::<UserError>().unwrap().fix.is_empty());
     }
 
     #[test]

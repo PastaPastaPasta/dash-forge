@@ -43,10 +43,10 @@ These guides describe what is on `master` today. Features that are specified but
 
 Members-only issues, comments and reviews, messages to specific people, making posts public, members-only branches and pull requests, environments, and bots are built, in `dg` and the web app. What can be members-only, and who reads it, is in [Who can read what](../security/audiences.md), the single place to check. The features still marked **Beta** (narrower branches, branch sharing, bots and agents, bot push access, making a repository public, publication dates) work but have rough edges: [Known limitations](collaborating.md#known-limitations).
 
-Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at Forge's key-exchange contract on sakura (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Dash Wallet sign-in is built. No released wallet supports it yet, and today's development builds cannot answer on testnet until a protocol fix lands: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
-The guides use **devnet sakura**, a test network, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too. Fees quoted as measured on bonsia or moutai are from those retired devnets. Testnet and mainnet have no Forge deployment yet. [Networks](../networks.md) has the details and the history.
+The guides use **testnet**, a test network and the tools' default, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too. Testnet DASH is free from a faucet and has no value, and the network can be reset. Fees quoted as measured on a devnet are from the Platform v5 test networks Forge used before testnet. Mainnet has no Forge deployment yet. [Networks](../networks.md) has the details and the history.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

@@ -62,7 +62,7 @@ dg ci report alice/project --sha "$SHA" --name build --status completed \
     --conclusion success --summary "412 tests passed" --log build.log --storage my-r2
 ```
 
-- **The network comes with the key.** A `dfk1:` key records its network (`dfk1:devnet-sakura:…`), and `dg` uses it when nothing else names one, so a fresh CI machine needs no `--network` flags. In a checkout of a `dash://` clone, the network the clone pinned wins; `DASH_FORGE_NETWORK` takes the same `devnet-<name>` form `dg` prints.
+- **The network comes with the key.** A `dfk1:` key records its network (`dfk1:testnet:…`), and `dg` uses it when nothing else names one, so a fresh CI machine needs no `--network` flags. In a checkout of a `dash://` clone, the network the clone pinned wins; `DASH_FORGE_NETWORK` takes the same form `dg` prints (`testnet`, or `devnet-<name>` for a devnet).
 - **The first report creates the run; the next ones update it in place.** An update is a replace of your own open run with that name on that commit. Once a run is `completed`, reporting the same name again (without `--external-id`) starts a new run, a re-run, which becomes the run shown; `dg` says so before you confirm.
 - **`--external-id <your CI's run id>`** ties reports to one run: a report updates the run carrying that id while it is open, and never starts a second one for it. Once that run completed, the same result again changes nothing, and a report that would change it (another conclusion, or a status that starts it over) is refused with [E604](../errors.md#e604) before anything is signed: a completed run is final, so report a re-run with a new id. If no run carries the id yet, `dg` reads once more a few seconds later before it creates one, so a report sent right after the first does not split the run. Use it whenever your CI has a run id (the GitHub Action passes `gh:<run id>:<attempt>:<job>:<name>`).
 - **What an update keeps.** A field the report does not give keeps its stored value. The start time, the completion time and the conclusion are set once and never move, so a re-queue (`--status queued`) of a run that started is a new run (or, with `--external-id`, refused with E604).
@@ -83,7 +83,7 @@ A maintainer or writer can ask the repository's runners to run a pull request's 
 - **In the web app**, on the PR's **Checks** tab: **Re-run** beside a completed check reported by forge-runner, or **Re-run all checks**. The tab then shows "Re-run requested" until a newer run of that check is reported, to everyone, and reads the runs again every 30 seconds meanwhile. A request no run answers within 10 minutes (no runner took it: runners handle each request once) says "no run yet" and Re-run is offered again. A run left queued or in progress for 2 hours (its runner stopped mid-job) is offered too.
 - **From the command line**: `dg ci rerun alice/project 12` for every check, or `--check "ci / build (pull_request)"` for one (`dg pr checks` lists the names). `--sha <commit>` refuses the request if the PR's head is no longer that commit.
 
-A request is one `event` on the PR (kind 26, [forge-v2.md §3.3](../contracts/forge-v2.md#33-ci-re-run-requests-kind-26)), which no one can delete: 59,660,580 credits (about 0.0006 DASH) for one check on devnet sakura (2026-10-02, Platform 5.0.0-beta.1); `dg` and the web app show an upper bound before you sign. It names the PR's head, the repository (so runners find it with one query) and the check. [forge-runner](self-host-runner.md#re-runs) reads the requests on every poll, or within seconds when the owner's relay wakes it, and runs the workflow that reports the check again on the head; the new run replaces the one shown. `dg ci reruns alice/project [--since <ms>]` lists the requests and whether each counts.
+A request is one `event` on the PR (kind 26, [forge-v2.md §3.3](../contracts/forge-v2.md#33-ci-re-run-requests-kind-26)), which no one can delete: 59,660,580 credits (about 0.0006 DASH) for one check on a Platform v5 devnet (2026-10-02, Platform 5.0.0-beta.1); `dg` and the web app show an upper bound before you sign. It names the PR's head, the repository (so runners find it with one query) and the check. [forge-runner](self-host-runner.md#re-runs) reads the requests on every poll, or within seconds when the owner's relay wakes it, and runs the workflow that reports the check again on the head; the new run replaces the one shown. `dg ci reruns alice/project [--since <ms>]` lists the requests and whether each counts.
 
 - **Who can ask.** The owner, maintainers and role-1 writers. Platform also admits a triage member's request (the contract's `t_triageKinds` does not name kind 26), but no reader counts it: `dg` and the web app refuse it before signing, and runners ignore one.
 - **What can be re-run.** An open PR's current head only: runners run nothing for a head that moved. Checks reported from elsewhere (the GitHub Action, a script) are re-run there; the web app offers Re-run only on forge-runner's runs.
@@ -158,8 +158,7 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
           install: 'source'         # no release is published yet; once one is, pin its tag and drop this
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
-          network: devnet           # Forge runs on devnet sakura (the default)
-          devnet-name: sakura
+          network: testnet          # Forge runs on testnet (the default)
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```

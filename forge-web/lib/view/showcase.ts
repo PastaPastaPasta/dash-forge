@@ -26,13 +26,9 @@ export interface ShowcaseEntry {
  * nothing.
  */
 export const SHOWCASE: Readonly<Record<string, readonly ShowcaseEntry[]>> = {
-  'devnet-sakura': [
-    // The mirrors of github.com/dashpay/dash and github.com/dashpay/dips go first once they are
-    // re-imported: sakura's Platform reset to 5.0.0-beta.2 (2026-10-06) took the old ones.
-    // The seeded demo: code, issues and pull requests (forge-contracts/scripts/seed-v2-fixture.mjs),
-    // re-seeded on the release's four-contract set when sakura moved to it (2026-10-17).
-    { owner: 'Amc7FjA3CJLae4stwztokTumqCX8KfDCkA3zNwVVYRZB', name: 'forge-v2-demo', repoId: '9LM5M5T5dX1Joxb4LQAXb4PV477ZcU3gZfUmAVc8HdMP' },
-  ],
+  // Empty until the official names and mirrors (github.com/dashpay/dash, dashpay/dips) are
+  // imported on testnet and pinned here (launch criterion L11): never an id that is not live.
+  testnet: [],
 }
 
 /** The showcase entries of a network key. */

@@ -23,10 +23,11 @@ describe('shortenIds', () => {
 })
 
 describe('the showcase (QW-045)', () => {
-  it('features sakura\'s demo repo, and nothing on a network without an entry', () => {
-    expect(showcaseFor('devnet-sakura').map((e) => e.name)).toEqual(['forge-v2-demo'])
+  it('has a testnet entry, empty until its repos are pinned, and nothing on a network without one', () => {
+    expect(Object.keys(SHOWCASE)).toEqual(['testnet'])
     expect(showcaseFor('testnet')).toEqual([])
-    expect(Object.keys(SHOWCASE)).toEqual(['devnet-sakura'])
+    expect(showcaseFor('devnet-sakura')).toEqual([])
+    expect(showcaseFor('mainnet')).toEqual([])
   })
 })
 

@@ -43,8 +43,9 @@
 variables:
   # Required: the destination, dash://<owner identity id>/<name>.
   FORGE_REPO: ""
-  FORGE_NETWORK: devnet
-  FORGE_DEVNET_NAME: sakura
+  # The network: testnet (Forge's network today), mainnet, or devnet with FORGE_DEVNET_NAME.
+  FORGE_NETWORK: testnet
+  FORGE_DEVNET_NAME: ""
   # What to install. One of the two is required:
   #   FORGE_VERSION     a published Dash Forge release (e.g. 0.1.0), checked against its
   #                     SHA256SUMS by the install.sh of that release's tag;
