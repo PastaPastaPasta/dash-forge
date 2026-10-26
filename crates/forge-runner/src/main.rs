@@ -38,9 +38,9 @@ mod config;
 mod cron;
 mod egress;
 mod envs;
+mod pending;
 mod push;
 mod relay;
-mod pending;
 mod run;
 mod watch;
 mod workflow;
@@ -189,6 +189,15 @@ fn real_main(cli: &Cli) -> Result<()> {
             let ran = run_locked(&cfg, r, &trig, &opts)?;
             for (name, conclusion) in &ran.checks {
                 println!("{name}\t{conclusion}");
+            }
+            // A report kept undelivered is resent only by a runner polling this state_dir.
+            let kept = pending::count(&cfg.state_dir, &r.repo);
+            if kept > 0 {
+                anyhow::bail!(
+                    "{kept} check report(s) of {} could not be delivered; they are kept in {} and resent by `forge-runner` polling this state_dir",
+                    r.repo,
+                    pending::path(&cfg.state_dir, &r.repo).display()
+                );
             }
             Ok(())
         }
@@ -428,7 +437,8 @@ const FOLLOW_BEYOND: usize = 10;
 /// jobs ran is never re-run (`forge-runner run` does that by hand); a report such a run could not
 /// deliver is resent first ([`pending::resend`]).
 fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
-    if let Err(e) = pending::resend(cfg, &repo.repo) {
+    // under the repository's lock, as every report kept is (a busy lock: the next poll resends)
+    if let Err(e) = locked(cfg, repo, |_| pending::resend(cfg, &repo.repo)) {
         eprintln!("forge-runner: {}: kept reports: {e:#}", repo.repo);
     }
     let path = state_path(&cfg.state_dir, &repo.repo);

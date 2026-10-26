@@ -1122,16 +1122,16 @@ impl RunCtx<'_> {
     }
 
     /// A completed `failure` for a reason the runner found itself (bad YAML, a refused job):
-    /// the check run says why, and nothing ran. Returns the check's name.
-    /// Fails when the report could not be delivered ([`report_completed`]).
-    fn refuse(&self, file: &Path, id: &str, name: &str, why: &str) -> Result<String> {
+    /// the check run says why, and nothing ran. Returns the check's name. A report that cannot
+    /// be delivered is kept for the next polls ([`report_or_keep`]).
+    fn refuse(&self, file: &Path, id: &str, name: &str, why: &str) -> String {
         let r = self.sealed(Report {
             conclusion: Some("failure"),
             summary: Some(format!("forge-runner did not run this: {why}")),
             ..self.report_of(file, id, name, "completed")
         });
-        report_completed(self.cfg, &r)?;
-        Ok(r.name)
+        report_or_keep(self.cfg, &r);
+        r.name
     }
 }
 
@@ -1377,7 +1377,7 @@ pub fn run(
     };
     for b in &plan.broken {
         let name = format!("{} (invalid workflow)", b.file.display());
-        let name = ctx.refuse(&b.file, "", &name, &b.reason)?;
+        let name = ctx.refuse(&b.file, "", &name, &b.reason);
         ran.checks.push((name, "failure"));
     }
     if !plan.path_filtered.is_empty() {
@@ -1387,7 +1387,7 @@ pub fn run(
         };
         let skips = judge_filtered(repo, trig, opts.only.as_deref(), policy, &mut plan);
         if !plan.path_filtered.is_empty() {
-            skip_filtered(&ctx, &plan, &skips, &mut ran)?;
+            skip_filtered(&ctx, &plan, &skips, &mut ran);
         } else if plan.run.is_empty() {
             if let Some(only) = &opts.only {
                 eprintln!(
@@ -1572,14 +1572,8 @@ fn checks_to_skip(policy: &serde_json::Value, alone: bool) -> Option<BTreeSet<St
 /// for it (`only`), and never when a workflow that runs here reports the same name. Other
 /// checks get nothing: each report is a paid write.
 ///
-/// Called before any workflow runs: a report that cannot be delivered ([`report_completed`])
-/// fails the run, which is tried again on the next poll rather than leaving the check undecided.
-fn skip_filtered(
-    c: &RunCtx<'_>,
-    plan: &workflow::Plan,
-    skips: &Skips,
-    ran: &mut Ran,
-) -> Result<()> {
+/// A report that cannot be delivered is kept for the next polls ([`report_or_keep`]).
+fn skip_filtered(c: &RunCtx<'_>, plan: &workflow::Plan, skips: &Skips, ran: &mut Ran) {
     let running = running_checks(plan, c.trig);
     for wf in &plan.path_filtered {
         for j in &wf.jobs {
@@ -1603,11 +1597,10 @@ fn skip_filtered(
                 summary: Some(summary),
                 ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
             });
-            report_completed(c.cfg, &r)?;
+            report_or_keep(c.cfg, &r);
             ran.checks.push((r.name, conclusion));
         }
     }
-    Ok(())
 }
 
 /// Run one workflow file with act (its refused jobs reported, not run) and report its jobs.
@@ -1623,7 +1616,7 @@ fn run_workflow(
         wf.jobs.iter().partition(|j| j.refused.is_some());
     for j in &refused {
         let why = j.refused.as_deref().unwrap_or("");
-        let name = c.refuse(&wf.file, &j.id, &j.check_name, why)?;
+        let name = c.refuse(&wf.file, &j.id, &j.check_name, why);
         ran.checks.push((name, "failure"));
     }
     if runnable.is_empty() {
@@ -1702,7 +1695,18 @@ fn run_workflow(
         let conclusion = outcome.conclusion(timed_out);
         let log_path = c.logs.join(format!("{}.log", j.id));
         let raw = results.logs.get(&j.id).map_or("", String::as_str);
-        std::fs::write(&log_path, redact(raw, &values))?;
+        // The job ran: a log that cannot be written leaves the report without one, never fails
+        // the run (a poll would run the jobs again).
+        let log = match std::fs::write(&log_path, redact(raw, &values)) {
+            Ok(()) => Some(log_path),
+            Err(e) => {
+                eprintln!(
+                    "forge-runner: the log of {} could not be written: {e}",
+                    j.id
+                );
+                None
+            }
+        };
         let why = match (outcome, timed_out, crashed) {
             (Outcome::Unfinished, true, _) => " (stopped at the time limit)",
             (Outcome::Unfinished, _, true) => " (act exited without a result for this job)",
@@ -1725,23 +1729,12 @@ fn run_workflow(
         let r = c.sealed(Report {
             conclusion: Some(conclusion),
             summary: Some(summary),
-            log: Some(log_path),
+            log,
             artifacts: files,
             ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
         });
-        if let Err(e) = report_completed(c.cfg, &r) {
-            eprintln!("forge-runner: {e:#}");
-            // The jobs ran and are never run again for their report (a step may deploy, use
-            // secrets or pay): the report is kept for the next polls to resend.
-            match crate::pending::keep(c.cfg, &r) {
-                Ok(()) => unreported.push(r.name.clone()),
-                Err(k) => eprintln!(
-                    "forge-runner: {} {} could not be kept for the next polls either ({k:#}); send it by hand: dg {}",
-                    r.repo,
-                    r.name,
-                    report_args(c.cfg, &r).join(" ")
-                ),
-            }
+        if report_or_keep(c.cfg, &r) {
+            unreported.push(r.name.clone());
         }
         ran.checks.push((r.name, conclusion));
     }
@@ -1780,6 +1773,25 @@ const REPORT_BACKOFF: [Duration; 3] = [
 /// stale revision); the run then stands as the first report recorded it.
 fn report_completed(cfg: &Config, r: &Report<'_>) -> Result<()> {
     deliver(r, &REPORT_BACKOFF, |r| report(cfg, r), std::thread::sleep)
+}
+
+/// Deliver a completed report ([`report_completed`]), else keep it for the next polls to resend
+/// ([`crate::pending::keep`]). It never fails the run: a poll would run the push's jobs again,
+/// deploy and secret-using steps included, only to report. Returns whether it was not delivered.
+fn report_or_keep(cfg: &Config, r: &Report<'_>) -> bool {
+    let Err(e) = report_completed(cfg, r) else {
+        return false;
+    };
+    eprintln!("forge-runner: {e:#}");
+    if let Err(k) = crate::pending::keep(cfg, r) {
+        eprintln!(
+            "forge-runner: {} {} could not be kept for the next polls either ({k:#}); send it by hand: dg {}",
+            r.repo,
+            r.name,
+            crate::pending::hand_args(cfg, r).join(" ")
+        );
+    }
+    true
 }
 
 /// [`report_completed`] over `send` (true: the report landed), waiting with `sleep` for each of
