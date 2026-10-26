@@ -15,6 +15,10 @@ export interface WasmKey {
   readonly totalBudget?: bigint
   readonly expiresAt?: bigint
   readonly contractBounds?: { toJSON(): { $type: string; id: string } }
+  /** `KeyType` (0 ECDSA_SECP256K1, 2 ECDSA_HASH160, …); read by the App Connect verifier only. */
+  readonly keyTypeNumber?: number
+  /** The key data, hex (the wasm getter); read by the App Connect verifier only. */
+  readonly data?: string
   validatePrivateKey(bytes: Uint8Array, network: string): boolean
 }
 
@@ -43,7 +47,11 @@ export interface AuthSdk {
      * object `fetch` returned (the wasm Identity, narrowed here to {@link WasmIdentity}).
      */
     updateKeyLimits(options: Omit<IdentityKeyLimitsUpdateOptions, 'identity'> & { identity: WasmIdentity }): Promise<IdentityPublicKey>
+    /** The keys Platform resolves for `contractId` and `purposes` (`getIdentitiesContractKeys`). */
+    contractKeys(query: { identityIds: string[]; contractId: string; purposes?: number[] }): Promise<{ readonly identityId: { toBase58(): string }; readonly keys: WasmKey[] }[]>
   }
+  /** The proved response's metadata: the latest block's time and protocol version. */
+  protocol: { versionUpgradeStateWithProof(): Promise<{ readonly metadata: { readonly protocolVersion: number; readonly timeMs: bigint } }> }
   documents: { query(q: unknown): Promise<Map<string, unknown>> }
   contracts: { fetch(id: string): Promise<unknown> }
   system: {

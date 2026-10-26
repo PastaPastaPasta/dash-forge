@@ -3,9 +3,9 @@
 /**
  * The low-balance banner (`ux-dx-spec.md` §4, low-balance states): when funds are low or empty,
  * one banner under the header with the specific fix — top up the identity, or renew this
- * browser's key — dismissible once per state per session (sessionStorage). It shows at every
- * width, so a phone, whose header only has room for the icon-sized funds cue, still says what is
- * wrong and how to fix it.
+ * browser's key (in the wallet that granted it, when it came from one) — dismissible once per
+ * state per session (sessionStorage). It shows at every width, so a phone, whose header only has
+ * room for the icon-sized funds cue, still says what is wrong and how to fix it.
  */
 
 import { useEffect, useState } from 'react'
@@ -32,10 +32,10 @@ function readDismissed(identity: string): readonly string[] {
 }
 
 export function LowFundsBanner(): JSX.Element | null {
-  const { identity, funds } = useAuth()
+  const { identity, funds, origin } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
-  const notice = funds ? fundsNotice(funds) : null
+  const notice = funds ? fundsNotice(funds, origin) : null
   // Read after mount (sessionStorage is browser-only), per identity; until then nothing shows,
   // so neither a flash nor another identity's dismissals.
   const [dismissed, setDismissed] = useState<{ identity: string; keys: readonly string[] } | null>(null)
@@ -46,6 +46,10 @@ export function LowFundsBanner(): JSX.Element | null {
   if (!identity || !funds || !notice || dismissed?.identity !== identity || dismissed.keys.includes(notice.key)) return null
   const empty = funds.level === 'empty'
   const topUp = notice.fix === 'top-up'
+  // A key a wallet granted is renewed in that wallet; the identity file stays the other way. A key
+  // a passkey restored may be either's: both are offered.
+  const either = notice.fix === 'renew-either'
+  const inWallet = notice.fix === 'renew-in-wallet' || either
   const dismiss = (): void => {
     const keys = [...dismissed.keys, notice.key]
     try {
@@ -72,10 +76,15 @@ export function LowFundsBanner(): JSX.Element | null {
           <Button
             size="sm"
             variant="primary"
-            onClick={() => (topUp ? openTopUp({ blocker: 'balance', proactive: true }) : openLogin('import'))}
+            onClick={() => (topUp ? openTopUp({ blocker: 'balance', proactive: true }) : openLogin(inWallet ? 'wallet-renew' : 'import'))}
           >
-            {topUp ? 'Top up' : 'Renew key'}
+            {topUp ? 'Top up' : inWallet ? 'Renew in your wallet' : 'Renew key'}
           </Button>
+          {either ? (
+            <Button size="sm" variant="outline" onClick={() => openLogin('import')} data-testid="low-funds-renew-with-file">
+              Renew with identity file
+            </Button>
+          ) : null}
           <Button size="icon" variant="ghost" onClick={dismiss} aria-label="Dismiss for this session">
             <X className="h-4 w-4" aria-hidden />
           </Button>

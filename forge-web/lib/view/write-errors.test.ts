@@ -257,6 +257,54 @@ describe('an unusable key opens renew, not a raw error (D-042)', () => {
   })
 })
 
+describe('a session on a wallet’s App Connect key reads key refusals as App Connect does', () => {
+  const ac = { appConnect: true }
+  const refusal = (code: number, figures = {}) => new ConsensusRefusal(code, `refused ${code}`, figures, false)
+
+  it('renew (20015, 20016, 40218): the same key sheet, which offers the wallet first', () => {
+    expect(writeFailure(refusal(20015), ac)).toEqual(writeFailure(refusal(20015)))
+    expect(writeFailure(refusal(20015), ac).sheet).toEqual({ blocker: 'key-budget' })
+    expect(writeFailure(refusal(20016), ac).sheet).toEqual({ blocker: 'key-expiry' })
+    const short = writeFailure(refusal(40218, { remaining: 1_000n, required: 5_000n }), ac)
+    expect(short.sheet).toEqual({ blocker: 'key-budget', shortfall: 4_000n })
+    expect(short.recheck).toBeUndefined()
+  })
+
+  it('logout (20003, 20006, 40208): the wallet revoked this browser, and the renew sheet opens', () => {
+    for (const [code, blocker] of [[20003, 'key-missing'], [20006, 'key-disabled'], [40208, 'key-disabled']] as const) {
+      const f = writeFailure(refusal(code), ac)
+      expect(f.message).toMatch(/^Your wallet revoked this browser's access\. You weren't charged\./)
+      expect(f.sheet).toEqual({ blocker })
+    }
+    // The same refusal outside App Connect keeps today's words.
+    expect(writeFailure(refusal(20006)).message).toMatch(/key was disabled/)
+    expect(writeFailure(refusal(20003)).sheet).toBeNull()
+  })
+
+  it('a key found disabled before signing says the same; one not shown (a node behind a renewal) does not', () => {
+    expect(writeFailure(new KeyUnusableError('disabled'), ac)).toEqual({ message: expect.stringMatching(/^Your wallet revoked/), sheet: { blocker: 'key-disabled' } })
+    expect(writeFailure(new KeyUnusableError('missing'), ac)).toEqual(writeFailure(new KeyUnusableError('missing')))
+    // Within the last minutes (the controller's margin) it is a renewal, not a revocation.
+    expect(writeFailure(new KeyUnusableError('expired'), ac)).toEqual(writeFailure(new KeyUnusableError('expired')))
+  })
+
+  it('handoff (20004, 20007, 20013): cannot happen to a Forge write; reads as any refusal', () => {
+    for (const code of [20004, 20007, 20013]) {
+      const f = writeFailure(refusal(code), ac)
+      expect(f).toEqual(writeFailure(refusal(code)))
+      expect(f.message).toMatch(new RegExp(`Error code ${code}`))
+      expect(f.sheet).toBeNull()
+    }
+  })
+
+  it('invalidate (20014): the usual sentence, and the session is checked again', () => {
+    const f = writeFailure(refusal(20014), ac)
+    expect(f.message).toBe(writeFailure(refusal(20014)).message)
+    expect(f.recheck).toBe(true)
+    expect(writeFailure(refusal(20014)).recheck).toBeUndefined()
+  })
+})
+
 describe('an immutable-property refusal (40128) names the frozen field', () => {
   // Drive's text, rs-dpp 5.0.0-beta.1 `document_immutable_property_changed_error.rs:27`.
   const immutable = (property: string, type: string) =>

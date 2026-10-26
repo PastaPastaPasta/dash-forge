@@ -21,6 +21,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AlreadyStoredError } from '@/lib/auth/controller'
+import { PlatformPasskeyError } from '@/lib/auth/passkey-vault/service'
 import type { VaultInfo } from '@/lib/auth/vault'
 import { useUiStore } from '@/hooks/use-ui-store'
 
@@ -39,14 +40,27 @@ const auth = {
   importIdentity: vi.fn(),
   forget: vi.fn(async () => undefined),
   unlock: vi.fn(),
+  /** Why passkeys for other devices are hidden; null shows the tile (the default is hidden). */
+  passkeyProblem: 'Checking whether passkeys work on this page.' as string | null,
+  signInWithPasskey: vi.fn(),
+  isLoading: false,
+  step: null as string | null,
 }
 
 /** The unfinished identity creation this browser holds, if any. */
 let journal: { depositAddress: string } | undefined
 
+/** Whether Platform answers (a fake connection); off, the wallet tile still shows, as offline. */
+let platformUp = false
+/** Whether the chain supports App Connect v2. */
+let v2Available = false
 vi.mock('@/lib/auth/connect', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/connect')>()),
-  connectPlatform: () => Promise.reject(new Error('offline in tests')),
+  connectPlatform: () => (platformUp ? Promise.resolve({}) : Promise.reject(new Error('offline in tests'))),
+}))
+vi.mock('@/lib/auth/app-connect-v2', async (orig) => ({
+  ...(await orig<typeof import('@/lib/auth/app-connect-v2')>()),
+  appConnectV2Available: async () => v2Available,
 }))
 /** Whether Dash Wallet can answer here (testnet); false mutes its tile, as on a devnet. */
 let walletSupported: boolean | null = null
@@ -74,8 +88,10 @@ vi.mock('@/contexts/auth-context', () => ({
     importIdentity: auth.importIdentity,
     unlock: auth.unlock,
     forget: auth.forget,
-    isLoading: false,
-    step: null,
+    isLoading: auth.isLoading,
+    step: auth.step,
+    platformPasskeyProblem: auth.passkeyProblem,
+    signInWithPasskey: auth.signInWithPasskey,
     identity: auth.identity,
     keyId: auth.keyId,
     unlockScope: auth.unlockScope,
@@ -142,8 +158,14 @@ beforeEach(() => {
   auth.storage = null
   journal = undefined
   walletSupported = null
+  platformUp = false
+  v2Available = false
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
+  auth.passkeyProblem = 'Checking whether passkeys work on this page.'
+  auth.signInWithPasskey.mockReset()
+  auth.isLoading = false
+  auth.step = null
   Element.prototype.scrollIntoView = vi.fn()
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -433,5 +455,112 @@ describe('Q5-C04: the key lifetime is worded for each path', () => {
     await click(byText('All options'))
     await click(q('[data-testid="tile-import"]'))
     expect(host.ownerDocument.body.textContent).toContain('for 90 days by default (up to a year)')
+  })
+})
+
+describe('App Connect v2 in the sheet', () => {
+  const tileOrder = (): (string | undefined)[] => [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].map((t) => t.dataset['testid'])
+
+  it('puts the wallet tile first where v2 is on offer, and says one approval covers Forge', async () => {
+    auth.vaults = []
+    walletSupported = false
+    platformUp = true
+    v2Available = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
+    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
+    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/approve once for all of Forge/)
+  })
+
+  it('keeps the wallet tile last where no wallet can answer and v2 is not on offer', async () => {
+    auth.vaults = []
+    walletSupported = false
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder().slice(0, 4)).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBe('true')
+  })
+
+  it('opens the renewal in the wallet on its own view, with the identity file as the other way', async () => {
+    auth.identity = ID
+    auth.keyId = 6
+    auth.storage = 'vault'
+    auth.unlockScope = 'full'
+    act(() => useUiStore.getState().openLogin('wallet-renew'))
+    await flush()
+    const body = host.ownerDocument.body.textContent ?? ''
+    expect(body).toMatch(/Renew this browser's key in your wallet/)
+    expect(body).not.toMatch(/Sign in to Dash Forge/)
+    expect(byText(/All options/)).toBeNull()
+    expect(q('[data-testid="wallet-renew-prepare"]')).not.toBeNull()
+    await click(q('[data-testid="renew-with-file-instead"]'))
+    expect(q('[data-testid="wallet-renew-prepare"]')).toBeNull()
+    expect(host.ownerDocument.body.textContent).toMatch(/Disables key #6 and registers/)
+  })
+})
+
+describe('Sign in with a passkey (passkeys that hold a key on Platform)', () => {
+  const openChooser = async (): Promise<void> => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+  }
+
+  it('is hidden while passkeys are not offered here (not checked, another host, no vault deployed yet)', async () => {
+    await openChooser()
+    expect(q('[data-testid="tile-passkey"]')).toBeNull()
+    // The rest of the list is there.
+    expect(q('[data-testid="tile-create"]')).not.toBeNull()
+  })
+
+  it('shows once passkeys are offered, after the wallet and before create, and says what it does not do', async () => {
+    auth.passkeyProblem = null
+    walletSupported = true
+    await openChooser()
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    const order = [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].map((b) => b.dataset.testid)
+    expect(order.slice(0, 3)).toEqual(['tile-wallet', 'tile-passkey', 'tile-create'])
+    expect(q('[data-testid="tile-passkey"]')!.textContent).toMatch(/Sign in with a passkey/)
+    expect(q('[data-testid="tile-passkey"]')!.textContent).toMatch(/It doesn't recover an account/)
+  })
+
+  it('signs in with one prompt and closes the sheet', async () => {
+    auth.passkeyProblem = null
+    auth.signInWithPasskey.mockResolvedValueOnce(undefined)
+    await openChooser()
+    await click(q('[data-testid="tile-passkey"]'))
+    expect(auth.signInWithPasskey).toHaveBeenCalledTimes(1)
+    expect(useUiStore.getState().loginOpen).toBe(false)
+  })
+
+  it('shows the step while it works', async () => {
+    auth.passkeyProblem = null
+    auth.isLoading = true
+    auth.step = 'Waiting for your passkey'
+    await openChooser()
+    expect(q('[data-testid="passkey-sign-in-step"]')!.textContent).toBe('Waiting for your passkey…')
+  })
+
+  it('says a browser-only passkey only unlocks the browser that made it', async () => {
+    auth.passkeyProblem = null
+    auth.signInWithPasskey.mockRejectedValueOnce(new PlatformPasskeyError('This passkey only unlocks the browser that made it. Use it there, or sign in another way.', 'not-vault'))
+    await openChooser()
+    await click(q('[data-testid="tile-passkey"]'))
+    expect(q('[role="alert"]')!.textContent).toMatch(/only unlocks the browser that made it/)
+    expect(q('[data-testid="passkey-unlock-instead"]')).toBeNull()
+    expect(useUiStore.getState().loginOpen).toBe(true)
+  })
+
+  it('offers "Unlock instead" when this browser already keeps a key', async () => {
+    auth.passkeyProblem = null
+    auth.signInWithPasskey.mockRejectedValueOnce(new PlatformPasskeyError('This browser already keeps this key. Unlock it instead.', 'held'))
+    await openChooser()
+    auth.vaults = [{ identityId: ID, keyId: 6, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
+    await click(q('[data-testid="tile-passkey"]'))
+    expect(q('[role="alert"]')!.textContent).toMatch(/already keeps this key/)
+    await click(q('[data-testid="passkey-unlock-instead"]'))
+    // The Unlock view, for the key this browser holds.
+    expect(q('#unlock-passphrase')).not.toBeNull()
   })
 })

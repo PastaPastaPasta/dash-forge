@@ -37,6 +37,8 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   '_next',
   '404',
   'api',
+  // `/connect/`: where a wallet returns after an App Connect v2 approval.
+  'connect',
   'explore',
   'favicon.ico',
   // `/github.com/<owner>/<repo>` and `/gh/<owner>/<repo>`: the Forge mirror of a GitHub repo (CJ-3).

@@ -150,8 +150,23 @@ interface VaultRecord {
    * when there was none (a first import). Finishing it replaces only that record.
    */
   readonly replaces?: number | null
-  /** The key came from `dg auth keys add --for-browser` (`./key-handoff`): renew it the same way. */
-  readonly origin?: 'dg'
+  /** Where the key came from, when it was not registered here: renew it the same way. */
+  readonly origin?: KeyOrigin
+}
+
+/**
+ * Where a stored key came from, when this browser did not register it with the master key:
+ * `dg` (`dg auth keys add --for-browser`, `./key-handoff`), `app-connect` (a wallet's App
+ * Connect v2 grant, `./app-connect-v2`) or `passkey` (restored from a passkey on Platform
+ * (`./passkey-vault`): a passkey does not say whether a wallet or the master key made the key, so
+ * it can be renewed either way). A key this browser registers itself has none; storing one (a
+ * renewal with the identity file or recovery phrase) clears it.
+ */
+export type KeyOrigin = 'dg' | 'app-connect' | 'passkey'
+
+/** Whether a stored value is a {@link KeyOrigin} (records and kept hints are read back unchecked). */
+export function isKeyOrigin(v: unknown): v is KeyOrigin {
+  return v === 'dg' || v === 'app-connect' || v === 'passkey'
 }
 
 /** What the UI may know about a stored vault (no secrets). */
@@ -169,6 +184,8 @@ export interface VaultInfo {
   readonly encryptionKey?: true
   /** The key came from `dg` (a key handoff): Renew offers `dg` first, not the recovery phrase. */
   readonly fromDg?: true
+  /** The key came from a wallet's App Connect grant: Renew offers the wallet first. */
+  readonly fromAppConnect?: true
 }
 
 const enc = new TextEncoder()
@@ -924,8 +941,8 @@ export async function storeInVault(
      * gave up, its key carried in `secret.extra`): it is never gone before its key is stored.
      */
     readonly dropStagedKeyId?: number
-    /** Where the key came from ({@link VaultRecord.origin}). */
-    readonly origin?: 'dg'
+    /** Where the key came from ({@link KeyOrigin}); none clears an earlier record's. */
+    readonly origin?: KeyOrigin
     /**
      * The key id of the record the caller found for this identity (null: none), checked in the
      * write's own transaction: a key another tab stored meanwhile aborts it ({@link VaultChangedError}).
@@ -1086,6 +1103,7 @@ export async function listVaults(network: Network): Promise<VaultInfo[]> {
     methods: r.slots.map((s) => s.kind),
     ...(withEnc.has(encryptionBlobKey(network, r.identityId)) ? { encryptionKey: true as const } : {}),
     ...(r.origin === 'dg' ? { fromDg: true as const } : {}),
+    ...(r.origin === 'app-connect' ? { fromAppConnect: true as const } : {}),
   }))
   // An identity with only a staged key (a first import whose tab closed after registering,
   // D-016) must still be offered for unlock, or the key it paid for is unreachable.
@@ -1380,6 +1398,15 @@ export async function keptKeyId(network: Network): Promise<{ identityId: string;
 /** The key id of the stored (main) record of (network, identity), or null when none. */
 export async function storedKeyId(network: Network, identityId: string): Promise<number | null> {
   return (await idbGet<VaultRecord>('vault', key(network, identityId)))?.keyId ?? null
+}
+
+/**
+ * Where the stored (main) record of (network, identity) came from ({@link KeyOrigin}), when that
+ * record holds `keyId`; null otherwise (none recorded, another key stored, or no record).
+ */
+export async function storedOrigin(network: Network, identityId: string, keyId: number): Promise<KeyOrigin | null> {
+  const r = await idbGet<VaultRecord>('vault', key(network, identityId))
+  return r?.keyId === keyId && isKeyOrigin(r.origin) ? r.origin : null
 }
 
 /** The kept session was used (a signature, the user active): its idle limit counts from now. */

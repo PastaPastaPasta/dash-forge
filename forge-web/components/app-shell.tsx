@@ -18,6 +18,7 @@ import { useContractsMissing } from '@/hooks/use-sdk'
 import { useOfflineNavigation } from '@/hooks/use-offline-navigation'
 import { PAGES_NOTICE } from '@/lib/pages-notice'
 import { LowFundsBanner } from '@/components/low-funds-banner'
+import { PasskeyOffer } from '@/components/passkey-offer'
 import { ClockSkewBanner } from '@/components/clock-skew-banner'
 import { LoginModal } from '@/components/login-modal'
 import { PlatformBusy } from '@/components/platform-busy'
@@ -54,6 +55,7 @@ export function AppShell({
       <NewKeyAlert />
       <ClockSkewBanner />
       <LowFundsBanner />
+      <PasskeyOffer />
       <main
         id="main"
         tabIndex={-1}

@@ -9,7 +9,8 @@
  * - the identity's balance: a top-up from this browser (a deposit address any Dash wallet or a
  *   test-network faucet can pay, QW-012), or a credit transfer from another identity;
  * - this key's budget: top up the same key (one master-key signature), or renew it;
- * - an expired or disabled key: renew it (a new key; the old one is disabled).
+ * - an expired or disabled key: renew it (a new key; the old one is disabled). A key a wallet
+ *   granted through App Connect is renewed in that wallet first, the identity file second.
  */
 
 import { useState } from 'react'
@@ -23,7 +24,7 @@ import { IdentityTopUpFlow } from '@/components/identity-top-up-flow'
 import { KeyBudgetText, KeyFundsLine } from '@/components/funds-summary'
 import { faucetUrls } from '@/lib/faucets'
 import { typicalIssueCredits } from '@/lib/sdk'
-import { issueCoverageParts, type KeyLimits } from '@/lib/view/funds'
+import { issueCoverageParts, renewableInWallet, type KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -72,7 +73,7 @@ export function TopUpSheet(): JSX.Element | null {
   const reason = useUiStore((s) => s.topUp)
   const close = useUiStore((s) => s.closeTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
-  const { identity, storage, keyLimits, balance, funds } = useAuth()
+  const { identity, storage, keyLimits, balance, funds, origin } = useAuth()
   const [other, setOther] = useState(false)
   const [topUpKey, setTopUpKey] = useState(false)
   if (identity === null) return null
@@ -82,12 +83,17 @@ export function TopUpSheet(): JSX.Element | null {
   const keyProblem = reason.blocker !== 'balance'
   // A stored Forge browser key with a budget can take more budget in place.
   const canTopUpKey = reason.blocker === 'key-budget' && storage === 'vault' && keyLimits?.total != null
-  const renew = (): void => {
+  // A key a wallet granted through App Connect is renewed in that wallet; the identity file or
+  // recovery phrase still works (the master key can renew any Forge browser key).
+  const inWallet = renewableInWallet(origin) && storage === 'vault'
+  // A key a passkey restored: the wallet may have made it, or the master key did. Said so.
+  const fromPasskey = origin === 'passkey' && storage === 'vault'
+  const renewVia = (view: 'import' | 'wallet-renew'): void => {
     close()
-    openLogin('import')
+    openLogin(view)
   }
   let title = 'Top up credits'
-  if (canTopUpKey) title = "Add budget to this browser's key"
+  if (canTopUpKey && !inWallet) title = "Add budget to this browser's key"
   else if (keyProblem) title = "Renew this browser's key"
 
   return (
@@ -101,7 +107,14 @@ export function TopUpSheet(): JSX.Element | null {
         {reason.proactive ? <KeyFundsLine /> : null}
         {keyProblem ? (
           <>
-            {canTopUpKey ? (
+            {inWallet ? (
+              <p>
+                {fromPasskey
+                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew it there. It adds a new key, and this one stays live until you disable it in Devices & keys."
+                  : 'Your wallet gave this browser its key, so renew it there: the wallet adds a new key and disables this one.'}
+                {canTopUpKey ? ' You can also add budget to this key with your identity file or recovery phrase.' : ' Your identity file or recovery phrase works too.'}
+              </p>
+            ) : canTopUpKey ? (
               <p>
                 Top it up to keep this key and add budget, or renew it to get a new key and disable this one. Either way
                 your identity file or recovery phrase signs once and is not stored.
@@ -113,9 +126,14 @@ export function TopUpSheet(): JSX.Element | null {
               </p>
             )}
             <div className="flex flex-wrap gap-2">
+              {inWallet ? (
+                <Button variant="primary" onClick={() => renewVia('wallet-renew')} data-testid="renew-in-wallet">
+                  Renew in your wallet
+                </Button>
+              ) : null}
               {canTopUpKey ? (
                 <Button
-                  variant="primary"
+                  variant={inWallet ? 'outline' : 'primary'}
                   onClick={() => {
                     close()
                     setTopUpKey(true)
@@ -124,8 +142,8 @@ export function TopUpSheet(): JSX.Element | null {
                   Top up key
                 </Button>
               ) : null}
-              <Button variant={canTopUpKey ? 'outline' : 'primary'} onClick={renew}>
-                Renew key
+              <Button variant={canTopUpKey || inWallet ? 'outline' : 'primary'} onClick={() => renewVia('import')}>
+                {inWallet ? 'Renew with identity file' : 'Renew key'}
               </Button>
             </div>
           </>

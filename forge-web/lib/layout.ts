@@ -8,7 +8,8 @@
  * (`stamp_vis_for`, the contract check in `Collab::write`).
  *
  * DESIGN rev 4.1 D44 adds a fourth contract, forge-meta: `repoKey`, `ban`, `label`, `topic`,
- * `packMirror`, `profile` and `follow` ({@link META_TYPES}) move there. The deployment record
+ * `packMirror`, `profile` and `follow` ({@link META_TYPES}) move there, and `vaultEntry` (UPDATE-2,
+ * the passkey vault) exists there only. The deployment record
  * says which layout a network has (`v2.forgeMeta`, `ForgeIds.meta`), so one build serves
  * sakura's three-contract set and four-contract sets: pass the network's ids to
  * {@link contractKindOfType}; without them it answers the three-contract home.
@@ -69,10 +70,21 @@ export const COMMUNITY_TYPES: ReadonlySet<string> = typesOf('community')
 
 /**
  * The types forge-meta holds on a four-contract set (D44). None is read by a rule, total or
- * derived index of its old contract, so the move changes no consensus rule. Parity: forge-core
+ * derived index of its old contract, so the move changes no consensus rule. `vaultEntry` is the
+ * exception: it has no three-contract home (`build.py` builds it with the four-contract layout
+ * only), so on a network without forge-meta no contract holds it. Parity: forge-core
  * `layout::META_TYPES`.
  */
-export const META_TYPES: ReadonlySet<string> = new Set(['repoKey', 'ban', 'label', 'topic', 'packMirror', 'profile', 'follow'])
+export const META_TYPES: ReadonlySet<string> = new Set([
+  'repoKey',
+  'ban',
+  'label',
+  'topic',
+  'packMirror',
+  'profile',
+  'follow',
+  'vaultEntry',
+])
 
 /**
  * The contract that holds `type` on the network `forge` describes: forge-meta for

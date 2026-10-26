@@ -21,7 +21,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
-import { keyBudgetWords } from '@/lib/view/funds'
+import { keyBudgetWords, renewableInWallet } from '@/lib/view/funds'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
 import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
@@ -43,7 +43,7 @@ export async function forgetConfirm(identityId: string): Promise<ConfirmActionOp
 }
 
 export function KeysPanel(): JSX.Element {
-  const { identity, keyId, heldOnly, keyLimits, storage, funds, balance, logout, forget, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
+  const { identity, keyId, heldOnly, keyLimits, storage, funds, balance, logout, forget, isLoading, grants, unlimitedKey, unboundedKey, origin } = useAuth()
   // What is left of the key's budget, and when the balance is lower, that it caps it (QW3-033).
   const budget = keyBudgetWords(keyLimits, balance, creditsAsDash)
   // Revoke opens a dialog that explains it and takes the identity file or the recovery phrase
@@ -64,6 +64,9 @@ export function KeysPanel(): JSX.Element {
   // A pasted key is not Forge's to renew (it may be a wallet's, and has no Forge limits): the
   // offer is a limited key from the identity file or phrase instead, and signing out forgets it.
   const pasted = storage === 'session'
+  // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
+  // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
+  const inWallet = storage === 'vault' && renewableInWallet(origin)
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
@@ -128,7 +131,11 @@ export function KeysPanel(): JSX.Element {
         </div>
       ) : null}
       {low ? (
-        <p className="text-caution-700 dark:text-caution-400">This browser&apos;s key is nearly used up. Top it up or renew it (uses your master key once).</p>
+        <p className="text-caution-700 dark:text-caution-400">
+          {inWallet
+            ? "This browser's key is nearly used up. Renew it in your wallet, or top it up with your identity file or recovery phrase."
+            : "This browser's key is nearly used up. Top it up or renew it (uses your master key once)."}
+        </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
         {canTopUp ? (
@@ -137,8 +144,14 @@ export function KeysPanel(): JSX.Element {
           </Button>
         ) : null}
         {/* A pasted key is not Forge's to renew: that is a first import. */}
-        <Button variant={unlimitedKey || pasted ? 'primary' : 'outline'} size="sm" onClick={() => openLogin(pasted ? 'import' : 'renew')}>
-          <RefreshCw className="h-3.5 w-3.5" aria-hidden /> {pasted ? 'Use a limited key instead' : unlimitedKey ? 'Replace with a limited key' : 'Renew key'}
+        {inWallet ? (
+          <Button variant="primary" size="sm" onClick={() => openLogin('wallet-renew')} data-testid="key-renew-in-wallet">
+            <Wallet className="h-3.5 w-3.5" aria-hidden /> Renew in your wallet
+          </Button>
+        ) : null}
+        <Button variant={!inWallet && (unlimitedKey || pasted) ? 'primary' : 'outline'} size="sm" onClick={() => openLogin(pasted ? 'import' : 'renew')}>
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden />{' '}
+          {pasted ? 'Use a limited key instead' : unlimitedKey ? 'Replace with a limited key' : inWallet ? 'Renew with identity file' : 'Renew key'}
         </Button>
         {pasted ? (
           <Button variant="danger" size="sm" onClick={() => logout()}>
@@ -177,7 +190,9 @@ export function KeysPanel(): JSX.Element {
           {unlimitedKey ? null : (
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
               {canTopUp ? 'Top-up keeps this key and adds budget (or a later expiry). ' : ''}Renew replaces it with a new key and disables this one.
-              {canTopUp ? ' Both use' : ' It uses'} your master key once and {canTopUp ? 'do' : 'does'} not store it.
+              {inWallet
+                ? ' Renewing in your wallet needs no master key. Top-up and the identity file use your master key once and do not store it.'
+                : `${canTopUp ? ' Both use' : ' It uses'} your master key once and ${canTopUp ? 'do' : 'does'} not store it.`}
             </p>
           )}
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">

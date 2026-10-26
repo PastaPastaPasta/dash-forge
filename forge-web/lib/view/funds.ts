@@ -89,15 +89,37 @@ export function issueCoverage(spendable: bigint | null, issueCredits: number, da
   return `${cost.before}${dash(cost.credits)} DASH${cost.after}`
 }
 
-/** The one fix a low or empty state needs (`ux-dx-spec.md` §4: top up / renew key). */
-export type FundsFix = 'top-up' | 'renew-key'
+/**
+ * The one fix a low or empty state needs (`ux-dx-spec.md` §4: top up / renew key).
+ * `renew-in-wallet`: the key came from a wallet's App Connect grant (session origin
+ * `app-connect`), so it is renewed in that wallet (`AuthController.walletRenewalRequest`); the
+ * identity file or recovery phrase still works as the other way. `renew-either`: the key was
+ * restored from a passkey (origin `passkey`), which does not say who made it, so both ways are
+ * offered side by side.
+ */
+export type FundsFix = 'top-up' | 'renew-key' | 'renew-in-wallet' | 'renew-either'
+
+/** Whether a session's key can be renewed in a wallet: one it granted, or one a passkey restored. */
+export function renewableInWallet(origin: string | null | undefined): boolean {
+  return origin === 'app-connect' || origin === 'passkey'
+}
+
+/** How "Renew" goes for a session: in the wallet for a key it granted, either way for a passkey's. */
+export function renewFix(origin: string | null | undefined): 'renew-key' | 'renew-in-wallet' | 'renew-either' {
+  if (!renewableInWallet(origin)) return 'renew-key'
+  return origin === 'passkey' ? 'renew-either' : 'renew-in-wallet'
+}
 
 /**
  * What the low-balance banner says for a funds state, or null when there is nothing to say
  * (comfortable). `key` names the state, so dismissing "low balance" does not also hide a later
- * "key expired" (one dismissal per state per session).
+ * "key expired" (one dismissal per state per session). `origin`: the session's key origin, which
+ * picks the renewal ({@link renewFix}); the thresholds are the same for every key.
  */
-export function fundsNotice(state: FundsState): { readonly key: string; readonly message: string; readonly threshold?: { before: string; dash: number; after: string }; readonly fix: FundsFix } | null {
+export function fundsNotice(
+  state: FundsState,
+  origin?: string | null,
+): { readonly key: string; readonly message: string; readonly threshold?: { before: string; dash: number; after: string }; readonly fix: FundsFix } | null {
   if (state.level === 'comfortable') return null
   const reason = state.reason ?? 'balance'
   const empty = state.level === 'empty'
@@ -116,7 +138,7 @@ export function fundsNotice(state: FundsState): { readonly key: string; readonly
   if (reason === 'key-budget') {
     return {
       key,
-      fix: 'renew-key',
+      fix: renewFix(origin),
       message: empty
         ? "This browser's key has spent its budget: writes are off until you renew it. Reading still works."
         : "This browser's key has less than 20 % of its budget left. Renew it (or top up its budget in Settings).",
@@ -124,7 +146,7 @@ export function fundsNotice(state: FundsState): { readonly key: string; readonly
   }
   return {
     key,
-    fix: 'renew-key',
+    fix: renewFix(origin),
     message: empty
       ? "This browser's key has expired: writes are off until you renew it. Reading still works."
       : "This browser's key expires within 7 days. Renew it to keep writing.",

@@ -367,3 +367,13 @@ describe('testnet ECON-05 refund previews', () => {
     expect(-previewDelete(type as string).credits).toBeLessThanOrEqual(refunded as number)
   })
 })
+
+describe('a passkey entry (vaultEntry)', () => {
+  // Measured on testnet (2026-10-26, passkey-vault.live.test.ts): a later entry 33,110,400, an
+  // identity's first 51,513,300; the two deletes refunded 26,654,372 and 37,031,569.
+  it('is priced at or above what testnet charged and refunds no more than the lower refund', () => {
+    expect(previewCreate('vaultEntry', {}, S).credits).toBeGreaterThanOrEqual(33_110_400)
+    expect(previewCreate('vaultEntry', {}, { ...S, author: true }).credits).toBeGreaterThanOrEqual(51_513_300)
+    expect(-previewDelete('vaultEntry').credits).toBeLessThanOrEqual(26_654_372)
+  })
+})

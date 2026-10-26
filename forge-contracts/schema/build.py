@@ -150,10 +150,17 @@ FLAGS = dict(
     author_retarget=True,        # authorEvent kind 8 + value: the PR author retargets (power R-STACK-1)
     policy_code_owners=True,     # policy.requireCodeOwners: CODEOWNERS approval declared on chain
     repo_ban=True,               # ban: a maintainer's per-repo ban list, applied by readers (TS-08 c)
+    # ---- UPDATE-2 (on-chain passkey vault): a new document type only, nothing on an existing type. It
+    # exists in the four-contract set only (it needs `layout_meta`, see below) and lands in forge-meta
+    # (META_TYPES): on a registered network it ships as `deploy-v2.mjs --update meta`, on one not yet
+    # registered it is part of the registration set.
+    passkey_vault=True,          # vaultEntry: a passkey-sealed key bundle per (owner, credential id)
 )
 # The UPDATE-1 items: every one off is the registered v1 set (registered/*.v1.json).
 UPDATE1_FLAGS = ('release_target_oid', 'config_moved_to', 'pack_mirror', 'transition_closed_by_pr', 'profile_key_proofs',
                  'profile_bot', 'author_retarget', 'policy_code_owners', 'repo_ban')
+# The UPDATE-2 items: added after UPDATE-1, so the registered v1 set has them off too (stale_registered).
+UPDATE2_FLAGS = ('passkey_vault',)
 # Each production network's registration (CONT-03): the committed set it registered, and the flags added after
 # it. `contracts/registered/<network>/<name>.v1.json` is a byte copy of what that network registered
 # (`freeze-registered.mjs` writes it at the registration commit, P4) and the build with the `since` flags off
@@ -164,7 +171,7 @@ UPDATE1_FLAGS = ('release_target_oid', 'config_moved_to', 'pack_mirror', 'transi
 # registration; a flag that was on and is later turned off cannot be expressed (--check fails loudly).
 NETWORK_REGISTRATIONS = {
     # testnet (dash-testnet-51), Platform 5.0.0-rc.8, 2026-10-26: forge-core D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9
-    'testnet': {'set': 'mainnet', 'since': ()},
+    'testnet': {'set': 'mainnet', 'since': ('passkey_vault',)},
 }
 # ---- Mainnet-only (a fresh registration may add them; an update never can: rules, references and
 # required fields on existing types are frozen, forge-v2.md §9). Off in every devnet build; the mainnet
@@ -301,7 +308,7 @@ BOT_PACK_KINDS = [0, 1, 6, 64, 65, 70]
 GRANT_TTL_MS = 90 * 24 * 3600 * 1000
 # D44: the types forge-meta takes, from the contract that holds them in the three-contract set
 META_TYPES = {'forge-collab': ('repoKey', 'ban'), 'forge-core': ('label', 'topic', 'packMirror'),
-              'forge-community': ('profile', 'follow')}
+              'forge-community': ('profile', 'follow', 'vaultEntry')}
 # The riders: independent of the RC2 items (other types and properties), so variants.py turns
 # each off only with every RC2 item on, the largest build.
 RIDER_FLAGS = ('close_reason', 'review_hunk')
@@ -967,6 +974,48 @@ def build(flags):
                           "unique": True}],
                      "required": ["$createdAt", "repoId", "identityId"], "additionalProperties": False}
 
+    # ======================= UPDATE-2 (on-chain passkey vault) =======================
+    # A new document type with its own index and no reference to an existing type, so protocol 14
+    # lets an update add it (validate_update/v0: new types are validated as at registration).
+    # Built with the four-contract layout only: it is defined here, in forge-community, and split_meta
+    # moves it to forge-meta (META_TYPES). Left in the three-contract forge-community it would take that
+    # contract to 18,385 B (ceiling 17,832) and its create transition to 1,989 B of room (ROOM_MIN 2,000),
+    # and the three-contract set is the devnet baseline, which no network needs the type in.
+    if up['passkey_vault'] and f['layout_meta']:
+        # One passkey-sealed key bundle per (owner, WebAuthn credential). A new device looks its entry up by
+        # credential id (the unique index byCredential; its $ownerId prefix is an owner's list) and opens
+        # `sealed` (an HPKE ciphertext, 240 B padded + 16 B tag = 256 B for Forge's one format) with the
+        # passkey's PRF output. `recipientKey` is the HPKE recipient public key (32 B) the PRF output derives
+        # and `enc` the HPKE encapsulated key (32 B). The ciphertext's AAD binds `credentialId`, `recipientKey`,
+        # `version` and `authKeyId`; `credentialId` and `recipientKey` are immutable (which passkey, and which
+        # recipient, the entry is for), and a re-seal (a replace) changes `enc`, `sealed`, `version` and
+        # `authKeyId` only. `authKeyId` names the owner's authentication key that slot 0 of the bundle stands
+        # for; Platform checks it is such a key of the owner on create and on a replace that changes it.
+        # What an update cannot change later: `recipientKey` and `enc` stay exactly 32 B and `sealed` stays
+        # variable-length (a byte array's fixed/variable encoding is held), `version` stays within a u8, and
+        # `credentialId` within 255 B (it is indexed); `minItems` and `maxItems` of `sealed` can be loosened.
+        # Mutable (a re-seal) and deletable (removing a passkey; the storage deposit is refunded). No rule
+        # reads any of it, so no `propertyConstraints`: the bounds are the schema's.
+        BYTES32 = {"type": "array", "byteArray": True, "minItems": 32, "maxItems": 32}
+        md['vaultEntry'] = {
+            "type": "object", "documentsMutable": True, "canBeDeleted": True,
+            "properties": {
+                "credentialId": {"type": "array", "byteArray": True, "minItems": 16, "maxItems": 255, "position": 0},
+                "recipientKey": dict(BYTES32, position=1),
+                "version": {"type": "integer", "minimum": 1, "maximum": 255, "position": 2},
+                "authKeyId": {"type": "integer", "minimum": 0, "maximum": 4294967295, "position": 3,
+                              "refersTo": {"type": "identityPublicKey", "identityProperty": "$ownerId",
+                                           "keyRequirements": {"purpose": "authentication"}}},
+                "enc": dict(BYTES32, position=4),
+                "sealed": {"type": "array", "byteArray": True, "minItems": 32, "maxItems": 256, "position": 5}},
+            "immutable": ["credentialId", "recipientKey"],
+            "indices": [
+                # One entry per (owner, credential): the sign-in lookup (both bound) and an owner's
+                # list (the $ownerId prefix)
+                {"name": "byCredential", "properties": [{"$ownerId": "asc"}, {"credentialId": "asc"}], "unique": True}],
+            "required": ["$createdAt", "$updatedAt", "credentialId", "recipientKey", "version", "authKeyId", "enc", "sealed"],
+            "additionalProperties": False}
+
     # ======================= mixed visibility (DESIGN rev 4.1 §8.3) =======================
     # A fresh registration only: each adds a rule, a reference or a required field to a type that
     # exists, which no update can (§9). Row numbers are DESIGN §8.2's; forge-v2.md §9.1 has each.
@@ -1536,11 +1585,11 @@ def stale_registered(registered_root, registrations):
     or an entry with no directory, is stale: what a network registered is frozen in the same commit that
     names it."""
     stale = []
-    v1 = build(flags_from(','.join(UPDATE1_FLAGS)))
+    v1 = build(flags_from(','.join(UPDATE1_FLAGS + UPDATE2_FLAGS)))
     for n in NAMES:
         p = os.path.join(registered_root, f'{n}.v1.json')
         if not os.path.exists(p) or open(p).read() != dumps(v1[n]):
-            stale.append((p, 'is not the build with every UPDATE-1 flag off'))
+            stale.append((p, 'is not the build with every UPDATE-1 and UPDATE-2 flag off'))
     dirs = sorted(d for d in os.listdir(registered_root) if os.path.isdir(os.path.join(registered_root, d))) \
         if os.path.isdir(registered_root) else []
     for d in dirs:

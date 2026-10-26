@@ -378,7 +378,7 @@ const SHOWN = 8
 function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; home: RepoHome; action: BulkAction; rows: readonly BulkRow[]; onClose: (wrote: boolean) => void }): JSX.Element {
   const repo = home.repo
   const { sdk } = useSdk(repoContractIds(repo))
-  const { signer } = useAuth()
+  const { signer, origin } = useAuth()
   const guard = useWriteGuard()
   const plan = useMemo(() => planBulk(action, rows), [action, rows])
   const cost = useMemo(() => bulkCost(action, plan.apply.length), [action, plan.apply.length])
@@ -436,7 +436,7 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
         }
       },
       classify: (e) => {
-        const f = writeFailure(e)
+        const f = writeFailure(e, { appConnect: origin === 'app-connect' })
         return { message: f.message, unconfirmed: e instanceof UnconfirmedWriteError, stop: f.sheet !== null }
       },
       onOutcome: (id, o) => {

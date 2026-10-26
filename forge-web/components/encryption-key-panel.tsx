@@ -111,6 +111,9 @@ export function EncryptionKeyPanel(): JSX.Element | null {
         setError('This identity has no encryption key that opens with that. Register one (Register a new key), or run `dg auth keys add --encryption`.')
       } else {
         setNote(`Members-only and private content can be read and written here: encryption key ${id} is stored in this browser.`)
+        // A new encryption key: this device's passkeys that held the old one are encrypted again
+        // (no prompt, no spend when there are none). A failure only leaves them at "Needs update".
+        void controller.resealPlatformPasskeys().catch(() => undefined)
       }
     } catch (e) {
       setError(errorMessage(e))

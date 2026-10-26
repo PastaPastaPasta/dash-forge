@@ -12,8 +12,14 @@ import { deploymentFilePath } from './network'
  *
  *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test wallet-login.spec.ts
  *
- * m1. Desktop: on a devnet the wallet tile comes after Create, Import and dg, and the request says
- *     plainly that Dash Wallet answers on testnet only. The sheet shows a dash-key QR (its text is
+ * This is the OLDER wallet protocol (v1, the legacy key exchange). Where App Connect v2 is on offer
+ *     (a devnet with protocol 14, as here) the sheet shows the v2 request first and the wallet tile
+ *     comes first: this spec takes "Show the older code" to reach v1 (wallet-login-v2.spec.ts
+ *     covers v2).
+ *
+ * m1. Desktop: the wallet tile is first where v2 is on offer (testnet: it is first too, as Dash
+ *     Wallet answers there; no v2 yet). After "Show the older code" the request says plainly that
+ *     Dash Wallet answers on testnet only. The sheet shows a dash-key QR (its text is
  *     in the caption) and a countdown, and no deep link. The wallet approves (legacy key-exchange contract); the page shows QR #2
  *     (dash-st); the wallet registers the key; the page shows the identity, the "no spending
  *     limit" warning and asks for a passkey; the user confirms and signs in with a passphrase;
@@ -34,10 +40,10 @@ const ROOT = resolve(__dirname, '../..')
 /** The wallet-login QR's URI: `n=t` on testnet, `n=d` on a devnet. */
 const KEY_URI = new RegExp(`^dash-key:[1-9A-HJ-NP-Za-km-z]+\\?n=${E2E_NETWORK === 'testnet' ? 't' : 'd'}&v=1$`)
 /**
- * The sign-in tiles in order. Dash Wallet answers on testnet only, so there its tile comes first;
- * on a devnet it comes last, after the dg tile.
+ * The sign-in tiles in order: the wallet tile comes first where a wallet can answer: on testnet
+ * (Dash Wallet answers the older code there) and on a devnet with App Connect v2 on offer.
  */
-const TILE_ORDER = E2E_NETWORK === 'testnet' ? ['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'] : ['tile-create', 'tile-import', 'tile-dg', 'tile-wallet']
+const TILE_ORDER = ['tile-wallet', 'tile-create', 'tile-import', 'tile-dg']
 const CHAIN_KEY = randomBytes(32).toString('hex')
 type Responder = typeof import('./wallet-responder.mjs')
 const responder = (): Promise<Responder> => import(pathToFileURL(join(__dirname, 'wallet-responder.mjs')).href)
@@ -74,11 +80,16 @@ test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for 
     await page.getByRole('button', { name: /^sign in$/i }).first().click()
     const wallet = page.getByTestId('tile-wallet')
     await expect(wallet).toBeVisible({ timeout: 60_000 })
-    // Not the first option on a devnet: no released wallet answers here (the dg tile sits before it).
-    const order = await page.locator('[data-testid^="tile-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
+    // The buttons only: a cost line between the tiles shares the testid prefix.
+    const order = await page.locator('button[data-testid^="tile-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
     expect(order.slice(0, TILE_ORDER.length)).toEqual(TILE_ORDER)
-    if (E2E_NETWORK !== 'testnet') await expect(wallet).toContainText(/testnet/i)
     await wallet.click()
+    // On a devnet the v2 request shows first: take the older code (v1), the subject of this spec.
+    if (E2E_NETWORK !== 'testnet') {
+      await page.getByTestId('older-code').click({ timeout: 60_000 })
+      // The v1 request is built after a few reads: wait for its link back to the newer code.
+      await expect(page.getByTestId('newer-code')).toBeVisible({ timeout: 60_000 })
+    }
     await expect(page.getByTestId('request-countdown')).toContainText('Expires in')
     await expect(page.getByTestId('wallet-support')).toContainText(E2E_NETWORK === 'testnet' ? /testnet development build/i : /works on testnet only/i)
     await expect(page.getByTestId('wallet-deep-link')).toHaveCount(0)
@@ -131,6 +142,11 @@ test('m2. phone: "Open in DashPay (Dash Wallet)" instead of a QR', async ({ brow
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: /^sign in$/i }).first().click()
   await page.getByTestId('tile-wallet').click({ timeout: 60_000 })
+  if (E2E_NETWORK !== 'testnet') {
+    await page.getByTestId('older-code').click({ timeout: 60_000 })
+    // The v1 request is built after a few reads: until then the v2 link would still be on screen.
+    await expect(page.getByTestId('newer-code')).toBeVisible({ timeout: 60_000 })
+  }
   const link = page.getByTestId('wallet-deep-link')
   await expect(link).toBeVisible({ timeout: 60_000 })
   expect(await link.getAttribute('href')).toMatch(KEY_URI)
