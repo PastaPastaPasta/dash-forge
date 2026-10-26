@@ -1,6 +1,7 @@
 {
   "network": "devnet",
   "devnetName": "sakura",
+  "retired": true,
   "chainId": "dash-devnet-sakura",
   "quorumBaseUrl": "https://quorums.sakura.networks.dash.org",
   "dapiAddresses": [

@@ -3301,15 +3301,14 @@ mod tests {
         // --version also names the contract set per network; a retired devnet is left out.
         let long = Cli::command().render_long_version();
         assert!(long.starts_with(&v.trim_end().to_string()), "{long}");
-        let sakura = forge_core::network::deployment("devnet-sakura")
-            .unwrap()
-            .unwrap();
-        let group = sakura.v2.unwrap().group;
+        let testnet = forge_core::network::deployment("testnet").unwrap().unwrap();
+        let group = testnet.v2.unwrap().group;
         assert!(
-            long.contains(&format!("devnet-sakura   contract group {group}")),
+            long.contains(&format!("testnet         contract group {group}")),
             "{long}"
         );
         assert!(!long.contains("devnet-moutai"), "{long}");
+        assert!(!long.contains("devnet-sakura"), "{long}");
     }
 
     #[test]
