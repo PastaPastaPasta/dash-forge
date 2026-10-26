@@ -48,7 +48,7 @@ rm -rf "$WT"; git init -q "$WT"
 dg_read_retry "$ID_OWNER" "$LOG-export.json" "$LOG-export.err" --json env export "$REPO" --env "$ENV_NAME" -o "$WT/.env" \
   || bad "export failed: $(head -c 400 "$LOG-export.err")"
 check "written" assert_eq "written" "$(jq_py "$LOG-export.json" 'd["status"]')"
-check "mode 0600" assert_eq "600" "$(stat -f '%Lp' "$WT/.env" 2>/dev/null || stat -c '%a' "$WT/.env")"
+check "mode 0600" assert_eq "600" "$(stat -c '%a' "$WT/.env" 2>/dev/null || stat -f '%Lp' "$WT/.env")"
 check "git check-ignore confirms it" git -C "$WT" check-ignore -q .env
 check "in .git/info/exclude" assert_file_contains "$WT/.git/info/exclude" "/.env"
 check "git status does not list it" assert_eq "" "$(git -C "$WT" status --porcelain)"

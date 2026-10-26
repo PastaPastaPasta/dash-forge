@@ -53,7 +53,7 @@ KEY_ID="$(jq_py "$LOG-login.json" 'd["keyId"]')"
 KEYFILE="$(jq_py "$LOG-login.json" 'd["source"]')"
 check "stored in a sealed file" assert_eq "sealed-file" "$(jq_py "$LOG-login.json" 'd["storage"]')"
 check "budget 0.01 DASH" assert_eq "1000000000" "$(jq_py "$LOG-login.json" 'd["budgetCredits"]')"
-check "key file is 0600" assert_eq "600" "$(stat -f '%Lp' "$KEYFILE" 2>/dev/null || stat -c '%a' "$KEYFILE")"
+check "key file is 0600" assert_eq "600" "$(stat -c '%a' "$KEYFILE" 2>/dev/null || stat -f '%Lp' "$KEYFILE")"
 check "key file holds no WIF in the clear" assert_not_file_contains "$KEYFILE" "privateKeyWif"
 check "config default is the key file" assert_file_contains "$XDG/config/dash-forge/config.toml" "$KEYFILE"
 
@@ -89,7 +89,7 @@ step "4. export the key for CI (dfk1) and use it"
 DFK="$XDG/ci.dfk1"
 if dg_default --json auth export --reveal-secrets --format dfk1 -o "$DFK" \
      >"$LOG-export.json" 2>"$LOG-export.err"; then
-  check "export file is 0600" assert_eq "600" "$(stat -f '%Lp' "$DFK" 2>/dev/null || stat -c '%a' "$DFK")"
+  check "export file is 0600" assert_eq "600" "$(stat -c '%a' "$DFK" 2>/dev/null || stat -f '%Lp' "$DFK")"
   check "export is a dfk1 value" assert_file_contains "$DFK" "dfk1:${DASH_FORGE_NETWORK}"
   if DASH_FORGE_KEY="$(cat "$DFK")" RUST_LOG=error NO_COLOR=1 _tmo "${DG}" --json auth balance \
        >"$LOG-dfk1.json" 2>"$LOG-dfk1.err"; then
