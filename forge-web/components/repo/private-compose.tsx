@@ -12,7 +12,7 @@ import type { RepoHome } from '@/lib/view'
 import { FORMER_MEMBER_TEXT } from '@/lib/view/audience'
 import { BOT_WRITE_TEXT, MEMBERS_TEXT_LIMIT } from '@/lib/repo/members-writes'
 import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
-import { previewCreate, previewCredits, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
+import { previewCreate, previewCredits, previewReplace, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
 import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
 import { utf8Bytes } from '@/lib/rules/long-body'
 import { PAD_BUCKET, letterFraming, pads } from '@/lib/private'
@@ -74,6 +74,21 @@ export function composeCost(
   if (audience === 'specificPeople') return composeDocCost(repo, kind, input, first, audience, recipients)
   const doc = composeDocCost(repo, kind, data, first, audience)
   return extra === null ? doc : sumPreviews([doc, extra])
+}
+
+/**
+ * What an edit (or a make-public, which writes the text again) costs: a replace of what is written,
+ * and, for a body over its field, its artifact (chunks and a `packManifest`), priced as
+ * {@link composeCost} prices a new post's artifact. The write goes through `longBodyField` either
+ * way, so pricing it as a plain replace quoted (and checked the balance against) far less than a
+ * long body costs. The replace itself is priced as before, by its text (a sealed replace's few
+ * bytes of framing are left to the replace estimate's margin).
+ */
+export function editCost(repo: RepoRef, kind: SealedKind, input: Readonly<Record<string, unknown>>): CostPreview {
+  const body = input['body']
+  const long = typeof body === 'string' && isLongBody(repo, kind, body, input)
+  const replace = previewReplace(kind, long ? { ...input, body: fieldEstimate(repo, kind, body, input) } : input)
+  return long ? sumPreviews([replace, previewCredits(longBodyCredits(repo, utf8Bytes(body)))]) : replace
 }
 
 /**
