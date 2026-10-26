@@ -68,6 +68,13 @@ interface AuthContextValue {
   readonly signer: WriteAuth | null
   /** How this session's key is held: a vault-stored limited key, or a tab-only raw key. */
   readonly storage: AuthSession['storage'] | null
+  /**
+   * Where the stored key came from when this browser did not register it (`app-connect`: a
+   * wallet's grant, renewed in that wallet), else null.
+   */
+  readonly origin: NonNullable<AuthSession['origin']> | null
+  /** Check the session's keys on chain again (a write was refused as outside the key's bounds). */
+  recheckSession: () => Promise<void>
   /** Whether this network supports limited keys (forge-v2, protocol 14). */
   readonly limitedKeys: boolean
   /** Keys stored (encrypted) on this device for this network. */
@@ -237,6 +244,9 @@ export function AuthProvider({
       unlock: withReload(controller.unlock.bind(controller)),
       loginWithRawKey: withReload(controller.loginWithRawKey.bind(controller)),
       refreshBalance: () => controller.refreshBalance(),
+      recheckSession: async () => {
+        await controller.recheckSession()
+      },
       logout: () => controller.logout(),
       forget: withReload(controller.forget.bind(controller)),
       revokeStored: withReload(controller.revokeStored.bind(controller)),
@@ -324,6 +334,7 @@ export function AuthProvider({
       error: state.error,
       signer,
       storage: session?.storage ?? null,
+      origin: session?.origin ?? null,
       grants: session?.grants ?? null,
       unlimitedKey: session?.unlimited === true,
       unboundedKey: session?.unbounded === true,
@@ -369,6 +380,7 @@ export function SignedOutView({ children }: { children: React.ReactNode }): JSX.
       error: null,
       signer: null,
       storage: null,
+      origin: null,
       grants: null,
       unlimitedKey: false,
       unboundedKey: false,

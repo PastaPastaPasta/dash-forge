@@ -81,6 +81,16 @@ describe('copy lint extraction', () => {
     const found = lint(dir) as Array<Entry & { id: string }>
     expect(found.map((f) => `${f.file}:${f.id}`)).toEqual(['app/page.tsx:code-identifier'])
   })
+
+  it('skips vendored code', () => {
+    mkdirSync(join(dir, 'lib', 'vendor', 'mod'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'vendor', 'mod', 'x.ts'), `throw new Error('the packManifest is missing here')\n`)
+    mkdirSync(join(dir, 'lib', 'auth'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'auth', 'vendor.ts'), `throw new Error('the starBeat is missing here')\n`)
+    const found = lint(dir) as Array<Entry & { id: string }>
+    expect(found.map((f) => f.file)).not.toContain(join('lib', 'vendor', 'mod', 'x.ts'))
+    expect(found.map((f) => f.file)).toContain(join('lib', 'auth', 'vendor.ts'))
+  })
 })
 
 describe('the shipped web copy', () => {

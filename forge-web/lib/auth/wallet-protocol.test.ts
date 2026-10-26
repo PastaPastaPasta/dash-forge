@@ -24,6 +24,8 @@ import {
   wipeAnswer,
   type ResponseSource,
 } from './app-connect'
+import { newV2LoginRequest } from './app-connect-v2'
+import { parseAppConnectUri } from '../vendor/platform-auth/app-connect'
 import { buildKeyRegistration, isUnlimited, keyScope, loginKeys, nextGrant, scopeCovers, RevokedWalletKey } from './key-registration'
 import { heldToDisable } from './limited-key'
 import { authKeyFromLogin, encodeKeyRequest, encryptionKeyFromLogin, openEnvelope, protocolUri } from './wallet-protocol'
@@ -85,6 +87,13 @@ describe('dash-key request: byte-compatible with the shipped wallets', () => {
     expect(() => parseKeyRequest(`dash-key:${base58Encode(good)}?n=d&v=2`)).toThrow(/version/)
     expect(() => parseKeyRequest(`dash-key:${base58Encode(good)}?n=x&v=1`)).toThrow(/network/)
     expect(() => parseKeyRequest(`dash-key://${base58Encode(good)}?n=d&v=1`)).toThrow(/\/\//)
+  })
+
+  it('cannot share a QR code with App Connect v2: a v1 wallet refuses a v2 request, and the v2 parser a v1 one', () => {
+    const v2 = newV2LoginRequest('devnet', FORGE, { connectionId: new Uint8Array(16), chainNow: Date.now() })
+    expect(() => parseKeyRequest(v2.qrUri)).toThrow(/unsupported version: 2/)
+    expect(() => parseKeyRequest(v2.linkUri)).toThrow(DashConnectUriException)
+    expect(() => parseAppConnectUri(newLoginRequest('devnet', FORGE.core).uri)).toThrow(expect.objectContaining({ code: 'unsupported' }))
   })
 
   it('carries no pairing code: the key-exchange protocol and the wallets have none', () => {

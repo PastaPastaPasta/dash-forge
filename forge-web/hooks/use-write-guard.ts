@@ -13,6 +13,8 @@
  * - after a failure ({@link WriteGuard.failed}): the fix Platform's answer calls for opens —
  *   renew or top up the key, top up the balance — and the balance and key limits are read
  *   again so the pill shows what the chain says (D-007, D-042). It returns the sentence to show.
+ *   For a key a wallet granted through App Connect, a write refused as outside the key's bounds
+ *   also has the session's keys checked on chain again.
  */
 
 import { useCallback } from 'react'
@@ -48,7 +50,7 @@ const EMPTY_REASON: Readonly<Record<'balance' | 'key-budget' | 'key-expiry', str
 }
 
 export function useWriteGuard(): WriteGuard {
-  const { identity, signer, balance, funds, keyLimits, grants, refreshBalance, resuming, unlockScope } = useAuth()
+  const { identity, signer, balance, funds, keyLimits, grants, refreshBalance, recheckSession, origin, resuming, unlockScope } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const openTopUp = useUiStore((s) => s.openTopUp)
 
@@ -98,14 +100,18 @@ export function useWriteGuard(): WriteGuard {
 
   const failed = useCallback(
     (e: unknown): string => {
-      const { message, sheet } = writeFailure(e)
+      // A key a wallet granted reads its refusals as App Connect does (revoked, out of bounds).
+      const { message, sheet, recheck } = writeFailure(e, { appConnect: origin === 'app-connect' })
       if (sheet !== null) {
         openTopUp(sheet)
         void refreshBalance().catch(() => undefined)
       }
+      // Refused as outside the key's bounds: read its scopes, limits and balance afresh. A read
+      // that fails keeps the session as it was.
+      if (recheck) void recheckSession().catch(() => undefined)
       return message
     },
-    [openTopUp, refreshBalance],
+    [openTopUp, origin, recheckSession, refreshBalance],
   )
 
   const disabledReason = writesPausedReason() ?? (funds?.level === 'empty' ? EMPTY_REASON[funds.reason ?? 'balance'] : null)

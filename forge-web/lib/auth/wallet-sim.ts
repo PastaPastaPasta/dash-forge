@@ -4,12 +4,16 @@
  * iOS `DashConnectUri.swift` length ceiling), derives the login key the way they do
  * (`LoginKeyDerivation`), and seals a response (`KeyExchangeCrypto.encryptLoginKey`). A test
  * that passes here passes the wallets' own parsers byte for byte.
+ *
+ * {@link answerV2} is an App Connect v2 wallet (`APP_CONNECT_PROFILE.md`), on the vendored
+ * module's parser and sealing: the reference the profile's vectors check.
  */
 
 import * as secp from '@noble/secp256k1'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 
+import { appConnectRequestHash, parseAppConnectUri, sealAppConnectPayload, type ParsedAppConnectUri } from '../vendor/platform-auth/app-connect'
 import { base58Decode } from './base58'
 import { envelopeKey } from './wallet-protocol'
 
@@ -108,4 +112,24 @@ export async function sealLoginKeys(loginKeys: readonly Uint8Array[], walletPriv
   loginKeys.forEach((l, i) => plain.set(l, i * 32))
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(nonce) }, k, plain))
   return new Uint8Array([...nonce, ...ct])
+}
+
+/** What an App Connect v2 wallet publishes for a request: the `loginKeyResponse` fields. */
+export interface V2Answer {
+  readonly parsed: ParsedAppConnectUri
+  /** `appEphemeralPubKeyHash`. */
+  readonly requestHash: Uint8Array
+  readonly walletEphemeralPubKey: Uint8Array
+  readonly encryptedPayload: Uint8Array
+}
+
+/**
+ * An App Connect v2 wallet's answer to `uri`: the request parsed as the profile specifies (a v1
+ * URI is refused as unsupported), and `slots` (the private keys it registered, one per granted
+ * binding) sealed to it under `ownerId`. Registering those keys is the caller's part.
+ */
+export async function answerV2(uri: string, p: { readonly ownerId: string; readonly slots: readonly Uint8Array[] }): Promise<V2Answer> {
+  const parsed = parseAppConnectUri(uri)
+  const sealed = await sealAppConnectPayload({ appEphemeralPubKey: parsed.request.appEphemeralPubKey, ownerId: base58Decode(p.ownerId), slots: [...p.slots] })
+  return { parsed, requestHash: appConnectRequestHash(parsed.request), ...sealed }
 }

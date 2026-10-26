@@ -68,6 +68,7 @@ const SITE_TITLES: Readonly<Record<string, string>> = {
   '/settings/storage': 'Storage settings',
   '/settings/profile': 'Public profile',
   '/login': 'Sign in',
+  '/connect': 'Finishing wallet sign-in',
   '/start': 'Getting started',
   '/github.com': 'Find a GitHub repo’s mirror',
   '/private': 'Private repositories',

@@ -30,6 +30,9 @@ paths = [
     '''forge-contracts/vectors/.*\.json''',
     # The generator for those vectors.
     '''forge-contracts/schema/vectors\.py''',
+    # Interop vectors vendored from platform-auth (App Connect, passkey vault): keys derived from
+    # fixed seeds and published upstream so every app reproduces the same bytes.
+    '''forge-web/lib/vendor/platform-auth/[^/]+/(vectors\.json|__vectors__/[^/]+\.json)''',
     # Fixtures for the secret scanner's own tests: fake tokens and the public Dash Core WIF
     # vectors, which must look real for the scanner to be tested.
     '''tools/secret-scan-vectors/.*''',

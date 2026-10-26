@@ -3,10 +3,12 @@
 /**
  * The sign-in sheet (`ux-dx-spec.md` §2.2). Three tiles plus an Advanced disclosure:
  *
- *   1. Use my Dash wallet — the DashConnect key exchange (shown only when a response contract
- *      exists here; first only where Dash Wallet answers, i.e. testnet, else last). A wallet
- *      approves one Forge contract per scan, so a finished sign-in walks through the rest in one
- *      guided sequence ("Step 2 of 3"), each step skippable (FEAT-04, lib/auth/guided-grants.ts);
+ *   1. Use my Dash wallet — App Connect v2 where the chain supports it (one approval covers all
+ *      of Forge, with a budget and an expiry), else the DashConnect key exchange (shown only when
+ *      a response contract exists here). First where a wallet can answer (v2 offered, or
+ *      testnet's Dash Wallet), else last. The older exchange approves one Forge contract per
+ *      scan, so a finished sign-in walks through the rest in one guided sequence ("Step 2 of 3"),
+ *      each step skippable (FEAT-04, lib/auth/guided-grants.ts);
  *   2. Create a new identity — mnemonic + backup quiz + deposit QR, registered with a limited
  *      key inside the IdentityCreate;
  *   3. Import an identity file (or mnemonic) — the master key signs one IdentityUpdate that
@@ -14,7 +16,8 @@
  *   Advanced: paste a raw key (developer path; this tab only; red warning).
  *
  * When this device already holds an encrypted key, the sheet opens on "Unlock" instead
- * (callers can open it on a view directly: Renew opens Import). On a network without forge-v2
+ * (callers can open it on a view directly: Renew opens Import, or the wallet that granted the key
+ * when it came from one). On a network without forge-v2
  * (no contract group to bind a key to) there is nothing to sign for: Import shows "not
  * deployed".
  */
@@ -49,6 +52,7 @@ import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
+import { appConnectV2Available } from '@/lib/auth/app-connect-v2'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { lockedIdentityOf } from '@/lib/auth/last-identity'
 import { readCreationJournal } from '@/lib/auth/create-identity'
@@ -143,24 +147,11 @@ export function LoginModal(): JSX.Element {
     setUnlockFor(id)
     setView('unlock')
   }
-  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' ? null : () => setView('choose')
+  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' || view === 'wallet-renew' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
   const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
-  // A write asked for the sheet: say which, and what it costs once signed in (L-62).
-  // Creating an identity is sign-up, and says so on every step (QW4-022), as GitHub's "Create your account" does.
-  const title =
-    view === 'grant'
-      ? grantTitle
-      : view === 'renew'
-        ? "Renew this browser's key"
-        : view === 'create'
-          ? 'Create your identity'
-          : view === 'dg'
-            ? 'Sign in with dg'
-            : intent
-              ? `Sign in to ${intent.action}`
-              : 'Sign in to Dash Forge'
+  const title = titleFor(view, grantTitle, intent?.action)
 
   return (
     <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">
@@ -218,7 +209,17 @@ export function LoginModal(): JSX.Element {
       ) : null}
       {view === 'dg' ? limitedKeys ? <DgHandoffFlow onDone={close} {...(dgReplace !== null ? { target: dgReplace } : {})} /> : <NotDeployedState /> : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
-      {view === 'wallet' ? <WalletConnectFlow onDone={() => setWalletDone(true)} /> : null}
+      {view === 'wallet' ? <WalletConnectFlow onDone={() => setWalletDone(true)} onUnlock={() => setView('unlock')} /> : null}
+      {view === 'wallet-renew' ? (
+        <>
+          <WalletConnectFlow mode="renew" onDone={close} onUnlock={() => setView('unlock')} />
+          <div className="mt-3 border-t border-anvil-200 pt-3 dark:border-anvil-800">
+            <button type="button" data-testid="renew-with-file-instead" onClick={() => setView('renew')} className="hit-area text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100">
+              Renew with identity file or recovery phrase instead
+            </button>
+          </div>
+        </>
+      ) : null}
       {view === 'grant' ? (
         <>
           {/* Keyed by contract: the next step starts a new request, never the last one's QR. */}
@@ -229,6 +230,27 @@ export function LoginModal(): JSX.Element {
       {view === 'advanced' ? <AdvancedView onDone={close} /> : null}
     </Dialog>
   )
+}
+
+/**
+ * The sheet's title. A write asked for the sheet: say which (L-62). Creating an identity is
+ * sign-up, and says so on every step (QW4-022), as GitHub's "Create your account" does.
+ */
+function titleFor(view: View | null, grantTitle: string, action: string | undefined): string {
+  switch (view) {
+    case 'grant':
+      return grantTitle
+    case 'renew':
+      return "Renew this browser's key"
+    case 'wallet-renew':
+      return "Renew this browser's key in your wallet"
+    case 'create':
+      return 'Create your identity'
+    case 'dg':
+      return 'Sign in with dg'
+    default:
+      return action ? `Sign in to ${action}` : 'Sign in to Dash Forge'
+  }
 }
 
 /** Skip this approval, or the rest: a skipped one is asked for when a write first needs it. */
@@ -255,7 +277,8 @@ function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number
 /** The sheet's description line for a view. */
 function describeView(view: View, limitedKeys: boolean): ReactNode {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
-  if (view === 'wallet' || view === 'grant') return 'Your wallet sends this browser a key it derives for Dash Forge. Your recovery phrase and master key stay on the phone.'
+  if (view === 'wallet' || view === 'grant') return 'Your wallet gives this browser a key for Dash Forge. Your recovery phrase and master key stay on the phone.'
+  if (view === 'wallet-renew') return 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
   const base = <>at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge</>
   // Import, renew and dg offer a lifetime picker; creating an identity does not.
@@ -323,7 +346,7 @@ function Tile({
 function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const { limitedKeys } = useAuth()
   const closeLogin = useUiStore((s) => s.closeLogin)
-  const walletAvailable = useWalletAvailability(limitedKeys)
+  const { available: walletAvailable, v2: walletV2 } = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
   const creating = useCreationInProgress()
   // While writes are paused (a devnet move, or the operator's PAGES_NOTICE=paused), no identity is
@@ -331,15 +354,18 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const pausedReason = writesPausedReason()
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
-  // First only where Dash Wallet can answer (testnet); elsewhere last, saying why.
-  const walletFirst = walletSignInSupported(ACTIVE_NETWORK.network)
+  // First where a wallet can answer: App Connect v2 is on offer here, or Dash Wallet answers the
+  // older exchange (testnet). Elsewhere last, saying why.
+  const walletFirst = walletV2 || walletSignInSupported(ACTIVE_NETWORK.network)
   const walletTile = walletAvailable ? (
     <Tile
       testId="tile-wallet"
       icon={Wallet}
       title="Use my Dash wallet"
       body={
-        walletFirst
+        walletV2
+          ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
+          : walletFirst
           ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve.'
           : ACTIVE_NETWORK.network === 'devnet'
             ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
@@ -430,26 +456,33 @@ function useCreationInProgress(): { readonly address: string; readonly funded: b
 }
 
 /**
- * Whether the wallet tile applies here (a wallet login contract exists on this network). When
- * Platform cannot be reached to check, the tile shows anyway: the flow behind it names what
+ * Whether the wallet tile applies here: a wallet login contract exists on this network, or the
+ * chain supports App Connect v2 (`v2`: the flow then asks for one approval for all of Forge).
+ * When Platform cannot be reached to check, the tile shows anyway: the flow behind it names what
  * failed and offers "Try again", where hiding it would fail silently.
  */
-function useWalletAvailability(limitedKeys: boolean): boolean {
-  const [available, setAvailable] = useState(false)
+function useWalletAvailability(limitedKeys: boolean): { readonly available: boolean; readonly v2: boolean } {
+  const [state, setState] = useState({ available: false, v2: false })
   useEffect(() => {
     if (!limitedKeys) return
     let cancelled = false
     connectPlatform(ACTIVE_NETWORK.network)
-      .then((sdk) => withTimeout(walletLoginAvailable(sdk, ACTIVE_NETWORK.key), PLATFORM_READ_MS, 'Finding the wallet login contract'))
+      .then(async (sdk) => {
+        // v2 needs no response contract of its own; a failed check only means "not v2".
+        const v2 = await withTimeout(appConnectV2Available(sdk, ACTIVE_NETWORK.network), PLATFORM_READ_MS, 'Checking what your wallet can answer').catch(() => false)
+        // When Platform cannot be asked, the tile shows anyway (see above).
+        const v1 = await withTimeout(walletLoginAvailable(sdk, ACTIVE_NETWORK.key), PLATFORM_READ_MS, 'Finding the wallet login contract').catch(() => true)
+        return { available: v1 || v2, v2 }
+      })
       .then(
-        (ok) => !cancelled && setAvailable(ok),
-        () => !cancelled && setAvailable(true),
+        (next) => !cancelled && setState(next),
+        () => !cancelled && setState({ available: true, v2: false }),
       )
     return () => {
       cancelled = true
     }
   }, [limitedKeys])
-  return available
+  return state
 }
 
 /** A dashed "choose a file" button over a hidden file input. */

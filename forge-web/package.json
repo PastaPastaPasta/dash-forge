@@ -21,7 +21,8 @@
     "lint:copy": "node scripts/copy-lint.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "vendor:status": "node ${PLATFORM_AUTH_DIR:-../../platform-auth}/tools/vendor.mjs status lib/vendor/platform-auth"
   },
   "dependencies": {
     "@dashevo/evo-sdk": "5.0.0-rc.8",
