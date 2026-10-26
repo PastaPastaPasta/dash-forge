@@ -91,7 +91,7 @@ describe('DevnetNoticeBanner', () => {
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
     expect(b.getAttribute('data-notice')).toBe('moving')
-    expect(b.textContent).toContain('Dash Forge moved to devnet sakura (Platform v5); bonsia was retired.')
+    expect(b.textContent).toContain('Dash Forge moved to testnet (Platform v5); bonsia was retired.')
     expect(b.textContent).toContain('Writing is paused')
     expect(dismissButton()).toBeNull()
     expect(b.querySelector('a')!.getAttribute('href')).toBe(DEVNET_MOVE_DOC)

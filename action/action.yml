@@ -8,7 +8,7 @@
 # from that tag. Between releases master still pins the latest release, so a workflow on
 # master's scripts that needs master's binaries sets `install: 'source'`.
 #
-# The network defaults to the devnet the hosted site (forge.dashhq.org) targets: Forge's
+# The network defaults to testnet, which the hosted site (forge.dashhq.org) targets: Forge's
 # contracts are registered there, and not on mainnet yet (forge-contracts/deployments/).
 name: Dash Forge mirror
 description: Mirror a GitHub repository into Dash Forge (Dash Platform), idempotently and under a per-run cost cap.
@@ -22,11 +22,11 @@ inputs:
     description: "Destination Forge repository: dash://<owner>/<name>, <owner>/<name>, or a bare name (the signer's own; created if missing)."
     required: true
   network:
-    description: "mainnet, testnet or devnet. The default is the devnet the hosted site targets; Forge is not deployed on mainnet yet."
-    default: devnet
+    description: "mainnet, testnet or devnet. The default is testnet, which the hosted site targets; Forge is not deployed on mainnet yet."
+    default: testnet
   devnet-name:
-    description: "Devnet name, used only when network is devnet."
-    default: sakura
+    description: "Devnet name, required when network is devnet and ignored otherwise."
+    default: ""
   sync:
     description: "Comma list of code,issues,prs,releases,labels."
     default: code,releases

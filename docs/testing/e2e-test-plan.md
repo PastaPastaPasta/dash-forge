@@ -110,7 +110,7 @@ forge-v2 repositories, issues and Platform-stored packs are permanent, so the sm
 ## 9. CI wiring
 
 - **PR**: unit + vectors + contract validation + builds (< 10 min, no network).
-- **Nightly** (`Devnet Nightly` workflow): seeds the v2 read fixture (`forge-contracts/scripts/seed-v2-fixture.mjs`, idempotent) → Playwright against a sakura build → CLI e2e suite (`e2e/cli`, 11 scenarios) on sakura. Funded jobs run only when the fixture identity secrets are configured and report SKIP otherwise. Teardown deletes the run's `e2e/<run-id>/…` refs; documents that cannot be deleted stay in the reserved fixture repos.
+- **Nightly** (`Testnet Nightly` workflow): seeds the v2 read fixture (`forge-contracts/scripts/seed-v2-fixture.mjs --production testnet`, idempotent) → Playwright against a testnet build → CLI e2e suite (`e2e/cli`, 11 scenarios) on testnet (`E2E_LIVE_TARGET=1`). Funded jobs run only when the `FORGE_TESTNET_IDENTITY_*` secrets (and, for the CLI suite, `FORGE_TESTNET_MINT_FUNDING_WIF`) are configured and report SKIP otherwise. Teardown deletes the run's `e2e/<run-id>/…` refs; documents that cannot be deleted stay in the reserved fixture repos.
 - **Release**: nightly + scale ladder + backends/chaos + relay + import + fees ledger + onboarding.
 - **Post-deploy/weekly**: mainnet smoke.
 - Serialization: one live job per fixture identity (nonce discipline); parallelism across identities, not within.

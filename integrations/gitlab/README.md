@@ -20,7 +20,7 @@ To run code that is not in a release, pin a commit you have reviewed in the URL 
 | Variable | Default | Meaning |
 |---|---|---|
 | `FORGE_REPO` | (required) | The destination, `dash://<owner>/<name>`. Nothing runs while it is empty. |
-| `FORGE_NETWORK`, `FORGE_DEVNET_NAME` | `devnet`, `sakura` | The network. |
+| `FORGE_NETWORK`, `FORGE_DEVNET_NAME` | `testnet`, empty | The network. `FORGE_DEVNET_NAME` names a devnet, with `FORGE_NETWORK: devnet`. |
 | `FORGE_VERSION` | empty | A Dash Forge release to install, checked against its `SHA256SUMS`. |
 | `FORGE_SOURCE_REF` | empty | A reviewed dash-forge commit to build when no release is set or installable. One of the two is required. |
 | `FORGE_STORAGE_KIND` | `platform` | `s3` to put packs in your bucket (`FORGE_S3_ENDPOINT`, `_REGION`, `_BUCKET`, `_PUBLIC_URL`, `_PREFIX`, `_VIRTUAL_HOSTED`, and `FORGE_REPLICAS`), with the `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` variables. |
