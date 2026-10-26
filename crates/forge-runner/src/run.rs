@@ -1731,14 +1731,23 @@ fn run_workflow(
         });
         if let Err(e) = report_completed(c.cfg, &r) {
             eprintln!("forge-runner: {e:#}");
-            unreported.push(r.name.clone());
+            // The jobs ran and are never run again for their report (a step may deploy, use
+            // secrets or pay): the report is kept for the next polls to resend.
+            match crate::pending::keep(c.cfg, &r) {
+                Ok(()) => unreported.push(r.name.clone()),
+                Err(k) => eprintln!(
+                    "forge-runner: {} {} could not be kept for the next polls either ({k:#}); send it by hand: dg {}",
+                    r.repo,
+                    r.name,
+                    report_args(c.cfg, &r).join(" ")
+                ),
+            }
         }
         ran.checks.push((r.name, conclusion));
     }
-    // The jobs ran, but a check nobody can see is not done: the push is tried again.
     if !unreported.is_empty() {
-        bail!(
-            "{} of {} could not be reported: {}",
+        eprintln!(
+            "forge-runner: {} of {} kept for the next polls to report (the jobs are not run again): {}",
             if unreported.len() == 1 {
                 "the result"
             } else {

@@ -36,7 +36,7 @@ Members-only content in public repositories, Environments and the secret scan. P
 - **`dg pr merge --override-policy` fails (E106) when the merge landed but its policy-bypass record did not**, instead of printing "merged" and exiting 0. `--record-bypass` records the missing bypass.
 - **`dg import` and `forge-import` without `--max-spend` stop at the estimate you confirmed** instead of running uncapped.
 - **The Mirror Action's recommended workflow no longer runs on issue, comment and pull request events**, which anyone can trigger. Mirroring them is an opt-in that the README explains, with its risk. An identity file as `DASH_FORGE_KEY` (no key budget) is refused unless `allow-unlimited-key: 'true'`.
-- **forge-runner retries a check's final report** with backoff. If the report still doesn't land, the push is tried again instead of being marked done with the check left running.
+- **forge-runner retries a check's final report** with backoff. If the report still doesn't land, the runner keeps it and resends it on the next polls (up to 48), instead of marking the run done with the check left running. The jobs are not run again.
 - **The web app prices an edit of a long issue, PR or comment with its long-body storage**, so the confirmation and its balance check show what the edit costs.
 
 ## [0.1.0] - 2026-10-04
