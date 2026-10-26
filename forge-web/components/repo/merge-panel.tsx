@@ -61,7 +61,7 @@ import { PublishDialog } from '@/components/repo/publish-dialog'
 import { authorName, historyChanges, namesBranch, readAllowList, scanChanges, withCoAuthors, type PublishScan } from '@/lib/view/publish'
 import type { FileChange } from '@/lib/view/commit-log'
 import { useAsync } from '@/hooks/use-async'
-import { branchName, readCommit, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
+import { branchName, headOidsOf, readCommit, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { useAuth } from '@/contexts/auth-context'
@@ -542,10 +542,10 @@ export function MergePanel({
             },
             // Published: complete for the public (no members key), never for this member's reader.
             verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, publicReader ?? (readers ?? { base: baseOnly }).base),
-            readBaseTip: async () => {
-              // The same rule the page's tip came from (resolveRef, then the provisional tip).
+            readBaseHeads: async () => {
+              // The same rule the page's tip came from (resolveRef): its heads, newest first.
               const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
-              return tipOidOf(ref ?? undefined) ?? ''
+              return headOidsOf(ref ?? undefined)
             },
             // The PR's base now: its newest retarget (any reader's rule, with no merge yet).
             readBaseRef: async () => prMergeBase(pull.baseRefName, pull.createdAt, (await readTargetLog(sdk, repo, pull.id)).events, null).refName,

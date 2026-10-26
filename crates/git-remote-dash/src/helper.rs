@@ -1706,9 +1706,12 @@ impl Helper {
         }
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
-        let mut est_credits = push_fees::estimate_ref_updates(
-            planned.iter().filter(|p| p.reject.is_none()).count() as u64,
-        );
+        let ref_updates: usize = planned
+            .iter()
+            .filter(|p| p.reject.is_none())
+            .map(Planned::writes)
+            .sum();
+        let mut est_credits = push_fees::estimate_ref_updates(ref_updates as u64);
 
         // Build + upload the packs covering all accepted, non-delete updates: one public pack
         // whose delta bases are public tips only, then one members-only pack per members-only
@@ -1758,6 +1761,7 @@ impl Helper {
                     .filter(|p| p.reject.is_none())
                     .map(|p| progress::short_ref(&p.spec.dst))
                     .collect(),
+                ref_updates,
                 git_dir: &git_dir,
                 policy: push_policy,
                 progress,
@@ -3186,14 +3190,17 @@ impl Writer<'_> {
         };
         let result = self
             .svc
-            .write_branch_ref_updates(self.repo, ring, &writes, |i| {
-                let p = &planned[narrower[i]];
-                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-                self.progress.emit(&text, &event);
+            .write_branch_ref_updates(self.repo, ring, &writes.writes, |k| {
+                if writes.is_own(k) {
+                    let p = &planned[narrower[writes.of[k]]];
+                    let (text, event) =
+                        progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                    self.progress.emit(&text, &event);
+                }
             })
             .await;
         match result {
-            Ok(results) => results,
+            Ok(results) => writes.per_ref(results),
             Err(e) => fail_all(e.to_string()),
         }
     }
@@ -3219,36 +3226,80 @@ impl Writer<'_> {
         };
         let result = self
             .svc
-            .write_members_ref_updates(self.repo, lane, &writes, |i| {
-                let p = &planned[members[i]];
-                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-                self.progress.emit(&text, &event);
+            .write_members_ref_updates(self.repo, lane, &writes.writes, |k| {
+                if writes.is_own(k) {
+                    let p = &planned[members[writes.of[k]]];
+                    let (text, event) =
+                        progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                    self.progress.emit(&text, &event);
+                }
             })
             .await;
         match result {
-            Ok(results) => results,
+            Ok(results) => writes.per_ref(results),
             Err(e) => fail_all(e.to_string()),
         }
     }
 }
 
+/// The ref updates of a batch ([`ref_writes`]): each ref's own, then one more per head it
+/// settles ([`Planned::settles`]); `of[k]` is the position in the batch of the ref `writes[k]`
+/// is for.
+struct RefWrites {
+    writes: Vec<forge_core::repo::RefWrite>,
+    of: Vec<usize>,
+}
+
+impl RefWrites {
+    /// Whether `writes[k]` is its ref's own update (the one progress reports as it lands).
+    fn is_own(&self, k: usize) -> bool {
+        k == 0 || self.of[k - 1] != self.of[k]
+    }
+
+    /// One result per ref from the writes' (in order; shorter when a sequential write stopped
+    /// at its failure): its own update's id when every one of its updates landed, else the
+    /// first failure. A ref none of whose updates was attempted has none.
+    fn per_ref(&self, results: Vec<forge_core::Result<String>>) -> Vec<forge_core::Result<String>> {
+        let mut out: Vec<forge_core::Result<String>> = Vec::with_capacity(results.len());
+        for (k, r) in results.into_iter().enumerate() {
+            match out.last_mut() {
+                Some(last) if !self.is_own(k) => {
+                    if let (Ok(_), Err(e)) = (&*last, r) {
+                        *last = Err(e);
+                    }
+                }
+                _ => out.push(r),
+            }
+        }
+        out
+    }
+}
+
 /// The ref writes of `planned[accepted[..]]`.
-fn ref_writes(planned: &[Planned], accepted: &[usize]) -> Result<Vec<forge_core::repo::RefWrite>> {
-    accepted
-        .iter()
-        .map(|&i| {
-            let p = &planned[i];
-            Ok(forge_core::repo::RefWrite {
+fn ref_writes(planned: &[Planned], accepted: &[usize]) -> Result<RefWrites> {
+    let mut out = RefWrites {
+        writes: Vec::new(),
+        of: Vec::new(),
+    };
+    for (at, &i) in accepted.iter().enumerate() {
+        let p = &planned[i];
+        let new_oid = match &p.new_oid {
+            Some(oid) => oid_to_bytes(oid)?,
+            None => vec![0u8; 20], // delete = zero oid
+        };
+        let prevs = std::iter::once(p.prev_oid.as_deref())
+            .chain(p.settles.iter().map(|h| Some(h.as_str())));
+        for prev in prevs {
+            out.writes.push(forge_core::repo::RefWrite {
                 ref_name: p.spec.dst.clone(),
-                new_oid: match &p.new_oid {
-                    Some(oid) => oid_to_bytes(oid)?,
-                    None => vec![0u8; 20], // delete = zero oid
-                },
-                prev_oid: p.prev_oid.as_deref().map(oid_to_bytes).transpose()?,
+                new_oid: new_oid.clone(),
+                prev_oid: prev.map(oid_to_bytes).transpose()?,
                 force: p.spec.force,
-            })
-        })
-        .collect()
+            });
+            out.of.push(at);
+        }
+    }
+    Ok(out)
 }
 
 /// Write the public refs `planned[accepted[..]]` in one batch and settle it
@@ -3271,19 +3322,21 @@ async fn write_batch(
     let fail_after = std::env::var("DASH_FORGE_FAIL_AFTER_REFS")
         .ok()
         .and_then(|n| n.parse::<usize>().ok())
-        .filter(|n| *n < writes.len());
+        .filter(|n| *n < writes.writes.len());
     #[cfg(feature = "test-hooks")]
-    let batch = &writes[..fail_after.unwrap_or(writes.len())];
+    let batch = &writes.writes[..fail_after.unwrap_or(writes.writes.len())];
     #[cfg(not(feature = "test-hooks"))]
-    let batch = &writes[..];
+    let batch = &writes.writes[..];
     // One config read for the whole push; a public repository's updates go in parallel
-    // (P-6). Each is reported as it lands.
+    // (P-6). Each ref is reported as its own update lands.
     let results = {
         let planned = &*planned;
-        svc.write_ref_updates(repo, batch, |i| {
-            let p = &planned[accepted[i]];
-            let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-            progress.emit(&text, &event);
+        svc.write_ref_updates(repo, batch, |k| {
+            if writes.is_own(k) {
+                let p = &planned[accepted[writes.of[k]]];
+                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                progress.emit(&text, &event);
+            }
         })
         .await
     };
@@ -3303,7 +3356,7 @@ async fn write_batch(
     if let Some(written) = fail_after {
         bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
     }
-    settle_ref_writes(planned, accepted, results, landed_before)
+    settle_ref_writes(planned, accepted, writes.per_ref(results), landed_before)
 }
 
 /// Fold a batch's per-ref `results` (for `planned[accepted[i]]`, in order; shorter when a
@@ -3370,6 +3423,16 @@ fn remote_tip(refs: &[(String, RefState)], name: &str) -> Option<String> {
     refs.iter()
         .find(|(n, _)| n == name)
         .and_then(|(_, s)| tip_oid(s))
+}
+
+/// Every live head of `name` within a resolved ref list, newest first: one for a resolved ref,
+/// several for a diverged one, none for an unborn or absent one.
+fn remote_heads(refs: &[(String, RefState)], name: &str) -> Vec<String> {
+    match refs.iter().find(|(n, _)| n == name).map(|(_, s)| s) {
+        Some(RefState::Resolved { oid, .. }) => vec![oid.clone()],
+        Some(RefState::Diverged { heads }) => heads.iter().map(|h| h.oid.clone()).collect(),
+        Some(RefState::Unborn) | None => Vec::new(),
+    }
 }
 
 /// The `list` answer for `refs`: `<oid> <refname>` per resolved ref, then (for a fetch
@@ -3442,6 +3505,10 @@ struct Planned {
     new_oid: Option<String>,
     /// Recorded previous tip (`None` = ref did not exist remotely).
     prev_oid: Option<String>,
+    /// The diverged ref's other live heads this update merged: each is written as one more
+    /// update of the same tip naming it as `prevOid`, so the race settles for every reader
+    /// (`forge_core::rules::settling_prev_oids`).
+    settles: Vec<String>,
     /// Set when the spec is rejected before any write (e.g. non-fast-forward).
     reject: Option<String>,
     /// Who the ref is for (DESIGN D12): public unless a public repository's push decided it is
@@ -3450,6 +3517,11 @@ struct Planned {
 }
 
 impl Planned {
+    /// How many ref updates writing it takes.
+    fn writes(&self) -> usize {
+        1 + self.settles.len()
+    }
+
     /// A members-only ref of a public repository (sealed under the members key).
     fn members(&self) -> bool {
         self.audience == Audience::Members
@@ -3468,7 +3540,9 @@ impl Planned {
 
 /// Decide accept/reject for every refspec up front (no writes): deletions and new refs are
 /// accepted; an update is accepted iff forced, a no-op, or a fast-forward — otherwise
-/// rejected as `non-fast-forward` (§2.3 / PRD 02). A `--force-with-lease` expectation
+/// rejected as `non-fast-forward` (§2.3 / PRD 02). On a diverged ref a fast-forward contains
+/// every live head (a merge of the race), and settles it with one more update per head beyond
+/// the tip ([`Planned::settles`]). A `--force-with-lease` expectation
 /// ([`OptionState::lease`]) accepts any update while the ref still points where the lease
 /// says, and rejects it as `stale info` (git's words) otherwise. A new ref that git clients could
 /// not hold next to an existing one (`feature` and `feature/x`, or `Foo` and `foo`) is refused
@@ -3486,7 +3560,8 @@ fn plan_pushes(
         // `prevOid`, which supersedes that tip without `force` (`resolve_ref`). Platform has no
         // compare-and-swap, so an update that lands from elsewhere before this one is not
         // overwritten: the ref reads as diverged and the read-back reports the push as lost. A
-        // ref that is already diverged takes a forced write, the only one that settles it.
+        // ref that is already diverged takes a forced write: the lease names one head, and only
+        // a force settles the others whatever the new tip contains.
         let diverged = remote_refs
             .iter()
             .any(|(n, s)| n == &spec.dst && matches!(s, RefState::Diverged { .. }));
@@ -3503,6 +3578,7 @@ fn plan_pushes(
                 spec,
                 new_oid: None,
                 prev_oid: prev,
+                settles: Vec::new(),
                 reject: Some(reject),
                 audience: Audience::Public,
             });
@@ -3514,6 +3590,7 @@ fn plan_pushes(
                 spec,
                 new_oid: None,
                 prev_oid: prev,
+                settles: Vec::new(),
                 reject: None,
                 audience: Audience::Public,
             });
@@ -3525,28 +3602,66 @@ fn plan_pushes(
                 spec,
                 new_oid: None,
                 prev_oid: prev,
+                settles: Vec::new(),
                 reject,
                 audience: Audience::Public,
             });
             continue;
         };
-        let reject = prev.as_ref().and_then(|tip| {
-            let fast_forward = spec.force
-                || lease.is_some()
-                || tip == &new_oid
-                || LocalRepo::is_ancestor(tip, &new_oid);
-            (!fast_forward).then(|| "non-fast-forward".to_string())
-        });
+        // An update moves off every live head it contains: the tip (`prevOid`), and on a
+        // diverged ref each other head too, one update apiece. One that leaves out a head would
+        // only add another, so it is refused before anything is paid for.
+        let (settles, reject) = if spec.force || lease.is_some() {
+            (Vec::new(), None)
+        } else {
+            let heads = remote_heads(remote_refs, &spec.dst);
+            match fast_forward(&spec.dst, &heads, &new_oid, LocalRepo::is_ancestor) {
+                Ok(settles) => (settles, None),
+                Err(reject) => (Vec::new(), Some(reject)),
+            }
+        };
         planned.push(Planned {
             spec,
             new_oid: Some(new_oid),
             prev_oid: prev,
+            settles,
             reject,
             audience: Audience::Public,
         });
     }
     reject_collisions(&mut planned, remote_refs);
     planned
+}
+
+/// [`plan_pushes`]'s check of a non-forced update of `dst` to `new_oid` against the ref's live
+/// `heads` (newest first; the first is the tip it records as `prevOid`), with the clone's commit
+/// graph: the further heads it settles ([`Planned::settles`]), or why it is refused.
+fn fast_forward(
+    dst: &str,
+    heads: &[String],
+    new_oid: &str,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> std::result::Result<Vec<String>, String> {
+    let contains = |a: &str, b: &str| a == b || is_ancestor(a, b);
+    match forge_core::rules::settling_prev_oids(heads, new_oid, contains) {
+        Ok(prevs) => Ok(prevs
+            .into_iter()
+            .filter(|h| Some(*h) != heads.first().map(String::as_str))
+            .map(str::to_owned)
+            .collect()),
+        Err(_) if heads.len() < 2 => Err("non-fast-forward".to_string()),
+        Err(head) => Err(diverged_reject(dst, head)),
+    }
+}
+
+/// The refusal of a push to a diverged ref whose tip does not contain `head`, one of its live
+/// heads: writing it would leave the ref diverged. `list` advertises only the newest head, so
+/// the refusal names the head by oid, which a fetch of that oid brings into the clone.
+fn diverged_reject(dst: &str, head: &str) -> String {
+    format!(
+        "non-fast-forward: {} has diverged and this push does not contain its other head {head}; fetch it (git fetch <remote> {head}), merge it and push again",
+        progress::short_ref(dst),
+    )
 }
 
 /// What a member view says about narrower branches, by ledger token ([`narrower_facts`]).
@@ -4806,6 +4921,9 @@ struct PushContext<'a> {
     repo_label: String,
     /// Short names of the refs this push updates.
     refs: Vec<String>,
+    /// How many ref updates it writes: one per ref, and one more per diverged head a ref
+    /// settles ([`Planned::writes`]).
+    ref_updates: usize,
     git_dir: &'a std::path::Path,
     policy: &'a PushPolicy,
     progress: Progress,
@@ -5005,7 +5123,7 @@ async fn upload_push_pack(
         if ctx.dry_run || ctx.history_cost.get().is_none() {
             return Ok(None);
         }
-        let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
+        let refs_only = push_fees::estimate_ref_updates(ctx.ref_updates as u64);
         let (est_credits, history) = history_alone(ctx, refs_only, policy_replication(ctx))?;
         return Ok(Some(Uploaded {
             est_credits,
@@ -5046,7 +5164,7 @@ async fn upload_push_pack(
         progress::platform_line(&PlatformWrites {
             chunks: if stores_pack { job.chunk_count } else { 0 },
             manifests: 2 + ctx.history_cost.get().map_or(0, |c| c.manifests()),
-            ref_updates: ctx.refs.len(),
+            ref_updates: ctx.ref_updates,
             est_credits: est.total(),
             history_bytes: ctx.history_cost.get().map_or(0, |c| c.plain_len()),
         })
@@ -5179,7 +5297,7 @@ async fn missing_index(
             // One manifest (the index's), not the push's two; no pack bytes.
             let credits = index_cost.chunk_credits + index_cost.metadata_credits / 2;
             if let Err(e) = policy::enforce(
-                credits + push_fees::estimate_ref_updates(ctx.refs.len() as u64),
+                credits + push_fees::estimate_ref_updates(ctx.ref_updates as u64),
                 ctx.policy,
                 replication.has_platform(),
                 policy::NOTE_NOTHING_STORED,
@@ -5416,7 +5534,7 @@ impl<'a> PackJob<'a> {
             pack_bytes: self.plain_bytes,
             objects: self.object_count,
             index_objects: self.index_objects,
-            refs: ctx.refs.len() as u64,
+            refs: ctx.ref_updates as u64,
             external_targets: ctx.policy.resolved.external.len() as u64,
             platform_bytes,
             sealed: ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
@@ -5719,8 +5837,8 @@ async fn dry_run_writes(
     progress::platform_line(&PlatformWrites {
         chunks: 0,
         manifests: ctx.history_cost.get().map_or(0, |c| c.manifests()),
-        ref_updates: ctx.refs.len(),
-        est_credits: push_fees::estimate_ref_updates(ctx.refs.len() as u64) + history,
+        ref_updates: ctx.ref_updates,
+        est_credits: push_fees::estimate_ref_updates(ctx.ref_updates as u64) + history,
         history_bytes: ctx.history_cost.get().map_or(0, |c| c.plain_len()),
     })
 }
@@ -5737,7 +5855,9 @@ async fn reuse_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<Opti
     // pack's browse index when no fragment covers it yet (a push that recorded the pack and died
     // before its index). The kept sealed bytes stay until the refs land ([`forget_sealed`]): this
     // push may still fail at its refs.
-    Ok(Some(push_fees::estimate_ref_updates(ctx.refs.len() as u64)))
+    Ok(Some(push_fees::estimate_ref_updates(
+        ctx.ref_updates as u64,
+    )))
 }
 
 /// Whether this identity already wrote a `packManifest` for this pack (one indexed read, no
@@ -6846,6 +6966,7 @@ mod tests {
         Unreadable,
     };
     use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
+    use super::{fast_forward, finalize_outcomes, ref_writes, remote_heads, RefWrites};
     use forge_core::members_git::Audience;
 
     #[test]
@@ -6900,6 +7021,7 @@ mod tests {
             },
             new_oid: None,
             prev_oid: Some("a".repeat(40)),
+            settles: Vec::new(),
             reject: None,
             audience: Audience::Public,
         };
@@ -6944,9 +7066,180 @@ mod tests {
             },
             new_oid: Some("1".repeat(40)),
             prev_oid: None,
+            settles: Vec::new(),
             reject: None,
             audience: Audience::Public,
         }
+    }
+
+    /// The ref updates `writes` would land as, by `author` in one block at `at`.
+    fn landed_as(writes: &RefWrites, author: &str, at: u64) -> Vec<forge_core::rules::RefUpdate> {
+        writes
+            .writes
+            .iter()
+            .enumerate()
+            .map(|(k, w)| forge_core::rules::RefUpdate {
+                id: format!("{author}{k}"),
+                ref_name_hash: "H".into(),
+                ref_name: w.ref_name.clone(),
+                prev_oid: w.prev_oid.as_deref().map(hex::encode).unwrap_or_default(),
+                new_oid: hex::encode(&w.new_oid),
+                force: w.force,
+                protected: false,
+                author: author.into(),
+                created_at: at,
+            })
+            .collect()
+    }
+
+    /// The stuck race: alice and bob pushed off X at once (heads Y, Z), carol fetched, merged
+    /// both into M and pushed without `--force`. The push names both heads, one update each, so
+    /// every reader's fold (identity ancestry: no commits needed) resolves `main` to M and the
+    /// push reports ok. The single update an older helper wrote leaves Z live: a lost race.
+    #[test]
+    fn a_merge_of_every_diverged_head_settles_the_race_for_every_reader() {
+        use forge_core::rules::{resolve_ref, RefState, RefUpdate};
+        let (x, z, y, m) = (
+            "a".repeat(40),
+            "b".repeat(40),
+            "c".repeat(40),
+            "d".repeat(40),
+        );
+        let dst = "refs/heads/main";
+        let update = |id: &str, prev: &str, new: &str, at: u64| RefUpdate {
+            id: id.into(),
+            ref_name_hash: "H".into(),
+            ref_name: dst.into(),
+            prev_oid: prev.into(),
+            new_oid: new.into(),
+            force: false,
+            protected: false,
+            author: id.into(),
+            created_at: at,
+        };
+        let race = vec![
+            update("owner", "", &x, 50),
+            update("alice", &x, &z, 100),
+            update("bob", &x, &y, 200),
+        ];
+        let same = |a: &str, b: &str| a == b;
+        let heads = remote_heads(&[(dst.into(), resolve_ref(&race, &[], "H", same))], dst);
+        assert_eq!(heads, [y.clone(), z.clone()]);
+        let graph = |a: &str, d: &str| d == m && [&x, &y, &z].iter().any(|h| *h == a);
+
+        let mut merge = planned(dst);
+        merge.new_oid = Some(m.clone());
+        merge.prev_oid = Some(heads[0].clone());
+        merge.settles = fast_forward(dst, &heads, &m, graph).expect("M merges both heads");
+        assert_eq!(merge.settles, std::slice::from_ref(&z));
+        assert_eq!(merge.writes(), 2);
+        let writes = ref_writes(std::slice::from_ref(&merge), &[0]).unwrap();
+        let prevs: Vec<String> = writes
+            .writes
+            .iter()
+            .map(|w| hex::encode(w.prev_oid.as_ref().unwrap()))
+            .collect();
+        assert_eq!(prevs, [y.clone(), z.clone()]);
+        assert!(writes
+            .writes
+            .iter()
+            .all(|w| !w.force && hex::encode(&w.new_oid) == m));
+
+        let landed: Vec<RefUpdate> = race
+            .iter()
+            .cloned()
+            .chain(landed_as(&writes, "carol", 300))
+            .collect();
+        let state = resolve_ref(&landed, &[], "H", same);
+        assert!(
+            matches!(&state, RefState::Resolved { oid, .. } if *oid == m),
+            "{state:?}"
+        );
+        let outcome = finalize_outcomes(vec![merge], &[(dst.into(), state)], false);
+        assert_eq!(outcome[0].wire(), format!("ok {dst}"));
+
+        // Before: the merge's one update named only the tip it saw.
+        let mut old = planned(dst);
+        old.new_oid = Some(m.clone());
+        old.prev_oid = Some(y.clone());
+        let one = ref_writes(std::slice::from_ref(&old), &[0]).unwrap();
+        let landed: Vec<RefUpdate> = race
+            .iter()
+            .cloned()
+            .chain(landed_as(&one, "carol", 300))
+            .collect();
+        let state = resolve_ref(&landed, &[], "H", same);
+        assert!(matches!(&state, RefState::Diverged { heads } if heads.len() == 2));
+        let outcome = finalize_outcomes(vec![old], &[(dst.into(), state)], false);
+        assert!(
+            outcome[0].wire().contains("lost concurrent race"),
+            "{}",
+            outcome[0].wire()
+        );
+    }
+
+    /// A push that contains only one side of a race would add a head and settle nothing: it is
+    /// refused before anything is written, naming the head to merge. On a resolved ref the
+    /// check is git's plain fast-forward.
+    #[test]
+    fn a_push_containing_one_side_of_a_race_is_refused_before_it_is_paid_for() {
+        let (z, y, n) = ("b".repeat(40), "c".repeat(40), "e".repeat(40));
+        let dst = "refs/heads/main";
+        let only_y = |a: &str, d: &str| a == y && d == n;
+        let heads = [y.clone(), z.clone()];
+        let why = fast_forward(dst, &heads, &n, only_y).unwrap_err();
+        assert!(
+            why.starts_with("non-fast-forward: main has diverged"),
+            "{why}"
+        );
+        assert!(why.contains(&format!("git fetch <remote> {z}")), "{why}");
+        // The other side alone is refused the same way, naming the newest head.
+        let only_z = |a: &str, d: &str| a == z && d == n;
+        assert!(fast_forward(dst, &heads, &n, only_z)
+            .unwrap_err()
+            .contains(&y));
+        // A resolved ref: a fast-forward records its tip and settles nothing more.
+        assert_eq!(
+            fast_forward(dst, std::slice::from_ref(&y), &n, only_y),
+            Ok(vec![])
+        );
+        assert_eq!(
+            fast_forward(dst, std::slice::from_ref(&z), &n, only_y),
+            Err("non-fast-forward".to_string())
+        );
+        assert_eq!(fast_forward(dst, &[], &n, only_y), Ok(vec![]));
+    }
+
+    /// A ref that settles a race writes several updates; the batch's results fold back to one
+    /// per ref: its own update's id when all landed, else its first failure, and none for a ref
+    /// a sequential write never reached.
+    #[test]
+    fn a_settling_refs_updates_report_as_one_result() {
+        let fail = |w: &str| forge_core::Error::Config(w.into());
+        let writes = RefWrites {
+            writes: Vec::new(),
+            of: vec![0, 0, 1],
+        };
+        let ids = |r: Vec<forge_core::Result<String>>| -> Vec<std::result::Result<String, String>> {
+            r.into_iter()
+                .map(|r| r.map_err(|e| e.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            ids(writes.per_ref(vec![Ok("a".into()), Ok("a2".into()), Ok("b".into())])),
+            [Ok("a".to_string()), Ok("b".to_string())]
+        );
+        let got = ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost")), Ok("b".into())]));
+        assert!(
+            got[0].as_ref().is_err_and(|e| e.contains("lost")),
+            "{got:?}"
+        );
+        assert_eq!(got[1], Ok("b".to_string()));
+        // sequential: stopped at the settling update's failure, ref 1 never attempted
+        let got = ids(writes.per_ref(vec![Ok("a".into()), Err(fail("lost"))]));
+        assert_eq!(got.len(), 1);
+        assert!(got[0].is_err());
+        assert!(writes.is_own(0) && !writes.is_own(1) && writes.is_own(2));
     }
 
     /// CodeRabbit (PR #127): a batch where some refs landed and one failed rejects only the
@@ -7042,6 +7335,7 @@ mod tests {
             },
             new_oid: None,
             prev_oid: Some("2".repeat(40)),
+            settles: Vec::new(),
             reject: None,
             audience: Audience::Public,
         };
