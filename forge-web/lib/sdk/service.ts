@@ -90,6 +90,8 @@ export interface EvoSdkConfig {
 export interface Connection {
   readonly sdk: EvoSDK
   readonly seeded: Map<string, number>
+  /** The warm-up's version read, when it was still running as the connection went live ({@link learnVersion}). */
+  readonly warming?: Promise<unknown>
 }
 
 /** What a new connection takes over from the one it replaces. */
@@ -230,6 +232,11 @@ function versionOf(sdk: EvoSDK): number | undefined {
  * frees a retired connection once its last call returned, {@link EvoSdkService.retire}).
  */
 function dispose(connection: Connection): void {
+  // The warm-up's read still borrows the SDK: free it once that read settles.
+  if (connection.warming !== undefined) {
+    void connection.warming.then(() => dispose({ sdk: connection.sdk, seeded: connection.seeded }))
+    return
+  }
   try {
     ;(connection.sdk.wasm as unknown as { free?: () => void }).free?.()
   } catch {
@@ -1085,18 +1092,28 @@ export const LEARN_VERSION_MS = 5_000
  * one the floor does not support (a `timeRange` query below 14) is refused before it is sent.
  * One proved request (DPNS's latest version: every network has it), only when the SDK is below
  * `floor`, teaches it. A failure, or no answer within {@link LEARN_VERSION_MS}, is left to the
- * reads, which learn the version too: the connect never waits on it longer.
+ * reads, which learn the version too: the connect never waits on it longer. Returns the read
+ * when it is still running then, so the SDK is not freed under it ({@link dispose}).
  */
-async function learnVersion(sdk: EvoSDK, floor: number, dpnsContractId: string): Promise<void> {
-  if ((versionOf(sdk) ?? 0) >= floor) return
+async function learnVersion(sdk: EvoSDK, floor: number, dpnsContractId: string): Promise<{ readonly running?: Promise<unknown> }> {
+  if ((versionOf(sdk) ?? 0) >= floor) return {}
+  let settled = false
+  const read = sdk.contracts
+    .getLatestVersions({ contractIds: [dpnsContractId] })
+    .catch(() => undefined)
+    .finally(() => {
+      settled = true
+    })
   let timer: ReturnType<typeof setTimeout> | undefined
   await Promise.race([
-    sdk.contracts.getLatestVersions({ contractIds: [dpnsContractId] }).catch(() => undefined),
+    read,
     new Promise<void>((resolve) => {
       timer = setTimeout(resolve, LEARN_VERSION_MS)
     }),
   ])
   clearTimeout(timer)
+  // (Wrapped: an async function returning the promise itself would wait for it.)
+  return settled ? {} : { running: read }
 }
 
 /**
@@ -1360,9 +1377,13 @@ async function connectAndWarm(
   step(signal, sdk)
   await preload(sdk, config.contractIds.filter((id) => !seeded.has(id)))
   step(signal, sdk)
-  await learnVersion(sdk, floor, NETWORKS[config.network].dpnsContractId)
-  step(signal, sdk)
-  return { sdk, seeded }
+  const { running } = await learnVersion(sdk, floor, NETWORKS[config.network].dpnsContractId)
+  const connection: Connection = { sdk, seeded, ...(running !== undefined ? { warming: running } : {}) }
+  if (signal.aborted) {
+    dispose(connection)
+    throw new Error('the connect was abandoned')
+  }
+  return connection
 }
 
 /** The process-wide evo-sdk service singleton. */

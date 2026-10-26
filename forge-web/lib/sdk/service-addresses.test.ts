@@ -163,14 +163,25 @@ describe('the protocol version before the first query', () => {
     await failed.initialize({ network: 'testnet', contractIds: [] })
     expect(failed.getStatus().phase).toBe('ready')
 
-    recorded.latest.mockReset().mockReturnValue(new Promise(() => undefined))
+    let answer!: () => void
+    const late = new Promise<Map<string, unknown>>((resolve) => (answer = () => resolve(new Map())))
+    // Only the warm-up's read hangs (the seeded-snapshot check after going live is tracked anyway).
+    recorded.latest.mockReset().mockImplementation(async ({ contractIds }) => (contractIds.includes(DPNS) ? late : new Map()))
     const hung = new EvoSdkService()
-    services.push(hung)
     const connecting = hung.initialize({ network: 'testnet', contractIds: [] })
     await vi.waitFor(() => expect(recorded.latest).toHaveBeenCalledWith({ contractIds: [DPNS] }))
     expect(hung.getStatus().phase).not.toBe('ready')
     await vi.advanceTimersByTimeAsync(LEARN_VERSION_MS)
     await connecting
     expect(hung.getStatus().phase).toBe('ready')
+
+    // The read it stopped waiting for still borrows the SDK: retiring the connection frees it
+    // only once that read settles (a wasm `free()` under a running call traps).
+    recorded.free.mockClear()
+    hung.cleanup()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(recorded.free).not.toHaveBeenCalled()
+    answer()
+    await vi.waitFor(() => expect(recorded.free).toHaveBeenCalledTimes(1))
   })
 })
