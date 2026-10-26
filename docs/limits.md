@@ -57,8 +57,8 @@ The apps read documents in pages and stop at a limit rather than guess. A result
 
 | What | Limit | Source |
 |---|---|---|
-| A push that costs more than | `dash.costWarnThreshold`, **0.05 DASH** by default, asks first; with no terminal it stops with [E801](errors.md#e801) | [Costs](guides/costs.md#seeing-costs-before-you-pay) |
-| Storing packs on Platform | a push that would store **more than 1 MiB** while `dash.storage` is unset asks first (they are permanent); raising the threshold does not lift this, choosing storage does | [E801](errors.md#e801) |
+| A push that costs more than | `dash.costWarnThreshold`, **0.05 DASH** by default, asks first; with no terminal it stops with [E801](errors.md#e801). The whole push counts, once, before anything is paid: every pack it stores and every ref update, deletes and tags at commits already stored too (`git push --tags` of 300 such tags costs about 0.28 DASH) | [Costs](guides/costs.md#seeing-costs-before-you-pay) |
+| Storing packs on Platform | a push that would store **more than 1 MiB** of packs in all while `dash.storage` is unset asks first (they are permanent); raising the threshold does not lift this, choosing storage does | [E801](errors.md#e801) |
 | The key's budget | a limited key spends at most its budget (0.25 DASH for `dg auth new`'s key, 0.05 for a browser key by default) ([E402](errors.md#e402)) | [Identity and keys](guides/identity-and-keys.md#limited-keys) |
 | Memory while indexing a fetched pack | none unless you set `dash.maxPackInput` (the gateway sets one) | [Gateway](hosting/forge-gateway.md) |
 | One identity writing from two places at once | two writers can pick the same nonce; one write is dropped ([E704](errors.md#e704)) | `docs/errors.md` |

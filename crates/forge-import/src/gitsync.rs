@@ -252,11 +252,12 @@ pub struct GitPusher {
 /// helper's own guard weighs them then: [`PushReport::fallback_credits`]).
 pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
     if r.docs == 0 && r.packs == 0 {
-        // Only refs move (a branch or tag at a commit already stored): each ref update is
-        // one document.
-        r.est_credits = r
-            .est_credits
-            .saturating_add(push_fees::estimate_ref_updates(r.refs));
+        // Only refs move (a branch or tag at a commit already stored, a delete): each ref
+        // update is one document. The helper's guard weighs them too, so they are its price,
+        // not an addition the cap it is handed should leave out ([`PushReport::overhead`]).
+        let refs = push_fees::estimate_ref_updates(r.refs);
+        r.est_credits = r.est_credits.saturating_add(refs);
+        r.helper_credits = r.helper_credits.saturating_add(refs);
         return r;
     }
     // Sealed and on Platform: the most a pack of this size can cost (a private repository
@@ -1329,6 +1330,11 @@ dash: push failed: ref did not converge to pushed tip"#;
             false,
         );
         assert!(ref_only.est_credits >= 66_744_380);
+        // The helper weighs those ref updates against the cap it is handed (a tag-only push, a
+        // prune that only deletes), so they are not overhead the cap leaves out: a run capped
+        // at its own estimate can still make that push.
+        assert_eq!(ref_only.overhead(), 0);
+        assert_eq!(ref_only.helper_credits, ref_only.est_credits);
     }
 
     /// e2e scenario 32 live on moutai (drive 4.2.0-beta.5, 2026-09-28, `sindresorhus/is-wsl`,
