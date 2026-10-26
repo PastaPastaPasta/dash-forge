@@ -583,6 +583,71 @@ impl ScratchRepo {
         }
         run_git(&args, Some(&self.dir), true, Some(revs.as_bytes()))
     }
+
+    /// The blobs of the pack `pack_sha` indexed into this scratch repo ([`Self::index_pack`]),
+    /// sorted: what [`crate::catalog`] records of it.
+    pub fn blobs_of(&self, pack_sha: &str) -> Result<Vec<String>> {
+        ensure_safe_rev(pack_sha)?;
+        let idx = self
+            .dir
+            .join("objects")
+            .join("pack")
+            .join(format!("pack-{pack_sha}.idx"));
+        let idx = std::fs::read(&idx).map_err(|e| anyhow!("reading {}: {e}", idx.display()))?;
+        // `<offset> <oid> (<crc>)` per object
+        let listed = run_git(&["show-index"], Some(&self.dir), true, Some(&idx))?;
+        let oids: String = String::from_utf8_lossy(&listed)
+            .lines()
+            .filter_map(|l| l.split_whitespace().nth(1))
+            .fold(String::new(), |mut s, oid| {
+                s.push_str(oid);
+                s.push('\n');
+                s
+            });
+        let typed = run_git(
+            &["cat-file", "--batch-check=%(objecttype) %(objectname)"],
+            Some(&self.dir),
+            true,
+            Some(oids.as_bytes()),
+        )?;
+        let mut blobs: Vec<String> = String::from_utf8_lossy(&typed)
+            .lines()
+            .filter_map(|l| l.strip_prefix("blob "))
+            .map(str::to_string)
+            .collect();
+        blobs.sort();
+        Ok(blobs)
+    }
+
+    /// A pack of exactly `oids`, no walk: a lazy fetch of blobs, which name no other object. An
+    /// oid this scratch repo lacks fails with git's "missing … object" wording
+    /// ([`names_missing_object`]).
+    pub fn pack_exact(&self, oids: &[String]) -> Result<Vec<u8>> {
+        let mut list = String::new();
+        for oid in oids {
+            ensure_safe_rev(oid)?;
+            list.push_str(oid);
+            list.push('\n');
+        }
+        let checked = run_git(
+            &["cat-file", "--batch-check"],
+            Some(&self.dir),
+            true,
+            Some(list.as_bytes()),
+        )?;
+        if let Some(gone) = String::from_utf8_lossy(&checked)
+            .lines()
+            .find(|l| l.ends_with(" missing"))
+        {
+            bail!("missing object {}", gone.trim_end_matches(" missing"));
+        }
+        run_git(
+            &["pack-objects", "--stdout", "--delta-base-offset"],
+            Some(&self.dir),
+            true,
+            Some(list.as_bytes()),
+        )
+    }
 }
 
 impl Drop for ScratchRepo {
@@ -594,8 +659,8 @@ impl Drop for ScratchRepo {
 #[cfg(test)]
 mod tests {
     use super::{
-        index_pack_args, names_missing_object, names_this_remote, objects_missing, run_git,
-        ScratchRepo,
+        index_checked, index_pack_args, names_missing_object, names_this_remote, objects_missing,
+        run_git, ScratchRepo,
     };
     use forge_core::user_error::{codes, UserError};
     use std::path::Path;
@@ -879,6 +944,55 @@ mod tests {
         let scratch = ScratchRepo::init().unwrap();
         scratch.index_pack(&second).unwrap();
         scratch.index_pack(&first).unwrap();
+    }
+
+    #[test]
+    fn a_lazy_blob_fetch_packs_only_the_blobs_from_the_packs_that_hold_them() {
+        // Two pushes, two packs. The catalog lists each pack's blobs; a lazy fetch of the
+        // second push's blob reads only the second pack and sends that blob alone, which a
+        // partial clone indexes as a promisor pack.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        run_git(&["init", "-q", "--bare"], Some(d), true, None).unwrap();
+        let b1 = put(d, "blob", b"1\n");
+        let t1 = put(d, "tree", &entry("100644", "a", &b1));
+        let c1 = put(d, "commit", commit_text(&t1, None, 1).as_bytes());
+        let b2 = put(d, "blob", b"2\n");
+        let t2 = put(d, "tree", &entry("100644", "a", &b2));
+        let c2 = put(d, "commit", commit_text(&t2, Some(&c1), 2).as_bytes());
+        let first = pack(d, &format!("{c1}\n"));
+        let second = pack(d, &format!("{c2}\n^{c1}\n"));
+
+        let scratch = ScratchRepo::init().unwrap();
+        let p1 = scratch.index_pack(&first).unwrap().sha;
+        let p2 = scratch.index_pack(&second).unwrap().sha;
+        assert_eq!(scratch.blobs_of(&p1).unwrap(), vec![b1.clone()]);
+        assert_eq!(scratch.blobs_of(&p2).unwrap(), vec![b2.clone()]);
+
+        let narrow = ScratchRepo::init().unwrap();
+        narrow.index_pack(&second).unwrap();
+        let sent = narrow.pack_exact(std::slice::from_ref(&b2)).unwrap();
+        let err = narrow.pack_exact(std::slice::from_ref(&b1)).unwrap_err();
+        assert!(
+            names_missing_object(&format!("{err:#}")),
+            "a stale catalog falls back: {err:#}"
+        );
+
+        // What the partial clone holds before (commits and trees, no blobs) and after.
+        let clone = ScratchRepo::init().unwrap();
+        let filtered = scratch
+            .pack_filtered(std::slice::from_ref(&c2), Some("blob:none"))
+            .unwrap();
+        index_checked(&filtered, Some(&clone.dir)).unwrap();
+        let indexed = index_checked(&sent, Some(&clone.dir)).unwrap();
+        assert_eq!(
+            clone.blobs_of(&indexed.sha).unwrap(),
+            vec![b2.clone()],
+            "the blob, alone"
+        );
+        let has =
+            |oid: &str| run_git(&["cat-file", "-e", oid], Some(&clone.dir), true, None).is_ok();
+        assert!(has(&b2) && has(&c1) && !has(&b1));
     }
 
     #[test]

@@ -46,6 +46,7 @@
 
 mod admin;
 mod bot_push;
+mod catalog;
 mod fetched;
 mod git;
 mod helper;
