@@ -309,6 +309,23 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   const result = run.result as NonNullable<MergeRun['result']>
   const empty = result.objectCount === 0
 
+  // Before anything is paid for: a base that has diverged, or moved since the merge was built,
+  // would be refused at the ref step below, after the pack was stored and recorded for nothing.
+  // (A merge that adds no objects pays nothing before the ref step.)
+  // (Checked again there: the base can still move while the pack uploads.)
+  if (!run.done.includes('upload') && !empty && deps.upload !== null) {
+    const heads = await attempt('upload', () => deps.readBaseHeads())
+    if (heads.length > 1) {
+      throw new MergeStopped(
+        `${branchName(deps.pull.baseRefName)} has diverged (${heads.length} heads from concurrent pushes); nothing was written. Merge its heads with git and push, then merge again`,
+      )
+    }
+    const tipNow = heads[0] ?? ''
+    if (tipNow !== run.baseTip) {
+      throw new MergeStopped(`the base branch moved to ${tipNow.slice(0, 9) || '(deleted)'} since this merge was built; nothing was written. Merge again`)
+    }
+  }
+
   if (!run.done.includes('upload')) {
     if (empty) {
       mark('upload', {}, 'skipped', 'nothing new to store')

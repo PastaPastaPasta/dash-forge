@@ -158,6 +158,16 @@ export async function runBranchCommit(deps: BranchRunDeps, from: BranchRun | nul
           .join(', ')}); nothing was written. Use the CLI (\`dg pr suggestion apply\`, \`dg pr update-branch\`).`,
       )
     }
+    // Before anything is paid for: a branch that is gone, has diverged or has moved would be
+    // refused at the ref step below, after the pack was stored and recorded for nothing.
+    // (Checked again there: the branch can still move while the pack uploads.)
+    if (deps.upload !== null) {
+      const tip = await attempt('upload', () => deps.readBranchTip())
+      if (tip === null) throw new BranchStopped('The PR branch no longer exists or has diverged; nothing was written.')
+      if (tip.toLowerCase() !== built.commit && tip.toLowerCase() !== deps.pull.headOid.toLowerCase()) {
+        throw new BranchStopped(`The PR branch moved to ${tip.slice(0, 9)} since this page read it; update the PR head first, then try again. Nothing was written.`)
+      }
+    }
   }
   if (!run.done.includes('upload')) {
     const upload = deps.upload
@@ -200,7 +210,7 @@ export async function runBranchCommit(deps: BranchRunDeps, from: BranchRun | nul
       if (tip === null || tip.toLowerCase() !== deps.pull.headOid.toLowerCase()) {
         throw new BranchStopped(
           tip === null
-            ? 'The PR branch no longer exists; nothing was moved.'
+            ? 'The PR branch no longer exists or has diverged; nothing was moved. The pack stays stored and unused.'
             : `The PR branch moved to ${tip.slice(0, 9)} since this page read it; update the PR head first, then try again. The pack stays stored and unused.`,
         )
       }
