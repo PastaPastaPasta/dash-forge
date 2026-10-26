@@ -787,11 +787,13 @@ impl GitPusher {
     /// Push for real. The caller has already charged [`Self::estimate`] to its budget.
     /// `max_credits` (in the helper's units: the budget left before that charge, less the
     /// estimate's additions to the helper's price) arms the helper's cost guard: a push the helper prices
-    /// above it is refused before anything is stored.
-    pub fn push(&self, max_credits: Option<u64>) -> Result<PushReport> {
-        self.run(false, max_credits)
+    /// above it is refused before anything is stored. A real push always has one: the run's
+    /// cap is `--max-spend` or its confirmed estimate.
+    pub fn push(&self, max_credits: u64) -> Result<PushReport> {
+        self.run(false, Some(max_credits))
     }
 
+    /// `max_credits`: the helper's hard cap; `None` only for the dry run, which stores nothing.
     fn run(&self, dry_run: bool, max_credits: Option<u64>) -> Result<PushReport> {
         let spec = self.refs.refspecs();
         if spec.is_empty() {
@@ -808,6 +810,7 @@ impl GitPusher {
                 "-c".to_string(),
                 format!("dash.costWarnThreshold={}", threshold_dash(max)),
             ]),
+            // the dry run only: it stores nothing
             None => cmd.args(["-c", "dash.confirm=never"]),
         };
         cmd.args(["push", "--porcelain", "--prune"]);

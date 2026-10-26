@@ -63,7 +63,8 @@ struct RunArgs {
     work_dir: Option<PathBuf>,
 
     /// Hard cap for this run, in DASH: refused up front when the estimate exceeds it, and
-    /// checked again before every write against what the run has spent so far.
+    /// checked again before every write against what the run has spent so far. Default: the
+    /// run's estimate, the figure it shows (and asks you to confirm without `--yes`).
     #[arg(long, value_name = "DASH")]
     max_spend: Option<f64>,
 

@@ -127,7 +127,7 @@ Useful flags (see `forge-import --help`):
 |---|---|
 | `--repo <owner/name or name>` | The destination. The default is the GitHub name, owned by you; it is created when missing. |
 | `--sync code,issues,prs,releases,labels` | What to mirror (default: all). |
-| `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. |
+| `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. Without `--max-spend`, the cap is the estimate the run prints (and asks you to confirm, unless `--yes`): a run never spends more than you approved, and one that would is stopped before that write; re-running prices what is left. |
 | `--state <file>` | Incremental state: the next run asks GitHub only for issues, PRs and comments updated since this run started. |
 | `--dry-run` | Price only. |
 | `--include-label-definitions` | A private destination only: mirror the label definitions too. Their names, colours and descriptions are not encrypted, so they are left out by default; the labels set on issues and PRs are encrypted either way. |

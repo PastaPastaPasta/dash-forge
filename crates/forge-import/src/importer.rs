@@ -42,7 +42,7 @@ pub struct ImportConfig {
     pub state_path: Option<PathBuf>,
     /// Where the bare git mirror lives between runs (default: a temp dir).
     pub work_dir: Option<PathBuf>,
-    /// Hard cap, credits.
+    /// Hard cap, credits; `None` caps the run at its own estimate ([`Budget::for_run`]).
     pub max_spend: Option<u64>,
     /// Enumerate, diff and price only.
     pub dry_run: bool,
@@ -311,7 +311,9 @@ async fn run_inner<'a>(
         credits_to_dash(collab_estimate),
         forge_core::fiat::note_credits(collab_estimate),
     );
-    let mut budget = Budget::new(cfg.max_spend);
+    // No --max-spend: the estimate confirmed below is the cap, so the run spends no more than
+    // what was approved.
+    let mut budget = Budget::for_run(cfg.max_spend, estimate);
 
     if cfg.dry_run {
         summary.counts = dry.counts;
@@ -392,7 +394,18 @@ async fn run_inner<'a>(
         };
         let published = push_one(ledger, &p, est, "the git push (branches and tags)").await?;
         if !published {
-            backfill_history(ledger, client, signer, &repo, &work, &meta.default_branch).await;
+            // optional: it may not take what the required writes after it were priced at
+            let reserve = collab_estimate;
+            backfill_history(
+                ledger,
+                client,
+                signer,
+                &repo,
+                &work,
+                &meta.default_branch,
+                reserve,
+            )
+            .await;
         }
     }
 
@@ -511,7 +524,8 @@ fn state_advances(
 /// After the code push, when it did not publish one itself: publish the default branch's history
 /// index from the work mirror when none covers its tip (the helper's own publish can miss one: a just-created repository's
 /// config a lagging node did not list, a pack an earlier run recorded). Optional: priced, fitted
-/// under the cap, and a failure is a warning, never a failed import.
+/// under the cap with `reserve` (credits) left for the required writes still to come, and a
+/// failure is a warning, never a failed import.
 async fn backfill_history(
     ledger: &mut Ledger<'_>,
     client: &PlatformClient,
@@ -519,6 +533,7 @@ async fn backfill_history(
     repo: &forge_core::scope::RepoRef,
     work: &std::path::Path,
     default_branch: &str,
+    reserve: u64,
 ) {
     if default_branch.is_empty() {
         return;
@@ -526,7 +541,7 @@ async fn backfill_history(
     let svc = forge_core::repo::RepoService::new(client, &signer.identity, &signer.bridge);
     let outcome =
         crate::gitsync::history_backfill(&svc, repo, work, default_branch, &mut |credits| {
-            ledger.budget.fits(credits)
+            ledger.budget.fits(credits.saturating_add(reserve))
         })
         .await;
     match outcome {
@@ -554,8 +569,8 @@ async fn push_optional(ledger: &mut Ledger<'_>, p: &GitPusher, signer: &Signer) 
     let balance = ledger.balance(&signer.id()).await;
     if !ledger.budget.fits(est.est_credits) || balance.is_some_and(|b| b < est.est_credits) {
         return ledger.skip_git(format!(
-            "{WHAT} (~{:.6} DASH{}) does not fit what is left of --max-spend or the balance; \
-             skipped this run",
+            "{WHAT} (~{:.6} DASH{}) does not fit what is left of the run's cap (--max-spend, or \
+             the estimate you confirmed) or the balance; skipped this run",
             credits_to_dash(est.est_credits),
             forge_core::fiat::note_credits(est.est_credits)
         ));
@@ -579,7 +594,9 @@ async fn push_one(
     }
     let before = ledger.budget.remaining();
     ledger.budget.charge(est.est_credits, what)?;
-    let guard = before.map(|b| b.saturating_sub(est.overhead()));
+    // The run's budget is always capped (`Budget::for_run`); an uncapped ledger still never
+    // pushes without the helper's guard.
+    let guard = before.map_or(u64::MAX, |b| b.saturating_sub(est.overhead()));
     let traced = ledger.traced_balance().await;
     let pushed = p.push(guard);
     let measured = ledger.reconcile().await;

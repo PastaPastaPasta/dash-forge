@@ -64,7 +64,7 @@ gitcfg() {
     n=$((n + 1))
 }
 # No cost settings here: forge-import enforces --max-spend on every write itself, and
-# runs its pushes with `-c dash.confirm=never` after pricing them.
+# hands each push what the cap has left as the helper's hard cap (`dash.confirm=refuse`).
 
 export DASH_FORGE_STORAGE_CONFIG="$FORGE_STORAGE_CONFIG"
 rm -f "$DASH_FORGE_STORAGE_CONFIG"
