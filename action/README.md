@@ -9,19 +9,18 @@ Each run is **idempotent** (running it again writes nothing and costs nothing) a
 ## Quick start
 
 1. **Create the destination repository and an identity to sign with.** Follow [Mirror a GitHub repository](../docs/guides/mirror-a-github-repo.md) for the first import. The Action can also create the repository on its first run, when `repo` is a bare name or names the signer as the owner.
-2. **Make a runner key.** The best choice is a *limited runner key*: it can spend at most its budget (0.5 DASH by default), only on Forge, and only until it expires (365 days by default). Make one with `dg auth export --new-key` ([guide](../docs/guides/mirror-a-github-repo.md#the-ci-secret)) or the [setup wizard](https://forge.dashhq.org/mirror/). The alternative is a **separate CI-only identity** with a small balance, added to the repository as a **maintainer** (`dg collab add … --role maintainer`). A writer also works, but cannot publish releases, and Forge does not trust a writer's imported numbers: issues opened on the mirror then start again from a low number instead of continuing GitHub's (#7762 after #7761). The trade-off is exposure: a leaked maintainer key can also change protected branches and the repo's settings, not just mirror. Do not give CI your main identity file, because it holds your master key. See [Identity and keys](../docs/guides/identity-and-keys.md).
+2. **Make a runner key.** The best choice is a *limited runner key*: it can spend at most its budget (0.5 DASH by default), only on Forge, and only until it expires (365 days by default). Make one with `dg auth export --new-key` ([guide](../docs/guides/mirror-a-github-repo.md#the-ci-secret)) or the [setup wizard](https://forge.dashhq.org/mirror/). The alternative is a **separate CI-only identity** with a small balance, added to the repository as a **maintainer** (`dg collab add … --role maintainer`); its identity file has no key budget, so the Action takes it only with `allow-unlimited-key: 'true'`. A writer also works, but cannot publish releases, and Forge does not trust a writer's imported numbers: issues opened on the mirror then start again from a low number instead of continuing GitHub's (#7762 after #7761). The trade-off is exposure: a leaked maintainer key can also change protected branches and the repo's settings, not just mirror. Do not give CI your main identity file, because it holds your master key. See [Identity and keys](../docs/guides/identity-and-keys.md).
 3. **Add repository secrets** (Settings → Secrets and variables → Actions):
-   - `DASH_FORGE_KEY`: the runner key, `dfk1:<network>:<identityId>:<keyId>:<wif>`. The contents of a bridge-format identity JSON file also work.
+   - `DASH_FORGE_KEY`: the runner key, `dfk1:<network>:<identityId>:<keyId>:<wif>`. The Action refuses the contents of a bridge-format identity JSON file, because its keys have no budget, unless you set `allow-unlimited-key: 'true'`.
    - For bucket storage: `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`, or `PINNING_TOKEN`.
 4. **Add the workflow** as `.github/workflows/forge-mirror.yml`:
 
 ```yaml
 name: Forge mirror
 on:
+  # Only people with write access can start these. Issue, comment and pull request
+  # events are left out on purpose: see "Mirroring issues and pull requests" below.
   push: { branches: ['**'], tags: ['**'] }
-  issues: { types: [opened, edited, closed, reopened, labeled, unlabeled] }
-  issue_comment: { types: [created] }
-  pull_request_target: { types: [opened, edited, closed, reopened, synchronize] }
   release: { types: [published, edited] }
   schedule: [{ cron: '17 3 * * *' }]     # daily reconcile
   workflow_dispatch:
@@ -38,7 +37,7 @@ jobs:
           repo: dash://<owner identity id>/project
           network: devnet                # Forge's network today (the default)
           devnet-name: sakura
-          sync: code,releases,issues,prs
+          sync: code,releases
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com
           s3-region: auto
@@ -52,9 +51,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-No `actions/checkout` step is needed. The Action keeps its own bare mirror of the GitHub repository and never runs code from it, so `pull_request_target` is safe here: pull requests from forks are mirrored, but none of their code runs with your secrets.
+No `actions/checkout` step is needed. The Action keeps its own bare mirror of the GitHub repository and never runs code from it.
 
 Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to see the estimate before you spend anything.
+
+### Mirroring issues and pull requests
+
+This is opt-in, because it lets anyone spend your DASH. Anyone with a GitHub account can open an issue, comment, or send a pull request to a public repository. Whatever they write is stored permanently on Dash Platform, fork pull request heads included, and you pay for it. `cost-cap` limits each run, not the total.
+
+- **Daily (recommended).** Add `issues,prs` to `sync` and keep the triggers above. The daily `schedule` run picks up new issues, pull requests and comments. Strangers can then make you pay for at most one run a day, up to `cost-cap`.
+- **As they happen.** Also add these triggers. Then every issue, comment or pull request event starts a run, and each run can spend up to `cost-cap`. Only the runner key's budget limits the total, so use a limited key with a small budget. Don't do this on a busy public repository.
+
+  ```yaml
+    issues: { types: [opened, edited, closed, reopened, labeled, unlabeled] }
+    issue_comment: { types: [created] }
+    pull_request_target: { types: [opened, edited, closed, reopened, synchronize] }
+  ```
+
+  `pull_request_target` doesn't run anything from the pull request here: the Action never checks out or runs the mirrored code, so a fork's code never runs with your secrets.
 
 ## Inputs
 
@@ -69,6 +83,7 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 | `s3-virtual-hosted` | `false` | `true`: virtual-hosted addressing (`https://<bucket>.<endpoint host>/<key>`), the same as `dg storage add --virtual-hosted`. Use it for AWS S3, which deprecates path-style. |
 | `pinning-endpoint` | | `ipfs-pinning`: Pinning Service API base URL. |
 | `ipfs-api` | `http://127.0.0.1:5001` | `ipfs-pinning`: the kubo RPC API the job runs, for example as a service container. |
+| `allow-unlimited-key` | `false` | `true`: accept an identity file as `DASH_FORGE_KEY`. Its keys have no spending budget, so nothing but its balance limits what runs can spend in total. By default the Action refuses one and needs a `dfk1:` runner key, whose budget Platform enforces. |
 | `replicas` | `1` | Storage confirmations a push needs. The Action never falls back to Platform storage silently. |
 | `cost-cap` | `0.05` | Maximum DASH one run may spend (see below). |
 | `dry-run` | `false` | `true`: list, compare and estimate, and write nothing. |
@@ -163,7 +178,7 @@ A `partial` run adds a *Skipped (retried next run)* row and a warning. A failed 
 ## Security
 
 - Grant the job only `contents: read, issues: read, pull-requests: read`. The Action writes to Dash Platform, never to GitHub.
-- **Anyone who can open an issue, comment or send a pull request can make a run spend.** Their content is stored permanently on-chain, fork PR heads included, and you pay for it: up to `cost-cap` per event, until the runner key's budget runs out. That budget is the real limit, so keep it small and use a limited key. On a busy public repository, drop the `issues`, `issue_comment` and `pull_request_target` triggers and let the daily `schedule` run pick up the changes, or remove `issues,prs` from `sync`.
+- **Anyone who can open an issue, comment or send a pull request can make a run spend** once `issues,prs` are in `sync`. Their content is stored permanently on-chain, fork PR heads included, and you pay for it. The workflow above leaves out the issue, comment and pull request triggers, so strangers can make you pay for at most the daily `schedule` run, up to `cost-cap`. If you add those triggers ([Mirroring issues and pull requests](#mirroring-issues-and-pull-requests)), each event can spend up to `cost-cap`, until the runner key's budget runs out. That budget is the real limit, so keep it small and use a limited key. The Action refuses a key without a budget (an identity file) unless `allow-unlimited-key: 'true'`.
 - Secrets are passed through `env:` and are never printed. A `dfk1:` key's WIF, and any secret field of an identity JSON, is masked in the log. An identity JSON is written to a `0600` file in `$RUNNER_TEMP` and deleted at the end of the job, even when the job fails.
 - The storage secrets are never written to disk. The storage profile holds `env:S3_SECRET_ACCESS_KEY`-style references, which are resolved when the push runs.
 - Every input is validated before anything runs, and inputs reach the scripts only as environment variables, never as text inside a script.

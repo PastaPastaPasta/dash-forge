@@ -298,7 +298,7 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
   git config --global dash.confirm auto             # auto | always | never | refuse
   ```
   Without a terminal (CI), a push over the threshold stops with [`E801`](../errors.md#e801) rather than spending. Before it uploads anything, a push also checks that your balance and your key's remaining budget cover the estimate ([`E401`](../errors.md#e401) / [`E402`](../errors.md#e402)); a push resumed after an interruption quotes only the chunks left.
-- **`forge-import --dry-run`** estimates a whole GitHub import, and `--max-spend` caps it.
+- **`forge-import --dry-run`** estimates a whole GitHub import, and `--max-spend` caps it. Without `--max-spend`, a run is capped at the estimate it shows you.
 - **`dg init` and `dg repo create`** stop before creating anything when no storage is chosen, and quote what Platform storage would cost for this repository ([E508](../errors.md#e508)).
 - **The web app** shows the price on every button that signs (repository, issue, comment, state change, review, member, star, release, key top-up), with refunds for deletes. After each write a toast shows the actual balance change. **Settings → Spend** keeps a local ledger in this browser: month and all-time totals by repository, and estimates that missed by more than 25 %.
 - **Limited keys cap spending.** A browser key can spend at most its budget (0.05 DASH by default), and a CI runner key its own (0.5 DASH). Platform enforces the budget at consensus, whatever the software does. See [Identity and keys](identity-and-keys.md#limited-keys).

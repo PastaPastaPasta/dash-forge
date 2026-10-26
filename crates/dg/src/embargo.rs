@@ -971,7 +971,8 @@ async fn tag_and_release(
             .into())
         }
         None => {
-            let argv = crate::pr::push_argv(ctx, remote, commit, &full);
+            let argv =
+                crate::pr::push_argv(ctx, remote, commit, &full, crate::pr::YesCap::Unquoted);
             crate::pr::push_to(
                 cwd,
                 &argv,

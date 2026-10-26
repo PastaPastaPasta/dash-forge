@@ -83,6 +83,8 @@ The message lists the conflicting files.
 
 **What to do:** run the same command again later: skipped items are retried and nothing already written is written twice. The standalone `forge-import` binary (and the GitHub Mirror Action) reports this as status `partial` with exit code 4.
 
+`dg pr merge --override-policy` reports E106 when the merge landed but the policy-bypass event that records it did not (`--json` status `merged_bypass_unrecorded`). The merge stands, but readers can't see that it bypassed the branch rules. **What to do:** run `dg pr merge <owner>/<repo> <n> --override-policy --record-bypass`. On a merged PR whose merge no bypass event names, it records the rules not met as that merge's bypass (after asking, with its cost) and writes nothing else.
+
 ## E107
 
 **Suggestion not applicable.** `dg pr suggestion apply` could not apply a review suggestion (a ```` ```suggestion ```` block) to the PR's branch. The message says which. The comment may be on an older head, or on the old side of the diff. It may name lines the file no longer has. Two suggestions may touch the same lines. Or the comment may have no suggestion block at all. Nothing was committed or pushed.
@@ -528,9 +530,11 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 ## E801
 
-**Stopped by the cost guard.** This push costs more than `dash.costWarnThreshold` (0.05 DASH when unset), or it would store more than 1 MiB of packs permanently on Platform while `dash.storage` is unset, or `dash.confirm = always`, and there is no terminal to confirm on (CI, a GUI client). The helper never assumes yes.
+**Stopped by the cost guard.** This push costs more than `dash.costWarnThreshold` (0.05 DASH when unset), or it would store more than 1 MiB of packs permanently on Platform while `dash.storage` is unset, or `dash.confirm = always`, and there is no terminal to confirm on (CI, a GUI client). The helper never assumes yes. The guard weighs the whole push once, before anything is stored: the public pack and each members-only branch's pack together, the browse and history indexes, and every ref update, including deletes and tags or branches that point at commits already stored (`git push --tags` with 300 of those costs about 0.28 DASH in ref updates alone). A push refused here stored and paid for nothing, except the key letters a push that starts a branch for fewer people sends first (the refusal's note says so). When only an optional part is over the limit (a history index or a missing browse index the push would add), the push goes ahead without it and says so; `dg repo reindex` publishes it later.
 
 **What to do:** add your own storage (`dg storage add`, then `dg storage use`) so packs go to your bucket and only the manifest and refs are paid on Platform. Or accept the price for this push with `git -c dash.confirm=never push`. If the price is what stopped it, you can also raise `dash.costWarnThreshold` (`off` turns the threshold off). If it was the 1 MiB rule (`dash.storage` unset), raising the threshold does not help: choose storage, or say Platform is what you want with `git config dash.storage platform`.
+
+`dg pr merge --yes`, `dg pr revert --yes` and the source-branch delete of `--delete-branch` hand the helper the push's share of the price they quoted as a hard cap: `--yes` approves that much and no more, and a `dash.confirm=refuse` cap of your own still applies when it is lower. The merge and the revert quote the push at the helper's own price, from a dry run of it (when that cannot be read, at a calibrated figure for a few KiB of new objects). A push that costs more than the quote is refused with E801 before anything is stored or paid for. Run the command again without `--yes` to see the push's own price and confirm it.
 
 ## E802
 

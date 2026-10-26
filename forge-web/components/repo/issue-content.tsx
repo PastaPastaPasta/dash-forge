@@ -69,7 +69,7 @@ import {
 import type { Holdings } from '@/lib/rules'
 import { capabilitiesOf } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
-import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewDelete, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -98,7 +98,7 @@ import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetC
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
-import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
+import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, editCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -603,13 +603,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         return pending.apply ? sumPreviews([def, apply]) : def
       }
       case 'editIssue':
-        return previewReplace('issue', { title: pending.title, body: pending.body })
+        return editCost(home.repo, 'issue', { title: pending.title, body: pending.body })
       case 'editComment':
-        return previewReplace('comment', { body: pending.body })
+        return editCost(home.repo, 'comment', { body: pending.body })
       case 'deleteComment':
         return previewDelete('comment')
       case 'makePublic':
-        return pending.id === null ? previewReplace('issue', { title: issue.title, body: issue.body }) : previewReplace('comment', { body: timelineComment(timeline, pending.id)?.body ?? '' })
+        return pending.id === null ? editCost(home.repo, 'issue', { title: issue.title, body: issue.body }) : editCost(home.repo, 'comment', { body: timelineComment(timeline, pending.id)?.body ?? '' })
       case 'hide': {
         const hide = hideCost(home.repo, pending, eventFirst)
         const extra = pending.closeAndLock ? [...(open ? [stateCost] : []), ...(meta.locked ? [] : [stateCost])] : []

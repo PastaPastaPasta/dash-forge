@@ -68,7 +68,8 @@ describe('WorkflowStep defaults (QW4-045)', () => {
     expect(host.textContent).toMatch(/above the Action's default of 0\.05 DASH because the first run copies everything/)
     await act(async () => collabBox().click())
     expect(yaml()).toContain("sync: 'code,releases,labels,issues,prs'")
-    expect(yaml()).toContain('pull_request_target')
+    // picked up by the daily run: no trigger a stranger can fire
+    expect(yaml()).not.toContain('pull_request_target')
   })
 
   it('puts the Copy button in a bar above the YAML, not over it', async () => {

@@ -127,7 +127,7 @@ Useful flags (see `forge-import --help`):
 |---|---|
 | `--repo <owner/name or name>` | The destination. The default is the GitHub name, owned by you; it is created when missing. |
 | `--sync code,issues,prs,releases,labels` | What to mirror (default: all). |
-| `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. |
+| `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. Without `--max-spend`, the cap is the estimate the run prints (and asks you to confirm, unless `--yes`): a run never spends more than you approved, and one that would is stopped before that write; re-running prices what is left. |
 | `--state <file>` | Incremental state: the next run asks GitHub only for issues, PRs and comments updated since this run started. |
 | `--dry-run` | Price only. |
 | `--include-label-definitions` | A private destination only: mirror the label definitions too. Their names, colours and descriptions are not encrypted, so they are left out by default; the labels set on issues and PRs are encrypted either way. |
@@ -251,7 +251,7 @@ The Action signs with the `DASH_FORGE_KEY` repository secret (Settings → Secre
   jq '.identityKeys | length' ci-identity.json    # must print 1
   ```
 
-  Paste the file's contents as the secret. This lowers the risk but does not remove it: a leaked HIGH key can sign documents and spend the identity's credits until you disable it. Better still, use a **separate identity** with a small balance, added to the repository as a maintainer (`dg collab add <owner>/<repo> <ci identity id> --role maintainer`; a writer works too, but cannot publish releases). Then a leak costs only that balance. See [Identity and keys](identity-and-keys.md).
+  Paste the file's contents as the secret, and set `allow-unlimited-key: 'true'` on the Action's step: its keys have no budget, so the Action refuses an identity file without that input. This lowers the risk but does not remove it: a leaked HIGH key can sign documents and spend the identity's credits until you disable it. Better still, use a **separate identity** with a small balance, added to the repository as a maintainer (`dg collab add <owner>/<repo> <ci identity id> --role maintainer`; a writer works too, but cannot publish releases). Then a leak costs only that balance. See [Identity and keys](identity-and-keys.md).
 
 Add your storage secrets too, for example `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` (or `PINNING_TOKEN`).
 
@@ -262,10 +262,8 @@ Save this as `.github/workflows/forge-mirror.yml` in the GitHub repository. Repl
 ```yaml
 name: Forge mirror
 on:
+  # Only people with write access can start these (issue and PR events: see below).
   push: { branches: ['**'], tags: ['**'] }
-  issues: { types: [opened, edited, closed, reopened, labeled, unlabeled] }
-  issue_comment: { types: [created] }
-  pull_request_target: { types: [opened, edited, closed, reopened, synchronize] }
   release: { types: [published, edited] }
   schedule: [{ cron: '17 3 * * *' }]     # daily reconcile
   workflow_dispatch:
@@ -284,7 +282,7 @@ jobs:
           repo: dash://<owner identity id>/<repo name>
           network: devnet                 # Forge's network today (also the Action's default)
           devnet-name: sakura
-          sync: code,releases,issues,prs
+          sync: code,releases
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com
           s3-region: auto
@@ -298,7 +296,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-No `actions/checkout` step is needed: the Action keeps its own bare mirror of the GitHub repository and never runs code from it, so `pull_request_target` is safe here.
+No `actions/checkout` step is needed: the Action keeps its own bare mirror of the GitHub repository and never runs code from it.
+
+To mirror issues and pull requests too, add `issues,prs` to `sync`: the daily run picks them up. Anyone with a GitHub account can open one, and you pay to store it, so the workflow leaves out the `issues`, `issue_comment` and `pull_request_target` triggers that would start a paid run on every such event. The Action's README explains [that opt-in and its risk](../../action/README.md#mirroring-issues-and-pull-requests).
 
 Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to see the estimate before you spend anything.
 
