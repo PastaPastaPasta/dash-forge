@@ -136,9 +136,8 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // ECON-05: short profile create 31.62M as the member's first forge-meta write.
   // Its contract nonce is priced separately by CONTRACT_FIRST_CREDITS.
   profile: 24_000_000,
-  // UPDATE-2 (the passkey vault): not measured yet. Yappr's entries on sakura paid 28–31M later and
-  // 46–50M first; Forge's 256-byte ciphertext is 80–160 bytes longer (≈2–4M). Its byte fields are
-  // in the base (they are not text). Re-measure with the live test.
+  // UPDATE-2 (the passkey vault), measured on testnet (2026-10-26, passkey-vault.live.test.ts): a
+  // later entry 33.11M, an identity's first 42.9M–51.5M. Its byte fields are in the base (not text).
   vaultEntry: 34_000_000,
 }
 
@@ -214,8 +213,8 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   protectedRefUpdate: { target: 7_000_000, repo: 23_000_000 },
   packManifest: { repo: 47_000_000 },
   packMirror: { repo: 16_000_000 },
-  // The owner's first entry builds its `byCredential` subtree (Yappr: 46–50M first vs 28–31M).
-  vaultEntry: { author: 17_000_000 },
+  // The owner's first entry builds its `byCredential` subtree: 51.5M first vs 33.1M on testnet.
+  vaultEntry: { author: 18_000_000 },
 }
 
 /**
@@ -294,8 +293,8 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
   webhook: -65_000_000,
   // ECON-05: a short profile delete refunded 17.25M.
   profile: -16_000_000,
-  // UPDATE-2: Yappr's entry deletes refunded about 23–35M; the low end until Forge's are measured.
-  vaultEntry: -23_000_000,
+  // UPDATE-2: entry deletes refunded 26.7M and 37.0M on testnet (the last one more); the low end.
+  vaultEntry: -26_000_000,
 }
 
 /**

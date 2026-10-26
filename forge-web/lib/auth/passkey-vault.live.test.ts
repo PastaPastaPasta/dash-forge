@@ -1,15 +1,15 @@
 /**
- * The passkey vault, live on a devnet with a software authenticator (the vendored core's fake
+ * The passkey vault, live on testnet or a devnet with a software authenticator (the vendored core's fake
  * adapter stands in for Face ID or a phone; everything else is Forge's own code: the Platform port
  * with proved reads, the writes through the WriteEngine, the chain check on every open, the vault
  * session). SKIPPED by default (real spend: it registers and disables a key, and writes, replaces
  * and deletes passkey entries):
  *
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
- *     pnpm exec vitest run lib/auth/passkey-vault.live.test.ts
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=testnet pnpm exec vitest run lib/auth/passkey-vault.live.test.ts
+ *   (or NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=<name>)
  *
- * Needs the RELAY test identity of the devnet (`~/.config/dash-forge/test-identities/devnet-sakura/
- * RELAY.identity.json`), or the identity file named by FORGE_WALLET_IDENTITY_FILE, with about
+ * Needs the network's RELAY test identity (`~/.config/dash-forge/test-identities/<testnet|devnet-
+ * name>/RELAY.identity.json`), or the identity file named by FORGE_WALLET_IDENTITY_FILE, with about
  * 0.05 DASH of credits. It also needs `vaultEntry` in the deployed forge-meta
  * (`deploy-v2.mjs --update meta`); until that lands the test says so and ends before it spends.
  *
@@ -36,9 +36,10 @@ import { fakePasskeyAdapter } from '../vendor/platform-auth/passkey-vault/__fixt
 import { AuthController } from './controller'
 import { vaultEntryDeployed } from './passkey-vault/deployed'
 
-const DEVNET = NETWORKS.devnet.devnetName ?? ''
-const FILE = process.env['FORGE_WALLET_IDENTITY_FILE'] ?? join(homedir(), '.config/dash-forge/test-identities', `devnet-${DEVNET}`, 'RELAY.identity.json')
-const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet' && existsSync(FILE)
+const network = DEFAULT_NETWORK
+const FILE = process.env['FORGE_WALLET_IDENTITY_FILE'] ?? join(homedir(), '.config/dash-forge/test-identities', NETWORKS[network].key, 'RELAY.identity.json')
+// Never on mainnet: it spends real credits.
+const LIVE = process.env['FORGE_LIVE'] === '1' && network !== 'mainnet' && existsSync(FILE)
 
 /** Credits to DASH, for the printed lines. */
 const dash = (credits: bigint): string => (Number(credits) / 1e11).toFixed(6)
@@ -47,13 +48,12 @@ describe.skipIf(!LIVE)('live passkey vault (software authenticator, forge-meta v
   it(
     'add, add, sign in on a new device, re-seal, remove, cleanup',
     async () => {
-      await evoSdkService.initialize({ network: 'devnet', contractIds: [], timeoutMs: 30000 })
+      await evoSdkService.initialize({ network, contractIds: [], timeoutMs: 30000 })
       const sdk = evoSdkService.getSdk()
-      const forge = NETWORKS.devnet.v2!
-      const network = 'devnet' as const
+      const forge = NETWORKS[network].v2!
       if (forge.meta === undefined || !(await vaultEntryDeployed(sdk, forge.meta))) {
         // eslint-disable-next-line no-console
-        console.log('SKIPPED: forge-meta on this devnet has no vaultEntry yet (deploy-v2.mjs --update meta is pending). Nothing was spent.')
+        console.log('SKIPPED: forge-meta on this network has no vaultEntry yet (deploy-v2.mjs --update meta is pending). Nothing was spent.')
         return
       }
 
