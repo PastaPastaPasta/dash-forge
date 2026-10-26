@@ -182,7 +182,7 @@ fn validate_devnet_name(name: &str) -> Result<()> {
     let ok_chars = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     if !ok_chars || name.starts_with('-') || name.ends_with('-') {
         return Err(Error::Config(format!(
-            "invalid devnet name {name:?}: use letters, digits and inner hyphens (e.g. `sakura`)"
+            "invalid devnet name {name:?}: use letters, digits and inner hyphens (e.g. `my-devnet`)"
         )));
     }
     // These alias a real network's quorum host (quorums.mainnet.networks.dash.org).
@@ -1376,10 +1376,10 @@ mod tests {
             t.network.quorum_base_url(),
             "https://quorums.sakura.networks.dash.org"
         );
-        // forge-contracts/deployments/devnet-sakura.json records the network only until the
-        // RC2 registration adds its `v2` record (web constants.test.ts checks the same file).
+        // forge-contracts/deployments/devnet-sakura.json keeps its record after the network went
+        // down (2026-10-24), marked retired (web constants.test.ts checks the same file).
         let file = deployment("devnet-sakura").unwrap().unwrap();
-        assert!(!file.retired);
+        assert!(file.retired);
         assert_eq!(t.v2, file.v2);
     }
 
@@ -1391,9 +1391,14 @@ mod tests {
         let live = suggested_v2_network().expect("a live network is deployed");
         assert!(notice.contains(&live.dg_flags()), "{notice}");
         assert!(!notice.contains("--devnet-name moutai"), "{notice}");
-        // Live networks get none.
+        // sakura went down after testnet's registration and names it; live networks get none.
+        let sakura =
+            retired_notice(&Network::from_key("devnet-sakura")).expect("sakura is retired");
+        assert!(
+            sakura.contains(&Network::Testnet.dg_flags()) || sakura.contains("testnet"),
+            "{sakura}"
+        );
         assert!(retired_notice(&Network::Testnet).is_none());
-        assert!(retired_notice(&Network::from_key("devnet-sakura")).is_none());
     }
 
     #[test]

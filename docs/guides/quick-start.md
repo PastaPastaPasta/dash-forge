@@ -1,6 +1,6 @@
 # Quick start
 
-This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **devnet sakura**, where Dash is free, so you can try everything without spending real money.
+This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **testnet**, where Dash is free, so you can try everything without spending real money.
 
 You will:
 
@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is waiting for the network to confirm your identity (or, if you build from source, the first build).
 
-> **Which network?** The commands target devnet **sakura**, a test network, which forge.dashhq.org also uses. The fees below were measured on sakura where they say so (2026-10-01), else on the retired devnet bonsia; [Costs](costs.md) has both. Testnet and mainnet have no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
+> **Which network?** The commands target **testnet**, a test network and the tools' default, which forge.dashhq.org also uses. The fees below were measured on Platform v5 test networks before Forge reached testnet (2026-10-01), or on the retired devnet bonsia where they say so; [Costs](costs.md) has both. Mainnet has no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
 
 ---
 
@@ -69,30 +69,30 @@ A Dash Platform **identity** is your account on Forge. It holds your keys and yo
 **Forge never funds or creates identities for you.** Create one from the terminal:
 
 ```sh
-dg auth new --network devnet --devnet-name sakura
+dg auth new
 ```
 
 1. `dg` shows a **12-word recovery phrase**. Write the words down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet sakura use the faucet at <https://faucet.sakura.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: the faucet's 10 test DASH all become credits (a balance of about 9.998 DASH), where the sample below sent 0.05.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on testnet use the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org). A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: whatever a faucet sends all becomes credits, where the sample below sent 0.05.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
-✓ identity ExampLeidentityExampLeidentityExampLeidentEx created on devnet-sakura
+✓ identity ExampLeidentityExampLeidentityExampLeidentEx created on testnet
   key #5: limited, 0.25 DASH budget, only on Dash Forge, expires in 180 day(s)
-  stored in macOS Keychain (dash-forge/devnet-sakura/ExampLeidentityExampLeidentityExampLeidentEx)
+  stored in macOS Keychain (dash-forge/testnet/ExampLeidentityExampLeidentityExampLeidentEx)
   balance 0.0499 DASH
 ```
 
-On a devnet the deposit is proven with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
+`dg` proves the deposit with an InstantSend lock when it can, which takes seconds, and otherwise with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
 
 > **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
 - **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
-- **With the Dash bridge**: <https://bridge.thepasta.org/?network=devnet-sakura>, then **Download Key Backup**, once the bridge offers devnet sakura (it lists moutai today).
+- **With the Dash bridge**: <https://bridge.thepasta.org>, on testnet, then **Download Key Backup**.
 
-To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). With today's wallets that works only in Dash Wallet iOS on devnet; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
+To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). No released wallet can answer yet, and today's development builds need a fix first; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 
 ---
 
@@ -101,24 +101,24 @@ To sign the *browser* in with an identity you already have, the web app also off
 `dg auth new` signs you in. With an identity you already have (a bridge `dash-identity-<id>.json`, or the 12 words), sign in once per computer:
 
 ```sh
-dg auth login --network devnet --devnet-name sakura ~/Downloads/dash-identity-<id>.json
-# or: dg auth login --network devnet --devnet-name sakura --mnemonic
+dg auth login ~/Downloads/dash-identity-<id>.json
+# or: dg auth login --mnemonic
 ```
 
 ```
-Registering a limited key for this computer on ExampLeidentityExampLeidentityExampLeidentEx (devnet-sakura):
+Registering a limited key for this computer on ExampLeidentityExampLeidentityExampLeidentEx (testnet):
   it can spend at most 0.25 DASH, only on Dash Forge, until it expires in 180 day(s)
   one identity update, ~0.0005 DASH; the master key signs once and is not stored
 Register the key? [y/N] y
-✓ signed in as ExampLeidentityExampLeidentityExampLeidentEx on devnet-sakura
+✓ signed in as ExampLeidentityExampLeidentityExampLeidentEx on testnet
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
   with encryption key #4: private repositories you are a member of open with it
-  stored in macOS Keychain (dash-forge/devnet-sakura/ExampLeidentityExampLeidentityExampLeidentEx)
+  stored in macOS Keychain (dash-forge/testnet/ExampLeidentityExampLeidentityExampLeidentEx)
   balance 0.0494 DASH
   the identity file is no longer needed here; keep it (or the words) offline
 ```
 
-The prompt defaults to no, so pressing Enter alone declines: type `y`. The quote is an upper bound: on devnet sakura the update was charged about 0.00047 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
+The prompt defaults to no, so pressing Enter alone declines: type `y`. The quote is an upper bound: on a Platform v5 test network the update was charged about 0.00047 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
 
 The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key, with your identity's encryption key beside it for private repositories (never the master key). Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
@@ -176,14 +176,14 @@ dg init                   # = dg repo create --push, for this directory
 ```
 
 ```
-Creating Exam…/my-project on devnet-sakura
+Creating Exam…/my-project on testnet
   repo + maintainer + config     ~0.002 DASH
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)
 Proceed? [Y/n] y
 ✓ created  https://forge.dashhq.org/Exam…/my-project
 ✓ remote 'origin' → dash://Exam…/my-project
-✓ git config dash.storage=r2-main, dash.network=devnet, dash.devnetName=sakura
+✓ git config dash.storage=r2-main
 dash: Exam…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
 dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0066 DASH
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
@@ -201,9 +201,9 @@ branch 'main' set up to track 'origin/main'.
 Open it: https://forge.dashhq.org/Exam…/my-project
 ```
 
-(The charges are the ones measured on devnet sakura on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
+(The charges are the ones measured on a Platform v5 test network on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On testnet, DASH is test money; when `dg` can fetch a price it adds what the same charge would cost on mainnet (`≈ $… on mainnet`). See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on sakura, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH**, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
 
 What it does, in order:
 
@@ -246,7 +246,7 @@ git push -u origin main
 Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key. On a computer where `dg` has recorded no network, name it in the clone, which keeps it in the clone's git config:
 
 ```sh
-git clone -c dash.network=devnet -c dash.devnetName=sakura dash://<owner>/<repo>
+git clone -c dash.network=testnet dash://<owner>/<repo>
 ```
 
 The repository page's **Clone** box shows this command, with the network filled in.

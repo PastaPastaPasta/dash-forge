@@ -75,6 +75,7 @@ import {
   filterCount,
   LabelChipFilter,
   LabelFilter,
+  LabelsIncompleteNote,
   MilestoneFilter,
   Pager,
   PastLastPage,
@@ -395,6 +396,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       </div>
 
       <SearchedNote searchedOf={data?.searchedOf} noun="issues" onMore={reload} oldest={query.sort === 'oldest'} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
+      <LabelsIncompleteNote complete={data?.labelsComplete} />
 
       <Pager label="Issue pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={ISSUE_PAGE_SIZE} onPage={(page) => change({ page })} />
 

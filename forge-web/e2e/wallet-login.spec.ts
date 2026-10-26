@@ -80,7 +80,7 @@ test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for 
     if (E2E_NETWORK !== 'testnet') await expect(wallet).toContainText(/testnet/i)
     await wallet.click()
     await expect(page.getByTestId('request-countdown')).toContainText('Expires in')
-    await expect(page.getByTestId('wallet-support')).toContainText(E2E_NETWORK === 'testnet' ? /testnet development build/i : /arrives when Forge is on testnet/i)
+    await expect(page.getByTestId('wallet-support')).toContainText(E2E_NETWORK === 'testnet' ? /testnet development build/i : /works on testnet only/i)
     await expect(page.getByTestId('wallet-deep-link')).toHaveCount(0)
     await expect(page.getByText(/pairing|shows code/i)).toHaveCount(0)
     await shot(page, 'wallet-login-01-request')

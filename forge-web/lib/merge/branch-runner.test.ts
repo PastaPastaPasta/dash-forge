@@ -77,6 +77,27 @@ describe('a commit to the PR branch', () => {
     expect(calls.some((c) => c.startsWith('ref:'))).toBe(false)
   })
 
+  it('pays for nothing when the branch moved, is gone or has diverged before the upload', async () => {
+    for (const t of ['dd'.repeat(20), null]) {
+      tip = t
+      calls.length = 0
+      await expect(runBranchCommit(deps(), null, () => undefined)).rejects.toThrow(/nothing was written/i)
+      expect(calls).toEqual([])
+    }
+  })
+
+  it('a branch that moves while the pack uploads still stops before the ref', async () => {
+    let reads = 0
+    const d = deps({
+      readBranchTip: async () => {
+        reads += 1
+        return reads === 1 ? HEAD : null
+      },
+    })
+    await expect(runBranchCommit(d, null, () => undefined)).rejects.toThrow(/no longer exists or has diverged; nothing was moved\. The pack stays stored and unused/)
+    expect(calls).toEqual(['upload', 'manifest:FORK', 'index'])
+  })
+
   it('resumes after the head update failed, without moving the branch twice', async () => {
     fail.add('head')
     let saved = null

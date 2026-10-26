@@ -377,17 +377,13 @@ export function workflowYaml(o: WorkflowOptions): string {
     ['GITHUB_TOKEN', '${{ secrets.GITHUB_TOKEN }}'],
   ]
   const src = `${DASH_FORGE_REPO.owner}/${DASH_FORGE_REPO.name}`
+  // Only events people with write access start: an issue, comment or pull request event would
+  // let anyone start a paid run. With issues and PRs mirrored, the daily run picks them up (the
+  // Action's README documents adding those triggers, and the risk).
   const triggers = [
     "  push: { branches: ['**'], tags: ['**'] }",
-    ...(o.collab
-      ? [
-          '  issues: { types: [opened, edited, closed, reopened, labeled, unlabeled] }',
-          '  issue_comment: { types: [created] }',
-          '  pull_request_target: { types: [opened, edited, closed, reopened, synchronize] }',
-        ]
-      : []),
     '  release: { types: [published, edited] }',
-    "  schedule: [{ cron: '17 3 * * *' }]     # daily reconcile",
+    o.collab ? "  schedule: [{ cron: '17 3 * * *' }]     # daily: issues, PRs and comments too" : "  schedule: [{ cron: '17 3 * * *' }]     # daily reconcile",
     '  workflow_dispatch:',
   ]
   return [

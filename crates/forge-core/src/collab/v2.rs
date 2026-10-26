@@ -3304,6 +3304,35 @@ fn pr_list_reads<'c>(
     ]
 }
 
+/// `commit_oid` as the bytes a review's `commitOid` holds, or `None` when no review can name it
+/// (not hex, or not the 20 or 32 bytes the contract's `oidWidth` admits).
+fn review_commit_bytes(commit_oid: &str) -> Option<Vec<u8>> {
+    hex::decode(commit_oid)
+        .ok()
+        .filter(|b| b.len() == 20 || b.len() == 32)
+}
+
+/// The `verdicts (patchId, commitOid, verdict)` read of a PR's reviews with `verdict` on
+/// `commit`: every field of the index pinned, so the read walks one key, by `$id`.
+fn verdict_query(
+    patch_id: [u8; 32],
+    commit: &[u8],
+    verdict: Verdict,
+) -> ([QueryFilter; 3], [QueryOrder; 3]) {
+    (
+        [
+            QueryFilter::eq("patchId", FieldValue::identifier(patch_id)),
+            QueryFilter::eq("commitOid", FieldValue::bytes(commit.to_vec())),
+            QueryFilter::eq("verdict", FieldValue::integer(verdict.code())),
+        ],
+        [
+            QueryOrder::asc("patchId"),
+            QueryOrder::asc("commitOid"),
+            QueryOrder::asc("verdict"),
+        ],
+    )
+}
+
 /// After a review read of `wanted` PRs that returned `rows` capped at [`LOOKUP_CAP`]: the PRs
 /// whose reviews are known complete, and those that must be read again. Independent of the
 /// walk's direction: a short read is complete for every PR; a full one is complete only for
@@ -5777,6 +5806,83 @@ impl<'a> Collab<'a> {
         ))
     }
 
+    /// Every member verdict (approve or request changes) on `patch_id` for `commit_oid`, read
+    /// as [`Self::reviews`] reads them, oldest first. These are the only reviews
+    /// [`count_approvals`] can count on that commit, so the approval fold over them is the fold
+    /// over every review of the PR.
+    ///
+    /// Reviews are un-gated: anyone can pad a PR's full review list past the complete read's
+    /// cap (`IncompleteRead`), which would leave its approvals unreadable. This reads the
+    /// `verdicts (patchId, commitOid, verdict)` index instead, complete, one equality read per
+    /// verdict. Consensus admits verdicts 1 and 2 only from a maintainer or role-1 writer
+    /// (`memberVerdict`; a non-member's are 4 and 5), so a non-member cannot add to it.
+    pub async fn member_verdicts(
+        &self,
+        repo: &RepoRef,
+        patch_id: &str,
+        commit_oid: &str,
+    ) -> Result<Vec<Review>> {
+        let collab = self.collab_contract(repo).await?;
+        let docs = self
+            .member_verdict_docs(&collab, patch_id, commit_oid)
+            .await?;
+        let (reviews, _) = self.readable_reviews(repo, docs).await?;
+        Ok(reviews.into_iter().map(|(_, r)| r).collect())
+    }
+
+    /// The documents of [`Self::member_verdicts`], unopened (none when no review can name
+    /// `commit_oid`).
+    async fn member_verdict_docs(
+        &self,
+        collab: &LoadedContract,
+        patch_id: &str,
+        commit_oid: &str,
+    ) -> Result<Vec<FetchedDocument>> {
+        let Some(commit) = review_commit_bytes(commit_oid) else {
+            return Ok(Vec::new());
+        };
+        let patch = platform::decode_identifier(patch_id)?;
+        let read = |verdict| {
+            let (filters, order) = verdict_query(patch, &commit, verdict);
+            async move {
+                self.client
+                    .query_all_documents(collab, DOC_REVIEW, &filters, &order)
+                    .await
+            }
+        };
+        let (approvals, changes) =
+            futures::try_join!(read(Verdict::Approve), read(Verdict::RequestChanges))?;
+        Ok(approvals.into_iter().chain(changes).collect())
+    }
+
+    /// The review `review_id` on `patch_id`, read as [`Self::reviews`] reads it, or `None`
+    /// when there is no such review on the PR or this reader cannot read it. One document
+    /// fetch, so a PR padded with reviews still finds the one it names.
+    pub async fn review_by_id(
+        &self,
+        repo: &RepoRef,
+        patch_id: &str,
+        review_id: &str,
+    ) -> Result<Option<Review>> {
+        let patch = platform::decode_identifier(patch_id)?;
+        if platform::decode_identifier(review_id).is_err() {
+            return Ok(None);
+        }
+        let collab = self.collab_contract(repo).await?;
+        let Some(doc) = self
+            .client
+            .fetch_document(&collab, DOC_REVIEW, review_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if doc.field_bytes32("patchId") != Some(patch) {
+            return Ok(None);
+        }
+        let (reviews, _) = self.readable_reviews(repo, vec![doc]).await?;
+        Ok(reviews.into_iter().next().map(|(_, r)| r))
+    }
+
     // --- reads: folded state --------------------------------------------------------
 
     /// An issue's state: its transitions' sum, and its events' labels and assignees.
@@ -5975,7 +6081,7 @@ impl<'a> Collab<'a> {
         let mut logs = self
             .feed_logs(repo, [transitions, events, author_events])
             .await?;
-        let reviews = self.complete_reviews(&collab, reviews, &page_ids).await?;
+        let (reviews, crowded) = self.complete_reviews(&collab, reviews, &page_ids).await?;
         // every review that counts (D15: a members-only verdict counts for every reader)
         let (reviews, _) = self.readable_reviews(repo, reviews).await?;
         let mut reviews = per_target(reviews, "patchId");
@@ -6017,10 +6123,15 @@ impl<'a> Collab<'a> {
             let log = logs.remove(id).unwrap_or_default();
             let mut docs = reviews.remove(id).unwrap_or_default();
             docs.sort_by(|a, b| (a.0.created_at, &a.0.id).cmp(&(b.0.created_at, &b.0.id)));
-            let patch_reviews: Vec<Review> = docs.into_iter().map(|(_, r)| r).collect();
             let merge_base = merge_base_of(&patch, &log);
             let base = base_of(&merge_base, patch.audience);
             let view = view_of(patch, log, merge_base, base);
+            let patch_reviews: Vec<Review> = if crowded.contains(&view.patch.document_id) {
+                self.member_verdicts(repo, &view.patch.document_id, &view.head)
+                    .await?
+            } else {
+                docs.into_iter().map(|(_, r)| r).collect()
+            };
             let approvals = approvals_over(&patch_reviews, &view, &oracle);
             rows.push((view, approvals));
         }
@@ -6045,14 +6156,17 @@ impl<'a> Collab<'a> {
     /// Complete the review lookup of [`Self::list_patch_views`] ([`reviews_to_reread`]): the
     /// PRs a full lookup may have cut short are read again with `patchId in [..]`, a page at
     /// a time, until a short page proves the rest complete. One request per 100 reviews,
-    /// never one per PR. A PR that fills a whole page by itself is read on its own.
+    /// never one per PR. A PR that fills a whole page by itself is left out of the rows and
+    /// returned on its own: anyone can pad its reviews, so the list reads only its member
+    /// verdicts on its head ([`Self::member_verdicts`]), all its approvals need.
     async fn complete_reviews(
         &self,
         collab: &LoadedContract,
         first: Vec<FetchedDocument>,
         page_ids: &[[u8; 32]],
-    ) -> Result<Vec<FetchedDocument>> {
+    ) -> Result<(Vec<FetchedDocument>, BTreeSet<String>)> {
         let mut out = Vec::new();
+        let mut crowded = BTreeSet::new();
         let mut rows = first;
         let mut wanted = page_ids.to_vec();
         loop {
@@ -6070,18 +6184,10 @@ impl<'a> Collab<'a> {
             wanted = reread;
             if let Some(whole) = alone {
                 wanted.retain(|id| *id != whole);
-                out.extend(
-                    self.by_target(
-                        collab,
-                        DOC_REVIEW,
-                        "patchId",
-                        &platform::encode_identifier(whole),
-                    )
-                    .await?,
-                );
+                crowded.insert(platform::encode_identifier(whole));
             }
             if wanted.is_empty() {
-                return Ok(out);
+                return Ok((out, crowded));
             }
             rows = self
                 .client
@@ -6121,14 +6227,18 @@ impl<'a> Collab<'a> {
         ))
     }
 
-    /// [`Self::approvals`] against a membership the caller already read.
+    /// [`Self::approvals`] against a membership the caller already read. The reviews are the
+    /// member verdicts on the PR's current head ([`Self::member_verdicts`]), all the fold
+    /// counts: a PR padded with other reviews keeps its approvals readable.
     pub async fn approvals_with(
         &self,
         repo: &RepoRef,
         view: &PatchView,
         oracle: &RoleOracle,
     ) -> Result<(Approvals, Vec<Review>)> {
-        let reviews = self.reviews(repo, &view.patch.document_id).await?;
+        let reviews = self
+            .member_verdicts(repo, &view.patch.document_id, &view.head)
+            .await?;
         Ok((approvals_over(&reviews, view, oracle), reviews))
     }
 
@@ -6177,7 +6287,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The branch rules at `view`'s merge ([`rules::merge_audit::audit_merge`]): the policy and
-    /// config timelines, the PR's reviews, the members, and (only when the policy then required
+    /// config timelines, the member verdicts on the merged head, the members, and (only when the policy then required
     /// checks) the runs on the merged head. `None` when the PR is not merged or its merge names
     /// no commit, and for a private repository (its config is sealed; not audited yet).
     pub async fn merge_audit(
@@ -6203,7 +6313,8 @@ impl<'a> Collab<'a> {
             self.policy_history(repo),
             crate::refs::read_config_history(self.client, &core, &scope),
             self.member_oracle(repo),
-            self.reviews(repo, &view.patch.document_id),
+            // all the audit counts: the member verdicts on the merged head
+            self.member_verdicts(repo, &view.patch.document_id, &merge_head),
         )?;
         let base = &view.merge_base.ref_name;
         let mut input = rules::merge_audit::MergeAuditInput {
@@ -11266,6 +11377,112 @@ mod tests {
         assert_eq!(got, expect);
         // A short page settles everything.
         assert!(reviews_to_reread(&walk(&[1, 2], 10), &wanted).is_empty());
+    }
+
+    /// The approvals read: the `verdicts` index with every field pinned, one read per member
+    /// verdict, in the index's own order, so the read walks one key of it.
+    #[test]
+    fn member_verdicts_are_read_on_the_verdicts_index() {
+        let collab: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../forge-contracts/contracts/mainnet/forge-collab.json"
+        ))
+        .unwrap();
+        let review = &collab["documentSchemas"]["review"];
+        let index = review["indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "verdicts")
+            .expect("the review type has a verdicts index");
+        let fields: Vec<&str> = index["properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_object().unwrap().keys().next().unwrap().as_str())
+            .collect();
+        let head = [0xab; 20];
+        for verdict in [Verdict::Approve, Verdict::RequestChanges] {
+            let (filters, order) = verdict_query([7; 32], &head, verdict);
+            let ordered: Vec<&str> = order.iter().map(|o| o.field.as_str()).collect();
+            assert_eq!(ordered, fields);
+            assert!(order.iter().all(|o| o.ascending));
+            let pinned: Vec<&str> = filters.iter().map(|f| f.field.as_str()).collect();
+            assert_eq!(pinned, fields);
+            assert!(filters.iter().all(|f| f.op == crate::platform::QueryOp::Eq));
+        }
+        // Consensus admits verdicts 1 and 2 only with `asMember` from a role ≤ 1 member: a
+        // non-member cannot add to the read.
+        let rule = review["propertyConstraints"]["memberVerdict"]["ifThenElse"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rule[0]["in"][1], serde_json::json!([1, 2]));
+        assert_eq!(rule[1]["allOf"][0]["present"], "asMember");
+        assert_eq!(
+            rule[1]["allOf"][1]["lessThanOrEqual"],
+            serde_json::json!(["mRole", 1])
+        );
+    }
+
+    /// A head no review can name reads nothing: not hex, or not the contract's 20 or 32 bytes.
+    #[test]
+    fn a_head_no_review_can_name_reads_no_verdicts() {
+        assert_eq!(review_commit_bytes(&"ab".repeat(20)), Some(vec![0xab; 20]));
+        assert_eq!(review_commit_bytes(&"CD".repeat(32)), Some(vec![0xcd; 32]));
+        assert_eq!(review_commit_bytes(""), None);
+        assert_eq!(review_commit_bytes(&"ab".repeat(21)), None);
+        assert_eq!(review_commit_bytes("not hex"), None);
+    }
+
+    /// The approval fold over a PR's member verdicts on its head is the fold over every review:
+    /// comments, non-member verdicts and reviews on other commits never count, however many.
+    #[test]
+    fn approvals_over_the_head_verdicts_equal_approvals_over_every_review() {
+        use crate::rules::v2::Membership;
+        let head = "ab".repeat(20);
+        let old = "cd".repeat(20);
+        let oracle = RoleOracle::new(vec![
+            Membership {
+                identity: "maint".into(),
+                role: Role::Maintainer,
+                created_at: 1,
+            },
+            Membership {
+                identity: "writer".into(),
+                role: Role::Writer,
+                created_at: 1,
+            },
+        ]);
+        let review = |n: u64, who: &str, verdict: u64, commit: &str| RuleReview {
+            id: format!("r{n:05}"),
+            reviewer: who.into(),
+            verdict,
+            commit_oid: commit.into(),
+            created_at: 10 + n,
+        };
+        let mut all = vec![
+            review(1, "maint", 2, &head),
+            review(2, "writer", 1, &head),
+            review(3, "maint", 1, &head),
+            review(4, "writer", 1, &old),
+            review(5, "author", 1, &head),
+            review(6, "dismissed", 1, &head),
+        ];
+        // a stranger's flood: non-member verdicts and comments on the head and elsewhere
+        all.extend((0..500).map(|n| review(100 + n, "stranger", 4 + n % 2, &head)));
+        all.extend((0..500).map(|n| review(1000 + n, "stranger", 3, &head)));
+        let dismissed = BTreeSet::from(["r00006".to_owned()]);
+        let verdicts: Vec<RuleReview> = all
+            .iter()
+            .filter(|r| (r.verdict == 1 || r.verdict == 2) && r.commit_oid == head)
+            .cloned()
+            .collect();
+        let full = count_approvals(&all, &oracle, &head, &dismissed, "author");
+        let bounded = count_approvals(&verdicts, &oracle, &head, &dismissed, "author");
+        assert_eq!(full, bounded);
+        assert_eq!(
+            bounded.approvers,
+            BTreeSet::from(["maint".to_owned(), "writer".to_owned()])
+        );
     }
 
     fn target(author: &str) -> Target {

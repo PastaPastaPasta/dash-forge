@@ -100,6 +100,7 @@ beforeEach(() => {
     searchedOf: null,
     stateComplete: true,
     labels: [],
+    labelsComplete: true,
     hidden: 0,
     hiddenBy: { malformed: 0, sealed: 0 } as never,
   }
@@ -138,6 +139,21 @@ describe('IssuesContent pinned issues (QW3-003)', () => {
     await settle()
     expect(el.querySelector('[data-testid="pins-unread"]')).toBeNull()
     expect(el.querySelectorAll('[data-testid="pinned-issue"]')).toHaveLength(1)
+  })
+})
+
+describe('IssuesContent label definitions', () => {
+  it('says the label filter is unverified when the definitions were not all read', async () => {
+    answer = { ...answer, labelsComplete: false }
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    expect(el.querySelector('[data-testid="labels-incomplete"]')?.textContent).toContain('too many label definitions to read them all')
+  })
+
+  it('says nothing when they were', async () => {
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    expect(el.querySelector('[data-testid="labels-incomplete"]')).toBeNull()
   })
 })
 

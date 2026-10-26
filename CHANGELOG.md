@@ -8,10 +8,15 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+## [0.2.0] - TODO(owner): the tagging date
+
+Dash Forge moves to **testnet**: its four contracts are registered there, and testnet is now the supported network for `dg`, `git-remote-dash`, the web app and the Actions. Devnet sakura, which v0.1.0 targeted, is down, and nothing on it was carried over. See the [release notes](docs/releases/v0.2.0.md) for networks, upgrading and known limitations.
+
 Members-only content in public repositories, Environments and the secret scan. People using older Forge builds see fewer things until they update: they leave members-only items out, and they don't count a members-only review's approval, so they may refuse a merge an up-to-date build allows. **Update to see and count members-only reviews.** [Who can read what](docs/security/audiences.md) explains the audiences, what stays public and what can still leak.
 
 ### Added
 
+- **Forge on testnet.** The production four-contract set (forge-core, forge-collab, forge-community and forge-meta) was registered on testnet (`dash-testnet-51`, Platform 5.0.0-rc.8, protocol 14) on 2026-10-26, in contract group `EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC`, from the same JSON that will be registered on mainnet. The record is `forge-contracts/deployments/testnet.json`, with its evidence in `forge-contracts/evidence/testnet/`. Testnet is every tool's default network, so `dg auth new` needs no flags.
 - **Members-only content in public repositories.** A maintainer turns it on once with `dg repo members enable` (it shows the cost first: about 0.004 DASH for 5 members), and `dg repo members status` shows who has the key. Members can then post issues, comments and reviews only members can read: maintainers, writers, triage members and readers, including members added later. Removed members keep what they could already read. CI runners are not members. Everyone can still see that something was posted, by whom, when and how large, and a review's verdict.
 - **Members-only discussion from `dg`** in public repositories with members-only content turned on: `--members` on `dg issue create`, `dg issue comment`, `dg pr comment` and `dg pr review`. Members read it in `dg issue view/list` and `dg pr view/list`; everyone else sees "#3 · members-only issue by @alice · open" and "3 members-only comments hidden". Every item in `--json` carries `"audience"` and `"readable"`. A members-only text longer than its field is stored encrypted (by maintainers and writers), and a members-only pending review is kept encrypted on disk.
 - **Readers on public repositories.** `dg collab add --role reader` works on public repositories: a reader follows the members-only discussion without pushing or merging.
@@ -26,8 +31,26 @@ Members-only content in public repositories, Environments and the secret scan. P
 
 ### Changed
 
+- **Testnet is the supported network.** forge.dashhq.org, the IPFS release build, the guides, the Mirror Action, the check action and the GitLab CI template default to testnet, and their faucet links go to the Dash testnet faucet and faucet.thepasta.org. The Mirror Action's and the check action's `devnet-name` input now defaults to empty. A workflow that set `network: devnet` and `devnet-name: sakura` must drop both. [Dash Forge moved to testnet](docs/guides/devnet-move.md) says how to re-push from a clone.
 - `dg repo view` counts git packs only: `packCount` and `packBytes` (and the `packs:` line) no longer include browse indexes, history indexes, release-asset lists or long bodies. `dg storage status` still lists every artifact.
 - Notifications and `forge-relay` webhooks never carry members-only text: they say that something happened, by whom and where. An encrypted comment or review from someone who is not a member is not shown and notifies nobody.
+
+### Fixed
+
+- **`git push` asks before the whole push, not one pack at a time.** The cost guard weighs every pack (public and members-only), every index and every ref update together, once, before anything is paid. A push of tags or branches at commits already stored (`git push --tags`), and a push that only deletes, used to write its ref updates without a question: 300 tags is about 0.28 DASH.
+- **`dg pr merge --yes` approves the price it shows, and no more.** The merge is built before the question and priced by a dry run of its push. The push is then capped at that price: a dearer push is refused (E801) before anything is paid. `dg pr revert --yes` and `--delete-branch` work the same way.
+- **`dg pr merge --override-policy` fails (E106) when the merge landed but its policy-bypass record did not**, instead of printing "merged" and exiting 0. `--record-bypass` records the missing bypass.
+- **`dg import` and `forge-import` without `--max-spend` stop at the estimate you confirmed** instead of running uncapped.
+- **The Mirror Action's recommended workflow no longer runs on issue, comment and pull request events**, which anyone can trigger. Mirroring them is an opt-in that the README explains, with its risk. An identity file as `DASH_FORGE_KEY` (no key budget) is refused unless `allow-unlimited-key: 'true'`.
+- **forge-runner retries a check's final report** with backoff. If the report still doesn't land, the runner keeps it and resends it on the next polls (up to 48), instead of marking the run done with the check left running. The jobs are not run again.
+- **The web app prices an edit of a long issue, PR or comment with its long-body storage**, so the confirmation and its balance check show what the edit costs.
+- **A push that merges every live head of a diverged branch settles it.** Before, a merge of both heads paid for its write, left the other head live and reported "lost concurrent race" on every later push until `--force`. If one of the settling updates fails, the push now says which head is still live instead of reporting nothing written.
+- **A flood of reviews can no longer block a merge.** Approvals are counted from members' verdicts on the PR's head, read on their own index, instead of from the whole review list, which anyone could pad past the complete-read cap.
+- **The web app runs only its own inline scripts in production.** Each exported page carries a second content policy that lists the SHA-256 of its inline scripts, so a script a host injects into the HTML (a CDN's analytics beacon, say) does not run beside the key vault.
+- **A browser merge or Update branch checks the base before paying for the pack**, and stops with "nothing was written" when the branch moved or diverged, instead of uploading a pack nothing could use.
+- **A partial clone's lazy blob fetch reads only the packs that hold the blobs** it needs, instead of downloading the whole repository again for each checkout, `git log -p` or blame.
+- **Issue and PR lists say when the repository's label definitions were not read completely**, instead of presenting the first page as all of them.
+- **A removed member's sealed author events on their own issues and PRs follow the late-content rule**, so they can no longer keep writing readable values under an old key.
 
 ## [0.1.0] - 2026-10-04
 
@@ -92,5 +115,6 @@ for networks, installation, verification and known limitations.
 
 See [Known limitations](docs/releases/v0.1.0.md#known-limitations) in the release notes.
 
-[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.1.0

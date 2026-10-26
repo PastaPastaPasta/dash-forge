@@ -13,7 +13,8 @@
       "enum": [
         "merged",
         "merge_recorded",
-        "already_merged"
+        "already_merged",
+        "bypass_recorded"
       ]
     },
     "pr": {
@@ -27,6 +28,13 @@
     },
     "transitionId": {
       "type": "string"
+    },
+    "eventId": {
+      "type": "string",
+      "description": "With --record-bypass: the policy-bypass event recorded."
+    },
+    "bypassRecorded": {
+      "type": "boolean"
     },
     "merged": {
       "type": "boolean"

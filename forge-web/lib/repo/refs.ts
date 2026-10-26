@@ -34,11 +34,12 @@
  *
  * Tip resolution folds a ref's full update history (both types, with the `protected` flag
  * set per source) through {@link resolveRef}, honoring as-of protected-pattern config.
- * Divergence resolution that turns on real commit ancestry (a merge superseding both racing
- * heads) needs a commit-graph predicate from the browse plane; callers may pass one via
- * `isAncestor`. Without it, linear/fast-forward/force/delete cases still resolve correctly
- * (the consensus clock, with the prevOid chain inside one block, carries those); only
- * unmerged races stay `Diverged`.
+ * Readers fold with no commit graph (`NO_ANCESTRY`), as forge-core's do (identity ancestry):
+ * a reader that held commits must not read a ref differently from one that holds none (the
+ * relay, a gateway, `dg` outside a clone). Linear/fast-forward/force/delete cases resolve
+ * through the consensus clock and the prevOid chain; a race settles when a push merges every
+ * head and names each as the `prevOid` of its own update (git-remote-dash writes one per head,
+ * forge-core `rules::settling_prev_oids`). Until then the ref stays `Diverged`.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -158,7 +159,7 @@ export function rowsOfRef(rows: readonly PlainDocument[], refNameHashHex: string
 }
 
 /** Drop repeated `$id`s, keeping the first occurrence. */
-function dedupeById(rows: readonly PlainDocument[]): PlainDocument[] {
+export function dedupeById(rows: readonly PlainDocument[]): PlainDocument[] {
   const seen = new Set<string>()
   return rows.filter((d) => {
     const id = String(d['$id'])

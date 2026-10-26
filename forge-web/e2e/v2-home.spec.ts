@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { atRoute, collectPageErrors, DEMO, E2E_DEVNET, EMPTY, readErrorBanner, routeOf, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved, skipWithoutFixture } from './helpers'
 import { quorumGuard } from './quorum-sync'
+import { E2E_NETWORK } from './network'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
 skipWithoutFixture()
@@ -24,6 +25,14 @@ test.beforeEach(quorumGuard)
 const OWNER = DEMO.owner
 const MAINTAINER = EMPTY.owner
 const NAME = process.env['E2E_V2_NAME'] ?? 'forge-v2-demo'
+// The build's network as the page names it: its key (`NETWORKS[…].key`), the quorum service's
+// host label, and the git config / dg flags of lib/view/repo-commands.ts.
+const ON_TESTNET = E2E_NETWORK === 'testnet'
+const NETWORK_KEY = ON_TESTNET ? 'testnet' : `devnet-${E2E_DEVNET}`
+const QUORUM_LABEL = ON_TESTNET ? 'testnet' : E2E_DEVNET
+const GIT_NETWORK = ON_TESTNET ? '-c dash.network=testnet' : `-c dash.network=devnet -c dash.devnetName=${E2E_DEVNET}`
+const DG_NETWORK = ON_TESTNET ? '--network testnet' : `--network devnet --devnet-name ${E2E_DEVNET}`
+const SET_NETWORK = ON_TESTNET ? 'git config dash.network testnet' : `git config dash.network devnet && git config dash.devnetName ${E2E_DEVNET}`
 
 function url(path = '', extra = '', owner = OWNER, name = NAME): string {
   const q = `owner=${owner}&name=${name}${extra}`
@@ -94,9 +103,9 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     for (const row of ['Chain data', 'Branch tip', 'File contents', 'Where the bytes came from']) {
       await expect(card.getByText(row, { exact: true })).toBeVisible()
     }
-    await expect(card.getByText(`Refs, issues and members were proven against Dash devnet-${E2E_DEVNET}.`)).toBeVisible()
-    // The devnet records a DAPI list, so a second key source is asked and must agree.
-    await expect(card.getByText(new RegExp(`quorums\\.${E2E_DEVNET}\\.networks\\.dash\\.org and .*\\(a DAPI node\\); both agreed on every one of the \\d+ quorums used`))).toBeVisible()
+    await expect(card.getByText(`Refs, issues and members were proven against Dash ${NETWORK_KEY}.`)).toBeVisible()
+    // The network records a DAPI list, so a second key source is asked and must agree.
+    await expect(card.getByText(new RegExp(`quorums\\.${QUORUM_LABEL}\\.networks\\.dash\\.org and .*\\(a DAPI node\\); both agreed on every one of the \\d+ quorums used`))).toBeVisible()
     await expect(card.getByText(/fetched the key list again to compare/)).toBeVisible()
     await expect(card.getByText(/^`?main`? =|main =/).first()).toBeVisible()
     await expect(card.getByText(/checked against Platform proofs/)).toBeVisible()
@@ -160,9 +169,9 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     // L-03 / L-21: pasted on a machine where nothing chose a network, a bare `git clone` goes to
     // testnet. Both commands name the build's devnet, which the clone keeps in its git config.
     await expect(
-      box.getByText(`git clone -c dash.network=devnet -c dash.devnetName=${E2E_DEVNET} dash://${OWNER}/${NAME}`, { exact: true }),
+      box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true }),
     ).toBeVisible()
-    await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} --network devnet --devnet-name ${E2E_DEVNET}`, { exact: true })).toBeVisible()
+    await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} ${DG_NETWORK}`, { exact: true })).toBeVisible()
 
     await box.getByRole('button', { name: 'install' }).click()
     const sheet = page.getByRole('dialog', { name: /Install git-remote-dash/ })
@@ -195,11 +204,11 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     const lines = await empty.locator('code').allInnerTexts()
     expect(lines).toEqual([
       `git remote add origin dash://${MAINTAINER}/forge-v2-empty`,
-      `git config dash.network devnet && git config dash.devnetName ${E2E_DEVNET}`,
+      SET_NETWORK,
       'git push -u origin main',
-      `dg repo clone ${MAINTAINER}/forge-v2-empty --network devnet --devnet-name ${E2E_DEVNET} && cd forge-v2-empty`,
+      `dg repo clone ${MAINTAINER}/forge-v2-empty ${DG_NETWORK} && cd forge-v2-empty`,
     ])
-    await expect(empty.getByTestId('empty-repo-network')).toContainText(`devnet-${E2E_DEVNET}`)
+    await expect(empty.getByTestId('empty-repo-network')).toContainText(NETWORK_KEY)
     await expect(empty.getByText(/Storage: packs go to/)).toBeVisible()
     // L-11: the ~0.0003 DASH per push copy was 5-10x low; the calibrated figures show instead,
     // from the cost module (re-measured on bonsia, QW-080), never a literal.

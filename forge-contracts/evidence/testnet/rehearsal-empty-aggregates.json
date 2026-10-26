@@ -1,0 +1,273 @@
+{
+  "network": "testnet",
+  "record": "/work/home/agent/forge-secrets/testnet/rehearsal/scratch-record.json",
+  "contracts": {
+    "core": "9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP",
+    "collab": "8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz",
+    "community": "68HtWxTtbgFjHNnkBXKP72J3ikxdieT2EY4bsuGz7Zpp",
+    "meta": "8qj74sQtGWq5Rwf5ihgNibD2tkwX61JLqvbkN2mhgcYT"
+  },
+  "ids": {
+    "repo": "6LPtk24TR5FsqqfH24kexE8Py4LpXEGWtqwHm5MkY893",
+    "target": "Gy37Skicb3dnt4bkf65KGRfsyc9SSN2UaTmTUAbS9deP",
+    "identity": "6nxQ61t8Phn5BgUoXpES7BaSbbKLa94mgTbdZZmyb7ao"
+  },
+  "passed": 42,
+  "total": 42,
+  "results": [
+    {
+      "label": "issue total (perRepo countable), repoId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "patch total (perRepo countable), repoId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "issue total, carrier repoId in [R] groupBy repoId",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "transitions by kind (perRepoKind), kind in [...] groupBy kind",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "transitions of one kind, repoId == and kind ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "state sums (perTarget summable), targetId in [...] groupBy targetId",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "state sum of one target, targetId ==",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "transition count of one target (perTarget countable)",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "author's issues in a repo (author rangeCountable, prefix)",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "comments on a target (target rangeCountable), targetId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "comments on targets, carrier targetId in [...] groupBy targetId",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "reviews on a PR (patch rangeCountable), patchId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "verdict counts (verdicts countable), patchId == commitOid == verdict in groupBy",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "star count (byRepo rangeCountable), repoId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "star counts, carrier repoId in [R] groupBy repoId",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "an identity's stars (byOwner countable, COMM-9)",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "watch count (byRepo rangeCountable, COMM-9), repoId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "an identity's watches (byOwner countable, COMM-9)",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "followers (byTarget rangeCountable), identityId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "following (byOwner countable), $ownerId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "check outcomes per head (F3), carrier outcome in [0,1,2] groupBy outcome",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "check outcomes per head, ungrouped range outcome >= 0",
+      "kind": "count",
+      "pass": true,
+      "got": "{\"\":0}"
+    },
+    {
+      "label": "check outcomes per head, range outcome >= 0 groupBy outcome",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "PR-list dots: headOid in [...] outcome >= 0 groupBy [headOid, outcome]",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "check outcomes per head, one outcome ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "release count (F4), ungrouped range sum over perTag, repoId ==",
+      "kind": "sum",
+      "pass": true,
+      "refused": true,
+      "got": "error: transport error: grpc error: code: 'Client specified an invalid argument', message: \"where clause on non indexed property error: prove sum requires a `summable: \\\"<prop>\\\"` index whose properties exactly match the where clause fields and whose summed property matches the request's `sum_property`, or `documentsSummable: \\\"<prop>\\\"` on the document type for unfiltered total sums — same requirement a"
+    },
+    {
+      "label": "release count (F4), carrier repoId in [R] groupBy repoId",
+      "kind": "sum",
+      "pass": true,
+      "refused": true,
+      "got": "error: transport error: grpc error: code: 'Client specified an invalid argument', message: \"where clause on non indexed property error: prove sum requires a `summable: \\\"<prop>\\\"` index whose properties exactly match the where clause fields and whose summed property matches the request's `sum_property`, or `documentsSummable: \\\"<prop>\\\"` on the document type for unfiltered total sums — same requirement a"
+    },
+    {
+      "label": "release count (F4), ungrouped range repoId == tagName > \"\"",
+      "kind": "sum",
+      "pass": true,
+      "got": "{\"\":0}"
+    },
+    {
+      "label": "release count (F4), carrier repoId in [R] tagName > \"\" groupBy repoId",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "release count (F4), per tag: repoId == tagName > \"\" groupBy tagName",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "one tag live? point sum repoId == tagName ==",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "one tag live? (writes.ts readTagLive) repoId == tagName in [t] groupBy tagName",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "pack bytes (bytes summable), storage == 0, kind in [...] groupBy kind",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "git pack bytes (packs.ts readGitPackBytes) storage in [0, 1] kind == 0 groupBy storage",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "pack bytes, one kind: repoId == storage == kind ==",
+      "kind": "sum",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "pack count (created rangeCountable), repoId ==",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "chunk count and seq sum of a pack (perPack averageable)",
+      "kind": "average",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "chunk count of a pack (perPack), countOf shape",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "topics of a repo (perRepo countable)",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "an owner's repos (ownerName rangeCountable, prefix)",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "forks of a repo (forkOf rangeCountable)",
+      "kind": "count",
+      "pass": true,
+      "got": "{}"
+    },
+    {
+      "label": "Explore: public repos since a time in the future (recent rangeCountable, range)",
+      "kind": "count",
+      "pass": true,
+      "got": "{\"\":0}"
+    }
+  ]
+}

@@ -31,8 +31,8 @@ KUBO_IMAGE='ipfs/kubo:v0.43.1@sha256:b293923d66e490e70ced64df42ea7a6cf7eac2740e3
 # here (for mainnet), never per run. RELEASE_DEVNET_NAME is empty off a devnet, and then no
 # NEXT_PUBLIC_DEVNET_NAME is passed at all: Next inlines an empty variable as "", which would
 # change the bytes against a rebuild that leaves it out.
-RELEASE_NETWORK='devnet'
-RELEASE_DEVNET_NAME='sakura'
+RELEASE_NETWORK='testnet'
+RELEASE_DEVNET_NAME=''
 # UnixFS import: the throwaway repository is initialised with IPIP-499's unixfs-v1-2025 profile
 # (which also sets 1024 links per file node and the HAMT directory settings); the flags restate
 # CIDv1, raw leaves, SHA-256 and 1 MiB chunks. Hidden files and empty directories are part of

@@ -26,7 +26,7 @@ function detailOf(row: NetworkRow): string {
   return row.test ? 'A test network: DASH is free and has no value, and the network can be reset.' : 'Real DASH: writes cost real money.'
 }
 
-/** `Devnet sakura` mid-sentence: `devnet sakura` (Testnet and Mainnet stay as they are). */
+/** `Devnet bonsia` mid-sentence: `devnet bonsia` (Testnet and Mainnet stay as they are). */
 const inSentence = (label: string): string => (label.startsWith('Devnet ') ? `d${label.slice(1)}` : label)
 
 function External({ href, children }: { href: string; children: string }): JSX.Element {
@@ -116,9 +116,9 @@ export default function NetworksPage(): JSX.Element {
         </section>
 
         <p className="text-dense text-anvil-600 dark:text-anvil-400">
-          {ACTIVE_NETWORK.network === 'devnet' ? (
+          {ACTIVE_NETWORK.network !== 'mainnet' ? (
             <>
-              Moved from an earlier devnet? <External href={DOCS.devnetMove}>What a move keeps and how to push again</External>.{' '}
+              Used Dash Forge on a devnet before? <External href={DOCS.devnetMove}>What the move kept and how to push again</External>.{' '}
             </>
           ) : null}
           The full history is in <External href={DOCS.networks}>the networks record</External>.

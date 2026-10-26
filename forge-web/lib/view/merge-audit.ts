@@ -14,8 +14,10 @@ import { ROLE_NOUN } from '../rules/roles'
 import { mergeTransition } from '../rules/transition'
 import type { ConfigDoc } from '../rules/types'
 import type { Review } from '../rules/v2'
-import type { RepoRef } from '../repo'
+import { readableReviews, type RepoRef, type ReviewView } from '../repo'
 import { readCheckRuns, type HeadChecks } from '../repo/checks'
+import { contentGate } from '../repo/made-public'
+import { readMemberVerdictDocs } from '../repo/verdicts'
 import { readMemberships } from '../repo/members'
 import { readPolicyHistory } from '../repo/settings'
 import type { TransitionView } from '../repo/transitions'
@@ -70,6 +72,14 @@ export function mergeAuditInput(thread: Pick<PullThread, 'pull' | 'timeline' | '
   }
 }
 
+/** `page`'s reviews and the member verdicts on `mergeHead`, each once, oldest first. */
+async function withMergeHeadVerdicts(sdk: EvoSDK, repo: RepoRef, page: PullThread, mergeHead: string): Promise<ReviewView[]> {
+  const docs = await readMemberVerdictDocs(sdk, repo, page.pull.id, mergeHead)
+  const { counted } = await readableReviews(contentGate(sdk, repo), repo.visibility, docs)
+  const held = new Set(page.reviews.map((r) => r.id))
+  return [...page.reviews, ...counted.filter((r) => !held.has(r.id))].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
+
 /**
  * Read what the audit needs and judge the merge. `configHistory` is the page's config reader (the
  * repo chrome's store); `pageChecks` the runs the page already read on the PR head, reused when it
@@ -86,7 +96,10 @@ export async function readMergeAudit(
   if (merge === null) return null
   // The page's member read failed (no approvals were counted): read them again rather than judge
   // with nobody a member, which would call every merge unmet.
-  const thread = page.approvals === null ? { ...page, members: await readMemberships(sdk, repo) } : page
+  const withMembers = page.approvals === null ? { ...page, members: await readMemberships(sdk, repo) } : page
+  // A review list cut short (`reviewsIncomplete`) holds the member verdicts on the current head
+  // only: read those on the merged head, all the audit counts.
+  const thread = page.reviewsIncomplete === true ? { ...withMembers, reviews: await withMergeHeadVerdicts(sdk, repo, page, merge.mergeHead) } : withMembers
   const [policies, configs] = await Promise.all([readPolicyHistory(sdk, repo), configHistory()])
   const noRuns = mergeAuditInput(thread, { policies, configs, checks: null })
   if (noRuns === null) return null

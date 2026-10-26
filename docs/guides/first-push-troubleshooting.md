@@ -27,7 +27,7 @@ The push stops before it stores or pays for anything in almost every case below,
 
 [E801](../errors.md#e801) means the helper would have asked "continue?" and had no terminal to ask on (CI, a GUI git client). There are two causes:
 
-1. **The price.** The push costs more than `dash.costWarnThreshold` (0.05 DASH unless you set it). Accept it for this push with `git -c dash.confirm=never push`, or raise the threshold (`git config --global dash.costWarnThreshold 0.1`, or `off`).
+1. **The price.** The push costs more than `dash.costWarnThreshold` (0.05 DASH unless you set it). The whole push counts: every pack and every ref update, so `git push --tags` of many tags at commits already stored can be stopped too. Accept it for this push with `git -c dash.confirm=never push`, or raise the threshold (`git config --global dash.costWarnThreshold 0.1`, or `off`).
 2. **The 1 MiB rule.** The repository has no `dash.storage`, and the push would store more than 1 MiB of packs **permanently on Platform**. Raising the threshold does not help. Choose storage: `dg storage add`, then `dg storage use <profile>`, and push again; only the manifest and refs are then paid on Platform. If Platform really is what you want, say so with `git config dash.storage platform`.
 
 Run `dg cost estimate` in the repository to see the price before you push. Platform storage is about 0.33 DASH per MiB; your own bucket is a few thousandths of a DASH per push ([Costs](costs.md#platform-or-your-own-bucket)).

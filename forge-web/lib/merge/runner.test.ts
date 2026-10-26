@@ -63,9 +63,10 @@ function deps(extra: Partial<MergeRunDeps> = {}): MergeRunDeps {
       calls.push('verify')
       return fail.has('verify') ? ['ee'.repeat(20)] : []
     },
-    readBaseTip: async () => {
+    readBaseHeads: async () => {
       calls.push('tip')
-      return fail.has('moved') ? 'ff'.repeat(20) : BASE
+      if (fail.has('diverged')) return [BASE, 'ee'.repeat(20)]
+      return [fail.has('moved') ? 'ff'.repeat(20) : BASE]
     },
     readBaseRef: async () => (fail.has('retargeted') ? 'refs/heads/next' : 'refs/heads/main'),
     intent: 'merge:P:bb',
@@ -112,8 +113,9 @@ describe('merge step runner', () => {
     const err = await runMergeSteps(deps(), newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), () => undefined).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(MergeStopped)
     expect(String(err)).toMatch(/retargeted to next since this merge started; the pack stays stored and unused/)
-    // Nothing moved and no merge was recorded: no tip read, no ref update, no event.
-    expect(calls.some((c) => c === 'tip' || c.startsWith('ref:') || c.startsWith('event:'))).toBe(false)
+    // Nothing moved and no merge was recorded: only the tip read before paying, no ref update, no event.
+    expect(calls.filter((c) => c === 'tip')).toHaveLength(1)
+    expect(calls.some((c) => c.startsWith('ref:') || c.startsWith('event:'))).toBe(false)
   })
 
   it('stops before the merge transition when the PR was retargeted after the ref update', async () => {
@@ -141,6 +143,7 @@ describe('merge step runner', () => {
     expect(calls).toEqual([
       'worker',
       'verify',
+      'tip', // the base checked before anything is paid for
       'upload:3:2',
       `manifest:${'dd'.repeat(32)}:1:https://pub/p.pack`,
       `index:${'dd'.repeat(32)}`,
@@ -264,6 +267,31 @@ describe('merge step runner', () => {
     calls.length = 0
     await expect(runMergeSteps(deps(), partial!.run, () => undefined)).rejects.toThrow(/base branch moved/)
     expect(calls).toEqual(['tip'])
+  })
+
+  it('stops before paying on a diverged base: one update naming one head would leave it diverged', async () => {
+    fail.add('diverged')
+    const d = deps()
+    await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toThrow(
+      /main has diverged \(2 heads from concurrent pushes\); nothing was written\. Merge its heads with git and push/,
+    )
+    expect(calls).toEqual(['worker', 'verify', 'tip'])
+  })
+
+  it('a base that diverges while the pack uploads still stops before the ref', async () => {
+    let reads = 0
+    const d = deps({
+      readBaseHeads: async () => {
+        calls.push('tip')
+        reads += 1
+        return reads === 1 ? [BASE] : [BASE, 'ee'.repeat(20)]
+      },
+    })
+    await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toThrow(
+      /main has diverged \(2 heads from concurrent pushes\); the pack stays stored and unused\./,
+    )
+    expect(calls.filter((c) => c === 'tip')).toHaveLength(2)
+    expect(calls.filter((c) => c.startsWith('ref') || c.startsWith('event'))).toEqual([])
   })
 
   it('a pack that misses part of the closure stops the merge before anything is paid for', async () => {

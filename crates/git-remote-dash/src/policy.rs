@@ -87,6 +87,24 @@ pub(crate) fn config_value(remote: Option<&str>, remote_key: &str, key: &str) ->
     pick_scoped(per_remote, repo_wide)
 }
 
+/// `dash.costWarnThreshold`, in DASH: 0.05 when unset, `None` when set to `off`.
+fn cost_warn_threshold(remote: Option<&str>) -> Result<Option<f64>> {
+    Ok(
+        match config_value(remote, "dashCostWarnThreshold", "costWarnThreshold") {
+            Some(v) => parse_cost_warn_threshold(&v)?,
+            None => Some(DEFAULT_COST_WARN_THRESHOLD_DASH),
+        },
+    )
+}
+
+/// `dash.confirm` (`auto` when unset).
+fn confirm_mode(remote: Option<&str>) -> Result<ConfirmMode> {
+    Ok(config_value(remote, "dashConfirm", "confirm")
+        .map(|v| ConfirmMode::parse(&v))
+        .transpose()?
+        .unwrap_or_default())
+}
+
 impl PushPolicy {
     /// Load the policy for a push through `remote` (the git remote name, when named).
     pub fn load(remote: Option<&str>) -> Result<Self> {
@@ -104,16 +122,9 @@ impl PushPolicy {
             StorageProfiles::load()?
         };
         let resolved = raw.resolve(&profiles)?;
-        let cost_warn_threshold =
-            match config_value(remote, "dashCostWarnThreshold", "costWarnThreshold") {
-                Some(v) => parse_cost_warn_threshold(&v)?,
-                None => Some(DEFAULT_COST_WARN_THRESHOLD_DASH),
-            };
+        let cost_warn_threshold = cost_warn_threshold(remote)?;
         let storage_configured = storage.is_some_and(|v| !v.trim().is_empty());
-        let confirm = config_value(remote, "dashConfirm", "confirm")
-            .map(|v| ConfirmMode::parse(&v))
-            .transpose()?
-            .unwrap_or_default();
+        let confirm = confirm_mode(remote)?;
         let allow_private_uri = config_value(remote, "dashAllowPrivateUri", "allowPrivateUri")
             .map(|v| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))
             .transpose()?
@@ -124,6 +135,20 @@ impl PushPolicy {
             storage_configured,
             confirm,
             allow_private_uri,
+        })
+    }
+
+    /// The cost guard's settings alone (`dash.costWarnThreshold`, `dash.confirm`), Platform as
+    /// the storage, for a push that stores nothing (deletes only). Its ref updates are paid for,
+    /// so it is guarded like any push, but a broken `dash.storage` or storage.toml must not
+    /// block it.
+    pub fn guard_only(remote: Option<&str>) -> Result<Self> {
+        Ok(Self {
+            resolved: StoragePolicy::platform_only().resolve(&StorageProfiles::default())?,
+            cost_warn_threshold: cost_warn_threshold(remote)?,
+            storage_configured: false,
+            confirm: confirm_mode(remote)?,
+            allow_private_uri: false,
         })
     }
 
@@ -152,10 +177,16 @@ impl PushPolicy {
 /// The cost-guard refusal note when nothing at all has been stored yet.
 pub const NOTE_NOTHING_STORED: &str = "nothing was stored or paid for";
 
-/// The note when a later pack of the same push is stopped: an earlier one is already stored
-/// and paid for (a push with a public pack and members-only packs uploads them in turn).
-pub const NOTE_EARLIER_PACK_STORED: &str =
-    "an earlier pack of this push is already stored and paid for; nothing further was written";
+/// The note when the guard stops a push that sent branch key letters first (a new branch for
+/// fewer people): those are paid for; nothing else was written.
+pub const NOTE_ONLY_LETTERS_PAID: &str =
+    "only the branch key letters this push sent first are paid for; no pack or ref was stored";
+
+/// The note when the guard stops a members-only pack's Platform fallback after an earlier pack of
+/// the push was stored: that one is paid for, and kept.
+pub const NOTE_FALLBACK_AFTER_A_PACK: &str =
+    "an earlier pack of this push is stored and paid for; \
+     this pack's copies your storage confirmed are kept, and nothing more was paid on Platform";
 
 /// The note when the guard stops the Platform fallback: the external copies that confirmed
 /// are already stored (and kept), but Platform was not paid.
@@ -357,6 +388,79 @@ pub fn enforce_pack(
             .fix("run `git -c dash.confirm=never push …` to accept the price")
             .note(note)),
         },
+    }
+}
+
+/// What one push pays for, priced before its first paid write: the guard weighs the whole push
+/// once ([`enforce_push`]), never one pack at a time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PushQuote {
+    /// What the push cannot go without, credits: its ref updates (deletes too), and every pack it
+    /// stores with its manifests and browse index (and the history index stored with the public
+    /// pack).
+    pub required: u64,
+    /// What it leaves out when the guard declines it with them, credits: a history index
+    /// published without a pack of its own, the browse index an earlier push's pack still lacks.
+    pub optional: u64,
+    /// Pack bytes still to upload (the 1 MiB rule weighs them when they go to Platform).
+    pub pack_bytes: u64,
+    /// Platform stores this push's bytes.
+    pub platform: bool,
+}
+
+impl PushQuote {
+    /// Everything it would write.
+    pub fn total(&self) -> u64 {
+        self.required.saturating_add(self.optional)
+    }
+}
+
+/// What the guard let a push spend ([`enforce_push`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approved {
+    /// The credits approved.
+    pub credits: u64,
+    /// The optional writes were declined (why, one line), and are left out; `None`: approved.
+    pub declined: Option<String>,
+}
+
+/// Run the guard once over a whole push (`quote`, read again after `cheaper` changed it), before
+/// anything is stored or paid for (`note`: what a refusal says was paid). When the price is what
+/// declined it, `cheaper` may offer a cheaper plan (a due full history index's delta), which is
+/// asked again; when the guard still declines on price, it is asked for the required writes
+/// alone, leaving the optional ones out. Refused when the required writes are.
+// A refusal happens at most once per push; boxing it buys nothing.
+#[allow(clippy::result_large_err)]
+pub fn enforce_push(
+    policy: &PushPolicy,
+    note: &'static str,
+    mut quote: impl FnMut() -> PushQuote,
+    cheaper: impl FnOnce() -> bool,
+) -> std::result::Result<Approved, UserError> {
+    let mut q = quote();
+    let mut outcome = enforce_pack(q.total(), q.pack_bytes, policy, q.platform, note);
+    if outcome.is_err() && over_threshold(q.total(), policy) && cheaper() {
+        q = quote();
+        outcome = enforce_pack(q.total(), q.pack_bytes, policy, q.platform, note);
+    }
+    match outcome {
+        Ok(()) => Ok(Approved {
+            credits: q.total(),
+            declined: None,
+        }),
+        // Leaving the optional writes out helps only against the price (or a "no" under
+        // `always`): the 1 MiB rule weighs the same pack bytes without them.
+        Err(e)
+            if q.optional > 0
+                && (over_threshold(q.total(), policy) || policy.confirm == ConfirmMode::Always) =>
+        {
+            enforce_pack(q.required, q.pack_bytes, policy, q.platform, note)?;
+            Ok(Approved {
+                credits: q.required,
+                declined: Some(e.message),
+            })
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -702,12 +806,6 @@ mod tests {
         let u = check_affordable(est, Some(est - 1), Some(dash1), true, NOTE_NOTHING_STORED)
             .unwrap_err();
         assert!(u.render("dash: ", false).contains("upper bound"));
-        // A later pack of a push whose first pack is paid does not claim nothing was paid.
-        let later =
-            check_affordable(est, Some(0), None, false, NOTE_EARLIER_PACK_STORED).unwrap_err();
-        let text = later.render("dash: ", false);
-        assert!(!text.contains("nothing was stored or paid for"), "{text}");
-        assert!(text.contains("already stored and paid for"), "{text}");
         assert_eq!((u.code, u.exit_code()), ("E401", 4));
         let text = u.render("dash: ", false);
         assert!(text.contains("estimated at 0.5000 DASH"), "{text}");
@@ -731,6 +829,123 @@ mod tests {
                 .code,
             "E402"
         );
+    }
+
+    /// `dash.confirm = refuse` with a 0.05 DASH threshold: never a terminal, so the decisions
+    /// below are the guard's alone.
+    fn refuse_above(threshold_dash: f64) -> PushPolicy {
+        PushPolicy {
+            resolved: StoragePolicy::platform_only()
+                .resolve(&StorageProfiles::default())
+                .unwrap(),
+            cost_warn_threshold: Some(threshold_dash),
+            storage_configured: true,
+            confirm: ConfirmMode::Refuse,
+            allow_private_uri: false,
+        }
+    }
+
+    fn required(credits: u64) -> PushQuote {
+        PushQuote {
+            required: credits,
+            ..PushQuote::default()
+        }
+    }
+
+    /// The guard weighs the whole push, once: ref updates alone (`git push --tags` of commits
+    /// already stored: no pack at all) are guarded, and packs each under the threshold are
+    /// refused when together they are over it.
+    #[test]
+    fn the_guard_weighs_the_whole_push_once() {
+        use forge_core::cost::push_fees::estimate_ref_updates;
+        let p = refuse_above(0.05);
+        // 300 tags ≈ 0.28 DASH of ref updates, and not a byte of pack.
+        let tags = enforce_push(
+            &p,
+            NOTE_NOTHING_STORED,
+            || required(estimate_ref_updates(300)),
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(tags.code, codes::COST_GUARD);
+        assert!(tags.render("dash: ", false).contains(NOTE_NOTHING_STORED));
+        // A few ref updates pass, at their price.
+        let few = estimate_ref_updates(3);
+        assert_eq!(
+            enforce_push(&p, NOTE_NOTHING_STORED, || required(few), || false).unwrap(),
+            Approved {
+                credits: few,
+                declined: None
+            }
+        );
+        // A public pack and a members-only pack of 0.03 DASH each: each under the threshold,
+        // the push over it.
+        let pack = forge_core::cost::CREDITS_PER_DASH * 3 / 100;
+        assert!(enforce_push(&p, NOTE_NOTHING_STORED, || required(pack), || false).is_ok());
+        assert!(enforce_push(
+            &p,
+            NOTE_NOTHING_STORED,
+            || required(few + 2 * pack),
+            || false
+        )
+        .is_err());
+    }
+
+    /// A push declined with its optional writes (a history index on its own, a missing browse
+    /// index) is approved without them; one whose price a cheaper plan brings under the threshold
+    /// takes it; one whose required writes are over the threshold is refused.
+    #[test]
+    fn a_declined_push_takes_the_cheaper_plan_or_leaves_out_what_it_can() {
+        let p = refuse_above(0.05);
+        let dash = forge_core::cost::CREDITS_PER_DASH;
+        let a = enforce_push(
+            &p,
+            NOTE_NOTHING_STORED,
+            || PushQuote {
+                required: dash / 100,
+                optional: dash / 10,
+                ..PushQuote::default()
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(a.credits, dash / 100);
+        assert!(a.declined.is_some());
+        // The cheaper plan (a due full index's delta) fits: taken, nothing left out.
+        let cheap = std::cell::Cell::new(false);
+        let a = enforce_push(
+            &p,
+            NOTE_NOTHING_STORED,
+            || PushQuote {
+                required: dash / 100,
+                optional: if cheap.get() { dash / 100 } else { dash / 10 },
+                ..PushQuote::default()
+            },
+            || {
+                cheap.set(true);
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!((a.credits, a.declined), (dash / 50, None));
+        // Required writes over the threshold: refused, whatever is optional.
+        let e = enforce_push(
+            &p,
+            NOTE_NOTHING_STORED,
+            || PushQuote {
+                required: dash / 10,
+                optional: 1,
+                ..PushQuote::default()
+            },
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, codes::COST_GUARD);
+        // A refusal's note says what was paid: the letters a push sent first, when it did.
+        let e = enforce_push(&p, NOTE_ONLY_LETTERS_PAID, || required(dash), || false).unwrap_err();
+        let text = e.render("dash: ", false);
+        assert!(text.contains(NOTE_ONLY_LETTERS_PAID), "{text}");
+        assert!(!text.contains(NOTE_NOTHING_STORED), "{text}");
     }
 
     #[test]

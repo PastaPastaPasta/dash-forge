@@ -26,7 +26,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { DEPENDENT_CONTRACTS, META_CONTRACT, depPath, isUnder, loadEvoSdk, writeDep } from './deploy-v2.mjs';
+import { DEPENDENT_CONTRACTS, META_CONTRACT, PROTOCOL_VERSION, depPath, isUnder, loadEvoSdk, writeDep } from './deploy-v2.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -99,10 +99,14 @@ async function main() {
   const addresses = network === 'devnet' ? dep.dapiAddresses ?? dep.v2?.devnet?.addresses : undefined;
 
   const { EvoSDK } = await loadEvoSdk();
-  const sdk = new EvoSDK({ network, trusted: true, devnetName, ...(addresses ? { addresses } : {}) });
+  // Pinned, as deploy-v2 pins it: before its first proof a testnet or mainnet SDK reports its
+  // built-in floor (13 on rc.8), and contracts serialized at that version are not the bytes the
+  // clients read the protocol-14 network with.
+  const sdk = new EvoSDK({ network, trusted: true, devnetName, version: PROTOCOL_VERSION, ...(addresses ? { addresses } : {}) });
   await sdk.connect();
-  const platformVersion = sdk.version();
   const contracts = await sdk.contracts.getMany(ids);
+  const platformVersion = sdk.version();
+  if (platformVersion !== PROTOCOL_VERSION) throw new Error(`${key} answered at protocol ${platformVersion}, not ${PROTOCOL_VERSION}: nothing written`);
 
   const snapshot = {};
   for (const id of ids) {

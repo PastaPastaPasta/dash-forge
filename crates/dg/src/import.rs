@@ -33,7 +33,8 @@ pub struct ImportArgs {
     /// Incremental state file (only items updated at the source since the last run are read).
     #[arg(long)]
     pub state: Option<PathBuf>,
-    /// Hard cap in DASH, checked before every write.
+    /// Hard cap in DASH, checked before every write. Default: the run's estimate, the figure
+    /// it asks you to confirm.
     #[arg(long, value_name = "DASH")]
     pub max_spend: Option<f64>,
     /// Price only; write nothing.
@@ -117,7 +118,7 @@ pub(crate) fn outcome(summary: &Summary) -> Result<(serde_json::Value, Option<Us
         Status::CapExceeded => Some(
             UserError::new(codes::COST_GUARD, "stopped at --max-spend")
                 .cause(summary.error.clone().unwrap_or_default())
-                .fix("re-run with a higher --max-spend; what was written is not written again"),
+                .fix("re-run with a higher --max-spend (without one, a re-run prices what is left and caps itself at that); what was written is not written again"),
         ),
         Status::Error => {
             let e = anyhow::anyhow!(summary

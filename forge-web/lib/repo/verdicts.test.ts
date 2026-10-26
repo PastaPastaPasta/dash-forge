@@ -10,11 +10,11 @@ import { describe, expect, it } from 'vitest'
 import { base58Encode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { bytesToBase64, hexToBase64 } from '../sdk'
-import { loadPullThread } from '../view/issues-view'
+import { REVIEW_LIST_PAGES, loadPullThread } from '../view/issues-view'
 import type { RepoRef } from './contract'
 import { mockSdk, newSeen, type Doc, type Store } from './drive-mock'
 import { invalidateMembers } from './members'
-import { readProvedVerdicts, verdictsQuery } from './verdicts'
+import { memberVerdictQuery, readMemberVerdictDocs, readProvedVerdicts, verdictsQuery } from './verdicts'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'GROUP' }
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
@@ -131,5 +131,70 @@ describe('proved verdict count (RC1 R-16)', () => {
     const thread = await loadPullThread(sdk, REPO_REF, 1)
     expect(thread?.verdicts).toBeNull()
     expect(thread?.approvals?.approvers).toEqual([MAINT])
+  })
+})
+
+/** `store()` with `n` non-member approvals (4) on the head, all older than its member reviews. */
+function flooded(n: number): Store {
+  const strangers = Array.from({ length: n }, () => review(STRANGER, 4, HEAD))
+  const s = store()
+  s['COLLAB']!['review'] = [...strangers, ...s['COLLAB']!['review']!]
+  return s
+}
+
+describe('member verdicts: the approvals a review flood cannot reach', () => {
+  it('reads each member verdict on the verdicts index with every field pinned', () => {
+    expect(memberVerdictQuery(REPO_REF, PATCH, HEAD, 2)).toEqual({
+      dataContractId: 'COLLAB',
+      documentTypeName: 'review',
+      where: [
+        ['patchId', '==', PATCH],
+        ['commitOid', '==', hexToBase64(HEAD)],
+        ['verdict', '==', 2],
+      ],
+      orderBy: [
+        ['patchId', 'asc'],
+        ['commitOid', 'asc'],
+        ['verdict', 'asc'],
+      ],
+    })
+  })
+
+  it('reads the member approvals and change requests on the head, nothing else', async () => {
+    const seen = newSeen()
+    const docs = await readMemberVerdictDocs(mockSdk(flooded(150), seen), REPO_REF, PATCH, HEAD.toUpperCase())
+    expect(docs.map((d) => [d['$ownerId'], d['verdict']])).toEqual([
+      [MAINT, 1],
+      [MAINT, 1],
+      [WRITER, 2],
+    ])
+    expect(seen.queries).toEqual([memberVerdictQuery(REPO_REF, PATCH, HEAD, 1), memberVerdictQuery(REPO_REF, PATCH, HEAD, 2)].map((q) => ({ ...q, limit: 100 })))
+    expect(await readMemberVerdictDocs(mockSdk(store(), newSeen()), REPO_REF, PATCH, 'abc')).toEqual([])
+  })
+
+  it('keeps a flooded PR\'s approvals, and says its review list is cut short', async () => {
+    invalidateMembers(REPO_REF)
+    const thread = await loadPullThread(mockSdk(flooded(100 * REVIEW_LIST_PAGES), newSeen()), REPO_REF, 1)
+    expect(thread?.reviewsIncomplete).toBe(true)
+    expect(thread?.approvals?.approvers).toEqual([MAINT])
+    expect(thread?.approvals?.changesRequested).toEqual([WRITER])
+    // The list: the composite's first page, and every member verdict on the head.
+    const members = thread?.reviews.filter((r) => r.reviewer !== STRANGER).map((r) => [r.reviewer, r.verdictCode])
+    expect(members).toEqual([
+      [MAINT, 1],
+      [MAINT, 1],
+      [WRITER, 2],
+    ])
+    expect(thread?.reviews.filter((r) => r.reviewer === STRANGER)).toHaveLength(100)
+  })
+
+  it('reads a long list that fits whole, and never the verdicts beside it', async () => {
+    invalidateMembers(REPO_REF)
+    const seen = newSeen()
+    const thread = await loadPullThread(mockSdk(flooded(150), seen), REPO_REF, 1)
+    expect(thread?.reviewsIncomplete).toBeUndefined()
+    expect(thread?.reviews).toHaveLength(155)
+    expect(thread?.approvals?.approvers).toEqual([MAINT])
+    expect(seen.queries.some((q) => (q.where ?? []).some(([f, op]) => f === 'verdict' && op === '=='))).toBe(false)
   })
 })

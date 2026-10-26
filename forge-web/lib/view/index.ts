@@ -161,6 +161,7 @@ export {
 } from './tree-nav'
 export {
   findBranch,
+  headOidsOf,
   isDiverged,
   isLive,
   isPublicRef,

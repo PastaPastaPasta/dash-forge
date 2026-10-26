@@ -1151,6 +1151,9 @@ async function deploy(argv, injected, locks) {
       // (set at the first write, so a crash after the first contract still names the set it is registering)
       if (setName !== null) v2.contractsSet = setChanged ? setName : (v2.contractsSet ?? setName);
       else v2.contractsDir ??= repoPath(contractsDir);
+      // A committed-set rehearsal on testnet or mainnet carries contractsSet like the live record;
+      // scratchOn tells the live suites (lib/target.mjs scratchStampError) it is a scratch set
+      if (scratchOnProduction) v2.scratchOn ??= network;
     };
 
     // ---- the nonce ledger (CNT-02): every transition the deployer signed, in order ----

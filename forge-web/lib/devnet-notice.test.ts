@@ -53,7 +53,7 @@ describe('writesPausedReason', () => {
   it('pauses writes only while moving, and says why', () => {
     expect(writesPausedReason(null)).toBeNull()
     expect(writesPausedReason('upcoming')).toBeNull()
-    expect(writesPausedReason('moving')).toBe('Writing is paused: this devnet was retired and Dash Forge moved to devnet sakura.')
+    expect(writesPausedReason('moving')).toBe('Writing is paused: this devnet was retired and Dash Forge moved to testnet.')
   })
 })
 
@@ -104,7 +104,7 @@ describe('copy and dismissal', () => {
     const c = devnetNoticeCopy('moving', 'sakura', null, { label: 'testnet', platform: null })
     expect(c.lead).toBe('Dash Forge moved to testnet; sakura was retired.')
     expect(c.body).toContain('Once the testnet build is live')
-    expect(FORGE_HOME.label).toBe('devnet sakura')
+    expect(FORGE_HOME.label).toBe('testnet')
   })
 
   it('upcoming says what is wiped and what to do', () => {
@@ -117,7 +117,7 @@ describe('copy and dismissal', () => {
 
   it('moving says where Forge went and what is gone', () => {
     const c = devnetNoticeCopy('moving', 'bonsia')
-    expect(c.lead).toBe('Dash Forge moved to devnet sakura (Platform v5); bonsia was retired.')
+    expect(c.lead).toBe('Dash Forge moved to testnet (Platform v5); bonsia was retired.')
     expect(c.body).toContain('Writing is paused here')
     expect(c.body).toContain('re-push your own repos from your clones')
   })
