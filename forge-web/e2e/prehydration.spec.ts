@@ -159,7 +159,15 @@ test.describe('a tap before hydration', () => {
   })
 
   test('an inline script the host injects does not run; the page still hydrates', async ({ page }) => {
-    const csp = cspErrors(page)
+    // The refusals, counted from the page's own `securitypolicyviolation` events: every engine
+    // fires them, while only Chromium also reports them to Playwright as console errors.
+    await page.addInitScript(() => {
+      const w = window as unknown as { __inlineRefused: number }
+      w.__inlineRefused = 0
+      document.addEventListener('securitypolicyviolation', (e) => {
+        if (e.blockedURI === 'inline' && e.effectiveDirective.startsWith('script-src')) w.__inlineRefused += 1
+      })
+    })
     await page.route(/\/explore\/(\?.*)?$/, async (route) => {
       const res = await route.fetch()
       const html = (await res.text()).replace('</head>', '<script>window.__injected=1</script></head>').replace('</body>', '<script>window.__injected=2</script></body>')
@@ -168,7 +176,7 @@ test.describe('a tap before hydration', () => {
     await page.goto('/explore/', { waitUntil: 'load' })
     await expect.poll(() => signInButton(page).evaluate((el) => Object.keys(el).some((k) => k.startsWith('__reactProps'))), { timeout: 60_000 }).toBe(true)
     expect(await page.evaluate(() => (window as unknown as { __injected?: number }).__injected)).toBeUndefined()
-    expect(csp.filter((t) => /inline script/i.test(t)).length).toBeGreaterThanOrEqual(2)
+    expect(await page.evaluate(() => (window as unknown as { __inlineRefused: number }).__inlineRefused)).toBeGreaterThanOrEqual(2)
   })
 
   test('a script that fails to load clears the busy look (not only the timer)', async ({ page }) => {

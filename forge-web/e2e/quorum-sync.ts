@@ -35,10 +35,9 @@
 
 import { test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
 
 import { decodeCurrentQuorumsInfo, grpcWebMessage, parseQuorumService, protoFields, QUORUMS_INFO_REQUEST } from '../lib/view/quorum-check'
-import { E2E_DEVNET } from './seed-summary'
+import { deploymentFilePath } from './network'
 
 /** Core blocks between two quorums of the platform quorum type on bonsia (its DKG interval). */
 const QUORUM_INTERVAL = 24
@@ -70,8 +69,8 @@ interface Deployment {
   readonly dapiAddresses: readonly string[]
 }
 
-const deployment = (): Deployment =>
-  JSON.parse(readFileSync(join(resolve(__dirname, '../..'), `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8')) as Deployment
+/** The target network's record (`devnet-<name>.json`, or testnet's: `e2e/network.ts`). */
+const deployment = (): Deployment => JSON.parse(readFileSync(deploymentFilePath(), 'utf8')) as Deployment
 
 /** One grpc-web call to a DAPI node: the response's message. */
 async function dapiCall(address: string, method: string, body: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
