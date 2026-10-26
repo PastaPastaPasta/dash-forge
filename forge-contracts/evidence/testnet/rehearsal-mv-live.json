@@ -1,0 +1,2994 @@
+{
+  "network": "testnet",
+  "liveTarget": false,
+  "scratch": {
+    "core": "9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP",
+    "collab": "8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz",
+    "community": "68HtWxTtbgFjHNnkBXKP72J3ikxdieT2EY4bsuGz7Zpp",
+    "meta": "8qj74sQtGWq5Rwf5ihgNibD2tkwX61JLqvbkN2mhgcYT",
+    "group": "28WdQQm2kF5PH3oQonjJSQUsd9QuXbSDATuFiAKdQqm4"
+  },
+  "live": {},
+  "run": "mvouqdoe",
+  "passed": 400,
+  "total": 401,
+  "infra": null,
+  "fees": {},
+  "feeDeltas": {},
+  "results": [
+    {
+      "item": "setup",
+      "label": "public repo mv-mvouqdoe",
+      "expect": "ok",
+      "got": "ok 5M4ua9i83jc7SdmDmGN1N1moLWCuzrbdxGUi4CRrbCKV",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: the owner's maintainer row",
+      "expect": "ok",
+      "got": "ok DKCWFyE6QJL3EvXNHV5pV4KU4CBuggP2Wtxswi1cxn77",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: maint2 consents",
+      "expect": "ok",
+      "got": "ok 9konuaLATaQYbE1wrqRUDv8BiAhfpYigCRubiKtLRah4",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: maint2 as maintainer",
+      "expect": "ok",
+      "got": "ok H1TCTgeYLaq94wMrurzNKtBZ4S4cdxqq1ZWwK2hgdUY6",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: writer consents",
+      "expect": "ok",
+      "got": "ok 2PvSgMsaho45tbbAd5GyAwkZDdMTHcEWaBs37FUDFRXb",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: writer as writer role 1",
+      "expect": "ok",
+      "got": "ok 3vcyqDi8NHfDzvRQPY7AHUKp7i4rufVCGWTnZKL52Vc3",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: triage consents",
+      "expect": "ok",
+      "got": "ok AoRd2ArUTDooESda5PVHpnQDwj64ThqC7QkU8d1EA4Tn",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: triage as writer role 2",
+      "expect": "ok",
+      "got": "ok HBMqqL336178VKDQDNCVFFBgW7Dj4UHZiY5NRRSHzy7U",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: reader consents",
+      "expect": "ok",
+      "got": "ok 6FvMBpKCXSeWeRZ5k9z6zZrSqwmn4CNQnsHu4d15aJTa",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: reader as writer role 3",
+      "expect": "ok",
+      "got": "ok F64H7dBPW2XnJfTNSTp7a9j2WyS27wLVGf7mzoQTJyck",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: bot consents",
+      "expect": "ok",
+      "got": "ok DPGxcPwbzSDnqB62ajRL79zxJ9Hqbtvdnv4sSxJFk8oC",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: bot as writer role 4",
+      "expect": "ok",
+      "got": "ok 25pn8jeYPtJVSFegP4ASMyvMQnkcXeFA1h6tvTaSBRfK",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: bot2 consents",
+      "expect": "ok",
+      "got": "ok Cnr4ozpoiawboqofMMQL2MmMjT6ZtJn38XYHnSsY9hcd",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mv-mvouqdoe: bot2 as writer role 4",
+      "expect": "ok",
+      "got": "ok NEHJie1JqqKhuENFa8nWWnXH7XYyXmqVBfkHesXkN9y",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "private repo mvp-mvouqdoe",
+      "expect": "ok",
+      "got": "ok 2ihfPtZ7MWJJKYbn6UMxDUtqUVvSrvbbtAY2bdr9zCc7",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mvp-mvouqdoe: the owner's maintainer row",
+      "expect": "ok",
+      "got": "ok HHZHLtRrfsek92CGhoj3PB2hFksDdLkQx3p2LL97Z24Y",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mvp-mvouqdoe: writer consents",
+      "expect": "ok",
+      "got": "ok 6g5ESb2C1S97bCzgoiwrNmc6rqJHRotiZVxqeKmYJWRr",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mvp-mvouqdoe: writer as writer role 1",
+      "expect": "ok",
+      "got": "ok HsU5ZQ7xtATiU2SxR9XzZvuehUF5ADcmRvo8JV9ZPtL2",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mvp-mvouqdoe: reader consents",
+      "expect": "ok",
+      "got": "ok F2QkyuW9GdpjQ4PSUSJY81k24mrFGw4dcFQPCphLumFn",
+      "pass": true
+    },
+    {
+      "item": "setup",
+      "label": "mvp-mvouqdoe: reader as writer role 3",
+      "expect": "ok",
+      "got": "ok AZjazju8xzcfiisFUdgkPDQ14hE62WDFzJbPHkoGJvav",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a writer row of role 5",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: 5 is greater than the maximum of 4, path: /role",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a public issue (writer)",
+      "expect": "ok",
+      "got": "ok 27HAVe2dpJZUBfbc9KiasPTZcPCYtDrh2nmbzko5nk2e",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's members-only issue (aud 1, asMember, mRole 1)",
+      "expect": "ok",
+      "got": "ok 6xtNaKCVAshGbnYHJDn1EAEGsL7bZmjo2pTaTHEGPFbQ",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's members-only issue (aud 1, no asMember)",
+      "expect": "refused 10422 audMember",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"audMember\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's members-only issue claiming membership",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path asMember",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a sealed issue without aud (dependentRequired enc -> aud)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: \"aud\" is a required property, path: ",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "aud without enc (dependentRequired aud -> enc)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: \"enc\" is a required property, path: ",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's letter on a public repo (aud 2, no asMember)",
+      "expect": "ok",
+      "got": "ok B8QRE7Gps5wPdmK3whBDwqNMDQbpaDHTNp9ebdYDrQf8",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's members-only comment (aud 1)",
+      "expect": "refused 10422 audMember",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"audMember\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's letter comment (aud 2)",
+      "expect": "ok",
+      "got": "ok HK6W7JQb51bhi1ZhXa24orb3exWoBf7iyAx4ivNf9cPV",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's members-only comment (aud 1, mRole 1)",
+      "expect": "ok",
+      "got": "ok J5vUoQfXkDiwSsSA6Ej3d5DfGjDyoqESPUDj4n9uhtgF",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a second members-only comment (to make public)",
+      "expect": "ok",
+      "got": "ok 7b7kLoSu3KuUCP5HnMLKuP9Tks3kAAnJdviM2reTVoW",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "the owner's members-only comment (maintainer, no mRole)",
+      "expect": "ok",
+      "got": "ok AKesiR9NAUdvAtZMn2jXvHM8BoyBcNsPYmm25TyoweVz",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's public comment",
+      "expect": "ok",
+      "got": "ok ETjmbveVxRfkYJELsKm8PtUZrFjFYqem4fVpJRH7hupF",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a plaintext edit that keeps aud (body, no enc)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: \"enc\" is a required property, path: ",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a plaintext edit that keeps aud and enc (noPlain)",
+      "expect": "refused 10422 noPlain",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"noPlain\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a sealed edit of a public comment (aud immutable once public)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'aud' of document ETjmbveVxRfkYJELsKm8PtUZrFjFYqem4fVpJRH7hupF (type 'comment') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a Members -> letter edit (aud 1 -> 2)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'aud' of document J5vUoQfXkDiwSsSA6Ej3d5DfGjDyoqESPUDj4n9uhtgF (type 'comment') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "the author's sealed re-edit keeping aud 1 (new enc)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "the author's edit to Public (drops aud, enc, epoch)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's members-only PR without branch names",
+      "expect": "ok",
+      "got": "ok 7KFVEKz46VvhLC26ZXKgKth1gFmFvkc38h8ZMnsnR9Pn",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a members-only inline comment (no path in plaintext)",
+      "expect": "ok",
+      "got": "ok AYu73YZEHDUuLrRafwbjPgS9N9tRApmq7wnioaW9GtpH",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "the inline comment's author makes it public, setting path",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a later change of the path (set once)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'path' of document AYu73YZEHDUuLrRafwbjPgS9N9tRApmq7wnioaW9GtpH (type 'comment') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a public inline comment without a path",
+      "expect": "ok",
+      "got": "ok FKFPExaE8rUibF3k9dcSokvBY4asTXf8yvngxGPsjmuM",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a public comment gaining a path later (three-term condition)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'path' of document FKFPExaE8rUibF3k9dcSokvBY4asTXf8yvngxGPsjmuM (type 'comment') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "the PR's author makes it public, setting both branch names",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a later change of the PR's base branch name (set once)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'baseRefName' of document 7KFVEKz46VvhLC26ZXKgKth1gFmFvkc38h8ZMnsnR9Pn (type 'patch') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's public PR without branch names",
+      "expect": "ok",
+      "got": "ok GnvRXvU1oHjFvL9EuTcWCmjPsEq4ZRYqirWsWVaoudDS",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a public PR gaining a source branch name later (three-term condition)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'sourceRefName' of document GnvRXvU1oHjFvL9EuTcWCmjPsEq4ZRYqirWsWVaoudDS (type 'patch') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a second members-only inline comment",
+      "expect": "ok",
+      "got": "ok 5J6RbjjPgGd9bLepKq2NzdsNanvt3udR81WLD6jozLbk",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a members-only comment gaining a plaintext diffHunk while it keeps aud",
+      "expect": "refused 40128|10422",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"noPlain\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "its author makes it public, setting path and diffHunk",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a later change of the diffHunk (set once)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'diffHunk' of document 5J6RbjjPgGd9bLepKq2NzdsNanvt3udR81WLD6jozLbk (type 'comment') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a members-only issue's author makes it public",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's sealed issue on a private repo (aud 1)",
+      "expect": "refused 10422 audMember",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"audMember\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's letter on a private repo (aud 2)",
+      "expect": "refused 10422 p_sealedIfPrivate",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"p_sealedIfPrivate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's plaintext issue stamped private",
+      "expect": "refused 10422 p_sealedIfPrivate",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"p_sealedIfPrivate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's sealed issue on the private repo",
+      "expect": "ok",
+      "got": "ok BpQLG19zFGfoCzKqoK4nr7tS5UY2HZ7U92219GMcrERQ",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a member's letter on the private repo (aud 2 with asMember)",
+      "expect": "ok",
+      "got": "ok 9YWepHU1SQmf5ugpArsx3PAiiFgTJpKBVXsspRTMmtrE",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's sealed PR on the private repo",
+      "expect": "ok",
+      "got": "ok HqFs42vkrypW7Kcy5ViFrZmZDpsKFN7JE6ERs9NguC5T",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's letter comment on a private repo",
+      "expect": "refused 10422 p_sealedIfPrivate",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"p_sealedIfPrivate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's comment claiming membership of the private repo",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path asMember",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a stranger's sealed review on a private PR",
+      "expect": "refused 10422 p_sealedIfPrivate",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"p_sealedIfPrivate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "the owner's bodyless approval on a private PR without aud (L1 seals every private review)",
+      "expect": "refused 10422 p_sealedIfPrivate",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"p_sealedIfPrivate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "the owner's sealed approval on a private PR (aud 1, enc, asMember)",
+      "expect": "ok",
+      "got": "ok BawHDwFGscVuLPbMadE2WcdMXdHLSZsWeNY6xJiHTJDN",
+      "pass": true
+    },
+    {
+      "item": "L1",
+      "label": "a writer's sealed comment on the private issue",
+      "expect": "ok",
+      "got": "ok Ezs25xCUbZyw2ANN5Y3waXhYknghG4pqKAVjcvfg6fwW",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "the owner's PR",
+      "expect": "ok",
+      "got": "ok UpdU9HHBg6seJDymbmobcbW1KQmH7VRMrNLTwY1dJkZ",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a reader's approve (asMember, mRole 3)",
+      "expect": "refused 10422 memberVerdict",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"memberVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a reader's request-changes (verdict 2, mRole 3)",
+      "expect": "refused 10422 memberVerdict",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"memberVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a reader's approve claiming mRole 1",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's mRole does not agree with the referenced document's role (where on asMember)",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "triage's approve (mRole 2)",
+      "expect": "refused 10422 memberVerdict",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"memberVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a bot's approve (mRole 4)",
+      "expect": "refused 10422 memberVerdict",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"memberVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a stranger's approve (verdict 1, no asMember)",
+      "expect": "refused 10422 memberVerdict",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"memberVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a writer's approve with no mRole (its row says role 1)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's mRole does not agree with the referenced document's role (where on asMember)",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a writer's approve (mRole 1)",
+      "expect": "ok",
+      "got": "ok 5QtfpGT4qbAFMEJySct1MJrujWmQsiF7A1WFxm5NqmZg",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a maintainer's approve with no mRole",
+      "expect": "ok",
+      "got": "ok 5F9r61BywF7jLwkKYBCRSYa3bSYsGNDLqQHcG2ybrB4q",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "the second maintainer's request-changes with no mRole",
+      "expect": "ok",
+      "got": "ok HvSz1rRgEQ5XvzPinKg9VAs4G6tgSXhpKt8D6BZS73FE",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a reader's comment-verdict (3) as a member",
+      "expect": "ok",
+      "got": "ok BtRWZJVMPjQxh6gCPFsf3EwemV5hQ3qNuMDQTXPW9sDv",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a stranger's verdict 4 (outside approval)",
+      "expect": "ok",
+      "got": "ok 2HdyYpPXv43YL4h4DGcGB7RuuDXUenRcjB6omGuu4xAR",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a member's verdict 4 (outsider verdicts only)",
+      "expect": "refused 10422 memberVerdict",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"memberVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "triage imports an issue (mRole 2)",
+      "expect": "refused 10422 i_provenance",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"i_provenance\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a writer imports an issue (mRole 1)",
+      "expect": "ok",
+      "got": "ok 9a1rLZKmi4s7DWCA9rL3SkKkTbpBfzAmcNajqFXDPH5c",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a stranger imports an issue",
+      "expect": "refused 10422 i_provenance",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"i_provenance\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "triage imports a review (i_provenance on review)",
+      "expect": "refused 10422 i_provenance",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"i_provenance\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "a writer imports a review",
+      "expect": "ok",
+      "got": "ok 7QC5DQCpkorzLzY11aGkjGCPrgQkRTebgyD9jG1iA4xt",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "public repo mvrc-mvouqdoe",
+      "expect": "ok",
+      "got": "ok BzFSVdo3p3XrYuPLeqVmMqXwzLDz3YjrzDG9d5vVY2dC",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "mvrc-mvouqdoe: the owner's maintainer row",
+      "expect": "ok",
+      "got": "ok FvuYdGgRcVeK6hM1UBRMHoCgFLTrxzAB3CoTaosCSH8p",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "mvrc-mvouqdoe: writer consents",
+      "expect": "ok",
+      "got": "ok 5szMid1netoGY6EBiq7Mrxz7oDj4rifC45bDKcifwACu",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "mvrc-mvouqdoe: writer as writer role 1",
+      "expect": "ok",
+      "got": "ok 14LbKDMd4VkU1oJvU5JCzwa2L7QDX13K9ewDTHyQhcCN",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "role-change repo: issue #1",
+      "expect": "ok",
+      "got": "ok AZksbhVYVTw4GHG6cNCUoCv4fZDPhfHwzVYi4Fhk6xvg",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "the writer's comment as a member (mRole 1)",
+      "expect": "ok",
+      "got": "ok 6wWtdD9qL9mDUNJbfwZ39EU2nyKpLHZd7YBAj4QkGpUU",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "the owner removes the writer's role-1 row",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "the owner re-adds the writer as triage (role 2)",
+      "expect": "ok",
+      "got": "ok 9dyeiDUbsbM4E1LiUnHHZXHPKQn2sm4Jxq19aPBgqui1",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "an edit restating the old mRole 1",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's mRole does not agree with the referenced document's role (where on asMember)",
+      "pass": true
+    },
+    {
+      "item": "L2",
+      "label": "an edit restating the new mRole 2",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "private repo mvc-mvouqdoe",
+      "expect": "ok",
+      "got": "ok 8QzxzuJZPVmvFr7PU6aCxBUjxU3vKKGbpsMc9VUFTTHq",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "mvc-mvouqdoe: the owner's maintainer row",
+      "expect": "ok",
+      "got": "ok BuwyraKjFAZpFc4EYWAUbm9YDCbXFSL6gyV76NWhPBQk",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "mvc-mvouqdoe: writer consents",
+      "expect": "ok",
+      "got": "ok DrRQuKHv2DUq22zHaQMmZQcaqijRvLzgWjv8w9QimAiz",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "mvc-mvouqdoe: writer as writer role 1",
+      "expect": "ok",
+      "got": "ok HXw1CfDG3q62HhMzXaYHEQSfpdvkayKn5coyNByc1fgn",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "mvc-mvouqdoe: maint2 consents",
+      "expect": "ok",
+      "got": "ok CQTZqKQWveX3iGsdJ3hXbFoT32xuEDFrV6drAnuogptG",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "mvc-mvouqdoe: maint2 as maintainer",
+      "expect": "ok",
+      "got": "ok 2ASEgRNfaV6Ue8KxT9as4qcbF5v5VHJkP9G5W8EFr45o",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "mvc-mvouqdoe: reader consents",
+      "expect": "ok",
+      "got": "ok Af1V5Ja3yNvvbcJnQSE5WkEyn1YGHB1TW5UdeFrLzz9N",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "mvc-mvouqdoe: reader as writer role 3",
+      "expect": "ok",
+      "got": "ok FZhnUR36Z82TkTYsYn1n45SsQYT5f8kUVHdvP8z2CPMM",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "an old sealed issue (private era)",
+      "expect": "ok",
+      "got": "ok BPhUVhRmTbZTDejL5dbiAsxJ1ENdvRHjhRGnZ1mR4e8B",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "an old sealed PR (private era)",
+      "expect": "ok",
+      "got": "ok CWaHJGTffHdWaS5X7M9kcQPoBF2c1mB8EtYrTw8JS6pC",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "an old sealed comment",
+      "expect": "ok",
+      "got": "ok 2BWSrQJd4yQQHLFrfFZrWA8Nw7aJL35DA6yLfnfX9gM4",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "an old sealed config (an anchor, framed 0x02)",
+      "expect": "ok",
+      "got": "ok 94rQW6Jbe4mSnhDPUujdXA5N9VaXZVehmMXcejh1ixKK",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "an old sealed ref update by the writer",
+      "expect": "ok",
+      "got": "ok AFcPm4Hrpr35PjeAgXMPEW2xHgZn2pkWt46je8mNM8RN",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "before the flip: a stranger's public comment on the old issue",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "before the flip: the writer's public ref update",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a maintainer flips the owner's repo (only the owner replaces it)",
+      "expect": "refused 40102",
+      "got": "refused 40102",
+      "note": "Provided document 8QzxzuJZPVmvFr7PU6aCxBUjxU3vKKGbpsMc9VUFTTHq owner ID HJu2c168iR72DYPVTakTBSy68zs1PpQrTpQgcHTLiLkD mismatch with existing AyvEsSQfK5qBotCsi2gZpePa7DcniqWzZ281TaNsJGv7",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "the owner flips private -> public",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "the owner flips it back public -> private",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'visibility' of document 8QzxzuJZPVmvFr7PU6aCxBUjxU3vKKGbpsMc9VUFTTHq (type 'repo') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a stranger's public reply on an old members-only thread",
+      "expect": "ok",
+      "got": "ok DrnEXhGz7C9KaYYFjiS7mMKJHLMyLfAyqWJVZmXRxPXD",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a member's members-only reply on the old thread (aud 1, vis public)",
+      "expect": "ok",
+      "got": "ok 8WzeaRRDkf9DowrTJAZZDBVvxBRFdcGZeWqdc6i81156",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a stranger's public review on an old PR",
+      "expect": "ok",
+      "got": "ok GSdaQwSb88JRwCJBsmtNRztumZ2nr46Gwk2pQ8FgyLAA",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a maintainer's public approval on an old PR (row stamped private)",
+      "expect": "ok",
+      "got": "ok EA6Xn7Q4pQqMiN9ga45fSbPkrSZM8Ca31qSbFEqv4n5Z",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a comment stamped private on the now-public repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "an author's edit to Public of an old private-era comment (vis private keeps aud required)",
+      "expect": "refused 10422 p_sealedIfPrivate",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"p_sealedIfPrivate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a new public issue on the converted repo",
+      "expect": "ok",
+      "got": "ok CgwiEQtA4ZRnAAnh2LsxgJu55Gr5GSzovh84cCSpqtED",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "the writer's public ref update (row stamped private, not re-issued)",
+      "expect": "ok",
+      "got": "ok 3jZGT9bvtjzkQ52UsFhL6XrHeU4Za8CH9vYBAyRieGEk",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a ref update stamped private on the now-public repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's vis does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "the owner's plaintext config (maintainer row stamped private)",
+      "expect": "ok",
+      "got": "ok BFyKNpxLXDa8mdGWW55aqN5D4WQTtsbCy87oZyMQ7KnH",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "the second maintainer's protected ref update",
+      "expect": "ok",
+      "got": "ok iZRFDvT4dgKxG7RenGErVmzvbqo3aYsRyzNt7csHWF9",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "the owner's public release",
+      "expect": "ok",
+      "got": "ok DmDZb2tvzpdccfBGPWt64XbnKFsE24XcfssgKz6xkbM7",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "the owner's webhook",
+      "expect": "ok",
+      "got": "ok BSzxhZA2ZjmgBtgo8bnVMEJSZf5aM4urJcCiRoS7u2MU",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a reader's public comment as a member (row stamped private)",
+      "expect": "ok",
+      "got": "ok DDobh7Q2Jxezr7m4vZqCQ2RUSTykZLBfSaUogaMEWoEe",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a public repo for the one-way check",
+      "expect": "ok",
+      "got": "ok HxhCpyeyPHGesYQzzCAx3GC9JuUHwk64aNZ7kZPVamWa",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a public repo made private",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'visibility' of document HxhCpyeyPHGesYQzzCAx3GC9JuUHwk64aNZ7kZPVamWa (type 'repo') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "C1",
+      "label": "a public repo's description edit (visibility unchanged)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to the writer (mr 1)",
+      "expect": "ok",
+      "got": "ok AvSKZQu7mLHX1nzs2GcYj2JTWA3ToPm4K7jt72CQCRJ3",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to triage (mr 2)",
+      "expect": "ok",
+      "got": "ok Cjx8gzUytsJ4MdAxTtHKa8pPu3SHfMHNr9ohcMfumGqv",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to the reader (mr 3)",
+      "expect": "ok",
+      "got": "ok 7VXncQYgFWKeQcGqLEPErkvmyKXmMo35V178914uGGLj",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to the second maintainer (maintainer operand, mr 1)",
+      "expect": "ok",
+      "got": "ok EEUaEuWJhHoL4QSAxZnVEygp4WMobRWe8wq9yJyFqZ1U",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to the reader of the private repo (mr 3)",
+      "expect": "ok",
+      "got": "ok 6DiizxcNvryhW2sT6LUt8Rzbx5snPMaS4vFuoBmuW5kw",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to a bot claiming mr 1",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's mr does not agree with the referenced document's role (where on memberId)",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to a bot claiming mr 3",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's mr does not agree with the referenced document's role (where on memberId)",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to a bot with mr 4 (maximum 3)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: 4 is greater than the maximum of 3, path: /mr",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "the writer's wrap (maintainer only)",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "L4",
+      "label": "a wrap to the writer claiming mr 2",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's mr does not agree with the referenced document's role (where on memberId)",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "the writer's issue",
+      "expect": "ok",
+      "got": "ok 7gANKN8y9swhHSPeAEsZDHaXDqiBK5DindsjszhEvUou",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot closes someone else's issue (r 2)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (own contract, document type patch, found by $ownerId, number, repoId) 5NZ6UeS2eHsphDWh8DjtEXgdwRU9DEzq1otXYdqj5wAm not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot closes someone else's issue (r 1)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (own contract, document type patch, found by $ownerId, number, repoId) 5NZ6UeS2eHsphDWh8DjtEXgdwRU9DEzq1otXYdqj5wAm not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "triage closes the same issue (r 2)",
+      "expect": "ok",
+      "got": "ok HVDChwvfmBV7GRwr2MgGMRXbWe5RuJ773MyJ35hgxhG8",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "triage reopens it (r 2)",
+      "expect": "ok",
+      "got": "ok 7ZwHYDH1KHf2izmmF7tMPCkN8i7M5WrxVkgxhZKTcJYu",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot labels an issue (event kind 4, r 2)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "triage labels the same issue (event kind 4, r 2)",
+      "expect": "ok",
+      "got": "ok 8ExrawnsQTfdUEepkoEqRPDLCrbfZ9WMcvYxah6kLEns",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot creates a label (r 2)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot creates a milestone (r 2)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot posts a check run (r 1)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot's members-only comment (aud 1, v0x05, mRole 4)",
+      "expect": "ok",
+      "got": "ok 96ht8qDS9mzEV5dD7yFkzsmvBtXiBacMBGGLhSzbsdNQ",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot's comment claiming mRole 1",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's mRole does not agree with the referenced document's role (where on asMember)",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot's public comment as a member (mRole 4)",
+      "expect": "ok",
+      "got": "ok 7kbSXBk2NyDYjBhTS4r5ftcBCQv169Ab2jQM8abGoZjH",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot opens its own issue",
+      "expect": "ok",
+      "got": "ok EtrDgPTAmdrYx2yYoacGNyQ6bBmTRimP9Z9zgA7b4cca",
+      "pass": true
+    },
+    {
+      "item": "C2",
+      "label": "a bot closes its own issue as the author (asAuthor)",
+      "expect": "ok",
+      "got": "ok RFSYTLneMvrvUtRBMywNJnjwn9tSjxqCn9K8VZJ8BE9",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a writer's kind-7 manifest (r 1)",
+      "expect": "refused 10422 maintKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"maintKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a writer's kind-8 manifest (r 1)",
+      "expect": "refused 10422 maintKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"maintKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a writer's kind-9 manifest (r 1)",
+      "expect": "refused 10422 maintKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"maintKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a writer's kind-11 manifest (r 1)",
+      "expect": "refused 10422 maintKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"maintKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a writer's kind-7 manifest claiming r 0",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "triage's kind-0 manifest (r 2)",
+      "expect": "refused 10422 botPack",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"botPack\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "the owner's kind-7 manifest with r 1",
+      "expect": "refused 10422 maintKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"maintKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a maintainer's kind-7 manifest (r 0)",
+      "expect": "ok",
+      "got": "ok 5eGgruf59duSXeqJcFiJ6x8YbC42bAj2ivhYwdc3TeTZ",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a maintainer's kind-8 manifest (r 0)",
+      "expect": "ok",
+      "got": "ok 4GN3xB2Gc99xiq9NVg1oVnszssLPSVEhTyRBdG8cQiVS",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a maintainer's kind-9 manifest (r 0)",
+      "expect": "ok",
+      "got": "ok 5bpmCSarqLtJeuzNSXUJjKLptnzNicGridFHLdTL4izz",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a maintainer's kind-11 manifest (r 0)",
+      "expect": "ok",
+      "got": "ok 7Y12BSijVHb4rF3FHUCaHgaEKZipbTEwAh4hbDVRF4BQ",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "the second maintainer's kind-8 manifest (r 0)",
+      "expect": "ok",
+      "got": "ok 6YaVUZrVWaL8kZze9NYwVbFmNqXgxFsAz74y5VimJerB",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a writer's kind-0 manifest (r 1)",
+      "expect": "ok",
+      "got": "ok HcygGfXVNnhcn9YmBy3bJLWZsH8Kr5eJNCYp9m7p6JXW",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a writer's kind-10 key letter manifest (r 1)",
+      "expect": "ok",
+      "got": "ok EvcfgSc2Fuj8yQjnXhHGoVhfJYuPeXWGXbwD1KAZXiDs",
+      "pass": true
+    },
+    {
+      "item": "C3",
+      "label": "a maintainer's kind-0 manifest (r 0)",
+      "expect": "ok",
+      "got": "ok 8n78JrkPwuM9ziTJ1vw5nniMiP3SmZrg6N2bU8EKnh8S",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "an aud check run with a summary",
+      "expect": "refused 10422 sealedNoText",
+      "got": "refused 10422",
+      "note": "A document of type \"checkRun\" breaks its propertyConstraints rule \"sealedNoText\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "an aud check run with a detailsUrl",
+      "expect": "refused 10422 sealedNoText",
+      "got": "refused 10422",
+      "note": "A document of type \"checkRun\" breaks its propertyConstraints rule \"sealedNoText\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "an aud check run with an externalId",
+      "expect": "refused 10422 sealedNoText",
+      "got": "refused 10422",
+      "note": "A document of type \"checkRun\" breaks its propertyConstraints rule \"sealedNoText\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "an aud check run with artifacts",
+      "expect": "refused 10422 sealedNoText",
+      "got": "refused 10422",
+      "note": "A document of type \"checkRun\" breaks its propertyConstraints rule \"sealedNoText\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "a private check run with a summary",
+      "expect": "refused 10422 sealedNoText",
+      "got": "refused 10422",
+      "note": "A document of type \"checkRun\" breaks its propertyConstraints rule \"sealedNoText\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "aud 2 on a check run (1 only)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: 2 is greater than the maximum of 1, path: /aud",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "an aud check run with only an opaque log link",
+      "expect": "ok",
+      "got": "ok HFm5uczQXjwSnxiwv9a6Mf9s9vHT3opzKqS7G7jkoGtE",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "a private check run with an opaque log link (row 13 loosened)",
+      "expect": "ok",
+      "got": "ok GuM5BDth3eoQhTBkwViZ1GLZ8qQ7u3N3TXdsJVsm2STw",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "a public check run with text",
+      "expect": "ok",
+      "got": "ok 4UVXUnGEgS73oGuVTwo36r1ZK9Vtf35NTTLXPCzRxcYg",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "a queued public run",
+      "expect": "ok",
+      "got": "ok HrzMNUtp6dAAicUHir2rqzpwfThBDLyggkD2gaUReMKU",
+      "pass": true
+    },
+    {
+      "item": "M1",
+      "label": "a public run turned members-only later (aud immutable)",
+      "expect": "refused 40128",
+      "got": "refused 40128",
+      "note": "state transition broadcast error: property 'aud' of document HrzMNUtp6dAAicUHir2rqzpwfThBDLyggkD2gaUReMKU (type 'checkRun') is immutable and cannot be changed by a replace",
+      "pass": true
+    },
+    {
+      "item": "FZ",
+      "label": "a completed failing run",
+      "expect": "ok",
+      "got": "ok CL3mDKkWNkjxxCEjnKHJngES9YBQouZHxv3YUcD9a7Eq",
+      "pass": true
+    },
+    {
+      "item": "FZ",
+      "label": "the runner deletes its completed run (keepCompleted)",
+      "expect": "refused 40147 keepCompleted",
+      "got": "refused 40147",
+      "note": "state transition broadcast error: Document CL3mDKkWNkjxxCEjnKHJngES9YBQouZHxv3YUcD9a7Eq of type \"checkRun\" can not be deleted: it breaks its deleteConstraints rule \"keepCompleted\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "FZ",
+      "label": "the runner deletes its queued run",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "the writer's issue",
+      "expect": "ok",
+      "got": "ok CNfwZm1s5VLWjChWeUarfewAyhfQbpKuYgjPVdgdpnRZ",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "triage asks for a CI re-run (kind 26)",
+      "expect": "refused 10422 t_triageKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"t_triageKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "triage asks a bot (kind 27)",
+      "expect": "refused 10422 t_triageKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"t_triageKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "triage writes kind 40 (a kind defined later)",
+      "expect": "refused 10422 t_triageKinds",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"t_triageKinds\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "triage labels (kind 4)",
+      "expect": "ok",
+      "got": "ok 3UySznfgCqgmvf7QqT5v14sn66S9jiMzrmE36vKV6KxB",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "triage assigns (kind 6)",
+      "expect": "ok",
+      "got": "ok mcwd1hG3zp181zfg4pmB691hJdZoQGLRRGTfD44HVUD",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "triage sets a milestone (kind 17)",
+      "expect": "ok",
+      "got": "ok HpNYN587CGRByVNYhuw42Qy8tpiPJcvzh5DHUzVE74c8",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "a writer asks a bot (kind 27, r 1)",
+      "expect": "ok",
+      "got": "ok B1aQ1ku9HdF4M9EHdMwNn9rWamk6Q6pUrC9PdzFPRz6F",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "a writer asks for a re-run (kind 26, r 1)",
+      "expect": "ok",
+      "got": "ok EZm7aNthFpypcUGq5Mb6VmDbyMacoNA2ETXjBccEJjgK",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "a maintainer's policy bypass (kind 23, asMaintainer)",
+      "expect": "ok",
+      "got": "ok 7btbdTyZGKHiJVteZkYBjpBpfLRqGj4nYjZE852YF9Su",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "a policy bypass without asMaintainer",
+      "expect": "refused 10422 hideByMaint",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"hideByMaint\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "a writer's policy bypass naming itself",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path asMaintainer",
+      "pass": true
+    },
+    {
+      "item": "M2",
+      "label": "a writer's policy bypass naming the owner",
+      "expect": "refused 10422 hideByMaint",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"hideByMaint\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a writer's members-only issue",
+      "expect": "ok",
+      "got": "ok 8f6dsjVw9Zk8oDNyyVC8D4h3srsKU6FPrVUxm9v6fBAP",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a writer's public issue",
+      "expect": "ok",
+      "got": "ok Am5AZPmCmHW8moNw6oWn5ggYp5G9naq8GzNcMRgRwKSe",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a plaintext label on a members-only issue, tAud left out",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz, document type patch) 8f6dsjVw9Zk8oDNyyVC8D4h3srsKU6FPrVUxm9v6fBAP not found for path targetId",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a plaintext label on a members-only issue, tAud 1",
+      "expect": "refused 10422 tAudSealed",
+      "got": "refused 10422",
+      "note": "A document of type \"event\" breaks its propertyConstraints rule \"tAudSealed\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a sealed label claiming the wrong tAud (2)",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz, document type patch) 8f6dsjVw9Zk8oDNyyVC8D4h3srsKU6FPrVUxm9v6fBAP not found for path targetId",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a sealed label on a members-only issue (tAud 1)",
+      "expect": "ok",
+      "got": "ok 18UjDtwJAnCUaEdRocMNY4r2jqypY5oyWqNGXT25Gnc",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a sealed assignment on a members-only issue (tAud 1)",
+      "expect": "ok",
+      "got": "ok 63xdnED36BqvV3Qu76RnbHs9krsUNu7FW453HfwNwo77",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a value-free event on a members-only issue (review request, tAud 1)",
+      "expect": "ok",
+      "got": "ok 8ZBjsgkZ7qZrz4DPY91GJGJQbFeMFxTE3JbAbNfxhMTa",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a plaintext label on a public issue (both absent agree)",
+      "expect": "ok",
+      "got": "ok 2hB9wSANqaPWeEXWDjYYb6nJdmvWE3Z2DzcokEBmMAXF",
+      "pass": true
+    },
+    {
+      "item": "M4",
+      "label": "a public issue claiming tAud 1",
+      "expect": "refused 40127|40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz, document type patch) Am5AZPmCmHW8moNw6oWn5ggYp5G9naq8GzNcMRgRwKSe not found for path targetId",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a writer's members-only PR",
+      "expect": "ok",
+      "got": "ok 4d1YvaxSqRQKi5kkh4fYqWPjXaKL3W1gZXKGhEDxA9EQ",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a writer's public PR",
+      "expect": "ok",
+      "got": "ok Az8RE5N4H1qiJ83TxFdkLNKdHdYMDRBA9c4bBxSySNSP",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a plaintext retarget of a members-only PR, tAud left out",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's tAud does not agree with the referenced document's aud (where on targetId)",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a plaintext retarget of a members-only PR, tAud 1",
+      "expect": "refused 10422 tAudSealed",
+      "got": "refused 10422",
+      "note": "A document of type \"authorEvent\" breaks its propertyConstraints rule \"tAudSealed\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a retarget with both value and enc",
+      "expect": "refused 10422 noPlain",
+      "got": "refused 10422",
+      "note": "A document of type \"authorEvent\" breaks its propertyConstraints rule \"noPlain\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a retarget with neither value nor enc",
+      "expect": "refused 10422 retargetValue",
+      "got": "refused 10422",
+      "note": "A document of type \"authorEvent\" breaks its propertyConstraints rule \"retargetValue\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "enc without epoch",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: \"epoch\" is a required property, path: ",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a sealed retarget of a members-only PR (tAud 1)",
+      "expect": "ok",
+      "got": "ok 4TZuheEHWSkxAc8HKQPUFCcHdGmcq7SM7KbBzkCpjWbX",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a plaintext retarget of a public PR",
+      "expect": "ok",
+      "got": "ok DHYZbpxCKC7VvsVhnXg3BizqTWoAKRaPbev4La6mgazF",
+      "pass": true
+    },
+    {
+      "item": "M3",
+      "label": "a non-author's sealed retarget",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 8SQr4F8jE3kgwoYUWWDAAT3kDeJEFU3ESQjBLkYZtLCz, document type patch, found by $ownerId, number, repoId) G1SAVd3dfdjNHJo2YmaNmhKThEa9kPVcwefCpeinC8ce not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner grants the bot a public prefix",
+      "expect": "ok",
+      "got": "ok 13EaSoYUpJdqwaG96pwmC29tf6PMYaiG4oLyxY5ieVMu",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes refs/heads/bot/ci-bot/x under the prefix grant",
+      "expect": "ok",
+      "got": "ok DBH8N81EZwqfQ8d3Bbphvzh5BboGQUQDn4yo1mLxmrMW",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot's chunk for its kind-0 pack",
+      "expect": "ok",
+      "got": "ok AVT1jTTEgFRDRpinTFqj8EsF3gKBZuvCQzTydgmLNmXi",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot's kind-0 pack manifest (r 4)",
+      "expect": "ok",
+      "got": "ok 435p16zJqLkvnbeeQnZmW2ZEZQkWbWemvxXXEhr4g5kt",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot's chunk for its kind-1 browse index",
+      "expect": "ok",
+      "got": "ok 9nzouxuDWGANB37w3arS1GmA7AMpLvuuwimGphwLQvv4",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot's kind-1 browse index manifest (r 4)",
+      "expect": "ok",
+      "got": "ok 7nJxrgxGwQLzt7pMLX92JytUekgnFBQzpedd6vSxSCWL",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot's chunk for its kind-6 long body",
+      "expect": "ok",
+      "got": "ok 6EHabSNB8KCAmqM5s17hmRUq8giTN4Ka3GzZrniXekxQ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot's kind-6 long body manifest (r 4)",
+      "expect": "ok",
+      "got": "ok 6C6DXWAXVwUaGXH7UUJ3wZNp1CHPwbrdSUvNa7k5YgdA",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot's chunk claiming a role (R-19: no r)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: Additional properties are not allowed ('r' was unexpected), path: ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a role-1 writer's chunk (R-19)",
+      "expect": "ok",
+      "got": "ok 567qK5ibNVkAtQa9KfaU5QDMiJNQYGBP26FnnDYYFoLU",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner's chunk (R-19, maintainer operand)",
+      "expect": "ok",
+      "got": "ok HPNNoUVvEuSfbwXYRyYzL2MYN6WZpXJpjZVxkrG4tAuz",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a prefix grant of refs/tags/ (headsOnly)",
+      "expect": "refused 10422 headsOnly",
+      "got": "refused 10422",
+      "note": "A document of type \"pushGrant\" breaks its propertyConstraints rule \"headsOnly\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a prefix grant of refs/ (headsOnly)",
+      "expect": "refused 10422 headsOnly",
+      "got": "refused 10422",
+      "note": "A document of type \"pushGrant\" breaks its propertyConstraints rule \"headsOnly\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot ref update with no grant (r 4)",
+      "expect": "refused 10422 botGrant",
+      "got": "refused 10422",
+      "note": "A document of type \"refUpdate\" breaks its propertyConstraints rule \"botGrant\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot ref update outside its prefix (refs/heads/main; R-06 grantPrefix)",
+      "expect": "refused 10422 grantPrefix",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"refUpdate\" breaks its propertyConstraints rule \"grantPrefix\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot ref update beside its prefix (no separator)",
+      "expect": "refused 10422 grantPrefix",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"refUpdate\" breaks its propertyConstraints rule \"grantPrefix\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot ref update copying the grant's until (gu: no such property since R-06)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: Additional properties are not allowed ('gu' was unexpected), path: ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot ref update copying the grant's prefix (gp: no such property since R-06)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: Additional properties are not allowed ('gp' was unexpected), path: ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot ref update claiming r 1 (its row is role 4)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "another bot pushes under the bot's grant",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's $ownerId does not agree with the referenced document's botId (where on pp)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "triage sends r 4 under the grant",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the reader sends r 4 under the grant",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "triage uploads a chunk (R-19: role 2 is not in [1, 4])",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"in\": [1, 4] } does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the reader uploads a chunk (R-19: role 3 is not in [1, 4])",
+      "expect": "refused 40127|40120",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"in\": [1, 4] } does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot protected ref update",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type maintainer, found by memberId, repoId) 5NZ6UeS2eHsphDWh8DjtEXgdwRU9DEzq1otXYdqj5wAm not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot manifest of kind 3 (r 4)",
+      "expect": "refused 10422 botPack",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"botPack\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot manifest of kind 7 (r 4)",
+      "expect": "refused 10422 botPack",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"botPack\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot manifest of kind 8 (r 4)",
+      "expect": "refused 10422 botPack",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"botPack\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot manifest of kind 10 (r 4)",
+      "expect": "refused 10422 botPack",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"botPack\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot manifest of kind 11 (r 4)",
+      "expect": "refused 10422 botPack",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"botPack\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot manifest claiming r 0",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot manifest with supersedes",
+      "expect": "refused 10422 botPack",
+      "got": "refused 10422",
+      "note": "A document of type \"packManifest\" breaks its propertyConstraints rule \"botPack\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot kind-64 manifest (members-only pack, external)",
+      "expect": "ok",
+      "got": "ok iY5d8WxjaxMMxSJSAjysBUHK6tVGmQBo26jyNBhMphQ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot kind-65 manifest (members-only browse index)",
+      "expect": "ok",
+      "got": "ok 5e4kygyWnQ5bZP2yn5CxEBnbF44MsxSY8qXoxsFMbssZ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a bot kind-70 manifest (members-only long body)",
+      "expect": "ok",
+      "got": "ok 8janCWGTb75Q6FGnMme9FTCJishZ2TS316AuUs42UzHX",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a writer's grant",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant to a role-1 writer",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": 4 } does not agree with the referenced document's role (where on botId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant to the reader",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": 4 } does not agree with the referenced document's role (where on botId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant to a stranger",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path botId",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant with until 91 days ahead",
+      "expect": "refused 10422 ttl90",
+      "got": "refused 10422",
+      "note": "A document of type \"pushGrant\" breaks its propertyConstraints rule \"ttl90\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant with until in the past",
+      "expect": "refused 10422 ttl90",
+      "got": "refused 10422",
+      "note": "A document of type \"pushGrant\" breaks its propertyConstraints rule \"ttl90\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant with both scope and prefix",
+      "expect": "refused 10422 oneScope",
+      "got": "refused 10422",
+      "note": "A document of type \"pushGrant\" breaks its propertyConstraints rule \"oneScope\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant with neither scope nor prefix",
+      "expect": "refused 10422 oneScope",
+      "got": "refused 10422",
+      "note": "A document of type \"pushGrant\" breaks its propertyConstraints rule \"oneScope\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a grant naming the bot row's role (br: no such property since R-06)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: Additional properties are not allowed ('br' was unexpected), path: ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner grants the bot one exact members-only ref",
+      "expect": "ok",
+      "got": "ok FipnSRjQ1JwuimhboeLKEFkS376S13abAH32EbPLTtV8",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes the exact members-only ref (sealed)",
+      "expect": "ok",
+      "got": "ok 3cnfGD9wF3LEXq7qN5rm3KcpRKV4T95ntcd5WZibTZzQ",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a public update through the exact grant",
+      "expect": "refused 10422 botGrant",
+      "got": "refused 10422",
+      "note": "A document of type \"refUpdate\" breaks its propertyConstraints rule \"botGrant\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "an exact grant used for another ref",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's refNameHash does not agree with the referenced document's scope (where on pg)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "pp naming the exact grant (it has no prefix: grantPrefix)",
+      "expect": "refused 10422 grantPrefix",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"refUpdate\" breaks its propertyConstraints rule \"grantPrefix\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a sealed bot push through a prefix grant (no refName: grantPrefix)",
+      "expect": "refused 10422 grantPrefix",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"refUpdate\" breaks its propertyConstraints rule \"grantPrefix\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "pg naming the prefix grant",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's refNameHash does not agree with the referenced document's scope (where on pg)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner renews the prefix grant (a new grant, later until)",
+      "expect": "ok",
+      "got": "ok 9jC1xh2Q6nbwAfc9ae7f1iqpyeFZn6zFT7gvvivk6aPn",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes under the renewal",
+      "expect": "ok",
+      "got": "ok 5HCXV94HQeiV5txgYvVWcij1pRmvBRSBvh1EsyTZdTCi",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a writer's push (r 1, no grant)",
+      "expect": "ok",
+      "got": "ok 9YrpQxBKn4edDksDPcWcBvZ9KSTFRpTJXYwEbbGo7oji",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "a writer's push naming a grant (r 1)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's $ownerId does not agree with the referenced document's botId (where on pp)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "consensus admits a bot's public update whose hash is not sha256(refName) (readers drop it)",
+      "expect": "ok",
+      "got": "ok FyzQyCn7HF2y4BmcXQS1A8teZpYKdFo15Vu9rsdTromf",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the second maintainer grants the bot the prefix",
+      "expect": "ok",
+      "got": "ok Wp8a6ABZri8VVQUyLNCHC3MSmMXXwVCpTuUEvKeXRC2",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes under the second maintainer's grant",
+      "expect": "ok",
+      "got": "ok DKAZTQ1PGySQrhyTnL61vVwoF32AthCPhjG9r7LPVTtA",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot names the owner as the second maintainer's grantor",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's grantor does not agree with the referenced document's $ownerId (where on pp)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner removes the second maintainer's row",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes under the removed granter's grant",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type maintainer, found by memberId, repoId) HJu2c168iR72DYPVTakTBSy68zs1PpQrTpQgcHTLiLkD not found for path grantor",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner grants bot2 a prefix",
+      "expect": "ok",
+      "got": "ok GvETQfdNMFTB6Ya86M4foEWU3XRaDf7jrDf58NFYjKFC",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "bot2 pushes under its grant",
+      "expect": "ok",
+      "got": "ok 2tCKneiZTKmfE3J9JmCHdam1jXBkkmskci8bb7JPmMti",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner removes bot2's row",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the removed bot2 pushes under its grant",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (own contract, document type writer, found by memberId, repoId) 67SGmtNHJQ15eLu9Fu1kbqqgxdzp7KHTvzJukygbEW9i not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner re-adds bot2 (role 4)",
+      "expect": "ok",
+      "got": "ok FVk7wdjoPmGixZksSVK2wLezhT8jH6k51VaPmvoaDBwa",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "consensus admits the re-added bot2 under its old grant (client rule ignores it)",
+      "expect": "ok",
+      "got": "ok 6xjLe5bTuRw5AoCfpi7BNg6motia2CUKcZckvmZAiMfC",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner removes bot2's role-4 row again",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner re-adds bot2 as triage (role 2)",
+      "expect": "ok",
+      "got": "ok 56GEyLEBa53iJRDDwmGaCVj3RCunAfZH8FvWo733KVpG",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "bot2, now triage, sends r 4 under its own live grant",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "bot2, now triage, sends r 2 under its grant",
+      "expect": "refused 10422 botGrant",
+      "got": "refused 10422",
+      "note": "A document of type \"refUpdate\" breaks its propertyConstraints rule \"botGrant\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner grants the bot a prefix for 2 minutes",
+      "expect": "ok",
+      "got": "ok 2VTwVKTf9EJXn75yz9vLqsKNCiD1DyUaqT6aj8NCrMdG",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes before the short grant ends",
+      "expect": "ok",
+      "got": "ok BCDXX3arTMGTKsqjnBRgKVFYtBjPmgVxZTuduKHcTNFg",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes after until (the where ordering)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"greaterThanOrEqual\": \"$createdAt\" } does not agree with the referenced document's until (where on pp)",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the owner grants the bot one exact ref for 2 minutes",
+      "expect": "ok",
+      "got": "ok CMD6eoNg3AShTPb8yoPpwoLBfMwsmrX7Ehdhk4dYSUbh",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes the exact ref before its grant ends",
+      "expect": "ok",
+      "got": "ok Ad15yPESy6U3ae1kLbXf665fBTiEUFFHhb1Xk4U41q6h",
+      "pass": true
+    },
+    {
+      "item": "B1",
+      "label": "the bot pushes the exact ref after until (the where ordering on pg)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"greaterThanOrEqual\": \"$createdAt\" } does not agree with the referenced document's until (where on pg)",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a label (forge-meta)",
+      "expect": "ok",
+      "got": "ok BK8kdofkjvy9ybtPZb2QQhVq2fPncDUymuZJPDxRs43E",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the label read back from forge-meta",
+      "expect": "label BK8kdofkjvy9ybtPZb2QQhVq2fPncDUymuZJPDxRs43E in 8qj74sQt…, proved",
+      "got": "found",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "triage's label (r 2)",
+      "expect": "ok",
+      "got": "ok 666JXbbcFmFc1JmrxNofMrX59ogZujtByVKLhZztDmBo",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a stranger's label",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type writer, found by memberId, repoId) Ew8pNwWDQHmMvGryaf9rFVrrvV87bmwVxhc2f23mG8Ce not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the reader's label (r 2)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a topic (forge-meta, no vis stamp: R-11)",
+      "expect": "ok",
+      "got": "ok A96BhXWRHy5HcwcBnRHU4n1chFsEDfNuZgBdXzRYLEMA",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the topic read back",
+      "expect": "topic A96BhXWRHy5HcwcBnRHU4n1chFsEDfNuZgBdXzRYLEMA in 8qj74sQt…, proved",
+      "got": "found",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a topic on a private repo (R-11 where const)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a topic by someone other than the repo's owner",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's $ownerId does not agree with the referenced document's $ownerId (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a topic carrying a vis stamp (no such property since R-11)",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: Additional properties are not allowed ('vis' was unexpected), path: ",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a stranger's pack mirror (forge-meta)",
+      "expect": "ok",
+      "got": "ok 8ZSjg4C6KGWXd2hxuD3LjbaNDpEZmRVjYedhkB59VPSB",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the pack mirror read back",
+      "expect": "packMirror 8ZSjg4C6KGWXd2hxuD3LjbaNDpEZmRVjYedhkB59VPSB in 8qj74sQt…, proved",
+      "got": "found",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a pack mirror of a private repo (R-11 where const)",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a pack mirror of a repo that does not exist",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced permanent document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type repo) p2Yicb86aZig616Eav2VWG9vuXR5mEqhtzshZYBxzsV not found for path repoId",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a ban (forge-meta)",
+      "expect": "ok",
+      "got": "ok B8ELsRSG25ZLAMiXRkDBX1vxSJVtU6mCpk3hyPmc3z6U",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the ban read back",
+      "expect": "ban B8ELsRSG25ZLAMiXRkDBX1vxSJVtU6mCpk3hyPmc3z6U in 8qj74sQt…, proved",
+      "got": "found",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the writer's ban (maintainer only)",
+      "expect": "refused 40120",
+      "got": "refused 40120",
+      "note": "state transition broadcast error: referenced deletable document (contract 9bXpqgEppfxG2Z4um8Y6T9miARJMKJZqoPDnrUss2fbP, document type maintainer, found by memberId, repoId) EXHftJ1DQ9SsLFSJgv8p2GiVNC4qtCbKdmNmub9ktGNu not found for path $ownerId",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a repo key wrap (forge-meta)",
+      "expect": "ok",
+      "got": "ok CrowBUvh8z3uov4irFqvoYABdqrqX7WDw3gJApTQxRTM",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the wrap read back",
+      "expect": "repoKey CrowBUvh8z3uov4irFqvoYABdqrqX7WDw3gJApTQxRTM in 8qj74sQt…, proved",
+      "got": "found",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the stranger's profile (forge-meta)",
+      "expect": "ok",
+      "got": "ok EEKkE2g9zW4oPhsWuQCkiaWEYvSTqLqhzJ3n41nyDXsz",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the profile read back",
+      "expect": "profile EEKkE2g9zW4oPhsWuQCkiaWEYvSTqLqhzJ3n41nyDXsz in 8qj74sQt…, proved",
+      "got": "found",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a follow (forge-meta)",
+      "expect": "ok",
+      "got": "ok CCKR2VoYu3dxSW9qSEhSo3VbwQuC73Xx3KZ7RQJ4WeCn",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the follow read back (byOwner index, proved)",
+      "expect": "1 entry in forge-meta",
+      "got": "1",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "following oneself (distinctFrom)",
+      "expect": "refused 10419",
+      "got": "refused 10419",
+      "note": "Document type \"follow\" property \"identityId\" must differ from \"$ownerId\", but the two values are equal",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the writer registers an AUTHENTICATION key bound to group 28WdQQm2…",
+      "expect": "ok",
+      "got": "ok key 5",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the key on chain is bound to the group",
+      "expect": "contractGroup 28WdQQm2kF5PH3oQonjJSQUsd9QuXbSDATuFiAKdQqm4",
+      "got": "{\"$type\":\"contractGroup\",\"id\":\"28WdQQm2kF5PH3oQonjJSQUsd9QuXbSDATuFiAKdQqm4\"}",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a forge-meta write (label) signed by the writer's group-bound key",
+      "expect": "ok",
+      "got": "ok GAwhC5sxizii5jMhzYWW2dvZyLgmvFGvSVpxzxms8avR",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the group-key label read back",
+      "expect": "label GAwhC5sxizii5jMhzYWW2dvZyLgmvFGvSVpxzxms8avR in 8qj74sQt…, proved",
+      "got": "found",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "a forge-core write (ref update) signed by the same key",
+      "expect": "ok",
+      "got": "ok 4nxTbKaG575KrfeRVbeiQwpGWKLcGrcNuysZCgza6pHc",
+      "pass": true
+    },
+    {
+      "item": "D44",
+      "label": "the same key signing for a contract outside the group (the live forge-community)",
+      "expect": "a devnet with a live set",
+      "got": "NOT RUN on testnet: it addresses the live forge-community",
+      "pass": true,
+      "notRun": true
+    },
+    {
+      "item": "ma2",
+      "label": "public repo mva-mvouqdoe",
+      "expect": "ok",
+      "got": "ok 6GD835Bzxgxesz5vSctxf2XS4ZbyXDDMsrnPuVwcBAkR",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mva-mvouqdoe: the owner's maintainer row",
+      "expect": "ok",
+      "got": "ok 8ti1Uj1BquoxPp2eWjCB5vKXVRdzGa9iq2tMHW4oYDih",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mva-mvouqdoe: maint2 consents",
+      "expect": "ok",
+      "got": "ok 4xC6RuNR5nxpQuJUasnWjpcHkgD2Y1yLcz5CfXaEhSzV",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mva-mvouqdoe: maint2 as maintainer",
+      "expect": "ok",
+      "got": "ok 8beG7v2nph2q1wNvYwgBN9stNdvdw2KyZuZGX3ZGZpcf",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mva-mvouqdoe: writer consents",
+      "expect": "ok",
+      "got": "ok 3Y8prDRHwWAyPV5wPod2bRkP15chHV8GpRXfh83Lgwpp",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mva-mvouqdoe: writer as writer role 1",
+      "expect": "ok",
+      "got": "ok F5hohFYZbaMZ1ZcPms9Vf33VFc4rqK8gdLXy62n33C6P",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mva-mvouqdoe: triage consents",
+      "expect": "ok",
+      "got": "ok ENLPAc3h19o8foJi82WVdvYopaFLF7i1VgjVSNeN5qr",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mva-mvouqdoe: triage as writer role 2",
+      "expect": "ok",
+      "got": "ok 865TjZ6eYpCAbtgEiKnWz61GVx1d5aRjZBFJG6deyTNh",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "private repo mvap-mvouqdoe",
+      "expect": "ok",
+      "got": "ok 2C5gaVR8wbYUY7H56mMYaJaEyYUt9HYJWJEsY3CuFbGM",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mvap-mvouqdoe: the owner's maintainer row",
+      "expect": "ok",
+      "got": "ok 3eASWJFuJVXk4oWvyo4AY8gPvBkWPFYm8FtZaWZ9AW8i",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mvap-mvouqdoe: writer consents",
+      "expect": "ok",
+      "got": "ok 9kw3sWesczSkRni4xEZDDSkHxE8QekJtiiU4kXDmgUaj",
+      "pass": true
+    },
+    {
+      "item": "ma2",
+      "label": "mvap-mvouqdoe: writer as writer role 1",
+      "expect": "ok",
+      "got": "ok 7Zd7AK2xxXbCgvNDJ67PcYY7pzS555XSfXabKvWRGJxR",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the writer's PR",
+      "expect": "ok",
+      "got": "ok 9o1rRHuVgtZUxbbkJuHmR1EvX8FP9FoTyhQPqAkYiuNs",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the owner's PR",
+      "expect": "ok",
+      "got": "ok FNeNkN2Pn125k2JeNeTXmR14Ai2h4fFTmt9ELXbYSgSQ",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the PR's author approves it (verdict 1, mRole 1)",
+      "expect": "refused 10422 authorNoVerdict",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"review\" breaks its propertyConstraints rule \"authorNoVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the PR's author requests changes on it (verdict 2)",
+      "expect": "refused 10422 authorNoVerdict",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"review\" breaks its propertyConstraints rule \"authorNoVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the author's approval marked imported (no import exemption)",
+      "expect": "refused 10422 authorNoVerdict",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"review\" breaks its propertyConstraints rule \"authorNoVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the owner approves its own PR (a maintainer author)",
+      "expect": "refused 10422 authorNoVerdict",
+      "got": "refused 10422",
+      "note": "state transition broadcast error: A document of type \"review\" breaks its propertyConstraints rule \"authorNoVerdict\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the PR's author comments on it (verdict 3)",
+      "expect": "ok",
+      "got": "ok 38ZKVd7fEuLGErp5jaNrUBYf4AoeBTg9y1raDDcxDRcU",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the owner approves the writer's PR",
+      "expect": "ok",
+      "got": "ok XNUkDG8LRg6AMw3vd3HFSdN3rAddD7YGXR5nKYd27bH",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the writer approves the owner's PR (mRole 1)",
+      "expect": "ok",
+      "got": "ok 8k887wAiK1SAEsSR1Spju3HBAbk9F45fGzRMsNyD9v23",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "the second maintainer requests changes on the writer's PR",
+      "expect": "ok",
+      "got": "ok 2sK38wRMQbRf3WPMq3PL7XekJBAJGBFc43R31kcRWpKB",
+      "pass": true
+    },
+    {
+      "item": "R-03",
+      "label": "a stranger's outside approval (verdict 4)",
+      "expect": "ok",
+      "got": "ok 43bb2YZKfaR3jQ8udDfSHvKn9ucQpuTqRZxuTYBGmQoA",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "the writer deletes its approval",
+      "expect": "refused 40147 keepVerdicts",
+      "got": "refused 40147",
+      "note": "state transition broadcast error: Document 8k887wAiK1SAEsSR1Spju3HBAbk9F45fGzRMsNyD9v23 of type \"review\" can not be deleted: it breaks its deleteConstraints rule \"keepVerdicts\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "the second maintainer deletes its change request",
+      "expect": "refused 40147 keepVerdicts",
+      "got": "refused 40147",
+      "note": "state transition broadcast error: Document 2sK38wRMQbRf3WPMq3PL7XekJBAJGBFc43R31kcRWpKB of type \"review\" can not be deleted: it breaks its deleteConstraints rule \"keepVerdicts\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "the author deletes its comment verdict (3)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "R-09",
+      "label": "the stranger deletes its outside verdict (4)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only issue framed 0x01 (private framing on a public repo)",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only issue framed 0x02 (config framing)",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only (aud 1) issue framed 0x04 (letter framing)",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only issue framed 0x05 (a version defined later)",
+      "expect": "ok",
+      "got": "ok FnXaYrAY2fW9km7fhpBMkxTioAPefhgfEMy3LfsLsUyw",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a stranger's letter (aud 2) framed 0x04",
+      "expect": "ok",
+      "got": "ok HqdUa95cGvfJazwnkFYkDgEbNN4mRgR5oVxieuSBJsUa",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a stranger's letter framed 0x01",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a private issue framed 0x01",
+      "expect": "ok",
+      "got": "ok FdmAowxCXxYM5S8h2AB3mJuvUisf6kyE1SbsDHTFhDFx",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a private issue framed 0x02",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a private aud-1 issue framed 0x04",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"issue\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a member's private letter (aud 2) framed 0x04",
+      "expect": "ok",
+      "got": "ok 7UXHQMVjVsqer9Cy7K4Ru3paWxTDp1mwpBNQuxFWCahC",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only PR framed 0x01",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"patch\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only PR framed 0x03",
+      "expect": "ok",
+      "got": "ok CyC7ZcBkRUmhVFgsHdoQXa5fw6kCYShiFMc986Mg44ck",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a public issue to reply on",
+      "expect": "ok",
+      "got": "ok 4ARYjDcojYchEzxNztwBQssT72kRMroF79U3RvDS2a2q",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only comment framed 0x02",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a members-only comment framed 0x03",
+      "expect": "ok",
+      "got": "ok Gu6Tf2fWnmHzwYHAqBp85qwGhiB5pEkSmBYTRmSnysBx",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "that comment re-sealed framed 0x01 (judged on every replace)",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "that comment re-sealed framed 0x03",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "triage's members-only review framed 0x04",
+      "expect": "refused 10422 encFraming",
+      "got": "refused 10422",
+      "note": "A document of type \"review\" breaks its propertyConstraints rule \"encFraming\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "triage's members-only review framed 0x03",
+      "expect": "ok",
+      "got": "ok 64JnGjz1eEoJJkGTeLo2P98NuVaMWXCpmm19sv4a94ha",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a sealed config framed 0x01",
+      "expect": "refused 10422 encV2",
+      "got": "refused 10422",
+      "note": "A document of type \"config\" breaks its propertyConstraints rule \"encV2\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a sealed config framed 0x03",
+      "expect": "refused 10422 encV2",
+      "got": "refused 10422",
+      "note": "A document of type \"config\" breaks its propertyConstraints rule \"encV2\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-04",
+      "label": "a sealed config framed 0x02 (an anchor)",
+      "expect": "ok",
+      "got": "ok 3LgegZhakjsKM25piB1zn1nepPusjt2Qpex7Cj9X7KGs",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "an issue to lock",
+      "expect": "ok",
+      "got": "ok 4mA9XWbNYX8t3gQWSBGsqDEHX4h29QpRdXtRbwkf8yE5",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "a stranger's comment before the lock",
+      "expect": "ok",
+      "got": "ok DnpEQu9Vs1JRJyW1XNCTGRV8ZBp8u8rcmGWMdaLJXQQj",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "triage locks the issue (kind 3, delta 16, r 2)",
+      "expect": "ok",
+      "got": "ok BJkaBRaUrHKxDc3S4nKAojU5wVSgkaAneB6jCgP1Z6u8",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "a stranger's new comment on the locked thread",
+      "expect": "refused 10422 lockGate",
+      "got": "refused 10422",
+      "note": "A document of type \"comment\" breaks its propertyConstraints rule \"lockGate\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "the stranger edits its comment from before the lock ($revision 2)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "a member's comment on the locked thread",
+      "expect": "ok",
+      "got": "ok H5vVzAebTwEZiw5UtXiJ1QS7E8ESybX72xLuNFfamdxq",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "an issue, then a newer one",
+      "expect": "ok",
+      "got": "ok CxGH3nG7WodzNhAt4GNgVL5SfTYBVgjncNYEtWLJ3NaU",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "the newer issue",
+      "expect": "ok",
+      "got": "ok 5D5sXsc6vsCsQtbsUpxFvELHoa3Z3gUVadXL6XA39e8K",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "an edit of the older issue ($revision 2: dense does not renumber it)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "R-05",
+      "label": "an issue created and edited right after, without waiting ($revision 2 is no create)",
+      "expect": "the edit accepted",
+      "got": "ok (adjacent blocks: created at 645787, updated at 645788, revision 2)",
+      "pass": true
+    },
+    {
+      "item": "R-08",
+      "label": "the owner deletes its own maintainer row",
+      "expect": "refused 40147 ownerRowStays",
+      "got": "refused 40147",
+      "note": "state transition broadcast error: Document 8ti1Uj1BquoxPp2eWjCB5vKXVRdzGa9iq2tMHW4oYDih of type \"maintainer\" can not be deleted: it breaks its deleteConstraints rule \"ownerRowStays\": it does not hold",
+      "pass": true
+    },
+    {
+      "item": "R-08",
+      "label": "the owner removes the second maintainer's row",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "item": "R-08",
+      "label": "the owner, its row kept, still writes a config",
+      "expect": "ok",
+      "got": "ok 7S1ii2gU6E3YfFxRQtK2jfGrQPJjiVtZjn3hJyXPSDUm",
+      "pass": true
+    },
+    {
+      "item": "R-11",
+      "label": "a webhook on a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-11",
+      "label": "a webhook on a public repo (no vis stamp)",
+      "expect": "ok",
+      "got": "ok DtPGKvYJ21BADD1XCiRqXPhkLKUzxuxVc1QjeLop55wz",
+      "pass": true
+    },
+    {
+      "item": "R-11",
+      "label": "a webhook carrying a vis stamp",
+      "expect": "refused 10101",
+      "got": "refused 10101",
+      "note": "JsonSchemaError: Additional properties are not allowed ('vis' was unexpected), path: ",
+      "pass": true
+    },
+    {
+      "item": "R-11",
+      "label": "a topic on a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-11",
+      "label": "a topic on a public repo",
+      "expect": "ok",
+      "got": "ok 6AzqoVs678LwmQycJCFzirP3qdJiN4rjNpjcS4TbRJF1",
+      "pass": true
+    },
+    {
+      "item": "R-11",
+      "label": "a pack mirror of a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-11",
+      "label": "a pack mirror of a public repo",
+      "expect": "ok",
+      "got": "ok 9M4SxFygkGQeP15g7oaWozdKo4eezoh6PC2ftcMxtmPX",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "a stranger stars a public repo",
+      "expect": "ok",
+      "got": "ok HtuyJ63g7cPAuZ911TjructLNzCXwmj58brMEVsaGME2",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "the owner stars its own public repo (self-stars allowed)",
+      "expect": "ok",
+      "got": "ok Cp7XX7fNgJYKyRnDKP6mzMw6fvoMQDDVtWL4gVndRtEn",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "a member stars a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "the owner stars its own private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "a stranger watches a public repo",
+      "expect": "ok",
+      "got": "ok 5Nt3AHA92rP32WZ9dxpdV8FPCmxWQoRUa9AWtLRDWESH",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "a member watches a private repo",
+      "expect": "refused 40127",
+      "got": "refused 40127",
+      "note": "state transition broadcast error: the document's { \"const\": \"public\" } does not agree with the referenced document's visibility (where on repoId)",
+      "pass": true
+    },
+    {
+      "item": "R-12",
+      "label": "the stranger unstars (an indexOnly delete checks no reference)",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    }
+  ]
+}
