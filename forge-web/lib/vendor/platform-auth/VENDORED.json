@@ -30,6 +30,43 @@
         "verify.ts": "sha256-5272d8263e7efe719fab01e114785a867580e0d6785e66fdd92baa0bc10e5f72"
       },
       "ref": "feat/app-connect-module"
+    },
+    "passkey-vault": {
+      "commit": "dbd9a4fd27f772051b1ec5853a298a6fb7a07f7e",
+      "dirty": false,
+      "externals": [
+        "@noble/ciphers",
+        "@noble/curves",
+        "@noble/hashes"
+      ],
+      "files": {
+        "__fixtures__/fake-passkey.ts": "sha256-d043f81181bbb39d5c77e574283f2278c0de32fc6cfeaea128dc7d6c50022cad",
+        "__fixtures__/memory-port.ts": "sha256-05f63180216fc6ceb7e30605c715e10b9537eadb25c990d8284968bba68dca9c",
+        "__fixtures__/profiles.ts": "sha256-a4813c7f654cea974dcc01d3e109f73b74dd1ac82688dc76aaf312c1f53429e5",
+        "__fixtures__/vectors.ts": "sha256-4ecd01661c50f46ad3c02760ffdbb4984cbf734faa5f13f6860c6526580ea0f1",
+        "__vectors__/forge.json": "sha256-4aae584c5493d5cf1b20f7a82d587bf28dbd1fd38887c62f62652ed4081489e1",
+        "__vectors__/generate.py": "sha256-b222d5c1e15e4efdc633b5b92486d1205b8c8d3e76cf44093aa357b1cb2fed9d",
+        "__vectors__/govhub.json": "sha256-ce67759e25cd5e6f368d3a1c8978a3c0ec54df17d11d9376f5ec016721d402aa",
+        "__vectors__/yappr.json": "sha256-81d6a989761c6c5251010c0d6f2527cf6baef6714c8a20180223cd4cd40716a4",
+        "bytes.ts": "sha256-e24ad247ffff805318c6e193e487f4678f026b7b8ac53e7d13a4910ebc74cb86",
+        "codecs.test.ts": "sha256-0b9e989118dd844d0553a4c80adc752cefb216931f32b79e8e165dd0e8a7b441",
+        "codecs.ts": "sha256-27cae3d3fbba28d23b38a343df0936c135f7fa888a7b7a0fa58ee465cd1a8bc3",
+        "entry.test.ts": "sha256-bedd312f457347eb4e06eaa0870f7e24384f7ed358493e284dc255e2eeef8983",
+        "entry.ts": "sha256-8c955f8ab5813d608556e39a5767609ac86228558bc10f9e56d9a78b49e5953f",
+        "errors.ts": "sha256-2da40dc2c024022374ca671f9f1517078c0b473117279911fe0ea408d1ea6ba6",
+        "hpke.test.ts": "sha256-bbaca9878ecee0fb964fdb5af3c53d2e4aeec8f7f8b3441f24496dfe9a0731b7",
+        "hpke.ts": "sha256-2820e7d2884e9a6e3ba461f1205a6b7973d1dc7dfb9d98284a8c07cf8badb8ba",
+        "index.ts": "sha256-97cd1f5f666f7e8f9b954472de9756f6a8fc7fafa84194361113acf997a47606",
+        "port.ts": "sha256-3b13eac8fd82c486a7090adb9c6d6f08ae8eb91e863a579fd9517734f564afb2",
+        "profile.ts": "sha256-80b8691740f08d34d342c7f8e25f0778c867607919527bbea9661379e3da45c7",
+        "user-handle.ts": "sha256-d2520559afe26077e3e723ae17d2ebe3edc2429f15f0eb228cf1581ea40cada2",
+        "vault.test.ts": "sha256-7324d4e2232955034e61cc02ac01b24c0dc6a60d57d708e8991cd4c2fc7dc2f5",
+        "vault.ts": "sha256-7ba9d297e484f3afa6f0759e8b8ad61620afc293104e9356d1c8359e29464577",
+        "verify.ts": "sha256-9acfde947c3c82de07e655960e3efde3a03990a095cb5e77aba75c18eb45222b",
+        "webauthn.test.ts": "sha256-7fd846a4728959f37108ec160313145762ecbf36d9b65c14e3536a804d33327a",
+        "webauthn.ts": "sha256-636e14708d0113e5131ff2bbb9083f4dcfdb9363a029f0a884518a4cca9f09b3"
+      },
+      "ref": "feat/passkey-vault"
     }
   },
   "note": "Owned by this repo, free to diverge. Run platform-auth tools/vendor.mjs status <dir>.",

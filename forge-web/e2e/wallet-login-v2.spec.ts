@@ -93,7 +93,8 @@ test.describe('v2 request (read-only)', () => {
     await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
     await expect(page.getByTestId('tile-wallet')).toBeVisible({ timeout: 60_000 })
     // Wallet first where v2 is on offer; the buttons only (a cost line shares the testid prefix).
-    const order = await page.locator('button[data-testid^="tile-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
+    // The passkey tile (once forge-meta has the passkey vault) sits right after the wallet's; it is not under test here.
+    const order = (await page.locator('button[data-testid^="tile-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))).filter((id) => id !== 'tile-passkey')
     expect(order.slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
     await expect(page.getByTestId('tile-wallet')).toContainText(/approve once for all of Forge/i)
 

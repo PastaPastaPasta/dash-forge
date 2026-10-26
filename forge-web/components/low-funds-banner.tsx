@@ -46,8 +46,10 @@ export function LowFundsBanner(): JSX.Element | null {
   if (!identity || !funds || !notice || dismissed?.identity !== identity || dismissed.keys.includes(notice.key)) return null
   const empty = funds.level === 'empty'
   const topUp = notice.fix === 'top-up'
-  // A key a wallet granted is renewed in that wallet; the identity file stays the other way.
-  const inWallet = notice.fix === 'renew-in-wallet'
+  // A key a wallet granted is renewed in that wallet; the identity file stays the other way. A key
+  // a passkey restored may be either's: both are offered.
+  const either = notice.fix === 'renew-either'
+  const inWallet = notice.fix === 'renew-in-wallet' || either
   const dismiss = (): void => {
     const keys = [...dismissed.keys, notice.key]
     try {
@@ -78,6 +80,11 @@ export function LowFundsBanner(): JSX.Element | null {
           >
             {topUp ? 'Top up' : inWallet ? 'Renew in your wallet' : 'Renew key'}
           </Button>
+          {either ? (
+            <Button size="sm" variant="outline" onClick={() => openLogin('import')} data-testid="low-funds-renew-with-file">
+              Renew with identity file
+            </Button>
+          ) : null}
           <Button size="icon" variant="ghost" onClick={dismiss} aria-label="Dismiss for this session">
             <X className="h-4 w-4" aria-hidden />
           </Button>

@@ -21,7 +21,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
-import { keyBudgetWords } from '@/lib/view/funds'
+import { keyBudgetWords, renewableInWallet } from '@/lib/view/funds'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
 import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
@@ -64,8 +64,9 @@ export function KeysPanel(): JSX.Element {
   // A pasted key is not Forge's to renew (it may be a wallet's, and has no Forge limits): the
   // offer is a limited key from the identity file or phrase instead, and signing out forgets it.
   const pasted = storage === 'session'
-  // A key a wallet granted through App Connect is renewed in that wallet.
-  const inWallet = storage === 'vault' && origin === 'app-connect'
+  // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
+  // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
+  const inWallet = storage === 'vault' && renewableInWallet(origin)
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">

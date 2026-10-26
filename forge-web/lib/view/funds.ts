@@ -93,13 +93,21 @@ export function issueCoverage(spendable: bigint | null, issueCredits: number, da
  * The one fix a low or empty state needs (`ux-dx-spec.md` §4: top up / renew key).
  * `renew-in-wallet`: the key came from a wallet's App Connect grant (session origin
  * `app-connect`), so it is renewed in that wallet (`AuthController.walletRenewalRequest`); the
- * identity file or recovery phrase still works as the other way.
+ * identity file or recovery phrase still works as the other way. `renew-either`: the key was
+ * restored from a passkey (origin `passkey`), which does not say who made it, so both ways are
+ * offered side by side.
  */
-export type FundsFix = 'top-up' | 'renew-key' | 'renew-in-wallet'
+export type FundsFix = 'top-up' | 'renew-key' | 'renew-in-wallet' | 'renew-either'
 
-/** How "Renew" goes for a session: in the wallet for a key it granted through App Connect. */
-export function renewFix(origin: string | null | undefined): 'renew-key' | 'renew-in-wallet' {
-  return origin === 'app-connect' ? 'renew-in-wallet' : 'renew-key'
+/** Whether a session's key can be renewed in a wallet: one it granted, or one a passkey restored. */
+export function renewableInWallet(origin: string | null | undefined): boolean {
+  return origin === 'app-connect' || origin === 'passkey'
+}
+
+/** How "Renew" goes for a session: in the wallet for a key it granted, either way for a passkey's. */
+export function renewFix(origin: string | null | undefined): 'renew-key' | 'renew-in-wallet' | 'renew-either' {
+  if (!renewableInWallet(origin)) return 'renew-key'
+  return origin === 'passkey' ? 'renew-either' : 'renew-in-wallet'
 }
 
 /**

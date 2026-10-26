@@ -156,15 +156,17 @@ interface VaultRecord {
 
 /**
  * Where a stored key came from, when this browser did not register it with the master key:
- * `dg` (`dg auth keys add --for-browser`, `./key-handoff`) or `app-connect` (a wallet's App
- * Connect v2 grant, `./app-connect-v2`). A key this browser registers itself has none; storing
- * one (a renewal with the identity file or recovery phrase) clears it.
+ * `dg` (`dg auth keys add --for-browser`, `./key-handoff`), `app-connect` (a wallet's App
+ * Connect v2 grant, `./app-connect-v2`) or `passkey` (restored from a passkey on Platform
+ * (`./passkey-vault`): a passkey does not say whether a wallet or the master key made the key, so
+ * it can be renewed either way). A key this browser registers itself has none; storing one (a
+ * renewal with the identity file or recovery phrase) clears it.
  */
-export type KeyOrigin = 'dg' | 'app-connect'
+export type KeyOrigin = 'dg' | 'app-connect' | 'passkey'
 
 /** Whether a stored value is a {@link KeyOrigin} (records and kept hints are read back unchecked). */
 export function isKeyOrigin(v: unknown): v is KeyOrigin {
-  return v === 'dg' || v === 'app-connect'
+  return v === 'dg' || v === 'app-connect' || v === 'passkey'
 }
 
 /** What the UI may know about a stored vault (no secrets). */

@@ -35,7 +35,8 @@ test('the committed mainnet set is four contracts, forge-meta last', () => {
 
 test('a three-contract record keeps the moved types in their old homes', () => {
   const ids = { core: 'c', collab: 'l', community: 'm' };
-  for (const t of META_TYPES) assert.equal(contractOn(ids, t), CONTRACT_OF[t], t);
+  // (vaultEntry, UPDATE-2, is a four-contract type: the three-contract set has no home for it)
+  for (const t of META_TYPES) if (t !== 'vaultEntry') assert.equal(contractOn(ids, t), CONTRACT_OF[t], t);
 });
 
 // ---- the shape of a loaded set decides the fields a write carries (DESIGN MB1) ----

@@ -24,6 +24,11 @@ const PASS = 'fake-passphrase-not-real-123'
 
 const auth = {
   scope: 'signing' as 'signing' | 'full',
+  /** Why passkeys are hidden (null: offered), and the identity's passkeys as the controller lists them. */
+  passkeyProblem: 'Checking whether passkeys work on this page.' as string | null,
+  passkeys: [] as { id: string; keyId: number; encryptionKey: boolean }[],
+  // One function for every render, as the context's is.
+  listPlatformPasskeys: async () => auth.passkeys,
   revokeStored: vi.fn(async (_id: string, _input: unknown): Promise<void> => undefined),
   unlockMore: vi.fn(async (_m: unknown): Promise<void> => {
     auth.scope = 'full'
@@ -37,6 +42,10 @@ vi.mock('@/contexts/auth-context', () => ({
     isLoading: false,
     unlockScope: auth.scope,
     revokeStored: auth.revokeStored,
+    storage: 'vault',
+    heldOnly: [] as number[],
+    platformPasskeyProblem: auth.passkeyProblem,
+    listPlatformPasskeys: auth.listPlatformPasskeys,
     vaults: [{ identityId: ID, keyId: 6, createdAt: 0, methods: ['passphrase'] }],
     controller: { unlockMore: auth.unlockMore },
   }),
@@ -68,6 +77,8 @@ async function giveWords(): Promise<void> {
 
 beforeEach(() => {
   auth.scope = 'signing'
+  auth.passkeyProblem = 'Checking whether passkeys work on this page.'
+  auth.passkeys = []
   auth.revokeStored.mockReset()
   auth.unlockMore.mockClear()
   onClose.mockClear()
@@ -159,5 +170,64 @@ describe('KeyRevokeDialog', () => {
     auth.scope = 'full'
     render()
     expect(host.querySelector('[data-testid="cost-preview"]')!.textContent).toMatch(/~0\.000023 DASH/)
+  })
+})
+
+describe('KeyRevokeDialog and the passkeys that hold the key', () => {
+  const settle = async (): Promise<void> => {
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+  const option = (): HTMLInputElement | null => host.querySelector('[data-testid="remove-passkeys"]')
+
+  it('offers to remove them first, ticked, and passes the choice on', async () => {
+    auth.scope = 'full'
+    auth.passkeyProblem = null
+    auth.passkeys = [
+      { id: 'a', keyId: 6, encryptionKey: false },
+      { id: 'b', keyId: 4, encryptionKey: false },
+      { id: 'c', keyId: 6, encryptionKey: true },
+    ]
+    render()
+    await settle()
+    expect(option()!.checked).toBe(true)
+    // Only the two that hold this browser's key (#6) count.
+    expect(host.querySelector('[data-testid="remove-passkeys-option"]')!.textContent).toMatch(/Also remove the 2 passkeys that hold this key/)
+    // One of them holds the encryption key: removal does not take that back.
+    expect(host.querySelector('[data-testid="remove-passkeys-encryption"]')!.textContent).toMatch(/still opens it for anyone who has the passkey/)
+    await giveWords()
+    await act(async () => button(/Sign once & revoke/).click())
+    expect(auth.revokeStored).toHaveBeenCalledWith(ID, { mnemonic: WORDS }, { removePasskeys: true })
+  })
+
+  it('leaves them alone when unticked', async () => {
+    auth.scope = 'full'
+    auth.passkeyProblem = null
+    auth.passkeys = [{ id: 'a', keyId: 6, encryptionKey: false }]
+    render()
+    await settle()
+    expect(host.querySelector('[data-testid="remove-passkeys-encryption"]')).toBeNull()
+    act(() => option()!.click())
+    await giveWords()
+    await act(async () => button(/Sign once & revoke/).click())
+    expect(auth.revokeStored).toHaveBeenCalledWith(ID, { mnemonic: WORDS })
+  })
+
+  it('offers nothing when no passkey holds the key, or passkeys are hidden here', async () => {
+    auth.scope = 'full'
+    auth.passkeyProblem = null
+    auth.passkeys = [{ id: 'b', keyId: 4, encryptionKey: false }]
+    render()
+    await settle()
+    expect(option()).toBeNull()
+    auth.passkeyProblem = "Passkeys that work on your other devices aren't available on this network yet."
+    auth.passkeys = [{ id: 'a', keyId: 6, encryptionKey: false }]
+    act(() => root.unmount())
+    root = createRoot(host)
+    render()
+    await settle()
+    expect(option()).toBeNull()
   })
 })

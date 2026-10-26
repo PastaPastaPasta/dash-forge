@@ -1,0 +1,104 @@
+{
+  "about": "Yappr passkey-vault v1 vectors, copied byte for byte from yappr lib/crypto/passkey-vault.test.ts (RAW: the design's vector from the independent prototype; RING: computed with the prototype's HPKE). Ids and keys are sha256 of the labels.",
+  "source": "yappr lib/crypto/passkey-vault.test.ts, docs/PASSKEY_VAULT.md \u00a73",
+  "profile": {
+    "prfLabel": "yappr/passkey-vault/v1/prf",
+    "infoLabel": "yappr/passkey-vault/v1",
+    "aadDocType": "vaultEntry",
+    "entryVersion": 1,
+    "strictSealedLength": false,
+    "formats": [
+      {
+        "id": 1,
+        "codec": "slotKeys",
+        "length": 80,
+        "maxKeys": 2
+      },
+      {
+        "id": 2,
+        "codec": "slotKeys",
+        "length": 160,
+        "maxKeys": 4
+      }
+    ]
+  },
+  "contractIdLabel": "test vector: vault contract id",
+  "ownerIdLabel": "test vector: owner identity id",
+  "contractId": "fa2bc2b200af11d4d4dd2729b60599127d5832f2ef3eb004c9309a3c2980fa00",
+  "ownerId": "6b768e30fd4ad6f04f750159a4344d4c596f086eef5516a0187cfc010ea16579",
+  "vectors": [
+    {
+      "name": "RAW",
+      "format": 1,
+      "credentialId": "68822693f2d21d39673258a62fc08dbfbb38744f",
+      "prfInput": "79617070722f706173736b65792d7661756c742f76312f707266fa2bc2b200af11d4d4dd2729b60599127d5832f2ef3eb004c9309a3c2980fa00",
+      "prfOutput": "387bc63059d4cd29b909e6fc4624b6875f9363e5e51e1a966c3060b3dd3a49e8",
+      "recipientSk": "3fa5cbc53c1620e6f9978b89ef5b14ca1c758393aa47f998084a38199e1e90a1",
+      "recipientKey": "f025f799ad8a214af13fb0e3ac29a51780deef4a2bf700181f3e787caa42d81a",
+      "ephemeralIkm": "30eddaf9393d591ec746b547b445832cec1ca31c42688488e95d577f9d929afe",
+      "info": "79617070722f706173736b65792d7661756c742f763100fa2bc2b200af11d4d4dd2729b60599127d5832f2ef3eb004c9309a3c2980fa006b768e30fd4ad6f04f750159a4344d4c596f086eef5516a0187cfc010ea16579",
+      "authKeyId": 2,
+      "aad": "7661756c74456e74727900011468822693f2d21d39673258a62fc08dbfbb38744ff025f799ad8a214af13fb0e3ac29a51780deef4a2bf700181f3e787caa42d81a00000002",
+      "keys": [
+        {
+          "purpose": 0,
+          "securityLevel": 2,
+          "keyType": 0,
+          "keyId": 2,
+          "privateKey": "819462ac0a37da9dbc59ae82ed7e308d489e828080b6f9f8151183bb7a1a756c",
+          "label": "test vector: HIGH auth key"
+        },
+        {
+          "purpose": 1,
+          "securityLevel": 3,
+          "keyType": 0,
+          "keyId": 6,
+          "privateKey": "b64ad618cc6d0027175787a5d901b0d61cf3d6e3d92bed45875cffbcd0111265",
+          "label": "test vector: encryption key"
+        }
+      ],
+      "bundle": "010200020000000002819462ac0a37da9dbc59ae82ed7e308d489e828080b6f9f8151183bb7a1a756c01030000000006b64ad618cc6d0027175787a5d901b0d61cf3d6e3d92bed45875cffbcd0111265",
+      "enc": "7baf4e67c9b049608cd7f6a0c4b00f53dcfe4f5ab74bbedc5860d451aa282b06",
+      "sealed": "e967f4c860290fcd0e701db258dc2256d448aa68184d9a96648c50b2e20bf59bbe089c1665d2086b3501016520ce572010ba81faa7e1134ff6f6958452dffea3b8645e13442f8b16da3bd2a6b36756e1846c63804a5c2fdbf8a62a7a186f640a"
+    },
+    {
+      "name": "RING",
+      "format": 2,
+      "credentialId": "e2b9adaf79bb4b1982a17a143c4ea844cd8f329c524bc953c807e5e8430de348",
+      "prfOutput": "f8449c57a6b3009084290a4a906cbea2af72781b4b3acfa37fcc157f2a912c2c",
+      "recipientKey": "59d33f0d132b5036f05cfd72262b784f403bc610611e6562a8a79da4760bc326",
+      "ephemeralIkm": "a69a781cfc8bc13f019b6e56556ab67542dfa478d7008ee7a22bd547b3f2bd02",
+      "authKeyId": 7,
+      "aad": "7661756c74456e747279000120e2b9adaf79bb4b1982a17a143c4ea844cd8f329c524bc953c807e5e8430de34859d33f0d132b5036f05cfd72262b784f403bc610611e6562a8a79da4760bc32600000007",
+      "keys": [
+        {
+          "purpose": 0,
+          "securityLevel": 1,
+          "keyType": 0,
+          "keyId": 7,
+          "privateKey": "1daa6fb6c6d1be6e7c70a0cdfd7810b6f62ad4e04066bcc0dcf1750f7db6f756",
+          "label": "test vector: App Connect group key"
+        },
+        {
+          "purpose": 0,
+          "securityLevel": 2,
+          "keyType": 2,
+          "keyId": 8,
+          "privateKey": "53652d68e339fb2c0b5661e0489075259a3414d8e943832f9b1ded0b432584a7",
+          "label": "test vector: App Connect DashPay profile key"
+        },
+        {
+          "purpose": 1,
+          "securityLevel": 3,
+          "keyType": 0,
+          "keyId": 9,
+          "privateKey": "fcc1b65f8a7190fb5b26ecb4c397dd15ef9c7bcca4179b3f76e6047c00fe604f",
+          "label": "test vector: App Connect anchor encryption key"
+        }
+      ],
+      "bundle": "0203000100000000071daa6fb6c6d1be6e7c70a0cdfd7810b6f62ad4e04066bcc0dcf1750f7db6f7560002020000000853652d68e339fb2c0b5661e0489075259a3414d8e943832f9b1ded0b432584a701030000000009fcc1b65f8a7190fb5b26ecb4c397dd15ef9c7bcca4179b3f76e6047c00fe604f0000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "enc": "e3574544df37f6dc5b18a3c384cbd59d7b8b073f2a001c3bcc25ac7a6e85d02d",
+      "sealed": "ae9aa24062af9e21df934690960f7b542f7fb9c31091796490428add088821b1f14e7001dea399cc901cca5ca6af2f40da04686b5e3ebc1e7dd5b991b2fb31976f695576cc7c2481d1d5638bd3bad1221571306bb975f7ea5217083fe392cf3dd0289521be6ac8a70dd0c089be0b8a4c99fbfafa9682a12ccc691aa91909e3e0d66269d3fb7869abbb9e950bf26db118cb227274e938e9dee242ff04f231d4ee68464e5c983ca51dccab4e92f4c2a7db"
+    }
+  ]
+}

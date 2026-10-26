@@ -36,6 +36,8 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
+import { Tile } from '@/components/auth/sign-in-tile'
+import { PasskeySignIn } from '@/components/auth/passkey-sign-in'
 import { DgHandoffFlow, type HandoffTarget } from '@/components/auth/dg-handoff-flow'
 import { KeyLifetimeSelect } from '@/components/auth/key-lifetime'
 import { PhraseWarning } from '@/components/auth/phrase-warning'
@@ -73,7 +75,7 @@ export function LoginModal(): JSX.Element {
   const requestedGrant = useUiStore((s) => s.loginGrantFor) ?? 'collab'
   const intent = useUiStore((s) => s.loginIntent)
   const close = useUiStore((s) => s.closeLogin)
-  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys, grants } = useAuth()
+  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys, grants, origin } = useAuth()
   const [view, setView] = useState<View | null>(null)
   // The guided grants after a wallet sign-in (FEAT-04): `walletDone` waits for the new session's
   // grants to land, `guide` is the sequence once it runs. Neither outlives the sheet.
@@ -150,7 +152,7 @@ export function LoginModal(): JSX.Element {
   const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' || view === 'wallet-renew' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
-  const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
+  const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys, origin === 'passkey')
   const title = titleFor(view, grantTitle, intent?.action)
 
   return (
@@ -190,6 +192,7 @@ export function LoginModal(): JSX.Element {
       ) : null}
       {view === 'choose' ? (
         <ChooseView
+          onDone={close}
           onPick={(v) => {
             setDgReplace(null)
             setView(v)
@@ -275,10 +278,15 @@ function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number
 }
 
 /** The sheet's description line for a view. */
-function describeView(view: View, limitedKeys: boolean): ReactNode {
+function describeView(view: View, limitedKeys: boolean, fromPasskey = false): ReactNode {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet gives this browser a key for Dash Forge. Your recovery phrase and master key stay on the phone.'
-  if (view === 'wallet-renew') return 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
+  if (view === 'wallet-renew') {
+    // A key a passkey brought here is not this browser's own wallet grant: the wallet adds a new one and leaves it.
+    return fromPasskey
+      ? 'Your wallet adds a new key for this browser. The current key stays live until you disable it in Devices & keys. Your recovery phrase and master key stay on the phone.'
+      : 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
+  }
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
   const base = <>at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge</>
   // Import, renew and dg offer a lifetime picker; creating an identity does not.
@@ -294,56 +302,7 @@ function describeView(view: View, limitedKeys: boolean): ReactNode {
   return <>A new or imported identity gives this browser a limited key: {base}, for {BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity&apos;s key can be renewed for up to a year later.</>
 }
 
-function Tile({
-  icon: Icon,
-  title,
-  body,
-  onClick,
-  testId,
-  muted = false,
-  highlight = false,
-  pausedReason = null,
-}: {
-  icon: typeof Wallet
-  title: string
-  body: string
-  onClick: () => void
-  testId: string
-  /**
-   * An option most people cannot use here: dashed, with a grey icon, still reachable (L-62).
-   * Not faded: it is an enabled button, so its text keeps the 4.5:1 contrast (QW4-041: the
-   * opacity took its helper text to 3.36:1).
-   */
-  muted?: boolean
-  /** Something this browser has in progress: outlined in the accent colour. */
-  highlight?: boolean
-  /** Why this option cannot be used now (the devnet is moving): disabled, with the reason as its text. */
-  pausedReason?: string | null
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      data-muted={muted || undefined}
-      disabled={pausedReason !== null}
-      onClick={onClick}
-      className={cn(
-        'disabled:pointer-events-none disabled:opacity-60',
-        'flex w-full items-start gap-3 rounded-lg border border-anvil-200 px-3 py-3 text-left transition-colors hover:border-forge-400 hover:bg-anvil-50 dark:border-anvil-750 dark:hover:bg-anvil-850',
-        muted && 'border-dashed',
-        highlight && 'border-forge-500/60 bg-forge-500/5 dark:border-forge-500/50',
-      )}
-    >
-      <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', muted ? 'text-anvil-500 dark:text-anvil-400' : 'text-forge-500')} aria-hidden />
-      <span>
-        <span className="block text-dense font-medium text-anvil-900 dark:text-anvil-50">{title}</span>
-        <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">{pausedReason ?? body}</span>
-      </span>
-    </button>
-  )
-}
-
-function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
+function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () => void }): JSX.Element {
   const { limitedKeys } = useAuth()
   const closeLogin = useUiStore((s) => s.closeLogin)
   const { available: walletAvailable, v2: walletV2 } = useWalletAvailability(limitedKeys)
@@ -395,6 +354,8 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
         />
       ) : null}
       {walletFirst ? walletTile : null}
+      {/* A passkey added on another device: reads only, so it is offered even while writes are paused. */}
+      <PasskeySignIn onDone={onDone} onUnlock={() => onPick('unlock')} />
       <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet." onClick={() => onPick('create')} pausedReason={pausedReason} />
       <p data-testid="tile-create-cost" className="text-[12px] text-anvil-500 dark:text-anvil-400">About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.</p>
       <Tile

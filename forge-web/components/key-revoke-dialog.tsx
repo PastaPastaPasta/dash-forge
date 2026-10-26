@@ -24,6 +24,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { UnlockMore } from '@/components/auth/unlock-more'
+import { RemovePasskeysOption, usePasskeysHolding } from '@/components/auth/remove-passkeys-option'
 import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { UnlockNeededError } from '@/lib/auth/controller'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
@@ -31,7 +32,7 @@ import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
 
 export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; onClose: () => void }): JSX.Element {
-  const { identity, keyId, revokeStored, isLoading, unlockScope } = useAuth()
+  const { identity, keyId, heldOnly, revokeStored, isLoading, unlockScope } = useAuth()
   const master = useMasterKeyInput(identity, { id: 'revoke', fileLabel: 'Identity file to revoke with' })
   const [submitError, setError] = useState<string | null>(null)
   const error = master.error ?? submitError
@@ -39,6 +40,9 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
   // dialog): unlock, then it runs again with the master key still in the field.
   const [unlockAsked, setUnlockAsked] = useState(false)
   const needsUnlock = unlockScope === 'signing' || unlockAsked
+  // Passkeys on Platform that hold the key being disabled (or one held only to disable with it).
+  const holding = usePasskeysHolding(keyId === null ? (heldOnly ?? []) : [keyId, ...(heldOnly ?? [])])
+  const [removePasskeys, setRemovePasskeys] = useState(true)
   const noun = unlimited ? 'the keys this browser holds' : "this browser's key"
   // What this browser keeps about the identity's top-ups after the revoke forgets the key (QW3-034).
   const [stays, setStays] = useState<string | null>(null)
@@ -55,7 +59,8 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
     if (identity === null || !master.ready || isLoading) return
     setError(null)
     try {
-      await revokeStored(identity, master.take({ keep: true }))
+      const input = master.take({ keep: true })
+      await (holding !== null && removePasskeys ? revokeStored(identity, input, { removePasskeys: true }) : revokeStored(identity, input))
       master.clear()
       onClose()
     } catch (e) {
@@ -107,6 +112,7 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
             void revoke()
           }}
         >
+          {holding !== null ? <RemovePasskeysOption holding={holding} checked={removePasskeys} onChange={setRemovePasskeys} /> : null}
           {master.element}
           <ErrorBox error={error} />
           <CostPreview cost={previewCredits(KEY_DISABLE_CREDITS)} />

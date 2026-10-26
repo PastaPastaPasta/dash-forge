@@ -3,14 +3,18 @@
  * What this browser keeps about an identity beyond its key (QA wave 2):
  * - QW2-025: the identity signed in last, which Unlock preselects among several stored keys;
  * - QW2-028: "Sign out & forget key" removes the spend ledger, the notifications inbox and the
- *   last-used marker too, so a shared computer keeps no trace of the identity.
+ *   last-used marker too, so a shared computer keeps no trace of the identity;
+ * - the passkey vault: this device's passkey markers and an unfinished enrolment go with it, so
+ *   nothing here vouches for a passkey of a forgotten identity (no re-seal without a prompt).
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { idbEntries, idbPut, resetMemoryStores } from '../idb'
 import { clearLedger, readBaseline, readLedger, recordSpend } from '../spend'
 import { clearInbox } from '../view/inbox'
+import { AuthController } from './controller'
 import { forgetLastIdentity, lockedIdentityOf, readLastIdentity, rememberLastIdentity } from './last-identity'
+import { putMarker, readMarkers, readPending, writePending } from './passkey-vault/markers'
 
 const A = 'JCuebezAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const B = 'BWv9Ku1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
@@ -61,5 +65,20 @@ describe('forgetting an identity here', () => {
     await idbPut('inbox', `devnet:${B}:subs`, { repos: [] })
     await clearInbox('devnet', A)
     expect((await idbEntries('inbox')).map(([k]) => k)).toEqual([`devnet:${B}:subs`])
+  })
+
+  it("clears this device's passkey markers and unfinished enrolment, and leaves other identities' alone", async () => {
+    const marker = { credentialId: new Uint8Array(16).fill(1), recipientKey: new Uint8Array(32).fill(2), keyIds: [5], addedAt: 1 }
+    for (const id of [A, B]) {
+      await putMarker('devnet', id, marker)
+      await writePending('devnet', id, { ownerId: new Uint8Array(32).fill(3), credentialId: new Uint8Array(16).fill(4) })
+    }
+    await new AuthController(async () => {
+      throw new Error('no network in this test')
+    }, 'devnet').forget(A)
+    expect(await readMarkers('devnet', A)).toEqual([])
+    expect(await readPending('devnet', A)).toBeNull()
+    expect(await readMarkers('devnet', B)).toHaveLength(1)
+    expect(await readPending('devnet', B)).not.toBeNull()
   })
 })
