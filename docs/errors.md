@@ -83,6 +83,8 @@ The message lists the conflicting files.
 
 **What to do:** run the same command again later: skipped items are retried and nothing already written is written twice. The standalone `forge-import` binary (and the GitHub Mirror Action) reports this as status `partial` with exit code 4.
 
+`dg pr merge --override-policy` reports E106 when the merge landed but the policy-bypass event that records it did not (`--json` status `merged_bypass_unrecorded`). The merge stands, but readers can't see that it bypassed the branch rules. **What to do:** run `dg pr merge <owner>/<repo> <n> --override-policy --record-bypass`. On a merged PR whose merge no bypass event names, it records the rules not met as that merge's bypass (after asking, with its cost) and writes nothing else.
+
 ## E107
 
 **Suggestion not applicable.** `dg pr suggestion apply` could not apply a review suggestion (a ```` ```suggestion ```` block) to the PR's branch. The message says which. The comment may be on an older head, or on the old side of the diff. It may name lines the file no longer has. Two suggestions may touch the same lines. Or the comment may have no suggestion block at all. Nothing was committed or pushed.

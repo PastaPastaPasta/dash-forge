@@ -1815,6 +1815,11 @@ pub struct PrMergeArgs {
     /// tip when the head is already in it).
     #[arg(long = "merge-oid", requires = "event_only")]
     pub merge_oid: Option<String>,
+    /// With --override-policy, on a merged PR: record the policy bypass of its merge, when the
+    /// merge's own record of it did not land (E106). The rules not met now are recorded; nothing
+    /// else is written.
+    #[arg(long = "record-bypass", requires = "override_policy")]
+    pub record_bypass: bool,
 }
 
 /// `dg pr create` arguments.

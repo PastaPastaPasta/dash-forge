@@ -2215,6 +2215,9 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     view.patch.body = read.text().to_string();
+    if a.record_bypass {
+        return record_missing_bypass(ctx, &s, &view, number).await;
+    }
     if view.state.merged {
         ctx.emit(
             json!({ "status": "already_merged", "pr": number, "merged": true }),
@@ -2407,25 +2410,10 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     // A maintainer's bypass is recorded on the PR as a policy-bypass `event` (kind 23), where
     // every reader sees it: GitHub's bypass is a timeline event the actor cannot delete, and an
     // `event` is immutable and non-deletable (a comment was neither). The merge stands if this
-    // fails; say so.
+    // fails; the command then fails once the rest is done, naming the re-run that records it.
+    let mut bypass_failed = None;
     if !bypassed.is_empty() {
-        let value = bypass_value(&bypassed);
-        let posted = async {
-            let oid = hex::decode(&merge_oid).context("merge oid")?;
-            Ok::<_, anyhow::Error>(
-                collab
-                    .post_event(
-                        handle,
-                        &view.patch.target(),
-                        forge_core::rules::EventKind::PolicyBypass,
-                        Some(&value),
-                        Some(&oid),
-                    )
-                    .await?,
-            )
-        }
-        .await;
-        match posted {
+        match post_bypass(&collab, handle, &view, &merge_oid, &bypassed).await {
             Ok(id) => steps.ok(
                 "bypass",
                 format!("recorded ({}) in event {}", bypassed.join("; "), short(&id)),
@@ -2437,6 +2425,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
                 steps
                     .done
                     .push(json!({ "step": "bypass", "ok": false, "detail": format!("{e:#}") }));
+                bypass_failed = Some(e);
             }
         }
     }
@@ -2499,47 +2488,59 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let on_base = after.as_ref().and_then(|v| v.state.merge_on_base);
     let spent = s.spent_since(before).await;
     let price = ctx.fiat_price();
-    ctx.emit(
-        json!({
-            "status": if merged { "merged" } else { "merge_recorded" },
-            "pr": number,
-            "method": method.as_str(),
-            "mergeOid": merge_oid,
-            "transitionId": transition_id,
-            "merged": merged,
-            "mergeOnBase": on_base,
-            "branchDeleted": branch_deleted,
-            "branchCheckNote": branch_check_note,
-            "bypassedRules": bypassed,
-            "checksNotPassing": not_passing,
-            "uncheckedFiles": unchecked,
-            "closedIssues": closed_issues,
-            "linkedIssuesOmitted": omitted,
-            "linkedIssuesImported": imported,
-            "cost": cost_json(spent, price),
-            "steps": steps.done,
-        }),
-        || {
-            if !merged {
-                println!(
-                    "Recorded the merge of PR #{number} ({}); it does not read as merged yet \
-                     (the read may lag a block).",
-                    short(&merge_oid)
-                );
-            } else if on_base == Some(false) {
-                println!(
-                    "✓ merged PR #{number} ({}); note: {} is not (yet) a tip of {}, so \
-                     readers label the merge commit as not found on the base",
-                    short(&merge_oid),
-                    short(&merge_oid),
-                    view.merge_base.ref_name
-                );
-            } else {
-                println!("✓ merged PR #{number} ({})", short(&merge_oid));
-            }
+    let mut body = json!({
+        "status": if merged { "merged" } else { "merge_recorded" },
+        "pr": number,
+        "method": method.as_str(),
+        "mergeOid": merge_oid,
+        "transitionId": transition_id,
+        "merged": merged,
+        "mergeOnBase": on_base,
+        "branchDeleted": branch_deleted,
+        "branchCheckNote": branch_check_note,
+        "bypassedRules": bypassed,
+        "checksNotPassing": not_passing,
+        "uncheckedFiles": unchecked,
+        "closedIssues": closed_issues,
+        "linkedIssuesOmitted": omitted,
+        "linkedIssuesImported": imported,
+        "cost": cost_json(spent, price),
+        "steps": steps.done,
+    });
+    if let Some(e) = bypass_failed {
+        if !ctx.json {
+            println!(
+                "merged PR #{number} ({}), but its policy bypass is not recorded",
+                short(&merge_oid)
+            );
             println!("  cost: {}", cost_line(spent, price));
-        },
-    );
+        }
+        body["status"] = json!("merged_bypass_unrecorded");
+        return Err(crate::errors::reported(
+            bypass_unrecorded(&e, number, repo),
+            body,
+        ));
+    }
+    ctx.emit(body, || {
+        if !merged {
+            println!(
+                "Recorded the merge of PR #{number} ({}); it does not read as merged yet \
+                     (the read may lag a block).",
+                short(&merge_oid)
+            );
+        } else if on_base == Some(false) {
+            println!(
+                "✓ merged PR #{number} ({}); note: {} is not (yet) a tip of {}, so \
+                     readers label the merge commit as not found on the base",
+                short(&merge_oid),
+                short(&merge_oid),
+                view.merge_base.ref_name
+            );
+        } else {
+            println!("✓ merged PR #{number} ({})", short(&merge_oid));
+        }
+        println!("  cost: {}", cost_line(spent, price));
+    });
     Ok(())
 }
 
@@ -3507,6 +3508,120 @@ fn bypass_value(rules: &[String]) -> String {
         out.push_str("the branch rules");
     }
     out
+}
+
+/// Post the policy-bypass event of the merge `merge_oid` naming the `bypassed` rules.
+async fn post_bypass(
+    collab: &Collab<'_>,
+    handle: &Repo,
+    view: &PatchView,
+    merge_oid: &str,
+    bypassed: &[String],
+) -> Result<String> {
+    let oid = hex::decode(merge_oid).context("merge oid")?;
+    Ok(collab
+        .post_event(
+            handle,
+            &view.patch.target(),
+            forge_core::rules::EventKind::PolicyBypass,
+            Some(&bypass_value(bypassed)),
+            Some(&oid),
+        )
+        .await?)
+}
+
+/// The error of a merge that landed while its policy-bypass record did not: the re-run with
+/// `--override-policy` records the bypass alone ([`record_missing_bypass`]).
+fn bypass_unrecorded(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
+    UserError::new(
+        codes::PARTIAL,
+        format!("PR #{number} is merged, but its policy bypass is not recorded"),
+    )
+    .cause(format!("posting the policy-bypass event failed: {e:#}"))
+    .fix(format!(
+        "record it: `dg pr merge {repo} {number} --override-policy --record-bypass` (writes the bypass event and nothing else)"
+    ))
+    .note("the merge stands; until the bypass is recorded, readers do not see that it bypassed the branch rules")
+}
+
+/// The merge of a merged PR that no policy-bypass event names, when it has one: `--record-bypass`
+/// records the bypass its merge did not.
+fn unrecorded_bypass_merge(view: &PatchView) -> Option<String> {
+    let oid = forge_core::rules::transition::merge_transition(&view.log.transitions)?
+        .oid
+        .clone()
+        .filter(|o| !o.is_empty())?;
+    let recorded = policy_bypasses(view).iter().any(|b| {
+        b.oid
+            .as_deref()
+            .is_some_and(|o| o.eq_ignore_ascii_case(&oid))
+    });
+    (!recorded).then_some(oid)
+}
+
+/// `dg pr merge --override-policy --record-bypass`: on a merged PR whose merge no bypass names,
+/// judge the branch rules as a merge would, and record the ones not met as the merge's
+/// policy-bypass event. Nothing to record when they are met now, or a bypass already names the
+/// merge; refused for a PR not merged.
+async fn record_missing_bypass(
+    ctx: &Ctx,
+    s: &Session,
+    view: &PatchView,
+    number: u64,
+) -> Result<()> {
+    if !view.state.merged {
+        return Err(crate::errors::usage(format!(
+            "PR #{number} is not merged: --record-bypass records the bypass of a merge that already landed"
+        )));
+    }
+    let Some(oid) = unrecorded_bypass_merge(view) else {
+        ctx.emit(
+            json!({ "status": "already_merged", "pr": number, "merged": true, "bypassRecorded": false }),
+            || println!("PR #{number} is merged, and its merge's policy bypass is already recorded (or it names no merge commit); nothing to do"),
+        );
+        return Ok(());
+    };
+    let oid = oid.as_str();
+    let (handle, collab) = (&s.repo, s.collab());
+    let MergeRights { bypassed, .. } =
+        require_merge_rights(ctx, s, handle, view, None, true).await?;
+    if bypassed.is_empty() {
+        ctx.emit(
+            json!({ "status": "already_merged", "pr": number, "merged": true, "bypassRecorded": false }),
+            || println!("PR #{number} is already merged and its branch rules are met; no bypass to record"),
+        );
+        return Ok(());
+    }
+    let quote = crate::quote::event(bypass_value(&bypassed).len() as u64, false);
+    ctx.confirm_or_cancel(&format!(
+        "PR #{number} is merged ({}) without a record of its policy bypass. Record it ({})? ({})",
+        short(oid),
+        bypassed.join("; "),
+        cost_line(quote, ctx.fiat_price())
+    ))?;
+    let before = s.balance().await;
+    let id = post_bypass(&collab, handle, view, oid, &bypassed).await?;
+    let spent = s.spent_since(before).await;
+    let price = ctx.fiat_price();
+    ctx.emit(
+        json!({
+            "status": "bypass_recorded",
+            "pr": number,
+            "mergeOid": oid,
+            "eventId": id,
+            "bypassedRules": bypassed,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ recorded the policy bypass of PR #{number}'s merge ({}) in event {}",
+                short(oid),
+                short(&id)
+            );
+            println!("  cost: {}", cost_line(spent, price));
+        },
+    );
+    Ok(())
 }
 
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
@@ -4512,6 +4627,52 @@ pub(crate) mod tests {
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
+    }
+
+    /// A merge whose policy-bypass record failed fails the command (E106, not a ✓ and exit 0),
+    /// and names the re-run that records it; that re-run finds the merge no bypass names.
+    #[test]
+    fn an_unrecorded_bypass_fails_the_merge_with_the_rerun_that_records_it() {
+        let e = bypass_unrecorded(&anyhow::anyhow!("40120: refused"), 4, "alice/project");
+        assert_eq!(e.code, codes::PARTIAL);
+        let text = format!("{e:?}");
+        assert!(
+            text.contains("PR #4 is merged, but its policy bypass is not recorded"),
+            "{text}"
+        );
+        assert!(text.contains("40120: refused"), "{text}");
+        assert!(
+            text.contains("dg pr merge alice/project 4 --override-policy"),
+            "{text}"
+        );
+
+        let oid = "ab".repeat(20);
+        let mut v = view_with("refs/heads/main", &"2".repeat(40));
+        // Not merged: no merge to record a bypass for.
+        assert_eq!(unrecorded_bypass_merge(&v), None);
+        v.log.transitions.push(
+            serde_json::from_value(
+                json!({ "kind": forge_core::rules::transition::PR_MERGE, "oid": oid }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(unrecorded_bypass_merge(&v).as_deref(), Some(oid.as_str()));
+        // A bypass naming another commit is not this merge's.
+        let bypass = |named: &str| forge_core::rules::Event {
+            id: "e".into(),
+            target_id: "d".into(),
+            kind: forge_core::rules::EventKind::PolicyBypass,
+            actor: "m".into(),
+            value: Some("required approvals: 0 of 1".into()),
+            oid: Some(named.into()),
+            ref_id: None,
+            created_at: 1,
+        };
+        v.log.events.push(bypass(&"cd".repeat(20)));
+        assert_eq!(unrecorded_bypass_merge(&v).as_deref(), Some(oid.as_str()));
+        // Recorded (in any case of hex): nothing left to record.
+        v.log.events.push(bypass(&oid.to_ascii_uppercase()));
+        assert_eq!(unrecorded_bypass_merge(&v), None);
     }
 
     /// MIXE-13: the refusal sends a members-only base to git, not back to `dg publish`.
