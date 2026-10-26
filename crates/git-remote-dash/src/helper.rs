@@ -1385,6 +1385,25 @@ impl Helper {
         if only_members {
             git_packs.retain(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
         }
+        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
+        // A partial clone's lazy fetch of blobs the catalog places: only the packs that hold
+        // them, and exactly those blobs (crate::catalog). Anything else reads every pack.
+        let lazy = lazy_blob_packs(
+            git_dir.as_deref(),
+            conn.repo.id(),
+            options,
+            incremental,
+            &git_packs,
+            &want_oids,
+        );
+        if let Some(holding) = &lazy {
+            tracing::info!(
+                wants = want_oids.len(),
+                packs = holding.len(),
+                "lazy fetch: reading only the packs that hold the wanted blobs"
+            );
+            git_packs.retain(|m| holding.contains(&m.pack_hash));
+        }
         let members_packs = manifests
             .iter()
             .any(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
@@ -1398,8 +1417,9 @@ impl Helper {
         // Download + verify every pack (M1: whole-repo packs; the want-set is served by the
         // union of stored packs, and git dedups objects it already has). Every push adds a
         // pack, so this grows with the repo's push count; downloading them one at a time
-        // took ~50 s for the nightly's 56-pack test repo, per fetch — and a partial clone
-        // fetches twice. `buffered` keeps a bounded window in flight and preserves order.
+        // took ~50 s for the nightly's 56-pack test repo, per fetch. (A partial clone's lazy
+        // blob fetches read only the packs the catalog says hold them, `lazy` above.)
+        // `buffered` keeps a bounded window in flight and preserves order.
         // Each pack comes from the first of its recorded copies that hash-verifies —
         // external URIs raced with the configured IPFS gateways — with Platform chunks as
         // the last resort.
@@ -1471,7 +1491,6 @@ impl Helper {
         {
             progress.note(&line);
         }
-        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
         let indexed: Vec<[u8; 32]> = fetched
             .iter()
             .filter(|(_, g)| matches!(g, Got::Bytes { .. }))
@@ -1490,25 +1509,36 @@ impl Helper {
                 .collect();
             members::record(&sh.heads, &packs)?;
         }
-        let shas = index_fetched(
-            fetched.into_iter().map(|(_, g)| g).collect(),
-            &want_oids,
+        let into = Indexing {
+            want_oids: &want_oids,
             options,
-            repo,
-            packs.len(),
-            parent.as_deref(),
-        )?;
-        // Record the packs indexed whole (not a partial clone's filtered subset), so the next
-        // fetch downloads only what is new.
-        if let (None, Some(d)) = (&options.filter, git_dir.as_deref()) {
-            let mut have = have;
-            for h in indexed {
-                have.insert(h);
+            repo_ref: repo,
+            total: packs.len(),
+            parent: parent.as_deref(),
+            exact: lazy.is_some(),
+        };
+        let done = index_fetched(fetched, &into)?;
+        match (&options.filter, git_dir.as_deref()) {
+            // Record the packs indexed whole (not a partial clone's filtered subset), so the
+            // next fetch downloads only what is new.
+            (None, Some(d)) => {
+                let mut have = have;
+                for h in indexed {
+                    have.insert(h);
+                }
+                have.save(d, conn.repo.id());
             }
-            have.save(d, conn.repo.id());
+            // A partial clone records which blobs each pack it read holds, so a lazy fetch of
+            // them reads only those packs.
+            (Some(_), Some(d)) => {
+                for (h, blobs) in &done.catalog {
+                    crate::catalog::record(d, conn.repo.id(), *h, blobs);
+                }
+            }
+            (_, None) => {}
         }
         Ok(FetchReport {
-            indexed: shas,
+            indexed: done.shas,
             members_packs,
         })
     }
@@ -2623,29 +2653,52 @@ struct Unreadable {
     error: String,
 }
 
+/// What [`index_fetched`] needs besides the packs.
+struct Indexing<'a> {
+    want_oids: &'a [String],
+    options: &'a OptionState,
+    repo_ref: &'a RepoRef,
+    /// How many packs the fetch chose (for E503's wording).
+    total: usize,
+    /// The repository a fork's missing packs may be in (E503's hint).
+    parent: Option<&'a str>,
+    /// A partial clone's lazy fetch of catalogued blobs ([`crate::catalog::cover`]): pack
+    /// exactly the wants, no walk.
+    exact: bool,
+}
+
+/// What [`index_fetched`] did.
+struct IndexReport {
+    /// The packs it indexed into the local odb, by git's pack name.
+    shas: Vec<String>,
+    /// A partial clone's: the blobs of each downloaded pack, by stored hash ([`crate::catalog`]).
+    catalog: Vec<([u8; 32], Vec<String>)>,
+}
+
 /// Index a fetch's downloaded packs into the local odb (for a `--filter` partial clone:
 /// through a scratch repo that applies the filter, then as a promisor pack). When packs were
 /// set aside and the wanted history is incomplete without them, fail before git's own
 /// connectivity check says only "did not send all necessary objects": E503
 /// ([`packs_unreadable`]) when any was unreadable, else E510 ([`hidden_packs_needed`]) when
 /// only packs the late-content rule hides are missing.
-fn index_fetched(
-    fetched: Vec<Got>,
-    want_oids: &[String],
-    options: &OptionState,
-    repo_ref: &RepoRef,
-    total: usize,
-    parent: Option<&str>,
-) -> Result<Vec<String>> {
+fn index_fetched(fetched: Vec<([u8; 32], Got)>, into: &Indexing<'_>) -> Result<IndexReport> {
+    let Indexing {
+        want_oids,
+        options,
+        repo_ref,
+        total,
+        parent,
+        exact,
+    } = *into;
     let display = repo_ref.display();
     let repo = display.as_str();
     let mut downloaded = Vec::new();
     let mut unreadable = Vec::new();
     let mut hidden = Vec::new();
     let mut skipped = Vec::new();
-    for got in fetched {
+    for (hash, got) in fetched {
         match got {
-            Got::Bytes { bytes, .. } => downloaded.push(bytes),
+            Got::Bytes { bytes, .. } => downloaded.push((hash, bytes)),
             Got::Unreadable(u) => unreadable.push(u),
             Got::Hidden(u) => hidden.push(u),
             Got::Skipped(s) => skipped.push(s),
@@ -2677,14 +2730,29 @@ fn index_fetched(
     let mut unchecked = Vec::new();
     if let Some(filter) = options.filter.as_deref() {
         let scratch = ScratchRepo::init()?;
-        for bytes in &downloaded {
-            unchecked.extend(scratch.index_pack(bytes)?.unchecked);
+        let mut catalog = Vec::with_capacity(downloaded.len());
+        for (hash, bytes) in &downloaded {
+            let indexed = scratch.index_pack(bytes)?;
+            unchecked.extend(indexed.unchecked);
+            // Without a catalog entry a later lazy fetch only reads more packs.
+            match scratch.blobs_of(&indexed.sha) {
+                Ok(blobs) => catalog.push((*hash, blobs)),
+                Err(e) => tracing::warn!(error = %e, "could not list a pack's blobs"),
+            }
         }
         scratch.check_blobs(&unchecked)?;
         if want_oids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(IndexReport {
+                shas: Vec::new(),
+                catalog,
+            });
         }
-        let filtered = match scratch.pack_filtered(want_oids, Some(filter)) {
+        let filtered = if exact {
+            scratch.pack_exact(want_oids)
+        } else {
+            scratch.pack_filtered(want_oids, Some(filter))
+        };
+        let filtered = match filtered {
             Ok(f) => f,
             Err(e) if blames_set_aside_packs(set_aside, &e) => {
                 tracing::debug!(error = %e, "filtered repack failed");
@@ -2695,10 +2763,13 @@ fn index_fetched(
         let sha = LocalRepo::index_pack(&filtered)?.sha;
         LocalRepo::write_promisor_marker(&sha)?;
         tracing::info!(filter, pack = %sha, "indexed filtered promisor pack");
-        return Ok(vec![sha]);
+        return Ok(IndexReport {
+            shas: vec![sha],
+            catalog,
+        });
     }
     let mut shas = Vec::with_capacity(downloaded.len());
-    for bytes in &downloaded {
+    for (_, bytes) in &downloaded {
         let indexed = LocalRepo::index_pack(bytes)?;
         tracing::info!(pack = %indexed.sha, "indexed pack into local odb");
         unchecked.extend(indexed.unchecked);
@@ -2708,7 +2779,10 @@ fn index_fetched(
     if set_aside && !want_oids.is_empty() && LocalRepo::history_has_gaps(want_oids) {
         return Err(incomplete());
     }
-    Ok(shas)
+    Ok(IndexReport {
+        shas,
+        catalog: Vec::new(),
+    })
 }
 
 /// Whether a failed filtered repack is explained by the packs this fetch set aside: only when
@@ -2982,6 +3056,25 @@ fn wants_already_local(wants: &[Want], options: &OptionState) -> bool {
     options.filter.is_none()
         && !wants.is_empty()
         && wants.iter().all(|w| LocalRepo::object_exists(&w.oid))
+}
+
+/// A partial clone's lazy fetch of blobs [`crate::catalog`] places: the packs, of `git_packs`,
+/// that hold them, so only those are downloaded and exactly the wants packed. `None`, read every
+/// pack, for any other fetch: outside a clone, unfiltered, the full pass, nothing wanted (the
+/// members-only pass of a `list`), or a want no catalogued pack holds (a commit or tree, or a
+/// blob of a pack no filtered fetch read yet).
+fn lazy_blob_packs(
+    git_dir: Option<&std::path::Path>,
+    repo_id: &str,
+    options: &OptionState,
+    incremental: bool,
+    git_packs: &[forge_core::repo::PackManifestInfo],
+    want_oids: &[String],
+) -> Option<Vec<[u8; 32]>> {
+    let git_dir =
+        git_dir.filter(|_| incremental && options.filter.is_some() && !want_oids.is_empty())?;
+    let catalog = crate::catalog::load(git_dir, repo_id, git_packs.iter().map(|m| m.pack_hash));
+    crate::catalog::cover(&catalog, want_oids)
 }
 
 /// The git packs a fetch downloads: every stored kind-0 pack (and, for a reader holding the
@@ -7071,7 +7164,9 @@ mod tests {
         settle_ref_writes, skipped_packs_needed, write_denied, Planned, PushOutcome, PushSpec,
         Unreadable,
     };
-    use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
+    use super::{
+        default_branch_hint, history_tip_landed, lazy_blob_packs, role_denied, PushHistory,
+    };
     use forge_core::members_git::Audience;
 
     #[test]
@@ -7317,6 +7412,54 @@ mod tests {
             ..Default::default()
         };
         assert!(incremental_fetch_complete(true, &filtered, &wants, || true));
+    }
+
+    #[test]
+    fn a_partial_clones_lazy_blob_fetch_reads_only_the_packs_that_hold_the_blobs() {
+        let git_dir = tempfile::tempdir().unwrap();
+        let d = Some(git_dir.path());
+        let packs: Vec<_> = (1..=3).map(|h| manifest(h, "o", &[])).collect();
+        let (b1, b2, tree) = ("1".repeat(40), "2".repeat(40), "3".repeat(40));
+        crate::catalog::record(git_dir.path(), "r", [1; 32], std::slice::from_ref(&b1));
+        crate::catalog::record(git_dir.path(), "r", [2; 32], std::slice::from_ref(&b2));
+        // pack 3 was pushed after the clone: not catalogued
+        let filtered = crate::options::OptionState {
+            filter: Some("blob:none".into()),
+            ..Default::default()
+        };
+        let lazy = |o: &crate::options::OptionState, incremental: bool, wants: &[String]| {
+            lazy_blob_packs(d, "r", o, incremental, &packs, wants)
+        };
+        assert_eq!(
+            lazy(&filtered, true, std::slice::from_ref(&b2)),
+            Some(vec![[2; 32]])
+        );
+        assert_eq!(
+            lazy(&filtered, true, &[b1.clone(), b2.clone()]),
+            Some(vec![[1; 32], [2; 32]])
+        );
+        // Every pack is read for a want no catalogued pack holds, on the full pass, for an
+        // unfiltered fetch, for nothing wanted, and outside a clone.
+        assert_eq!(lazy(&filtered, true, &[b1.clone(), tree]), None);
+        assert_eq!(lazy(&filtered, false, std::slice::from_ref(&b2)), None);
+        assert_eq!(
+            lazy(
+                &crate::options::OptionState::default(),
+                true,
+                std::slice::from_ref(&b2)
+            ),
+            None
+        );
+        assert_eq!(lazy(&filtered, true, &[]), None);
+        assert_eq!(
+            lazy_blob_packs(None, "r", &filtered, true, &packs, &[b2]),
+            None
+        );
+        // Only the packs the repository still lists: a catalogued pack no longer stored is not chosen.
+        assert_eq!(
+            lazy_blob_packs(d, "r", &filtered, true, &packs[1..], &[b1]),
+            None
+        );
     }
 
     #[test]

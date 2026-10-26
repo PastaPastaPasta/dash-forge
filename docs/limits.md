@@ -65,7 +65,8 @@ The apps read documents in pages and stop at a limit rather than guess. A result
 
 ## Not supported
 
-- **Shallow clones** (`--depth`, `--shallow-since`, `--shallow-exclude`) fail with [E205](errors.md#e205). Use `git clone --filter=blob:none`.
+- **Shallow clones** (`--depth`, `--shallow-since`, `--shallow-exclude`) fail with [E205](errors.md#e205). Use `git clone --filter=blob:none` for a smaller checkout (it saves disk, not download: see the next point).
+- **A partial clone does not download less than a full one.** A stored pack holds whole pushes, not single objects, so `git clone --filter=blob:none` reads every pack and keeps the commits and trees. The blobs git then fetches on demand (a checkout, `git log -p`, `git blame`) come only from the packs that hold them: the clone records which blobs each pack it read holds (`.git/dash/catalog/`). Every pack is still read again by a `git fetch` or `git pull` into a partial clone (a full clone reads only the new ones), by an on-demand fetch of a tree or commit (`--filter=tree:0`), and by one of a blob in a pack pushed since the clone last read every pack.
 - **Atomic pushes** (`git push --atomic`): each branch and tag is its own write.
 - **Git LFS objects.** A repository can hold LFS pointer files, but the large files are not stored: keep large binaries out of git, or attach them to releases.
 - **A git older than 2.44** cannot clone histories with malformed author lines ([E511](errors.md#e511)).

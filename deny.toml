@@ -46,6 +46,19 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6); Linux keyring path only, no known flaw, no zbus 6 keyring yet" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6); Linux keyring path only, no known flaw, no zbus 6 keyring yet" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6); proc-macro at build time, no known flaw, no zbus 6 keyring yet" },
+
+    # crypto-bigint 0.5.5, secret-dependent branches in "constant-time" arithmetic (published 2026-10-23).
+    # Fixed only in 0.7.6; the 0.5 and 0.6 lines get no release. 0.5 is the bigint of the whole RustCrypto
+    # elliptic-curve 0.13 generation, and three users hold us there: the Platform SDK at its pinned tag
+    # (dashcore -> blsful -> blstrs_plus, and vsss-rs; BLS is only used to verify quorum signatures, identity
+    # keys are signed with libsecp256k1, which is C), pgp (signature verification with public keys only,
+    # rules/signature.rs) and web-push-native 0.5, the latest release, still on p256 0.13. The last one is
+    # the reachable path: forge-notify signs its VAPID JWT (ES256) and makes the per-message ECDH key with
+    # p256 0.13, whose scalar arithmetic (sub_mod) is crypto-bigint 0.5. Exploiting it needs fine timing or
+    # microarchitectural observation of the notify host while it signs; the key at stake is the service's
+    # VAPID key (it can send pushes to subscribers, nothing else). Remove when web-push-native moves to p256
+    # 0.14 and the SDK to elliptic-curve 0.14.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 has no fix; held by the pinned SDK (BLS verify), pgp (verify) and web-push-native's p256 0.13 (forge-notify VAPID key)" },
 ]
 
 [licenses]
