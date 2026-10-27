@@ -1226,31 +1226,11 @@ impl PlatformClient {
         limit: u32,
         start_after: Option<&str>,
     ) -> Result<Vec<FetchedDocument>> {
-        // A descending page after a cursor cannot be proved on protocol 13 under the 4.2
-        // verifier (see [`ascending_equivalent`]). When an ascending equivalent exists, read
-        // the whole set that way (complete, reversed to the requested order) and slice out
-        // the page after the cursor. This costs a complete read per page; the listings that
-        // page descending (issues, PRs, stars) are small.
-        if let (Some(after), Some(_)) = (start_after, ascending_equivalent(filters, order)) {
-            if limit == 0 {
-                return Err(Error::Config("query limit must be greater than 0".into()));
-            }
-            let all = self
-                .query_all_documents(contract, document_type, filters, order)
-                .await?;
-            let Some(at) = all.iter().position(|d| d.id == after) else {
-                return Err(Error::Config(format!(
-                    "start_after document {after} is not in the {document_type} result set"
-                )));
-            };
-            return Ok(all.into_iter().skip(at + 1).take(limit as usize).collect());
-        }
         self.query_page(contract, document_type, filters, order, limit, start_after)
             .await
     }
 
-    /// One page exactly as requested — the network half of [`Self::query_documents`], which
-    /// the complete reader calls directly (it only ever pages ascending after a cursor).
+    /// One page exactly as requested, refreshing a stale contract once.
     async fn query_page(
         &self,
         contract: &LoadedContract,
@@ -1359,8 +1339,6 @@ impl PlatformClient {
 
     /// [`Self::query_all_documents`], stopping once more than `max` rows are held: the rows in
     /// `order`, at least `max + 1` of them when more match (the caller truncates and says so).
-    /// A descending read that is paged ascending and reversed (see [`ascending_equivalent`])
-    /// cannot stop early (its first rows are the last read), so it reads every match.
     pub async fn query_documents_up_to(
         &self,
         contract: &LoadedContract,
@@ -1369,19 +1347,9 @@ impl PlatformClient {
         order: &[QueryOrder],
         max: usize,
     ) -> Result<Vec<FetchedDocument>> {
-        // Page a descending read in ascending order and reverse it (see
-        // [`ascending_equivalent`]): the rs-sdk 4.2 verifier rejects the proof a protocol-13
-        // node returns for a descending page that starts after a cursor, so every read past
-        // the first 100 rows would fail on testnet.
-        let ascending = ascending_equivalent(filters, order);
-        let order = ascending.as_deref().unwrap_or(order);
-        // See [`tie_probe_allowed`]: when the index ends in `$createdAt`, every page boundary
-        // is followed by a read of the boundary timestamp, so same-block rows are not lost.
-        let tie_safe = tie_probe_allowed(filters, order);
-        let max = if ascending.is_some() { usize::MAX } else { max };
-        // `async move` so the futures own their inputs; returning a future that borrows the
+        // `async move` so the future owns its input; returning a future that borrows the
         // closure's parameter would not outlive the call.
-        let mut documents = page_until(
+        page_until(
             document_type,
             |start_after: Option<String>| async move {
                 self.query_page(
@@ -1394,22 +1362,9 @@ impl PlatformClient {
                 )
                 .await
             },
-            tie_safe.then_some(|created_at: u64| async move {
-                let mut tie = filters.to_vec();
-                tie.push(QueryFilter::eq(
-                    "$createdAt",
-                    FieldValue::uint64(created_at),
-                ));
-                self.query_page(contract, document_type, &tie, order, PAGE_SIZE, None)
-                    .await
-            }),
             max,
         )
-        .await?;
-        if ascending.is_some() {
-            documents.reverse();
-        }
-        Ok(documents)
+        .await
     }
 
     /// [`Self::query_all_documents`] for documents of ~15 KB each (pack `chunk`s), whose
@@ -1426,8 +1381,8 @@ impl PlatformClient {
     /// not banned for it (the deadline is ours, not their fault). Rows already read are kept:
     /// a slow page costs that page, not the read.
     ///
-    /// `order` must be all-ascending with no `$createdAt` tie handling needed (chunks are
-    /// read by `seq`); any other read goes through [`Self::query_all_documents`].
+    /// `order` must be all-ascending (chunks are read by `seq`); any other read goes through
+    /// [`Self::query_all_documents`].
     pub async fn query_all_large_documents(
         &self,
         contract: &LoadedContract,
@@ -1436,7 +1391,7 @@ impl PlatformClient {
         order: &[QueryOrder],
     ) -> Result<Vec<FetchedDocument>> {
         // (Its pages refresh and retry one by one.)
-        if !order.iter().all(|o| o.ascending) || tie_probe_allowed(filters, order) {
+        if !order.iter().all(|o| o.ascending) {
             return self
                 .query_all_documents(contract, document_type, filters, order)
                 .await;
@@ -3530,88 +3485,23 @@ pub fn decode_identifier(base58: &str) -> Result<[u8; 32]> {
 /// Rows per page. Drive's default and maximum are both 100.
 const PAGE_SIZE: u32 = 100;
 
-/// The all-ascending order whose traversal, reversed, is exactly `order`'s traversal — or
-/// `None` when `order` is already ascending or has no such equivalent.
-///
-/// A complete read ([`PlatformClient::query_all_documents`]) pages with a `start_after`
-/// cursor. The grovedb verifier in rs-sdk 4.2 checks that every proof op matches the walk
-/// direction. Protocol-13 nodes (testnet today) answer a descending page after a cursor
-/// with a proof that fails that check. That page is only needed when a read passes one page,
-/// so it surfaced as `packManifest` reads failing on a repo with 101 manifests. Ascending
-/// pages verify, and Drive's descending walk is the exact reverse of its ascending walk,
-/// so an ascending read reversed returns the same rows in the same order.
-///
-/// Reversing the whole result also reverses any clause that was already ascending. That is
-/// only harmless when an equality filter pins that clause's field to one value, so any
-/// other mixed order returns `None` and is read as requested.
-fn ascending_equivalent(filters: &[QueryFilter], order: &[QueryOrder]) -> Option<Vec<QueryOrder>> {
-    if order.iter().all(|o| o.ascending) {
-        return None;
-    }
-    let pinned = |field: &str| {
-        filters
-            .iter()
-            .any(|f| f.op == QueryOp::Eq && f.field == field)
-    };
-    if order.iter().any(|o| o.ascending && !pinned(&o.field)) {
-        return None;
-    }
-    Some(
-        order
-            .iter()
-            .map(|o| QueryOrder::asc(o.field.clone()))
-            .collect(),
-    )
-}
-
 /// Hard safety cap on total rounds, matching forge-web's `queryAllDocuments`.
 /// 1000 pages x 100 rows = 100k documents.
 const MAX_PAGES: usize = 1000;
 
-/// Whether a complete read can make its page boundaries tie-safe: its order ends in
-/// `$createdAt` ascending, every earlier order field is pinned by an `==` filter, and every
-/// filter is an `==` on some other field. The index then ends in `$createdAt`, so an
-/// equality on the boundary timestamp is a valid query on the same index.
-///
-/// Why: on protocol 13, a `start_after` cursor excludes the cursor's whole `$createdAt`
-/// key, not just the rows up to the cursor document. Documents created in the same block
-/// as a page's last row that sort after it would be silently skipped. `$createdAt` is the
-/// block time, so these ties are real. Protocol 14 bounds the cursor by document id and
-/// does not drop them.
-///
-/// Every forge-v2 type read with an order ending in `$createdAt` requires it, so a proved
-/// query returns the boundary row's
-/// timestamp.
-fn tie_probe_allowed(filters: &[QueryFilter], order: &[QueryOrder]) -> bool {
-    let Some((last, rest)) = order.split_last() else {
-        return false;
-    };
-    let pinned = |field: &str| {
-        filters
-            .iter()
-            .any(|f| f.op == QueryOp::Eq && f.field == field)
-    };
-    last.field == "$createdAt"
-        && last.ascending
-        && rest.iter().all(|o| o.ascending && pinned(&o.field))
-        && filters
-            .iter()
-            .all(|f| f.op == QueryOp::Eq && f.field != "$createdAt")
-}
-
-/// Page a `$id`-cursored query to exhaustion, given a page fetcher and, optionally, a
-/// boundary-tie reader.
+/// Page a `$id`-cursored query to exhaustion, given a page fetcher.
 ///
 /// Transport-free so the loop itself is testable: `query_all_documents` owns a live `Sdk`,
 /// which made the one piece of logic that decides whether a read is complete the one piece
 /// with no test. `fetch` receives the `start_after` cursor (`None` for the first page) and
 /// returns one page.
 ///
-/// `tie_probe`, when given, returns every row whose `$createdAt` equals its argument, in
-/// traversal order (see [`tie_probe_allowed`]). After each full page it is called with the
-/// last row's `$createdAt`. Rows not yet held are appended, and the cursor moves to the last
-/// tied row. A tie of a full page or more cannot be proved complete and fails the read.
-/// Rows are deduplicated by `$id` throughout.
+/// The cursor alone is enough on protocol 14, the only protocol Forge's contracts run on:
+/// Drive continues a `startAfter` page within the cursor's index key by document id, so rows
+/// sharing the cursor's `$createdAt` are not skipped (`DriveDocumentQuery::pads_cursor_page`).
+/// The primary-key path is not padded and needs no padding, since ids are unique. An `indexOnly`
+/// type refuses a cursor outright, so a read of one fails at its second page.
+/// Rows are deduplicated by `$id`.
 ///
 /// A **short page is the only accepted proof** that the end was reached. If the cursor
 /// cannot advance, or the page cap is hit, this returns [`Error::IncompleteRead`] rather
@@ -3619,33 +3509,24 @@ fn tie_probe_allowed(filters: &[QueryFilter], order: &[QueryOrder]) -> bool {
 /// different points on identical data would itself be the cross-client divergence these
 /// reads exist to prevent.
 #[cfg(test)]
-async fn page_to_exhaustion<F, Fut, P, PFut>(
-    document_type: &str,
-    fetch: F,
-    tie_probe: Option<P>,
-) -> Result<Vec<FetchedDocument>>
+async fn page_to_exhaustion<F, Fut>(document_type: &str, fetch: F) -> Result<Vec<FetchedDocument>>
 where
     F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<FetchedDocument>>>,
-    P: FnMut(u64) -> PFut,
-    PFut: std::future::Future<Output = Result<Vec<FetchedDocument>>>,
 {
-    page_until(document_type, fetch, tie_probe, usize::MAX).await
+    page_until(document_type, fetch, usize::MAX).await
 }
 
 /// [`page_to_exhaustion`] that also stops, successfully, once more than `max` rows are held
 /// (a capped read: the caller knows more may match).
-async fn page_until<F, Fut, P, PFut>(
+async fn page_until<F, Fut>(
     document_type: &str,
     mut fetch: F,
-    mut tie_probe: Option<P>,
     max: usize,
 ) -> Result<Vec<FetchedDocument>>
 where
     F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<FetchedDocument>>>,
-    P: FnMut(u64) -> PFut,
-    PFut: std::future::Future<Output = Result<Vec<FetchedDocument>>>,
 {
     let incomplete = |fetched: usize, reason: String| Error::IncompleteRead {
         document_type: document_type.to_string(),
@@ -3654,23 +3535,20 @@ where
     };
     let mut out: Vec<FetchedDocument> = Vec::new();
     let mut held: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut take = |out: &mut Vec<FetchedDocument>, rows: Vec<FetchedDocument>| {
-        for d in rows {
-            if held.insert(d.id.clone()) {
-                out.push(d);
-            }
-        }
-    };
     let mut start_after: Option<String> = None;
     for _ in 0..MAX_PAGES {
         let page = fetch(start_after.clone()).await?;
         let n = page.len();
-        let last = page.last().map(|d| (d.id.clone(), d.created_at));
-        take(&mut out, page);
+        let last = page.last().map(|d| d.id.clone());
+        for d in page {
+            if held.insert(d.id.clone()) {
+                out.push(d);
+            }
+        }
         if n < PAGE_SIZE as usize || out.len() > max {
             return Ok(out);
         }
-        let Some((mut cursor, created_at)) = last else {
+        let Some(cursor) = last else {
             // A full page with no last element is impossible, but treating it as "done"
             // would silently truncate; treat it as unprovable instead.
             return Err(incomplete(
@@ -3678,22 +3556,6 @@ where
                 "a full page yielded no cursor document".to_string(),
             ));
         };
-        if let (Some(probe), Some(t)) = (tie_probe.as_mut(), created_at) {
-            let tied = probe(t).await?;
-            if tied.len() >= PAGE_SIZE as usize {
-                return Err(incomplete(
-                    out.len(),
-                    format!(
-                        "{PAGE_SIZE} or more documents share $createdAt {t}; the page \
-                         boundary tie cannot be read completely"
-                    ),
-                ));
-            }
-            if let Some(last_tied) = tied.last() {
-                cursor.clone_from(&last_tied.id);
-            }
-            take(&mut out, tied);
-        }
         start_after = Some(cursor);
     }
     Err(Error::IncompleteRead {
@@ -5111,10 +4973,10 @@ mod tests {
     }
 
     use super::{
-        ascending_equivalent, is_contract_missing, is_stale_contract, is_transient_node_error,
-        page_to_exhaustion, page_until, retry_with_backoff, tie_probe_allowed, FetchedDocument,
-        FieldValue, JournalStore, PushJournal, QueryFilter, QueryOrder, SignedTransition,
-        WriteIntent, WriteOp, MAX_PAGES, MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
+        is_contract_missing, is_stale_contract, is_transient_node_error, page_to_exhaustion,
+        page_until, retry_with_backoff, FetchedDocument, FieldValue, JournalStore, PushJournal,
+        SignedTransition, WriteIntent, WriteOp, MAX_PAGES, MAX_READ_ATTEMPTS, NONCE_MASK,
+        PAGE_SIZE,
     };
     use crate::error::{Error, Result};
     use crate::network::{Network, NetworkTarget};
@@ -5414,41 +5276,6 @@ mod tests {
         assert!(!same_field(None, s(FieldValue::text("x")).as_ref()));
     }
 
-    fn fields(order: &[QueryOrder]) -> Vec<(String, bool)> {
-        order
-            .iter()
-            .map(|o| (o.field.clone(), o.ascending))
-            .collect()
-    }
-
-    #[test]
-    fn a_descending_complete_read_is_paged_ascending() {
-        let asc = ascending_equivalent(&[], &[QueryOrder::desc("$createdAt")]).unwrap();
-        assert_eq!(fields(&asc), [("$createdAt".to_string(), true)]);
-    }
-
-    #[test]
-    fn an_ascending_read_is_left_alone() {
-        assert!(ascending_equivalent(&[], &[QueryOrder::asc("$createdAt")]).is_none());
-        assert!(ascending_equivalent(&[], &[]).is_none());
-    }
-
-    #[test]
-    fn a_mixed_order_flips_only_when_the_ascending_prefix_is_pinned() {
-        let order = [QueryOrder::asc("kind"), QueryOrder::desc("$createdAt")];
-        // `kind` pinned by an equality filter: reversing it is a no-op, so the read flips.
-        let pinned = [QueryFilter::eq("kind", FieldValue::integer(1))];
-        let asc = ascending_equivalent(&pinned, &order).unwrap();
-        assert_eq!(
-            fields(&asc),
-            [("kind".to_string(), true), ("$createdAt".to_string(), true)]
-        );
-        // Unpinned (or only range-filtered): reversing would reorder `kind`, so it stays.
-        assert!(ascending_equivalent(&[], &order).is_none());
-        let ranged = [QueryFilter::gt("kind", FieldValue::integer(1))];
-        assert!(ascending_equivalent(&ranged, &order).is_none());
-    }
-
     fn doc(i: usize) -> FetchedDocument {
         FetchedDocument {
             id: format!("d-{i:06}"),
@@ -5480,132 +5307,17 @@ mod tests {
         }
     }
 
-    type Ready = std::future::Ready<Result<Vec<FetchedDocument>>>;
-
-    fn no_probe() -> Option<fn(u64) -> Ready> {
-        None
-    }
-
-    /// A document at `created_at` with id `d-<i>`.
-    fn doc_at(i: usize, created_at: u64) -> FetchedDocument {
-        FetchedDocument {
-            created_at: Some(created_at),
-            ..doc(i)
-        }
-    }
-
-    /// Rows sorted by ($createdAt, $id), served with PROTOCOL-13 cursor semantics: a
-    /// `start_after` cursor excludes every row whose `$createdAt` is <= the cursor's, so rows
-    /// sharing the cursor's timestamp but sorting after it are skipped (the real Drive
-    /// behaviour this guards against).
-    fn protocol_13(rows: Vec<FetchedDocument>) -> impl FnMut(Option<String>) -> Ready {
-        move |start_after| {
-            let from_t = start_after.map(|id| {
-                rows.iter()
-                    .find(|d| d.id == id)
-                    .and_then(|d| d.created_at)
-                    .unwrap()
-            });
-            let page = rows
-                .iter()
-                .filter(|d| from_t.is_none_or(|t| d.created_at.unwrap() > t))
-                .take(PAGE_SIZE as usize)
-                .cloned()
-                .collect();
-            std::future::ready(Ok(page))
-        }
-    }
-
-    /// 99 rows at distinct times, then `tied` rows sharing one timestamp: row 100 is the
-    /// first of the tie, so the page boundary falls inside it.
-    fn straddling_tie(tied: usize) -> Vec<FetchedDocument> {
-        let mut rows: Vec<FetchedDocument> = (0..99).map(|i| doc_at(i, i as u64)).collect();
-        rows.extend((99..99 + tied).map(|i| doc_at(i, 1_000)));
-        rows.push(doc_at(99 + tied, 2_000));
-        rows
-    }
-
-    #[tokio::test]
-    async fn protocol_13_drops_same_block_rows_at_a_page_boundary_without_the_probe() {
-        let rows = straddling_tie(3);
-        let got = page_to_exhaustion("event", protocol_13(rows.clone()), no_probe())
-            .await
-            .unwrap();
-        // The mock reproduces the gap: the two tied rows after the boundary are lost.
-        assert_eq!(got.len(), rows.len() - 2);
-    }
-
-    #[tokio::test]
-    async fn the_tie_probe_recovers_same_block_rows_at_a_page_boundary() {
-        let rows = straddling_tie(3);
-        let tie_rows = rows.clone();
-        let probe = move |t: u64| {
-            let tied = tie_rows
-                .iter()
-                .filter(|d| d.created_at == Some(t))
-                .cloned()
-                .collect();
-            std::future::ready(Ok(tied))
-        };
-        let got = page_to_exhaustion("event", protocol_13(rows.clone()), Some(probe))
-            .await
-            .unwrap();
-        let ids: Vec<&str> = got.iter().map(|d| d.id.as_str()).collect();
-        let want: Vec<&str> = rows.iter().map(|d| d.id.as_str()).collect();
-        assert_eq!(ids, want, "every row, once, in traversal order");
-    }
-
-    #[tokio::test]
-    async fn a_boundary_tie_of_a_full_page_is_refused() {
-        let rows = straddling_tie(PAGE_SIZE as usize);
-        let tie_rows = rows.clone();
-        let probe = move |t: u64| {
-            let tied = tie_rows
-                .iter()
-                .filter(|d| d.created_at == Some(t))
-                .take(PAGE_SIZE as usize)
-                .cloned()
-                .collect();
-            std::future::ready(Ok(tied))
-        };
-        let got = page_to_exhaustion("event", protocol_13(rows), Some(probe)).await;
-        assert!(matches!(got, Err(Error::IncompleteRead { .. })), "{got:?}");
-    }
-
-    #[test]
-    fn the_tie_probe_runs_only_where_created_at_ends_the_index() {
-        let owner = || QueryFilter::eq("$ownerId", FieldValue::integer(1));
-        assert!(tie_probe_allowed(&[], &[QueryOrder::asc("$createdAt")]));
-        assert!(tie_probe_allowed(
-            &[owner()],
-            &[QueryOrder::asc("$ownerId"), QueryOrder::asc("$createdAt")]
-        ));
-        // Not ending in $createdAt, an unpinned prefix, a range filter, or descending.
-        assert!(!tie_probe_allowed(&[], &[QueryOrder::asc("seq")]));
-        assert!(!tie_probe_allowed(
-            &[],
-            &[QueryOrder::asc("$ownerId"), QueryOrder::asc("$createdAt")]
-        ));
-        assert!(!tie_probe_allowed(
-            &[QueryFilter::gt("seq", FieldValue::integer(1))],
-            &[QueryOrder::asc("$createdAt")]
-        ));
-        assert!(!tie_probe_allowed(&[], &[QueryOrder::desc("$createdAt")]));
-    }
-
     #[tokio::test]
     async fn pages_past_the_first_page_boundary() {
         // 101 rows: the case the whole change exists for. A single page would stop at 100.
-        let got = page_to_exhaustion("event", serve(101), no_probe())
-            .await
-            .unwrap();
+        let got = page_to_exhaustion("event", serve(101)).await.unwrap();
         assert_eq!(got.len(), 101);
         assert_eq!(got[100].id, "d-000100");
     }
 
     #[tokio::test]
     async fn a_short_first_page_is_the_end() {
-        let capped = page_until("event", serve(usize::MAX), no_probe(), 150)
+        let capped = page_until("event", serve(usize::MAX), 150)
             .await
             .expect("a capped read stops once past the cap");
         assert_eq!(
@@ -5613,9 +5325,7 @@ mod tests {
             200,
             "two full pages: the second passes the cap"
         );
-        let got = page_to_exhaustion("event", serve(7), no_probe())
-            .await
-            .unwrap();
+        let got = page_to_exhaustion("event", serve(7)).await.unwrap();
         assert_eq!(got.len(), 7);
     }
 
@@ -5624,15 +5334,11 @@ mod tests {
         // Exactly PAGE_SIZE rows: the first page is full, so the end is NOT yet proven and
         // a second (empty, therefore short) page must be requested.
         let mut calls = 0usize;
-        let got = page_to_exhaustion(
-            "event",
-            |start_after| {
-                calls += 1;
-                let mut f = serve(PAGE_SIZE as usize);
-                f(start_after)
-            },
-            no_probe(),
-        )
+        let got = page_to_exhaustion("event", |start_after| {
+            calls += 1;
+            let mut f = serve(PAGE_SIZE as usize);
+            f(start_after)
+        })
         .await
         .unwrap();
         assert_eq!(got.len(), PAGE_SIZE as usize);
@@ -5643,7 +5349,7 @@ mod tests {
     async fn refuses_to_return_a_partial_answer_at_the_page_cap() {
         // A cursor that always advances and pages that are always full: the end is never
         // proven, so this must fail rather than hand back 100k rows as if complete.
-        let got = page_to_exhaustion("event", serve(usize::MAX), no_probe()).await;
+        let got = page_to_exhaustion("event", serve(usize::MAX)).await;
         match got {
             Err(Error::IncompleteRead {
                 document_type,
@@ -5659,11 +5365,9 @@ mod tests {
 
     #[tokio::test]
     async fn propagates_a_fetch_error() {
-        let got = page_to_exhaustion(
-            "event",
-            |_| std::future::ready(Err(Error::Platform("boom".into()))),
-            no_probe(),
-        )
+        let got = page_to_exhaustion("event", |_| {
+            std::future::ready(Err(Error::Platform("boom".into())))
+        })
         .await;
         assert!(matches!(got, Err(Error::Platform(_))));
     }

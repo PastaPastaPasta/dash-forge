@@ -96,23 +96,6 @@ export type PlainDocument = Record<string, unknown>
 // (the value only selects DPP's serialization rules, which are stable for our field types).
 let platformVersion = 1
 
-/** The protocol version from which a `startAfter` page never skips rows tied with its cursor. */
-const CURSOR_PADDED_FROM = 14
-
-/**
- * Whether the network pages tie-safely by itself (protocol {@link CURSOR_PADDED_FROM}+), as far
- * as the SDK has seen: the version is learned from the first proved reply, which every paged
- * read has had by the time it needs its second page.
- *
- * Drive pads a cursor page only off the primary key and for types that are not `indexOnly`
- * (`pads_cursor_page`). Every tie-probed read here orders by `$createdAt` (never the primary key),
- * and none of the `indexOnly` forge types (`star`, `starBeat`, `follow`, `watch`) has an index
- * ending in `$createdAt`, the only shape {@link tieProbeAllowed} admits: the version alone decides.
- */
-export function cursorPadded(): boolean {
-  return platformVersion >= CURSOR_PADDED_FROM
-}
-
 /** Pin the DPP platform version used by {@link normalizeDocument}'s `toJSON`. */
 export function setPlatformVersion(version: number): void {
   if (Number.isInteger(version) && version > 0) platformVersion = version
@@ -485,28 +468,6 @@ export async function rankedDocuments(sdk: EvoSDK, query: RankedQuery): Promise<
   }
 }
 
-/**
- * The all-ascending `orderBy` whose traversal, reversed, is exactly `query`'s — or null when
- * the order is already ascending or has no such equivalent. Parity: forge-core
- * `platform::ascending_equivalent`.
- *
- * A complete read pages with a `startAfter` cursor. The grovedb verifier in evo-sdk 4.2 checks
- * that every proof op matches the walk direction. Protocol-13 nodes answered a
- * descending page after a cursor with a proof that fails that check. It surfaced as
- * `packManifest` reads failing once a repo passed 100 manifests. Ascending pages verify, and
- * Drive's descending walk is the exact reverse of its ascending walk. Reversing also
- * reverses any clause that was already ascending, which is only harmless when an `==` filter
- * pins that clause's field, so any other mixed order is left as requested.
- */
-export function ascendingEquivalent(query: DocumentQuery): OrderByClause[] | null {
-  const orderBy = query.orderBy ?? []
-  if (orderBy.every(([, direction]) => direction === 'asc')) return null
-  const pinned = (field: string): boolean =>
-    (query.where ?? []).some(([f, op]) => f === field && op === '==')
-  if (orderBy.some(([field, direction]) => direction === 'asc' && !pinned(field))) return null
-  return orderBy.map(([field]) => [field, 'asc'] as const)
-}
-
 /** Thrown when a read that must be complete could not be proven complete. */
 export class IncompleteReadError extends Error {
   constructor(
@@ -536,40 +497,14 @@ export class IncompleteReadError extends Error {
  * genuinely want a bounded window should use {@link queryDocumentsWithProof} with a `limit`
  * and present it as a window.
  *
+ * The cursor alone is enough on protocol 14, the only protocol Forge's contracts run on: Drive
+ * continues a `startAfter` page within the cursor's index key by document id, so rows sharing
+ * the cursor's `$createdAt` are not skipped (`rs-drive` `DriveDocumentQuery::pads_cursor_page`).
+ * The primary-key path is not padded and needs no padding, since ids are unique. An `indexOnly`
+ * type refuses a cursor outright, so a read of one throws at its second page.
+ *
  * `pageLimit` bounds each round-trip; `maxPages` is a hard safety cap on total rounds.
  */
-/**
- * Whether a complete read can make its page boundaries tie-safe. Parity: forge-core
- * `platform::tie_probe_allowed`. The conditions: the order ends in `$createdAt` ascending,
- * every earlier order field is pinned by an `==` filter, and every filter is an `==` on some
- * other field. The index then ends in `$createdAt`, so an equality on the boundary timestamp
- * is a valid query on the same index.
- *
- * Why: on protocol 13, a `startAfter` cursor excludes the cursor's whole `$createdAt` key.
- * Documents created in the same block as a page's last row that sort after it would be
- * silently skipped. Protocol 14 bounds the cursor by document id and does not drop them.
- *
- * It needs the boundary row's `$createdAt`, which every forge-v2 history type requires.
- *
- * Only below protocol 14 ({@link CURSOR_PADDED_FROM}): there Drive lowers a `startAfter` as a
- * `startAt` on the cursor's own index key, continues within it by document id and strips the
- * cursor row (`rs-drive` `DriveDocumentQuery::pads_cursor_page`, gated on
- * `non_primary_key_path_query >= 1`, first set in protocol 14; proved the same way, and
- * covered by `compound_cursor_tests.rs`). The probe would be one more request per full page for
- * rows the next page returns anyway.
- */
-export function tieProbeAllowed(query: DocumentQuery): boolean {
-  const orderBy = query.orderBy ?? []
-  const last = orderBy[orderBy.length - 1]
-  if (last === undefined || last[0] !== '$createdAt' || last[1] !== 'asc') return false
-  const where = query.where ?? []
-  const pinned = (field: string): boolean => where.some(([f, op]) => f === field && op === '==')
-  return (
-    orderBy.slice(0, -1).every(([field, direction]) => direction === 'asc' && pinned(field)) &&
-    where.every(([field, op]) => op === '==' && field !== '$createdAt')
-  )
-}
-
 export async function queryAllDocuments(
   sdk: EvoSDK,
   query: DocumentQuery,
@@ -579,18 +514,13 @@ export async function queryAllDocuments(
     /**
      * The query's first page, already read elsewhere (a composite's sibling sub-query with
      * the same query and a `pageLimit` limit): a short one is the whole answer, a full one is
-     * continued from its last row instead of being read again. Ascending queries only.
+     * continued from its last row instead of being read again.
      */
     readonly firstPage?: readonly PlainDocument[]
   } = {},
 ): Promise<PlainDocument[]> {
   const pageLimit = opts.pageLimit ?? 100
   const maxPages = opts.maxPages ?? 1000
-  // Page a descending read ascending and reverse it — see `ascendingEquivalent`.
-  const ascending = ascendingEquivalent(query)
-  if (opts.firstPage !== undefined && ascending !== null) throw new Error('firstPage continues an ascending query only')
-  const paged = ascending === null ? query : { ...query, orderBy: ascending }
-  const tieShape = tieProbeAllowed(paged)
   const out: PlainDocument[] = []
   const held = new Set<string>()
   const take = (rows: PlainDocument[]): void => {
@@ -603,17 +533,15 @@ export async function queryAllDocuments(
       out.push(d)
     }
   }
-  const done = (): PlainDocument[] => (ascending === null ? out : out.reverse())
   let startAfter: string | undefined
   for (let page = 0; page < maxPages; page++) {
     const documents =
       page === 0 && opts.firstPage !== undefined
         ? [...opts.firstPage]
-        : (await queryDocumentsWithProof(sdk, { ...paged, limit: pageLimit, startAfter })).documents
+        : (await queryDocumentsWithProof(sdk, { ...query, limit: pageLimit, startAfter })).documents
     take(documents)
-    if (documents.length < pageLimit) return done()
-    const last = documents[documents.length - 1]
-    const lastId = last?.['$id']
+    if (documents.length < pageLimit) return out
+    const lastId = documents[documents.length - 1]?.['$id']
     if (typeof lastId !== 'string') {
       throw new IncompleteReadError(
         query.documentTypeName,
@@ -621,29 +549,7 @@ export async function queryAllDocuments(
         'a full page ended on a result with no id, so the next page cannot be read',
       )
     }
-    let cursor: string = lastId
-    // Same-block rows past the boundary: read the boundary timestamp in full (see
-    // `tieProbeAllowed`), then continue after the last of them.
-    const createdAt = last?.['$createdAt']
-    // Checked per boundary: the version is known once the first proved page has come back.
-    if (tieShape && !cursorPadded() && typeof createdAt === 'number') {
-      const { documents: tied } = await queryDocumentsWithProof(sdk, {
-        ...paged,
-        where: [...(paged.where ?? []), ['$createdAt', '==', createdAt]],
-        limit: pageLimit,
-      })
-      if (tied.length >= pageLimit) {
-        throw new IncompleteReadError(
-          query.documentTypeName,
-          out.length,
-          `${pageLimit} or more results share the creation time ${createdAt}, so the page boundary cannot be read completely`,
-        )
-      }
-      const lastTied = tied[tied.length - 1]?.['$id']
-      if (typeof lastTied === 'string') cursor = lastTied
-      take(tied)
-    }
-    startAfter = cursor
+    startAfter = lastId
   }
   throw new IncompleteReadError(
     query.documentTypeName,

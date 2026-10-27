@@ -3,7 +3,7 @@
  *
  * Trusted-mode connections (`testnetTrusted()` / `mainnetTrusted()` / a devnet's) + `*WithProof`
  * reads (the only WASM-viable path, S0.3), with the base64 byteArray operand encoding and the
- * complete, tie-safe paging that active-repo correctness depends on.
+ * complete paging that active-repo correctness depends on.
  */
 
 export { ensureSdk, evoSdkService, preloadContractIds, type EvoSdkConfig, type SdkStatus } from './service'
@@ -72,7 +72,6 @@ export {
   type CostPreview,
 } from './cost'
 export {
-  ascendingEquivalent,
   base64ToBytes,
   base64ToHex,
   bytesToBase64,
@@ -82,7 +81,6 @@ export {
   uintGroupKey,
   uintOfGroupKey,
   type GroupedQuery,
-  cursorPadded,
   hexToBase64,
   normalizeDocument,
   setPlatformVersion,
@@ -94,7 +92,6 @@ export {
   rankedDocuments,
   retryOnStaleContract,
   shareInFlight,
-  tieProbeAllowed,
   type DocumentQuery,
   type RankedEntry,
   type RankedPage,

@@ -16,7 +16,7 @@ vi.mock('../constants', async (importOriginal) => {
 })
 
 import type { ForgeIds } from '../deployments'
-import { base64ToHex, bytesToBase64, hexToBase64, setPlatformVersion, type DocumentQuery } from '../sdk'
+import { base64ToHex, bytesToBase64, hexToBase64, type DocumentQuery } from '../sdk'
 import { CHROME_KEYSET_SPLITS } from './refs'
 import { loadRepoHome } from '../view/repo-view'
 import { cachedDpnsName, clearDpnsCache } from '../view/dpns'
@@ -184,7 +184,6 @@ function fakeSdk(
 const REF: RepoRef = { forge: FORGE, repoId: REPO, ownerId: OWNER, name: 'demo', visibility: 'public' }
 
 beforeEach(() => {
-  setPlatformVersion(14)
   resetRepoTimelines()
   clearDpnsCache()
   invalidateMembers(REF, 'devnet')
