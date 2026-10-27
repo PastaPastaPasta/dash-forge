@@ -1,9 +1,6 @@
 /**
- * The v2 `repoId ==` prefix must keep complete reads tie-safe and descending reads pageable:
- * `queryAllDocuments` probes a page boundary's `$createdAt` only when every earlier order
- * field is pinned by `==` (`tieProbeAllowed`), and pages a descending read ascending
- * (`ascendingEquivalent`). The prefix is an `==` on an index's leading field, so both still
- * apply to every scoped complete read the readers make.
+ * `repoSource`: which Forge contract holds each document type, and that the layout names
+ * exactly the types each contract schema declares.
  */
 
 import { readFileSync } from 'node:fs'
@@ -11,7 +8,6 @@ import { resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { ascendingEquivalent, tieProbeAllowed } from '../sdk'
 import type { RepoRef } from './contract'
 import { COLLAB_TYPES, COMMUNITY_TYPES, CORE_TYPES } from '../layout'
 import { repoSource } from './source'
@@ -23,7 +19,6 @@ const DEMO: RepoRef = {
   name: 'n',
   visibility: 'public',
 }
-const s = repoSource(DEMO)
 
 describe('which contract holds a type', () => {
   const three = repoSource({ ...DEMO, forge: { ...DEMO.forge, community: 'COMMUNITY' } })
@@ -53,23 +48,5 @@ describe('which contract holds a type', () => {
     const optional = ['starBeat', 'pushGrant']
     const declared = [...types].filter((t) => !optional.includes(t) || t in schema.documentSchemas)
     expect(declared.sort()).toEqual(Object.keys(schema.documentSchemas).sort())
-  })
-})
-
-describe('repoId-scoped complete reads', () => {
-  it('stay tie-safe', () => {
-    expect(tieProbeAllowed(s.repoQuery('config', { orderBy: [['$createdAt', 'asc']] }))).toBe(true)
-    expect(tieProbeAllowed(s.repoQuery('event', { orderBy: [['$createdAt', 'asc']] }))).toBe(true)
-    expect(
-      tieProbeAllowed(
-        s.repoQuery('refUpdate', { where: [['refNameHash', '==', 'h']], orderBy: [['$createdAt', 'asc']] }),
-      ),
-    ).toBe(true)
-  })
-
-  it('page a newest-first read ascending', () => {
-    expect(ascendingEquivalent(s.repoQuery('packManifest', { orderBy: [['$createdAt', 'desc']] }))).toEqual([
-      ['$createdAt', 'asc'],
-    ])
   })
 })

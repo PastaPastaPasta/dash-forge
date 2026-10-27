@@ -158,20 +158,14 @@ Protocol 14 changes three things that a client has to handle:
   Drive rejects. forge-web's `documentForCreate` builds documents through
   `Document.fromObject`, which keeps bytes as bytes.
 
-Protocol 13 under the 4.2 verifier has two paging gotchas, which both clients handle in their
-complete readers (`query_all_documents` / `queryAllDocuments`):
-
-- **Descending page after a cursor.** The 4.2 grovedb verifier rejects the proof a
-  protocol-13 node returns for one ("Proof op family does not match the query direction").
-  A descending read is paged ascending and reversed, which gives the same rows in the same
-  order.
-- **Same-block ties.** A `start_after` cursor excludes the cursor's whole `$createdAt`, so
-  documents created in the same block as a page's last row, and sorting after it, are
-  skipped. When the index ends in `$createdAt`, the readers also query the boundary
-  timestamp with `==`. This needs the boundary row's `$createdAt`, which history-keeping
-  types (`packManifest`, `event`, `refUpdate`, `issue`, ...) do not return from a proved
-  query on protocol 13. forge-v2 runs only on protocol 14, where the readers bound the
-  cursor by document id.
+The complete readers (`query_all_documents` / `queryAllDocuments`) page on the `startAfter`
+cursor alone, in the requested order. On protocol 14 Drive lowers a `startAfter` off the
+primary key as a `startAt` on the cursor's own index key, continues within that key by
+document id and drops the cursor row (`DriveDocumentQuery::pads_cursor_page`). So documents
+created in the same block as a page's last row are not skipped, and pages are not one row
+short. Descending pages after a cursor prove and verify like ascending ones. Protocol 13 got
+both wrong, and the readers used to work around it; forge-v2 needs protocol 14, so they no
+longer do.
 
 ## Networks
 

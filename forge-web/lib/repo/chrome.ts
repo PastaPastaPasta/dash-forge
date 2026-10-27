@@ -36,7 +36,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { compositeOf, countsAt, docsAt, queryComposite, type CompositeSub } from '../sdk/composite'
-import { base64ToHex, cursorPadded, queryAllDocuments, shareInFlight, type PlainDocument, type WhereClause } from '../sdk'
+import { base64ToHex, queryAllDocuments, shareInFlight, type PlainDocument, type WhereClause } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { membersGeneration, membershipsFromDocs, seedMemberships } from './members'
 import { noteForkOf } from './fork-parent'
@@ -382,9 +382,7 @@ async function readChrome(
   const generation = generationOf(key)
   const membersAtStart = membersGeneration()
   const held = touch(key)
-  // Only on protocol 14 is a delta page continued safely: a `startAfter` cursor below it drops
-  // rows tied with the cursor, and the `>=` bound rules out the tie probe. Read whole there.
-  const known = cursorPadded() ? held?.settled : undefined
+  const known = held?.settled
   const q = compositeOf(
     { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$ownerId', '==', ownerId], ['name', '==', name]] },
     1,

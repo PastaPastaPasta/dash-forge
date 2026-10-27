@@ -72,8 +72,8 @@ describe('packed byteArray parsing (tips / supersedes)', () => {
       ]),
       REPO,
     )
-    // The read's row order is the reader's concern (it pages ascending and reverses); look
-    // the rows up by pack instead of by position.
+    // The read's row order is the reader's concern (it reads newest first); look the rows up
+    // by pack instead of by position.
     const byPack = (b: number) => docs.find((d) => d.packHash === hashHex(b))
     expect(byPack(0xaa)?.uris).toEqual(['https://m/p.pack'])
     expect(byPack(0xaa)?.supersedes).toEqual([])

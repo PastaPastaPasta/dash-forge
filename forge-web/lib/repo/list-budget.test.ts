@@ -13,11 +13,11 @@
  */
 
 import { sha256 } from '@noble/hashes/sha2.js'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
-import { bytesToBase64, hexToBase64, setPlatformVersion } from '../sdk'
+import { bytesToBase64, hexToBase64 } from '../sdk'
 import type { RepoRef } from './contract'
 import { mockSdk, newSeen, type Doc, type Seen, type Store } from './drive-mock'
 import { queryIssues, type IssueListPage, type IssueSelection } from './issue-index'
@@ -201,8 +201,6 @@ async function settledIssues(r: Repo, q: IssueSelection): Promise<{ page: IssueL
   for (; page.searchedOf?.auto === true && loads < 50; loads++) page = await queryIssues(r.sdk, r.repo, q, r.issues, 'devnet')
   return { page, loads }
 }
-
-beforeAll(() => setPlatformVersion(14))
 
 describe('list request budget on a dash-sized repo (QW2-002, QW3-003)', () => {
   for (const items of [5615, 7700, 15_000]) {

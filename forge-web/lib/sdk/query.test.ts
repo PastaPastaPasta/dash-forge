@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, retryOnStaleContract, setPlatformVersion, setStaleContractHandler, staleContractCause, staleDocumentVersion, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
+import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, retryOnStaleContract, setStaleContractHandler, staleContractCause, staleDocumentVersion, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
 
 const CONTRACT = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -165,32 +165,24 @@ describe('identical reads in flight are joined (S-1)', () => {
   })
 })
 
-describe('the page-boundary tie read is for protocol 13 only', () => {
+describe('a complete read pages on the cursor alone', () => {
   // Two full pages, then a short one.
   const rows = Array.from({ length: 201 }, (_, i) => ({ $id: `r-${String(i).padStart(4, '0')}`, $createdAt: i }))
-  function pagedSdk(version: number, seen: unknown[]): EvoSDK {
-    const query = async (q: { where?: unknown[][]; startAfter?: string; limit?: number }) => {
+  function pagedSdk(seen: { startAfter?: string }[]): EvoSDK {
+    const query = async (q: { startAfter?: string; limit?: number }) => {
       seen.push(q)
       let out = [...rows]
-      for (const [f, op, v] of q.where ?? []) if (op === '==' && f === '$createdAt') out = out.filter((d) => d.$createdAt === v)
       if (q.startAfter !== undefined) out = out.slice(out.findIndex((d) => d.$id === q.startAfter) + 1)
       return new Map(out.slice(0, q.limit ?? 100).map((d) => [d.$id, d]))
     }
-    return { documents: { query }, version: () => version } as unknown as EvoSDK
+    return { documents: { query }, version: () => 14 } as unknown as EvoSDK
   }
   const q = { dataContractId: CONTRACT, documentTypeName: 'event', where: [['repoId', '==', 'r']] as const, orderBy: [['$createdAt', 'asc']] as const }
-  afterEach(() => setPlatformVersion(14))
 
-  it('protocol 14 pages on the cursor alone (Drive pads the tie itself)', async () => {
-    const seen: unknown[] = []
-    expect(await queryAllDocuments(pagedSdk(14, seen), q)).toHaveLength(201)
-    expect(seen).toHaveLength(3)
-  })
-
-  it('protocol 13 still reads each boundary timestamp', async () => {
-    const seen: unknown[] = []
-    expect(await queryAllDocuments(pagedSdk(13, seen), q)).toHaveLength(201)
-    expect(seen).toHaveLength(5)
+  it('one request per page, each after the last row (Drive keeps rows tied with the cursor)', async () => {
+    const seen: { startAfter?: string }[] = []
+    expect(await queryAllDocuments(pagedSdk(seen), q)).toHaveLength(201)
+    expect(seen.map((s) => s.startAfter)).toEqual([undefined, 'r-0099', 'r-0199'])
   })
 })
 

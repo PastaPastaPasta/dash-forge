@@ -72,7 +72,6 @@ export {
   type CostPreview,
 } from './cost'
 export {
-  ascendingEquivalent,
   base64ToBytes,
   base64ToHex,
   bytesToBase64,
@@ -82,7 +81,6 @@ export {
   uintGroupKey,
   uintOfGroupKey,
   type GroupedQuery,
-  cursorPadded,
   hexToBase64,
   normalizeDocument,
   setPlatformVersion,
@@ -94,7 +92,6 @@ export {
   rankedDocuments,
   retryOnStaleContract,
   shareInFlight,
-  tieProbeAllowed,
   type DocumentQuery,
   type RankedEntry,
   type RankedPage,

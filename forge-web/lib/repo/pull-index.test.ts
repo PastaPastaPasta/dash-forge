@@ -7,11 +7,11 @@
  */
 
 import { sha256 } from '@noble/hashes/sha2.js'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
-import { bytesToBase64, hexToBase64, setPlatformVersion, type DocumentQuery } from '../sdk'
+import { bytesToBase64, hexToBase64, type DocumentQuery } from '../sdk'
 import { invalidateRepoFeed } from './issues'
 import { queryIssues } from './issue-index'
 import { openPullsOnBranch, pullsLinking, queryPulls, type PullSelection } from './pull-index'
@@ -112,9 +112,6 @@ function fresh(n: number, opts?: { churn?: boolean }) {
 
 const plainOf = (seen: Seen, type: string): DocumentQuery[] => seen.queries.filter((q) => q.documentTypeName === type)
 const requests = (seen: Seen): number => seen.composites.length + seen.queries.length + seen.counts.length + seen.sums.length
-
-// Protocol 14 (moutai, bonsia): a paged read continues past its cursor without a tie probe.
-beforeAll(() => setPlatformVersion(14))
 
 describe('pull index', () => {
   it('lists the first page from one composite and one state sum, with the proved Open / Merged / Closed counts', async () => {
