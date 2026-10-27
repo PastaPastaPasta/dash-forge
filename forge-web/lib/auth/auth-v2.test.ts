@@ -21,7 +21,7 @@ import {
   unlockWithPassphrase,
   unlockedSecret,
 } from './vault'
-import { buildAssetLock, buildPayment, hash160, txid, verifiedUtxos, type Utxo } from './asset-lock'
+import { DepositTracker, buildAssetLock, buildPayment, hash160, txid, type Utxo } from './asset-lock'
 import { masterMaterialFromFile } from './identity-file'
 import { base58CheckEncode } from './base58'
 import { encodeWif } from './wif'
@@ -157,7 +157,7 @@ describe('asset-lock transaction', () => {
     expect(lock.txid).toBe('452aa5a12caf5b23d314ac9ae8ef129a283f9a4c72492cff1fc5bf9cfc6d4fff')
   })
 
-  describe('a lying block explorer', () => {
+  describe('deposit outputs', () => {
     const priv = new Uint8Array(32).fill(5)
     const pub = secp.getPublicKey(priv, true)
     const script = `76a914${bytesToHex(hash160(pub))}88ac`
@@ -169,33 +169,17 @@ describe('asset-lock transaction', () => {
       { address, duffs: 500_000_000 },
       address,
     )
-    const ep = { dapi: [], insight: 'https://explorer.invalid', islockRpc: null }
-    const serve = (rawtx: Uint8Array): void => {
-      vi.stubGlobal('fetch', async (url: string) => ({ ok: true, json: async () => ({ rawtx: bytesToHex(rawtx) }), url }))
-    }
-
-    it('cannot make the lock burn the deposit by under-reporting its value', async () => {
-      serve(funding.raw)
-      const listed: Utxo[] = [{ txid: funding.txid, vout: 0, satoshis: 2_000_000, scriptPubKey: script, confirmations: 1 }]
-      const utxos = await verifiedUtxos(ep, address, listed)
-      expect(utxos[0]?.satoshis).toBe(500_000_000)
-      const lock = buildAssetLock(utxos, priv)
-      expect(lock.lockedDuffs).toBe(500_000_000 - 1000)
-    })
-
-    it('rejects a raw transaction that does not hash to the listed txid', async () => {
-      serve(funding.raw)
-      const listed: Utxo[] = [{ txid: 'ee'.repeat(32), vout: 0, satoshis: 500_000_000, scriptPubKey: script, confirmations: 1 }]
-      await expect(verifiedUtxos(ep, address, listed)).rejects.toThrow(/not ee/)
-    })
-
-    it('drops outputs that do not pay the deposit address', async () => {
-      serve(funding.raw)
-      const listed: Utxo[] = [{ txid: funding.txid, vout: 1, satoshis: 500_000_000, scriptPubKey: script, confirmations: 1 }]
+    it('takes values from the raw transaction, so the lock cannot burn the deposit', () => {
+      const t = new DepositTracker(address)
+      t.ingest(funding.raw)
       // Output 1 is the change back to the same address in this fixture: still ours.
-      expect((await verifiedUtxos(ep, address, listed)).length).toBe(1)
-      const other: Utxo[] = [{ txid: funding.txid, vout: 7, satoshis: 1, scriptPubKey: script, confirmations: 1 }]
-      expect(await verifiedUtxos(ep, address, other)).toEqual([])
+      expect(t.utxos.map((u) => [u.txid, u.vout])).toEqual([
+        [funding.txid, 0],
+        [funding.txid, 1],
+      ])
+      const pay = t.utxos.filter((u) => u.vout === 0)
+      expect(pay[0]?.satoshis).toBe(500_000_000)
+      expect(buildAssetLock(pay, priv).lockedDuffs).toBe(500_000_000 - 1000)
     })
 
     it('refuses to sign inputs whose script is not the deposit key', () => {

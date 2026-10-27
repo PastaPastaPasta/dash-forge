@@ -6,8 +6,8 @@
  *   2. the deposit address (the mnemonic's BIP-44 asset-lock key) and QR; funds arrive from
  *      any wallet (or the faucet on dev networks) and are seen on a DAPI transaction feed
  *      that replays from the Core height recorded when the creation started;
- *   3. the asset lock is built, saved to the journal, broadcast, and proven (InstantSend or
- *      chain lock);
+ *   3. the asset lock is built, saved to the journal, broadcast, and proven (its InstantSend
+ *      lock, off DAPI feeds opened before the broadcast, or a chain lock);
  *   4. this browser's limited key is generated and **stored in the vault first**, then one
  *      IdentityCreate registers the canonical key set (MASTER, HIGH, CRITICAL auth, CRITICAL
  *      transfer, MEDIUM encryption; DIP-13 from the mnemonic, so `dg` and the bridge open the
@@ -49,12 +49,11 @@ import { isStaleConnectionError } from '../sdk/unreachable'
 import { assertWritesAllowed, serialized } from '../sdk/write'
 import { errorMessage } from '../utils'
 import {
-  broadcastTx,
   buildAssetLock,
   coreEndpoints,
   currentHeight,
   depositHeld,
-  obtainLockProof,
+  sendAndProveLock,
   waitForDeposit,
   wifBytes,
   type CoreEndpoints,
@@ -393,10 +392,9 @@ export async function createIdentityFromMnemonic(
   }
   const lockTxid = journal.lockTxid as string
   const lockRaw = hexToBytes(journal.lockRaw as string)
-  // Idempotent: re-sending an accepted transaction is harmless (DAPI, else the explorer).
-  await broadcastTx(ep, bytesToHex(lockRaw), lockTxid)
+  // Broadcast (again, on a resumed run: harmless) and prove.
   params.onStage?.('proving')
-  const proof: LockProof = await obtainLockProof(ep, { txid: lockTxid, raw: lockRaw }, () => platformClh(sdk), {
+  const proof: LockProof = await sendAndProveLock(ep, { txid: lockTxid, raw: lockRaw }, () => platformClh(sdk), {
     signal: params.signal,
     onStatus: (s) => params.onStage?.('proving', s),
   })

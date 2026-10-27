@@ -1,24 +1,24 @@
 /**
  * Core-chain side of creating an identity in the browser (`ux-dx-spec.md` §2.2 tile 2), ported
- * from `tools/mint-identity` (tx.mjs, lock.mjs, dapi-core.mjs):
+ * from `tools/mint-identity` (tx.mjs, lock.mjs, dapi-core.mjs) and aligned with govhub and
+ * mainnet-bridge:
  *
  *   1. watch the deposit address through DAPI (the evonodes' Core service, `dapi-core.ts`): a
  *      bloom-filtered `subscribeToTransactionsWithProofs` feed from the height the creation
- *      started at. A block explorer (Insight; configurable) is asked only when the feed is
- *      idle or unavailable;
+ *      started at, on two nodes at once;
  *   2. build and sign a type-8 asset-lock transaction spending them to one credit output
- *      controlled by the asset-lock key, and broadcast it (DAPI first, the explorer as
- *      fallback);
- *   3. prove the lock: an InstantSend lock where a public `getislocks` endpoint exists
- *      (testnet), else a chain-lock proof once DAPI reports the transaction mined and
- *      Platform's chain-locked Core height reaches its block (devnets).
+ *      controlled by the asset-lock key, and broadcast it;
+ *   3. prove the lock: its InstantSend lock, taken off feeds opened on three nodes before the
+ *      broadcast (an islock is sent once, live, and never replayed), else a chain-lock proof
+ *      once DAPI reports the transaction mined and Platform's chain-locked Core height
+ *      reaches its block.
  *
- * Neither source is trusted with amounts. Every input is derived from a raw funding
- * transaction whose txid is computed here — for the explorer, fetched and checked against the
- * txid it named — and parsed for the output's value and script before anything is signed.
- * (The legacy sighash does not commit to input values: trusting a claimed amount would let a
- * lying source turn the deposit into miner fees.) A node or explorer can delay the user or
- * hide funds, but not take them or learn a key.
+ * Only the evonodes are asked: no block explorer or JSON-RPC service. No node is trusted with
+ * amounts. Every input is derived from a raw funding transaction whose txid is computed here,
+ * and parsed for the output's value and script before anything is signed. (The legacy sighash
+ * does not commit to input values: trusting a claimed amount would let a lying source turn the
+ * deposit into miner fees.) A node can delay the user or hide funds, but not take them or
+ * learn a key, and Platform checks an islock's signature itself.
  */
 
 import * as secp from '@noble/secp256k1'
@@ -28,48 +28,30 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, hexToBytes } from '@noble/hashes/utils.js'
 
 import { ACTIVE_NETWORK, NETWORKS, type Network } from '../constants'
-import { isAbort, sleep } from '../sdk/facade'
+import { anyOf } from '../sdk/budget'
+import { sleep } from '../sdk/facade'
 import { base58CheckDecode } from './base58'
-import { DapiCore, bloomFilter } from './dapi-core'
+import { DapiCore, bloomFilter, shuffled, type BloomFilter } from './dapi-core'
 import { decodeWif } from './wif'
 
 // @noble/secp256k1 v3 needs sync hashes wired for sign/getPublicKey.
 secp.hashes.sha256 = sha256
 secp.hashes.hmacSha256 = (k, m) => hmac(sha256, k, m)
 
-/** DAPI, the fallback explorer, and the lock-proof endpoint per network. */
+/** The Core endpoints per network. */
 export interface CoreEndpoints {
-  /** DAPI nodes (`https://host:port`) serving the Core gRPC-web service; empty = explorer only. */
+  /** DAPI nodes (`https://host:port`) serving the Core gRPC-web service. */
   readonly dapi: readonly string[]
-  /** Insight API base URL, asked only when DAPI cannot answer. */
-  readonly insight: string
-  /** JSON-RPC with `getislocks` (InstantSend proof), or null to use chain-lock proofs. */
-  readonly islockRpc: string | null
 }
 
-/** Where Settings stores a user-chosen block explorer (Insight API base URL). */
-export const INSIGHT_OVERRIDE_KEY = 'forge:insight-url'
-
-/** The endpoints this build uses (Settings may override the explorer, spec §2.2). */
+/** The endpoints this build uses. */
 export function coreEndpoints(network: Network = ACTIVE_NETWORK.network): CoreEndpoints {
-  const override = typeof window !== 'undefined' ? window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) : null
-  const dapi = NETWORKS[network].dapiAddresses
-  if (network === 'devnet') {
-    return { dapi, insight: override ?? `https://insight.${ACTIVE_NETWORK.devnetName}.networks.dash.org/insight-api`, islockRpc: null }
-  }
-  if (network === 'testnet') {
-    return { dapi, insight: override ?? 'https://insight.testnet.networks.dash.org/insight-api', islockRpc: 'https://trpc.digitalcash.dev' }
-  }
-  return { dapi, insight: override ?? 'https://insight.dash.org/insight-api', islockRpc: null }
+  return { dapi: NETWORKS[network].dapiAddresses }
 }
 
-function dapiOf(ep: CoreEndpoints): DapiCore | null {
-  return ep.dapi.length > 0 ? new DapiCore(ep.dapi) : null
+function dapiOf(ep: CoreEndpoints): DapiCore {
+  return new DapiCore(ep.dapi)
 }
-
-// ---------------------------------------------------------------------------
-// Insight
-// ---------------------------------------------------------------------------
 
 export interface Utxo {
   readonly txid: string
@@ -77,17 +59,6 @@ export interface Utxo {
   readonly satoshis: number
   readonly scriptPubKey: string
   readonly confirmations: number
-}
-
-async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init)
-  if (!res.ok) throw new Error(`${new URL(url).host}: HTTP ${res.status}`)
-  return (await res.json()) as T
-}
-
-export async function getUtxos(ep: CoreEndpoints, address: string): Promise<Utxo[]> {
-  const rows = await getJson<Utxo[]>(`${ep.insight}/addr/${address}/utxo`)
-  return rows.map((u) => ({ txid: u.txid, vout: u.vout, satoshis: u.satoshis, scriptPubKey: u.scriptPubKey, confirmations: u.confirmations ?? 0 }))
 }
 
 /** The value and script of each output of a raw transaction (Dash; special payload skipped). */
@@ -132,78 +103,21 @@ export function parseOutputs(raw: Uint8Array): { value: bigint; script: Uint8Arr
   return out
 }
 
-/**
- * The deposit's spendable outputs, each proven from its raw funding transaction: the raw
- * bytes must hash to the txid the explorer named, and the value and script come from those
- * bytes. Outputs that do not pay `address`'s P2PKH script are dropped.
- */
-export async function verifiedUtxos(ep: CoreEndpoints, address: string, listed: readonly Utxo[]): Promise<Utxo[]> {
-  const script = bytesToHex(p2pkh(addressHash(address)))
-  const out: Utxo[] = []
-  const rawCache = new Map<string, Uint8Array>()
-  for (const u of listed) {
-    let raw = rawCache.get(u.txid)
-    if (!raw) {
-      raw = hexToBytes((await getJson<{ rawtx: string }>(`${ep.insight}/rawtx/${u.txid}`)).rawtx)
-      if (txid(raw) !== u.txid) throw new Error(`the block explorer returned a transaction that is not ${u.txid}`)
-      rawCache.set(u.txid, raw)
-    }
-    const o = parseOutputs(raw)[u.vout]
-    if (!o || bytesToHex(o.script) !== script) continue
-    if (o.value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('deposit output too large')
-    out.push({ ...u, satoshis: Number(o.value), scriptPubKey: script })
-  }
-  return out
-}
-
-/** The height `txid` was mined at (null while unconfirmed): DAPI first, the explorer if DAPI fails. */
+/** The height `txid` was mined at (null while unconfirmed or unknown). */
 export async function getTxHeight(ep: CoreEndpoints, txid: string): Promise<number | null> {
-  const dapi = dapiOf(ep)
-  if (dapi) {
-    try {
-      return (await dapi.transaction(txid))?.height ?? null
-    } catch {
-      // fall through to the explorer
-    }
-  }
-  const tx = await getJson<{ blockheight?: number }>(`${ep.insight}/tx/${txid}`)
-  return typeof tx.blockheight === 'number' && tx.blockheight >= 0 ? tx.blockheight : null
-}
-
-/** Whether the network knows `txid` (mempool or chain), through DAPI or the explorer. */
-async function txKnown(ep: CoreEndpoints, txid: string): Promise<boolean> {
-  const dapi = dapiOf(ep)
-  if (dapi && (await dapi.transaction(txid).catch(() => null))) return true
-  return getJson(`${ep.insight}/tx/${txid}`).then(
-    () => true,
-    () => false,
-  )
+  return (await dapiOf(ep).transaction(txid))?.height ?? null
 }
 
 /**
- * Broadcast through DAPI, else the explorer. Re-sending an accepted transaction is harmless;
- * a transaction the network already has counts as sent, so a lost response never strands the
- * deposit.
+ * Broadcast through DAPI. Re-sending an accepted transaction is harmless; a transaction the
+ * network already has counts as sent, so a lost response never strands the deposit.
  */
 export async function broadcastTx(ep: CoreEndpoints, rawHex: string, txid: string): Promise<void> {
   const dapi = dapiOf(ep)
-  let dapiError: unknown = null
-  if (dapi) {
-    try {
-      await dapi.broadcast(hexToBytes(rawHex))
-      return
-    } catch (e) {
-      dapiError = e
-    }
-  }
   try {
-    await getJson(`${ep.insight}/tx/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rawtx: rawHex }),
-    })
+    await dapi.broadcast(hexToBytes(rawHex))
   } catch (e) {
-    if (!(await txKnown(ep, txid))) throw dapiError ?? e
+    if (!(await dapi.transaction(txid).catch(() => null))) throw e
   }
 }
 
@@ -333,7 +247,7 @@ export function buildAssetLock(utxos: readonly Utxo[], priv: Uint8Array): { raw:
   const fee = ASSET_LOCK_FEE_PER_INPUT * utxos.length
   const locked = total - fee
   if (locked <= 0) throw new Error('deposit too small to cover the fee')
-  // Every input's script must be the lock key's own P2PKH (verifiedUtxos checked the values).
+  // Every input's script must be the lock key's own P2PKH (the values come from the raw transactions, `DepositTracker`).
   const own = bytesToHex(p2pkh(hash160(secp.getPublicKey(priv, true))))
   if (utxos.some((u) => u.scriptPubKey !== own)) throw new Error('an input is not paid to the deposit key')
   if (locked + fee !== total) throw new Error('asset-lock fee mismatch')
@@ -382,40 +296,157 @@ export type LockProof =
   | { readonly type: 'instant'; readonly txid: string; readonly raw: Uint8Array; readonly islock: Uint8Array }
   | { readonly type: 'chain'; readonly txid: string; readonly height: number }
 
-async function fetchIslock(rpc: string, id: string): Promise<Uint8Array | null> {
-  const res = await fetch(rpc, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method: 'getislocks', params: [[id]] }),
-  })
-  if (!res.ok) return null
-  const data = (await res.json()) as { result?: { txid?: string; hex?: string }[] }
-  const hit = data.result?.find((r) => r?.txid === id && r.hex)
-  return hit?.hex ? hexToBytes(hit.hex) : null
+/** How long, after the broadcast, an InstantSend lock is waited for before a chain-lock proof. */
+const ISLOCK_WAIT_MS = 60_000
+/** Feeds watching for the islock, each on its own node: one can be down or drop the lock. */
+const ISLOCK_FEEDS = 3
+/** The longest the broadcast waits for an islock feed to open. */
+const ISLOCK_OPEN_MS = 10_000
+
+/** The txid (display hex) an ISDLOCK locks: version 1 | inputs (36 bytes each) | txid | cycle hash | BLS signature. */
+export function islockTxid(islock: Uint8Array): string | null {
+  if (islock[0] !== 1 || islock.length < 2) return null
+  let at = 2
+  let inputs = islock[1] as number
+  if (inputs === 0xfd) {
+    inputs = (islock[2] as number) | ((islock[3] as number) << 8)
+    at = 4
+  } else if (inputs > 0xfd) return null
+  at += inputs * 36
+  if (islock.length !== at + 32 + 32 + 96) return null
+  return bytesToHex(islock.slice(at, at + 32).reverse())
 }
 
 /**
- * Wait until the asset lock is provable: an InstantSend lock where the network offers one
- * (up to 90 s), else a chain-lock proof once the tx is mined and Platform's chain-locked Core
- * height reaches it (`platformChainLockedHeight` is read from Platform status).
+ * A filter matching the asset lock: its txid and the outpoints it spends, each in Core's byte
+ * order (what rs-dapi matches) and as displayed (what the older JS DAPI matched).
  */
-export async function obtainLockProof(
+export function lockFilter(lock: { txid: string; raw: Uint8Array }): BloomFilter {
+  const both = (display: string, tail: Uint8Array = new Uint8Array(0)): Uint8Array[] => {
+    const b = hexToBytes(display)
+    return [concatBytes(b.slice().reverse(), tail), concatBytes(b, tail)]
+  }
+  const elements = both(lock.txid)
+  for (const i of parseTx(lock.raw).inputs) elements.push(...both(i.txid, u32(i.vout)))
+  return bloomFilter(elements)
+}
+
+/** `p`, or null once `ms` pass first. */
+function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<null>((r) => {
+    timer = setTimeout(() => r(null), ms)
+  })
+  return Promise.race([p, late]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * Run `feed` on up to `lanes` nodes at once. A lane whose feed fails or ends with null moves to
+ * the next untried node (with `forever`, round the list again), `retryMs` later. Resolves with
+ * the first non-null result, or null once every lane gave up or `signal` stopped them.
+ */
+function onNodes<T>(
+  nodes: readonly string[],
+  lanes: number,
+  signal: AbortSignal,
+  feed: (node: string) => Promise<T | null>,
+  opts: { forever?: boolean; retryMs?: number } = {},
+): Promise<T | null> {
+  const order = shuffled(nodes)
+  let next = 0
+  let done = false
+  return new Promise((resolve) => {
+    const lane = async (): Promise<void> => {
+      while (!done && !signal.aborted) {
+        if (next >= order.length) {
+          if (!opts.forever) return
+          next = 0
+        }
+        const result = await feed(order[next++] as string).catch(() => null)
+        if (result !== null) {
+          done = true
+          resolve(result)
+          return
+        }
+        if (opts.retryMs) await sleep(opts.retryMs, signal).catch(() => undefined)
+      }
+    }
+    const n = Math.max(1, Math.min(lanes, order.length))
+    let left = n
+    for (let i = 0; i < n; i++) {
+      void lane().finally(() => {
+        if (--left === 0) resolve(null)
+      })
+    }
+  })
+}
+
+/**
+ * The first islock for `lock` on feeds from `from`, on {@link ISLOCK_FEEDS} nodes at once;
+ * null once they all fail or `signal` stops them. `onOpen` fires when a feed is listening.
+ */
+function watchInstantLock(
+  dapi: DapiCore,
+  lock: { txid: string; raw: Uint8Array },
+  from: number,
+  signal: AbortSignal,
+  onOpen: () => void,
+): Promise<Uint8Array | null> {
+  const filter = lockFilter(lock)
+  return onNodes(dapi.nodes, ISLOCK_FEEDS, signal, async (node) => {
+    for await (const ev of dapi.watch(filter, from, { node, signal, onOpen })) {
+      if (ev.kind !== 'islocks') continue
+      const hit = ev.locks.find((l) => islockTxid(l) === lock.txid)
+      if (hit) return hit
+    }
+    return null
+  })
+}
+
+/**
+ * Broadcast the asset lock and wait until it is provable. Feeds watching for its InstantSend
+ * lock open first (an islock is sent once, live); the first matching one within a minute of
+ * the broadcast makes an instant proof. Otherwise, and for a lock already mined or locked, a chain-lock
+ * proof once the lock is mined and Platform's chain-locked Core height reaches it
+ * (`platformChainLockedHeight` is read from Platform status). Re-sending an accepted lock is
+ * harmless, so a resumed creation calls this again.
+ */
+export async function sendAndProveLock(
   ep: CoreEndpoints,
   lock: { txid: string; raw: Uint8Array },
   platformChainLockedHeight: () => Promise<number | null>,
-  opts: { signal?: AbortSignal; onStatus?: (s: string) => void; timeoutMs?: number } = {},
+  opts: { signal?: AbortSignal; onStatus?: (s: string) => void; timeoutMs?: number; islockWaitMs?: number } = {},
 ): Promise<LockProof> {
+  opts.signal?.throwIfAborted()
+  const dapi = dapiOf(ep)
   const deadline = Date.now() + (opts.timeoutMs ?? 20 * 60 * 1000)
-  if (ep.islockRpc) {
+  const known = await dapi.transaction(lock.txid).catch(() => null)
+  let height = known?.height ?? null
+  // Mined, or already InstantSend-locked on a resumed run (the islock is not sent again): a
+  // chain-lock proof.
+  if (height === null && known?.instantLocked !== true) {
     opts.onStatus?.('Waiting for InstantSend…')
-    const until = Date.now() + 90_000
-    while (Date.now() < until) {
-      const islock = await fetchIslock(ep.islockRpc, lock.txid).catch(() => null)
-      if (islock) return { type: 'instant', txid: lock.txid, raw: lock.raw, islock }
-      await sleep(3000, opts.signal)
+    const stop = new AbortController()
+    const signal = opts.signal ? anyOf(opts.signal, stop.signal) : stop.signal
+    try {
+      const tip = await dapi.bestHeight().catch(() => null)
+      let opened = (): void => undefined
+      const open = new Promise<void>((r) => {
+        opened = r
+      })
+      // A couple of blocks back, so every node's history is short and its live feed starts at once.
+      const islock = tip === null ? Promise.resolve(null) : watchInstantLock(dapi, lock, tip - 2, signal, opened)
+      // Listening before the broadcast; a feed that never opens only costs the chain-lock wait.
+      await within(Promise.race([open, islock]), ISLOCK_OPEN_MS)
+      opts.signal?.throwIfAborted()
+      await broadcastTx(ep, bytesToHex(lock.raw), lock.txid)
+      const found = await within(islock, opts.islockWaitMs ?? ISLOCK_WAIT_MS)
+      opts.signal?.throwIfAborted()
+      if (found) return { type: 'instant', txid: lock.txid, raw: lock.raw, islock: found }
+    } finally {
+      stop.abort()
     }
   }
-  let height: number | null = null
   while (Date.now() < deadline) {
     if (height === null) {
       opts.onStatus?.('Waiting for the deposit to be mined…')
@@ -508,15 +539,14 @@ function parseTx(raw: Uint8Array): { inputs: { txid: string; vout: number }[]; o
   return { inputs, outputs: parseOutputs(raw) }
 }
 
-/** The explorer's view of the deposit, every output proven from its raw transaction. */
-async function explorerDeposit(ep: CoreEndpoints, address: string): Promise<Utxo[]> {
-  return verifiedUtxos(ep, address, await getUtxos(ep, address))
-}
-
-/** The Core height to start a deposit watch from (the tip, before the address is shown). */
+/**
+ * The Core height to start a deposit watch from (the tip, before the address is shown): null
+ * when no node answers. A build with no DAPI nodes throws, so no address is shown that nothing
+ * could watch.
+ */
 export async function currentHeight(ep: CoreEndpoints): Promise<number | null> {
   const dapi = dapiOf(ep)
-  return dapi ? dapi.bestHeight().catch(() => null) : null
+  return dapi.bestHeight().catch(() => null)
 }
 
 /** Where a deposit watch starts: a recorded height, else a height or start time. */
@@ -539,112 +569,142 @@ export async function watchFrom(dapi: DapiCore, start: WatchStart): Promise<numb
 /**
  * A filter for `address`. With BLOOM_UPDATE_ALL the node inserts each matched outpoint, so
  * one sized for the address hash alone would saturate after a match or two and stream every
- * transaction; room for 50 elements keeps it under 150 bytes.
+ * transaction: it has room for 50 elements (the 200-byte floor).
  */
-function addressFilter(address: string): ReturnType<typeof bloomFilter> {
+function addressFilter(address: string): BloomFilter {
   return bloomFilter([addressHash(address)], 0.0001, undefined, 50)
 }
 
+/** How long a deposit check's feed must be quiet, once its history is in, before a payment stands. */
+const SETTLE_MS = 3_000
 /**
- * What `address` holds (duffs): the larger of DAPI's confirmed history from `from` and the
- * explorer's view. Throws when neither can say — and when only DAPI answered zero, since its
- * history leaves out the mempool and an unconfirmed payment would read as empty.
+ * The same for "nothing there": longer, since a node sends its mempool's matches in one batch
+ * once it has read them all, and a false zero could leave a payment behind.
+ */
+const SETTLE_EMPTY_MS = 15_000
+/** How long the second node is waited for once the first has answered. */
+const SECOND_OPINION_MS = 5_000
+
+/**
+ * What one node's feed from `height` says `address` holds: its history block by block, then
+ * its mempool. The total stands once (about) every block to the tip is in and the feed has been
+ * quiet for {@link SETTLE_MS} ({@link SETTLE_EMPTY_MS} for zero); null if the feed ends first.
+ */
+async function heldOn(dapi: DapiCore, node: string, address: string, height: number, blocks: number, signal: AbortSignal): Promise<number | null> {
+  const tracker = new DepositTracker(address)
+  const feed = dapi.watch(addressFilter(address), height, { node, signal })
+  let seen = 0
+  let quietSince = Date.now()
+  let pending = feed.next()
+  for (;;) {
+    // Returning (or failing) aborts the fetch under a read still in flight: observe it.
+    pending.catch(() => undefined)
+    const next = await within(pending, SETTLE_MS)
+    if (next === null) {
+      if (seen >= blocks && (tracker.total > 0 || Date.now() - quietSince >= SETTLE_EMPTY_MS)) return tracker.total
+      continue
+    }
+    if (next.done) return null
+    quietSince = Date.now()
+    if (next.value.kind === 'block') seen++
+    else if (next.value.kind === 'txs') for (const raw of next.value.txs) tracker.ingest(raw)
+    pending = feed.next()
+  }
+}
+
+/**
+ * What `address` holds (duffs), confirmed or in the mempool, from DAPI feeds from `from`: the
+ * larger of what two nodes say (one can lag or hide a payment). Throws when no node answers
+ * within `timeoutMs`.
  */
 export async function depositHeld(ep: CoreEndpoints, address: string, from: WatchStart, timeoutMs = 60_000): Promise<number> {
   const dapi = dapiOf(ep)
-  let viaDapi: number | null = null
-  if (dapi) {
-    try {
-      const height = await watchFrom(dapi, from)
-      const tracker = new DepositTracker(address)
-      const count = (await dapi.bestHeight()) - height + 1
-      const signal = AbortSignal.timeout(timeoutMs)
-      for await (const txs of dapi.watch(addressFilter(address), height, { count: Math.max(1, count), signal })) {
-        for (const raw of txs) tracker.ingest(raw)
+  const run = new AbortController()
+  const timer = setTimeout(() => run.abort(), timeoutMs)
+  try {
+    const height = await watchFrom(dapi, from)
+    // A node a block or two behind the tip sends that many fewer.
+    const blocks = (await dapi.bestHeight()) - height - 1
+    const order = shuffled(dapi.nodes)
+    const answers: number[] = []
+    let answered = (): void => undefined
+    const first = new Promise<void>((r) => {
+      answered = r
+    })
+    const lanes = [0, 1].map(async (start) => {
+      for (let i = start; i < order.length && !run.signal.aborted; i += 2) {
+        const held = await heldOn(dapi, order[i] as string, address, height, blocks, run.signal).catch(() => null)
+        if (held !== null) {
+          answers.push(held)
+          answered()
+          return
+        }
       }
-      viaDapi = tracker.total
-    } catch {
-      // unknown through DAPI; the explorer may still say
-    }
+    })
+    const all = Promise.all(lanes)
+    await Promise.race([all, first.then(() => within(all, SECOND_OPINION_MS))])
+    if (answers.length > 0) return Math.max(...answers)
+  } catch {
+    // no node answered; reported below
+  } finally {
+    clearTimeout(timer)
+    run.abort()
   }
-  const viaExplorer = await getUtxos(ep, address).then(
-    (u) => u.reduce((s, x) => s + x.satoshis, 0),
-    () => null,
-  )
-  if (viaExplorer !== null) return Math.max(viaExplorer, viaDapi ?? 0)
-  if (viaDapi !== null && viaDapi > 0) return viaDapi
-  throw new Error('could not check the deposit address (the network nodes see no confirmed payment and the block explorer is unreachable)')
+  throw new Error('could not check the deposit address (no Dash network node answered)')
 }
 
-/** How long the DAPI feed may be silent before the explorer is asked as well. */
-const FEED_IDLE_MS = 30_000
+/** Feeds watching a deposit, each on its own node. */
+const DEPOSIT_FEEDS = 2
+/** A feed silent this long is replaced (a merkle block arrives for every new block, ~2.5 minutes). */
+const FEED_IDLE_MS = 10 * 60_000
 
 /**
  * Wait until `address` holds at least `minDuffs`, and return its outputs. The deposit is seen
- * on a DAPI bloom-filtered transaction feed from `from` (history, then the mempool and
- * new blocks); the explorer is asked whenever the feed is idle, fails, or DAPI is not
- * configured.
+ * on DAPI bloom-filtered transaction feeds from `from` (history, then the mempool and new
+ * blocks) on two nodes at once; a feed that fails, ends or goes silent moves to another node.
  */
 export async function waitForDeposit(
   ep: CoreEndpoints,
   address: string,
   minDuffs: number,
-  opts: { signal?: AbortSignal; onSeen?: (duffs: number) => void; intervalMs?: number; from?: WatchStart } = {},
+  opts: { signal?: AbortSignal; onSeen?: (duffs: number) => void; from?: WatchStart } = {},
 ): Promise<Utxo[]> {
   const dapi = dapiOf(ep)
   const tracker = new DepositTracker(address)
-  const askExplorer = async (): Promise<Utxo[] | null> => {
-    const utxos = await explorerDeposit(ep, address).catch(() => null)
-    if (utxos) {
-      const total = utxos.reduce((s, u) => s + u.satoshis, 0)
-      opts.onSeen?.(Math.max(total, tracker.total))
-      if (total >= minDuffs) return utxos
-    }
-    return null
-  }
-  for (;;) {
-    if (opts.signal?.aborted) throw new DOMException('cancelled', 'AbortError')
-    if (dapi) {
-      const run = new AbortController()
-      const stop = (): void => run.abort()
-      opts.signal?.addEventListener('abort', stop, { once: true })
-      try {
-        const height = await watchFrom(dapi, opts.from ?? { startedAt: Date.now() })
-        const feed = dapi.watch(addressFilter(address), height, { signal: run.signal })
-        // One read in flight at a time: an idle timeout asks the explorer, then keeps waiting
-        // on the same read (a second next() would queue behind it and drop its batch).
-        let pending = feed.next()
-        // Returning (or failing) aborts the fetch under a read still in flight: observe it.
-        pending.catch(() => undefined)
-        for (;;) {
-          let timer: ReturnType<typeof setTimeout> | undefined
-          const idle = new Promise<'idle'>((r) => {
-            timer = setTimeout(() => r('idle'), FEED_IDLE_MS)
-          })
-          const next = await Promise.race([pending, idle])
-          clearTimeout(timer)
-          if (next === 'idle') {
-            const found = await askExplorer()
-            if (found) return found
-            continue
+  const from = opts.from ?? { startedAt: Date.now() }
+  const stop = new AbortController()
+  const signal = opts.signal ? anyOf(opts.signal, stop.signal) : stop.signal
+  try {
+    const found = await onNodes(
+      dapi.nodes,
+      DEPOSIT_FEEDS,
+      signal,
+      async (node) => {
+        // Ended on return too: a read still pending under an idle feed would otherwise hold it open.
+        const run = new AbortController()
+        try {
+          const feed = dapi.watch(addressFilter(address), await watchFrom(dapi, from), { node, signal: anyOf(signal, run.signal) })
+          let pending = feed.next()
+          for (;;) {
+            pending.catch(() => undefined)
+            const next = await within(pending, FEED_IDLE_MS)
+            if (next === null || next.done) return null
+            if (next.value.kind === 'txs') {
+              for (const raw of next.value.txs) tracker.ingest(raw)
+              opts.onSeen?.(tracker.total)
+              if (tracker.total >= minDuffs) return tracker.utxos
+            }
+            pending = feed.next()
           }
-          if (next.done) break
-          for (const raw of next.value) tracker.ingest(raw)
-          opts.onSeen?.(tracker.total)
-          if (tracker.total >= minDuffs) return tracker.utxos
-          pending = feed.next()
-          pending.catch(() => undefined)
+        } finally {
+          run.abort()
         }
-      } catch (e) {
-        if (isAbort(e) && opts.signal?.aborted) throw e
-        // The feed failed or ended: ask the explorer, then reconnect.
-      } finally {
-        run.abort()
-        opts.signal?.removeEventListener('abort', stop)
-      }
-    }
-    const found = await askExplorer()
+      },
+      { forever: true, retryMs: 5000 },
+    )
     if (found) return found
-    await sleep(dapi ? 5000 : (opts.intervalMs ?? 4000), opts.signal)
+    throw new DOMException('cancelled', 'AbortError')
+  } finally {
+    stop.abort()
   }
 }

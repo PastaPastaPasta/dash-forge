@@ -68,9 +68,8 @@ vi.mock('@dashevo/evo-sdk', () => {
   }
 })
 vi.mock('./asset-lock', () => ({
-  coreEndpoints: () => ({ insight: 'https://insight.invalid' }),
-  broadcastTx: async () => undefined,
-  obtainLockProof: async () => ({ type: 'chain', txid: 'ab'.repeat(32), height: 100 }),
+  coreEndpoints: () => ({ dapi: [] }),
+  sendAndProveLock: async () => ({ type: 'chain', txid: 'ab'.repeat(32), height: 100 }),
   currentHeight: async () => 1,
   waitForDeposit: async () => [],
   buildAssetLock: () => {

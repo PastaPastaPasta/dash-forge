@@ -3,15 +3,23 @@
 //! [`CoreChain`] is the DAPI Core service every evonode serves next to Platform (dapi-grpc
 //! `core.proto`): `broadcastTransaction`, `getTransaction` (raw bytes, height, lock status),
 //! `getBlockchainStatus`, and `subscribeToTransactionsWithProofs`, a bloom-filtered stream of
-//! the transactions that pay or spend an address. [`crate::platform::PlatformClient`]
-//! implements it over the SDK's DAPI client, so funding needs no service besides the
-//! evonodes. The [`Insight`] block explorer is only a fallback for when DAPI cannot answer,
-//! and `getislocks` JSON-RPC recovers an InstantSend lock by txid where one exists.
+//! the transactions that pay or spend an address, and of the InstantSend locks of the ones
+//! it matched. [`crate::platform::PlatformClient`] implements it over the SDK's DAPI client,
+//! so funding needs no service besides the evonodes. The [`Insight`] block explorer is only a
+//! fallback for when DAPI cannot answer.
 //!
-//! Neither is trusted with amounts or keys: every output a deposit is built from is re-read
-//! from its raw funding transaction, which must hash to its txid
-//! (`platform::identity::DepositWatch`, `verify_deposit`), and neither sees a private key.
-//! A node or explorer can delay the user or hide funds, not take them.
+//! An asset lock's InstantSend lock comes from that same stream, filtered on the lock's txid
+//! and the outpoints it spends ([`CoreChain::watch_instant_lock`]). Nodes send a lock once,
+//! live, and never replay it, so the watch is opened before the asset lock is broadcast
+//! ([`send_and_await_instant_lock`]); without a lock in time the asset lock is proven with a
+//! chain lock instead. A `getislocks` JSON-RPC endpoint, when the user names one, is asked as
+//! well (no network has one by default: the public one stopped serving locks).
+//!
+//! None of them is trusted with amounts or keys: every output a deposit is built from is
+//! re-read from its raw funding transaction, which must hash to its txid
+//! (`platform::identity::DepositWatch`, `verify_deposit`), an InstantSend lock is used only
+//! when it names the asset lock's txid (Platform checks its signature), and none sees a
+//! private key. A node or explorer can delay the user or hide funds, not take them.
 
 use std::time::Duration;
 
@@ -47,6 +55,13 @@ pub trait CoreTxFeed: Send {
     }
 }
 
+/// A live feed of the InstantSend locks a lock watch's nodes send.
+#[async_trait]
+pub trait InstantLockFeed: Send {
+    /// The next batch of raw InstantSend lock messages; `None` once every stream has ended.
+    async fn next_locks(&mut self) -> Result<Option<Vec<Vec<u8>>>>;
+}
+
 /// The DAPI Core calls funding needs (implemented by [`crate::platform::PlatformClient`]).
 #[async_trait]
 pub trait CoreChain: Send + Sync {
@@ -65,41 +80,43 @@ pub trait CoreChain: Send + Sync {
         from_height: u32,
         history_only: bool,
     ) -> Result<Box<dyn CoreTxFeed>>;
+    /// Watch for the InstantSend lock of the transaction `raw`: a feed filtered on its txid
+    /// and the outpoints it spends, from just below the tip. Nodes send a lock only live, so
+    /// open the watch before broadcasting.
+    async fn watch_instant_lock(&self, raw: &[u8]) -> Result<Box<dyn InstantLockFeed>>;
 }
 
-/// The fallback explorer and the lock-proof endpoint, per network.
+/// The fallback explorer and the optional extra InstantSend source, per network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreEndpoints {
     /// Insight API base URL (`…/insight-api`), consulted only when DAPI cannot answer.
     pub insight: String,
-    /// JSON-RPC with `getislocks` (InstantSend proofs), or `None` to use chain-lock proofs.
+    /// A JSON-RPC with `getislocks`, asked for an InstantSend lock beside the DAPI stream;
+    /// `None` (every network's default) asks only the stream.
     pub islock_rpc: Option<String>,
 }
 
 impl CoreEndpoints {
     /// The defaults for `network`, with the explorer overridable (ux-dx-spec §2.2: the
-    /// explorer is configurable).
+    /// explorer is configurable). No network has an InstantSend RPC by default: the DAPI
+    /// stream delivers the locks (testnet's `trpc.digitalcash.dev` stopped serving them).
     pub fn for_network(network: &Network, insight_override: Option<&str>) -> Self {
-        let (insight, islock_rpc) = match network {
-            Network::Testnet => (
-                "https://insight.testnet.networks.dash.org/insight-api".to_string(),
-                Some("https://trpc.digitalcash.dev".to_string()),
-            ),
-            Network::Mainnet => ("https://insight.dash.org/insight-api".to_string(), None),
-            Network::Devnet { name, .. } => (
-                format!("https://insight.{name}.networks.dash.org/insight-api"),
-                None,
-            ),
+        let insight = match network {
+            Network::Testnet => "https://insight.testnet.networks.dash.org/insight-api".to_string(),
+            Network::Mainnet => "https://insight.dash.org/insight-api".to_string(),
+            Network::Devnet { name, .. } => {
+                format!("https://insight.{name}.networks.dash.org/insight-api")
+            }
         };
         Self {
             insight: insight_override.map_or(insight, |s| s.trim_end_matches('/').to_string()),
-            islock_rpc,
+            islock_rpc: None,
         }
     }
 
-    /// With the InstantSend RPC chosen by the user (`--islock-rpc`, `config.toml`): a URL, or
-    /// `off` / `none` to prove with chain locks only. `None` or blank keeps the network's
-    /// default (testnet's is a third-party service, `trpc.digitalcash.dev`).
+    /// With the InstantSend RPC chosen by the user (`--islock-rpc`, `config.toml`): a URL
+    /// asked beside the DAPI stream, or `off` / `none` for the stream only (the default, also
+    /// kept for `None` or blank).
     ///
     /// A URL must be https (plain http only to a loopback host: the RPC sees the asset-lock
     /// txid, so it must not travel in clear over the network). Anything else is an error.
@@ -527,6 +544,131 @@ pub async fn fetch_islock(rpc: &str, txid: &str) -> Result<Option<Vec<u8>>> {
         .and_then(|h| hex::decode(h).ok()))
 }
 
+/// The txid (display hex) an InstantSend lock message locks, or `None` when it is not one
+/// (DIP-22 `ISDLOCK`: version, the locked outpoints, txid, cycle hash, BLS signature).
+pub fn instant_lock_txid(islock: &[u8]) -> Option<String> {
+    use dash_sdk::dpp::dashcore::consensus::encode::deserialize;
+    deserialize::<dash_sdk::dpp::dashcore::InstantLock>(islock)
+        .ok()
+        .map(|l| l.txid.to_string())
+}
+
+/// How long the RPC, when one is configured, is left between two `getislocks` questions.
+const ISLOCK_RPC_POLL: Duration = Duration::from_secs(3);
+
+/// How an asset lock reached the network, and so how it can be proven.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockRoute {
+    /// Its InstantSend lock (raw message) arrived.
+    Instant(Vec<u8>),
+    /// It was mined already: its InstantSend lock is gone for good, prove with a chain lock.
+    Mined,
+    /// The network had InstantSend-locked it already (a resumed creation): nodes do not send
+    /// that lock again, and no RPC had it, so prove with a chain lock.
+    AlreadyInstantLocked,
+    /// No InstantSend lock arrived in time: prove with a chain lock.
+    NoInstantLock,
+}
+
+/// Broadcast the asset lock `raw` (id `txid`) and wait up to `wait` for its InstantSend lock.
+///
+/// The lock watch ([`CoreChain::watch_instant_lock`]) is opened first, because nodes send a
+/// lock once, live: one that arrived before the watch is never seen. A lock the network has
+/// already mined is not sent again ([`LockRoute::Mined`]), and one it knows is not broadcast
+/// again; one it has already InstantSend-locked (a resumed creation) can no longer arrive
+/// through the stream, so only `rpc` is asked for it ([`LockRoute::AlreadyInstantLocked`]).
+/// `rpc`, a `getislocks` endpoint, is asked every few seconds, each call bounded by the time
+/// left. Only a lock that decodes and names `txid` counts. A watch that cannot be opened does
+/// not stop the broadcast. `on_waiting` is called once the broadcast is done and the wait
+/// begins. Fails only when the broadcast does.
+pub async fn send_and_await_instant_lock(
+    chain: &dyn CoreChain,
+    explorer: Option<&Insight>,
+    rpc: Option<&str>,
+    raw: &[u8],
+    txid: &str,
+    wait: Duration,
+    on_waiting: &mut (dyn FnMut() + Send),
+) -> Result<LockRoute> {
+    let status = chain
+        .transaction(txid)
+        .await
+        .inspect_err(|e| tracing::debug!("reading {txid} before broadcasting it failed: {e}"))
+        .ok()
+        .flatten();
+    if status.as_ref().is_some_and(|s| s.height.is_some()) {
+        return Ok(LockRoute::Mined);
+    }
+    let locked_before = status.as_ref().is_some_and(|s| s.instant_locked);
+    if locked_before && rpc.is_none() {
+        return Ok(LockRoute::AlreadyInstantLocked);
+    }
+    let mut feed = if locked_before {
+        None
+    } else {
+        chain
+            .watch_instant_lock(raw)
+            .await
+            .inspect_err(|e| tracing::warn!("watching {txid} for InstantSend failed: {e}"))
+            .ok()
+    };
+    if status.is_none() {
+        broadcast(chain, explorer, raw, txid).await?;
+    }
+    on_waiting();
+    let is_ours = |l: &Vec<u8>| instant_lock_txid(l).as_deref() == Some(txid);
+    let none = if locked_before {
+        LockRoute::AlreadyInstantLocked
+    } else {
+        LockRoute::NoInstantLock
+    };
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut next_rpc = tokio::time::Instant::now();
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok(none);
+        }
+        if let Some(rpc) = rpc.filter(|_| now >= next_rpc) {
+            match tokio::time::timeout_at(deadline, fetch_islock(rpc, txid)).await {
+                Ok(Ok(Some(l))) if is_ours(&l) => return Ok(LockRoute::Instant(l)),
+                Ok(Ok(Some(_))) => tracing::warn!("{rpc} sent a lock that is not {txid}'s"),
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(e)) => tracing::debug!("{e}"),
+            }
+            next_rpc = tokio::time::Instant::now() + ISLOCK_RPC_POLL;
+        }
+        let until = if rpc.is_some() {
+            deadline.min(next_rpc)
+        } else {
+            deadline
+        };
+        let Some(f) = feed.as_mut() else {
+            if rpc.is_none() {
+                return Ok(none);
+            }
+            tokio::time::sleep_until(until).await;
+            continue;
+        };
+        match tokio::time::timeout_at(until, f.next_locks()).await {
+            Ok(Ok(Some(locks))) => {
+                if let Some(l) = locks.into_iter().find(is_ours) {
+                    return Ok(LockRoute::Instant(l));
+                }
+            }
+            Ok(Ok(None)) => {
+                tracing::debug!("every InstantSend stream for {txid} ended");
+                feed = None;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("the InstantSend stream for {txid} failed: {e}");
+                feed = None;
+            }
+            Err(_waited) => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,13 +710,31 @@ mod tests {
         (Insight::new(&endpoints), hits)
     }
 
-    /// DAPI Core in memory: transactions by id, a feed per watch, and a broadcast log.
+    /// DAPI Core in memory: transactions by id, a feed per watch, the InstantSend locks a
+    /// lock watch delivers, and a broadcast log.
     #[derive(Default)]
     struct FakeDapi {
         txs: Mutex<BTreeMap<String, CoreTxStatus>>,
         feed: Mutex<Vec<Vec<Vec<u8>>>>,
+        islocks: Mutex<Vec<Vec<Vec<u8>>>>,
         broadcasts: Mutex<Vec<Vec<u8>>>,
         watched_from: Mutex<Vec<u32>>,
+        /// For each lock watch, how many broadcasts had happened when it was opened.
+        lock_watches: Mutex<Vec<usize>>,
+        /// A lock watch cannot be opened.
+        lock_watch_fails: bool,
+        /// A lock watch stays open without sending anything.
+        lock_watch_silent: bool,
+    }
+
+    /// A lock watch that is open and never sends anything.
+    struct SilentFeed;
+
+    #[async_trait]
+    impl InstantLockFeed for SilentFeed {
+        async fn next_locks(&mut self) -> Result<Option<Vec<Vec<u8>>>> {
+            std::future::pending().await
+        }
     }
 
     struct FakeFeed(Vec<Vec<Vec<u8>>>);
@@ -586,6 +746,13 @@ mod tests {
                 return Ok(None);
             }
             Ok(Some(self.0.remove(0)))
+        }
+    }
+
+    #[async_trait]
+    impl InstantLockFeed for FakeFeed {
+        async fn next_locks(&mut self) -> Result<Option<Vec<Vec<u8>>>> {
+            self.next_transactions().await
         }
     }
 
@@ -610,6 +777,28 @@ mod tests {
             self.watched_from.lock().unwrap().push(from_height);
             Ok(Box::new(FakeFeed(self.feed.lock().unwrap().clone())))
         }
+        async fn watch_instant_lock(&self, _raw: &[u8]) -> Result<Box<dyn InstantLockFeed>> {
+            let sent = self.broadcasts.lock().unwrap().len();
+            self.lock_watches.lock().unwrap().push(sent);
+            if self.lock_watch_fails {
+                return Err(Error::Platform("no DAPI node opened a watch".into()));
+            }
+            if self.lock_watch_silent {
+                return Ok(Box::new(SilentFeed));
+            }
+            Ok(Box::new(FakeFeed(self.islocks.lock().unwrap().clone())))
+        }
+    }
+
+    /// An `ISDLOCK` message locking `txid` (one input), its signature zeros.
+    fn islock_for(txid: Txid) -> Vec<u8> {
+        let mut m = vec![1u8, 1];
+        m.extend_from_slice(Txid::all_zeros().as_byte_array());
+        m.extend_from_slice(&3u32.to_le_bytes());
+        m.extend_from_slice(txid.as_byte_array());
+        m.extend_from_slice(&[0x11; 32]);
+        m.extend_from_slice(&[0; 96]);
+        m
     }
 
     fn payment(to: &str, duffs: u64) -> Transaction {
@@ -739,7 +928,10 @@ mod tests {
     fn endpoints_follow_the_network_and_the_override() {
         let t = CoreEndpoints::for_network(&Network::Testnet, None);
         assert!(t.insight.contains("testnet"));
-        assert!(t.islock_rpc.is_some(), "testnet proves with InstantSend");
+        assert!(
+            t.islock_rpc.is_none(),
+            "testnet's InstantSend locks come from the DAPI stream"
+        );
         let m = CoreEndpoints::for_network(&Network::Mainnet, Some("https://my.explorer/api/"));
         assert_eq!(m.insight, "https://my.explorer/api");
         assert_eq!(m.insight_host(), "my.explorer");
@@ -761,15 +953,12 @@ mod tests {
     #[test]
     fn the_islock_rpc_is_the_users_choice() {
         let default = CoreEndpoints::for_network(&Network::Testnet, None);
-        assert_eq!(
-            default.islock_rpc.as_deref(),
-            Some("https://trpc.digitalcash.dev")
-        );
+        assert_eq!(default.islock_rpc, None, "no third-party RPC by default");
         // Unset or blank: the network's default.
         let with = |c: Option<&str>| default.clone().with_islock_rpc(c);
         assert_eq!(with(None).unwrap(), default);
         assert_eq!(with(Some("  ")).unwrap(), default);
-        // A URL replaces it (trailing slash dropped); `off` means chain locks only.
+        // A URL adds one (trailing slash dropped); `off` means the DAPI stream only.
         let own = with(Some("https://rpc.example/")).unwrap();
         assert_eq!(own.islock_rpc.as_deref(), Some("https://rpc.example"));
         assert!(with(Some("OFF")).unwrap().islock_rpc.is_none());
@@ -788,10 +977,257 @@ mod tests {
             let e = with(Some(bad)).unwrap_err().to_string();
             assert!(e.contains("InstantSend RPC"), "{bad}: {e}");
         }
-        // It also turns InstantSend on where the network has no default.
+        // Any network takes one.
         let m = CoreEndpoints::for_network(&Network::Mainnet, None)
             .with_islock_rpc(Some("https://rpc.example"))
             .unwrap();
         assert!(m.islock_rpc.is_some());
+    }
+
+    #[test]
+    fn an_instant_lock_names_the_txid_it_locks() {
+        let pay = payment(ADDR, 5_000);
+        let islock = islock_for(pay.txid());
+        // The wire bytes are reversed into the display hex every txid is compared in.
+        assert_eq!(instant_lock_txid(&islock), Some(pay.txid().to_string()));
+        assert_ne!(
+            hex::encode(pay.txid().as_byte_array()),
+            pay.txid().to_string()
+        );
+        // Truncated, padded or empty: not a lock.
+        assert_eq!(instant_lock_txid(&islock[..islock.len() - 1]), None);
+        assert_eq!(instant_lock_txid(&[islock.as_slice(), &[0]].concat()), None);
+        assert_eq!(instant_lock_txid(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn a_matching_instant_lock_from_the_stream_proves_the_asset_lock() {
+        let dapi = FakeDapi::default();
+        let lock = payment(ADDR, 2_999_000);
+        let txid = lock.txid().to_string();
+        let ours = islock_for(lock.txid());
+        // Another transaction's lock first (a bloom false positive), then ours.
+        dapi.islocks.lock().unwrap().extend([
+            vec![islock_for(payment(ADDR, 1).txid())],
+            vec![vec![9, 9], ours.clone()],
+        ]);
+        let mut waited = 0;
+        let route = send_and_await_instant_lock(
+            &dapi,
+            None,
+            None,
+            &serialize(&lock),
+            &txid,
+            Duration::from_secs(5),
+            &mut || waited += 1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(route, LockRoute::Instant(ours));
+        assert_eq!(waited, 1);
+        // The watch was open before the one broadcast.
+        assert_eq!(*dapi.lock_watches.lock().unwrap(), vec![0]);
+        assert_eq!(dapi.broadcasts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn without_a_matching_instant_lock_the_asset_lock_proves_by_chain() {
+        let dapi = FakeDapi::default();
+        let lock = payment(ADDR, 2_999_000);
+        let txid = lock.txid().to_string();
+        dapi.islocks
+            .lock()
+            .unwrap()
+            .push(vec![islock_for(payment(ADDR, 1).txid())]);
+        let route = send_and_await_instant_lock(
+            &dapi,
+            None,
+            None,
+            &serialize(&lock),
+            &txid,
+            Duration::from_secs(5),
+            &mut || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(route, LockRoute::NoInstantLock);
+        assert_eq!(dapi.broadcasts.lock().unwrap().len(), 1);
+
+        // Mined already: nothing is watched or sent, straight to the chain proof.
+        let mined = FakeDapi::default();
+        mined.txs.lock().unwrap().insert(
+            txid.clone(),
+            CoreTxStatus {
+                raw: serialize(&lock),
+                height: Some(88_861),
+                chain_locked: false,
+                instant_locked: true,
+            },
+        );
+        mined
+            .islocks
+            .lock()
+            .unwrap()
+            .push(vec![islock_for(lock.txid())]);
+        let route = send_and_await_instant_lock(
+            &mined,
+            None,
+            None,
+            &serialize(&lock),
+            &txid,
+            Duration::from_secs(5),
+            &mut || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(route, LockRoute::Mined);
+        assert!(mined.lock_watches.lock().unwrap().is_empty());
+        assert!(mined.broadcasts.lock().unwrap().is_empty());
+    }
+
+    /// The lock `txid` a pending creation sent, as DAPI reports it before a resume.
+    fn known(dapi: &FakeDapi, lock: &Transaction, instant_locked: bool) {
+        dapi.txs.lock().unwrap().insert(
+            lock.txid().to_string(),
+            CoreTxStatus {
+                raw: serialize(lock),
+                height: None,
+                chain_locked: false,
+                instant_locked,
+            },
+        );
+    }
+
+    async fn route(
+        dapi: &FakeDapi,
+        rpc: Option<&str>,
+        lock: &Transaction,
+        wait: Duration,
+    ) -> (LockRoute, usize) {
+        let mut waited = 0;
+        let route = send_and_await_instant_lock(
+            dapi,
+            None,
+            rpc,
+            &serialize(lock),
+            &lock.txid().to_string(),
+            wait,
+            &mut || waited += 1,
+        )
+        .await
+        .unwrap();
+        (route, waited)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_stream_is_given_up_on_after_the_wait() {
+        let dapi = FakeDapi {
+            lock_watch_silent: true,
+            ..FakeDapi::default()
+        };
+        let lock = payment(ADDR, 2_999_000);
+        let start = tokio::time::Instant::now();
+        let (r, waited) = route(&dapi, None, &lock, Duration::from_secs(60)).await;
+        assert_eq!(r, LockRoute::NoInstantLock);
+        assert_eq!(waited, 1);
+        assert_eq!(start.elapsed(), Duration::from_secs(60));
+        assert_eq!(dapi.broadcasts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_resumed_lock_already_instant_locked_is_neither_watched_nor_sent() {
+        let dapi = FakeDapi::default();
+        let lock = payment(ADDR, 2_999_000);
+        known(&dapi, &lock, true);
+        dapi.islocks
+            .lock()
+            .unwrap()
+            .push(vec![islock_for(lock.txid())]);
+        let (r, waited) = route(&dapi, None, &lock, Duration::from_secs(5)).await;
+        assert_eq!(r, LockRoute::AlreadyInstantLocked);
+        assert_eq!(waited, 0, "no wait is announced");
+        assert!(dapi.lock_watches.lock().unwrap().is_empty());
+        assert!(dapi.broadcasts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_resumed_lock_not_yet_instant_locked_is_watched_but_not_sent_again() {
+        let dapi = FakeDapi::default();
+        let lock = payment(ADDR, 2_999_000);
+        known(&dapi, &lock, false);
+        let ours = islock_for(lock.txid());
+        dapi.islocks.lock().unwrap().push(vec![ours.clone()]);
+        let (r, _) = route(&dapi, None, &lock, Duration::from_secs(5)).await;
+        assert_eq!(r, LockRoute::Instant(ours));
+        assert_eq!(*dapi.lock_watches.lock().unwrap(), vec![0]);
+        assert!(dapi.broadcasts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_watch_still_broadcasts_and_falls_back_to_chain() {
+        let dapi = FakeDapi {
+            lock_watch_fails: true,
+            ..FakeDapi::default()
+        };
+        let lock = payment(ADDR, 2_999_000);
+        let (r, _) = route(&dapi, None, &lock, Duration::from_secs(5)).await;
+        assert_eq!(r, LockRoute::NoInstantLock);
+        assert_eq!(dapi.lock_watches.lock().unwrap().len(), 1);
+        assert_eq!(dapi.broadcasts.lock().unwrap().len(), 1);
+    }
+
+    /// A `getislocks` RPC that answers every call with `body`; counts the calls.
+    fn rpc_answering(body: String) -> (String, Arc<AtomicUsize>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (url, hits)
+    }
+
+    #[tokio::test]
+    async fn an_rpc_lock_for_another_transaction_is_refused() {
+        let dapi = FakeDapi::default();
+        let lock = payment(ADDR, 2_999_000);
+        // The entry claims our txid, but the lock it carries locks another transaction.
+        let other = islock_for(payment(ADDR, 1).txid());
+        let body = serde_json::json!({
+            "result": [{ "txid": lock.txid().to_string(), "hex": hex::encode(&other) }]
+        })
+        .to_string();
+        let (url, hits) = rpc_answering(body);
+        let (r, _) = route(&dapi, Some(&url), &lock, Duration::from_millis(1_500)).await;
+        assert_eq!(r, LockRoute::NoInstantLock);
+        assert!(hits.load(Ordering::SeqCst) >= 1, "the RPC was asked");
+
+        // The same RPC with our own lock proves it.
+        let ours = islock_for(lock.txid());
+        let body = serde_json::json!({
+            "result": [{ "txid": lock.txid().to_string(), "hex": hex::encode(&ours) }]
+        })
+        .to_string();
+        let (url, _) = rpc_answering(body);
+        let (r, _) = route(
+            &FakeDapi::default(),
+            Some(&url),
+            &lock,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r, LockRoute::Instant(ours));
     }
 }
