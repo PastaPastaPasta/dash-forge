@@ -11,7 +11,9 @@ description = "Shared library for Dash Forge: platform client, pack pipeline, ba
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# `float_roundtrip`: read every JSON number exactly, as JavaScript's `JSON.parse` does (the default
+# parser is off by one ulp for some; a board card's number field must read alike in both clients).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 tracing.workspace = true
 # The CLIs' shared stderr logger (`logging`, feature `cli-logging`), which hides the SDK's
 # recovered-error noise.

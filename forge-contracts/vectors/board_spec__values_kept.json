@@ -1,0 +1,130 @@
+{
+  "name": "values_kept",
+  "description": "Valid values of every type survive (text up to 200 characters), and serialize canonically: ids ascending, numbers as JavaScript writes them.",
+  "case": "board_spec",
+  "rules": "v2",
+  "input": {
+    "op": "values",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        },
+        {
+          "id": 6,
+          "name": "Summary",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "f": "{\"6\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"5\":\"Ship it\",\"4\":\"2026-11-01\",\"3\":2,\"2\":2.5,\"1\":3}"
+  },
+  "expected": {
+    "values": {
+      "1": 3,
+      "2": 2.5,
+      "3": 2,
+      "4": "2026-11-01",
+      "5": "Ship it",
+      "6": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    "json": "{\"1\":3,\"2\":2.5,\"3\":2,\"4\":\"2026-11-01\",\"5\":\"Ship it\",\"6\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}"
+  }
+}

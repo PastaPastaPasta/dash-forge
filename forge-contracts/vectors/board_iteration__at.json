@@ -1,0 +1,134 @@
+{
+  "name": "at",
+  "description": "iterationAt: the iteration holding a time (UTC days): none before the first; the last millisecond of iteration 0; the first of 1; far later; past index 65535 none.",
+  "case": "board_iteration",
+  "rules": "v2",
+  "input": {
+    "op": "at",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "field": 3,
+    "dates": [
+      1791763199999,
+      1791763200000,
+      1792972799999,
+      1792972800000,
+      1793102400000,
+      1798761600000,
+      81062899200000,
+      81064108800000
+    ]
+  },
+  "expected": [
+    null,
+    0,
+    0,
+    1,
+    1,
+    5,
+    65535,
+    null
+  ]
+}

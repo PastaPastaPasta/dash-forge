@@ -1,0 +1,78 @@
+{
+  "name": "boards_newest",
+  "description": "Board revisions: per key the newest over every member's by ($updatedAt, $id), ascending by key; a newest revision with state 2 deletes the board (another member's older open revision does not bring it back); an older deleted revision does not.",
+  "case": "board_fold",
+  "rules": "v2",
+  "input": {
+    "op": "boards",
+    "docs": [
+      {
+        "id": "CZAKsFwL5dVHb1TA5jaZrrkF8PUZybTyDd3A4YBfbkVQ",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1790812800100,
+        "key": 7,
+        "state": 0,
+        "name": "B7",
+        "spec": null
+      },
+      {
+        "id": "CdAyBrK6Ypt9vgjmzzJqUEqQXFCE4qM3nZufQYnvsRpf",
+        "ownerId": "FFftTC944VmyJQ2VaUDieXSMpssQULQkDB9odPorkphY",
+        "updatedAt": 1790812800150,
+        "key": 7,
+        "state": 2,
+        "name": "B7",
+        "spec": null
+      },
+      {
+        "id": "AhBcWSgs22H2GN2PvF375cvZv6utA5E8MWnAkZQC979v",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1790812800050,
+        "key": 3,
+        "state": 0,
+        "name": "B3",
+        "spec": null
+      },
+      {
+        "id": "bhBcWSgs22H2GN2PvF375cvZv6utA5E8MWnAkZQC979v",
+        "ownerId": "FFftTC944VmyJQ2VaUDieXSMpssQULQkDB9odPorkphY",
+        "updatedAt": 1790812800050,
+        "key": 3,
+        "state": 1,
+        "name": "B3",
+        "spec": null
+      },
+      {
+        "id": "D7Eb8ru2td9a5RMt4ondt5tyNrLVVZvNByoMTSMbo3wY",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1790812800010,
+        "key": 9,
+        "state": 1,
+        "name": "B9",
+        "spec": null
+      },
+      {
+        "id": "D3DwpGXGRRkhjk5G9Z4NGhooyzcqQL3Hd2vr7RkLXNcH",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1790812800005,
+        "key": 9,
+        "state": 2,
+        "name": "B9",
+        "spec": null
+      }
+    ],
+    "withDeleted": false
+  },
+  "expected": [
+    {
+      "key": 3,
+      "id": "bhBcWSgs22H2GN2PvF375cvZv6utA5E8MWnAkZQC979v",
+      "state": 1
+    },
+    {
+      "key": 9,
+      "id": "D7Eb8ru2td9a5RMt4ondt5tyNrLVVZvNByoMTSMbo3wY",
+      "state": 1
+    }
+  ]
+}

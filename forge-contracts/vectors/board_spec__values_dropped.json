@@ -1,0 +1,125 @@
+{
+  "name": "values_dropped",
+  "description": "A card's field values keep only fields the spec has, with a value of the field's type: an unknown field or option, a wrong type, a non-canonical key (\"01\"), a number past ±1e15 or below 1e-6, a bad date, a negative or fractional iteration, empty or 201-character text are dropped; -0 reads as 0; ids ascending.",
+  "case": "board_spec",
+  "rules": "v2",
+  "input": {
+    "op": "values",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        },
+        {
+          "id": 6,
+          "name": "Summary",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "f": "{\"1\":7,\"2\":-0,\"3\":1.5,\"4\":\"2026-02-30\",\"5\":\"\",\"6\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"9\":1,\"01\":2}"
+  },
+  "expected": {
+    "values": {
+      "2": 0
+    },
+    "json": "{\"2\":0}"
+  }
+}

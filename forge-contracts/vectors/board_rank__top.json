@@ -1,0 +1,49 @@
+{
+  "name": "top",
+  "description": "topRank(first) = rankBetween(\"\", min(first, \"V\")): above the column and the sourced pool; an empty column (null) as below \"V\".",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "top",
+    "firsts": [
+      null,
+      "V",
+      "W",
+      "z",
+      "F",
+      "5",
+      "1",
+      "01",
+      "V0ABCDEFG1230"
+    ]
+  },
+  "expected": [
+    {
+      "rank": "F"
+    },
+    {
+      "rank": "F"
+    },
+    {
+      "rank": "F"
+    },
+    {
+      "rank": "F"
+    },
+    {
+      "rank": "7"
+    },
+    {
+      "rank": "2"
+    },
+    {
+      "rank": "0V"
+    },
+    {
+      "rank": "00V"
+    },
+    {
+      "rank": "F"
+    }
+  ]
+}

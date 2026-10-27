@@ -1,0 +1,144 @@
+{
+  "name": "parse_unresolved",
+  "description": "What names nothing on this board is reported, never searched as text: an unknown field, option or column, a value of the wrong shape, an empty value of a known key, a DPNS name (resolve it first), is:draft, -no: is applied (NOT). A key with nothing after the colon and a URL stay text.",
+  "case": "board_query",
+  "rules": "v2",
+  "input": {
+    "op": "parse",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        },
+        {
+          "id": 6,
+          "name": "Story points",
+          "type": "num"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "text": "foo:bar priority:P9 status:Nope estimate:abc estimate:*..* estimate:1e3 iteration:0 target:2026-13-01 is:draft state:issue assignee:alice.dash label: -no:label note: https://example.com/x \"story pts\":3 plain"
+  },
+  "expected": {
+    "preds": [
+      {
+        "k": "no",
+        "not": true,
+        "v": "label"
+      }
+    ],
+    "text": "note: https://example.com/x plain",
+    "unresolved": [
+      "foo:bar",
+      "priority:P9",
+      "status:Nope",
+      "estimate:abc",
+      "estimate:*..*",
+      "estimate:1e3",
+      "iteration:0",
+      "target:2026-13-01",
+      "is:draft",
+      "state:issue",
+      "assignee:alice.dash",
+      "label:",
+      "\"story pts\":3"
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "rerank_empty",
+  "description": "rerank(0): no ranks.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "rerank",
+    "n": 0
+  },
+  "expected": {
+    "ranks": []
+  }
+}

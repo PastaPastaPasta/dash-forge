@@ -1,0 +1,268 @@
+{
+  "name": "bad_rank_and_values",
+  "description": "A card whose rank is absent or not an explicit rank (ends in 0, a bad digit) ranks as if it had none (implicit); a card whose f is not JSON has no values. Repeated items count once.",
+  "case": "board_fold",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "home": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+    "now": 1793102400000,
+    "items": [
+      {
+        "id": "5qqdEAo4aP1w1P5JbecQqeta1fms6Dez2fuUtznBZyJE",
+        "number": 71,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791068400000,
+        "closedAt": null,
+        "title": "Item 71",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "5urGYmAq3aQoM4MvWuLgT2yjQXVXBTY4bcmzF1PSqedV",
+        "number": 72,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791072000000,
+        "closedAt": null,
+        "title": "Item 72",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "5yrusMYbWmofgjeYSA4x4R4toPDBGhR9AZeVb1zi7Kxk",
+        "number": 73,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791075600000,
+        "closedAt": null,
+        "title": "Item 73",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "5qqdEAo4aP1w1P5JbecQqeta1fms6Dez2fuUtznBZyJE",
+        "number": 71,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791068400000,
+        "closedAt": null,
+        "title": "Item 71",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      }
+    ],
+    "cards": [
+      {
+        "id": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244801000,
+        "item": "5qqdEAo4aP1w1P5JbecQqeta1fms6Dez2fuUtznBZyJE",
+        "col": 2,
+        "rank": "AB0",
+        "f": "{\"2\":",
+        "state": 0
+      },
+      {
+        "id": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244802000,
+        "item": "5urGYmAq3aQoM4MvWuLgT2yjQXVXBTY4bcmzF1PSqedV",
+        "col": 2,
+        "rank": "A-B",
+        "f": null,
+        "state": 0
+      },
+      {
+        "id": "7zG3FMzeog9g1MMgkMRQkGsPZJRSs3Z8Uf45hmYGZcrJ",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244803000,
+        "item": "5yrusMYbWmofgjeYSA4x4R4toPDBGhR9AZeVb1zi7Kxk",
+        "col": 2,
+        "rank": "A",
+        "f": null,
+        "state": 0
+      }
+    ]
+  },
+  "expected": {
+    "items": [
+      {
+        "id": "5qqdEAo4aP1w1P5JbecQqeta1fms6Dez2fuUtznBZyJE",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "col": 2,
+        "rank": "V0VX1wTg0JmYt",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "5urGYmAq3aQoM4MvWuLgT2yjQXVXBTY4bcmzF1PSqedV",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "col": 2,
+        "rank": "V0VX2BaCWK452",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "5yrusMYbWmofgjeYSA4x4R4toPDBGhR9AZeVb1zi7Kxk",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": "7zG3FMzeog9g1MMgkMRQkGsPZJRSs3Z8Uf45hmYGZcrJ",
+        "col": 2,
+        "rank": "A",
+        "archived": null,
+        "fields": {}
+      }
+    ],
+    "columns": [
+      {
+        "id": 1,
+        "items": []
+      },
+      {
+        "id": 2,
+        "items": [
+          "5yrusMYbWmofgjeYSA4x4R4toPDBGhR9AZeVb1zi7Kxk",
+          "5qqdEAo4aP1w1P5JbecQqeta1fms6Dez2fuUtznBZyJE",
+          "5urGYmAq3aQoM4MvWuLgT2yjQXVXBTY4bcmzF1PSqedV"
+        ]
+      },
+      {
+        "id": 3,
+        "items": []
+      },
+      {
+        "id": 4,
+        "items": []
+      }
+    ]
+  }
+}

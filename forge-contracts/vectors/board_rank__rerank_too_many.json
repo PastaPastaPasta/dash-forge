@@ -1,0 +1,13 @@
+{
+  "name": "rerank_too_many",
+  "description": "rerank past 1 000 000 items is refused (invalid).",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "rerank",
+    "n": 1000001
+  },
+  "expected": {
+    "error": "invalid"
+  }
+}

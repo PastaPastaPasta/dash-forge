@@ -1,0 +1,45 @@
+{
+  "name": "rerank_wide",
+  "description": "rerank(31): 2 digits would leave under 62 ranks between neighbours (1922 < 62·32), so 3 digits.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "rerank",
+    "n": 31
+  },
+  "expected": {
+    "ranks": [
+      "0y3",
+      "1w7",
+      "2uB",
+      "3sF",
+      "4qJ",
+      "5oN",
+      "6mR",
+      "7kV",
+      "8iY",
+      "9gc",
+      "Aeg",
+      "Bck",
+      "Cao",
+      "DYs",
+      "EWw",
+      "FV",
+      "GT3",
+      "HR7",
+      "IPB",
+      "JNF",
+      "KLJ",
+      "LJN",
+      "MHR",
+      "NFV",
+      "ODY",
+      "PBc",
+      "Q9g",
+      "R7k",
+      "S5o",
+      "T3s",
+      "U1w"
+    ]
+  }
+}

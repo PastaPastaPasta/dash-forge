@@ -1,0 +1,292 @@
+{
+  "name": "group_repo",
+  "description": "Grouped by repository (by id).",
+  "case": "board_view",
+  "rules": "v2",
+  "input": {
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "home": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+    "now": 1793102400000,
+    "me": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb",
+    "items": [
+      {
+        "id": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "number": 101,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791176400000,
+        "closedAt": null,
+        "title": "banana",
+        "labels": [
+          "ui",
+          "bug"
+        ],
+        "assignees": [
+          "Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r",
+          "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+        ],
+        "milestone": "v2",
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "number": 102,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791180000000,
+        "closedAt": null,
+        "title": "Apple",
+        "labels": [
+          "bug"
+        ],
+        "assignees": [
+          "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+        ],
+        "milestone": "v1",
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "7zG3FMzeog9g1MMgkMRQkGsPZJRSs3Z8Uf45hmYGZcrJ",
+        "number": 103,
+        "repoId": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx",
+        "repo": "bob/lib",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791183600000,
+        "closedAt": null,
+        "title": "cherry",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "84GgZxNRGsYYM2eJfc9gMexYxA96xHSD3bvb3n9XqJBZ",
+        "number": 104,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "closed",
+        "createdAt": 1791187200000,
+        "closedAt": 1793016000000,
+        "title": "date",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "88HKtYkBk4wQghvvarswy33iM1rm3XKHcYo6Pnko6yWp",
+        "number": 105,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "pr",
+        "state": "open",
+        "createdAt": 1791190800000,
+        "closedAt": null,
+        "title": "elder",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "8CHyD97xDGLH2PDYW7cDaR8sjsaR8mCNBVfbjoN4Ner5",
+        "number": 106,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791194400000,
+        "closedAt": null,
+        "title": "fig",
+        "labels": [
+          "ui"
+        ],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      }
+    ],
+    "cards": [
+      {
+        "id": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244801000,
+        "item": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "col": 2,
+        "rank": "G",
+        "f": "{\"1\":2,\"2\":3,\"3\":1}",
+        "state": 0
+      },
+      {
+        "id": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244802000,
+        "item": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "col": 2,
+        "rank": "F",
+        "f": "{\"1\":1,\"2\":5,\"3\":1}",
+        "state": 0
+      },
+      {
+        "id": "7zG3FMzeog9g1MMgkMRQkGsPZJRSs3Z8Uf45hmYGZcrJ",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244803000,
+        "item": "7zG3FMzeog9g1MMgkMRQkGsPZJRSs3Z8Uf45hmYGZcrJ",
+        "col": 1,
+        "rank": null,
+        "f": "{\"2\":2.5,\"3\":2}",
+        "state": 0
+      },
+      {
+        "id": "84GgZxNRGsYYM2eJfc9gMexYxA96xHSD3bvb3n9XqJBZ",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244804000,
+        "item": "84GgZxNRGsYYM2eJfc9gMexYxA96xHSD3bvb3n9XqJBZ",
+        "col": 2,
+        "rank": null,
+        "f": "{\"1\":4,\"2\":1,\"3\":1}",
+        "state": 0
+      },
+      {
+        "id": "88HKtYkBk4wQghvvarswy33iM1rm3XKHcYo6Pnko6yWp",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244805000,
+        "item": "88HKtYkBk4wQghvvarswy33iM1rm3XKHcYo6Pnko6yWp",
+        "col": 3,
+        "rank": null,
+        "f": "{\"2\":8,\"3\":0}",
+        "state": 0
+      }
+    ],
+    "q": "",
+    "op": "group",
+    "by": "repo"
+  },
+  "expected": [
+    {
+      "key": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+      "items": [
+        "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "84GgZxNRGsYYM2eJfc9gMexYxA96xHSD3bvb3n9XqJBZ",
+        "88HKtYkBk4wQghvvarswy33iM1rm3XKHcYo6Pnko6yWp",
+        "8CHyD97xDGLH2PDYW7cDaR8sjsaR8mCNBVfbjoN4Ner5"
+      ]
+    },
+    {
+      "key": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx",
+      "items": [
+        "7zG3FMzeog9g1MMgkMRQkGsPZJRSs3Z8Uf45hmYGZcrJ"
+      ]
+    }
+  ]
+}
