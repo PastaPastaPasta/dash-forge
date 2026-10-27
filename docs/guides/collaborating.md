@@ -670,6 +670,19 @@ dg issue milestone  <owner>/<repo> 12 v1.0
 
 On the web, **Issues → Milestones** lists them open and closed, with due dates and progress, and lets members create, edit, close, reopen and delete them. Like a label, a milestone keeps its title once defined. A milestone definition can be deleted only by the member who wrote it, so one another member also defined can be closed but not deleted. Milestones in a private repository are encrypted, which this release does not do yet (web or `dg`).
 
+### Boards
+
+Boards lay issues and pull requests out in columns, with fields, iterations and saved views (GitHub's projects). Triage members and up move and place items; maintainers and writers create boards:
+
+```sh
+dg board create <owner>/<repo> --name Roadmap
+dg board view   <owner>/<repo> Roadmap
+dg board move   <owner>/<repo> Roadmap #12 "In progress"
+dg board set    <owner>/<repo> Roadmap #12 priority=P1 estimate=3
+```
+
+The [Boards guide](boards.md) has every command.
+
 ### Stars
 
 ```sh

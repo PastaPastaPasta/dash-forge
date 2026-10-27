@@ -6,6 +6,7 @@
 //! stored numeric event kinds, and the text-length checks run before anything is signed.
 
 pub mod bans;
+pub mod boards;
 pub mod long_body;
 pub mod moderation;
 pub mod parity;

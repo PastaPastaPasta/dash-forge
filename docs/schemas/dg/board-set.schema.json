@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/board-set.schema.json",
+  "title": "dg board set --json",
+  "description": "An item's fields set on a board.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "set"
+      ]
+    },
+    "board": {
+      "type": "integer"
+    },
+    "fields": {
+      "type": "object"
+    },
+    "card": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "created": {
+          "type": "boolean"
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "col": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rank": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "archived",
+            "removed"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "documentId",
+        "state"
+      ]
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "board",
+    "card"
+  ],
+  "additionalProperties": true
+}

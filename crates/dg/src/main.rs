@@ -10,6 +10,7 @@ mod attestation_signer;
 mod audience;
 mod auth;
 mod bans;
+mod board;
 mod bot;
 mod bot_push;
 mod branch;
@@ -203,6 +204,9 @@ pub enum Command {
     /// Milestones (put an issue in one with `dg issue milestone`).
     #[command(subcommand)]
     Milestone(MilestoneCommand),
+    /// Boards: issues and pull requests in columns, with fields, iterations and saved views.
+    #[command(subcommand)]
+    Board(BoardCommand),
     /// Your public profile: display name, bio, avatar, links, location, company, signing keys.
     #[command(subcommand)]
     Profile(ProfileCommand),
@@ -1256,6 +1260,172 @@ pub enum MilestoneCommand {
         /// Reopen instead.
         #[arg(long)]
         reopen: bool,
+    },
+}
+
+/// A new board's starting definition (`dg board create --template`): the web's create-dialog
+/// templates (forge-web `components/repo/boards/board-templates.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum BoardTemplate {
+    /// Todo, In progress and Done; every issue and pull request of the repository; Priority,
+    /// Estimate and a two-week Iteration; done items archived after 14 days.
+    Kanban,
+    /// Backlog, Todo, In progress, In review and Done, with two-week sprints, estimates and a
+    /// "Current sprint" view.
+    Sprint,
+    /// Needs triage, Confirmed, In progress and Fixed, holding every issue labelled bug, with a
+    /// Priority.
+    #[value(alias = "bugs")]
+    Triage,
+    /// One column and nothing added for you: only the items you put on it.
+    Empty,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BoardCommand {
+    /// List a repository's boards, open and closed.
+    List {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Include deleted boards.
+        #[arg(long)]
+        deleted: bool,
+    },
+    /// Show a board: each column with its items, their fields, the column's totals and its
+    /// work-in-progress limit.
+    View {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number (as `dg board list` shows it) or its name.
+        board: String,
+        /// Show it as one of its saved views shows it (its filter, sort and totals).
+        #[arg(long = "view", value_name = "NAME")]
+        view: Option<String>,
+        /// Also show archived items.
+        #[arg(long)]
+        archived: bool,
+    },
+    /// Create a board. Maintainers and writers.
+    Create {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board's name.
+        #[arg(long)]
+        name: String,
+        /// The columns, in order, comma-separated (default `Todo,In progress,Done`). A column
+        /// named Done takes closed and merged items.
+        #[arg(long, value_name = "A,B,C")]
+        columns: Option<String>,
+        /// What the board starts with.
+        #[arg(long, value_enum, default_value = "kanban")]
+        template: BoardTemplate,
+    },
+    /// Move an item to a column: to its bottom, or with `--top`, `--before` or `--after`.
+    /// Maintainers, writers and triage members.
+    Move {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
+        /// The item: `#12`, `12`, `owner/name#12`, or `pr#12` when an issue and a pull request share the number.
+        item: String,
+        /// The column, by name.
+        column: String,
+        /// At the top of the column.
+        #[arg(long, conflicts_with_all = ["bottom", "before", "after"])]
+        top: bool,
+        /// At the bottom of the column (the default).
+        #[arg(long, conflicts_with_all = ["before", "after"])]
+        bottom: bool,
+        /// Just above this item of the column.
+        #[arg(long, value_name = "ITEM", conflicts_with = "after")]
+        before: Option<String>,
+        /// Just below this item of the column.
+        #[arg(long, value_name = "ITEM")]
+        after: Option<String>,
+    },
+    /// Set an item's fields, `priority=P1 estimate=3 iteration=@next` (an empty value clears
+    /// one; `status=<column>` moves it). Maintainers, writers and triage members.
+    Set {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
+        /// The item: `#12`, `12`, `owner/name#12` or `pr#12`.
+        item: String,
+        /// `field=value` pairs, field names as the board names them.
+        #[arg(required = true, num_args = 1.., value_name = "FIELD=VALUE")]
+        values: Vec<String>,
+    },
+    /// Put items on a board, or open a new issue there with `--title`. Maintainers, writers
+    /// and triage members.
+    Add {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
+        /// The items: `#12`, `12`, `owner/name#12` or `pr#12`.
+        #[arg(required_unless_present = "title", value_name = "ITEM")]
+        items: Vec<String>,
+        /// The column to put them in (default: the board's default column).
+        #[arg(long)]
+        column: Option<String>,
+        /// Open a new issue with this title in the repository and put it on the board.
+        #[arg(long, conflicts_with = "items")]
+        title: Option<String>,
+    },
+    /// Archive items: hidden from the board unless a view asks for archived ones.
+    /// Maintainers, writers and triage members.
+    Archive {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
+        /// The items: `#12`, `12`, `owner/name#12` or `pr#12`.
+        #[arg(required = true, value_name = "ITEM")]
+        items: Vec<String>,
+        /// Bring archived items back instead.
+        #[arg(long)]
+        restore: bool,
+    },
+    /// Remove items from a board, even ones it would include by itself. Maintainers, writers
+    /// and triage members.
+    Remove {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
+        /// The items: `#12`, `12`, `owner/name#12` or `pr#12`.
+        #[arg(required = true, value_name = "ITEM")]
+        items: Vec<String>,
+    },
+    /// Move every open item of the current iteration that is not done into the next iteration.
+    NextIteration {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
+        /// The iteration field, by name (default: the board's first).
+        #[arg(long)]
+        field: Option<String>,
+    },
+    /// Close a board (read-only, listed under closed), or reopen it with `--reopen`.
+    /// Maintainers and writers.
+    Close {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
+        /// Reopen instead.
+        #[arg(long)]
+        reopen: bool,
+    },
+    /// Delete a board. Maintainers and writers.
+    Delete {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The board: its number or its name.
+        board: String,
     },
 }
 
@@ -2673,6 +2843,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Release(cmd) => Box::pin(release::run(ctx, cmd)).await,
         Command::Label(cmd) => label::run(ctx, cmd).await,
         Command::Milestone(cmd) => milestone::run(ctx, cmd).await,
+        Command::Board(cmd) => Box::pin(board::run(ctx, cmd)).await,
         Command::Profile(cmd) => profile::run(ctx, cmd).await,
         Command::VerifyCommit { repo, revs, author } => {
             signing::verify_commits(ctx, repo.as_deref(), revs, author).await

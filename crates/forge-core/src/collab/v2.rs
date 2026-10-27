@@ -2807,7 +2807,9 @@ pub fn gated_write(doc_type: &str, props: &BTreeMap<String, FieldValue>) -> Opti
         }
         // `t_triageKinds` is a deny-list: an unknown kind (or none) is open to triage.
         DOC_EVENT => Some((kind.map_or(Role::Triage, members::event_code_needs), false)),
-        DOC_LABEL | DOC_MILESTONE => Some((Role::Triage, false)),
+        DOC_LABEL | DOC_MILESTONE | super::boards::DOC_CARD => Some((Role::Triage, false)),
+        // writers define boards, triage only places cards on them (`docs/design/boards.md` §5.1)
+        super::boards::DOC_BOARD => Some((Role::Writer, false)),
         _ => None,
     }
 }
@@ -4385,7 +4387,7 @@ impl<'a> Collab<'a> {
     /// The keys anyone holds for a repository made public (`private-repos.md` §18.3): the epoch
     /// keys its owner published, which open what was written before them. `DocKeys::None(why)`
     /// for any other repository, or when none was published.
-    async fn published_keys(&self, repo: &RepoRef, why: Unopened) -> DocKeys {
+    pub(super) async fn published_keys(&self, repo: &RepoRef, why: Unopened) -> DocKeys {
         let converted = crate::repo::RepoService::reader(self.client)
             .conversion(repo)
             .await

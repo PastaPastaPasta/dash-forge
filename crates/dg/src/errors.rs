@@ -15,8 +15,8 @@ use forge_core::user_error::{self, codes, ErrorContext, UserError};
 use serde_json::Value;
 
 use crate::{
-    CollabCommand, Command, CostCommand, IssueCommand, LabelCommand, MilestoneCommand, PrCommand,
-    ReleaseCommand, RepoBackendCommand, RepoCommand, StorageCommand,
+    BoardCommand, CollabCommand, Command, CostCommand, IssueCommand, LabelCommand,
+    MilestoneCommand, PrCommand, ReleaseCommand, RepoBackendCommand, RepoCommand, StorageCommand,
 };
 
 /// A failure with a result of its own: `body` is the command's `--json` object (printed
@@ -202,6 +202,21 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         | Command::Milestone(
             MilestoneCommand::Create { repo, .. } | MilestoneCommand::Close { repo, .. },
         ) => ("milestone not changed", Some(repo)),
+        Command::Board(BoardCommand::List { repo, .. } | BoardCommand::View { repo, .. }) => {
+            ("could not read the boards", Some(repo))
+        }
+        Command::Board(BoardCommand::Create { repo, .. }) => ("board not created", Some(repo)),
+        Command::Board(BoardCommand::Close { repo, .. } | BoardCommand::Delete { repo, .. }) => {
+            ("board not changed", Some(repo))
+        }
+        Command::Board(
+            BoardCommand::Move { repo, .. }
+            | BoardCommand::Set { repo, .. }
+            | BoardCommand::Add { repo, .. }
+            | BoardCommand::Archive { repo, .. }
+            | BoardCommand::Remove { repo, .. }
+            | BoardCommand::NextIteration { repo, .. },
+        ) => ("board not changed", Some(repo)),
         Command::Issue(I::Reopen { repo, .. }) => ("issue not reopened", Some(repo)),
         Command::Issue(I::Edit { repo, .. }) => ("issue not edited", Some(repo)),
         Command::Issue(I::EditComment { repo, .. }) => ("comment not edited", Some(repo)),

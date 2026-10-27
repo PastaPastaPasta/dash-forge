@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/board-list.schema.json",
+  "title": "dg board list --json",
+  "description": "The repository's boards.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "count": {
+      "type": "integer"
+    },
+    "boards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "integer"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed",
+              "deleted"
+            ]
+          },
+          "sealed": {
+            "type": "boolean"
+          },
+          "repoId": {
+            "type": "string"
+          },
+          "columns": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "specError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the definition is not shown: a refusal of the board rules, or `unreadable` (sealed)."
+          },
+          "updatedAt": {
+            "type": "integer"
+          },
+          "editedBy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "state"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "count",
+    "boards"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/board-remove.schema.json",
+  "title": "dg board remove --json",
+  "description": "Items removed from a board.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "board": {
+      "type": "integer"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "cards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "documentId": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "col": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived",
+              "removed"
+            ]
+          }
+        },
+        "required": [
+          "item",
+          "documentId",
+          "state"
+        ]
+      }
+    },
+    "failed": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "item"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "board",
+    "count"
+  ],
+  "additionalProperties": true
+}

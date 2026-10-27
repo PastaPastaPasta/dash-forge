@@ -104,6 +104,38 @@ pub fn milestone_definition(text_bytes: u64) -> u64 {
     collab_doc_credits(CollabDoc::Label, DEFINITION_FIXED_BYTES + text_bytes) + 10_000_000
 }
 
+/// What a `board` or `card` (UPDATE-3, `docs/design/boards.md` §7) stores per byte of text,
+/// as every write: forge-web's `CREDITS_PER_TEXT_BYTE`.
+const BOARD_CREDITS_PER_BYTE: u64 = 27_500;
+
+/// A member's first revision of a board carrying `text_bytes` of name and definition (sealed:
+/// its `enc`). ESTIMATED, never measured (no network carries the type yet): forge-web's
+/// `BASE_CREDITS.board` (40M) plus its first-board surcharge (10M) and the bytes.
+pub fn board_create(text_bytes: u64) -> u64 {
+    50_000_000 + BOARD_CREDITS_PER_BYTE * text_bytes
+}
+
+/// A replace of the signer's own board revision or card carrying `text_bytes`: ESTIMATED from
+/// the passkey vault's measured 3.1M replace (forge-web `REPLACE_BASE_BY_TYPE`, 4M).
+pub fn board_replace(text_bytes: u64) -> u64 {
+    4_000_000 + BOARD_CREDITS_PER_BYTE * text_bytes
+}
+
+/// A member's first card for an item carrying `text_bytes` of column, rank and fields:
+/// ESTIMATED, forge-web's `BASE_CREDITS.card` (42M) with the first card of a board (10M) and of
+/// an item (18M) surcharges.
+pub fn card_create(text_bytes: u64) -> u64 {
+    70_000_000 + BOARD_CREDITS_PER_BYTE * text_bytes
+}
+
+/// `creates` first cards and `replaces` card replaces of about `text_bytes` each (a re-rank, a
+/// bulk archive, "move to the next iteration"): the web's `priceBoardWrites`.
+pub fn card_writes(creates: usize, replaces: usize, text_bytes: u64) -> u64 {
+    let n = |k: usize| u64::try_from(k).unwrap_or(u64::MAX);
+    n(creates).saturating_mul(card_create(text_bytes))
+        + n(replaces).saturating_mul(board_replace(text_bytes))
+}
+
 /// A `topic` document, priced as the repository's first: 61.7M-62.6M on bonsia (QA wave 3),
 /// the repository's first 72.9M.
 pub const TOPIC: u64 = 78_000_000;

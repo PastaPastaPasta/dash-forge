@@ -1203,6 +1203,16 @@ impl Keyring {
         }
     }
 
+    /// [`crate::private::board::open`] (private-repos.md §4.6) for a stored `board` or `card`
+    /// under this reader's keys, anchors and members.
+    #[must_use]
+    pub fn open_board(
+        &self,
+        d: &crate::private::board::StoredBoardDoc,
+    ) -> crate::private::board::Opened {
+        crate::private::board::open(&self.ctx, d)
+    }
+
     /// Whether an artifact sealed under `epoch` and first recorded at block height `height` was
     /// uploaded after the late-content cut-off for that epoch, whoever uploaded it (§8.2):
     /// `stated(next(e)) + GRACE_BLOCKS`, or at any height under a burned epoch. A named sealed

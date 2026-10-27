@@ -507,7 +507,7 @@ pub fn letter_kind(kind: DocKind) -> bool {
 /// One record `tag ‖ u16(len) ‖ value`. A value longer than u16 cannot be represented;
 /// truncating the length would corrupt the framing, so it is written as-is and refused by the
 /// parse every writer runs on its own output.
-fn push_record(out: &mut Vec<u8>, tag: u8, v: &[u8]) {
+pub(crate) fn push_record(out: &mut Vec<u8>, tag: u8, v: &[u8]) {
     let len = u16::try_from(v.len()).unwrap_or(u16::MAX);
     out.push(tag);
     out.extend_from_slice(&len.to_be_bytes());
@@ -521,10 +521,17 @@ fn push_record(out: &mut Vec<u8>, tag: u8, v: &[u8]) {
 /// bucket.
 #[must_use]
 pub fn pad_record(n: usize, max: usize) -> Vec<u8> {
+    pad_record_in(n, max, PAD_BUCKET)
+}
+
+/// [`pad_record`] to a multiple of `bucket` (a sealed release's and board's is 32, §16.2,
+/// §4.6).
+#[must_use]
+pub(crate) fn pad_record_in(n: usize, max: usize, bucket: usize) -> Vec<u8> {
     if n + 3 > max {
         return Vec::new();
     }
-    let fill = ((PAD_BUCKET - (n + 3) % PAD_BUCKET) % PAD_BUCKET).min(max - 3 - n);
+    let fill = ((bucket - (n + 3) % bucket) % bucket).min(max - 3 - n);
     let mut out = Vec::with_capacity(3 + fill);
     push_record(&mut out, PAD, &vec![0; fill]);
     out

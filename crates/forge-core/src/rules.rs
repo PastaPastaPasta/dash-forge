@@ -3887,9 +3887,9 @@ mod tests {
                 || v.case == crate::private::branch_key::conformance::CASE
                 || v.case == crate::private::members_check::CASE
                 || v.case == "seal_off_marker"
-                // a private repository's sealed boards and cards: forge-web
-                // `lib/private/board.conformance.test.ts` runs them; no Rust reader yet
-                || v.case == "sealed_board"
+                // a private repository's sealed boards and cards: `private::board`'s own
+                // harness runs them (as forge-web `lib/private/board.conformance.test.ts` does)
+                || v.case == crate::private::board::VECTOR_CASE
             {
                 continue;
             }

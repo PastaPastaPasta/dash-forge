@@ -1121,6 +1121,26 @@ fn field_value(field: &BoardField, v: &Value) -> Option<Scalar> {
     }
 }
 
+/// `v` as a value of `field` (the web's `fieldValueOk`): the value a card stores, or `None`
+/// when the field's type refuses it (an unknown option, a non-finite or out-of-range number, a
+/// date that is no calendar day, an iteration past 65535, empty or long text).
+#[must_use]
+pub fn field_value_ok(field: &BoardField, v: &Value) -> Option<Scalar> {
+    field_value(field, v)
+}
+
+/// The `board.name` schema (§3.1, the web's `BOARD_NAME` in `lib/repo/board-writes.ts`): 1–63
+/// characters, at most 252 UTF-8 bytes, no C0 control character or DEL, and at least one
+/// character that is not white space (JavaScript's `\s`).
+#[must_use]
+pub fn is_board_name(s: &str) -> bool {
+    let c0 = |c: char| (c as u32) < 0x20 || c == '\u{7f}';
+    (1..=NAME_MAX).contains(&char_len(s))
+        && s.len() <= 252
+        && !s.chars().any(c0)
+        && s.chars().any(|c| !is_space(c))
+}
+
 fn valid_values<'a>(
     entries: impl Iterator<Item = (&'a String, &'a Value)>,
     spec: &BoardSpec,
@@ -1462,7 +1482,7 @@ pub fn iteration_range(field: &BoardField, k: i64) -> Option<IterationRange> {
 // ---------------------------------------------------------------------------------------------
 
 /// An issue or a pull request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ItemKind {
     /// An issue.

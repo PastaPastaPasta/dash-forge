@@ -18,6 +18,7 @@
 //! * [`wrap`]: the 47-byte `repoKey` wrap plaintext (§5.1);
 //! * [`release`]: sealed releases: the keyed `tagName`, the TLV, the open, the kind-4 asset
 //!   manifest and the reader's fold over a tag's revisions (§16);
+//! * [`board`]: a private repository's sealed boards and cards (§4.6, UPDATE-3);
 //! * [`bundle`]: make-public bundles (kind 7), and [`convert`]: what readers derive about a
 //!   repository made public, and the epoch keys its owner published (§18);
 //! * [`epoch`]: anchors, the current epoch, the chain walk, alerts and the repair check, as one
@@ -43,6 +44,7 @@ compile_error!("the `vectors` feature (deterministic nonces and file ids) is for
 mod access_conformance;
 pub mod access_notice;
 pub mod blind;
+pub mod board;
 pub mod bot_post;
 pub mod branch_key;
 pub mod bundle;

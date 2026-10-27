@@ -185,17 +185,14 @@ impl DocHeader {
     }
 
     fn ad_with(&self, repo_id: &[u8; 32], epoch: u32, version: u8, bind: &[u8]) -> Vec<u8> {
-        let t = self.kind.type_name().as_bytes();
-        let mut ad = Vec::with_capacity(AD_DOMAIN.len() + 1 + 64 + 4 + t.len() + 1 + bind.len());
-        ad.extend_from_slice(AD_DOMAIN);
-        ad.push(version);
-        ad.extend_from_slice(repo_id);
-        ad.extend_from_slice(&self.owner_id);
-        ad.extend_from_slice(&epoch.to_be_bytes());
-        ad.extend_from_slice(t);
-        ad.push(0);
-        ad.extend_from_slice(bind);
-        ad
+        build_ad(
+            repo_id,
+            &self.owner_id,
+            epoch,
+            version,
+            self.kind.type_name(),
+            bind,
+        )
     }
 
     fn version(&self) -> u8 {
@@ -205,6 +202,30 @@ impl DocHeader {
             V1
         }
     }
+}
+
+/// The associated data of §4.4: `"dash-forge/v2/doc" ‖ 0x00 ‖ version ‖ repoId ‖ $ownerId ‖
+/// u32(epoch) ‖ docType ‖ 0x00 ‖ bind`. Also forge-meta's sealed boards and cards
+/// ([`super::board::ad`]), whose types are not [`DocKind`]s.
+pub(crate) fn build_ad(
+    repo_id: &[u8; 32],
+    owner_id: &[u8; 32],
+    epoch: u32,
+    version: u8,
+    doc_type: &str,
+    bind: &[u8],
+) -> Vec<u8> {
+    let t = doc_type.as_bytes();
+    let mut ad = Vec::with_capacity(AD_DOMAIN.len() + 1 + 64 + 4 + t.len() + 1 + bind.len());
+    ad.extend_from_slice(AD_DOMAIN);
+    ad.push(version);
+    ad.extend_from_slice(repo_id);
+    ad.extend_from_slice(owner_id);
+    ad.extend_from_slice(&epoch.to_be_bytes());
+    ad.extend_from_slice(t);
+    ad.push(0);
+    ad.extend_from_slice(bind);
+    ad
 }
 
 /// The ref-name hash check of §4.5 (H3), after decryption: each hash field present on the
