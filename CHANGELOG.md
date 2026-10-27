@@ -8,6 +8,10 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Added
+
+- **Board contract types.** forge-meta gains `board` and `card` (UPDATE-3, [boards design](docs/design/boards.md) §3), written only by the home repository's members; testnet gets them by an in-place update of forge-meta (version 3), which is not applied yet.
+
 ### Fixed
 
 - **InstantSend proofs on testnet.** Creating or topping up an identity, in the web app or with `dg auth new`, waited on `getislocks` at `trpc.digitalcash.dev`, which no longer follows testnet, so every lock fell back to a slower chain-lock proof. The InstantSend lock now comes off DAPI `subscribeToTransactionsWithProofs` feeds on three evonodes, opened before the asset lock is broadcast, as in govhub and mainnet-bridge. `--islock-rpc` and `islock_rpc` still add an RPC of your choice, but none is set by default.

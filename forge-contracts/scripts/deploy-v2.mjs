@@ -100,6 +100,7 @@
 //
 // forge-meta (DESIGN rev 4.1 D44): when <dir> holds forge-meta.json it is registered fourth, after
 // forge-community, like the others: its schema names forge-core's id (FORGE_CORE_CONTRACT_ID), and
+// with boards (UPDATE-3) forge-collab's (FORGE_COLLAB_CONTRACT_ID: a card names an issue or a PR), and
 // its create transition enrols it in the group. `--only meta` registers it alone against the
 // recorded forge-core and group (an earlier run that registered the three).
 //
@@ -128,6 +129,8 @@
 // community do the same for forge-collab and forge-community (the recorded ids replace their
 // placeholders), and --update all updates the three in registration order (UPDATE-1, roadmap D4;
 // check each with contract-validate --expect-update registered/<contract>.v1.json first).
+// --update meta updates forge-meta alone, with every recorded id substituted (UPDATE-2's vaultEntry
+// names none; UPDATE-3's board and card name forge-core and forge-collab).
 //
 // --force-new without --only does the same for the set: when the recorded forge-core was
 // registered from a different schema (a change such as a new `required` system field, which the
@@ -315,6 +318,11 @@ function selfTest(dir = DEFAULT_CONTRACTS_DIR, log = defaultLog) {
   if (JSON.stringify(core).includes(PLACEHOLDER)) throw new Error('forge-core must not name its own id');
   if (!schemaText('forge-community', dir).includes(placeholderFor('forge-collab'))) {
     throw new Error('forge-community names no FORGE_COLLAB_CONTRACT_ID: its events would not refer to this forge-collab');
+  }
+  // UPDATE-3: a card names any repository's issue or PR, so a forge-meta with cards names forge-collab
+  if (dependents.includes(META_CONTRACT) && JSON.parse(schemaText(META_CONTRACT.schemaName, dir)).documentSchemas.card
+      && !schemaText(META_CONTRACT.schemaName, dir).includes(placeholderFor('forge-collab'))) {
+    throw new Error('forge-meta names no FORGE_COLLAB_CONTRACT_ID: its cards would not refer to this forge-collab');
   }
   const ids = { [PLACEHOLDER]: want.contract };
   for (const { schemaName } of dependents) {
@@ -1521,7 +1529,7 @@ async function deploy(argv, injected, locks) {
       return id;
     }
 
-    // --update <core|collab|community|all>: an in-place DataContractUpdate of each recorded contract
+    // --update <core|collab|community|meta|all>: an in-place DataContractUpdate of each recorded contract
     // to its current schema, as the next version (in registration order: core, collab, community).
     // Returns the step to report; resumable (see the header).
     async function updateContract({ key, schemaName, substitutions }) {

@@ -249,7 +249,7 @@ The plaintext is a sequence of records `tag(u8) ‖ len(u16) ‖ value`. No JSON
 AD = "dash-forge/v2/doc" ‖ 0x00 ‖ enc[0] ‖ repoId(32) ‖ $ownerId(32) ‖ u32(epoch) ‖ docType(ASCII) ‖ 0x00 ‖ bind
 ```
 
-`enc[0]` is the version byte (`0x01` to `0x04`), so a ciphertext cannot be re-framed under another version. A specific-people letter (v0x04) has no epoch keys: its AD is built from `repoId` alone with the literal `epoch = 0`, and is then extended to `AD'` by `SHA-256(H)` (§4.1); a config, whose bind is `COMMIT_e`, has no such AD. `docType` is the contract's type name (`issue`, `patch`, `comment`, `review`, `event`, `authorEvent`, `refUpdate`, `protectedRefUpdate`, `config`, `release`). An `authorEvent` (an issue's or PR's author's own event) is sealed only where the contract declares `authorEvent.enc` (mainnet M3): its value (a retarget's new base) is TLV 15 as an event's, never a head (`private_collab_seal__author_event_retarget`). `bind` is the type's immutable plaintext identity:
+`enc[0]` is the version byte (`0x01` to `0x04`), so a ciphertext cannot be re-framed under another version. A specific-people letter (v0x04) has no epoch keys: its AD is built from `repoId` alone with the literal `epoch = 0`, and is then extended to `AD'` by `SHA-256(H)` (§4.1); a config, whose bind is `COMMIT_e`, has no such AD. `docType` is the contract's type name (`issue`, `patch`, `comment`, `review`, `event`, `authorEvent`, `refUpdate`, `protectedRefUpdate`, `config`, `release`, and forge-meta's `board` and `card`, UPDATE-3). An `authorEvent` (an issue's or PR's author's own event) is sealed only where the contract declares `authorEvent.enc` (mainnet M3): its value (a retarget's new base) is TLV 15 as an event's, never a head (`private_collab_seal__author_event_retarget`). `bind` is the type's immutable plaintext identity:
 
 | type | bind |
 |---|---|
@@ -259,8 +259,10 @@ AD = "dash-forge/v2/doc" ‖ 0x00 ‖ enc[0] ‖ repoId(32) ‖ $ownerId(32) ‖
 | refUpdate, protectedRefUpdate | `refNameHash` (32) ‖ `oidf(newOid)` ‖ `oidf(prevOid or empty)` ‖ `force` (0x00/0x01) |
 | config | `COMMIT_e` (32) |
 | release | the document's `tagName` string, as its 43 ASCII bytes (§16.2) |
+| board | `u32(key)` (the board's `name` and `spec` sealed together; [boards.md](../design/boards.md) §3.3) |
+| card | `u32(board)` ‖ `item` (32) (the card's `col`, `rank` and `f` sealed; its `state` stays plaintext) |
 
-`oidf(x) = u8(len(x)) ‖ x`. Binding `repoId`, `$ownerId`, `epoch` and the type means a ciphertext lifted from one document cannot be replayed as another: not by an outsider into a new comment in the same repo (different `$ownerId`), not into another repo, not under another type or epoch. `$ownerId` is safe to bind because these nine types are not transferable; making one transferable would be a breaking change to this design. The ref-update binding ties the hidden name to the visible tip, so a stored `enc` cannot be re-used to name a different ref for the same OID. The document's `$id`, `$createdAt` and `$createdAtBlockHeight` are not bound (unknown at encryption time).
+`oidf(x) = u8(len(x)) ‖ x`. Binding `repoId`, `$ownerId`, `epoch` and the type means a ciphertext lifted from one document cannot be replayed as another: not by an outsider into a new comment in the same repo (different `$ownerId`), not into another repo, not under another type or epoch. `$ownerId` is safe to bind because none of these types is transferable; making one transferable would be a breaking change to this design. The ref-update binding ties the hidden name to the visible tip, so a stored `enc` cannot be re-used to name a different ref for the same OID. A board's or a card's binding is its immutable keys, so a sealed payload cannot be moved to another board or item; both are mutable, and a member's edit re-seals the whole payload under the repository's current epoch (a card is one document per member, item and board, so a replace is its only way to change). The document's `$id`, `$createdAt` and `$createdAtBlockHeight` are not bound (unknown at encryption time).
 
 ### 4.5 Ref-name hashing, and the hash check on read
 

@@ -44,6 +44,18 @@
   "expect": "absent"
  },
  {
+  "item": "U3",
+  "name": "no board type",
+  "type": "board",
+  "expect": "absent"
+ },
+ {
+  "item": "U3",
+  "name": "no card type",
+  "type": "card",
+  "expect": "absent"
+ },
+ {
   "item": "EVK",
   "name": "no byKind index",
   "type": "event",

@@ -53,6 +53,10 @@ export const DOC = {
   topic: 'topic',
   /** A passkey-sealed copy of a session's keys (forge-meta only; `lib/auth/passkey-vault`). */
   vaultEntry: 'vaultEntry',
+  /** A board's definition, one per (home repo, key, member) (forge-meta only; `docs/design/boards.md` §3.1). */
+  board: 'board',
+  /** A member's placement and field values for one item on one board (forge-meta only; boards.md §3.2). */
+  card: 'card',
 } as const
 
 export { withVis } from '../layout'

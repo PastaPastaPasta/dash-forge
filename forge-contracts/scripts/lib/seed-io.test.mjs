@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { CONTRACTS, CONTRACT_OF, META_TYPES, ROOT, assertWriteTarget, contractOn, contractsIn, resolveNetwork, shapeData, shapeOfSet } from './seed-io.mjs';
+import { CONTRACTS, CONTRACT_OF, META_ONLY_TYPES, META_TYPES, ROOT, assertWriteTarget, contractOn, contractsIn, resolveNetwork, shapeData, shapeOfSet } from './seed-io.mjs';
 
 const typesOf = (dir, file) => Object.keys(JSON.parse(readFileSync(join(dir, file), 'utf8')).documentSchemas);
 
@@ -35,8 +35,12 @@ test('the committed mainnet set is four contracts, forge-meta last', () => {
 
 test('a three-contract record keeps the moved types in their old homes', () => {
   const ids = { core: 'c', collab: 'l', community: 'm' };
-  // (vaultEntry, UPDATE-2, is a four-contract type: the three-contract set has no home for it)
-  for (const t of META_TYPES) if (t !== 'vaultEntry') assert.equal(contractOn(ids, t), CONTRACT_OF[t], t);
+  // (vaultEntry, board and card are four-contract types: the three-contract set has no home for them)
+  for (const t of META_TYPES) {
+    if (META_ONLY_TYPES.has(t)) assert.equal(contractOn(ids, t), undefined, t);
+    else assert.equal(contractOn(ids, t), CONTRACT_OF[t], t);
+  }
+  for (const t of META_ONLY_TYPES) assert.ok(META_TYPES.has(t), t);
 });
 
 // ---- the shape of a loaded set decides the fields a write carries (DESIGN MB1) ----

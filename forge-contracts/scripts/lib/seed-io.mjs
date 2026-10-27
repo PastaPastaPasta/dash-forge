@@ -45,10 +45,16 @@ export const CONTRACT_OF = DEFAULT_SET.contractOf;
 
 /**
  * The types forge-meta holds on a four-contract set (DESIGN rev 4.1 D44); a three-contract set
- * keeps them in their `CONTRACT_OF` homes, except `vaultEntry` (UPDATE-2, the passkey vault), which
- * only the four-contract set has. Parity: forge-core `layout::META_TYPES`, forge-web `lib/layout.ts`.
+ * keeps them in their `CONTRACT_OF` homes, except `META_ONLY_TYPES`, which only the four-contract
+ * set has. Parity: forge-core `layout::META_TYPES`, forge-web `lib/layout.ts`.
  */
-export const META_TYPES = new Set(['repoKey', 'ban', 'label', 'topic', 'packMirror', 'profile', 'follow', 'vaultEntry']);
+export const META_TYPES = new Set(['repoKey', 'ban', 'label', 'topic', 'packMirror', 'profile', 'follow', 'vaultEntry', 'board', 'card']);
+
+/**
+ * The `META_TYPES` with no three-contract home: `vaultEntry` (UPDATE-2, the passkey vault), `board`
+ * and `card` (UPDATE-3, docs/design/boards.md §3). Parity: forge-core `layout::META_ONLY_TYPES`.
+ */
+export const META_ONLY_TYPES = new Set(['vaultEntry', 'board', 'card']);
 
 /**
  * The contract (`core`, `collab`, `community`, `meta`) that holds `type` on the network whose ids

@@ -530,6 +530,29 @@ test('--update core on a production record: the contract-nonce ledger entry, reg
   await assert.rejects(t.run(t.prod('--update', 'core')), /differ from git HEAD/);
 });
 
+test('--update meta names the recorded forge-core and forge-collab (UPDATE-3: card.item refers to forge-collab)', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  const { forgeCore, forgeCollab, forgeMeta } = t.read().v2;
+  // pretend the chain holds an older forge-meta than the committed file (testnet's v2, before boards)
+  const tampered = t.read();
+  tampered.v2.forgeMeta.schemaHash = '0'.repeat(64);
+  writeFileSync(t.testnetFile, JSON.stringify(tampered, null, 2));
+  await t.run(t.prod('--update', 'meta'));
+  const rec = t.read();
+  assert.equal(rec.v2.forgeMeta.version, 2);
+  assert.equal(rec.v2.forgeMeta.schemaHash, forgeMeta.schemaHash);
+  // only forge-meta was updated
+  assert.deepEqual(rec.v2.nonceLedger.filter((e) => e.kind === 'dataContractUpdate').map((e) => e.key), ['forgeMeta']);
+  const sent = t.fake.state.contracts.get(forgeMeta.contractId).json;
+  assert.equal(sent.version, 2);
+  assert.ok(!JSON.stringify(sent).includes('_CONTRACT_ID'), 'no placeholder left in the update');
+  const { board, card } = sent.documentSchemas;
+  for (const leaf of [...board.ownerRefersTo.anyOf, ...card.ownerRefersTo.anyOf]) assert.equal(leaf.contractId, forgeCore.contractId, leaf.documentType);
+  assert.deepEqual(card.properties.item.refersTo.anyOf.map((l) => [l.documentType, l.contractId]),
+    [['issue', forgeCollab.contractId], ['patch', forgeCollab.contractId]]);
+});
+
 test('--update refuses a record of the other set', async () => {
   const t = setup();
   await t.run(t.prod());
