@@ -168,7 +168,7 @@ The payload encoding (TLV tags 32–36, padding, the read order) is `private-rep
 
 ## 4. Views
 
-A view is `{id, name, layout, q, group, lane, sort, cols?, date?}`, at most 8 per board, saved in the board definition. Unsaved changes live in the URL (`?b=&view=&q=&group=&lane=&sort=`), so any cut can be shared as a link; a member saves it into the definition.
+A view is `{id, name, layout, q, group, lane, sort, cols?, date?}`, at most 8 per board, saved in the board definition. Unsaved changes live in the URL (`?b=&view=&q=&group=&lane=&sort=`, and `&layout=`, `&cols=`, `&date=` for a layout switched or columns picked), so any cut can be shared as a link; a member saves it into the definition. An open item panel is `&item=<id>`.
 
 ### 4.1 Board layout
 
@@ -213,7 +213,7 @@ The UI offers only what the viewer's role allows and the contract's gate refuses
 
 ### 5.2 Moving
 
-Drag a card (pointer or touch); keyboard: focus a card, `Space` to pick it up, arrows to move, `Space` to drop, `Esc` to cancel (with live-region announcements). The board moves the card at once (optimistic), signs one write (`card` create, or replace of the signer's own), and puts it back with the reason if the write is refused. Dropping into a column over its WIP limit warns and still moves.
+Drag a card (pointer or touch; on a touch screen by its grip, so a swipe elsewhere still scrolls the board); keyboard: focus a card, `Space` to pick it up, arrows to move, `Space` to drop, `Esc` to cancel (with live-region announcements). The board moves the card at once (optimistic), signs one write (`card` create, or replace of the signer's own), and puts it back with the reason if the write is refused. Dropping into a column over its WIP limit warns and still moves.
 
 ### 5.3 Adding
 
