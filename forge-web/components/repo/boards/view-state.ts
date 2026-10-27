@@ -7,8 +7,10 @@
 
 import { searchTokens } from '@/lib/rules/search-terms'
 import {
+  LAYOUTS,
   byRank,
   fieldKeyId,
+  groupKeyOk,
   groupRows,
   matchesBoardQuery,
   sortRows,
@@ -29,8 +31,8 @@ import type { RankedCard } from '@/lib/repo'
 /** The view a board with no saved views shows: the board layout, everything, by status. */
 export const DEFAULT_VIEW: SavedView = { id: 0, name: 'Board', layout: 'board', q: '' }
 
-/** Every layout a view may use, in the order the layout picker lists them. */
-export const LAYOUTS: readonly ViewLayout[] = ['board', 'table', 'roadmap']
+/** Every layout a view may use, in the order the layout picker lists them (the rules' own list). */
+export { LAYOUTS }
 
 /** The built-in item keys (besides Status) a view may group by or split into swimlanes: the item's own facts. */
 export const ITEM_GROUP_KEYS: readonly string[] = ['assignee', 'label', 'milestone', 'repo']
@@ -75,16 +77,12 @@ export function savedViews(spec: BoardSpec): readonly SavedView[] {
 
 /** Whether `key` may group the board layout's columns: Status, or a single-select or iteration field (§2.7). */
 export function boardGroupOk(spec: BoardSpec, key: string): boolean {
-  if (key === 'status') return true
-  const id = fieldKeyId(key)
-  const f = id === null ? undefined : spec.fields.find((x) => x.id === id)
-  return f !== undefined && (f.type === 'sel' || f.type === 'iter')
+  return groupKeyOk(spec.fields, key, true)
 }
 
 /** Whether `key` may split the board into swimlanes under grouping `group` (never Status, never the grouping). */
 export function laneOk(spec: BoardSpec, key: string, group: string): boolean {
-  if (key === 'status' || key === group) return false
-  return ITEM_GROUP_KEYS.includes(key) || boardGroupOk(spec, key)
+  return key !== 'status' && key !== group && groupKeyOk(spec.fields, key, false)
 }
 
 /** A copy of `v` with optional key `k` set to `value`, or left out when `value` is empty. */
@@ -118,7 +116,7 @@ function isField(spec: BoardSpec, key: string): boolean {
  */
 export function normalizeView(spec: BoardSpec, view: SavedView): SavedView {
   let v = view
-  const groupOk = (k: string) => (v.layout === 'board' ? boardGroupOk(spec, k) : k === 'status' || ITEM_GROUP_KEYS.includes(k) || boardGroupOk(spec, k))
+  const groupOk = (k: string) => groupKeyOk(spec.fields, k, v.layout === 'board')
   if (v.group !== undefined && !groupOk(v.group)) v = withKey(v, 'group', '')
   if (v.lane !== undefined && !laneOk(spec, v.lane, v.group ?? 'status')) v = withKey(v, 'lane', '')
   if (v.sort !== undefined) {

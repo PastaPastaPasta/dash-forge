@@ -29,6 +29,7 @@ afterEach(() => {
   el.remove()
 })
 
+const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)) })
 const render = (props: BoardLayoutProps): void => act(() => root.render(<BoardTable {...props} />))
 const headers = (): string[] => [...el.querySelectorAll('thead th')].map((th) => th.textContent?.trim() ?? '')
 const row = (c: string): HTMLTableRowElement => el.querySelector(`tr[data-item="${id(c)}"]`) as HTMLTableRowElement
@@ -114,7 +115,7 @@ describe('BoardTable', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
     expect(props.state.write).toHaveBeenCalledTimes(1)
-    expect(props.state.write).toHaveBeenCalledWith({ id: id('a'), repoId: HOME }, { col: 2 }, undefined)
+    expect(props.state.write).toHaveBeenCalledWith({ id: id('a'), repoId: HOME }, { col: 2 })
     expect(cell('a', 1).querySelector('select')).toBeNull()
   })
 
@@ -130,11 +131,12 @@ describe('BoardTable', () => {
     expect(document.activeElement).toBe(cell('a', 2))
     expect(cell('a', 2).tabIndex).toBe(0)
     expect(first.tabIndex).toBe(-1)
-    // Escape leaves the value alone
+    // Escape leaves the value alone, and focus comes back to the cell
     key(cell('a', 2), 'Enter')
     let input = cell('a', 2).querySelector('input') as HTMLInputElement
     typeInto(input, '9')
     key(input, 'Escape')
+    await settle()
     expect(props.state.write).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(cell('a', 2))
     // Enter writes it
@@ -142,20 +144,86 @@ describe('BoardTable', () => {
     input = cell('a', 2).querySelector('input') as HTMLInputElement
     typeInto(input, '8')
     await act(async () => void input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
-    expect(props.state.write).toHaveBeenCalledWith({ id: id('a'), repoId: HOME }, { fields: { 2: 8 } }, undefined)
-    // a bad number is refused before any write
+    await settle()
+    expect(props.state.write).toHaveBeenCalledWith({ id: id('a'), repoId: HOME }, { fields: { 2: 8 } })
+    // a bad number is refused before any write; fixed, and left, it is written
     key(cell('a', 2), 'Enter')
     input = cell('a', 2).querySelector('input') as HTMLInputElement
     typeInto(input, 'lots')
     key(input, 'Enter')
     expect(cell('a', 2).querySelector('[role="alert"]')?.textContent).toBe('Enter a number.')
     expect(props.state.write).toHaveBeenCalledTimes(1)
+    typeInto(input, '6')
+    act(() => input.blur())
+    expect(props.state.write).toHaveBeenLastCalledWith({ id: id('a'), repoId: HOME }, { fields: { 2: 6 } })
+    expect(cell('a', 2).querySelector('input')).toBeNull()
     // down a row, and Enter on the title opens the item
-    key(input, 'Escape')
+    act(() => cell('a', 2).focus())
     key(cell('a', 2), 'ArrowDown')
     key(document.activeElement as Element, 'Home')
     key(document.activeElement as Element, 'Enter')
     expect(props.onOpenItem).toHaveBeenCalledWith(id('b'))
+  })
+
+  it('leaving an editor (Tab, a click elsewhere) leaves focus where it went; a refused value is put back', async () => {
+    const props = layoutProps({ cols: ['title', 'f2'] })
+    const outside = document.createElement('input')
+    document.body.append(outside)
+    render(props)
+    act(() => cell('a', 1).click())
+    const input = cell('a', 1).querySelector('input') as HTMLInputElement
+    typeInto(input, 'lots')
+    act(() => outside.focus())
+    await settle()
+    expect(document.activeElement).toBe(outside)
+    expect(cell('a', 1).querySelector('input')).toBeNull()
+    expect(cell('a', 1).textContent).toBe('3')
+    expect(props.state.write).not.toHaveBeenCalled()
+    outside.remove()
+  })
+
+  it('keeps an edit on its item when a poll reorders the rows', async () => {
+    const props = layoutProps({ cols: ['title', 'f2'] })
+    render(props)
+    act(() => cell('a', 1).click())
+    const input = cell('a', 1).querySelector('input') as HTMLInputElement
+    typeInto(input, '4')
+    // a poll: item b now sorts first
+    render({ ...props, rows: [...props.rows].reverse(), view: { ...props.view, sort: '-number' } })
+    expect(row('a').querySelector('input')).toBe(input)
+    expect(row('e').querySelector('input')).toBeNull()
+    await act(async () => void input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+    expect(props.state.write).toHaveBeenCalledWith({ id: id('a'), repoId: HOME }, { fields: { 2: 4 } })
+  })
+
+  it('a closed item’s Status offers no column before Done', () => {
+    render(layoutProps({ cols: ['title', 'status'] }))
+    act(() => cell('d', 1).click())
+    const options = [...(cell('d', 1).querySelector('select') as HTMLSelectElement).options]
+    expect(options.map((o) => [o.textContent, o.disabled])).toEqual([
+      ['Todo', true],
+      ['In progress', true],
+      ['Done', false],
+    ])
+    expect(cell('d', 1).querySelector('select')?.getAttribute('title')).toBe('Closed items show in Done, or in a column after it.')
+  })
+
+  it('a keyboard step through a select writes on Enter, once', async () => {
+    const props = layoutProps({ cols: ['title', 'f1'] })
+    render(props)
+    act(() => cell('a', 1).click())
+    const select = cell('a', 1).querySelector('select') as HTMLSelectElement
+    for (const v of ['2', '3']) {
+      key(select, 'ArrowDown')
+      await act(async () => {
+        select.value = v
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+    expect(props.state.write).not.toHaveBeenCalled()
+    await act(async () => void select.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+    expect(props.state.write).toHaveBeenCalledTimes(1)
+    expect(props.state.write).toHaveBeenCalledWith({ id: id('a'), repoId: HOME }, { fields: { 1: 3 } })
   })
 
   it('opens the item from a row; a visitor edits nothing', () => {
@@ -171,14 +239,14 @@ describe('BoardTable', () => {
     const base = layoutProps({ cols: ['title'] })
     const placements = new Map(base.placements)
     placements.set(id('d'), { ...(placements.get(id('d')) as NonNullable<ReturnType<typeof placements.get>>), archived: 'auto' })
-    render({ ...base, placements, items: ITEMS, state: hookState({ pending: new Set([id('b')]) }) })
+    render({ ...base, placements, items: ITEMS, rows: ITEMS.map((item) => ({ item, placement: placements.get(item.id)! })), state: hookState({ pending: new Set([id('b')]) }) })
     expect(cell('d', 0).querySelector('[data-testid="archived-badge"]')).not.toBeNull()
     expect(row('b').getAttribute('aria-busy')).toBe('true')
     expect(cell('b', 0).textContent).toContain('Saving')
   })
 
   it('says so when nothing matches', () => {
-    render(layoutProps({}, { items: [] }))
+    render(layoutProps({}, { items: [], rows: [] }))
     expect(el.textContent).toContain('No items match')
   })
 })

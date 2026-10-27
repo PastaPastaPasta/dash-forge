@@ -11,11 +11,14 @@
  *   (Status) and the sum of the view's first number field (`sumFieldOf`, `totals`, §4.5).
  * - **Editing**: members who place cards (`state.can.place`) edit Status and the custom fields in
  *   place; each change is one card write (`state.write`, Status writes `col`), shown at once and
- *   taken back by the hook if refused. A private home's card for another repository's item asks
- *   first (§3.3).
+ *   taken back by the hook if refused. The shell's guarded state asks before a private home's
+ *   card for another repository's item (§3.3). A closed item's Status offers no column before
+ *   Done, where it shows whatever its card says (§2.4).
  * - **Keyboard**: the body is a grid with one tab stop (roving tabindex): arrows, Home / End,
  *   Ctrl+Home / Ctrl+End and Page Up / Down move; Enter edits an editable cell or opens the item
- *   from any other; Escape cancels an edit.
+ *   from any other; Escape cancels an edit. The cell in focus and the one being edited are named
+ *   by (section, item, column), never by position, so a poll that adds or moves a row never moves
+ *   an edit onto another item.
  *
  * Archived items (a view with `is:archived`), items with a write in flight and private items
  * ("a private item", `BoardItemSet.hidden`) are marked on their row. Not virtualized: a board
@@ -24,15 +27,14 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Archive, ArrowDown, ArrowUp, ArrowUpDown, Loader2, Lock, Table2 } from 'lucide-react'
-import { crossRepoCardNeedsConfirm, type CardPatch, type LabelDef } from '@/lib/repo'
-import { groupRows, sortRows, sumFieldOf, totals, type BoardItem, type BoardRow, type BoardSpec, type BoardView as SavedView, type FieldValue } from '@/lib/rules/boards'
+import type { CardPatch, LabelDef } from '@/lib/repo'
+import { dateOf, fieldById, fieldOfKey, groupRows, sortKeyOk, sortRows, sumFieldOf, totals, type BoardItem, type BoardRow, type BoardSpec, type BoardView as SavedView, type FieldValue } from '@/lib/rules/boards'
 import { AssigneeAvatars, LabelChip } from '@/components/repo/issue-bits'
 import { Author } from '@/components/author'
 import { EmptyState } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
-import { useConfirmAction } from '@/components/ui/confirm-action'
 import { cn, shortId } from '@/lib/utils'
-import { ColorDot, FieldInput, GroupHeading, ItemStateIcon, StatusSelect, dayText, fieldValueText, viewKeyLabel } from './board-fields'
+import { DotLabel, FieldInput, GroupHeading, ItemStateIcon, StatusSelect, dayText, fieldValueText, viewKeyLabel } from './board-fields'
 import type { BoardLayoutProps } from './layout-props'
 
 /** The table's columns: the view's `cols` with Title first, or Title, Status, Assignees, Labels and every custom field. */
@@ -48,23 +50,12 @@ export function nextSort(current: string | undefined, key: string): string | und
   return key
 }
 
-/** The custom field a view key names, or undefined. */
-function fieldOf(spec: BoardSpec, key: string) {
-  const m = /^f(\d+)$/.exec(key)
-  return m ? spec.fields.find((f) => f.id === Number(m[1])) : undefined
-}
-
 /** Whether a column's cells are edited in place (Status and the custom fields). */
 function editableKey(spec: BoardSpec, key: string): boolean {
-  return key === 'status' || fieldOf(spec, key) !== undefined
+  return key === 'status' || fieldOfKey(spec.fields, key) !== undefined
 }
 
 const STATE_WORD = { open: 'Open', closed: 'Closed', merged: 'Merged' } as const
-
-/** A number as both clients print it (§2.7). */
-function numText(n: number): string {
-  return String(n)
-}
 
 interface Section {
   readonly key: string
@@ -72,85 +63,94 @@ interface Section {
   readonly rows: readonly BoardRow[]
 }
 
-export function BoardTable({ state, spec, view, items, placements, onOpenItem, onViewChange, home, labels }: BoardLayoutProps): JSX.Element {
+/** A cell: its section, its item and its column key. */
+interface CellRef {
+  readonly section: string
+  readonly item: string
+  readonly col: string
+}
+
+const sameCell = (a: CellRef | null, b: CellRef): boolean => a !== null && a.section === b.section && a.item === b.item && a.col === b.col
+
+export function BoardTable({ state, spec, view, rows, items, onOpenItem, onViewChange, home, labels }: BoardLayoutProps): JSX.Element {
   const cols = useMemo(() => tableColumns(spec, view), [spec, view])
   const hidden = state.items?.hidden
   const sumField = sumFieldOf(spec, view)
-  const sumName = sumField === null ? null : (spec.fields.find((f) => f.id === sumField)?.name ?? null)
+  const sumName = sumField === null ? null : (fieldById(spec, sumField)?.name ?? null)
   const multiRepo = useMemo(() => new Set(items.map((i) => i.repoId)).size > 1, [items])
   const sections: Section[] = useMemo(() => {
-    const rows = items.flatMap((item): BoardRow[] => {
-      const placement = placements.get(item.id)
-      return placement === undefined ? [] : [{ item, placement }]
-    })
     const sorted = sortRows(rows, view.sort, spec)
     if (view.group === undefined) return [{ key: 'all', group: null, rows: sorted }]
     const byId = new Map(sorted.map((r) => [r.item.id, r]))
     return groupRows(sorted, view.group, spec, state.now).map((g) => ({ key: `g:${String(g.key)}`, group: g.key, rows: g.items.map((id) => byId.get(id) as BoardRow) }))
-  }, [items, placements, view.sort, view.group, spec, state.now])
+  }, [rows, view.sort, view.group, spec, state.now])
   // The grid's rows in order (an item in two groups, by assignee or label, is a row in each).
   const flat = useMemo(() => sections.flatMap((s) => s.rows.map((r) => ({ section: s.key, row: r }))), [sections])
 
-  const [active, setActive] = useState({ r: 0, c: 0 })
-  const [editing, setEditing] = useState<{ r: number; c: number } | null>(null)
+  const [active, setActive] = useState<CellRef | null>(null)
+  const [editing, setEditing] = useState<CellRef | null>(null)
   const refocus = useRef(false)
   const gridRef = useRef<HTMLTableElement>(null)
-  const [confirm, confirmElement] = useConfirmAction()
-  const r = Math.min(active.r, Math.max(0, flat.length - 1))
-  const c = Math.min(active.c, cols.length - 1)
+  // The cell in focus by position: the active one while its row is shown, else the first.
+  const at = (() => {
+    const r = active === null ? -1 : flat.findIndex((f) => f.section === active.section && f.row.item.id === active.item)
+    const c = active === null ? -1 : cols.indexOf(active.col)
+    return { r: Math.max(0, r), c: Math.max(0, c) }
+  })()
+  const cellAt = (r: number, c: number): CellRef | null => {
+    const f = flat[r]
+    const col = cols[c]
+    return f === undefined || col === undefined ? null : { section: f.section, item: f.row.item.id, col }
+  }
+  const cellEl = (ref: CellRef | null): HTMLElement | null => {
+    if (ref === null) return null
+    // matched by dataset, not a selector: a section's key holds a label or milestone name as is
+    const row = [...(gridRef.current?.querySelectorAll<HTMLElement>('tr[data-item]') ?? [])].find((tr) => tr.dataset['section'] === ref.section && tr.dataset['item'] === ref.item)
+    return [...(row?.querySelectorAll<HTMLElement>('td[data-col]') ?? [])].find((td) => td.dataset['col'] === ref.col) ?? null
+  }
 
-  const cellEl = (row: number, col: number): HTMLElement | null => gridRef.current?.querySelector<HTMLElement>(`[data-cell="${row}:${col}"]`) ?? null
+  // After an edit ends with Enter, Escape or a pick, its editor is gone and focus with it: put it
+  // back on the cell. An edit ended by leaving it (Tab, a click elsewhere) leaves focus there.
   useEffect(() => {
     if (!refocus.current) return
     refocus.current = false
-    cellEl(r, c)?.focus()
+    const target = cellAt(at.r, at.c)
+    const t = setTimeout(() => {
+      const a = document.activeElement
+      if (a === null || a === document.body) cellEl(target)?.focus()
+    }, 0)
+    return () => clearTimeout(t)
   })
 
-  const move = (row: number, col: number): void => {
-    const nr = Math.max(0, Math.min(flat.length - 1, row))
-    const nc = Math.max(0, Math.min(cols.length - 1, col))
-    setActive({ r: nr, c: nc })
-    cellEl(nr, nc)?.focus()
+  const move = (r: number, c: number): void => {
+    const next = cellAt(Math.max(0, Math.min(flat.length - 1, r)), Math.max(0, Math.min(cols.length - 1, c)))
+    if (next === null) return
+    setActive(next)
+    cellEl(next)?.focus()
   }
 
   const canEdit = (item: BoardItem, key: string): boolean => state.can.place && hidden?.has(item.id) !== true && editableKey(spec, key)
-
-  const write = async (item: BoardItem, patch: CardPatch): Promise<void> => {
-    const board = state.board
-    let confirmCrossRepo = false
-    const homeRepo = home ?? (board === null ? null : { repoId: board.repoId, visibility: board.sealed ? 'private' : 'public' })
-    if (homeRepo !== null && crossRepoCardNeedsConfirm(homeRepo, item.repoId)) {
-      const ok = await confirm({
-        title: 'Place an item of another repo',
-        body: 'This board is in a private repo. Placing this item on it shows everyone that this repo tracks it.',
-        confirmLabel: 'Place it',
-        tone: 'primary',
-      })
-      if (!ok) return
-      confirmCrossRepo = true
-    }
-    // A refusal is taken back and reported by the board (`state.refusal`).
-    await state.write({ id: item.id, repoId: item.repoId }, patch, confirmCrossRepo ? { confirmCrossRepo } : undefined).catch(() => undefined)
-  }
 
   const endEdit = (): void => {
     refocus.current = true
     setEditing(null)
   }
 
-  const commit = (item: BoardItem, key: string, value: FieldValue | null | number): void => {
+  const commit = (item: BoardItem, key: string, value: FieldValue | null): void => {
     endEdit()
-    if (key === 'status') void write(item, { col: value as number })
-    else {
-      const field = fieldOf(spec, key)
-      if (field !== undefined) void write(item, { fields: { [field.id]: value } })
-    }
+    const patch: CardPatch | null = key === 'status' ? { col: value as number } : (() => {
+      const field = fieldOfKey(spec.fields, key)
+      return field === undefined ? null : { fields: { [field.id]: value } }
+    })()
+    // A refusal is taken back and reported by the board (`state.refusal`).
+    if (patch !== null) void state.write({ id: item.id, repoId: item.repoId }, patch).catch(() => undefined)
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTableElement>): void => {
     if (editing !== null) return
     const target = e.target as HTMLElement
-    if (target.dataset['cell'] === undefined) return
+    if (target.dataset['col'] === undefined) return
+    const { r, c } = at
     const item = flat[r]?.row.item
     switch (e.key) {
       case 'ArrowDown':
@@ -180,7 +180,7 @@ export function BoardTable({ state, spec, view, items, placements, onOpenItem, o
       case 'Enter':
       case 'F2': {
         const key = cols[c] as string
-        if (item !== undefined && canEdit(item, key)) setEditing({ r, c })
+        if (item !== undefined && canEdit(item, key)) setEditing(cellAt(r, c))
         else if (item !== undefined && e.key === 'Enter') onOpenItem(item.id)
         break
       }
@@ -197,17 +197,17 @@ export function BoardTable({ state, spec, view, items, placements, onOpenItem, o
     return <EmptyState icon={Table2} title="No items match" body="Items this view's filter matches show here, one per row." />
   }
 
-  let rowIndex = -1
+  const focusAt = cellAt(at.r, at.c)
   return (
     <div data-testid="board-table">
       <ScrollRegion label="Board table" className="max-h-[calc(100vh-14rem)] min-h-[12rem] overflow-auto rounded-lg border border-anvil-200 dark:border-anvil-800">
-        <table ref={gridRef} role="grid" aria-label="Board items" aria-rowcount={flat.length + 1} aria-colcount={cols.length} className="w-full border-separate border-spacing-0 text-dense" onKeyDown={onKeyDown}>
+        <table ref={gridRef} role="grid" aria-label="Board items" aria-colcount={cols.length} className="w-full border-separate border-spacing-0 text-dense" onKeyDown={onKeyDown}>
           <thead>
             <tr role="row">
               {cols.map((key, ci) => {
                 const sorted = sortKey === key
                 const label = viewKeyLabel(spec, key)
-                const sortable = key !== 'labels' && key !== 'assignees' && key !== 'state'
+                const sortable = sortKeyOk(spec.fields, key)
                 const Icon = sorted ? (desc ? ArrowDown : ArrowUp) : ArrowUpDown
                 return (
                   <th
@@ -256,7 +256,7 @@ export function BoardTable({ state, spec, view, items, placements, onOpenItem, o
                         </span>
                         {t.sum !== null && sumName !== null ? (
                           <span className="text-[12px] font-normal text-anvil-500 dark:text-anvil-400" data-testid="section-sum">
-                            {sumName}: <span className="font-mono tabular-nums text-anvil-700 dark:text-anvil-200">{numText(t.sum)}</span>
+                            {sumName}: <span className="font-mono tabular-nums text-anvil-700 dark:text-anvil-200">{String(t.sum)}</span>
                           </span>
                         ) : null}
                       </span>
@@ -264,36 +264,36 @@ export function BoardTable({ state, spec, view, items, placements, onOpenItem, o
                   </tr>
                 ) : null}
                 {s.rows.map(({ item, placement }) => {
-                  rowIndex++
-                  const ri = rowIndex
                   const priv = hidden?.has(item.id) === true
                   const pending = state.pending.has(item.id)
                   return (
                     <tr
                       key={`${s.key}:${item.id}`}
                       role="row"
-                      aria-rowindex={ri + 2}
+                      data-section={s.key}
                       data-item={item.id}
                       className={cn('group/row', placement.archived !== null && 'text-anvil-500 dark:text-anvil-400', pending && 'opacity-70')}
                       aria-busy={pending || undefined}
                     >
                       {cols.map((key, ci) => {
-                        const isActive = ri === r && ci === c
-                        const isEditing = editing !== null && editing.r === ri && editing.c === ci
+                        const here: CellRef = { section: s.key, item: item.id, col: key }
+                        const isActive = focusAt !== null && sameCell(focusAt, here)
+                        const isEditing = sameCell(editing, here)
                         const editable = canEdit(item, key)
                         return (
                           <td
                             key={key}
                             role="gridcell"
                             tabIndex={isActive && !isEditing ? 0 : -1}
-                            data-cell={`${ri}:${ci}`}
+                            data-col={key}
                             aria-readonly={editable ? undefined : true}
                             onFocus={() => {
-                              if (!isActive) setActive({ r: ri, c: ci })
+                              if (!isActive) setActive(here)
                             }}
                             onClick={() => {
-                              setActive({ r: ri, c: ci })
-                              if (editable) setEditing({ r: ri, c: ci })
+                              setActive(here)
+                              if (isEditing) return
+                              if (editable) setEditing(here)
                               else onOpenItem(item.id)
                             }}
                             className={cn(
@@ -303,7 +303,7 @@ export function BoardTable({ state, spec, view, items, placements, onOpenItem, o
                             )}
                           >
                             {isEditing ? (
-                              <EditCell spec={spec} item={item} keyName={key} value={key === 'status' ? placement.col : placement.fields[String(fieldOf(spec, key)?.id)]} now={state.now} onCommit={(v) => commit(item, key, v)} onCancel={endEdit} />
+                              <EditCell spec={spec} item={item} keyName={key} value={key === 'status' ? placement.col : placement.fields[String(fieldOfKey(spec.fields, key)?.id)]} now={state.now} onCommit={(v) => commit(item, key, v)} onCancel={endEdit} />
                             ) : (
                               <Cell spec={spec} item={item} keyName={key} placement={placement} priv={priv} pending={pending} multiRepo={multiRepo} labels={home === undefined || item.repoId === home.repoId ? labels : undefined} />
                             )}
@@ -318,16 +318,15 @@ export function BoardTable({ state, spec, view, items, placements, onOpenItem, o
           })}
         </table>
       </ScrollRegion>
-      {confirmElement}
     </div>
   )
 }
 
 /** The editor of one cell: the Status select, or the field's input. */
-function EditCell({ spec, item, keyName, value, now, onCommit, onCancel }: { spec: BoardSpec; item: BoardItem; keyName: string; value: FieldValue | number | undefined; now: number; onCommit: (v: FieldValue | null) => void; onCancel: () => void }): JSX.Element | null {
+function EditCell({ spec, item, keyName, value, now, onCommit, onCancel }: { spec: BoardSpec; item: BoardItem; keyName: string; value: FieldValue | undefined; now: number; onCommit: (v: FieldValue | null) => void; onCancel: () => void }): JSX.Element | null {
   const label = `${viewKeyLabel(spec, keyName)} of #${item.number}`
-  if (keyName === 'status') return <StatusSelect spec={spec} value={value as number} label={label} autoFocus onChange={onCommit} onCancel={onCancel} className="py-0.5" />
-  const field = fieldOf(spec, keyName)
+  if (keyName === 'status') return <StatusSelect spec={spec} value={value as number} closed={item.state !== 'open'} label={label} autoFocus onChange={onCommit} onCancel={onCancel} className="py-0.5" />
+  const field = fieldOfKey(spec.fields, keyName)
   if (field === undefined) return null
   return <FieldInput field={field} value={value} now={now} label={label} autoFocus onCommit={onCommit} onCancel={onCancel} className="py-0.5" />
 }
@@ -343,11 +342,7 @@ function Cell({ spec, item, keyName, placement, priv, pending, multiRepo, labels
           <span className={cn('min-w-0 truncate', priv ? 'italic text-anvil-500 dark:text-anvil-400' : 'font-medium text-anvil-900 dark:text-anvil-50')} title={priv ? undefined : item.title}>
             {priv ? 'A private item' : item.title}
           </span>
-          {!priv ? (
-            <span className={cn('shrink-0 font-mono text-[12px]', muted)}>
-              {multiRepo && item.repo !== undefined ? `${item.repo}#${item.number}` : `#${item.number}`}
-            </span>
-          ) : null}
+          {!priv ? <span className={cn('shrink-0 font-mono text-[12px]', muted)}>{multiRepo && item.repo !== undefined ? `${item.repo}#${item.number}` : `#${item.number}`}</span> : null}
           {placement.archived !== null ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-anvil-300 px-1.5 text-[11px] text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="archived-badge">
               <Archive className="h-3 w-3" aria-hidden /> Archived
@@ -382,30 +377,21 @@ function Cell({ spec, item, keyName, placement, priv, pending, multiRepo, labels
     case 'milestone':
       return <span className="truncate">{item.milestone ?? ''}</span>
     case 'created':
-      return <span className={cn('whitespace-nowrap', muted)}>{priv ? '' : dayText(new Date(item.createdAt).toISOString().slice(0, 10))}</span>
+      return <span className={cn('whitespace-nowrap', muted)}>{priv ? '' : dayText(dateOf(item.createdAt))}</span>
     case 'status': {
       const col = spec.columns.find((x) => x.id === placement.col)
       return (
-        <span className="inline-flex min-w-0 items-center gap-1.5">
-          <ColorDot color={col?.color} />
-          <span className={cn('truncate', col === undefined && muted)}>{col?.name ?? 'No status'}</span>
-        </span>
+        <DotLabel color={col?.color} className={col === undefined ? muted : undefined}>
+          {col?.name ?? 'No status'}
+        </DotLabel>
       )
     }
     default: {
-      const field = fieldOf(spec, keyName)
+      const field = fieldOfKey(spec.fields, keyName)
       if (field === undefined) return null
       const v = placement.fields[String(field.id)]
       const text = fieldValueText(field, v)
-      if (field.type === 'sel' && v !== undefined) {
-        const opt = field.options?.find((o) => o.id === v)
-        return (
-          <span className="inline-flex min-w-0 items-center gap-1.5">
-            <ColorDot color={opt?.color} />
-            <span className="truncate">{text}</span>
-          </span>
-        )
-      }
+      if (field.type === 'sel' && v !== undefined) return <DotLabel color={field.options?.find((o) => o.id === v)?.color}>{text}</DotLabel>
       return <span className={cn('block truncate', field.type === 'num' && 'text-right font-mono tabular-nums')}>{text}</span>
     }
   }

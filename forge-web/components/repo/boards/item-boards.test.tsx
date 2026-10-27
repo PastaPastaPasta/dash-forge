@@ -32,6 +32,7 @@ vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () =>
 vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role, known: true, failed: false, retry: () => undefined }) }))
 vi.mock('@/lib/spend-toast', () => ({ spendAction: (_labels: unknown, run: (tag: (s: unknown) => unknown) => Promise<unknown>) => run((s) => s) }))
 vi.mock('@/hooks/use-board', () => ({
+  useBoardsDeployed: (forge: { meta?: string } | undefined) => forge?.meta !== undefined,
   useItemBoards: (_repo: unknown, item: BoardItem | null) => {
     seenItems.push(item)
     return { data: item === null ? null : entries, loading: false, error: null, cause: null, settled: true, reload: () => undefined, write, addTo }

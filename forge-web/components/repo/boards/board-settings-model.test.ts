@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { defaultSpec, parseSpec, serializeSpec, SPEC_MAX_BYTES, type BoardSpec } from '@/lib/rules/boards'
 import { BOARD_TEMPLATES, boardTemplate } from './board-templates'
-import { cleanView, moved, nameProblem, nextId, sameSpec, specBytes, trimNames, withoutColumn, withoutField } from './board-settings-model'
+import { clampedInt, cleanView, entryProblem, hasNameProblems, moved, nameProblem, newEntry, nextId, sameSpec, specBytes, trimNames, usedIds, withoutColumn, withoutField } from './board-settings-model'
 
 const HOME = 'Home1111111111111111111111111111111111111111'
 const NOW = Date.UTC(2026, 9, 27, 12)
@@ -32,12 +32,31 @@ describe('board templates', () => {
   })
 })
 
-describe('nextId and moved', () => {
-  it('takes one past the highest id, else the lowest free one', () => {
+describe('ids never come back', () => {
+  it('takes one past every id the entries, the saved board and the cards name; none past 255', () => {
     expect(nextId([])).toBe(1)
     expect(nextId([{ id: 1 }, { id: 5 }])).toBe(6)
-    expect(nextId([{ id: 255 }, { id: 1 }])).toBe(2)
-    expect(nextId(Array.from({ length: 255 }, (_, i) => ({ id: i + 1 })))).toBeNull()
+    // column 3 was deleted in the draft, but cards still name it
+    expect(nextId([{ id: 1 }, { id: 2 }], [3])).toBe(4)
+    expect(nextId([{ id: 255 }, { id: 1 }])).toBeNull()
+    expect(nextId([{ id: 1 }], [255])).toBeNull()
+  })
+  it('reads the ids cards name: columns, fields and each field’s option values', () => {
+    const cards = [
+      { col: 7, f: JSON.stringify({ 1: 9, 2: 3.5, 12: 'x' }) },
+      { col: null, f: '{"5":4,"abc":1,"300":2}' },
+      { col: 0, f: 'not json' },
+    ]
+    const used = usedIds(cards, SPEC)
+    expect([...used.columns].sort((a, b) => a - b)).toEqual([1, 2, 3, 7])
+    expect([...used.fields].sort((a, b) => a - b)).toEqual([1, 2, 3, 5, 12])
+    expect([...(used.options.get(1) ?? [])].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 9])
+    expect([...(used.options.get(5) ?? [])]).toEqual([4])
+  })
+  it('names a new entry after its noun, and none when no id is left', () => {
+    expect(newEntry(SPEC.columns, 'Column', [7])).toEqual({ id: 8, name: 'Column 4' })
+    expect(newEntry([{ id: 1, name: 'column 2' }], 'Column')).toEqual({ id: 2, name: 'Column 3' })
+    expect(newEntry([{ id: 255, name: 'x' }], 'Column')).toBeNull()
   })
   it('moves an entry and leaves bad moves alone', () => {
     expect(moved(['a', 'b', 'c'], 0, 2)).toEqual(['b', 'c', 'a'])
@@ -59,6 +78,16 @@ describe('nameProblem', () => {
     expect(nameProblem('Status', [], 'field')).toBe('“Status” is a built-in field.')
     // a column may be called Status
     expect(nameProblem('Status', [], 'column')).toBeNull()
+    expect(entryProblem([{ id: 1, name: 'Todo ' }, { id: 2, name: 'todo' }], { id: 2, name: 'todo' }, 'column')).toBe('Another column has this name.')
+    expect(hasNameProblems(SPEC)).toBe(false)
+    expect(hasNameProblems({ ...SPEC, views: [{ id: 1, name: 'A', layout: 'board', q: '' }, { id: 2, name: 'a', layout: 'board', q: '' }] })).toBe(true)
+  })
+  it('reads a typed whole number when it is left, clamped', () => {
+    expect(clampedInt('21', 1, 90)).toBe(21)
+    expect(clampedInt('121', 1, 90)).toBe(90)
+    expect(clampedInt('0', 1, 90)).toBe(1)
+    expect(clampedInt('', 1, 90)).toBeNull()
+    expect(clampedInt('1.5', 1, 90)).toBeNull()
   })
 })
 
@@ -71,6 +100,9 @@ describe('deleting what views point at', () => {
     expect(out.views.find((v) => v.id === 2)?.cols).toEqual(['title', 'status', 'assignees', 'f2'])
     expect(out.views.find((v) => v.id === 4)).toEqual({ id: 4, name: 'By priority', layout: 'board', q: '', sort: '-f2' })
     expect('json' in serializeSpec(out)).toBe(true)
+  })
+  it('drops a table column list that empties (the default columns show)', () => {
+    expect(cleanView({ id: 1, name: 'V', layout: 'table', q: '', cols: ['f9'] }, SPEC.fields)).toEqual({ id: 1, name: 'V', layout: 'table', q: '' })
   })
   it('drops a grouping the board layout does not take', () => {
     expect(cleanView({ id: 1, name: 'V', layout: 'board', q: '', group: 'assignee' }, SPEC.fields)).toEqual({ id: 1, name: 'V', layout: 'board', q: '' })
@@ -92,7 +124,8 @@ describe('size and sameness', () => {
     expect(specBytes({ ...SPEC, columns: [] })).toBeNull()
   })
   it('compares by the written bytes, and trims names', () => {
-    expect(sameSpec(SPEC, { ...SPEC, desc: undefined })).toBe(true)
+    expect(sameSpec(SPEC, { ...SPEC, desc: '' })).toBe(true)
+    expect(sameSpec(SPEC, { ...SPEC, desc: 'x' })).toBe(false)
     expect(sameSpec(SPEC, { ...SPEC, arch: 0 })).toBe(false)
     const padded = trimNames({ ...SPEC, columns: [{ id: 1, name: ' Todo ' }] })
     expect(padded.columns[0]?.name).toBe('Todo')

@@ -19,17 +19,16 @@ import { Archive, KanbanSquare, Plus } from 'lucide-react'
 import { canPlaceCards, type BoardView, type CardPatch, type RepoRef } from '@/lib/repo'
 import type { BoardItem, FieldValue } from '@/lib/rules/boards'
 import { priceBoardWrites } from '@/lib/sdk'
-import { useBoards, useItemBoards, type ItemBoardPlacement } from '@/hooks/use-board'
+import { useBoards, useBoardsDeployed, useItemBoards, type ItemBoardPlacement } from '@/hooks/use-board'
 import { useInView } from '@/hooks/use-in-view'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useAuth } from '@/contexts/auth-context'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { SidebarSection, useDismiss } from '@/components/repo/target-rail'
-import { hasBoards } from '@/components/repo/repo-header'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Spinner } from '@/components/ui/states'
 import { cn, errorMessage } from '@/lib/utils'
-import { ColorDot, FieldInput, StatusSelect, boardHref, columnName, fieldValueText } from './board-fields'
+import { DotLabel, FieldInput, StatusSelect, boardHref, columnName, fieldValueText } from './board-fields'
 
 /** The address of a board's home: the item's own repository, or another of its owner's. */
 function homeAddr(addr: RepoAddress, repo: RepoRef, home: RepoRef): RepoAddress {
@@ -37,7 +36,8 @@ function homeAddr(addr: RepoAddress, repo: RepoRef, home: RepoRef): RepoAddress 
 }
 
 export function ItemBoards({ repo, addr, item }: { repo: RepoRef; addr: RepoAddress | undefined; item: BoardItem }): JSX.Element | null {
-  if (!hasBoards(repo.forge)) return null
+  // only where the network's forge-meta has boards (read from the SDK's contract cache)
+  if (useBoardsDeployed(repo.forge) !== true) return null
   return <ItemBoardsSection repo={repo} addr={addr} item={item} />
 }
 
@@ -55,7 +55,7 @@ function ItemBoardsSection({ repo, addr, item }: { repo: RepoRef; addr: RepoAddr
           <Spinner label="Reading boards" className="text-[12px]" />
         ) : boards.error !== null ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            The boards could not be read.{' '}
+            This page couldn&apos;t read the boards.{' '}
             <button type="button" onClick={boards.reload} className="text-forge-700 hover:underline dark:text-forge-400">
               Try again
             </button>
@@ -63,16 +63,24 @@ function ItemBoardsSection({ repo, addr, item }: { repo: RepoRef; addr: RepoAddr
         ) : entries.length === 0 ? (
           <p className="text-anvil-500 dark:text-anvil-400">None yet</p>
         ) : (
-          entries.map((e) => <ItemBoardEntry key={`${e.home.repoId}:${e.board.key}`} entry={e} repo={repo} addr={addr} write={boards.write} />)
+          entries.map((e) => <ItemBoardEntry key={`${e.home.repoId}:${e.board.key}`} entry={e} repo={repo} addr={addr} closed={item.state !== 'open'} write={boards.write} />)
         )}
-        {canAdd && seen ? <AddToBoard repo={repo} on={new Set((boards.data ?? []).filter((e) => e.home.repoId === repo.repoId && e.placement?.on !== false).map((e) => e.board.key))} addTo={boards.addTo} /> : null}
+        {canAdd && seen ? (
+          <AddToBoard
+            repo={repo}
+            on={new Set((boards.data ?? []).filter((e) => e.home.repoId === repo.repoId && e.placement?.on !== false).map((e) => e.board.key))}
+            // a board the signer already has a card on (removed from it) is a replace, not a create
+            mine={new Set((boards.data ?? []).filter((e) => e.home.repoId === repo.repoId && signer !== null && e.cards.some((c) => c.ownerId === signer.identityId)).map((e) => e.board.key))}
+            addTo={boards.addTo}
+          />
+        ) : null}
       </div>
     </SidebarSection>
   )
 }
 
 /** One board the item is on: its name, and the item's Status and fields there. */
-function ItemBoardEntry({ entry, repo, addr, write }: { entry: ItemBoardPlacement; repo: RepoRef; addr: RepoAddress | undefined; write: ReturnType<typeof useItemBoards>['write'] }): JSX.Element {
+function ItemBoardEntry({ entry, repo, addr, closed, write }: { entry: ItemBoardPlacement; repo: RepoRef; addr: RepoAddress | undefined; closed: boolean; write: ReturnType<typeof useItemBoards>['write'] }): JSX.Element {
   const { board, placement } = entry
   const spec = board.spec
   const { role } = useViewerRole(entry.home)
@@ -80,22 +88,28 @@ function ItemBoardEntry({ entry, repo, addr, write }: { entry: ItemBoardPlacemen
   const can = signer !== null && canPlaceCards(role) && board.state === 'open' && spec !== null
   // What this page wrote, shown until the re-read (every board write re-reads the list) has it.
   const [shown, setShown] = useState<{ col?: number; fields: Record<string, FieldValue | null> }>({ fields: {} })
-  const [busy, setBusy] = useState(false)
+  // writes in flight (queued per item by the hook, so each lands over the one before)
+  const [busy, setBusy] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const version = `${entry.card?.id ?? ''}:${entry.card?.updatedAt ?? 0}`
-  useEffect(() => setShown({ fields: {} }), [version])
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  // a re-read of the card with every write landed shows what was written
+  useEffect(() => {
+    if (busyRef.current === 0) setShown({ fields: {} })
+  }, [version])
   const href = addr === undefined ? null : boardHref(homeAddr(addr, repo, entry.home), board.key)
   const name = board.name ?? 'Encrypted board'
-  const apply = (patch: CardPatch, show: { col?: number; fields?: Record<string, FieldValue | null> }): void => {
-    setShown((s) => ({ ...s, ...(show.col !== undefined ? { col: show.col } : {}), fields: { ...s.fields, ...show.fields } }))
-    setBusy(true)
+  const apply = (patch: CardPatch): void => {
+    setShown((s) => ({ ...s, ...(patch.col !== undefined ? { col: patch.col } : {}), fields: { ...s.fields, ...patch.fields } }))
+    setBusy((n) => n + 1)
     setError(null)
     write(entry, patch)
       .catch((e: unknown) => {
         setShown({ fields: {} })
         setError(errorMessage(e))
       })
-      .finally(() => setBusy(false))
+      .finally(() => setBusy((n) => n - 1))
   }
   const col = shown.col ?? placement?.col ?? 0
   const valueOf = (id: number): FieldValue | undefined => {
@@ -116,7 +130,7 @@ function ItemBoardEntry({ entry, repo, addr, write }: { entry: ItemBoardPlacemen
         )}
         {entry.home.repoId !== repo.repoId ? <span className="shrink-0 font-mono text-[11px] text-anvil-500 dark:text-anvil-400">{entry.home.name}</span> : null}
         {board.state === 'closed' ? <span className="shrink-0 rounded-full border border-anvil-300 px-1.5 text-[11px] text-anvil-600 dark:border-anvil-700 dark:text-anvil-300">Closed</span> : null}
-        {busy ? <Spinner label="Saving" className="ml-auto shrink-0 text-[11px]" /> : null}
+        {busy > 0 ? <Spinner label="Saving" className="ml-auto shrink-0 text-[11px]" /> : null}
       </div>
       {spec === null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">This board can&apos;t be read here.</p>
@@ -125,18 +139,17 @@ function ItemBoardEntry({ entry, repo, addr, write }: { entry: ItemBoardPlacemen
           <dt className="text-anvil-500 dark:text-anvil-400">Status</dt>
           <dd className="min-w-0">
             {can ? (
-              <StatusSelect spec={spec} value={col} label={`Status on ${name}`} onChange={(c) => apply({ col: c }, { col: c })} className="py-0.5 text-[12px]" />
+              <StatusSelect spec={spec} value={col} closed={closed} label={`Status on ${name}`} onChange={(c) => apply({ col: c })} className="py-0.5 text-[12px]" />
             ) : (
-              <span className="inline-flex min-w-0 items-center gap-1.5">
-                <ColorDot color={spec.columns.find((c) => c.id === col)?.color} />
-                <span className="truncate text-anvil-800 dark:text-anvil-100">{columnName(spec, col)}</span>
-              </span>
+              <DotLabel color={spec.columns.find((c) => c.id === col)?.color} className="text-anvil-800 dark:text-anvil-100">
+                {columnName(spec, col)}
+              </DotLabel>
             )}
           </dd>
           {fields.map((f) => (
             <FieldRow key={f.id} name={f.name}>
               {can ? (
-                <FieldInput field={f} value={valueOf(f.id)} now={Date.now()} label={`${f.name} on ${name}`} onCommit={(v) => apply({ fields: { [f.id]: v } }, { fields: { [String(f.id)]: v } })} className="py-0.5 text-[12px]" />
+                <FieldInput field={f} value={valueOf(f.id)} now={Date.now()} label={`${f.name} on ${name}`} onCommit={(v) => apply({ fields: { [f.id]: v } })} className="py-0.5 text-[12px]" />
               ) : (
                 <span className="truncate text-anvil-800 dark:text-anvil-100">{fieldValueText(f, valueOf(f.id))}</span>
               )}
@@ -170,7 +183,7 @@ function FieldRow({ name, children }: { name: string; children: React.ReactNode 
 }
 
 /** "Add to board": the repository's other open boards (read when the menu opens), one priced card write. */
-function AddToBoard({ repo, on, addTo }: { repo: RepoRef; on: ReadonlySet<number>; addTo: ReturnType<typeof useItemBoards>['addTo'] }): JSX.Element {
+function AddToBoard({ repo, on, mine, addTo }: { repo: RepoRef; on: ReadonlySet<number>; mine: ReadonlySet<number>; addTo: ReturnType<typeof useItemBoards>['addTo'] }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [chosen, setChosen] = useState<BoardView | null>(null)
   const ref = useRef<HTMLDivElement>(null)
@@ -191,8 +204,8 @@ function AddToBoard({ repo, on, addTo }: { repo: RepoRef; on: ReadonlySet<number
         open={chosen !== null}
         onClose={() => setChosen(null)}
         title={`Add to “${chosen?.name ?? ''}”`}
-        description="It goes into the board's default column."
-        cost={priceBoardWrites(1, 0, { sealed: repo.visibility === 'private' })}
+        description="The item joins the board in its default column, or in Done once closed."
+        cost={chosen !== null && mine.has(chosen.key) ? priceBoardWrites(0, 1, { sealed: repo.visibility === 'private' }) : priceBoardWrites(1, 0, { sealed: repo.visibility === 'private' })}
         confirmLabel="Sign & add"
         successNote="Added"
         onConfirm={async (intent) => {
@@ -211,7 +224,7 @@ function BoardMenu({ repo, on, onChoose }: { repo: RepoRef; on: ReadonlySet<numb
       {boards.data === null && boards.error === null ? (
         <Spinner label="Reading boards" className="px-3 py-1.5 text-[12px]" />
       ) : boards.error !== null ? (
-        <p className="px-3 py-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">The boards could not be read.</p>
+        <p className="px-3 py-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">This page couldn&apos;t read the boards.</p>
       ) : choices.length === 0 ? (
         <p className="px-3 py-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">No other open boards in this repo.</p>
       ) : (

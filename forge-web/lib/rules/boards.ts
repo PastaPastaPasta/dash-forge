@@ -62,7 +62,8 @@ export const RANK_MAX = 63
 /** Ranks are re-spread for at most this many items at once. */
 export const RERANK_MAX = 1_000_000
 
-const DAY_MS = 86_400_000
+/** A day in milliseconds (dates are UTC days). */
+export const DAY_MS = 86_400_000
 
 /** `s`'s length in UTF-8 bytes (what the contract's `maxBytes` counts). */
 function utf8Length(s: string): number {
@@ -87,7 +88,7 @@ function isSpace(cp: number): boolean {
 }
 
 /** C0, DEL and C1 control characters. */
-function isControl(cp: number): boolean {
+export function isControl(cp: number): boolean {
   return cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)
 }
 
@@ -311,12 +312,12 @@ export type SpecResult = { readonly spec: BoardSpec } | { readonly error: SpecEr
  * Names a field may not have, in any letter case: the query's own keys and the built-in fields
  * (§2.2, §4.4), so `<field>:<value>` is never ambiguous.
  */
-const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set([
+export const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set([
   'is', 'state', 'label', 'labels', 'assignee', 'assignees', 'author', 'milestone', 'no', 'status', 'repo', 'repository', 'title', 'number', 'created',
 ])
 
 const FIELD_TYPES: readonly FieldType[] = ['sel', 'num', 'date', 'iter', 'text']
-const LAYOUTS: readonly ViewLayout[] = ['board', 'table', 'roadmap']
+export const LAYOUTS: readonly ViewLayout[] = ['board', 'table', 'roadmap']
 const GROUP_BUILTINS = ['status', 'assignee', 'label', 'milestone', 'repo']
 const SORT_BUILTINS = ['rank', 'title', 'number', 'created', 'status', 'repo', 'author', 'milestone']
 const COL_BUILTINS = ['title', 'number', 'repo', 'state', 'author', 'assignees', 'labels', 'milestone', 'created', 'status']
@@ -334,25 +335,37 @@ export function fieldById(spec: BoardSpec, id: number): BoardField | undefined {
   return spec.fields.find((f) => f.id === id)
 }
 
-function fieldOfKey(fields: readonly BoardField[], key: string): BoardField | undefined {
+/** The field a `f<id>` view key names in `fields`, or undefined. */
+export function fieldOfKey(fields: readonly BoardField[], key: string): BoardField | undefined {
   const id = fieldKeyId(key)
   return id === null ? undefined : fields.find((f) => f.id === id)
 }
 
-function groupKeyOk(fields: readonly BoardField[], key: string, boardLayout: boolean): boolean {
+/** Whether `key` may group a view (§2.7): Status, a built-in (not on the board layout), a `sel` / `iter` field. */
+export function groupKeyOk(fields: readonly BoardField[], key: string, boardLayout: boolean): boolean {
   if (key === 'status') return true
   if (GROUP_BUILTINS.includes(key)) return !boardLayout
   const f = fieldOfKey(fields, key)
   return f !== undefined && (f.type === 'sel' || f.type === 'iter')
 }
 
-function sortKeyOk(fields: readonly BoardField[], key: string): boolean {
+/** Whether `key` (a leading `-` for descending) may sort a view (§2.7). */
+export function sortKeyOk(fields: readonly BoardField[], key: string): boolean {
   const k = key.startsWith('-') ? key.slice(1) : key
   return SORT_BUILTINS.includes(k) || fieldOfKey(fields, k) !== undefined
 }
 
-function colKeyOk(fields: readonly BoardField[], key: string): boolean {
+/** Whether `key` may be one of a view's `cols` (§2.7). */
+export function colKeyOk(fields: readonly BoardField[], key: string): boolean {
   return COL_BUILTINS.includes(key) || fieldOfKey(fields, key) !== undefined
+}
+
+/** Whether a view's roadmap `date` (§2.7) is one `iter` field or two different `date` fields of `fields`. */
+export function viewDatesOk(fields: readonly BoardField[], date: readonly number[]): boolean {
+  const types = date.map((d) => fields.find((f) => f.id === d)?.type)
+  const iter = types.length === 1 && types[0] === 'iter'
+  const range = types.length === 2 && types[0] === 'date' && types[1] === 'date' && date[0] !== date[1]
+  return iter || range
 }
 
 /** Whether `names` (compared in lower case) and `ids` repeat. */
@@ -463,11 +476,7 @@ function parseViews(v: unknown, fields: readonly BoardField[]): BoardView[] {
       if (cols.some((c) => typeof c !== 'string' || !colKeyOk(fields, c)) || new Set(cols).size !== cols.length) refuse('view')
     }
     if (date !== undefined) {
-      if (!Array.isArray(date) || !date.every((d) => isInt(d, 1, 255))) refuse('view')
-      const types = date.map((d) => fields.find((f) => f.id === d)?.type)
-      const iter = types.length === 1 && types[0] === 'iter'
-      const range = types.length === 2 && types[0] === 'date' && types[1] === 'date' && date[0] !== date[1]
-      if (!iter && !range) refuse('view')
+      if (!Array.isArray(date) || !date.every((d) => isInt(d, 1, 255)) || !viewDatesOk(fields, date)) refuse('view')
     }
     return {
       id: w.id,

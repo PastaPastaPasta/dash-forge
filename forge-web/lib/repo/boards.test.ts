@@ -225,6 +225,15 @@ describe('writeCard: a fresh read of the newest card, then only the change (§3.
     expect(replaced).toEqual([{ type: 'card', id: 'mine', changes: expect.objectContaining({ col: 3, rank: 'Vx', f: undefined, state: 0, r: 1 }) }])
   })
 
+  it("applies over the signer's previous write (`over`) when the read does not show it yet", async () => {
+    const board = await openBoard()
+    // the read still has the old card: the signer's write of col 3 has not reached it
+    stored['card'] = [cardDoc({ $id: 'mine', $updatedAt: 90, col: 2, rank: 'Vx' })]
+    const over = { id: 'mine', ownerId: AUTH.identityId, updatedAt: 91, item: ITEM, col: 3, rank: 'Vx', f: null, state: 0 }
+    await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { fields: { 2: 5 } }, { over })
+    expect(replaced[0]).toMatchObject({ id: 'mine', changes: { col: 3, rank: 'Vx', f: '{"2":5}' } })
+  })
+
   it("replaces the signer's own card even when this reader skips it as malformed", async () => {
     const board = await openBoard()
     // plaintext beside enc: malformed, skipped by readers, but still the signer's document

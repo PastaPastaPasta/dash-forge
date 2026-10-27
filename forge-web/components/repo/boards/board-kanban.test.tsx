@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BoardHookState } from '@/hooks/use-board'
 import type { RepoRef } from '@/lib/repo'
-import { foldBoard } from '@/lib/rules/boards'
+import { type Placement, foldBoard } from '@/lib/rules/boards'
 
 import { CARDS, HOME, ITEMS, ME, NOW, OTHER_REPO, SPEC, hookState, id } from './layout-fixture'
 import type { BoardLayoutProps } from './layout-props'
@@ -39,7 +39,8 @@ const placements = new Map(fold.items.map((p) => [p.id, p]))
 
 function props(over: Partial<BoardHookState> = {}, extra: Partial<BoardLayoutProps> = {}): BoardLayoutProps {
   const state = hookState({ fold, items: { items: ITEMS, hidden: new Set(), missing: new Set(), partial: false, hasOlderClosed: false, walks: new Map() }, ...over })
-  return { state, spec: SPEC, view: { id: 1, name: 'Board', layout: 'board', q: '' }, items: ITEMS, placements, onOpenItem: vi.fn(), home: HOME_REF, addr: { owner: 'alice', name: 'project' }, ...extra }
+  const base = { state, spec: SPEC, view: { id: 1, name: 'Board', layout: 'board' as const, q: '' }, items: ITEMS, placements, onOpenItem: vi.fn(), home: HOME_REF, addr: { owner: 'alice', name: 'project' }, ...extra }
+  return { ...base, rows: extra.rows ?? base.items.flatMap((item) => (base.placements.has(item.id) ? [{ item, placement: base.placements.get(item.id) as Placement }] : [])) }
 }
 
 let root: Root

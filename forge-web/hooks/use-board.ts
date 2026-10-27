@@ -35,6 +35,9 @@ import {
   assembleBoard,
   boardItemReader,
   boardWriteGeneration,
+  boardsDeployed,
+  knownBoardsDeployed,
+  subscribeBoardsDeployed,
   canEditBoards,
   canPlaceCards,
   cardsSince,
@@ -129,6 +132,24 @@ function needWriter(sdk: ReturnType<typeof useSdk>['sdk'], signer: WriteAuth | n
   // copy-lint-ignore: the action's own button is hidden for a signed-out viewer; this is the guard
   if (sdk === null || signer === null) throw new Error('Sign in to change this board.')
   return { sdk, signer }
+}
+
+/**
+ * Whether the network `forge` names has boards (`boardsDeployed`: its forge-meta declares `board`
+ * and `card`): null until known (the contract is read once a session, usually from the SDK's
+ * cache), false on a three-contract set or before the update.
+ */
+export function useBoardsDeployed(forge: { readonly meta?: string | undefined } | null | undefined): boolean | null {
+  const meta = forge?.meta
+  const { sdk, ready } = useSdk()
+  const known = useKnownBoardsDeployed(meta)
+  const state = useAsync(() => boardsDeployed(sdk!, meta), [ready, meta ?? ''], { enabled: ready && sdk !== null && known === undefined })
+  return known ?? state.data ?? null
+}
+
+/** The answer {@link useBoardsDeployed} read this session, without reading anything (a shell drawn before the SDK loads). */
+export function useKnownBoardsDeployed(meta: string | undefined): boolean | undefined {
+  return useSyncExternalStore(subscribeBoardsDeployed, () => knownBoardsDeployed(meta), () => undefined)
 }
 
 /** A repository's boards (open and closed; deleted left out), and what the viewer may do. */
@@ -260,6 +281,35 @@ function caughtUp(p: Pending, held: readonly BoardCard[]): boolean {
 }
 
 /**
+ * Each item's card writes in turn (§3.2). A card write reads the item's newest card and replaces
+ * the signer's whole card, so a second edit started while the first is in flight would be built
+ * on a read without the first, and undo it. Here a write waits for the writes in flight on its
+ * items; a single-item write then applies its patch over the card the previous one made (`over`,
+ * which the read may not show yet). A failed write leaves the next to read afresh.
+ */
+function useCardQueue(): <T>(items: readonly string[], start: (over: BoardCard | undefined) => Promise<T>) => Promise<T> {
+  const chains = useRef(new Map<string, Promise<BoardCard | null>>())
+  return useCallback(<T,>(items: readonly string[], start: (over: BoardCard | undefined) => Promise<T>): Promise<T> => {
+    const before = items.flatMap((id) => chains.current.get(id) ?? [])
+    const out = (async () => {
+      const prev = await Promise.all(before)
+      return start(items.length === 1 ? (prev[0] ?? undefined) : undefined)
+    })()
+    const card = out.then(
+      (o) => (o as Partial<CardWritten> | null)?.card ?? null,
+      () => null,
+    )
+    for (const id of items) {
+      chains.current.set(id, card)
+      void card.then(() => {
+        if (chains.current.get(id) === card) chains.current.delete(id)
+      })
+    }
+    return out
+  }, [])
+}
+
+/**
  * Board `key` of `repo` (see the module header). `options.label` names a repository on its
  * items (`owner/name`, default its name); `options.repos` are the repositories the page already
  * holds, with their sessions (a private source or card repository the viewer is a member of).
@@ -281,6 +331,9 @@ export function useBoard(repo: RepoRef, key: number, options: { readonly label?:
   const [nonce, setNonce] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [overlay, setOverlay] = useState<ReadonlyMap<string, Pending>>(new Map())
+  const overlayRef = useRef(overlay)
+  overlayRef.current = overlay
+  const queue = useCardQueue()
   const [refusal, setRefusal] = useState<BoardRefusalNote | null>(null)
   const optionsRef = useRef(options)
   optionsRef.current = options
@@ -395,7 +448,7 @@ export function useBoard(repo: RepoRef, key: number, options: { readonly label?:
    * poll (the landed card replaces the optimistic one); on a refusal take it back with the reason.
    */
   const run = useCallback(
-    async <T>(items: readonly CardItem[], patchOf: ((item: CardItem) => CardPatch) | null, write: (w: { sdk: NonNullable<typeof sdk>; signer: WriteAuth; board: BoardView }) => Promise<T>): Promise<T> => {
+    async <T>(items: readonly CardItem[], patchOf: ((item: CardItem) => CardPatch) | null, write: (w: { sdk: NonNullable<typeof sdk>; signer: WriteAuth; board: BoardView; over: BoardCard | undefined }) => Promise<T>): Promise<T> => {
       const w = needWriter(sdk, signer)
       const h = heldRef.current
       if (h === null || h.board === null) throw new Error('This board has not loaded yet.')
@@ -409,7 +462,8 @@ export function useBoard(repo: RepoRef, key: number, options: { readonly label?:
           const next = new Map(cur)
           for (const item of items) {
             try {
-              const c = patchedCard(spec, newest.get(item.id) ?? null, patchOf(item))
+              // over an earlier write still shown (in flight, or landed and not yet polled): it is the item's newest
+              const c = patchedCard(spec, cur.get(item.id)?.card ?? newest.get(item.id) ?? null, patchOf(item))
               next.set(item.id, { card: { id: `pending:${item.id}`, ownerId: w.signer.identityId, updatedAt: PENDING_AT, item: item.id, ...c }, token, landed: null })
             } catch {
               // a patch the board refuses is refused again by the write, with its reason
@@ -432,7 +486,10 @@ export function useBoard(repo: RepoRef, key: number, options: { readonly label?:
           return next
         })
       try {
-        const out = await write({ ...w, board: b })
+        const out = await queue(
+          items.map((i) => i.id),
+          (over) => write({ ...w, board: b, over }),
+        )
         settle(landedOf(out))
         await poll().catch(() => undefined)
         const failed = (out as Partial<BulkWritten>)?.failed
@@ -444,7 +501,7 @@ export function useBoard(repo: RepoRef, key: number, options: { readonly label?:
         throw e
       }
     },
-    [sdk, signer, poll],
+    [sdk, signer, poll, queue],
   )
 
   return {
@@ -469,13 +526,13 @@ export function useBoard(repo: RepoRef, key: number, options: { readonly label?:
       // the walks are the older read's; any item a poll added meanwhile stays
       setHeld((cur) => (cur === null || cur.key !== h.key ? cur : { ...cur, items: unionItems(older, cur.items) }))
     },
-    write: (item, patch, opts) => run([item], () => patch, (w) => writeCard(w.sdk, w.signer, repo, w.board, item, patch, opts)),
+    write: (item, patch, opts) => run([item], () => patch, (w) => writeCard(w.sdk, w.signer, repo, w.board, item, patch, { ...opts, ...(w.over !== undefined ? { over: w.over } : {}) })),
     move: (item, target, column, before, opts) => {
       // the rank shown at once is the one the write computes; a refusal (re-rank) takes it back
       const r = rankBefore(column, item.id, before)
       const rank = 'rank' in r ? { rank: r.rank } : {}
       const optimistic = (): CardPatch => ('col' in target ? { col: target.col, ...rank } : { fields: { [target.field]: target.value }, ...rank })
-      return run([item], optimistic, (w) => moveCard(w.sdk, w.signer, repo, w.board, item, target, column, before, opts))
+      return run([item], optimistic, (w) => moveCard(w.sdk, w.signer, repo, w.board, item, target, column, before, { ...opts, ...(w.over !== undefined ? { over: w.over } : {}) }))
     },
     add: (items, col, opts) => run(items, () => ({ state: 0, ...(col !== undefined ? { col } : {}) }), (w) => addItems(w.sdk, w.signer, repo, w.board, items, col, opts)),
     archive: (items, opts) => run(items, () => ({ state: 1 }), (w) => archiveItems(w.sdk, w.signer, repo, w.board, items, opts)),
@@ -541,13 +598,20 @@ export function useItemBoards(repo: RepoRef, item: BoardItem | null): AsyncState
     [ready, repoKey(repo), network, item?.id ?? '', item?.state ?? '', generation],
     { enabled: ready && sdk !== null && item !== null },
   )
+  // A re-read (after any board write) keeps the last list up meanwhile: the sidebar's controls,
+  // and the error a refused write shows on its board, stay mounted.
+  const held = useRef<{ readonly id: string; readonly data: ItemBoardPlacement[] } | null>(null)
+  if (state.data !== null && item !== null) held.current = { id: item.id, data: state.data }
+  const data = state.data ?? (item !== null && held.current?.id === item.id ? held.current.data : null)
+  const queue = useCardQueue()
   const write = useCallback(
     (entry: ItemBoard, patch: CardPatch, opts?: CardWriteOptions) => {
       const w = needWriter(sdk, signer)
       if (item === null) return Promise.reject(new Error('No item.'))
-      return writeCard(w.sdk, w.signer, entry.home, entry.board, { id: item.id, repoId: item.repoId }, patch, opts)
+      // one queue per (board, item): the same item on two boards is two cards
+      return queue([`${entry.home.repoId}:${entry.board.key}:${item.id}`], (over) => writeCard(w.sdk, w.signer, entry.home, entry.board, { id: item.id, repoId: item.repoId }, patch, { ...opts, ...(over !== undefined ? { over } : {}) }))
     },
-    [sdk, signer, item],
+    [sdk, signer, item, queue],
   )
   const addTo = useCallback(
     (board: BoardView, col?: number, opts?: CardWriteOptions) => {
@@ -557,5 +621,5 @@ export function useItemBoards(repo: RepoRef, item: BoardItem | null): AsyncState
     },
     [sdk, signer, item, repo],
   )
-  return { ...state, write, addTo }
+  return { ...state, data, write, addTo }
 }

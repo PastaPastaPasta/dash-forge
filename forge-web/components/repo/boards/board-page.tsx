@@ -31,7 +31,8 @@ import { Input } from '@/components/ui/input'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
-import { useBoard, type BoardHookState } from '@/hooks/use-board'
+import { useBoard, useBoardsDeployed, type BoardHookState } from '@/hooks/use-board'
+import { BoardsUnavailable } from './boards-list'
 import { useParam, withTrailingSlash, type RepoAddress } from '@/hooks/use-query-param'
 import { useSearchParams } from '@/hooks/use-route'
 import { useSdk } from '@/hooks/use-sdk'
@@ -92,6 +93,10 @@ const LAYOUT_NAME: Readonly<Record<ViewLayout, string>> = { board: 'Board', tabl
 export function BoardPage({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const b = useParam('b')
   const key = /^\d{1,10}$/.test(b) ? Number(b) : 0
+  // only where the network's forge-meta has the board types
+  const deployed = useBoardsDeployed(home.repo.forge)
+  if (deployed === null) return <LoadingBlock label="Reading the board" />
+  if (!deployed) return <BoardsUnavailable />
   if (key < 1 || key > 4294967295) {
     return (
       <EmptyState
@@ -221,6 +226,7 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
     spec,
     view,
     items: shownItems,
+    rows,
     placements,
     onOpenItem: (id) => setParams({ item: id }, true),
     onViewChange,

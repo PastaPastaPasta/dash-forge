@@ -205,6 +205,7 @@ export {
   type ItemBoard,
   type ItemCardDocs,
 } from './boards'
+export { BOARD_TYPES, boardsDeployed, declaresBoards, knownBoardsDeployed, subscribeBoardsDeployed } from './boards-deployed'
 export {
   CLOSED_PER_REPO,
   addCardItems,

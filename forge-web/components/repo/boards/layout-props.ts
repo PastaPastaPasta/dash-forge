@@ -8,7 +8,7 @@
 import type { BoardHookState } from '@/hooks/use-board'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import type { LabelDef, RepoRef } from '@/lib/repo'
-import type { BoardItem, BoardSpec, BoardView as SavedView, Placement } from '@/lib/rules/boards'
+import type { BoardItem, BoardRow, BoardSpec, BoardView as SavedView, Placement } from '@/lib/rules/boards'
 
 export interface BoardLayoutProps {
   /** The board hook: fold, cards, role (`can`), pending writes and every mutation. */
@@ -19,6 +19,8 @@ export interface BoardLayoutProps {
   readonly view: SavedView
   /** The items the view's query matches, archived ones only when the query asks for them. */
   readonly items: readonly BoardItem[]
+  /** The same items with their placements, in the same order (what the view rules take). */
+  readonly rows: readonly BoardRow[]
   /** Each shown item's placement, by item id. */
   readonly placements: ReadonlyMap<string, Placement>
   /** Open the item panel (§5.5) on an item. */

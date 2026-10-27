@@ -27,6 +27,7 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ signer: { identity
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: (e: unknown) => String(e), disabledReason: null }) }))
 vi.mock('@/lib/spend-toast', () => ({ spendAction: (_labels: unknown, run: (tag: (s: unknown) => unknown) => Promise<unknown>) => run((s) => s) }))
 vi.mock('@/hooks/use-board', () => ({
+  useBoardsDeployed: (forge: { meta?: string } | undefined) => forge?.meta !== undefined,
   useBoards: () => ({ data: boards, loading: false, error: null, cause: null, settled: true, reload: () => undefined, role: can.edit ? 'writer' : 'triage', can, create }),
 }))
 

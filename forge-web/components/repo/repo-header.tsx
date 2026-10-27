@@ -16,6 +16,7 @@ import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
 import { WatchButton } from '@/components/repo/watch-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
+import { useBoardsDeployed } from '@/hooks/use-board'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { usePathname, useShortAddressBar } from '@/hooks/use-route'
 import { cn, shortId } from '@/lib/utils'
@@ -82,7 +83,7 @@ function ForkedFrom({ home }: { home: RepoHome }): JSX.Element {
 /**
  * The tabs (`ux-dx-spec.md` §5.2): Code · Issues (n) · Pull requests (n) · Boards · Releases ·
  * Settings. Commits live under Code (the ref bar's `n commits`). Boards (`docs/design/boards.md`)
- * sit where GitHub puts Projects, on a network whose contracts have them ({@link hasBoards}).
+ * sit where GitHub puts Projects, on a network whose forge-meta has them (`useBoardsDeployed`).
  * Settings is a maintainer's tab; a writer sees the same page as a read-only Members list.
  */
 export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/activity', '/repo/commits', '/repo/commit', '/repo/compare', '/repo/search']
@@ -100,11 +101,6 @@ export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | '
   return null
 }
 
-/** Whether a repository's network has boards: the forge-meta contract (UPDATE-3) of a four-contract set. */
-export function hasBoards(forge: { readonly meta?: string | undefined } | null | undefined): boolean {
-  return forge?.meta !== undefined
-}
-
 /** Routes whose view renders its own h1 (an issue's title, a commit's subject): the repo name is not the page's heading there. */
 const VIEWS_WITH_OWN_H1 = ['/repo/issue', '/repo/pull', '/repo/pulls/new', '/repo/commit', '/repo/compare', '/repo/releases', '/repo/stargazers', '/repo/security']
 
@@ -116,6 +112,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const counts = useTargetCounts(home.repo)
   const membersOnly = useMembersOnlyOpen(home.repo)
   const { role } = useViewerRole(home.repo)
+  const boards = useBoardsDeployed(home.repo.forge)
   const TitleTag = VIEWS_WITH_OWN_H1.includes(pathname) ? 'div' : 'h1'
   // The owner pill reads the same name: no extra request. Look-alikes of known names (TS-24).
   const ownerLookup = useSettledDpnsName(home.repo.ownerId)
@@ -132,7 +129,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
     { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues, membersOnly: membersOnly.issues, letters: membersOnly.issueLetters },
     { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls, membersOnly: membersOnly.pulls, letters: membersOnly.pullLetters },
-    ...(hasBoards(home.repo.forge) ? [{ key: 'boards', label: 'Boards', path: '/repo/boards', icon: KanbanSquare, refAware: false, count: null }] : []),
+    ...(boards === true ? [{ key: 'boards', label: 'Boards', path: '/repo/boards', icon: KanbanSquare, refAware: false, count: null }] : []),
     { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, count: null },
     ...(role === 'maintainer'
       ? [{ key: 'settings', label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, count: null }]

@@ -18,6 +18,8 @@ const HOME_ID = 'Home1111111111111111111111111111111111111111'
 const NOW = Date.UTC(2026, 9, 27, 12)
 let role: 'maintainer' | 'writer' | 'triage' | null = 'writer'
 let board: BoardView
+let fresh: BoardView | null = null
+let cards: { id: string; ownerId: string; updatedAt: number; item: string; col: number | null; rank: string | null; f: string | null; state: number }[] = []
 const push = vi.fn()
 const saveBoard = vi.fn(async () => ({ key: 9, documentId: 'd', created: false, result: {} }))
 const setBoardState = vi.fn(async () => ({ key: 9, documentId: 'd', created: false, result: {} }))
@@ -32,7 +34,9 @@ vi.mock('@/lib/spend-toast', () => ({ spendAction: (_labels: unknown, run: (tag:
 vi.mock('@/lib/view/discovery', () => ({ listReposByOwner: async () => ({ owned: [{ key: HOME_ID, slug: 'project', name: 'project', ownerId: ME }, { key: 'Other222222222222222222222222222222222222222', slug: 'docs', name: 'docs', ownerId: ME }], member: [] }) }))
 vi.mock('@/lib/repo', async (orig) => ({
   ...(await orig<typeof import('@/lib/repo')>()),
-  readBoardDefinition: async () => board,
+  boardsDeployed: async () => true,
+  readBoard: async () => ({ board, cards, since: 0 }),
+  readBoardDefinition: async () => fresh ?? board,
   readRepoById: async () => null,
   saveBoard,
   setBoardState,
@@ -61,6 +65,8 @@ let el: HTMLDivElement
 beforeEach(() => {
   role = 'writer'
   board = boardOf(defaultSpec(HOME_ID, NOW))
+  cards = []
+  fresh = null
   saveBoard.mockClear()
   setBoardState.mockClear()
   push.mockReset()
@@ -107,6 +113,36 @@ describe('Board settings', () => {
     expect(savedSpec().columns.map((c) => c.name)).toEqual(['Todo', 'Doing', 'Done', 'Column 4'])
   })
 
+  it('never gives a new column, field or option an id a card still names', async () => {
+    // a card still names deleted column 6, field 9 and Priority's deleted option 7
+    cards = [{ id: 'c', ownerId: ME, updatedAt: NOW, item: 'i', col: 6, rank: null, f: JSON.stringify({ 1: 7, 9: 'x' }), state: 0 }]
+    await open()
+    act(() => button(/Add column/)?.click())
+    act(() => button(/Add option/)?.click())
+    act(() => button(/Add field/)?.click())
+    type(labelled<HTMLInputElement>('New field name'), 'Size')
+    act(() => button(/^Add$/)?.click())
+    act(() => (el.querySelector('[data-testid="settings-save"]') as HTMLButtonElement).click())
+    await act(async () => button(/Sign & save/)?.click())
+    await settle()
+    const spec = savedSpec()
+    expect(spec.columns.at(-1)?.id).toBe(7)
+    expect(spec.fields.at(-1)).toMatchObject({ id: 10, name: 'Size' })
+    expect(spec.fields[0]?.options?.at(-1)?.id).toBe(8)
+  })
+
+  it('refuses to save over a revision another member wrote meanwhile', async () => {
+    await open()
+    type(labelled<HTMLInputElement>('Name of column 1'), 'Backlog')
+    fresh = { ...board, newest: { id: 'b9', ownerId: 'Other', updatedAt: NOW + 5 } }
+    act(() => (el.querySelector('[data-testid="settings-save"]') as HTMLButtonElement).click())
+    await act(async () => button(/Sign & save/)?.click())
+    await settle()
+    expect(saveBoard).not.toHaveBeenCalled()
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Someone changed this board while you were editing. Reload and try again.')
+    expect(el.querySelector('[data-testid="settings-stale"]')).not.toBeNull()
+  })
+
   it('names a problem precisely and holds the save', async () => {
     await open()
     type(labelled<HTMLInputElement>('Name of column 2'), 'todo')
@@ -134,7 +170,12 @@ describe('Board settings', () => {
     act(() => button(/Add option/)?.click())
     expect(labelled<HTMLInputElement>('Option 5 of Priority').value).toBe('Option 5')
     expect(el.querySelector('[data-testid="iteration-preview"]')?.textContent).toContain('Iteration 1: Oct 26 – Nov 8, 2026')
-    type(labelled<HTMLInputElement>('Days in each Iteration'), '7')
+    const days = labelled<HTMLInputElement>('Days in each Iteration')
+    act(() => days.focus())
+    // typed freely: clearing it is not 1, and 7 is checked only when the field is left
+    type(days, '')
+    type(days, '7')
+    act(() => days.blur())
     expect(el.querySelector('[data-testid="iteration-preview"]')?.textContent).toContain('Iteration 2: Nov 2 – Nov 8, 2026')
   })
 

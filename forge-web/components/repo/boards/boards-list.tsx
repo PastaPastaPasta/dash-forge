@@ -20,7 +20,7 @@ import { checkBoardInput, type BoardView } from '@/lib/repo'
 import { NAME_MAX } from '@/lib/rules/boards'
 import { priceBoardWrites } from '@/lib/sdk'
 import { plural, timeAgo } from '@/lib/view/format'
-import { useBoards } from '@/hooks/use-board'
+import { useBoards, useBoardsDeployed } from '@/hooks/use-board'
 import { useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
@@ -32,23 +32,21 @@ import { cn, inputProblem } from '@/lib/utils'
 import { BOARD_TEMPLATES, boardTemplate, type BoardTemplateKey } from './board-templates'
 import { boardHref, boardSettingsHref } from './board-fields'
 
-/** Whether `home`'s network has the board types (forge-meta, UPDATE-3). */
-export function boardsAvailable(home: Pick<RepoHome, 'repo'>): boolean {
-  return home.repo.forge.meta !== undefined
-}
-
 /** What boards are, in one sentence (the empty state, the sidebar). */
 export const BOARDS_BLURB = 'Boards lay out issues and pull requests in columns, so the team can see and move work through its stages.'
 
+/** What a page of boards shows on a network whose forge-meta has no boards yet. */
+export function BoardsUnavailable(): JSX.Element {
+  return <EmptyState icon={KanbanSquare} title="No boards on this network" body="Boards aren't available on this network yet." />
+}
+
 export function BoardsList({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  if (!boardsAvailable(home)) {
-    return (
-      <div className="max-w-4xl" data-testid="boards-page">
-        <EmptyState icon={KanbanSquare} title="Boards aren't here yet" body="Boards aren't available on this network yet." />
-      </div>
-    )
-  }
-  return <BoardsListContent home={home} addr={addr} />
+  const deployed = useBoardsDeployed(home.repo.forge)
+  return (
+    <div className="max-w-4xl" data-testid="boards-page">
+      {deployed === null ? <LoadingBlock label="Reading boards" /> : deployed ? <BoardsListContent home={home} addr={addr} /> : <BoardsUnavailable />}
+    </div>
+  )
 }
 
 function BoardsListContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
@@ -65,7 +63,7 @@ function BoardsListContent({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const now = Date.now()
 
   return (
-    <div className="max-w-4xl space-y-4" data-testid="boards-page">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-prose">
           <KanbanSquare className="h-4 w-4 text-fg-muted" aria-hidden /> Boards

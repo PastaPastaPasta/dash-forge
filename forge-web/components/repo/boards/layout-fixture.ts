@@ -129,16 +129,17 @@ export function hookState(over: Partial<BoardHookState> = {}): BoardHookState {
 /** Layout props over the fixture: every item on the board, the view given. */
 export function layoutProps(view: Partial<SavedView> = {}, over: Partial<BoardLayoutProps> = {}): BoardLayoutProps {
   const placements = fold()
-  return {
+  const base = {
     state: hookState(),
     spec: SPEC,
-    view: { id: 1, name: 'View', layout: 'table', q: '', ...view },
+    view: { id: 1, name: 'View', layout: 'table' as const, q: '', ...view },
     items: ITEMS.filter((i) => placements.get(i.id)?.on === true && placements.get(i.id)?.archived === null),
-    placements,
+    placements: placements as ReadonlyMap<string, Placement>,
     onOpenItem: vi.fn(),
     onViewChange: vi.fn(),
     ...over,
   }
+  return { ...base, rows: over.rows ?? base.items.flatMap((item) => (base.placements.has(item.id) ? [{ item, placement: base.placements.get(item.id) as Placement }] : [])) }
 }
 
 /** A day number of `YYYY-MM-DD`. */

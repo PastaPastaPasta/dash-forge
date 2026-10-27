@@ -38,7 +38,6 @@ import {
   type BoardField,
   type BoardFold,
   type BoardItem,
-  type BoardRow,
   type BoardSpec,
   type FieldValue,
   type Placement,
@@ -139,7 +138,7 @@ function fromControl(e: { target: EventTarget | null; currentTarget: EventTarget
 }
 
 export function BoardKanban(props: BoardLayoutProps): JSX.Element {
-  const { state, spec, view, items, placements, onOpenItem, home, labels } = props
+  const { state, spec, view, items, rows, placements, onOpenItem, home, labels } = props
   const fold = state.fold
   const wide = useMinWidth(640)
   const instructions = useId()
@@ -160,7 +159,6 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
   const canPlace = state.can.place
   const archivedShown = asksArchived(view.q)
   const sorted = view.sort !== undefined && view.sort !== 'rank'
-  const rows = useMemo<BoardRow[]>(() => items.flatMap((item) => (placements.has(item.id) ? [{ item, placement: placements.get(item.id) as Placement }] : [])), [items, placements])
   const layout = useMemo(() => kanbanLayout(rows, spec, view, state.now), [rows, spec, view, state.now])
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
   const hidden = state.items?.hidden

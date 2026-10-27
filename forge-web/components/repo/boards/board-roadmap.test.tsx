@@ -139,6 +139,41 @@ describe('BoardRoadmap', () => {
     expect(props.state.write).toHaveBeenCalledTimes(1)
   })
 
+  it('a private item’s bar does not drag; a press opens it', async () => {
+    const props = layoutProps({ layout: 'roadmap', date: [4, 5] })
+    render({ ...props, state: hookState({ items: { ...props.state.items!, hidden: new Set([id('a')]) } }) })
+    const bar = rowOf('a').querySelector('[data-testid="roadmap-bar"]') as HTMLElement
+    expect(bar.querySelectorAll('span[aria-hidden]')).toHaveLength(0)
+    pointer(bar, 'pointerdown', 100)
+    pointer(bar, 'pointermove', 160)
+    pointer(bar, 'pointerup', 160)
+    act(() => bar.click())
+    expect(props.state.write).not.toHaveBeenCalled()
+  })
+
+  it('stretches the left end of a bar whose dates are the wrong way round: that end is the target', async () => {
+    const swapped = layoutProps({ layout: 'roadmap', date: [5, 4] })
+    render(swapped)
+    const bar = rowOf('a').querySelector('[data-testid="roadmap-bar"]') as HTMLElement
+    const start = bar.firstElementChild as HTMLElement
+    pointer(start, 'pointerdown', 100)
+    pointer(start, 'pointermove', 142)
+    await act(async () => void start.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 142 })))
+    // with date [5, 4] field 5 is the start (11-06) and 4 the target (10-26): the left end is field 4's
+    expect(swapped.state.write).toHaveBeenCalledWith({ id: id('a'), repoId: HOME }, { fields: { 4: '2026-11-02' } })
+  })
+
+  it('shows no shift before a press counts as a drag', () => {
+    render(layoutProps({ layout: 'roadmap', date: [4, 5] }))
+    const zoom = [...el.querySelectorAll<HTMLButtonElement>('[aria-label="Zoom"] button')].find((b) => b.textContent === 'Quarters') as HTMLButtonElement
+    act(() => zoom.click())
+    const bar = rowOf('a').querySelector('[data-testid="roadmap-bar"]') as HTMLElement
+    const left = bar.style.left
+    pointer(bar, 'pointerdown', 100)
+    pointer(bar, 'pointermove', 103)
+    expect(bar.style.left).toBe(left)
+  })
+
   it('explains itself when the board has no date to plot', () => {
     render(layoutProps({ layout: 'roadmap' }, { spec: { ...SPEC, fields: SPEC.fields.filter((f) => f.type === 'sel') } }))
     expect(el.textContent).toContain('Nothing to plot yet')

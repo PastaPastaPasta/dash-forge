@@ -291,6 +291,12 @@ export interface CardWriteOptions {
   readonly intent?: string
   /** The signer confirmed a private home repository's card for another repository's item (§3.3). */
   readonly confirmCrossRepo?: boolean
+  /**
+   * The card this client's previous write of the item just made (its write queue, `useBoard`):
+   * the patch applies over it rather than over the fresh read, which may not show that write yet
+   * (§3.2: a member's own back-to-back edits must not undo each other).
+   */
+  readonly over?: BoardCard
 }
 
 /** The outcome of a card write. */
@@ -373,7 +379,7 @@ export async function writeCard(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, boa
   if (spec === null) throw new BoardWriteError('unreadable', "this board's definition can't be read here, so its cards can't be changed")
   checkPatch(spec, patch)
   // A newest card this reader cannot open holds values it cannot carry over: the newest it can open is the base.
-  const next = patchedCard(spec, newestCards(cards.filter((c) => c.unreadable !== true)).get(item.id) ?? null, patch)
+  const next = patchedCard(spec, opts.over ?? newestCards(cards.filter((c) => c.unreadable !== true)).get(item.id) ?? null, patch)
   const contractId = contractOf(repo.forge, DOC.card)
   const base = { ...ids, state: next.state }
   const fields: CardFields = { ...(next.col !== null ? { col: next.col } : {}), ...(next.rank !== null ? { rank: next.rank } : {}), ...(next.f !== null ? { f: next.f } : {}) }

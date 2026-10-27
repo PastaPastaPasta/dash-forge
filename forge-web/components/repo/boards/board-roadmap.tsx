@@ -19,14 +19,13 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { CalendarRange, Lock } from 'lucide-react'
 import { labelTextColor } from '@/lib/repo'
-import { byRank, dateDays, dateOf, fieldById, groupRows, iterationAt, iterationRange, sortRows, type BoardField, type BoardItem, type BoardRow, type BoardSpec, type BoardView as SavedView } from '@/lib/rules/boards'
+import { DAY_MS, ITER_INDEX_MAX, byRank, dateDays, dateOf, fieldById, groupRows, iterationAt, iterationRange, sortRows, type BoardField, type BoardItem, type BoardRow, type BoardSpec, type BoardView as SavedView } from '@/lib/rules/boards'
 import { EmptyState } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
 import { GroupHeading, ItemStateIcon, columnName, dayRangeText } from './board-fields'
 import type { BoardLayoutProps } from './layout-props'
 
-const DAY_MS = 86_400_000
 
 export type Zoom = 'weeks' | 'months' | 'quarters'
 export const ZOOMS: readonly { readonly key: Zoom; readonly label: string }[] = [
@@ -60,11 +59,15 @@ export function roadmapDates(spec: BoardSpec, view: SavedView): RoadmapDates | n
   return null
 }
 
-/** An item's bar: its first and last day (day numbers, inclusive); `single` when only one date is set. */
+/**
+ * An item's bar: its first and last day (day numbers, inclusive); `single` when only one date is
+ * set; `swapped` when its start date is after its target date (the left end is then the target).
+ */
 export interface Bar {
   readonly start: number
   readonly end: number
   readonly single: boolean
+  readonly swapped?: boolean
 }
 
 /** Where `row`'s bar runs, or null when it has no date to plot. */
@@ -82,7 +85,7 @@ export function barOf(row: BoardRow, dates: RoadmapDates): Bar | null {
     const d = (s ?? e) as number
     return { start: d, end: d, single: true }
   }
-  return { start: Math.min(s, e), end: Math.max(s, e), single: false }
+  return { start: Math.min(s, e), end: Math.max(s, e), single: false, ...(s > e ? { swapped: true } : {}) }
 }
 
 /** A day number as `YYYY-MM-DD`. */
@@ -164,7 +167,7 @@ interface Drag {
   readonly moved: boolean
 }
 
-export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem }: BoardLayoutProps): JSX.Element {
+export function BoardRoadmap({ state, spec, view, items, rows, onOpenItem }: BoardLayoutProps): JSX.Element {
   const [zoom, setZoom] = useState<Zoom>('months')
   const [drag, setDrag] = useState<Drag | null>(null)
   const dragRef = useRef<Drag | null>(null)
@@ -176,10 +179,6 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
   const px = PX[zoom]
 
   const { scheduled, unscheduled } = useMemo(() => {
-    const rows = items.flatMap((item): BoardRow[] => {
-      const placement = placements.get(item.id)
-      return placement === undefined ? [] : [{ item, placement }]
-    })
     if (dates === null) return { scheduled: [] as { row: BoardRow; bar: Bar }[], unscheduled: rows }
     const withBars = rows.map((row) => ({ row, bar: barOf(row, dates) }))
     const on = withBars.filter((x): x is { row: BoardRow; bar: Bar } => x.bar !== null)
@@ -187,7 +186,7 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
     const order = view.sort !== undefined ? sortRows(on.map((x) => x.row), view.sort, spec).map((r) => r.item.id) : null
     const sorted = order !== null ? order.map((id) => on.find((x) => x.row.item.id === id) as { row: BoardRow; bar: Bar }) : [...on].sort((a, b) => a.bar.start - b.bar.start || a.bar.end - b.bar.end || byRank(a.row.placement, b.row.placement))
     return { scheduled: sorted, unscheduled: withBars.filter((x) => x.bar === null).map((x) => x.row) }
-  }, [items, placements, dates, view.sort, spec])
+  }, [rows, dates, view.sort, spec])
 
   const groups = useMemo(() => {
     if (view.group === undefined) return [{ key: 'all', group: null as string | number | null, rows: scheduled }]
@@ -213,7 +212,7 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
     if (iterField === undefined) return []
     const first = iterationAt(iterField, span.from * DAY_MS) ?? 0
     const out = []
-    for (let k = first; k <= 65535; k++) {
+    for (let k = first; k <= ITER_INDEX_MAX; k++) {
       const r = iterationRange(iterField, k)
       if (r === null || r.startMs / DAY_MS >= span.to) break
       if (r.endMs / DAY_MS > span.from) out.push(r)
@@ -232,9 +231,13 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
   }, [zoom])
 
   const canDrag = state.can.place && dates?.kind === 'range'
+  // the pointer press a drag handled: the click that follows it does nothing more
+  const pressHandled = useRef(false)
 
   const onPointerDown = (e: ReactPointerEvent<HTMLElement>, item: string, part: Drag['part'], bar: Bar): void => {
-    if (!canDrag || e.button !== 0) return
+    pressHandled.current = false
+    // a private item is not this reader's to change; a touch on the bar scrolls the timeline (its ends still drag)
+    if (!canDrag || e.button !== 0 || hidden?.has(item) === true || (part === 'move' && e.pointerType === 'touch')) return
     e.stopPropagation()
     e.currentTarget.setPointerCapture?.(e.pointerId)
     setDrag({ item, part, x: e.clientX, bar, delta: 0, moved: false })
@@ -243,12 +246,15 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
     const d = dragRef.current
     if (d === null) return
     const dx = e.clientX - d.x
-    setDrag({ ...d, delta: Math.round(dx / px), moved: d.moved || Math.abs(dx) > 4 })
+    const movedNow = d.moved || Math.abs(dx) > 4
+    // nothing shifts before the move counts as a drag: a press that opens the item never shows one
+    setDrag({ ...d, delta: movedNow ? Math.round(dx / px) : 0, moved: movedNow })
   }
   const onPointerUp = (row: BoardRow): void => {
     const d = dragRef.current
     setDrag(null)
     if (d === null || dates?.kind !== 'range') return
+    pressHandled.current = true
     if (!d.moved) {
       onOpenItem(row.item.id)
       return
@@ -256,9 +262,11 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
     const next = moved(d)
     if (next.start === d.bar.start && next.end === d.bar.end) return
     const has = (f: BoardField): boolean => row.placement.fields[String(f.id)] !== undefined
+    // the left end is the start date, unless the dates are the wrong way round
+    const [left, right] = d.bar.swapped === true ? [dates.end, dates.start] : [dates.start, dates.end]
     const fields: Record<number, string> = {}
-    if (next.start !== d.bar.start || (d.part === 'start' && !has(dates.start))) fields[dates.start.id] = dayOf(next.start)
-    if (next.end !== d.bar.end || (d.part === 'end' && !has(dates.end))) fields[dates.end.id] = dayOf(next.end)
+    if (next.start !== d.bar.start || (d.part === 'start' && !has(left))) fields[left.id] = dayOf(next.start)
+    if (next.end !== d.bar.end || (d.part === 'end' && !has(right))) fields[right.id] = dayOf(next.end)
     // a single-date bar moved keeps to its one date
     if (d.bar.single && d.part === 'move') {
       for (const f of [dates.start, dates.end]) if (!has(f)) delete fields[f.id]
@@ -391,9 +399,12 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
                               aria-label={text}
                               title={text}
                               data-testid="roadmap-bar"
-                              onClick={(e) => {
-                                // a pointer press already opened (or dragged) it; this is the keyboard's
-                                if (canDrag && e.detail > 0) return
+                              onClick={() => {
+                                // a press the drag handled (opened, or moved the bar) is done; a key, a tap or a plain click opens
+                                if (pressHandled.current) {
+                                  pressHandled.current = false
+                                  return
+                                }
                                 onOpenItem(item.id)
                               }}
                               onPointerDown={(e) => onPointerDown(e, item.id, 'move', bar)}
@@ -405,17 +416,17 @@ export function BoardRoadmap({ state, spec, view, items, placements, onOpenItem 
                                 bar.single && 'rounded-full',
                                 fill === undefined && 'border-anvil-300 bg-anvil-200 text-anvil-900 dark:border-anvil-600 dark:bg-anvil-700 dark:text-anvil-50',
                                 fill !== undefined && 'border-black/10 dark:border-white/10',
-                                canDrag && 'cursor-grab touch-none',
+                                canDrag && !priv && 'cursor-grab',
                                 d?.moved === true && 'cursor-grabbing ring-2 ring-focus',
                               )}
                               style={{ left, width: w, ...(fill !== undefined ? { backgroundColor: fill, color: ink ?? undefined } : {}) }}
                             >
-                              {canDrag && !bar.single ? (
-                                <span aria-hidden onPointerDown={(e) => onPointerDown(e, item.id, 'start', bar)} className="absolute inset-y-0 left-0 w-2 cursor-ew-resize opacity-0 group-hover/bar:bg-black/10 group-hover/bar:opacity-100" />
+                              {canDrag && !priv && !bar.single ? (
+                                <span aria-hidden onPointerDown={(e) => onPointerDown(e, item.id, 'start', bar)} className="absolute inset-y-0 left-0 w-2 cursor-ew-resize touch-none opacity-0 group-hover/bar:bg-black/10 group-hover/bar:opacity-100" />
                               ) : null}
                               {!narrow ? <span className="truncate px-2">{priv ? 'A private item' : item.title}</span> : null}
-                              {canDrag && !bar.single ? (
-                                <span aria-hidden onPointerDown={(e) => onPointerDown(e, item.id, 'end', bar)} className="absolute inset-y-0 right-0 w-2 cursor-ew-resize opacity-0 group-hover/bar:bg-black/10 group-hover/bar:opacity-100" />
+                              {canDrag && !priv && !bar.single ? (
+                                <span aria-hidden onPointerDown={(e) => onPointerDown(e, item.id, 'end', bar)} className="absolute inset-y-0 right-0 w-2 cursor-ew-resize touch-none opacity-0 group-hover/bar:bg-black/10 group-hover/bar:opacity-100" />
                               ) : null}
                             </button>
                             {narrow && !priv ? (

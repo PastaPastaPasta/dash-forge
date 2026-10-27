@@ -19,6 +19,7 @@ const CARD: CardDoc = { id: 'c1', ownerId: 'me', updatedAt: 100, item: ITEM.id, 
 
 const state = vi.hoisted(() => ({
   move: null as null | { resolve: (v: unknown) => void; reject: (e: unknown) => void },
+  writes: [] as { patch: unknown; opts: { over?: unknown } | undefined; resolve: (v: unknown) => void }[],
   since: vi.fn(),
   read: null as unknown,
   // the SDK and the signer are stable across renders, as the app's are
@@ -35,6 +36,10 @@ vi.mock('@/lib/repo', async (load) => ({
   loadBoardItems: async (): Promise<BoardItemSet> => ({ items: [ITEM], hidden: new Set(), missing: new Set(), partial: false, hasOlderClosed: false, walks: new Map() }),
   addCardItems: async (_r: unknown, _i: unknown, set: BoardItemSet) => set,
   readCardsSince: state.since,
+  writeCard: (_sdk: unknown, _auth: unknown, _repo: unknown, _board: unknown, _item: unknown, patch: unknown, opts?: { over?: unknown }) =>
+    new Promise((resolve) => {
+      state.writes.push({ patch, opts, resolve })
+    }),
   moveCard: () =>
     new Promise((resolve, reject) => {
       state.move = { resolve, reject }
@@ -56,6 +61,7 @@ const colOf = (): number | undefined => view.fold?.items.find((p) => p.id === IT
 
 beforeEach(async () => {
   state.move = null
+  state.writes = []
   state.since.mockReset().mockResolvedValue([])
   const read: BoardRead = {
     board: { key: 7, repoId: HOME, state: 'open', name: 'B', spec: SPEC, specError: null, sealed: false, newest: { id: 'b', ownerId: 'me', updatedAt: 1 }, revisions: [{ id: 'b', ownerId: 'me', updatedAt: 1 }] },
@@ -144,5 +150,33 @@ describe('useBoard', () => {
     })
     expect(state.since).toHaveBeenCalledTimes(1)
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+  })
+
+  it('two quick edits of one item both land: the second waits, and applies over the first', async () => {
+    const item = { id: ITEM.id, repoId: HOME }
+    let a!: Promise<unknown>
+    let b!: Promise<unknown>
+    await act(async () => {
+      a = view.write(item, { col: 2 })
+      b = view.write(item, { fields: { 2: 5 } })
+    })
+    // both shown at once
+    expect(colOf()).toBe(2)
+    expect(view.fold?.items.find((p) => p.id === ITEM.id)?.fields).toEqual({ 2: 5 })
+    // the second is not started before the first lands
+    expect(state.writes).toHaveLength(1)
+    const first = { id: 'c1', ownerId: 'me', updatedAt: 300, item: ITEM.id, col: 2, rank: null, f: null, state: 0 }
+    await act(async () => {
+      state.writes[0]?.resolve({ card: first, created: false, result: {} })
+      await a
+    })
+    expect(state.writes).toHaveLength(2)
+    expect(state.writes[1]?.patch).toEqual({ fields: { 2: 5 } })
+    // built over the first write's card, not a read that may not show it yet
+    expect(state.writes[1]?.opts?.over).toEqual(first)
+    await act(async () => {
+      state.writes[1]?.resolve({ card: { ...first, f: '{"2":5}' }, created: false, result: {} })
+      await b
+    })
   })
 })

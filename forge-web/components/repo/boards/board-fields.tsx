@@ -6,11 +6,11 @@
  * the editor of one field value and the Status select, an item's state icon, a colour dot.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { CheckCircle2, CircleDot } from 'lucide-react'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { STATE_TEXT } from '@/lib/design/state'
-import { dateDays, fieldKeyId, fieldValueOk, iterationAt, iterationRange, type BoardField, type BoardItem, type BoardSpec, type FieldValue, type IterationRange } from '@/lib/rules/boards'
+import { DAY_MS, dateDays, fieldOfKey, fieldValueOk, iterationAt, iterationRange, type BoardField, type BoardItem, type BoardSpec, type FieldValue, type IterationRange } from '@/lib/rules/boards'
 import { disabledField } from '@/components/ui/input'
 import { pullStateView } from '@/components/repo/pull-state'
 import { LabelChip } from '@/components/repo/issue-bits'
@@ -39,8 +39,6 @@ export function boardSettingsHref(addr: RepoAddress, key: number): string {
 // ---------------------------------------------------------------------------------------------
 // How values read
 // ---------------------------------------------------------------------------------------------
-
-const DAY_MS = 86_400_000
 
 /** `YYYY-MM-DD` as "Oct 26, 2026" (UTC, as the board stores dates); `year: false` drops the year. */
 export function dayText(day: string, { year = true }: { readonly year?: boolean } = {}): string {
@@ -96,11 +94,7 @@ export const BUILTIN_KEY_LABEL: Readonly<Record<string, string>> = {
 /** A view key's name: a built-in's, or a custom field's (`f<id>`). */
 export function viewKeyLabel(spec: BoardSpec, key: string): string {
   const k = key.startsWith('-') ? key.slice(1) : key
-  const builtin = BUILTIN_KEY_LABEL[k]
-  if (builtin !== undefined) return builtin
-  const m = /^f(\d+)$/.exec(k)
-  const field = m ? spec.fields.find((f) => f.id === Number(m[1])) : undefined
-  return field?.name ?? k
+  return BUILTIN_KEY_LABEL[k] ?? fieldOfKey(spec.fields, k)?.name ?? k
 }
 
 /** A status column's name; "No status" for 0. */
@@ -120,6 +114,16 @@ export function ColorDot({ color, className }: { readonly color?: string | undef
       className={cn('inline-block h-2.5 w-2.5 shrink-0 rounded-full', color === undefined && 'border border-dashed border-anvil-400 dark:border-anvil-500', className)}
       style={color === undefined ? undefined : { backgroundColor: color }}
     />
+  )
+}
+
+/** A colour dot and a label beside it, truncated (a column, an option). */
+export function DotLabel({ color, children, className }: { readonly color?: string | undefined; readonly children: ReactNode; readonly className?: string }): JSX.Element {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <ColorDot color={color} />
+      <span className={cn('truncate', className)}>{children}</span>
+    </span>
   )
 }
 
@@ -200,10 +204,101 @@ export function parseFieldInput(field: BoardField, raw: string): { readonly valu
 }
 
 /**
- * The editor of one field value: a select for a single-select or iteration field (a choice is
- * written at once), an input for a number, date or text (written on Enter or when it loses
- * focus; Escape cancels). An empty value clears it. `onCommit` gets the new value only when it
- * differs.
+ * A select whose choice is written at once when made with the pointer, but when made with the
+ * keyboard (the arrows step through a closed select's options, which fires `change` on Windows
+ * and Linux) only on Enter or when the select is left: stepping past three options is one write,
+ * not three. Escape puts it back.
+ */
+function PickSelect({
+  value,
+  onPick,
+  onCancel,
+  id,
+  label,
+  title,
+  autoFocus,
+  disabled,
+  className,
+  children,
+}: {
+  readonly value: string
+  readonly onPick: (v: string) => void
+  readonly onCancel?: (() => void) | undefined
+  readonly id?: string | undefined
+  readonly label: string
+  readonly title?: string | undefined
+  readonly autoFocus: boolean
+  readonly disabled: boolean
+  readonly className?: string | undefined
+  readonly children: ReactNode
+}): JSX.Element {
+  const [draft, setDraft] = useState(value)
+  useEffect(() => setDraft(value), [value])
+  // the change came from the keyboard: wait for Enter or the blur
+  const keyed = useRef(false)
+  // this select was just settled (picked or put back): its blur writes nothing more
+  const settled = useRef(false)
+  const pick = (v: string): void => {
+    settled.current = true
+    keyed.current = false
+    if (v !== value) onPick(v)
+    else onCancel?.()
+  }
+  return (
+    <select
+      id={id}
+      aria-label={label}
+      title={title}
+      value={draft}
+      autoFocus={autoFocus}
+      disabled={disabled}
+      onPointerDown={() => {
+        keyed.current = false
+        settled.current = false
+      }}
+      onChange={(e) => {
+        setDraft(e.target.value)
+        if (!keyed.current) pick(e.target.value)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          e.stopPropagation()
+          pick(draft)
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          keyed.current = false
+          settled.current = true
+          setDraft(value)
+          onCancel?.()
+        } else if (e.key !== 'Tab' && e.key !== 'Shift') {
+          keyed.current = true
+          settled.current = false
+        }
+      }}
+      onBlur={() => {
+        keyed.current = false
+        if (settled.current) {
+          settled.current = false
+          return
+        }
+        if (draft !== value) onPick(draft)
+        else onCancel?.()
+      }}
+      className={cn(controlClass, 'w-full min-w-0', className)}
+    >
+      {children}
+    </select>
+  )
+}
+
+/**
+ * The editor of one field value: a select for a single-select or iteration field (see
+ * {@link PickSelect}), an input for a number, date or text (written on Enter or when it loses
+ * focus; Escape puts it back, as does leaving it with a value it refuses). An empty value clears
+ * it. `onCommit` gets the new value only when it differs; `onCancel` is told when an edit ends
+ * without one.
  */
 export function FieldInput({
   field,
@@ -229,51 +324,44 @@ export function FieldInput({
   readonly disabled?: boolean
   readonly className?: string
 }): JSX.Element {
-  const [draft, setDraft] = useState(value === undefined ? '' : String(value))
+  const text = value === undefined ? '' : String(value)
+  const [draft, setDraft] = useState(text)
   const [error, setError] = useState<string | null>(null)
-  const done = useRef(false)
+  // Enter or Escape settled the edit: the blur that may follow writes nothing more
+  const settled = useRef(false)
   useEffect(() => {
-    setDraft(value === undefined ? '' : String(value))
+    setDraft(text)
     setError(null)
-  }, [value])
+  }, [text])
   const name = label ?? field.name
-  const commit = (raw: string): void => {
+  /** Write `raw` if it is a value and differs; false when it is refused. */
+  const commit = (raw: string): boolean => {
     const parsed = parseFieldInput(field, raw)
     if ('error' in parsed) {
       setError(parsed.error)
-      return
+      return false
     }
     setError(null)
     if ((parsed.value ?? undefined) !== value) onCommit(parsed.value)
     else onCancel?.()
+    return true
+  }
+  const putBack = (): void => {
+    setDraft(text)
+    setError(null)
+    onCancel?.()
   }
   if (field.type === 'sel' || field.type === 'iter') {
     const choices = field.type === 'sel' ? (field.options ?? []).map((o) => ({ v: String(o.id), name: o.name })) : iterationChoices(field, now, typeof value === 'number' ? value : undefined).map((r) => ({ v: String(r.index), name: `${r.name} (${dayRangeText(r.start, r.end)})` }))
     return (
-      <select
-        id={id}
-        aria-label={name}
-        value={value === undefined ? '' : String(value)}
-        autoFocus={autoFocus}
-        disabled={disabled}
-        onChange={(e) => commit(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            e.preventDefault()
-            e.stopPropagation()
-            onCancel?.()
-          }
-        }}
-        onBlur={() => onCancel?.()}
-        className={cn(controlClass, 'w-full min-w-0', className)}
-      >
+      <PickSelect id={id} label={name} value={text} autoFocus={autoFocus} disabled={disabled} className={className} onPick={(v) => void commit(v)} onCancel={onCancel}>
         <option value="">{`No ${field.name.toLowerCase()}`}</option>
         {choices.map((c) => (
           <option key={c.v} value={c.v}>
             {c.name}
           </option>
         ))}
-      </select>
+      </PickSelect>
     )
   }
   return (
@@ -288,29 +376,33 @@ export function FieldInput({
         value={draft}
         autoFocus={autoFocus}
         disabled={disabled}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => {
+          settled.current = false
+          setDraft(e.target.value)
+        }}
+        onFocus={() => {
+          settled.current = false
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             e.preventDefault()
             e.stopPropagation()
-            done.current = true
-            commit(draft)
+            // a refused value stays, with its reason, to be fixed
+            if (commit(draft)) settled.current = true
           } else if (e.key === 'Escape') {
             e.preventDefault()
             e.stopPropagation()
-            done.current = true
-            setDraft(value === undefined ? '' : String(value))
-            setError(null)
-            onCancel?.()
+            settled.current = true
+            putBack()
           }
         }}
         onBlur={() => {
-          // Enter and Escape already settled it; a click elsewhere writes what was typed.
-          if (done.current) {
-            done.current = false
+          if (settled.current) {
+            settled.current = false
             return
           }
-          commit(draft)
+          // leaving with a refused value puts the old one back rather than strand the edit
+          if (!commit(draft)) putBack()
         }}
         className={cn(controlClass, 'w-full min-w-0', field.type === 'num' && 'font-mono tabular-nums', className)}
       />
@@ -323,12 +415,20 @@ export function FieldInput({
   )
 }
 
-/** The Status select: every column, and "No status" while the item has none. */
+/** Why a closed item's Status offers no column before Done (§2.4 rule 1). */
+export const CLOSED_STAYS_DONE = 'Closed items show in Done, or in a column after it.'
+
+/**
+ * The Status select: every column, and "No status" while the item has none. For a closed or
+ * merged item (`closed`) the columns before Done are offered but disabled: the board shows it in
+ * Done whatever its card says (§2.4 rule 1), so such a move would change nothing.
+ */
 export function StatusSelect({
   spec,
   value,
   onChange,
   onCancel,
+  closed = false,
   id,
   label = 'Status',
   autoFocus = false,
@@ -339,41 +439,29 @@ export function StatusSelect({
   readonly value: number
   readonly onChange: (col: number) => void
   readonly onCancel?: () => void
+  /** The item is closed or merged. */
+  readonly closed?: boolean
   readonly id?: string
   readonly label?: string
   readonly autoFocus?: boolean
   readonly disabled?: boolean
   readonly className?: string
 }): JSX.Element {
+  const doneAt = spec.done === 0 ? -1 : spec.columns.findIndex((c) => c.id === spec.done)
+  const held = closed && doneAt >= 0
   return (
-    <select
-      id={id}
-      aria-label={label}
-      value={String(value)}
-      autoFocus={autoFocus}
-      disabled={disabled}
-      onChange={(e) => {
-        const col = Number(e.target.value)
-        if (col !== value) onChange(col)
-        else onCancel?.()
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          e.stopPropagation()
-          onCancel?.()
-        }
-      }}
-      onBlur={() => onCancel?.()}
-      className={cn(controlClass, 'w-full min-w-0', className)}
-    >
-      {value === 0 || !spec.columns.some((c) => c.id === value) ? <option value="0">No status</option> : null}
-      {spec.columns.map((c) => (
-        <option key={c.id} value={String(c.id)}>
+    <PickSelect id={id} label={label} title={held ? CLOSED_STAYS_DONE : undefined} value={String(value)} autoFocus={autoFocus} disabled={disabled} className={className} onPick={(v) => onChange(Number(v))} onCancel={onCancel}>
+      {value === 0 || !spec.columns.some((c) => c.id === value) ? (
+        <option value="0" disabled={held}>
+          No status
+        </option>
+      ) : null}
+      {spec.columns.map((c, i) => (
+        <option key={c.id} value={String(c.id)} disabled={held && i < doneAt}>
           {c.name}
         </option>
       ))}
-    </select>
+    </PickSelect>
   )
 }
 
@@ -387,28 +475,15 @@ export function StatusSelect({
  * `items` name it); "No <key>" for the empty group.
  */
 export function GroupHeading({ spec, by, groupKey, items }: { readonly spec: BoardSpec; readonly by: string; readonly groupKey: string | number | null; readonly items: readonly BoardItem[] }): JSX.Element {
-  const field = (() => {
-    const id = fieldKeyId(by)
-    return id === null ? undefined : spec.fields.find((f) => f.id === id)
-  })()
+  const field = fieldOfKey(spec.fields, by)
   if (by === 'status') {
     const col = spec.columns.find((c) => c.id === groupKey)
-    return (
-      <span className="inline-flex min-w-0 items-center gap-1.5">
-        <ColorDot color={col?.color} />
-        <span className="truncate">{col?.name ?? 'No status'}</span>
-      </span>
-    )
+    return <DotLabel color={col?.color}>{col?.name ?? 'No status'}</DotLabel>
   }
   if (groupKey === null) return <span>{`No ${viewKeyLabel(spec, by).toLowerCase()}`}</span>
   if (field?.type === 'sel') {
     const opt = field.options?.find((o) => o.id === groupKey)
-    return (
-      <span className="inline-flex min-w-0 items-center gap-1.5">
-        <ColorDot color={opt?.color} />
-        <span className="truncate">{opt?.name ?? String(groupKey)}</span>
-      </span>
-    )
+    return <DotLabel color={opt?.color}>{opt?.name ?? String(groupKey)}</DotLabel>
   }
   if (field?.type === 'iter' && typeof groupKey === 'number') {
     const r = iterationRange(field, groupKey)

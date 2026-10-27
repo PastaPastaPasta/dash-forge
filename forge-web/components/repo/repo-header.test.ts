@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { activeRepoTab, hasBoards } from './repo-header'
+import { activeRepoTab } from './repo-header'
 
 describe('activeRepoTab', () => {
   it.each([
@@ -36,10 +36,3 @@ describe('activeRepoTab', () => {
   })
 })
 
-describe('hasBoards', () => {
-  it('is the four-contract set with forge-meta (boards.md §3)', () => {
-    expect(hasBoards({ meta: 'M' })).toBe(true)
-    expect(hasBoards({})).toBe(false)
-    expect(hasBoards(null)).toBe(false)
-  })
-})
