@@ -53,6 +53,10 @@ const REPO_TITLES: Readonly<Record<string, (q: Query, repo: string) => string>> 
   '/repo/security': (_q, repo) => `Security policy · ${repo}`,
   '/repo/labels': (_q, repo) => `Labels · ${repo}`,
   '/repo/milestones': (_q, repo) => `Milestones · ${repo}`,
+  '/repo/boards': (_q, repo) => `Boards · ${repo}`,
+  // Never the board's name: a private repo's is encrypted.
+  '/repo/board': (_q, repo) => `Board · ${repo}`,
+  '/repo/board/settings': (_q, repo) => `Board settings · ${repo}`,
   '/repo/settings': (_q, repo) => `Settings · ${repo}`,
   '/repo/settings/environments': (_q, repo) => `Environments · ${repo}`,
   '/repo/settings/bots': (_q, repo) => `Bots and runners · ${repo}`,

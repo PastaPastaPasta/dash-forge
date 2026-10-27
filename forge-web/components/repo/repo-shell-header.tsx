@@ -13,17 +13,20 @@
 
 import Link from 'next/link'
 import { usePathname } from '@/hooks/use-route'
-import { Code2, GitPullRequest, MessageSquare, Tag } from 'lucide-react'
-import { activeRepoTab } from '@/components/repo/repo-header'
+import { Code2, GitPullRequest, KanbanSquare, MessageSquare, Tag } from 'lucide-react'
+import { activeRepoTab, hasBoards } from '@/components/repo/repo-header'
+import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 import { ownerLabel } from '@/lib/page-title'
 import { TabStrip } from '@/components/ui/tab-strip'
 
+// The real header's tabs, Boards where this build's network has them (the real header asks the repo's).
 const TABS = [
   { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true },
   { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false },
   { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false },
+  ...(hasBoards(NETWORKS[DEFAULT_NETWORK].v2) ? [{ key: 'boards', label: 'Boards', path: '/repo/boards', icon: KanbanSquare, refAware: false }] : []),
   { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false },
 ] as const
 

@@ -8,7 +8,7 @@
 
 import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { Archive, Code2, GitFork, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
+import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CopyLinkButton } from '@/components/ui/copy-link'
@@ -80,22 +80,29 @@ function ForkedFrom({ home }: { home: RepoHome }): JSX.Element {
 }
 
 /**
- * The five tabs (`ux-dx-spec.md` §5.2): Code · Issues (n) · Pull requests (n) · Releases ·
- * Settings. Commits live under Code (the ref bar's `n commits`). Settings is a maintainer's
- * tab; a writer sees the same page as a read-only Members list.
+ * The tabs (`ux-dx-spec.md` §5.2): Code · Issues (n) · Pull requests (n) · Boards · Releases ·
+ * Settings. Commits live under Code (the ref bar's `n commits`). Boards (`docs/design/boards.md`)
+ * sit where GitHub puts Projects, on a network whose contracts have them ({@link hasBoards}).
+ * Settings is a maintainer's tab; a writer sees the same page as a read-only Members list.
  */
 export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/activity', '/repo/commits', '/repo/commit', '/repo/compare', '/repo/search']
 
 /** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
-export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
+export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'boards' | 'releases' | 'settings' | null {
   const p = bareRoute(pathname)
   if (CODE_ROUTES.includes(p)) return 'code'
   // Labels and Milestones sit under Issues, as on GitHub.
   if (p === '/repo/issues' || p === '/repo/issue' || p === '/repo/labels' || p === '/repo/milestones') return 'issues'
   if (p === '/repo/pulls' || p === '/repo/pull' || p === '/repo/pulls/new') return 'pulls'
+  if (p === '/repo/boards' || p === '/repo/board' || p === '/repo/board/settings') return 'boards'
   if (p === '/repo/releases' || p === '/repo/release') return 'releases'
   if (p === '/repo/settings' || p === '/repo/settings/environments' || p === '/repo/settings/bots') return 'settings'
   return null
+}
+
+/** Whether a repository's network has boards: the forge-meta contract (UPDATE-3) of a four-contract set. */
+export function hasBoards(forge: { readonly meta?: string | undefined } | null | undefined): boolean {
+  return forge?.meta !== undefined
 }
 
 /** Routes whose view renders its own h1 (an issue's title, a commit's subject): the repo name is not the page's heading there. */
@@ -125,6 +132,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
     { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues, membersOnly: membersOnly.issues, letters: membersOnly.issueLetters },
     { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls, membersOnly: membersOnly.pulls, letters: membersOnly.pullLetters },
+    ...(hasBoards(home.repo.forge) ? [{ key: 'boards', label: 'Boards', path: '/repo/boards', icon: KanbanSquare, refAware: false, count: null }] : []),
     { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, count: null },
     ...(role === 'maintainer'
       ? [{ key: 'settings', label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, count: null }]

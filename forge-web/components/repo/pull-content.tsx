@@ -153,6 +153,7 @@ import { importedHost, importedUrlOf } from '@/lib/view/ref-targets'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { EmbargoPanel, embargoShows } from '@/components/repo/embargo-panel'
+import { ItemBoards } from '@/components/repo/boards/item-boards'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, ofMembersOnlyBranch, useQuotedMembersPost } from '@/components/repo/make-public'
@@ -2491,6 +2492,12 @@ function PullPage({
                 manageHref={repoHref('/repo/milestones', addr)}
               />
             </SidebarSection>
+            {/* Boards (boards.md §5.6): read once scrolled into view. */}
+            <ItemBoards
+              repo={repo}
+              addr={addr}
+              item={{ id: pull.id, number: pull.number, repoId: repo.repoId, repo: repo.name, kind: 'pr', state: merged ? 'merged' : open ? 'open' : 'closed', createdAt: pull.createdAt, closedAt: null, title: pull.title, labels: pull.state.labels, assignees: pull.state.assignees, milestone: review.milestone, author: pull.author }}
+            />
             {repo.visibility === 'public' ? (
               <EmbargoPanel
                 repo={repo}

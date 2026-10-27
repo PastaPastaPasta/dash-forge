@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { activeRepoTab } from './repo-header'
+import { activeRepoTab, hasBoards } from './repo-header'
 
 describe('activeRepoTab', () => {
   it.each([
@@ -16,6 +16,9 @@ describe('activeRepoTab', () => {
     ['/repo/issue/', 'issues'],
     ['/repo/pulls/new/', 'pulls'],
     ['/repo/release', 'releases'],
+    ['/repo/boards/', 'boards'],
+    ['/repo/board', 'boards'],
+    ['/repo/board/settings/', 'boards'],
     ['/repo/settings/', 'settings'],
     ['/repo/settings/environments/', 'settings'],
     ['/repo/settings/bots/', 'settings'],
@@ -30,5 +33,13 @@ describe('activeRepoTab', () => {
     expect(activeRepoTab('/repo/stargazers/')).toBeNull()
     // The security policy page, like Stargazers, sits under no tab.
     expect(activeRepoTab('/repo/security/')).toBeNull()
+  })
+})
+
+describe('hasBoards', () => {
+  it('is the four-contract set with forge-meta (boards.md §3)', () => {
+    expect(hasBoards({ meta: 'M' })).toBe(true)
+    expect(hasBoards({})).toBe(false)
+    expect(hasBoards(null)).toBe(false)
   })
 })
