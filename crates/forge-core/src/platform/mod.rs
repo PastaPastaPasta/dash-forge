@@ -3499,6 +3499,8 @@ const MAX_PAGES: usize = 1000;
 /// The cursor alone is enough on protocol 14, the only protocol Forge's contracts run on:
 /// Drive continues a `startAfter` page within the cursor's index key by document id, so rows
 /// sharing the cursor's `$createdAt` are not skipped (`DriveDocumentQuery::pads_cursor_page`).
+/// The primary-key path is not padded and needs no padding, since ids are unique. An `indexOnly`
+/// type refuses a cursor outright, so a read of one fails at its second page.
 /// Rows are deduplicated by `$id`.
 ///
 /// A **short page is the only accepted proof** that the end was reached. If the cursor

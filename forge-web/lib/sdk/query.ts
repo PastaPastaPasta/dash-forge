@@ -500,6 +500,8 @@ export class IncompleteReadError extends Error {
  * The cursor alone is enough on protocol 14, the only protocol Forge's contracts run on: Drive
  * continues a `startAfter` page within the cursor's index key by document id, so rows sharing
  * the cursor's `$createdAt` are not skipped (`rs-drive` `DriveDocumentQuery::pads_cursor_page`).
+ * The primary-key path is not padded and needs no padding, since ids are unique. An `indexOnly`
+ * type refuses a cursor outright, so a read of one throws at its second page.
  *
  * `pageLimit` bounds each round-trip; `maxPages` is a hard safety cap on total rounds.
  */

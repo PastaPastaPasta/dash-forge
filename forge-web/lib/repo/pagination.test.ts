@@ -400,7 +400,10 @@ describe('pack manifests across a page boundary', () => {
     expect(read).toHaveLength(PAGE + 1)
     expect(read[0]?.documentId).toBe(`m-${String(PAGE).padStart(4, '0')}`)
     expect(read[read.length - 1]?.documentId).toBe('m-0000')
-    expect(seen.length).toBeGreaterThan(1)
+    // Paged newest first: page 2 continues after page 1's oldest row, in the same order.
+    expect(seen).toHaveLength(2)
+    expect(seen[1]?.orderBy).toEqual([['$createdAt', 'desc']])
+    expect(seen[1]?.startAfter).toBe('m-0001')
   })
 })
 

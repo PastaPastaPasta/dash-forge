@@ -163,7 +163,10 @@ cursor alone, in the requested order. On protocol 14 Drive lowers a `startAfter`
 primary key as a `startAt` on the cursor's own index key, continues within that key by
 document id and drops the cursor row (`DriveDocumentQuery::pads_cursor_page`). So documents
 created in the same block as a page's last row are not skipped, and pages are not one row
-short. Descending pages after a cursor prove and verify like ascending ones. Protocol 13 got
+short. Descending pages after a cursor prove and verify like ascending ones. The primary-key
+path is not padded and needs no padding, because ids are unique. `indexOnly` types (`star`,
+`watch`, `follow`) refuse a cursor outright, so their reads must stay within one page or page
+by a range clause. Protocol 13 got
 both wrong, and the readers used to work around it; forge-v2 needs protocol 14, so they no
 longer do.
 
