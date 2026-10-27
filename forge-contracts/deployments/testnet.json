@@ -146,6 +146,21 @@
         "gitCommitPushed": true,
         "status": "updated",
         "at": "2026-10-26T18:14:06.576Z"
+      },
+      {
+        "contractNonce": "3",
+        "kind": "dataContractUpdate",
+        "key": "forgeMeta",
+        "contractId": "6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93",
+        "version": 3,
+        "schemaHash": "b33a289792657b3c2b175fef16fae1660faa7c899a372d225e67cd165389c547",
+        "previousSchemaHash": "dc2e13d943036289f68027784e7fbdb3078c07b369036275278409f1919b5a5c",
+        "sourceSha256": "e32b1ff316dd4821a5161bf6ba2b22ae195d7dddbb039643ab07542239015448",
+        "transitionSha256": "6abd8de347cfef2b3076ad93d7a2bc444cefc2bfd14d09152ed03b5ef21a1446",
+        "gitCommit": "7562a74e6681f534790d42975e0e1687e45af12e",
+        "gitCommitPushed": true,
+        "status": "updated",
+        "at": "2026-10-27T22:46:43.890Z"
       }
     ],
     "forgeCollab": {
@@ -212,7 +227,7 @@
       "status": "registered",
       "sizeBytes": 6976,
       "roomBytes": 13504,
-      "schemaHash": "dc2e13d943036289f68027784e7fbdb3078c07b369036275278409f1919b5a5c",
+      "schemaHash": "b33a289792657b3c2b175fef16fae1660faa7c899a372d225e67cd165389c547",
       "registeredSchemaHash": "57e35d9709a6c2e251766e02efd83e828185fb03a77755266a752a6ec586aab3",
       "documentsHash": "dd5e5f4ddbd8d8867ccdb9a789c9186e82fc4213b4c58dc724bb8a0a019205a9",
       "sourceFile": "forge-contracts/contracts/mainnet/forge-meta.json",
@@ -248,9 +263,26 @@
           "costCredits": "39040993330",
           "costDash": 0.3904099333,
           "updatedAt": "2026-10-26T18:14:08.493Z"
+        },
+        {
+          "version": 3,
+          "identityNonce": "3",
+          "sizeBytes": 10913,
+          "transitionSha256": "6abd8de347cfef2b3076ad93d7a2bc444cefc2bfd14d09152ed03b5ef21a1446",
+          "schemaHash": "b33a289792657b3c2b175fef16fae1660faa7c899a372d225e67cd165389c547",
+          "previousSchemaHash": "dc2e13d943036289f68027784e7fbdb3078c07b369036275278409f1919b5a5c",
+          "sourceFile": "forge-contracts/contracts/mainnet/forge-meta.json",
+          "sourceSha256": "e32b1ff316dd4821a5161bf6ba2b22ae195d7dddbb039643ab07542239015448",
+          "gitCommit": "7562a74e6681f534790d42975e0e1687e45af12e",
+          "gitCommitPushed": true,
+          "balanceBefore": "73487915680",
+          "status": "updated",
+          "costCredits": "46117488830",
+          "costDash": 0.4611748883,
+          "updatedAt": "2026-10-27T22:46:47.853Z"
         }
       ],
-      "version": 2
+      "version": 3
     },
     "contractGroupId": "EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC",
     "contractGroup": {

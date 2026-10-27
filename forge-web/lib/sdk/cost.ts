@@ -140,7 +140,7 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // later entry 33.11M, an identity's first 42.9M–51.5M. Its byte fields are in the base (not text).
   vaultEntry: 34_000_000,
   // UPDATE-3 (boards, `docs/design/boards.md` §3, §7), measured on testnet (2026-10-27,
-  // boards.live.test.ts on the scratch set's forge-meta v3, three runs): a repository's later board
+  // boards.live.test.ts, three runs on the scratch set and one on the live set): a repository's later board
   // 53.7M-54.7M with a 740-byte name and Kanban definition (its text priced per byte, so 34.3M
   // fixed); a card for an item another member has a card for 42.8M-43.2M (column only, no text).
   board: 34_000_000,
@@ -615,7 +615,7 @@ export const REPLACE_MIN_CREDITS = 3_500_000
 
 /**
  * The fixed part of a replace of the types whose replace was measured far below
- * {@link REPLACE_BASE_CREDITS}, on a testnet scratch set (UPDATE-3: boards.live.test.ts, three runs,
+ * {@link REPLACE_BASE_CREDITS}, on testnet (UPDATE-3: boards.live.test.ts, scratch and live sets,
  * 2026-10-27): a board's rename, close, reopen or delete 3.4M-4.6M credits; a card's move (column
  * and a one-digit rank) 4.2M-4.9M, field values set 4.5M-5.2M, an archive 4.2M-4.8M. Each is the highest fixed part
  * measured with {@link HEADROOM} (the trees grow), and their text is priced per byte as for any

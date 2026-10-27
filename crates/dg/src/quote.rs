@@ -111,7 +111,7 @@ const BOARD_CREDITS_PER_BYTE: u64 = 27_500;
 /// A member's first revision of a board carrying `text_bytes` of name and definition (sealed:
 /// its `enc`), priced as the repository's first and the signer's first forge-meta write: forge-web's
 /// `BASE_CREDITS.board` (34M), its first-board surcharge (10M) and the contract nonce (12M), with
-/// headroom (1.06), and the bytes. Measured on a testnet scratch set (2026-10-27,
+/// headroom (1.06), and the bytes. Measured on testnet (2026-10-27,
 /// `boards.live.test.ts`): 62.8M-63.8M for a repository's first with 738 bytes, 53.7M-54.7M later.
 pub fn board_create(text_bytes: u64) -> u64 {
     60_000_000 + BOARD_CREDITS_PER_BYTE * text_bytes
@@ -127,7 +127,7 @@ pub fn board_replace(text_bytes: u64) -> u64 {
 /// A member's first card for an item carrying `text_bytes` of column, rank and fields, priced as
 /// a board's first card and the signer's first forge-meta write: forge-web's `BASE_CREDITS.card`
 /// (43M) with the board's first card (18.5M), the item's first (28.5M) and the contract nonce (12M)
-/// surcharges, with headroom (1.06). Measured on a testnet scratch set: 88.3M-89.1M a board's first
+/// surcharges, with headroom (1.06). Measured on testnet: 88.3M-89.1M a board's first
 /// card, 70.5M-70.9M an item's first, 42.8M-43.2M for an item another member has a card for.
 pub fn card_create(text_bytes: u64) -> u64 {
     109_000_000 + BOARD_CREDITS_PER_BYTE * text_bytes

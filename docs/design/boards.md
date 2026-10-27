@@ -112,9 +112,9 @@ Pinned by `forge-web/lib/rules/boards.ts` and forge-core `rules::boards` (vector
 
 ## 3. Contract: two new forge-meta types (UPDATE-3)
 
-New document types only, added to forge-meta by `deploy-v2.mjs --update meta` on a registered network (forge-meta v3 on testnet, rehearsed on its scratch set; the live set's update is pending) and part of the registration set elsewhere. Flag `boards` (UPDATE3), four-contract set only, as `passkey_vault`.
+New document types only, added to forge-meta by `deploy-v2.mjs --update meta` on a registered network (forge-meta v3 on testnet since 2026-10-27, rehearsed on its scratch set first) and part of the registration set elsewhere. Flag `boards` (UPDATE3), four-contract set only, as `passkey_vault`.
 
-Both types are **mutable and never deleted, one document per (member, board[, item])** (`canBeDeleted: false`: deleting the newest document would silently bring back an older member's, which no poll of `$updatedAt` sees, and a removed member could still delete theirs; `state` 2 is the delete). Every index key and both timestamps are `required` (an unrequired `$updatedAt` is never recorded, and a unique index does not hold a document missing a key part). A member's later write replaces their own document (a replace costs a fraction of a create: on a testnet scratch set a card's move 4.2M–4.9M credits against its create's 43M–89M), and readers take the newest across members. Both are member-gated like `label`: `ownerRefersTo` a forge-core `maintainer` or a `writer` whose `role` equals the claimed `r`, re-validated on every replace, so a removed member cannot touch their old documents and a role change takes effect on the next write.
+Both types are **mutable and never deleted, one document per (member, board[, item])** (`canBeDeleted: false`: deleting the newest document would silently bring back an older member's, which no poll of `$updatedAt` sees, and a removed member could still delete theirs; `state` 2 is the delete). Every index key and both timestamps are `required` (an unrequired `$updatedAt` is never recorded, and a unique index does not hold a document missing a key part). A member's later write replaces their own document (a replace costs a fraction of a create: on testnet a card's move 4.2M–4.9M credits against its create's 43M–89M), and readers take the newest across members. Both are member-gated like `label`: `ownerRefersTo` a forge-core `maintainer` or a `writer` whose `role` equals the claimed `r`, re-validated on every replace, so a removed member cannot touch their old documents and a role change takes effect on the next write.
 
 ### 3.1 `board`
 
@@ -245,7 +245,7 @@ An open board polls `card.recent` for cards with `$updatedAt >=` its last read (
 
 ## 7. Costs
 
-Measured on a testnet scratch set (2026-10-27, three runs of `forge-web/lib/repo/boards.live.test.ts` against the scratch set's forge-meta v3; the model is `forge-web/lib/sdk/cost.ts`, `board` and `card` in `BASE_CREDITS`, `FIRST_WRITE_CREDITS` and `REPLACE_BASE_BY_TYPE`):
+Measured on testnet (2026-10-27, `forge-web/lib/repo/boards.live.test.ts`: three runs on the scratch set's forge-meta v3, then one on the live set's, whose fees fell within these ranges; the model is `forge-web/lib/sdk/cost.ts`, `board` and `card` in `BASE_CREDITS`, `FIRST_WRITE_CREDITS` and `REPLACE_BASE_BY_TYPE`):
 
 | Write | Credits | ≈ DASH |
 |---|---|---|
@@ -256,7 +256,7 @@ Measured on a testnet scratch set (2026-10-27, three runs of `forge-web/lib/repo
 | An item's first card on the board | 70.5M–70.9M | 0.00071 |
 | A board's first card (also the item's first) | 88.3M–89.1M | 0.00089 |
 | A card's move (column and rank), field change or archive (a replace) | 4.2M–5.2M | 0.00005 |
-| A write consensus refuses (a non-member's card or board, a removed member's replace, a card naming no issue or PR) | 1.6M–2.0M | 0.00002 |
+| A write consensus refuses (a non-member's card or board, a removed member's replace, a card naming no issue or PR) | 1.6M–2.1M (once 10.3M) | 0.00002–0.0001 |
 
 A board's text is priced per byte (27,500 credits), so a longer definition costs more. Sources, Done, auto-archive and views cost nothing. `priceBoardWrites(creates, replaces)` prices a multi-write action (a re-rank, "move to the next iteration", a bulk archive) before it is signed.
 

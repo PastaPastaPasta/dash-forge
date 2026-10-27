@@ -260,7 +260,7 @@ At most 10 passkeys per identity. An entry is always the same size, whatever key
 
 ### Boards
 
-A board's definition is one document per member who edits it, and a card one document per member, item and board, replaced in place by every later change ([boards design](../design/boards.md#7-costs)). Measured on a testnet scratch set (2026-10-27, the same contract the live set gets) with the live test (`lib/repo/boards.live.test.ts`), which prints what each write costs.
+A board's definition is one document per member who edits it, and a card one document per member, item and board, replaced in place by every later change ([boards design](../design/boards.md#7-costs)). Measured on testnet (2026-10-27, on the scratch set and the live set) with the live test (`lib/repo/boards.live.test.ts`), which prints what each write costs.
 
 | Action | About | Notes |
 |---|---|---|

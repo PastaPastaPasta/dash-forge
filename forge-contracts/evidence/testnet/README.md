@@ -43,17 +43,21 @@ re-seal 3,143,380; the two deletes refunded 26,654,372 and 37,031,569; the sign-
 
 ## forge-meta update to version 3: boards (2026-10-27)
 
-forge-meta gains the `board` and `card` document types (UPDATE-3, the flag `boards`,
+forge-meta was updated in place to add the `board` and `card` document types (UPDATE-3, the flag `boards`,
 [docs/design/boards.md](../../../docs/design/boards.md) §3), nothing else: the new forge-meta.json
 differs from version 2's only by the two added types (every other type, `schemaDefs`, the config and
 the description are equal), and `contract-validate --expect-update` accepts it as an update of
 version 2 (`ALLOWED`). The update is one `DataContractUpdate` of 10,913 B (the contract is
-10,842 B). A contract update pays the whole contract's registration fee again (10 types and 16
-indexes), so it costs about 0.46 DASH.
+10,842 B), signed by the deployer at contract nonce 3 (gitCommit `7562a74e`), costing
+0.461175 tDASH (46,117,488,830 credits): a contract update pays the whole contract's registration
+fee again (10 types and 16 indexes). The other three contracts are unchanged. It is recorded in
+`forge-contracts/deployments/testnet.json` (`forgeMeta.updates`, `v2.nonceLedger`), and the web
+snapshot (`deployments/contracts/testnet.json`) was refreshed at protocol 14 right after it.
 
 | File | What it shows |
 |---|---|
-| `update-meta-v3.sha256` | The sums of the set the update is run against (`--expect-sha256`): only forge-meta's differs from `update-meta-v2.sha256`. |
+| `update-meta-v3.sha256` | The sums of the set the update was run against (`--expect-sha256`): only forge-meta's differs from `update-meta-v2.sha256`. |
+| `c1-v3.json` | C1 on the live set after the update: every contract on chain equals the signed JSON, forge-meta at version 3 (44/44). |
 | `rehearsal-scratch-record.json` | The update applied to the scratch set (`forgeMeta.updates`, version 3: contract nonce 3, 10,913 B, 0.461175 tDASH). The record's top-level `sizeBytes` and `roomBytes` stay the registration's (6,976 B); the contract is now 10,842 B, about 9.6 KB under the transition limit. |
 | `rehearsal-c1-v3.json` | C1 on the scratch set after the update: every contract on chain equals the signed JSON, forge-meta at version 3 (44/44). |
 
@@ -92,8 +96,13 @@ Fees the live test measured on the scratch set, in credits (three runs):
 | A card's move / field change / archive (replaces) | 4,157,662 to 5,209,102 |
 | A refused write (stranger, removed member, card naming no issue or PR) | 1,628,280 to 1,980,780 |
 
-**The live update is pending.** A dry run against the live set (`deploy-v2.mjs --network testnet
---set mainnet --identity <deployer> --expect-sha256 update-meta-v3.sha256 --update meta --dry-run`)
-built the same transition (forge-meta `6arQJW8y…` version 2 to 3, contract nonce 3, 10,913 B, the
-sums matching). On testnet the real run refuses until the commit it records is on a branch of
-origin (so the record's `gitCommit` can be fetched), so it waits for the boards branch to be pushed.
+**The live set.** After the scratch rehearsal the live forge-meta (`6arQJW8y…`) was updated with the
+same bytes; C1 passed 44/44 (`c1-v3.json`). `boards.live.test.ts` then passed against the live set
+(a throwaway `boards-live-*` repository of OWNER, the same identities), every refusal above
+included. Its fees fell within the scratch set's ranges, in credits: a repository's first board
+62,924,580, a later one 53,868,240; board replaces 3,534,680 to 4,077,560; a board's first card
+88,488,320; a card for an item another member has one for 42,912,400; card replaces 4,312,462 to
+4,689,622; refused writes 1,641,280 to 2,135,580. Two writes paid more than on the scratch set, for
+a reason not established here: the triage member's first card (the item's first) 79,191,280
+(70.5M-70.9M there; still under its preview with the contract-nonce surcharge, 88.5M), and the
+stranger's first refused card 10,257,440 (its refused board right after it paid 1,641,280).

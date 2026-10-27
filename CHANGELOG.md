@@ -11,7 +11,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 ### Added
 
 - **`dg board`.** List, view (`--view`, `--json` with the fold), create (the web's templates or `--columns`), move (`--top`, `--before`, `--after`), set fields, add (or open a new issue with `--title`), archive, remove, move to the next iteration, close and delete boards from the command line, private repositories' sealed boards and cards included ([Boards guide](docs/guides/boards.md)). forge-core reads and writes boards and cards as the web does, and runs the `sealed_board` vectors.
-- **Board contract types.** forge-meta gains `board` and `card` (UPDATE-3, [boards design](docs/design/boards.md) §3), written only by the home repository's members; testnet gets them by an in-place update of forge-meta (version 3), which is not applied yet.
+- **Board contract types.** forge-meta gains `board` and `card` (UPDATE-3, [boards design](docs/design/boards.md) §3), written only by the home repository's members; testnet got them on 2026-10-27 by an in-place update of forge-meta to version 3 ([evidence](forge-contracts/evidence/testnet/README.md#forge-meta-update-to-version-3-boards-2026-10-27)).
 
 ### Fixed
 
