@@ -34,6 +34,7 @@ import {
   LABEL_COLORS,
   boardWriteGeneration,
   canEditBoards,
+  boardTextBytes,
   checkBoardInput,
   ownRevision,
   readBoard,
@@ -313,7 +314,7 @@ function SettingsEditor({ home, addr, board, used, sdk, editor, reload }: { home
   const problem = hasNameProblems(clean) ? 'Fix the names marked above to save.' : inputProblem(() => checkBoardInput({ name, spec: clean }))
   const bytes = specBytes(clean)
   const own = signer !== null && ownRevision(board, signer.identityId) !== null
-  const cost = priceBoardWrites(own ? 0 : 1, own ? 1 : 0, { type: 'board', sealed: board.sealed })
+  const cost = priceBoardWrites(own ? 0 : 1, own ? 1 : 0, { type: 'board', sealed: board.sealed, bytes: boardTextBytes({ name, spec: clean }) })
 
   const run = async (intent: string): Promise<void> => {
     if (sdk === null || signer === null || action === null) throw new Error('Sign in to change this board.')

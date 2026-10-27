@@ -16,7 +16,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { CheckCircle2, KanbanSquare, Lock, Plus, Settings2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { checkBoardInput, type BoardView } from '@/lib/repo'
+import { boardTextBytes, checkBoardInput, type BoardView } from '@/lib/repo'
 import { NAME_MAX } from '@/lib/rules/boards'
 import { priceBoardWrites } from '@/lib/sdk'
 import { plural, timeAgo } from '@/lib/view/format'
@@ -189,7 +189,7 @@ function NewBoardDialog({
       onClose={close}
       title="New board"
       description="Anyone who can see this repo can see its boards. Maintainers and members with Write change them."
-      cost={priceBoardWrites(1, 0, { type: 'board', sealed })}
+      cost={priceBoardWrites(1, 0, { type: 'board', sealed, bytes: boardTextBytes({ name: trimmed, spec }) })}
       confirmLabel="Sign & create"
       successNote="Board created"
       blocked={problem !== null && trimmed !== '' ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : trimmed === '' ? <span /> : undefined}

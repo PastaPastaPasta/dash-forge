@@ -126,6 +126,16 @@ export function checkBoardInput(input: { readonly name: string; readonly spec: B
   return { name, spec: out.json }
 }
 
+/**
+ * The text a board write of `input` stores, in bytes (its trimmed name and canonical definition):
+ * what `priceBoardWrites` prices it by, since a board's definition is priced per byte. A
+ * definition that does not serialize counts as the largest one.
+ */
+export function boardTextBytes(input: { readonly name: string; readonly spec: BoardSpec }): number {
+  const out = serializeSpec(input.spec)
+  return utf8Length(input.name.trim()) + ('json' in out ? utf8Length(out.json) : SPEC_MAX_BYTES)
+}
+
 function refuseUnlessOpen(board: BoardView): void {
   if (board.state !== 'open') throw new BoardWriteError('closed', board.state === 'deleted' ? 'this board was deleted' : 'this board is closed: reopen it to change it')
 }

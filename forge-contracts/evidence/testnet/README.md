@@ -40,3 +40,60 @@ contract gained after the key was bound to the group), a fresh device signed in 
 alone, then the test re-sealed one entry and deleted both. The same test then passed against the live
 set. Fees measured on the live set, in credits: first entry 51,513,300, a later one 33,110,400, a
 re-seal 3,143,380; the two deletes refunded 26,654,372 and 37,031,569; the sign-in cost nothing.
+
+## forge-meta update to version 3: boards (2026-10-27)
+
+forge-meta gains the `board` and `card` document types (UPDATE-3, the flag `boards`,
+[docs/design/boards.md](../../../docs/design/boards.md) §3), nothing else: the new forge-meta.json
+differs from version 2's only by the two added types (every other type, `schemaDefs`, the config and
+the description are equal), and `contract-validate --expect-update` accepts it as an update of
+version 2 (`ALLOWED`). The update is one `DataContractUpdate` of 10,913 B (the contract is
+10,842 B). A contract update pays the whole contract's registration fee again (10 types and 16
+indexes), so it costs about 0.46 DASH.
+
+| File | What it shows |
+|---|---|
+| `update-meta-v3.sha256` | The sums of the set the update is run against (`--expect-sha256`): only forge-meta's differs from `update-meta-v2.sha256`. |
+| `rehearsal-scratch-record.json` | The update applied to the scratch set (`forgeMeta.updates`, version 3: contract nonce 3, 10,913 B, 0.461175 tDASH). The record's top-level `sizeBytes` and `roomBytes` stay the registration's (6,976 B); the contract is now 10,842 B, about 9.6 KB under the transition limit. |
+| `rehearsal-c1-v3.json` | C1 on the scratch set after the update: every contract on chain equals the signed JSON, forge-meta at version 3 (44/44). |
+
+**The scratch rehearsal.** The scratch set's forge-meta (`8qj74sQt…`) was updated to version 3
+with the same bytes. The first run's version check read a node that had not applied the block yet
+(it still proved version 2) and stopped with the update recorded as pending; the update had
+landed, and rerunning the same command completed the record. `deploy-v2.mjs` now reads the version
+again for a few seconds, both after a broadcast and before rebroadcasting a pending update.
+
+Then `forge-web/lib/repo/boards.live.test.ts` passed three times against the scratch set
+(`FORGE_BOARDS_RECORD` names its record), with the testnet QA identities OWNER (the repository's
+owner), CONTRIB (granted triage) and TREASURY (a stranger). It ran the web's data layer end to end
+in a throwaway repository: a board created, renamed, closed (a card write then refused before
+signing), reopened, and a second one deleted; cards placed, moved with a rank, given field values
+and archived; the triage member placing a card. `readBoards`, `readBoard`, `readCardsSince`,
+`readItemCards` and the fold agreed with what was written. Consensus refused, each paying only a
+processing fee:
+
+- a stranger's card and board: the member gate (40120);
+- a board signed by the triage member: its writer document's role is not the claimed `r` (40127);
+- the triage member's replace of its own card after the owner removed it: the gate is checked
+  again on a replace (40120);
+- a member's card naming the repository document instead of an issue or PR: `card.item`'s
+  reference (40120).
+
+Fees the live test measured on the scratch set, in credits (three runs):
+
+| Write | Credits |
+|---|---|
+| A board with the Kanban template's definition (738 B): a repository's first | 62,769,780 to 63,818,180 |
+| A repository's later board | 53,713,440 to 54,681,460 |
+| A board's rename / close / reopen / delete (replaces) | 3,379,880 to 4,628,500 |
+| A card for an item another member has a card for | 42,757,600 to 43,197,820 |
+| An item's first card | 70,513,480 to 70,860,620 |
+| A board's first card (also the item's first) | 88,333,520 to 89,120,880 |
+| A card's move / field change / archive (replaces) | 4,157,662 to 5,209,102 |
+| A refused write (stranger, removed member, card naming no issue or PR) | 1,628,280 to 1,980,780 |
+
+**The live update is pending.** A dry run against the live set (`deploy-v2.mjs --network testnet
+--set mainnet --identity <deployer> --expect-sha256 update-meta-v3.sha256 --update meta --dry-run`)
+built the same transition (forge-meta `6arQJW8y…` version 2 to 3, contract nonce 3, 10,913 B, the
+sums matching). On testnet the real run refuses until the commit it records is on a branch of
+origin (so the record's `gitCommit` can be fetched), so it waits for the boards branch to be pushed.

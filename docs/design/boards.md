@@ -31,10 +31,10 @@ The stories GitHub Projects, Trello and Jira all serve, and how Forge answers ea
 
 **Deliberately different.**
 
-- *No draft cards.* Trello cards and GitHub draft issues are a second kind of item that later has to be converted. On Forge an issue costs about as much as a card (0.0010 vs 0.0005 DASH) and already has comments, labels, assignees, a number, a URL and history, so quick add makes a real issue. One item model; nothing to convert.
+- *No draft cards.* Trello cards and GitHub draft issues are a second kind of item that later has to be converted. On Forge an issue costs about as much as a card (0.0007–0.0012 vs 0.0004–0.0009 DASH) and already has comments, labels, assignees, a number, a URL and history, so quick add makes a real issue. One item model; nothing to convert.
 - *No automation engine.* GitHub's workflows and Jira's automation run on a server when something happens. Forge hosts nothing, so automation is **derived**: rules in the board's definition that every reader applies when it renders (sources, the Done column, auto-archive). They are free (no writes), instant, consistent between the web and the CLI (shared vectors), and can never "fail to run".
 - *No configurable workflow transitions* (Jira's "In review may only go to Done"). Statuses are columns; any member may move any card. Transition rules suit a ticketing desk, not a forge, and would be client-only anyway.
-- *Board history is not kept.* A card's placement is one mutable document per member (§3.2): a move costs about 0.00003 DASH instead of 0.0005, at the price of no per-move audit trail. Issue state history stays in the issue timeline, which is what matters.
+- *Board history is not kept.* A card's placement is one mutable document per member (§3.2): a move costs about 0.00005 DASH instead of 0.0004 or more, at the price of no per-move audit trail. Issue state history stays in the issue timeline, which is what matters.
 
 ---
 
@@ -94,7 +94,7 @@ A card's `rank` is a string over the 62 digits `0-9A-Za-z` (ASCII order, so byte
 
 - **Implicit rank.** An item with no card, or whose newest card has no rank, ranks `V` + the **item's** `$createdAt` in 8 zero-padded base-62 digits + the first 3 bytes of the item's `$id` (big-endian, mod 62⁴) in 4 digits. Sourced items therefore form a pool (`V…`) in creation order, oldest first, almost never two equal (two items of one block whose id prefixes collide mod 62⁴ tie, and sort by `$id`), and a card can be dropped between two of them without ranking either. An implicit rank may end in `0`; only the midpoint arithmetic treats trailing `0`s as absent.
 - **Moves.** Dropping between two neighbours writes `rankBetween(a, b)`, a string strictly between them (digit-wise midpoint; vectors `board_rank__*`). **Top** of a column: `rankBetween("", min(first, "V"))`. **Bottom**: `rankBetween(max(last, "W"), "")`. So explicit top and bottom groups bracket the sourced pool, and later sourced items (which join the pool) never pass a card dropped at the bottom. A card dropped between two sourced items gets a `V…` rank, which later sourced items may pass; that is intended (they are newer).
-- **Overflow.** A rank that would exceed 63 characters (about 350 drops into one gap) is refused before signing with "Re-rank this column", which rewrites the column's ranks evenly: one write per item, a create (≈ 0.0005 DASH) for each item the signer has no card for, priced before signing. `rerank(n)` spreads them between `0` and `V` (k/(n+1) of the way, in the fewest digits that leave 62 ranks between neighbours), so items sourced later still join below them, in the pool. The pairs with no rank between are equal ranks (two members dropping into one gap at once write the same rank) and `b` = `a` + `0…0` (an explicit rank against an implicit one ending in `0`); both are `re-rank` too.
+- **Overflow.** A rank that would exceed 63 characters (about 350 drops into one gap) is refused before signing with "Re-rank this column", which rewrites the column's ranks evenly: one write per item, a create (≈ 0.0004–0.0009 DASH) for each item the signer has no card for, priced before signing. `rerank(n)` spreads them between `0` and `V` (k/(n+1) of the way, in the fewest digits that leave 62 ranks between neighbours), so items sourced later still join below them, in the pool. The pairs with no rank between are equal ranks (two members dropping into one gap at once write the same rank) and `b` = `a` + `0…0` (an explicit rank against an implicit one ending in `0`); both are `re-rank` too.
 
 ### 2.7 Encoding and the rules both clients apply
 
@@ -112,9 +112,9 @@ Pinned by `forge-web/lib/rules/boards.ts` and forge-core `rules::boards` (vector
 
 ## 3. Contract: two new forge-meta types (UPDATE-3)
 
-New document types only, added to forge-meta by `deploy-v2.mjs --update meta` on a registered network (forge-meta v3 on testnet) and part of the registration set elsewhere. Flag `boards` (UPDATE3), four-contract set only, as `passkey_vault`.
+New document types only, added to forge-meta by `deploy-v2.mjs --update meta` on a registered network (forge-meta v3 on testnet, rehearsed on its scratch set; the live set's update is pending) and part of the registration set elsewhere. Flag `boards` (UPDATE3), four-contract set only, as `passkey_vault`.
 
-Both types are **mutable and never deleted, one document per (member, board[, item])** (`canBeDeleted: false`: deleting the newest document would silently bring back an older member's, which no poll of `$updatedAt` sees, and a removed member could still delete theirs; `state` 2 is the delete). Every index key and both timestamps are `required` (an unrequired `$updatedAt` is never recorded, and a unique index does not hold a document missing a key part). A member's later write replaces their own document (a replace costs a fraction of a create: the passkey vault measured 3.1M credits against 51.5M), and readers take the newest across members. Both are member-gated like `label`: `ownerRefersTo` a forge-core `maintainer` or a `writer` whose `role` equals the claimed `r`, re-validated on every replace, so a removed member cannot touch their old documents and a role change takes effect on the next write.
+Both types are **mutable and never deleted, one document per (member, board[, item])** (`canBeDeleted: false`: deleting the newest document would silently bring back an older member's, which no poll of `$updatedAt` sees, and a removed member could still delete theirs; `state` 2 is the delete). Every index key and both timestamps are `required` (an unrequired `$updatedAt` is never recorded, and a unique index does not hold a document missing a key part). A member's later write replaces their own document (a replace costs a fraction of a create: on a testnet scratch set a card's move 4.2M–4.9M credits against its create's 43M–89M), and readers take the newest across members. Both are member-gated like `label`: `ownerRefersTo` a forge-core `maintainer` or a `writer` whose `role` equals the claimed `r`, re-validated on every replace, so a removed member cannot touch their old documents and a role change takes effect on the next write.
 
 ### 3.1 `board`
 
@@ -150,7 +150,7 @@ Indexes: unique `onItem (item, repoId, board, $ownerId)` (one card per member pe
 
 `state` stays plaintext in a private repo: it tells only that an item was archived or removed.
 
-**Why one document per member and not one per item.** Platform documents are replaced only by their owner. One document per item would need every member to create a new immutable document per move (0.0005 DASH, forever growing). Per-member mutable documents make every move after a member's first a replace.
+**Why one document per member and not one per item.** Platform documents are replaced only by their owner. One document per item would need every member to create a new immutable document per move (0.0004 DASH or more, forever growing). Per-member mutable documents make every move after a member's first a replace.
 
 **Concurrent edits.** A card carries all of a member's view of the item (column, rank, fields), and the newest wins whole. A client reads the item's newest card immediately before signing and applies only its own change to it, so two members editing different fields of one card both land unless the second read happens before the first write is visible (the read-to-sign latency, a few seconds); then the last writer wins whole.
 
@@ -245,7 +245,20 @@ An open board polls `card.recent` for cards with `$updatedAt >=` its last read (
 
 ## 7. Costs
 
-From the measured model (`forge-web/lib/sdk/cost.ts`): a board definition ≈ 0.0015 DASH to create, ≈ 0.0002 to edit; a member's first card for an item ≈ 0.0005, every later move or field change of it ≈ 0.00003. Sources, Done, auto-archive and views cost nothing. Until a network carries the types these are **estimates** (`board` and `card` in `BASE_CREDITS` and `REPLACE_BASE_BY_TYPE`, scaled from the passkey vault's measured create and replace); `priceBoardWrites(creates, replaces)` prices a multi-write action (a re-rank, "move to the next iteration", a bulk archive) before it is signed.
+Measured on a testnet scratch set (2026-10-27, three runs of `forge-web/lib/repo/boards.live.test.ts` against the scratch set's forge-meta v3; the model is `forge-web/lib/sdk/cost.ts`, `board` and `card` in `BASE_CREDITS`, `FIRST_WRITE_CREDITS` and `REPLACE_BASE_BY_TYPE`):
+
+| Write | Credits | ≈ DASH |
+|---|---|---|
+| A board (the Kanban template, 738 bytes of name and definition): a repository's first | 62.8M–63.8M | 0.00064 |
+| A repository's later board | 53.7M–54.7M | 0.00055 |
+| A board's rename, close, reopen or delete (a replace) | 3.4M–4.6M | 0.00004–0.00005 |
+| A card for an item another member already has a card for | 42.8M–43.2M | 0.00043 |
+| An item's first card on the board | 70.5M–70.9M | 0.00071 |
+| A board's first card (also the item's first) | 88.3M–89.1M | 0.00089 |
+| A card's move (column and rank), field change or archive (a replace) | 4.2M–5.2M | 0.00005 |
+| A write consensus refuses (a non-member's card or board, a removed member's replace, a card naming no issue or PR) | 1.6M–2.0M | 0.00002 |
+
+A board's text is priced per byte (27,500 credits), so a longer definition costs more. Sources, Done, auto-archive and views cost nothing. `priceBoardWrites(creates, replaces)` prices a multi-write action (a re-rank, "move to the next iteration", a bulk archive) before it is signed.
 
 ## 8. Limits
 

@@ -37,7 +37,7 @@ import { useParam, withTrailingSlash, type RepoAddress } from '@/hooks/use-query
 import { useSearchParams } from '@/hooks/use-route'
 import { useSdk } from '@/hooks/use-sdk'
 import { useUiStore } from '@/hooks/use-ui-store'
-import { BoardWriteError, nextIterationPlan, ownRevision, readBoardDefinition, readLabels, repoContractIds, repoKey, type LabelDef, type RepoRef } from '@/lib/repo'
+import { BoardWriteError, boardTextBytes, nextIterationPlan, ownRevision, readBoardDefinition, readLabels, repoContractIds, repoKey, type LabelDef, type RepoRef } from '@/lib/repo'
 import { cachedDpnsName } from '@/lib/view/dpns'
 import {
   fieldById,
@@ -406,7 +406,7 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
         onClose={() => setSaving(false)}
         title={`Save view "${base.name}"`}
         description="Everyone who opens this board sees the view this way."
-        cost={priceBoardWrites(hasOwnRevision ? 0 : 1, hasOwnRevision ? 1 : 0, { type: 'board', sealed: home.repo.visibility === 'private' })}
+        cost={priceBoardWrites(hasOwnRevision ? 0 : 1, hasOwnRevision ? 1 : 0, { type: 'board', sealed: home.repo.visibility === 'private', bytes: boardTextBytes({ name: board.name ?? '', spec: { ...spec, views: savedOver(spec) } }) })}
         confirmLabel="Save view"
         successNote="View saved"
         onConfirm={async (intent) => {

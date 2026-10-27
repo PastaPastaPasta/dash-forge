@@ -139,12 +139,12 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // UPDATE-2 (the passkey vault), measured on testnet (2026-10-26, passkey-vault.live.test.ts): a
   // later entry 33.11M, an identity's first 42.9M–51.5M. Its byte fields are in the base (not text).
   vaultEntry: 34_000_000,
-  // UPDATE-3 (boards, `docs/design/boards.md` §3, §7): ESTIMATED, never measured. Both are member
-  // documents shaped like the vault's entry (a few integers, one or two short strings, a unique
-  // index ending in `$ownerId`); a card also writes the `recent` index, a board its definition
-  // text (priced per byte). Re-measure once a network carries forge-meta v3.
-  board: 40_000_000,
-  card: 42_000_000,
+  // UPDATE-3 (boards, `docs/design/boards.md` §3, §7), measured on testnet (2026-10-27,
+  // boards.live.test.ts on the scratch set's forge-meta v3, three runs): a repository's later board
+  // 53.7M-54.7M with a 740-byte name and Kanban definition (its text priced per byte, so 34.3M
+  // fixed); a card for an item another member has a card for 42.8M-43.2M (column only, no text).
+  board: 34_000_000,
+  card: 43_000_000,
 }
 
 /**
@@ -221,11 +221,12 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   packMirror: { repo: 16_000_000 },
   // The owner's first entry builds its `byCredential` subtree: 51.5M first vs 33.1M on testnet.
   vaultEntry: { author: 18_000_000 },
-  // UPDATE-3, ESTIMATED from the vault's 18.4M first-entry surcharge: `repo` the home repo's first
-  // board (its `byKey` repo level) or a board's first card (`recent`); `target` an item's first
-  // card anywhere (`onItem`'s item level).
+  // UPDATE-3, measured on testnet (2026-10-27): `repo` the home repo's first board (its `byKey`
+  // repo level: 62.8M-63.8M, 9.1M-9.5M over a later one) or a board's first card (`recent`:
+  // 88.3M-89.1M, 17.8M-18.3M over an item's first); `target` an item's first card (`onItem`'s item
+  // level: 70.5M-70.9M, 27.7M over a card for an item that has one).
   board: { repo: 10_000_000 },
-  card: { repo: 10_000_000, target: 18_000_000 },
+  card: { repo: 18_500_000, target: 28_500_000 },
 }
 
 /**
@@ -613,28 +614,34 @@ export const REPLACE_BASE_CREDITS = 17_000_000
 export const REPLACE_MIN_CREDITS = 3_500_000
 
 /**
- * The fixed part of a replace of the types whose replace was measured (or is estimated) far
- * below {@link REPLACE_BASE_CREDITS}: the passkey vault's entry replace measured 3.1M credits on
- * testnet (UPDATE-2); a board's or card's replace (UPDATE-3) is ESTIMATED from it, since a card
- * move changes as little (its column and rank). Their text is priced per byte as for any replace.
+ * The fixed part of a replace of the types whose replace was measured far below
+ * {@link REPLACE_BASE_CREDITS}, on a testnet scratch set (UPDATE-3: boards.live.test.ts, three runs,
+ * 2026-10-27): a board's rename, close, reopen or delete 3.4M-4.6M credits; a card's move (column
+ * and a one-digit rank) 4.2M-4.9M, field values set 4.5M-5.2M, an archive 4.2M-4.8M. Each is the highest fixed part
+ * measured with {@link HEADROOM} (the trees grow), and their text is priced per byte as for any
+ * replace, an upper bound (a board's definition re-stated unchanged pays nothing for it).
  */
 export const REPLACE_BASE_BY_TYPE: Readonly<Record<string, number>> = {
-  board: 4_000_000,
-  card: 4_000_000,
+  board: 4_700_000,
+  card: 5_150_000,
 }
 
 /** Preview for replacing a document's `changes`: a range, from {@link REPLACE_MIN_CREDITS}. */
 export function previewReplace(documentType: string, changes: Readonly<Record<string, unknown>> = {}): CostPreview {
   const bytes = textBytes(changes)
   const credits = (REPLACE_BASE_BY_TYPE[documentType] ?? REPLACE_BASE_CREDITS) + CREDITS_PER_TEXT_BYTE * bytes
-  // Drive estimates a replace like a create of the document; its requirement is at most that.
+  // Drive estimates a replace like a create of the document; its requirement is at most that. A
+  // type whose replace is priced apart but whose admission was never probed (a board or card) is
+  // admitted as its create would be: the replace's own price would let a nearly spent budget through.
   const measured = ADMISSION_CREDITS[documentType]
-  return { ...previewCredits(credits, measured ? admissionFor(documentType, bytes, credits) : undefined), minCredits: REPLACE_MIN_CREDITS }
+  const admit = measured ? admissionFor(documentType, bytes, credits) : documentType in REPLACE_BASE_BY_TYPE ? previewCreate(documentType, changes).admit : undefined
+  return { ...previewCredits(credits, admit), minCredits: REPLACE_MIN_CREDITS }
 }
 
 /**
- * The typical bytes one board write stores beyond its fixed shape, for {@link priceBoardWrites}:
- * a card's rank and a few field values; a board's name and a template-sized definition (§2.7).
+ * The typical bytes one board write stores beyond its fixed shape, for {@link priceBoardWrites}
+ * when the caller does not know them: a card's rank and a few field values; a board's name and a
+ * template-sized definition (§2.7).
  * A private repository's write stores them sealed (`enc`), with 29 bytes of framing and padding
  * to 32 (`private-repos.md` §4.6).
  */
@@ -645,11 +652,17 @@ const SEALED_EXTRA_BYTES = 29 + 32
  * What a multi-write board action costs before it is signed (`docs/design/boards.md` §5.3, §5.4,
  * §2.6's re-rank): `creates` member documents written for the first time (a card for an item the
  * signer has none for) and `replaces` replaces of the signer's own. `type`: `card` (the default)
- * or `board`; `sealed`: a private repository's (its fields in `enc`). ESTIMATED: neither type has
- * been measured on a network yet ({@link BASE_CREDITS}).
+ * or `board`; `sealed`: a private repository's (its fields in `enc`); `bytes`: the text each write
+ * stores, when known (a board's name and canonical definition: `boardTextBytes`), else the typical.
+ * Each create is priced with every first-write surcharge, an upper bound (the fees measured on
+ * testnet, {@link BASE_CREDITS}).
  */
-export function priceBoardWrites(creates: number, replaces: number, { type = 'card', sealed = false }: { readonly type?: 'card' | 'board'; readonly sealed?: boolean } = {}): CostPreview {
-  const n = BOARD_WRITE_BYTES[type] + (sealed ? SEALED_EXTRA_BYTES : 0)
+export function priceBoardWrites(
+  creates: number,
+  replaces: number,
+  { type = 'card', sealed = false, bytes }: { readonly type?: 'card' | 'board'; readonly sealed?: boolean; readonly bytes?: number } = {},
+): CostPreview {
+  const n = (bytes ?? BOARD_WRITE_BYTES[type]) + (sealed ? SEALED_EXTRA_BYTES : 0)
   const sample = { text: 'x'.repeat(n) }
   const parts: CostPreview[] = []
   for (let i = 0; i < creates; i++) parts.push(previewCreate(type, sample))

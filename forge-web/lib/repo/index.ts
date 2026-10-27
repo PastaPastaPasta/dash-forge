@@ -225,6 +225,7 @@ export {
   BoardWriteError,
   addItems,
   archiveItems,
+  boardTextBytes,
   checkBoardInput,
   createBoard,
   crossRepoCardNeedsConfirm,
