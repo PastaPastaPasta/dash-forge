@@ -8,6 +8,14 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Fixed
+
+- **InstantSend proofs on testnet.** Creating or topping up an identity, in the web app or with `dg auth new`, waited on `getislocks` at `trpc.digitalcash.dev`, which no longer follows testnet, so every lock fell back to a slower chain-lock proof. The InstantSend lock now comes off DAPI `subscribeToTransactionsWithProofs` feeds on three evonodes, opened before the asset lock is broadcast, as in govhub and mainnet-bridge. `--islock-rpc` and `islock_rpc` still add an RPC of your choice, but none is set by default.
+
+### Changed
+
+- **The web app asks only the Dash network's evonodes** for an identity deposit: the Insight fallback and the **Fallback block explorer** setting are gone. It watches the deposit on two nodes at once, and moves a feed that fails or goes silent to another node.
+
 ## [0.2.0] - TODO(owner): the tagging date
 
 Dash Forge moves to **testnet**: its four contracts are registered there, and testnet is now the supported network for `dg`, `git-remote-dash`, the web app and the Actions. Devnet sakura, which v0.1.0 targeted, is down, and nothing on it was carried over. See the [release notes](docs/releases/v0.2.0.md) for networks, upgrading and known limitations.

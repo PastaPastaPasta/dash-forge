@@ -19,10 +19,8 @@ import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
-import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { keyBudgetWords, renewableInWallet } from '@/lib/view/funds'
-import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
 import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
@@ -52,11 +50,6 @@ export function KeysPanel(): JSX.Element {
   const [confirm, confirmDialog] = useConfirmAction()
   const openLogin = useUiStore((s) => s.openLogin)
   const missingGrant = nextGrant(grants)
-  const [explorer, setExplorer] = useState(() =>
-    typeof window === 'undefined' ? '' : window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) ?? '',
-  )
-  // What the field accepts: an https URL (http would let a network observer answer for it).
-  const explorerProblem = explorer.trim() !== '' && !/^https:\/\/[^\s/]+/.test(explorer.trim()) ? 'Use an https:// address. Not saved.' : null
   const low = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
   const [topUpOpen, setTopUpOpen] = useState(false)
   // Only a stored Forge browser key (a budget on a group-bound key) can be topped up here.
@@ -211,29 +204,6 @@ export function KeysPanel(): JSX.Element {
       {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
       {revokeOpen ? <KeyRevokeDialog unlimited={unlimitedKey} onClose={() => setRevokeOpen(false)} /> : null}
       {confirmDialog}
-      <Field
-        label="Fallback block explorer (asked only if the network's nodes cannot see an identity deposit)"
-        htmlFor="explorer-url"
-        hint={`Insight API base URL. Leave empty for this network's default (${coreEndpoints().insight}). It can delay you but cannot take funds or keys.`}
-      >
-        <Input
-          id="explorer-url"
-          value={explorer}
-          aria-invalid={explorerProblem !== null}
-          placeholder={coreEndpoints().insight}
-          onChange={(e) => {
-            setExplorer(e.target.value)
-            const v = e.target.value.trim()
-            if (v === '') window.localStorage.removeItem(INSIGHT_OVERRIDE_KEY)
-            else if (/^https:\/\//.test(v)) window.localStorage.setItem(INSIGHT_OVERRIDE_KEY, v.replace(/\/+$/, ''))
-          }}
-        />
-        {explorerProblem ? (
-          <p role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">
-            {explorerProblem}
-          </p>
-        ) : null}
-      </Field>
     </div>
   )
 }

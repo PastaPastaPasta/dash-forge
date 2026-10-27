@@ -32,7 +32,7 @@ import { authSdk, isAbort } from '../sdk/facade'
 import { assertWritesAllowed, balanceBeforeWrite } from '../sdk/write'
 import { evoSdkService } from '../sdk/service'
 import { errorMessage } from '../utils'
-import { broadcastTx, buildAssetLock, coreEndpoints, currentHeight, depositHeld, obtainLockProof, waitForDeposit, wifBytes, type CoreEndpoints } from './asset-lock'
+import { buildAssetLock, coreEndpoints, currentHeight, depositHeld, sendAndProveLock, waitForDeposit, wifBytes, type CoreEndpoints } from './asset-lock'
 import { assetLockUse, platformClh } from './create-identity'
 import { deriveAt, deriveMasterKey, normalizeMnemonic, topUpKeyPath } from './hd'
 import { controlsKey } from './wif'
@@ -256,10 +256,9 @@ async function runTopUp(
   }
   const lockTxid = journal.lockTxid as string
   const lockRaw = hexToBytes(journal.lockRaw as string)
-  // Idempotent: re-sending an accepted transaction is harmless.
-  await broadcastTx(ep, bytesToHex(lockRaw), lockTxid)
+  // Broadcast (again, on a resumed run: harmless) and prove.
   params.onStage?.('proving')
-  const proof = await obtainLockProof(ep, { txid: lockTxid, raw: lockRaw }, () => platformClh(sdk), {
+  const proof = await sendAndProveLock(ep, { txid: lockTxid, raw: lockRaw }, () => platformClh(sdk), {
     signal: params.signal,
     onStatus: (s) => params.onStage?.('proving', s),
   })

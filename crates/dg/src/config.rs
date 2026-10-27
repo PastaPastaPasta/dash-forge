@@ -10,8 +10,8 @@
 //! dapi_addresses = "68.67.122.86,68.67.122.87"     # testnet/devnet; default: deployments file
 //! fiat = "EUR"                 # optional fiat equivalents; "off" disables requests
 //! trending = false              # `dg repo star` does not count toward Trending (default: true)
-//! islock_rpc = "https://trpc.digitalcash.dev"   # InstantSend lock source for `dg auth new`;
-//!                                               # "off" proves with chain locks only
+//! islock_rpc = "https://rpc.example"   # optional extra InstantSend lock source for
+//!                                      # `dg auth new`, beside the DAPI stream (default: none)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -51,9 +51,9 @@ pub struct Config {
     /// `--no-trending` overrides it for one star.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trending: Option<bool>,
-    /// The JSON-RPC (`getislocks`) `dg auth new` asks for an InstantSend proof of its asset
-    /// lock, or `off` for chain locks only. Unset: the network's default (testnet's is the
-    /// third-party `https://trpc.digitalcash.dev`). Overridden by `dg auth new --islock-rpc`.
+    /// An extra JSON-RPC (`getislocks`) `dg auth new` asks for its asset lock's InstantSend
+    /// lock, beside the DAPI stream that delivers it; unset or `off`: the stream only (no
+    /// network has a default RPC). Overridden by `dg auth new --islock-rpc`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub islock_rpc: Option<String>,
 }

@@ -609,7 +609,7 @@ pub fn build_asset_lock(keys: &NewIdentityKeys, utxos: &[VerifiedUtxo]) -> Resul
 /// How an asset lock is proven to Platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockProof {
-    /// An InstantSend lock (testnet, mainnet with an islock source).
+    /// An InstantSend lock (from the DAPI stream, on any network).
     Instant {
         /// The raw asset-lock transaction.
         raw_tx: Vec<u8>,

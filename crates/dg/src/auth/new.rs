@@ -9,9 +9,12 @@
 //!    only when the feed is idle or unavailable, and its outputs are re-read from their raw
 //!    transactions too.
 //! 4. A type-8 asset lock spends the deposit to a credit output; it is saved to the journal
-//!    before it is broadcast (DAPI first, the explorer as fallback).
-//! 5. The lock is proven: an InstantSend lock where the network offers one, else a chain lock
-//!    once DAPI reports the transaction mined and Platform's chain-locked height reaches it.
+//!    before it is broadcast (DAPI first, the explorer as fallback). Before the broadcast, a
+//!    `subscribeToTransactionsWithProofs` stream filtered on the lock's txid and inputs opens
+//!    on up to three evonodes: they send its InstantSend lock once, live.
+//! 5. The lock is proven: with the InstantSend lock when one arrives within a minute of the
+//!    broadcast, else (or when it was mined already) with a chain lock once DAPI reports the
+//!    transaction mined and Platform's chain-locked height reaches it.
 //! 6. One IdentityCreate registers the canonical keys (MASTER, HIGH, CRITICAL, TRANSFER,
 //!    ENCRYPTION — the same DIP-13 keys the bridge and the web app derive) plus this computer's
 //!    limited key, which is stored **before** the identity exists, so an interruption can never
@@ -28,7 +31,7 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use forge_core::funding::{self, fetch_islock, CoreChain as _, CoreEndpoints, Insight};
+use forge_core::funding::{self, CoreChain as _, CoreEndpoints, Insight, LockRoute};
 use forge_core::keystore::{BridgeIdentity, Secret};
 use forge_core::platform::identity::{
     self, build_asset_lock, identity_id_for, FreshKey, LimitedKeySpec, LockProof, NewIdentityKeys,
@@ -50,8 +53,9 @@ use crate::secret_out::{Stream, Surroundings};
 const DEPOSIT_WAIT: Duration = Duration::from_mins(30);
 /// How long to wait for the asset lock to become provable.
 const PROOF_WAIT: Duration = Duration::from_mins(20);
-/// How long to try for an InstantSend lock before falling back to a chain lock.
-const ISLOCK_WAIT: Duration = Duration::from_secs(90);
+/// How long after the broadcast to wait for an InstantSend lock before falling back to a
+/// chain lock (one normally arrives within seconds).
+const ISLOCK_WAIT: Duration = Duration::from_secs(60);
 
 /// `dg auth new` arguments.
 #[derive(Debug, clap::Args)]
@@ -67,9 +71,9 @@ pub struct NewArgs {
     /// Fallback block explorer (Insight API base URL), asked only when DAPI cannot answer.
     #[arg(long, value_name = "URL")]
     pub explorer: Option<String>,
-    /// JSON-RPC (`getislocks`) to ask for an InstantSend proof of the asset lock, or `off` to
-    /// prove with a chain lock only. Default: `islock_rpc` in config.toml, else the network's
-    /// (testnet: the third-party https://trpc.digitalcash.dev, which sees the asset-lock txid).
+    /// An extra JSON-RPC (`getislocks`) asked for the asset lock's InstantSend lock beside the
+    /// DAPI stream (it sees the asset-lock txid), or `off` for the stream only. Default:
+    /// `islock_rpc` in config.toml, else none.
     #[arg(long, value_name = "URL")]
     pub islock_rpc: Option<String>,
     /// Resume an interrupted creation (asks for the words again).
@@ -342,26 +346,14 @@ async fn wait_for_deposit(
     })
 }
 
-/// Broadcast the asset lock: DAPI first, the explorer as fallback; an "already known" answer
-/// from either is success.
-async fn broadcast(
-    client: &PlatformClient,
-    insight: &Insight,
-    lock: &SignedAssetLock,
-) -> Result<()> {
-    funding::broadcast(client, Some(insight), &lock.raw, &lock.txid)
-        .await
-        .context("broadcasting the asset lock")
-}
-
 /// The funding endpoints for this run: the network's, with the explorer from `--explorer` and
 /// the InstantSend RPC from `--islock-rpc`, else `islock_rpc` in config.toml.
 /// A value that is not an https URL (or `off`) is a usage error, before anything is done.
 fn endpoints_for(ctx: &Ctx, args: &NewArgs) -> Result<CoreEndpoints> {
     let (islock, from) = match &args.islock_rpc {
         Some(v) => (Some(v.clone()), "--islock-rpc"),
-        // An unreadable config.toml is an error, never the default RPC: `islock_rpc = "off"`
-        // must not quietly turn back into a third-party endpoint.
+        // An unreadable config.toml is an error, never the default: the user's `islock_rpc`
+        // must not be quietly dropped.
         None => (
             crate::config::Config::load()?.islock_rpc,
             "islock_rpc in config.toml",
@@ -381,8 +373,10 @@ fn instant_proof_refused(error: &str) -> bool {
     e.contains("instant lock proof signature") || e.contains("try chain asset lock proof")
 }
 
-/// Wait until the lock is provable: InstantSend where available, else a chain lock.
-async fn prove(
+/// Broadcast the lock and prove it: with its InstantSend lock when one arrives within
+/// [`ISLOCK_WAIT`] (from the DAPI stream, watched from before the broadcast, or the
+/// `--islock-rpc` endpoint when one is set), else with a chain lock.
+async fn send_and_prove(
     ctx: &Ctx,
     client: &PlatformClient,
     endpoints: &CoreEndpoints,
@@ -390,21 +384,34 @@ async fn prove(
     lock: &SignedAssetLock,
 ) -> Result<LockProof> {
     let start = Instant::now();
-    if let Some(rpc) = &endpoints.islock_rpc {
-        say(ctx, "  waiting for InstantSend…");
-        while start.elapsed() < ISLOCK_WAIT {
-            if let Ok(Some(islock)) = fetch_islock(rpc, &lock.txid).await {
-                return Ok(LockProof::Instant {
-                    raw_tx: lock.raw.clone(),
-                    islock,
-                });
-            }
-            tokio::time::sleep(Duration::from_secs(3)).await;
+    let route = funding::send_and_await_instant_lock(
+        client,
+        Some(insight),
+        endpoints.islock_rpc.as_deref(),
+        &lock.raw,
+        &lock.txid,
+        ISLOCK_WAIT,
+        &mut || say(ctx, "  waiting for InstantSend…"),
+    )
+    .await
+    .context("broadcasting the asset lock")?;
+    match route {
+        LockRoute::Instant(islock) => {
+            return Ok(LockProof::Instant {
+                raw_tx: lock.raw.clone(),
+                islock,
+            })
         }
-        say(
+        LockRoute::Mined => say(ctx, "  the asset lock is mined already"),
+        LockRoute::AlreadyInstantLocked => say(
+            ctx,
+            "  the asset lock is InstantSend-locked already; its lock is not sent again, \
+             proving with a chain lock",
+        ),
+        LockRoute::NoInstantLock => say(
             ctx,
             "  no InstantSend lock; proving with a chain lock instead",
-        );
+        ),
     }
     prove_chain(ctx, client, insight, lock, start).await
 }
@@ -731,7 +738,8 @@ fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64)
     }
 }
 
-/// Deposit → asset lock (saved to the journal before broadcast) → broadcast → proof.
+/// Deposit → asset lock (saved to the journal before broadcast) → lock watch → broadcast →
+/// proof.
 async fn fund_and_lock(
     ctx: &Ctx,
     client: &PlatformClient,
@@ -775,8 +783,7 @@ async fn fund_and_lock(
         );
         lock
     };
-    broadcast(client, &insight, &lock).await?;
-    let proof = prove(ctx, client, &endpoints, &insight, &lock).await?;
+    let proof = send_and_prove(ctx, client, &endpoints, &insight, &lock).await?;
     Ok((lock, proof))
 }
 
@@ -878,7 +885,7 @@ async fn register(
     if let Err(e) = client.create_identity(keys, proof, &limited, spec).await {
         // An InstantSend proof Platform will not take (a stale lock on a resume, as much as a
         // fresh one) is not the end: the same asset lock proves with a chain lock. Chain locks
-        // need no InstantSend source, so this also works when the RPC is down.
+        // need no InstantSend source, so this works whatever delivered the refused lock.
         if !(matches!(proof, LockProof::Instant { .. }) && instant_proof_refused(&e.to_string())) {
             return Err(anyhow::Error::from(e).context("registering the identity"));
         }

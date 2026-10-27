@@ -10,16 +10,24 @@
  *   getBestBlockHeight    {} → { uint32 height = 1 }
  *   subscribeToTransactionsWithProofs (server stream)
  *                         { BloomFilter bloom_filter = 1; uint32 from_block_height = 3;
- *                          uint32 count = 4 } → { RawTransactions raw_transactions = 1 | … }
+ *                          uint32 count = 4 } → { RawTransactions raw_transactions = 1 |
+ *                          InstantSendLockMessages instant_send_lock_messages = 2 |
+ *                          bytes raw_merkle_block = 3 }
  *
  * The evonodes' gateway allows cross-origin gRPC-web (`x-grpc-web`, `content-type`), so no
- * block explorer or proxy is involved.
+ * block explorer, RPC service or proxy is involved.
  */
 
 import { concatBytes } from '@noble/hashes/utils.js'
 
+import { anyOf } from '../sdk/budget'
+
 const SERVICE = 'org.dash.platform.dapi.v0.Core'
 const CALL_TIMEOUT_MS = 20_000
+/** How long a node may take to accept a stream (a silent one would hold the caller's lane). */
+const OPEN_TIMEOUT_MS = 10_000
+/** The smallest filter sent: DAPI nodes treat tinier ones as saturated (govhub `bloom.ts`). */
+const MIN_BLOOM_BYTES = 200
 const GRPC_NOT_FOUND = 5
 /** gRPC codes worth another node: CANCELLED, UNKNOWN, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE. */
 const RETRYABLE = new Set([1, 2, 4, 8, 13, 14])
@@ -152,7 +160,7 @@ export interface BloomFilter {
 
 /**
  * A filter holding `elements`, sized like Dash Core's CBloomFilter for `capacity` elements
- * (default: just these) at `fpRate`.
+ * (default: just these) at `fpRate`, and never under {@link MIN_BLOOM_BYTES}.
  */
 export function bloomFilter(
   elements: readonly Uint8Array[],
@@ -161,7 +169,7 @@ export function bloomFilter(
   capacity = elements.length,
 ): BloomFilter {
   const n = Math.max(1, capacity, elements.length)
-  const size = Math.max(1, Math.min(Math.floor((-1 / (Math.LN2 * Math.LN2)) * n * Math.log(fpRate) / 8), 36_000))
+  const size = Math.max(MIN_BLOOM_BYTES, Math.min(Math.floor((-1 / (Math.LN2 * Math.LN2)) * n * Math.log(fpRate) / 8), 36_000))
   const hashFuncs = Math.max(1, Math.min(Math.floor(((size * 8) / n) * Math.LN2), 50))
   const data = new Uint8Array(size)
   for (const e of elements) {
@@ -220,7 +228,7 @@ function statusError(method: string, status: number, message: string | null | un
   return new DapiError(`${method}: ${message ? decodeURIComponent(message) : `gRPC status ${status}`}`, status)
 }
 
-function shuffled<T>(list: readonly T[]): T[] {
+export function shuffled<T>(list: readonly T[]): T[] {
   const a = [...list]
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
@@ -228,6 +236,14 @@ function shuffled<T>(list: readonly T[]): T[] {
   }
   return a
 }
+
+/** One message of a transaction feed. */
+export type FeedEvent =
+  | { readonly kind: 'txs'; readonly txs: Uint8Array[] }
+  /** InstantSend locks (raw ISDLOCK bytes) of matched transactions; only sent live, never replayed. */
+  | { readonly kind: 'islocks'; readonly locks: Uint8Array[] }
+  /** A block's filtered merkle block: the history replays one per block, then one per new block. */
+  | { readonly kind: 'block' }
 
 export interface CoreTx {
   readonly raw: Uint8Array
@@ -307,18 +323,37 @@ export class DapiCore {
   }
 
   /**
-   * Stream the raw transactions `filter` matches from block `fromHeight`: history, then (with
-   * `count` 0) the mempool and new blocks. Yields one batch per RawTransactions message and
-   * returns when the node ends the stream.
+   * Stream what `filter` matches from block `fromHeight` on one node (`opts.node`, else a random
+   * one): history, then (with `count` 0) the mempool and new blocks, with the InstantSend locks
+   * of matched transactions as they arrive. `onOpen` fires once the node accepts the stream.
+   * Returns when the node ends it.
    */
-  async *watch(filter: BloomFilter, fromHeight: number, opts: { count?: number; signal?: AbortSignal } = {}): AsyncGenerator<Uint8Array[]> {
+  async *watch(
+    filter: BloomFilter,
+    fromHeight: number,
+    opts: { count?: number; signal?: AbortSignal; node?: string; onOpen?: () => void } = {},
+  ): AsyncGenerator<FeedEvent> {
     const bloom = concatBytes(field(1, filter.data), field(2, filter.hashFuncs), field(3, filter.tweak), field(4, filter.flags))
     const request = concatBytes(field(1, bloom), field(3, Math.max(1, fromHeight)), ...(opts.count ? [field(4, opts.count)] : []))
-    const node = shuffled(this.nodes)[0] as string
-    const res = await this.post(node, 'subscribeToTransactionsWithProofs', request, opts.signal)
+    const node = opts.node ?? (shuffled(this.nodes)[0] as string)
+    // The caller's signal stops the stream, and so does a node that has not accepted it within
+    // OPEN_TIMEOUT_MS.
+    const tooSlow = new AbortController()
+    const opening = setTimeout(() => tooSlow.abort(), OPEN_TIMEOUT_MS)
+    let res: Response
+    try {
+      res = await this.post(node, 'subscribeToTransactionsWithProofs', request, opts.signal ? anyOf(opts.signal, tooSlow.signal) : tooSlow.signal)
+    } catch (e) {
+      if (tooSlow.signal.aborted && !opts.signal?.aborted) throw new DapiError(`subscribeToTransactionsWithProofs to ${node} timed out`, 4)
+      throw e
+    } finally {
+      clearTimeout(opening)
+    }
     if (!res.body) throw new DapiError('subscribeToTransactionsWithProofs: no response stream', 14)
+    opts.onOpen?.()
     const reader = res.body.getReader()
     let buf: Uint8Array = new Uint8Array(0)
+    const list = (b: Uint8Array): Uint8Array[] => (decode(b).get(1) ?? []).filter((t): t is Uint8Array => t instanceof Uint8Array)
     try {
       for (;;) {
         const { value, done } = await reader.read()
@@ -326,11 +361,14 @@ export class DapiCore {
         const { messages, trailers, rest } = takeFrames(concatBytes(buf, value))
         buf = rest
         for (const msg of messages) {
-          const raw = bytesOf(decode(msg), 1)
-          if (raw.length > 0) {
-            const txs = (decode(raw).get(1) ?? []).filter((t): t is Uint8Array => t instanceof Uint8Array)
-            if (txs.length > 0) yield txs
-          }
+          const m = decode(msg)
+          if (m.has(1)) {
+            const txs = list(bytesOf(m, 1))
+            if (txs.length > 0) yield { kind: 'txs', txs }
+          } else if (m.has(2)) {
+            const locks = list(bytesOf(m, 2))
+            if (locks.length > 0) yield { kind: 'islocks', locks }
+          } else if (m.has(3)) yield { kind: 'block' }
         }
         if (trailers) {
           const status = Number(trailers['grpc-status'] ?? 0)

@@ -34,7 +34,6 @@ import { creditsAsDash } from '@/lib/view/format'
 import { isAbort } from '@/lib/sdk/facade'
 import { PHASE_TEXT, STEP_MS, connectPlatform, loadSdkLibrary, type ConnectPhase } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
-import { coreEndpoints } from '@/lib/auth/asset-lock'
 import {
   clearCreationJournal,
   createIdentityFromMnemonic,
@@ -471,8 +470,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         ) : null}
       </div>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Waiting for your deposit. It usually takes a few minutes. If Dash nodes don&apos;t answer, this page asks{' '}
-        {new URL(coreEndpoints(network).insight).host} instead (change it in Settings). Amounts are checked either way.
+        Waiting for your deposit. It usually takes a few minutes. This page watches for it through the Dash network&apos;s own nodes and
+        checks the amounts itself.
       </p>
       {error && !running && notCreated === 'final' ? (
         // Nothing left to retry with: this deposit cannot create the identity.
