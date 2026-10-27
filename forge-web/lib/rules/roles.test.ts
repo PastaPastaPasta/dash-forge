@@ -61,6 +61,15 @@ describe('claimedRole: the r a gated write carries', () => {
     for (const type of ['label', 'milestone']) expect(roles.map((role) => claim(type, {}, role))).toEqual([1, 1, 2, 'refused', 1])
   })
 
+  it('boards (UPDATE-3): a board claims 1 and is refused for triage and readers; a card is triage-gated', () => {
+    expect(roles.map((role) => claim('board', {}, role))).toEqual([1, 1, 'refused', 'refused', 1])
+    expect(roles.map((role) => claim('card', {}, role))).toEqual([1, 1, 2, 'refused', 1])
+    expect(isRoleGated('board') && isRoleGated('card')).toBe(true)
+    expect(() => claimedRole('board', {}, 'triage')).toThrow(/a triage member cannot create, edit, close or delete boards/)
+    expect(() => claimedRole('card', {}, 'reader')).toThrow(/a reader cannot move, add or archive items on a board/)
+    expect(() => claimedRole('card', {}, 'bot')).toThrow(/a bot cannot/)
+  })
+
   it('transition: triage closes, reopens and locks (2), never merges, drafts or readies; the author always claims 1', () => {
     for (const kind of [1, 2, 3, 4, 11, 12, 16, 17, 18, 19]) expect(roles.map((role) => claim('transition', { kind, asAuthor: 0 }, role))).toEqual([1, 1, 2, 'refused', 1])
     for (const kind of [13, 14, 15]) expect(roles.map((role) => claim('transition', { kind, asAuthor: 0 }, role))).toEqual([1, 1, 'refused', 'refused', 1])

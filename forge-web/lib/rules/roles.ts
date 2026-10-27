@@ -8,6 +8,8 @@
  * - `refUpdate`, `packManifest`, `chunk`, `checkRun`: `r` 1 only (push and checks: role 1).
  * - `label`, `milestone`, `transition`, `event`: `r` 1 or 2; a transition of kind 13/14/15
  *   (merge, draft, ready) and an event of kind 8, 15, 16, 19, 20 or 23 need `r` 1.
+ * - forge-meta's `board` (UPDATE-3, `docs/design/boards.md` §3.1): `r` 1 only (writers define
+ *   boards, triage does not); `card` (§3.2): `r` 1 or 2 (triage places cards).
  *
  * Maintainers (the repo owner's own maintainer document included), authors (`transition`
  * `asAuthor` > 0) and runners pass through other operands, so they always claim 1. A reader
@@ -294,7 +296,13 @@ export function whoCan(cap: keyof Capabilities, form: 'plural' | 'one' = 'plural
 /** The types whose gate admits role 1 only (`r` maximum 1). */
 export const PUSH_GATED_TYPES: ReadonlySet<string> = new Set(['refUpdate', 'packManifest', 'chunk', 'checkRun'])
 /** The types whose gate admits roles 1 and 2 (`r` 1..2). */
-export const TRIAGE_GATED_TYPES: ReadonlySet<string> = new Set(['label', 'milestone', 'transition', 'event'])
+export const TRIAGE_GATED_TYPES: ReadonlySet<string> = new Set(['label', 'milestone', 'transition', 'event', 'card'])
+/**
+ * The member-gated types whose gate admits role 1 only and that are not pushes: a board's
+ * definition (`board.r` is 1, rule `rClaim`; boards.md §3.1). Maintainers and writers define,
+ * close and delete boards; triage only places cards on them.
+ */
+export const WRITER_GATED_TYPES: ReadonlySet<string> = new Set(['board'])
 /** Transition kinds that need `r` 1 (`e_mergeOid`): merge, draft, ready. */
 export const WRITER_TRANSITION_KINDS: ReadonlySet<number> = new Set([13, 14, 15])
 /**
@@ -312,7 +320,7 @@ export const CLIENT_WRITER_EVENT_KINDS: ReadonlySet<number> = new Set([26, 27, 2
 
 /** Whether `documentType` carries `r` (its gate proves the writer document's role). */
 export function isRoleGated(documentType: string): boolean {
-  return PUSH_GATED_TYPES.has(documentType) || TRIAGE_GATED_TYPES.has(documentType)
+  return PUSH_GATED_TYPES.has(documentType) || TRIAGE_GATED_TYPES.has(documentType) || WRITER_GATED_TYPES.has(documentType)
 }
 
 /** A write the signer's role cannot make: refused before signing. */
@@ -355,6 +363,7 @@ const TRANSITION_WHAT: Readonly<Record<number, string>> = {
  * whom consensus judges by its other operands). Null for a type that carries no `r`.
  *
  * - push class and `checkRun`: 1; refused for triage and reader;
+ * - `board`: 1; refused for triage and reader (boards.md §5.1);
  * - an author's transition (`asAuthor` > 0): 1;
  * - a maintainer, a role-1 writer, or no membership: 1;
  * - triage: 2, refused for the writer-only transition and event kinds;
@@ -369,11 +378,22 @@ export function claimedRole(documentType: string, data: Readonly<Record<string, 
     if (role === 'triage' || role === 'reader' || role === 'bot') throw new RoleRefusedError(role, documentType === 'checkRun' ? 'post check runs' : 'push')
     return 1
   }
+  if (WRITER_GATED_TYPES.has(documentType)) {
+    if (role === 'triage' || role === 'reader' || role === 'bot') throw new RoleRefusedError(role, 'create, edit, close or delete boards')
+    return 1
+  }
   if (documentType === 'transition' && (intOf(data['asAuthor']) ?? 0) > 0) return 1
   if (role === null || role === 'maintainer' || role === 'writer') return 1
   const kind = intOf(data['kind'])
   if (role === 'reader' || role === 'bot') {
-    const what = documentType === 'transition' ? 'change its state as a member (only as the author of your own issue or pull request)' : documentType === 'event' ? 'label, assign, or otherwise change issues and pull requests as a member' : `define ${documentType}s`
+    const what =
+      documentType === 'transition'
+        ? 'change its state as a member (only as the author of your own issue or pull request)'
+        : documentType === 'event'
+          ? 'label, assign, or otherwise change issues and pull requests as a member'
+          : documentType === 'card'
+            ? 'move, add or archive items on a board'
+            : `define ${documentType}s`
     throw new RoleRefusedError(role, what)
   }
   if (documentType === 'transition' && kind !== null && WRITER_TRANSITION_KINDS.has(kind)) {

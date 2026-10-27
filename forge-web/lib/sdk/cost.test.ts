@@ -15,6 +15,7 @@ import {
   previewCreate,
   previewDelete,
   previewReplace,
+  priceBoardWrites,
   REPLACE_MIN_CREDITS,
   sumPreviews,
   type FirstWrite,
@@ -375,5 +376,27 @@ describe('a passkey entry (vaultEntry)', () => {
     expect(previewCreate('vaultEntry', {}, S).credits).toBeGreaterThanOrEqual(33_110_400)
     expect(previewCreate('vaultEntry', {}, { ...S, author: true }).credits).toBeGreaterThanOrEqual(51_513_300)
     expect(-previewDelete('vaultEntry').credits).toBeLessThanOrEqual(26_654_372)
+  })
+})
+
+describe('boards (UPDATE-3, estimated)', () => {
+  it('prices a card as design §7 quotes: about 0.0005 DASH to create, a few hundred-thousandths to move', () => {
+    const create = previewCreate('card', { rank: 'V' }, S).dash
+    expect(create).toBeGreaterThan(0.0004)
+    expect(create).toBeLessThan(0.0006)
+    const move = previewReplace('card', { rank: 'Vx' })
+    expect(move.dash).toBeLessThan(0.00005)
+    expect(move.minCredits).toBeLessThanOrEqual(move.credits)
+  })
+
+  it('priceBoardWrites sums creates and replaces, and nothing costs nothing', () => {
+    expect(priceBoardWrites(0, 0).credits).toBe(0)
+    const one = priceBoardWrites(1, 0).credits
+    const replace = priceBoardWrites(0, 1).credits
+    expect(replace).toBeLessThan(one / 5)
+    expect(priceBoardWrites(3, 2).credits).toBe(3 * one + 2 * replace)
+    // sealed writes store their framing too; a board's definition costs more than a card
+    expect(priceBoardWrites(1, 0, { sealed: true }).credits).toBeGreaterThan(one)
+    expect(priceBoardWrites(1, 0, { type: 'board' }).credits).toBeGreaterThan(one)
   })
 })

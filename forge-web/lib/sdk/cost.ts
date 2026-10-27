@@ -139,6 +139,12 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // UPDATE-2 (the passkey vault), measured on testnet (2026-10-26, passkey-vault.live.test.ts): a
   // later entry 33.11M, an identity's first 42.9M–51.5M. Its byte fields are in the base (not text).
   vaultEntry: 34_000_000,
+  // UPDATE-3 (boards, `docs/design/boards.md` §3, §7): ESTIMATED, never measured. Both are member
+  // documents shaped like the vault's entry (a few integers, one or two short strings, a unique
+  // index ending in `$ownerId`); a card also writes the `recent` index, a board its definition
+  // text (priced per byte). Re-measure once a network carries forge-meta v3.
+  board: 40_000_000,
+  card: 42_000_000,
 }
 
 /**
@@ -215,6 +221,11 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   packMirror: { repo: 16_000_000 },
   // The owner's first entry builds its `byCredential` subtree: 51.5M first vs 33.1M on testnet.
   vaultEntry: { author: 18_000_000 },
+  // UPDATE-3, ESTIMATED from the vault's 18.4M first-entry surcharge: `repo` the home repo's first
+  // board (its `byKey` repo level) or a board's first card (`recent`); `target` an item's first
+  // card anywhere (`onItem`'s item level).
+  board: { repo: 10_000_000 },
+  card: { repo: 10_000_000, target: 18_000_000 },
 }
 
 /**
@@ -601,13 +612,49 @@ export const REPLACE_BASE_CREDITS = 17_000_000
  */
 export const REPLACE_MIN_CREDITS = 3_500_000
 
+/**
+ * The fixed part of a replace of the types whose replace was measured (or is estimated) far
+ * below {@link REPLACE_BASE_CREDITS}: the passkey vault's entry replace measured 3.1M credits on
+ * testnet (UPDATE-2); a board's or card's replace (UPDATE-3) is ESTIMATED from it, since a card
+ * move changes as little (its column and rank). Their text is priced per byte as for any replace.
+ */
+export const REPLACE_BASE_BY_TYPE: Readonly<Record<string, number>> = {
+  board: 4_000_000,
+  card: 4_000_000,
+}
+
 /** Preview for replacing a document's `changes`: a range, from {@link REPLACE_MIN_CREDITS}. */
 export function previewReplace(documentType: string, changes: Readonly<Record<string, unknown>> = {}): CostPreview {
   const bytes = textBytes(changes)
-  const credits = REPLACE_BASE_CREDITS + CREDITS_PER_TEXT_BYTE * bytes
+  const credits = (REPLACE_BASE_BY_TYPE[documentType] ?? REPLACE_BASE_CREDITS) + CREDITS_PER_TEXT_BYTE * bytes
   // Drive estimates a replace like a create of the document; its requirement is at most that.
   const measured = ADMISSION_CREDITS[documentType]
   return { ...previewCredits(credits, measured ? admissionFor(documentType, bytes, credits) : undefined), minCredits: REPLACE_MIN_CREDITS }
+}
+
+/**
+ * The typical bytes one board write stores beyond its fixed shape, for {@link priceBoardWrites}:
+ * a card's rank and a few field values; a board's name and a template-sized definition (§2.7).
+ * A private repository's write stores them sealed (`enc`), with 29 bytes of framing and padding
+ * to 32 (`private-repos.md` §4.6).
+ */
+const BOARD_WRITE_BYTES = { card: 40, board: 1200 } as const
+const SEALED_EXTRA_BYTES = 29 + 32
+
+/**
+ * What a multi-write board action costs before it is signed (`docs/design/boards.md` §5.3, §5.4,
+ * §2.6's re-rank): `creates` member documents written for the first time (a card for an item the
+ * signer has none for) and `replaces` replaces of the signer's own. `type`: `card` (the default)
+ * or `board`; `sealed`: a private repository's (its fields in `enc`). ESTIMATED: neither type has
+ * been measured on a network yet ({@link BASE_CREDITS}).
+ */
+export function priceBoardWrites(creates: number, replaces: number, { type = 'card', sealed = false }: { readonly type?: 'card' | 'board'; readonly sealed?: boolean } = {}): CostPreview {
+  const n = BOARD_WRITE_BYTES[type] + (sealed ? SEALED_EXTRA_BYTES : 0)
+  const sample = { text: 'x'.repeat(n) }
+  const parts: CostPreview[] = []
+  for (let i = 0; i < creates; i++) parts.push(previewCreate(type, sample))
+  for (let i = 0; i < replaces; i++) parts.push(previewReplace(type, sample))
+  return parts.length === 0 ? previewCredits(0) : sumPreviews(parts)
 }
 
 /** Preview for deleting one document of `documentType` (usually a refund: negative credits). */

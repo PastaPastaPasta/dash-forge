@@ -1,0 +1,25 @@
+{
+  "name": "seal_board_name_control",
+  "description": "a name with a control character is refused.",
+  "case": "sealed_board",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "nonce": "000102030405060708090a0b",
+    "doc": {
+      "type": "board",
+      "key": 7
+    },
+    "fields": {
+      "name": "a\tb",
+      "spec": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"In progress\"},{\"id\":3,\"name\":\"Done\"}],\"def\":1,\"done\":3}"
+    }
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

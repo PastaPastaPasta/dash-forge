@@ -76,6 +76,8 @@ Its column:
 
 An open item may sit in Done (a team that marks work done before closing). A board without a Done column applies rule 2 and 3 only.
 
+**Which closed items a reader reads.** A source's open items are read whole; its closed and merged ones from the repository's state changes newest first, until the auto-archive window ends (older ones are archived unless a card keeps them, and the items cards name are read by id anyway), or, with `arch` 0, until the 200 most recently closed of that source **repository** (all its sources together) are found; "Show older" (and a view asking for `is:archived`) reads on.
+
 **Auto-archive** (`arch`, days, 0 = off): let `closedAt` be the `$createdAt` of the item's latest transition into closed or merged (the transition that made its `sum mod 16` closed or merged). A closed or merged item whose newest card is older than `closedAt` (or which has none) is archived once `now ≥ closedAt + arch` days. `now` is an explicit input of the fold (the vectors pin it). Reopening never clears a card's archived state (as on GitHub). **Archived** items (auto or by a card's state) are hidden unless the view asks for them (`is:archived`). A **removed** item is off the board even if a source matches it; adding it again writes an active card.
 
 **Order within a column** is by rank (§2.6), ascending; a view may sort by a field instead (§4).
@@ -158,7 +160,9 @@ Indexes: unique `onItem (item, repoId, board, $ownerId)` (one card per member pe
 
 A private repository's boards and cards are sealed with the repository key under the current epoch, with the private-repos per-document framing (`docs/security/private-repos.md` §4.4): new `docType`s `board` and `card`, bound to `u32(key)` and `u32(board) ‖ item (32 B)` respectively, so a sealed payload cannot be moved to another board or item. Readers of a private repo see nothing; the keys, `state` and the item ids are all that is plaintext.
 
-**What a private board still shows.** `item` is plaintext, immutable and indexed, so a card in a private planning repository that names a *public* repository's issue publishes "private repository R tracks owner/name#12" (and which member wrote it). Clients confirm before writing such a cross-repository card from a private home repo. A public repository's members-only boards (the members key, `enc` v0x03) are possible with this schema and left to a later client.
+The payload encoding (TLV tags 32–36, padding, the read order) is `private-repos.md` §4.6, pinned by the `sealed_board__*` vectors. A version other than `0x01` reads as unreadable, not malformed, so a later client's members-only boards stay listed.
+
+**What a private board still shows.** `item` is plaintext, immutable and indexed, so a card in a private planning repository that names a *public* repository's issue publishes "private repository R tracks owner/name#12" (and which member wrote it). Clients confirm before writing such a cross-repository card from a private home repo (the web refuses the write until the caller passes the confirmation: `crossRepoCardNeedsConfirm`, `BoardWriteError` `cross-repo`). A public repository's members-only boards (the members key, `enc` v0x03) are possible with this schema and left to a later client.
 
 ---
 
@@ -225,7 +229,7 @@ Clicking a card opens a side panel: title, state, body (markdown), labels, assig
 
 ### 5.6 On an issue or pull request
 
-The sidebar's "Boards" section lists the boards it is on whose home is the item's repository or another repository of the same owner (`card.onItem` with `item ==` the item, filtered by home repo; a stranger's board naming the issue never shows), with its status and fields (editable), and "Add to board" for that repository's other boards.
+The sidebar's "Boards" section lists the boards it is on whose home is the item's repository or another repository of the same owner (`card.onItem` with `item ==` the item, filtered by home repo; a stranger's board naming the issue never shows), with its status and fields (editable), and "Add to board" for that repository's other boards. Another repository of the owner that is private is left out: its boards are sealed with a key the item's page does not hold.
 
 ### 5.7 Liveness
 
@@ -241,7 +245,7 @@ An open board polls `card.recent` for cards with `$updatedAt >=` its last read (
 
 ## 7. Costs
 
-From the measured model (`forge-web/lib/sdk/cost.ts`): a board definition ≈ 0.0015 DASH to create, ≈ 0.0002 to edit; a member's first card for an item ≈ 0.0005, every later move or field change of it ≈ 0.00003. Sources, Done, auto-archive and views cost nothing.
+From the measured model (`forge-web/lib/sdk/cost.ts`): a board definition ≈ 0.0015 DASH to create, ≈ 0.0002 to edit; a member's first card for an item ≈ 0.0005, every later move or field change of it ≈ 0.00003. Sources, Done, auto-archive and views cost nothing. Until a network carries the types these are **estimates** (`board` and `card` in `BASE_CREDITS` and `REPLACE_BASE_BY_TYPE`, scaled from the passkey vault's measured create and replace); `priceBoardWrites(creates, replaces)` prices a multi-write action (a re-rank, "move to the next iteration", a bulk archive) before it is signed.
 
 ## 8. Limits
 

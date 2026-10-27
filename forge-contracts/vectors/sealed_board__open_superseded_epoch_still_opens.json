@@ -1,0 +1,42 @@
+{
+  "name": "open_superseded_epoch_still_opens",
+  "description": "a board under superseded epoch 0 by a member removed since still opens: both types are member-gated at consensus on every write, so the height part of the late rule (§8.2) does not apply.",
+  "case": "sealed_board",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        },
+        "1": {
+          "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+          "height": 1000
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "board",
+      "key": 7,
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "plaintext": false,
+      "enc": "01000102030405060708090a0b3e7028a0ac5388143e0c35b3b050df789b274eea479160eb2cfbec2fbba79e8a330954a9e8700f356020378f2350e347a9d8bd0f55aac03fe2ae2265e98dfa589874658be2f70d3a8102d8736fdb4c99f93726ec567354e3eb4cf7685f5b3950e9c00e6a81460d91e36cde8ada3ad90c548e031d6e78adaa21612b6862e4008ef93596fbe90429874f25150568ec0e65"
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "name": "Roadmap",
+      "spec": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"In progress\"},{\"id\":3,\"name\":\"Done\"}],\"def\":1,\"done\":3}"
+    }
+  }
+}
