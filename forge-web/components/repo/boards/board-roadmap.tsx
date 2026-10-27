@@ -24,6 +24,7 @@ import { EmptyState } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
 import { GroupHeading, ItemStateIcon, columnName, dayRangeText } from './board-fields'
+import { ItemRef } from './board-bits'
 import type { BoardLayoutProps } from './layout-props'
 
 
@@ -175,6 +176,7 @@ export function BoardRoadmap({ state, spec, view, items, rows, onOpenItem }: Boa
   const scrollRef = useRef<HTMLDivElement>(null)
   const dates = roadmapDates(spec, view)
   const hidden = state.items?.hidden
+  const multiRepo = useMemo(() => new Set(items.map((i) => i.repoId)).size > 1, [items])
   const today = Math.floor(state.now / DAY_MS)
   const px = PX[zoom]
 
@@ -338,7 +340,8 @@ export function BoardRoadmap({ state, spec, view, items, rows, onOpenItem }: Boa
                       {b.name}
                     </span>
                   ))}
-                  <span className="absolute bottom-0 h-full border-l-2 border-forge-600 dark:border-forge-400" style={{ left: xOf(today) + px / 2 }} />
+                  {/* a tick at the header's foot: a full-height line would cross the labels above it */}
+                  <span className="absolute bottom-0 h-2 border-l-2 border-forge-600 dark:border-forge-400" style={{ left: xOf(today) + px / 2 }} />
                 </div>
               </div>
 
@@ -391,7 +394,7 @@ export function BoardRoadmap({ state, spec, view, items, rows, onOpenItem }: Boa
                             <button type="button" tabIndex={-1} onClick={() => onOpenItem(item.id)} className={cn('min-w-0 truncate text-left text-dense hover:underline', priv ? 'italic text-anvil-500 dark:text-anvil-400' : 'text-anvil-900 dark:text-anvil-50')} title={priv ? undefined : item.title}>
                               {priv ? 'A private item' : item.title}
                             </button>
-                            {!priv ? <span className="shrink-0 font-mono text-[11px] text-anvil-500 dark:text-anvil-400">#{item.number}</span> : null}
+                            {!priv ? <ItemRef item={item} multiRepo={multiRepo} className="max-w-[7rem] shrink-0 text-[11px] text-anvil-500 dark:text-anvil-400" /> : null}
                           </div>
                           <div className="relative" style={{ width }}>
                             <button
@@ -461,7 +464,7 @@ export function BoardRoadmap({ state, spec, view, items, rows, onOpenItem }: Boa
                     <button type="button" onClick={() => onOpenItem(item.id)} className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-dense hover:bg-anvil-50 dark:hover:bg-anvil-900 coarse:min-h-11">
                       {priv ? <Lock className="h-4 w-4 shrink-0 text-fg-muted" aria-hidden /> : <ItemStateIcon item={item} />}
                       <span className={cn('min-w-0 flex-1 truncate', priv ? 'italic text-anvil-500 dark:text-anvil-400' : 'text-anvil-900 dark:text-anvil-50')}>{priv ? 'A private item' : item.title}</span>
-                      {!priv ? <span className="shrink-0 font-mono text-[11px] text-anvil-500 dark:text-anvil-400">#{item.number}</span> : null}
+                      {!priv ? <ItemRef item={item} multiRepo={multiRepo} className="max-w-[8rem] shrink-0 text-[11px] text-anvil-500 dark:text-anvil-400" /> : null}
                     </button>
                   </li>
                 )

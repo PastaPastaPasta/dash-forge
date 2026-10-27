@@ -81,8 +81,9 @@ describe('board layout', () => {
     // The card says what it is: number, title, state, labels, its fields.
     expect(card(1).getAttribute('aria-label')).toBe('project #1 Write the parser, Open issue, labels bug, Priority P0, Estimate 3, Iteration 1, Start Oct 26, 2026, Target Nov 6, 2026')
     expect(card(1).textContent).toContain('Estimate 3')
-    // Two repositories on the board: cards carry their repository.
-    expect(card(5).textContent).toContain('project #5')
+    // Two repositories on the board: cards carry their repository's name (the label in full as the tooltip).
+    expect(card(5).textContent).toContain('project#5')
+    expect(card(5).querySelector('[title="project#5"]')).not.toBeNull()
     // The column sums the view's first number field.
     expect(cols[1]?.querySelector('[data-testid="column-sum"]')?.textContent).toBe('Estimate 7')
   })
@@ -113,6 +114,31 @@ describe('board layout', () => {
       { id: id('b'), rank: placements.get(id('b'))?.rank },
       { id: id('c'), rank: placements.get(id('c'))?.rank },
     ], id('c'))
+  })
+
+  it('keeps the focus on a card dropped in another column once the move renders there', async () => {
+    const p = props()
+    await render(p)
+    card(1).focus()
+    await key(card(1), ' ')
+    await key(card(1), 'ArrowRight')
+    await key(card(1), ' ')
+    // The hook's optimistic move renders after the drop: the card's element in Todo is gone.
+    const rows = p.rows.map((r) => (r.item.id === id('a') ? { ...r, placement: { ...r.placement, col: 2 } } : r))
+    await render({ ...p, rows, placements: new Map(rows.map((r) => [r.item.id, r.placement])) })
+    expect(cardsIn(columns()[1] as HTMLElement)).toContain(1)
+    expect(document.activeElement).toBe(card(1))
+  })
+
+  it('shows a board spanning repositories by repo name, never an owner id that hides the number', async () => {
+    const owner = 'G1SAVd3dfdjNHJo2YmaNmhKThEa9kPVcwefCpeinC8ce'
+    const items = ITEMS.map((i) => ({ ...i, repo: `${owner}/${i.repoId === HOME ? 'project' : 'tools'}` }))
+    const p = props({}, { items })
+    await render({ ...p, rows: p.rows.map((r) => ({ ...r, item: items.find((i) => i.id === r.item.id) ?? r.item })) })
+    expect(card(5).textContent).toContain('tools#5')
+    expect(card(5).textContent).not.toContain(owner)
+    expect(card(5).querySelector(`[title="${owner}/tools#5"]`)).not.toBeNull()
+    expect(card(5).getAttribute('aria-label')).toMatch(/^tools #5 Secret/)
   })
 
   it('cancels a keyboard move with Escape, writing nothing', async () => {

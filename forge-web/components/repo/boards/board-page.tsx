@@ -8,7 +8,7 @@
  * - the view: the saved views as tabs, the URL's unsaved changes over one (`?view=&q=&group=
  *   &lane=&sort=&layout=`, a shareable cut), Save view (members who edit boards) and Reset;
  * - the filter: the board query (§4.4; qualifiers that name nothing here are listed under the box,
- *   `@me` is the signed-in identity), grouping, swimlanes and sort pickers, Show archived
+ *   `@me` is the signed-in identity), grouping, swimlanes and sort pickers, Only archived
  *   (`is:archived`), and "Load older closed items";
  * - the current iteration's dates and progress, with "Move open items to the next iteration"
  *   (§5.4, priced first);
@@ -57,12 +57,12 @@ import {
 } from '@/lib/rules/boards'
 import { priceBoardWrites } from '@/lib/sdk'
 import type { RepoHome } from '@/lib/view'
-import { cn, shortId } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 
 import { boardSettingsHref, boardsHref, dayRangeText, viewKeyLabel } from './board-fields'
 import { BulkActionDialog, cardCount, rerankAction, type BulkAction } from './board-dialogs'
 import { BoardKanban } from './board-kanban'
-import { BoardRoadmap } from './board-roadmap'
+import { BoardRoadmap, roadmapDates } from './board-roadmap'
 import { BoardTable } from './board-table'
 import { ItemPanel } from './item-panel'
 import type { BoardLayoutProps } from './layout-props'
@@ -117,7 +117,9 @@ export function BoardPage({ home, addr }: { home: RepoHome; addr: RepoAddress })
 function BoardScreen({ home, addr, boardKey }: { home: RepoHome; addr: RepoAddress; boardKey: number }): JSX.Element {
   const { network } = useSdk(repoContractIds(home.repo))
   // An item's repository as its card shows it: `owner/name`, the owner's name when known.
-  const label = (r: RepoRef): string => `${r.repoId === home.repo.repoId ? addr.owner : (cachedDpnsName(network, r.ownerId) ?? shortId(r.ownerId))}/${r.name}`
+  // `owner/name`, as `repo:` is written (§4.4): an owner by DPNS name or whole identity id (cards
+  // show only the name, `ItemRef`), never a shortened id that cannot be typed.
+  const label = (r: RepoRef): string => `${r.repoId === home.repo.repoId ? addr.owner : (cachedDpnsName(network, r.ownerId) ?? r.ownerId)}/${r.name}`
   const raw = useBoard(home.repo, boardKey, { label })
   const [state, crossRepoDialog] = useGuardedBoard(raw, home.repo)
 
@@ -168,6 +170,21 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
   const itemParam = params.get('item')
   const labelsRead = useAsync(() => readLabels(sdk!, home.repo), [ready, repoKey(home.repo)], { enabled: ready && sdk !== null })
   const labels = useMemo(() => new Map<string, LabelDef>((labelsRead.data ?? []).map((l) => [l.name, l])), [labelsRead.data])
+  // A label the home repo's items carry that the definitions read lacks (one defined from the
+  // item panel a moment ago, or by someone else since): read them again, once per such set, so
+  // its chip shows its colour without a reload.
+  const missingLabels = useMemo(() => {
+    if (labelsRead.data === null || state.items === null) return ''
+    const missing = new Set<string>()
+    for (const item of state.items.items) if (item.repoId === home.repo.repoId) for (const l of item.labels) if (!labels.has(l)) missing.add(l)
+    return [...missing].sort().join('\n')
+  }, [labelsRead.data, labels, state.items, home.repo.repoId])
+  const labelsAskedFor = useRef('')
+  useEffect(() => {
+    if (missingLabels === '' || missingLabels === labelsAskedFor.current || labelsRead.loading) return
+    labelsAskedFor.current = missingLabels
+    labelsRead.reload()
+  })
   const [bulk, setBulk] = useState<BulkAction | null>(null)
   const [saving, setSaving] = useState(false)
   /** Whether the signer already has a revision of this board (Save view replaces it, else creates one). */
@@ -314,10 +331,10 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
       />
 
       {/* Filter bar */}
-      <FilterBox q={view.q} onChange={(q) => setParams({ q })} />
+      <FilterBox q={view.q} placeholder={filterPlaceholder(spec)} onChange={(q) => setParams({ q })} />
       {query.unresolved.length > 0 ? (
         <p role="note" className="-mt-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="board-query-unresolved">
-          Not applied: {query.unresolved.join(' ')}. They name nothing on this board.
+          Not applied: {query.unresolved.join(' ')}. {query.unresolved.length === 1 ? 'It names' : 'They name'} nothing on this board.
         </p>
       ) : null}
       {usesMe && identity === null ? <p className="-mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">Sign in to filter by @me.</p> : null}
@@ -327,9 +344,10 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
         {view.layout !== 'roadmap' ? <GroupPicker spec={spec} view={view} onChange={(group) => onViewChange({ group })} /> : null}
         {view.layout === 'board' ? <LanePicker spec={spec} view={view} onChange={(lane) => onViewChange({ lane })} /> : null}
         {view.layout !== 'roadmap' ? <SortPicker spec={spec} value={view.sort} onChange={(sort) => onViewChange({ sort })} /> : null}
+        {view.layout === 'roadmap' ? <DatesPicker spec={spec} view={view} onChange={(date) => onViewChange({ date })} /> : null}
         <label className="inline-flex items-center gap-1.5 text-anvil-600 dark:text-anvil-300 coarse:min-h-11">
           <input type="checkbox" checked={archived} onChange={(e) => setParams({ q: withArchived(view.q, e.target.checked) })} className="accent-forge-600" data-testid="show-archived" />
-          Show archived
+          Only archived
         </label>
         <span className="ml-auto text-[12px] tabular-nums text-anvil-500 dark:text-anvil-400" data-testid="board-shown-count">
           {rows.length === 1 ? '1 item' : `${rows.length} items`}
@@ -460,13 +478,25 @@ function ViewTabs({ spec, active, dirty, onPick, actions }: { spec: BoardSpec; a
 }
 
 /** The query box: filters as you type (the URL follows a moment later). */
-function FilterBox({ q, onChange }: { q: string; onChange: (q: string) => void }): JSX.Element {
+/**
+ * The filter box's example, in this board's own terms: a column after the first (quoted when it
+ * has a space), `assignee:@me`, and the first single-select field's first option.
+ */
+export function filterPlaceholder(spec: BoardSpec): string {
+  const quote = (s: string): string => (/\s/.test(s) ? `"${s}"` : s)
+  const col = spec.columns[1] ?? spec.columns[0]
+  const sel = spec.fields.find((f) => f.type === 'sel' && (f.options?.length ?? 0) > 0)
+  const opt = sel?.options?.[0]
+  return [col !== undefined ? `status:${quote(col.name)}` : 'is:open', 'assignee:@me', ...(sel !== undefined && opt !== undefined ? [`${quote(sel.name.toLowerCase())}:${quote(opt.name)}`] : [])].join(' ')
+}
+
+function FilterBox({ q, placeholder, onChange }: { q: string; placeholder: string; onChange: (q: string) => void }): JSX.Element {
   const [draft, setDraft] = useState(q)
   const last = useRef(q)
   const changeRef = useRef(onChange)
   changeRef.current = onChange
   useEffect(() => {
-    // Another control (Show archived, Reset, a view tab) changed the query: show it.
+    // Another control (Only archived, Reset, a view tab) changed the query: show it.
     if (q !== last.current) {
       last.current = q
       setDraft(q)
@@ -495,7 +525,7 @@ function FilterBox({ q, onChange }: { q: string; onChange: (q: string) => void }
       </label>
       <div className="relative flex-1">
         <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-        <Input id="board-filter" value={draft} onChange={(e) => setDraft(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder='status:"In progress" assignee:@me priority:P1' data-testid="board-filter" />
+        <Input id="board-filter" value={draft} onChange={(e) => setDraft(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder={placeholder} data-testid="board-filter" />
       </div>
       {draft !== '' ? (
         <Button
@@ -548,14 +578,18 @@ function fieldKeys(spec: BoardSpec, types: readonly BoardField['type'][]): { key
   return spec.fields.filter((f) => types.includes(f.type)).map((f) => ({ key: `f${f.id}`, name: f.name }))
 }
 
+/**
+ * The board layout's columns (Status unless a field is chosen: picking Status clears the
+ * grouping), or the table's sections: none, Status, an item key or a field (`''` is none).
+ */
 function GroupPicker({ spec, view, onChange }: { spec: BoardSpec; view: SavedView; onChange: (g: string) => void }): JSX.Element {
   const board = view.layout === 'board'
-  const options = [{ key: 'status', name: 'Status' }, ...(board ? [] : itemKeys(spec)), ...fieldKeys(spec, ['sel', 'iter'])]
-  const value = board ? boardGroupOf(spec, view) : (view.group ?? 'status')
+  const options = [...(board ? [] : [{ key: '', name: 'None' }]), { key: 'status', name: 'Status' }, ...(board ? [] : itemKeys(spec)), ...fieldKeys(spec, ['sel', 'iter'])]
+  const value = board ? boardGroupOf(spec, view) : (view.group ?? '')
   return (
     <label className="inline-flex items-center gap-1.5 text-anvil-600 dark:text-anvil-300">
       {board ? 'Columns' : 'Group'}
-      <select value={value} onChange={(e) => onChange(e.target.value === 'status' ? '' : e.target.value)} className={PICKER} data-testid="group-picker">
+      <select value={value} onChange={(e) => onChange(board && e.target.value === 'status' ? '' : e.target.value)} className={PICKER} data-testid="group-picker">
         {options.map((o) => (
           <option key={o.key} value={o.key}>
             {o.name}
@@ -577,6 +611,33 @@ function LanePicker({ spec, view, onChange }: { spec: BoardSpec; view: SavedView
         <option value="">None</option>
         {options.map((o) => (
           <option key={o.key} value={o.key}>
+            {o.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+/**
+ * What the roadmap plots (§4.3, `view.date`): an iteration field, or a start and a target date
+ * field (each pair of date fields in field order). Shown when there is a choice to make.
+ */
+function DatesPicker({ spec, view, onChange }: { spec: BoardSpec; view: SavedView; onChange: (date: number[]) => void }): JSX.Element | null {
+  const dates = spec.fields.filter((f) => f.type === 'date')
+  const options = [
+    ...spec.fields.filter((f) => f.type === 'iter').map((f) => ({ ids: [f.id], name: f.name })),
+    ...dates.flatMap((a, i) => dates.slice(i + 1).map((b) => ({ ids: [a.id, b.id], name: `${a.name} to ${b.name}` }))),
+  ]
+  if (options.length < 2) return null
+  const now = roadmapDates(spec, view)
+  const value = now === null ? '' : now.kind === 'iter' ? String(now.field.id) : `${now.start.id},${now.end.id}`
+  return (
+    <label className="inline-flex items-center gap-1.5 text-anvil-600 dark:text-anvil-300">
+      Dates
+      <select value={value} onChange={(e) => onChange(e.target.value.split(',').map(Number))} className={PICKER} data-testid="dates-picker">
+        {options.map((o) => (
+          <option key={o.ids.join(',')} value={o.ids.join(',')}>
             {o.name}
           </option>
         ))}

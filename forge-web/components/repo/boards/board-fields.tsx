@@ -128,13 +128,13 @@ export function DotLabel({ color, children, className }: { readonly color?: stri
 }
 
 /** An issue's or PR's state icon, as the lists draw it, with its name for screen readers. */
-export function ItemStateIcon({ item, className }: { readonly item: Pick<BoardItem, 'kind' | 'state'>; readonly className?: string }): JSX.Element {
+export function ItemStateIcon({ item, className, decorative = false }: { readonly item: Pick<BoardItem, 'kind' | 'state'>; readonly className?: string; /** The state is said in words beside it: no screen-reader text of its own. */ readonly decorative?: boolean }): JSX.Element {
   if (item.kind === 'pr') {
     const v = pullStateView({ open: item.state === 'open', merged: item.state === 'merged' })
     return (
       <>
         <v.Icon className={cn('h-4 w-4 shrink-0', v.klass, className)} aria-hidden />
-        <span className="sr-only">{`${v.label} pull request`}</span>
+        {decorative ? null : <span className="sr-only">{`${v.label} pull request`}</span>}
       </>
     )
   }
@@ -143,7 +143,7 @@ export function ItemStateIcon({ item, className }: { readonly item: Pick<BoardIt
   return (
     <>
       <Icon className={cn('h-4 w-4 shrink-0', open ? STATE_TEXT.open : STATE_TEXT.done, className)} aria-hidden />
-      <span className="sr-only">{open ? 'Open issue' : 'Closed issue'}</span>
+      {decorative ? null : <span className="sr-only">{open ? 'Open issue' : 'Closed issue'}</span>}
     </>
   )
 }

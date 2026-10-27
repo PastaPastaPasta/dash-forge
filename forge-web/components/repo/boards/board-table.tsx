@@ -35,6 +35,7 @@ import { EmptyState } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn, shortId } from '@/lib/utils'
 import { DotLabel, FieldInput, GroupHeading, ItemStateIcon, StatusSelect, dayText, fieldValueText, viewKeyLabel } from './board-fields'
+import { ItemRef } from './board-bits'
 import type { BoardLayoutProps } from './layout-props'
 
 /** The table's columns: the view's `cols` with Title first, or Title, Status, Assignees, Labels and every custom field. */
@@ -342,7 +343,7 @@ function Cell({ spec, item, keyName, placement, priv, pending, multiRepo, labels
           <span className={cn('min-w-0 truncate', priv ? 'italic text-anvil-500 dark:text-anvil-400' : 'font-medium text-anvil-900 dark:text-anvil-50')} title={priv ? undefined : item.title}>
             {priv ? 'A private item' : item.title}
           </span>
-          {!priv ? <span className={cn('shrink-0 font-mono text-[12px]', muted)}>{multiRepo && item.repo !== undefined ? `${item.repo}#${item.number}` : `#${item.number}`}</span> : null}
+          {!priv ? <ItemRef item={item} multiRepo={multiRepo} className={cn('max-w-[12rem] shrink-0 text-[12px]', muted)} /> : null}
           {placement.archived !== null ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-anvil-300 px-1.5 text-[11px] text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="archived-badge">
               <Archive className="h-3 w-3" aria-hidden /> Archived

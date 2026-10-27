@@ -59,7 +59,8 @@ function BoardsListContent({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const all = useMemo(() => boards.data ?? [], [boards.data])
   const open = all.filter((b) => b.state === 'open')
   const closed = all.filter((b) => b.state === 'closed')
-  const shown = state === 'open' ? open : closed
+  // the most recently changed first, as GitHub lists projects (a key is random)
+  const shown = [...(state === 'open' ? open : closed)].sort((a, b) => b.newest.updatedAt - a.newest.updatedAt || a.key - b.key)
   const now = Date.now()
 
   return (
@@ -217,7 +218,8 @@ function NewBoardDialog({
                 onClick={() => setTemplate(t.key)}
                 data-testid={`template-${t.key}`}
                 className={cn(
-                  'rounded-md border px-3 py-2 text-left transition-colors coarse:min-h-11',
+                  // a column: each card's name, blurb and stages from the top, whatever its row's height
+                  'flex flex-col items-stretch justify-start rounded-md border px-3 py-2 text-left transition-colors coarse:min-h-11',
                   on ? 'border-forge-500 bg-forge-500/5 dark:border-forge-400' : 'border-anvil-200 hover:border-anvil-300 dark:border-anvil-750 dark:hover:border-anvil-600',
                 )}
               >

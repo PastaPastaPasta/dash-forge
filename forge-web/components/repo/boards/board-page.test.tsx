@@ -29,11 +29,12 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ signer: { identity
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: (e: unknown) => String(e), disabledReason: null }) }))
 vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role: 'maintainer', known: true, failed: false, retry: () => undefined }) }))
 vi.mock('@/hooks/use-board', () => ({ useBoard: () => board, useBoardsDeployed: () => true, useBoards: () => ({ data: [], loading: false, error: null, cause: null, settled: true, reload: () => undefined, role: null, can: { place: false, edit: false }, create: async () => ({}) }) }))
-vi.mock('@/lib/repo', async (orig) => ({ ...(await orig<typeof import('@/lib/repo')>()), readLabels: async () => [{ name: 'bug', color: '#d73a4a', description: '', retired: false, createdAt: 1, id: 'l1' }] }))
+const readLabels = vi.fn(async () => [{ name: 'bug', color: '#d73a4a', description: '', retired: false, createdAt: 1, id: 'l1' }])
+vi.mock('@/lib/repo', async (orig) => ({ ...(await orig<typeof import('@/lib/repo')>()), readLabels: () => readLabels() }))
 const loadIssueThread = vi.fn(async () => ({ issue: { body: 'The parser drops **comments**.' }, labels: [], members: [] }))
 vi.mock('@/lib/view', async (orig) => ({ ...(await orig<typeof import('@/lib/view')>()), loadIssueThread: () => loadIssueThread() }))
 
-const { BoardPage } = await import('./board-page')
+const { BoardPage, filterPlaceholder } = await import('./board-page')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -50,6 +51,7 @@ beforeEach(() => {
   board = hookState({ fold, items: { items: ITEMS, hidden: new Set(), missing: new Set(), partial: false, hasOlderClosed: false, walks: new Map() } })
   replace.mockReset()
   push.mockReset()
+  readLabels.mockClear()
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -87,11 +89,11 @@ describe('board page', () => {
 
   it('lists the qualifiers that name nothing on the board under the box', async () => {
     await render('q=nope%3Ax+label%3Abug')
-    expect(el.querySelector('[data-testid="board-query-unresolved"]')?.textContent).toBe('Not applied: nope:x. They name nothing on this board.')
+    expect(el.querySelector('[data-testid="board-query-unresolved"]')?.textContent).toBe('Not applied: nope:x. It names nothing on this board.')
     expect(shown()).toEqual([1])
   })
 
-  it('offers Reset and Save view for unsaved changes, and Show archived adds is:archived', async () => {
+  it('offers Reset and Save view for unsaved changes, and Only archived adds is:archived', async () => {
     await render('q=label%3Abug')
     expect(el.querySelector('[data-testid="view-dirty"]')?.textContent).toContain('Save view')
     const archived = el.querySelector<HTMLInputElement>('[data-testid="show-archived"]') as HTMLInputElement
@@ -162,6 +164,60 @@ describe('board page', () => {
     await act(async () => (document.querySelector('[data-testid="confirm-action"]') as HTMLButtonElement).click())
     await settle()
     expect(board.write).toHaveBeenLastCalledWith({ id: id('e'), repoId: OTHER_REPO }, { col: 2 }, { confirmCrossRepo: true })
+  })
+
+  it('groups the table by Status, by another key, or not at all', async () => {
+    await render('layout=table')
+    const picker = el.querySelector<HTMLSelectElement>('[data-testid="group-picker"]') as HTMLSelectElement
+    expect([...picker.options].slice(0, 3).map((o) => o.text)).toEqual(['None', 'Status', 'Assignee'])
+    expect(picker.value).toBe('')
+    await act(async () => {
+      picker.value = 'status'
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(replace).toHaveBeenLastCalledWith('/repo/board/?owner=alice&name=project&b=7&layout=table&group=status', { scroll: false })
+    await render('layout=table&group=status')
+    expect(el.querySelectorAll('[data-testid="board-table-section"]').length).toBe(3)
+  })
+
+  it('lets a roadmap plot an iteration or a pair of date fields', async () => {
+    await render('layout=roadmap')
+    const picker = el.querySelector<HTMLSelectElement>('[data-testid="dates-picker"]') as HTMLSelectElement
+    expect([...picker.options].map((o) => o.text)).toEqual(['Iteration', 'Start to Target'])
+    expect(picker.value).toBe('3')
+    await act(async () => {
+      picker.value = '4,5'
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(replace).toHaveBeenLastCalledWith('/repo/board/?owner=alice&name=project&b=7&layout=roadmap&date=4%2C5', { scroll: false })
+  })
+
+  it('suggests a filter in the board’s own terms', () => {
+    expect(filterPlaceholder(SPEC)).toBe('status:"In progress" assignee:@me priority:P0')
+    expect(filterPlaceholder({ ...SPEC, columns: [{ id: 1, name: 'Todo' }], fields: [] })).toBe('status:Todo assignee:@me')
+  })
+
+  it('reads the label definitions again when an item shows a label they lack (one just defined)', async () => {
+    board = { ...board, items: { ...(board.items as NonNullable<BoardHookState['items']>), items: ITEMS.map((i) => (i.id === id('b') ? { ...i, labels: ['docs'] } : i)) } }
+    await render('')
+    await settle()
+    expect(readLabels).toHaveBeenCalledTimes(2)
+    await render('q=label%3Adocs')
+    await settle()
+    expect(readLabels).toHaveBeenCalledTimes(2)
+  })
+
+  it('closes the item panel once its item is removed from the board', async () => {
+    await render(`item=${id('a')}`)
+    await settle()
+    const panel = document.querySelector('[data-testid="item-panel"]') as HTMLElement
+    expect(panel.querySelector('[data-testid="item-page-link"]')?.textContent).toBe('Go to issue ')
+    const remove = [...panel.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Remove') as HTMLButtonElement
+    await act(async () => remove.click())
+    await act(async () => (document.querySelector('[data-testid="confirm-action"]') as HTMLButtonElement).click())
+    await settle()
+    expect(board.remove).toHaveBeenCalledWith([{ id: id('a'), repoId: HOME }], undefined)
+    expect(replace).toHaveBeenLastCalledWith('/repo/board/?owner=alice&name=project&b=7', { scroll: false })
   })
 
   it('gives a reader the board without field editors', async () => {

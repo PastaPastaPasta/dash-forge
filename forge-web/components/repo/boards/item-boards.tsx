@@ -36,7 +36,7 @@ function homeAddr(addr: RepoAddress, repo: RepoRef, home: RepoRef): RepoAddress 
 }
 
 export function ItemBoards({ repo, addr, item }: { repo: RepoRef; addr: RepoAddress | undefined; item: BoardItem }): JSX.Element | null {
-  // only where the network's forge-meta has boards (read from the SDK's contract cache)
+  // only where the network's forge-meta has boards (`boardsDeployed`: the bundled snapshot, no request)
   if (useBoardsDeployed(repo.forge) !== true) return null
   return <ItemBoardsSection repo={repo} addr={addr} item={item} />
 }
@@ -139,7 +139,7 @@ function ItemBoardEntry({ entry, repo, addr, closed, write }: { entry: ItemBoard
           <dt className="text-anvil-500 dark:text-anvil-400">Status</dt>
           <dd className="min-w-0">
             {can ? (
-              <StatusSelect spec={spec} value={col} closed={closed} label={`Status on ${name}`} onChange={(c) => apply({ col: c })} className="py-0.5 text-[12px]" />
+              <StatusSelect spec={spec} value={col} closed={closed} label={`Status on ${name}`} onChange={(c) => apply({ col: c })} className="h-7 py-0.5 text-[12px]" />
             ) : (
               <DotLabel color={spec.columns.find((c) => c.id === col)?.color} className="text-anvil-800 dark:text-anvil-100">
                 {columnName(spec, col)}
@@ -149,7 +149,7 @@ function ItemBoardEntry({ entry, repo, addr, closed, write }: { entry: ItemBoard
           {fields.map((f) => (
             <FieldRow key={f.id} name={f.name}>
               {can ? (
-                <FieldInput field={f} value={valueOf(f.id)} now={Date.now()} label={`${f.name} on ${name}`} onCommit={(v) => apply({ fields: { [f.id]: v } })} className="py-0.5 text-[12px]" />
+                <FieldInput field={f} value={valueOf(f.id)} now={Date.now()} label={`${f.name} on ${name}`} onCommit={(v) => apply({ fields: { [f.id]: v } })} className="h-7 py-0.5 text-[12px]" />
               ) : (
                 <span className="truncate text-anvil-800 dark:text-anvil-100">{fieldValueText(f, valueOf(f.id))}</span>
               )}

@@ -44,7 +44,7 @@ import {
 } from '@/lib/rules/boards'
 import { cn, shortId } from '@/lib/utils'
 
-import { FieldChip, itemStateWords } from './board-bits'
+import { FieldChip, ItemRef, itemRepoName, itemStateWords } from './board-bits'
 import { ColorDot, GroupHeading, ItemStateIcon, dayRangeText, fieldValueText } from './board-fields'
 import { BulkActionDialog, cardCount, rerankAction, type BulkAction } from './board-dialogs'
 import type { BoardLayoutProps } from './layout-props'
@@ -72,6 +72,9 @@ interface Drag {
   readonly mode: 'pointer' | 'keyboard'
   readonly invalid: string | null
 }
+
+/** How long after a keyboard drop the moved card is looked for in its new cell, to focus it. */
+const FOCUS_AFTER_MS = 3000
 
 /** A column as shown: its name, colour, WIP limit and the key a move sets. */
 interface ColumnMeta {
@@ -153,8 +156,11 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
   const [phoneCol, setPhoneCol] = useState(0)
   const [bulk, setBulk] = useState<BulkAction | null>(null)
   const suppressClick = useRef(false)
-  /** A card to focus once it renders (after a keyboard drop it re-renders in its new column). */
-  const focusAfter = useRef<(CellPos & { readonly id: string }) | null>(null)
+  /**
+   * A card to focus once it renders (after a keyboard drop it re-renders in its new column), until
+   * `until` (ms): the optimistic move may land a render or two after the drop.
+   */
+  const focusAfter = useRef<(CellPos & { readonly id: string; readonly until?: number }) | null>(null)
 
   const canPlace = state.can.place
   const archivedShown = asksArchived(view.q)
@@ -318,7 +324,7 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
           say(`${titleOf(id)} dropped where it was.`)
           return
         }
-        focusAfter.current = { id, col: d.to.col, lane: d.to.lane }
+        focusAfter.current = { id, col: d.to.col, lane: d.to.lane, until: Date.now() + FOCUS_AFTER_MS }
         say(`Dropped ${titleOf(id)} in ${where(d.to, id)}.`)
         commit(id, d.from, d.to)
       } else if (e.key === 'Escape' || e.key === 'Tab') {
@@ -363,12 +369,17 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
     if (d !== null && d.mode === 'keyboard' && d.item === id) cancelCarry(d)
   }
 
-  // A card to focus once it has rendered (after a drop, or a phone's column switch): tried once.
+  // A card to focus once it has rendered (after a drop, or a phone's column switch). A drop's card
+  // is looked for on each render until it shows in its new cell (the move renders after the drop,
+  // and the card's old element, which held the focus, is gone by then), or until the deadline
+  // (a refused move puts it back where it was); anything else is tried once.
   useEffect(() => {
     const f = focusAfter.current
     if (f === null) return
+    const el = cardEl(f.id, f)
+    if (el === null && f.until !== undefined && Date.now() < f.until) return
     focusAfter.current = null
-    cardEl(f.id, f)?.focus()
+    el?.focus()
   })
 
   // ---------------------------------------------------------------------------------------------
@@ -549,7 +560,7 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
     const ids = col.items.filter((id) => placements.get(id)?.archived === null)
     setBulk({
       title: `Archive ${meta.name}`,
-      description: `Archives the ${cardCount(ids.length)} this view shows in ${meta.name}. They stay on the board under Show archived.`,
+      description: `Archives the ${cardCount(ids.length)} this view shows in ${meta.name}. They stay on the board under Only archived.`,
       confirmLabel: `Archive ${cardCount(ids.length)}`,
       items: ids.map(cardItem),
       run: (opts) => state.archive(ids.map(cardItem), opts),
@@ -757,7 +768,7 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
       {carried !== undefined ? (
         <div ref={ghostRef} aria-hidden className={cn('pointer-events-none fixed left-0 top-0 z-50 rotate-1 opacity-95 shadow-xl', drag?.invalid != null && 'opacity-60')} style={{ width: 0, visibility: 'hidden' }}>
           <CardFace item={carried} placement={placements.get(carried.id) as Placement} spec={spec} cols={view.cols} hidden={hidden?.has(carried.id) === true} multiRepo={multiRepo} labels={labels} />
-          {drag?.invalid != null ? <p className="mt-1 rounded bg-anvil-900 px-2 py-1 text-[11px] text-white dark:bg-anvil-100 dark:text-anvil-900">{drag.invalid}</p> : null}
+          {drag?.invalid != null ? <p className="mt-1 rounded bg-anvil-900 px-2 py-1 text-[11px] text-white dark:bg-anvil-700">{drag.invalid}</p> : null}
         </div>
       ) : null}
       {home !== undefined ? <BulkActionDialog action={bulk} state={state} home={home} onClose={() => setBulk(null)} /> : null}
@@ -842,7 +853,8 @@ function cardFields(spec: BoardSpec, placement: Placement, cols: readonly string
 
 /** A card's repository prefix ("owner/name "): only on a multi-repository board. */
 function repoPrefix(item: BoardItem, multiRepo: boolean): string {
-  return multiRepo && item.repo !== undefined ? `${item.repo} ` : ''
+  const name = multiRepo ? itemRepoName(item) : undefined
+  return name !== undefined ? `${name} ` : ''
 }
 
 /** What a card shows (shared by the card and the drag ghost). */
@@ -865,9 +877,7 @@ function CardFace({ item, placement, spec, cols, hidden, multiRepo, labels }: Ca
     >
       <div className="flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
         <ItemStateIcon item={item} className="h-3.5 w-3.5" />
-        <span className="min-w-0 truncate font-mono">
-          {repoPrefix(item, multiRepo)}#{item.number}
-        </span>
+        <ItemRef item={item} multiRepo={multiRepo} />
         {placement.archived !== null ? <span className="ml-auto rounded bg-anvil-100 px-1 text-[10px] font-medium uppercase tracking-wide text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">Archived</span> : null}
       </div>
       <p className={cn('mt-0.5 line-clamp-3 break-words text-dense font-medium text-anvil-900 dark:text-anvil-50', placement.archived !== null && 'text-anvil-600 dark:text-anvil-300')}>{item.title || '(untitled)'}</p>
@@ -951,7 +961,7 @@ function KanbanCard(
             e.stopPropagation()
             props.onPointerDown(e, true)
           }}
-          className="absolute -left-0.5 top-1/2 hidden h-8 w-4 -translate-y-1/2 cursor-grab touch-none items-center justify-center text-anvil-400 group-hover:flex coarse:flex dark:text-anvil-500"
+          className="absolute -left-0.5 top-1/2 hidden h-8 w-4 -translate-y-1/2 cursor-grab touch-none items-center justify-center text-anvil-500 group-hover:flex coarse:flex dark:text-anvil-400"
           data-testid="card-grip"
         >
           <GripVertical className="h-3.5 w-3.5" />

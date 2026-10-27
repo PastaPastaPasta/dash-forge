@@ -77,6 +77,13 @@ const type = (input: HTMLInputElement, value: string): void => {
 }
 
 describe('Boards list', () => {
+  it('lists the most recently changed board first (a key is random)', () => {
+    const at = (b: BoardView, ago: number): BoardView => ({ ...b, newest: { ...b.newest, updatedAt: NOW - ago } })
+    boards = [at(board(9, 'Old'), 9_000_000), at(board(1, 'Newest'), 1_000), at(board(5, 'Middle'), 60_000)]
+    act(() => root.render(<BoardsList home={home()} addr={addr} />))
+    expect([...el.querySelectorAll('[data-testid="board-row"]')].map((r) => r.getAttribute('data-key'))).toEqual(['1', '5', '9'])
+  })
+
   it('lists the open boards with their description, columns and last change; closed ones under Closed', () => {
     boards = [board(1, 'Roadmap', 'open', 'What ships when'), board(2, 'Old sprint', 'closed'), board(3, null)]
     act(() => root.render(<BoardsList home={home()} addr={addr} />))

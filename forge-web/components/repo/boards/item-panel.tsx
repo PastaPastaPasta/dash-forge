@@ -41,7 +41,7 @@ import { loadIssueThread, loadPullThread } from '@/lib/view'
 import { timeAgo } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
 
-import { itemStateWords } from './board-bits'
+import { ItemRef, itemStateWords } from './board-bits'
 import { ColorDot, FieldInput, ItemStateIcon, StatusSelect, columnName, fieldValueText } from './board-fields'
 import { GuardDeclined, cardWritesCost } from './use-guarded-board'
 
@@ -106,7 +106,9 @@ export function ItemPanel({ state, spec, itemId, home, addr, labels, onClose }: 
   }, [])
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end" data-testid="item-panel-layer">
+    // `!mt-0`: the board page stacks its sections with `space-y-3`, whose top margin would push
+    // a fixed layer 12px down the viewport (the page showing above the scrim and the sheet).
+    <div className="fixed inset-0 z-40 !mt-0 flex justify-end" data-testid="item-panel-layer">
       <div className="absolute inset-0 bg-anvil-950/40 animate-fade-in" aria-hidden onMouseDown={() => onClose()} />
       <div
         ref={panelRef}
@@ -127,7 +129,7 @@ export function ItemPanel({ state, spec, itemId, home, addr, labels, onClose }: 
             <p className="flex items-center gap-2 text-dense text-anvil-600 dark:text-anvil-300">
               <Lock className="h-4 w-4" aria-hidden /> It belongs to a private repo you can&apos;t read here.
             </p>
-            <PlacementSection state={state} spec={spec} item={item} placement={placement} home={home} />
+            <PlacementSection state={state} spec={spec} item={item} placement={placement} home={home} onRemoved={onClose} />
           </PanelFrame>
         ) : (
           <ItemBody state={state} spec={spec} item={item} placement={placement} home={home} addr={addr} labels={labels} onClose={onClose} />
@@ -223,14 +225,13 @@ function ItemBody({ state, spec, item, placement, home, addr, labels, onClose }:
       onClose={onClose}
       number={
         <p className="mb-1 flex flex-wrap items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          <ItemStateIcon item={item} />
+          <ItemStateIcon item={item} decorative />
           <span className="font-medium text-anvil-700 dark:text-anvil-200">{itemStateWords(item)}</span>
-          <span className="font-mono">
-            {item.repo !== undefined && !atHome ? `${item.repo} ` : ''}#{item.number}
-          </span>
+          <ItemRef item={item} multiRepo={!atHome} />
           {page !== null ? (
             <Link href={page} className="hit-area inline-flex items-center gap-1 text-forge-700 hover:underline dark:text-forge-400" data-testid="item-page-link">
-              Open {item.kind === 'pr' ? 'pull request' : 'issue'} <ExternalLink className="h-3 w-3" aria-hidden />
+              {/* not "Open issue": the state beside it reads so */}
+              Go to {item.kind === 'pr' ? 'pull request' : 'issue'} <ExternalLink className="h-3 w-3" aria-hidden />
             </Link>
           ) : null}
         </p>
@@ -241,7 +242,7 @@ function ItemBody({ state, spec, item, placement, home, addr, labels, onClose }:
         {item.milestone !== null ? <span>· Milestone {item.milestone}</span> : null}
       </p>
 
-      <PlacementSection state={state} spec={spec} item={item} placement={placement} home={home} />
+      <PlacementSection state={state} spec={spec} item={item} placement={placement} home={home} onRemoved={onClose} />
 
       <section aria-labelledby="item-panel-labels">
         <h3 id="item-panel-labels" className="mb-1.5 text-[12px] font-semibold uppercase tracking-wide text-anvil-500 dark:text-anvil-400">
@@ -295,7 +296,8 @@ function ItemBody({ state, spec, item, placement, home, addr, labels, onClose }:
 }
 
 /** The board's Status and fields for the item, editable by members, and archive / restore / remove. */
-function PlacementSection({ state, spec, item, placement, home }: { state: BoardHookState; spec: BoardSpec; item: BoardItem; placement: Placement; home: RepoRef }): JSX.Element {
+/** `onRemoved`: the item left the board (the panel closes rather than show "not on this board"). */
+function PlacementSection({ state, spec, item, placement, home, onRemoved }: { state: BoardHookState; spec: BoardSpec; item: BoardItem; placement: Placement; home: RepoRef; onRemoved: () => void }): JSX.Element {
   const { identity } = useAuth()
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -371,7 +373,12 @@ function PlacementSection({ state, spec, item, placement, home }: { state: Board
                   body: placement.sourced ? 'The item leaves the board even though the board’s sources include it. Adding it again brings it back.' : 'The item leaves the board. Adding it again brings it back.',
                   confirmLabel: 'Remove',
                 })
-                if (ok) await bulk('remove', () => state.remove([cardItem]))
+                if (ok)
+                  await bulk('remove', async () => {
+                    const out = await state.remove([cardItem])
+                    if (out.failed === null) onRemoved()
+                    return out
+                  })
               }}
             >
               <Trash2 className="h-3.5 w-3.5" aria-hidden /> Remove

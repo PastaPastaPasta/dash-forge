@@ -187,7 +187,7 @@ export function boardLaneOf(spec: BoardSpec, view: SavedView): string | null {
   return view.lane !== undefined && laneOk(spec, view.lane, boardGroupOf(spec, view)) ? view.lane : null
 }
 
-/** Whether a query asks for archived items (`is:archived`, the "Show archived" toggle). */
+/** Whether a query asks for archived items (`is:archived`, the "Only archived" toggle). */
 export function asksArchived(q: string): boolean {
   return searchTokens(q).some((t) => t.toLowerCase() === 'is:archived')
 }

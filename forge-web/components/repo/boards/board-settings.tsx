@@ -523,7 +523,7 @@ function ColumnsSection({ spec, edit, used }: { spec: BoardSpec; edit: SpecEdit;
                   setDragging(i)
                 }}
                 onDragEnd={() => setDragging(null)}
-                className="cursor-grab text-anvil-400 dark:text-anvil-500"
+                className="cursor-grab text-anvil-500 dark:text-anvil-400"
                 aria-hidden
                 title="Drag to reorder"
               >
@@ -535,8 +535,11 @@ function ColumnsSection({ spec, edit, used }: { spec: BoardSpec; edit: SpecEdit;
                 WIP
                 <NumberField value={c.wip} min={1} max={WIP_MAX} optional placeholder="None" label={`WIP limit of ${c.name}`} onChange={(wip) => setColumn(c.id, { wip })} className="w-20" />
               </label>
-              {spec.def === c.id ? <span className={chip}>Default</span> : null}
-              {spec.done === c.id ? <span className={chip}>Done</span> : null}
+              {/* a fixed slot, so every row's name and WIP line up whatever the row is marked */}
+              <span className="flex w-[6.5rem] shrink-0 gap-1">
+                {spec.def === c.id ? <span className={chip}>Default</span> : null}
+                {spec.done === c.id ? <span className={chip}>Done</span> : null}
+              </span>
               <EntryButtons index={i} count={spec.columns.length} what={`column ${c.name}`} onMove={(to) => move(i, to)} {...(spec.columns.length > 1 ? { onDelete: () => edit((s) => withoutColumn(s, c.id)) } : {})} />
               <Problem text={entryProblem(spec.columns, c, 'column')} />
             </li>
@@ -569,7 +572,8 @@ function ColumnsSection({ spec, edit, used }: { spec: BoardSpec; edit: SpecEdit;
         </label>
       </div>
       <p id="board-def-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        New items start in the default column ({columnName(spec, spec.def)}), and so do a deleted column&apos;s. Closed and merged items go to Done.
+        New items start in the default column ({columnName(spec, spec.def)}), and so do a deleted column&apos;s.{' '}
+        {spec.done !== 0 ? `Closed and merged items go to ${columnName(spec, spec.done)}.` : 'Without a Done column, closed and merged items stay where their cards put them.'}
       </p>
     </Section>
   )
@@ -603,7 +607,7 @@ function FieldsSection({ spec, edit, used }: { spec: BoardSpec; edit: SpecEdit; 
             <li key={f.id} className={cn(rowClass, 'items-start')} data-testid="field-row">
               <div className="flex w-full flex-wrap items-center gap-2">
                 <input aria-label={`Name of field ${i + 1}`} value={f.name} maxLength={NAME_MAX} onChange={(e) => setField(f.id, { name: e.target.value })} className={cn(controlClass, 'min-w-0 flex-1')} />
-                <span className={cn(chip, 'py-0.5')}>{FIELD_TYPE_LABEL[f.type]}</span>
+                <span className={cn(chip, 'w-[5.5rem] shrink-0 py-0.5 text-center')}>{FIELD_TYPE_LABEL[f.type]}</span>
                 <EntryButtons index={i} count={spec.fields.length} what={`field ${f.name}`} onMove={(to) => move(i, to)} onDelete={() => edit((s) => withoutField(s, f.id))} />
               </div>
               <Problem text={entryProblem(spec.fields, f, 'field')} />

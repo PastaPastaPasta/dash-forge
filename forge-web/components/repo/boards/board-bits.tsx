@@ -2,11 +2,12 @@
 
 /**
  * Pieces the board layout's cards and the item panel share (`docs/design/boards.md` §4.1, §5.5),
- * beside the ones every board surface shares (`board-fields.tsx`): an item's state in words, and
- * a custom field's value as a small chip on a card.
+ * beside the ones every board surface shares (`board-fields.tsx`): an item's state in words, its
+ * reference on a board that spans repositories, and a custom field's value as a small chip on a card.
  */
 
 import type { BoardField, BoardItem, FieldValue } from '@/lib/rules/boards'
+import { cn } from '@/lib/utils'
 
 import { ColorDot, fieldValueText } from './board-fields'
 
@@ -37,6 +38,29 @@ export function FieldChip({ field, value }: { field: BoardField; value: FieldVal
     >
       {option !== undefined ? <ColorDot color={option.color} className="h-2 w-2" /> : null}
       <span className="truncate">{shown}</span>
+    </span>
+  )
+}
+
+/**
+ * The repository an item's label names, as a card shows it: the name after the owner
+ * (`owner/name`, where the owner is often a 44-character identity id, `board-page.tsx`).
+ */
+export function itemRepoName(item: Pick<BoardItem, 'repo'>): string | undefined {
+  return item.repo?.slice(item.repo.lastIndexOf('/') + 1)
+}
+
+/**
+ * An item's reference on a card, a table row or a roadmap line: `#12`, or `name #12` when the
+ * board spans repositories, with the full `owner/name#12` as its tooltip. The number never
+ * truncates; a long repository name does.
+ */
+export function ItemRef({ item, multiRepo, className }: { item: Pick<BoardItem, 'repo' | 'number'>; multiRepo: boolean; className?: string }): JSX.Element {
+  const name = multiRepo ? itemRepoName(item) : undefined
+  return (
+    <span className={cn('inline-flex min-w-0 items-baseline gap-1 font-mono', className)} title={name !== undefined ? `${item.repo}#${item.number}` : undefined}>
+      {name !== undefined ? <span className="min-w-0 truncate">{name}</span> : null}
+      <span className="shrink-0">#{item.number}</span>
     </span>
   )
 }

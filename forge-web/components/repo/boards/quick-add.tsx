@@ -225,7 +225,7 @@ export function QuickAdd({ state, spec, home, homeLabel, target, onAdded }: { st
         </div>
       ) : null}
       <p className="text-[11px] text-anvil-500 dark:text-anvil-400">
-        {plan.kind === 'title' ? `Creates an issue in ${chosen.label}.` : plan.kind === 'ref' ? `Adds #${plan.number}${plan.owner !== undefined ? ` of ${plan.owner}/${plan.name}` : ''} to the board.` : 'A title creates an issue. #12 or a link adds one.'}
+        {plan.kind === 'title' ? `Creates an issue in ${chosen.label}.` : plan.kind === 'ref' ? `Puts #${plan.number}${plan.owner !== undefined ? ` of ${plan.owner}/${plan.name}` : ''} in ${target.name}.` : 'A title creates an issue. #12 or a link adds one.'}
       </p>
       {cost !== null ? <CostPreview cost={cost} className="px-2 py-1 text-[12px]" /> : null}
       {error !== null ? (
