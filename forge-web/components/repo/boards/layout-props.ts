@@ -6,6 +6,8 @@
  */
 
 import type { BoardHookState } from '@/hooks/use-board'
+import type { RepoAddress } from '@/hooks/use-query-param'
+import type { LabelDef, RepoRef } from '@/lib/repo'
 import type { BoardItem, BoardSpec, BoardView as SavedView, Placement } from '@/lib/rules/boards'
 
 export interface BoardLayoutProps {
@@ -27,4 +29,13 @@ export interface BoardLayoutProps {
    * controls that would change the view are read-only.
    */
   onViewChange?(change: Partial<SavedView>): void
+  /**
+   * The board's home repository (as the page holds it, with its session when private): quick add
+   * creates issues and resolves `#12` here. Absent: the layout offers no quick add.
+   */
+  readonly home?: RepoRef
+  /** The page's repo address, for links to an item's own page (`repoHref`). */
+  readonly addr?: RepoAddress
+  /** The home repository's label definitions by name (chip colours); absent or unknown: the neutral chip. */
+  readonly labels?: ReadonlyMap<string, LabelDef>
 }
