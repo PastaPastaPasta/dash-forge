@@ -6,7 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { boardsDeployed, declaresBoards, knownBoardsDeployed, resetBoardsDeployed, subscribeBoardsDeployed } from './boards-deployed'
+import { boardsDeployed, bundledContractTypes, declaresBoards, knownBoardsDeployed, resetBoardsDeployed, subscribeBoardsDeployed } from './boards-deployed'
 
 const sdkWith = (fetch: (id: string) => Promise<unknown>): EvoSDK => ({ contracts: { fetch } }) as unknown as EvoSDK
 
@@ -38,6 +38,21 @@ describe('boardsDeployed', () => {
   it('a forge-meta without the update (testnet v2) has none', async () => {
     expect(await boardsDeployed(sdkWith(async () => ({ schemas: { vaultEntry: {} } })), 'V2')).toBe(false)
     expect(knownBoardsDeployed('V2')).toBe(false)
+  })
+
+  it('a bundled snapshot that declares both types answers yes without a request (an update never removes a type)', async () => {
+    const fetch = vi.fn(async () => ({ schemas: {} }))
+    expect(await boardsDeployed(sdkWith(fetch), 'Snap', async () => ['label', 'board', 'card'])).toBe(true)
+    expect(fetch).not.toHaveBeenCalled()
+    // a snapshot from before the update (v2): the fetched contract decides
+    expect(await boardsDeployed(sdkWith(async () => ({ schemas: { board: {}, card: {} } })), 'Old', async () => ['label', 'vaultEntry'])).toBe(true)
+  })
+
+  it('reads the build\'s own snapshot of the network\'s forge-meta', async () => {
+    const { NETWORKS, DEFAULT_NETWORK } = await import('../constants')
+    const meta = NETWORKS[DEFAULT_NETWORK].v2?.meta
+    expect(await bundledContractTypes('NoSuchContract')).toEqual([])
+    if (meta !== undefined) expect(await bundledContractTypes(meta)).toEqual(expect.arrayContaining(['board', 'card']))
   })
 
   it('a failed read is no answer: it throws and is asked again', async () => {

@@ -4,12 +4,15 @@
  * --update meta`): until it lands a network has the contract but no boards, and every board
  * control stays hidden (the Boards tab, the issue sidebar's section) rather than fail on a read.
  *
- * As the passkey vault's check (`lib/auth/passkey-vault/deployed.ts`), the answer is the
- * contract the SDK fetches (proved), so a build never offers what Platform does not have. The
- * SDK serves forge-meta from its contract cache (the bundled snapshot or the connect's preload),
- * so the check costs no request on a repo page; a snapshot older than the update answers "not
- * deployed" until the SDK drops it for a newer contract version. A missing contract is "not
- * deployed"; a failed read is neither answer and throws (asked again next time).
+ * The answer costs no request on a repo page when the build's bundled snapshot of forge-meta
+ * (`lib/sdk/contract-seed.ts`, what the SDK is seeded with) already declares both types: a
+ * snapshot is a version Platform served, and an update can never remove a document type
+ * (rs-dpp `data_contract/methods/validate_update/v0`: "document type can't be removed"), so the
+ * live contract declares them too. (`contracts.fetch` is a `getDataContract` request, never the
+ * cache: asking it on every cold repo page cost pb-1 a request.) Otherwise, as the passkey
+ * vault's check (`lib/auth/passkey-vault/deployed.ts`), the answer is the contract the SDK
+ * fetches (proved), so a build never offers what Platform does not have. A missing contract is
+ * "not deployed"; a failed read is neither answer and throws (asked again next time).
  *
  * Answers are kept per forge-meta id for the session ({@link knownBoardsDeployed}), and pages
  * that must not wait for the SDK (the repo's shell header) follow them ({@link subscribeBoardsDeployed}).
@@ -18,6 +21,8 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { documentTypesOf } from '../auth/passkey-vault/deployed'
+import { DEFAULT_NETWORK, NETWORKS } from '../constants'
+import { loadContractSnapshots } from '../sdk/contract-seed'
 import { authSdk } from '../sdk/facade'
 import { isContractMissingError } from '../sdk/contract-missing'
 
@@ -45,22 +50,47 @@ export function declaresBoards(contract: unknown): boolean {
   return BOARD_TYPES.every((t) => types.includes(t))
 }
 
-/** Whether forge-meta (`metaId`, base58; undefined on a three-contract set) declares `board` and `card`. Throws when Platform cannot be read. */
-export function boardsDeployed(sdk: EvoSDK, metaId: string | undefined): Promise<boolean> {
+/**
+ * The document types the build's bundled snapshot of contract `id` declares (none without one,
+ * or when it cannot be decoded): the network's own snapshot file, as the SDK is seeded.
+ */
+export async function bundledContractTypes(id: string): Promise<readonly string[]> {
+  try {
+    const snapshot = (await loadContractSnapshots(NETWORKS[DEFAULT_NETWORK].key))[id]
+    if (snapshot === undefined) return []
+    const evo = await import('@dashevo/evo-sdk')
+    // Loaded already once the SDK is connected (as the seed it decodes alike, `lib/sdk/service.ts`).
+    await evo.ensureInitialized()
+    return documentTypesOf(evo.DataContract.fromBase64(snapshot.bytes, false, snapshot.platformVersion))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Whether forge-meta (`metaId`, base58; undefined on a three-contract set) declares `board` and
+ * `card`: the bundled snapshot's answer when it says yes, else the fetched contract's. Throws
+ * when Platform cannot be read. `bundled` is the snapshot reader (tests replace it).
+ */
+export function boardsDeployed(sdk: EvoSDK, metaId: string | undefined, bundled: (id: string) => Promise<readonly string[]> = bundledContractTypes): Promise<boolean> {
   if (metaId === undefined) return Promise.resolve(false)
   const held = known.get(metaId)
   if (held !== undefined) return Promise.resolve(held)
   let p = reading.get(metaId)
   if (p === undefined) {
     p = (async () => {
-      let contract: unknown
-      try {
-        contract = await authSdk(sdk).contracts.fetch(metaId)
-      } catch (e) {
-        if (!isContractMissingError(e)) throw e
-        contract = undefined
+      const types = await bundled(metaId)
+      let yes = BOARD_TYPES.every((t) => types.includes(t))
+      if (!yes) {
+        let contract: unknown
+        try {
+          contract = await authSdk(sdk).contracts.fetch(metaId)
+        } catch (e) {
+          if (!isContractMissingError(e)) throw e
+          contract = undefined
+        }
+        yes = contract !== undefined && declaresBoards(contract)
       }
-      const yes = contract !== undefined && declaresBoards(contract)
       known.set(metaId, yes)
       for (const l of listeners) l()
       return yes
