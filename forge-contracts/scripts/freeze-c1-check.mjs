@@ -3,7 +3,7 @@
 //   - the registered config is $formatVersion 2, readonly false, no moderation (canBeDeleted false,
 //     no keepsHistory), and equals the JSON's config block (keys the node adds are null);
 //   - each documentSchemas / schemaDefs block equals the JSON's, key for key;
-//   - owner, version 1, the recorded group.
+//   - owner, and the version recorded (1, or the last `--update`'s), the recorded group.
 //
 //   node forge-contracts/scripts/freeze-c1-check.mjs --record <record.json> --contracts <dir> \
 //        [--network devnet|testnet|mainnet] [--devnet-name sakura] [--report <file.json>]
@@ -51,7 +51,8 @@ for (const c of SETS) {
   if (!fetched) { check(c.schemaName, 'registered on chain', false, r.contractId); continue; }
   const got = fetched.toJSON();
   check(c.schemaName, 'registered on chain', true, `${r.contractId} version ${got.version}`);
-  check(c.schemaName, 'owner is the scratch deployer and version is 1', got.ownerId === r.ownerId && Number(got.version) === 1, `${got.ownerId} v${got.version}`);
+  const version = Number(r.version ?? 1);
+  check(c.schemaName, `owner is the deployer and version is ${version} (recorded)`, got.ownerId === r.ownerId && Number(got.version) === version, `${got.ownerId} v${got.version}`);
   const cfg = got.config ?? {};
   check(c.schemaName, 'config $formatVersion 2', String(cfg.$formatVersion) === '2', String(cfg.$formatVersion));
   check(c.schemaName, 'readonly false', cfg.readonly === false, String(cfg.readonly));

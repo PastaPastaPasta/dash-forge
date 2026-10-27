@@ -553,6 +553,72 @@ test('--update meta names the recorded forge-core and forge-collab (UPDATE-3: ca
     [['issue', forgeCollab.contractId], ['patch', forgeCollab.contractId]]);
 });
 
+test('--update reads the version again while the node still proves the one before (testnet scratch, 2026-10-27)', async () => {
+  const lagging = (t, staleReads) => {
+    let stale = 0;
+    class Lagging extends t.fake.evo.EvoSDK {
+      constructor(options) {
+        super(options);
+        const { broadcastAndWait } = this.stateTransitions;
+        const { fetch } = this.contracts;
+        this.stateTransitions.broadcastAndWait = async (st) => {
+          try {
+            await broadcastAndWait(st);
+          } finally {
+            stale = staleReads;
+          }
+        };
+        this.contracts.fetch = async (id) => {
+          const c = await fetch(id);
+          if (stale === 0 || !c) return c;
+          stale -= 1;
+          return { ...c, version: c.version - 1 };
+        };
+      }
+    }
+    return { ...t.fake.evo, EvoSDK: Lagging };
+  };
+  const t = setup();
+  await t.run(t.prod());
+  const tampered = t.read();
+  tampered.v2.forgeMeta.schemaHash = '0'.repeat(64);
+  writeFileSync(t.testnetFile, JSON.stringify(tampered, null, 2));
+  // two stale reads, three tries: the update completes
+  await t.run(t.prod('--update', 'meta'), { evo: lagging(t, 2), settleTries: 3 });
+  assert.equal(t.read().v2.forgeMeta.version, 2);
+  assert.equal(t.read().v2.forgeMeta.pendingUpdate, undefined);
+  // a node that never catches up within the tries: the run stops with the update pending (a rerun settles it)
+  const again = setup();
+  await again.run(again.prod());
+  const old = again.read();
+  old.v2.forgeMeta.schemaHash = '0'.repeat(64);
+  writeFileSync(again.testnetFile, JSON.stringify(old, null, 2));
+  await assert.rejects(again.run(again.prod('--update', 'meta'), { evo: lagging(again, 5), settleTries: 2 }), /update broadcast but the chain shows version 1/);
+  const pending = again.read().v2.forgeMeta.pendingUpdate;
+  assert.equal(pending.version, 2);
+  // the rerun meets a node that still lags: it reads again rather than broadcast a second time
+  const broadcasts = again.fake.broadcasts;
+  class StillLagging extends again.fake.evo.EvoSDK {
+    constructor(options) {
+      super(options);
+      const { fetch } = this.contracts;
+      let stale = 2;
+      this.contracts.fetch = async (id) => {
+        const c = await fetch(id);
+        if (stale === 0 || !c) return c;
+        stale -= 1;
+        return { ...c, version: c.version - 1 };
+      };
+    }
+  }
+  await again.run(again.prod('--update', 'meta'), { evo: { ...again.fake.evo, EvoSDK: StillLagging }, settleTries: 3 });
+  assert.equal(again.fake.broadcasts, broadcasts, 'no second broadcast');
+  const done = again.read().v2.forgeMeta;
+  assert.equal(done.version, 2);
+  assert.equal(done.pendingUpdate, undefined);
+  assert.equal(done.updates.at(-1).balanceBefore, pending.balanceBefore);
+});
+
 test('--update refuses a record of the other set', async () => {
   const t = setup();
   await t.run(t.prod());

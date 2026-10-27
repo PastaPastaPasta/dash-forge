@@ -1537,8 +1537,16 @@ async function deploy(argv, injected, locks) {
       if (!rec?.contractId || rec.status !== 'registered') throw new Error(`--update: no registered ${schemaName} recorded for this network`);
       const json = load(schemaName, substitutions);
       const hash = schemaHash(json);
-      const onChain = await sdk.contracts.fetch(rec.contractId);
+      let onChain = await sdk.contracts.fetch(rec.contractId);
       if (!onChain) throw new Error(`--update: ${rec.contractId} is recorded but not on chain`);
+      // A pending update a node may not show yet: read again before broadcasting it a second time
+      // (a lagging node proves the version before it; a rebroadcast would be refused, and the
+      // record's pre-broadcast balance overwritten)
+      for (let i = 0; rec.pendingUpdate && Number(onChain.version) < rec.pendingUpdate.version && i < (injected.settleTries ?? 10); i++) {
+        await new Promise((r) => setTimeout(r, injected.settleMs ?? 2000));
+        sdk.wasm?.removeCachedContract?.(onChain.id);
+        onChain = (await sdk.contracts.fetch(rec.contractId)) ?? onChain;
+      }
       const chainVersion = Number(onChain.version);
       // Close an update out: the version and schema it took the contract to, and what it cost.
       const complete = (pending, cost, extra) => {
@@ -1598,7 +1606,14 @@ async function deploy(argv, injected, locks) {
       const after = await settledBalance(before);
       // The SDK cached the contract fetched above: drop it, so the check reads the new version
       sdk.wasm?.removeCachedContract?.(onChain.id);
-      const fetched = await sdk.contracts.fetch(rec.contractId);
+      let fetched = await sdk.contracts.fetch(rec.contractId);
+      // (a node that has not applied the block yet still proves the old version: read again, as the
+      // creates do; testnet's scratch update to forge-meta v3 met one on 2026-10-27)
+      for (let i = 0; (!fetched || Number(fetched.version) < version) && i < (injected.settleTries ?? 10); i++) {
+        await new Promise((r) => setTimeout(r, injected.settleMs ?? 2000));
+        sdk.wasm?.removeCachedContract?.(onChain.id);
+        fetched = await sdk.contracts.fetch(rec.contractId);
+      }
       if (!fetched || Number(fetched.version) !== version) throw new Error(`${key}: update broadcast but the chain shows version ${fetched ? fetched.version : 'none'}`);
       complete(rec.pendingUpdate, before - after, { updatedAt: stamp() });
       say(`${key}: updated to version ${version}; cost ${(Number(before - after) / CREDITS_PER_DASH).toFixed(6)} DASH`);
