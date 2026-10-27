@@ -52,6 +52,7 @@ import {
   type SpecError,
 } from '../rules/boards'
 import { ConsensusRefusal, DUPLICATE_UNIQUE_CODE, contentHash, createDocumentIdempotent, queryDocumentsWithProof, replaceDocumentIdempotent, type ReplaceResult, type WriteAuth, type WriteResult } from '../sdk'
+import { BASE_PATH, expandShortPath } from '../short-url'
 import { utf8Length } from '../view/issue-query'
 import { BOARD_STATE_CODE, noteBoardWrite, ownRevision, readBoardDefinition, readItemCardDocs, type BoardCard, type BoardState, type BoardView } from './boards'
 import { DOC, type RepoRef } from './contract'
@@ -639,8 +640,10 @@ export async function quickAddIssue(
 
 /**
  * An existing item a quick add names (§5.3): `#12`, `owner/name#12`, or an issue, PR or number
- * link of this app (`/repo/issue/?owner=…&name=…&number=12`, `target-href.ts`); null for a title.
- * The owner and name are as written (an owner's DPNS name or identity id), resolved by the caller.
+ * link of this app, as a route (`/repo/issue/?owner=…&name=…&number=12`, `target-href.ts`) or as
+ * the short URL the address bar shows (`/owner/name/issues/12`, `/owner/name/pull/7/files`,
+ * `lib/short-url.ts`), under the build's base path if it has one; null for a title. The owner and
+ * name are as written (an owner's DPNS name or identity id), resolved by the caller.
  */
 export function parseItemReference(text: string): { readonly owner?: string; readonly name?: string; readonly number: number } | null {
   const t = text.trim()
@@ -654,10 +657,14 @@ export function parseItemReference(text: string): { readonly owner?: string; rea
   } catch {
     return null
   }
-  if (!/^\/repo\/(issue|pull|number)\/?$/.test(url.pathname)) return null
-  const owner = url.searchParams.get('owner')
-  const name = url.searchParams.get('name')
-  const n = url.searchParams.get('number')
+  // GitHub's own issue URLs have the short URL's shape: not this app's.
+  if (/^(www\.)?github\.com$/i.test(url.hostname)) return null
+  const route = new URL(expandShortPath(url.pathname, BASE_PATH) ?? `${url.pathname}${url.search}`, url)
+  const path = BASE_PATH !== '' && route.pathname.startsWith(`${BASE_PATH}/`) ? route.pathname.slice(BASE_PATH.length) : route.pathname
+  if (!/^\/repo\/(issue|pull|number)\/?$/.test(path)) return null
+  const owner = route.searchParams.get('owner')
+  const name = route.searchParams.get('name')
+  const n = route.searchParams.get('number')
   if (owner === null || name === null || n === null || !/^\d{1,10}$/.test(n)) return null
   return { owner, name, number: Number(n) }
 }

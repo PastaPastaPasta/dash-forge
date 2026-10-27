@@ -435,6 +435,16 @@ describe('quick add references', () => {
     expect(writes.parseItemReference('Fix the build')).toBeNull()
     expect(writes.parseItemReference('https://example.com/a?owner=a&name=b&number=1')).toBeNull()
   })
+
+  it('reads the short URLs the address bar shows (a link copied from it)', () => {
+    expect(writes.parseItemReference('https://git-forge.dashhq.org/alice/forge/issues/3')).toEqual({ owner: 'alice', name: 'forge', number: 3 })
+    expect(writes.parseItemReference('http://127.0.0.1:4321/8hJm1/forge-v2-demo/pull/5')).toEqual({ owner: '8hJm1', name: 'forge-v2-demo', number: 5 })
+    expect(writes.parseItemReference('https://git-forge.dashhq.org/alice/forge/pull/7/files')).toEqual({ owner: 'alice', name: 'forge', number: 7 })
+    // not an item: a repo's home, its issue list, GitHub's own URL
+    expect(writes.parseItemReference('https://git-forge.dashhq.org/alice/forge')).toBeNull()
+    expect(writes.parseItemReference('https://git-forge.dashhq.org/alice/forge/issues')).toBeNull()
+    expect(writes.parseItemReference('https://github.com/alice/forge/issues/3')).toBeNull()
+  })
 })
 
 describe('a private repository: sealed boards and cards (§3.3)', () => {
