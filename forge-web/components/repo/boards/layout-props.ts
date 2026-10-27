@@ -1,0 +1,30 @@
+/**
+ * What the board page hands each layout (design `docs/design/boards.md` §4): the board shell
+ * (`board-page.tsx`) owns loading, the view, the query and the item panel; a layout
+ * (`board-kanban.tsx`, `board-table.tsx`, `board-roadmap.tsx`) renders the shown items and asks
+ * the shell to write.
+ */
+
+import type { BoardHookState } from '@/hooks/use-board'
+import type { BoardItem, BoardSpec, BoardView as SavedView, Placement } from '@/lib/rules/boards'
+
+export interface BoardLayoutProps {
+  /** The board hook: fold, cards, role (`can`), pending writes and every mutation. */
+  readonly state: BoardHookState
+  /** The parsed definition the layout renders (never null here: the shell shows errors itself). */
+  readonly spec: BoardSpec
+  /** The view in force: a saved view, or the URL's unsaved changes over one. */
+  readonly view: SavedView
+  /** The items the view's query matches, archived ones only when the query asks for them. */
+  readonly items: readonly BoardItem[]
+  /** Each shown item's placement, by item id. */
+  readonly placements: ReadonlyMap<string, Placement>
+  /** Open the item panel (§5.5) on an item. */
+  onOpenItem(itemId: string): void
+  /**
+   * Change the view in force (§4: unsaved changes live in the URL): a layout asks for a sort, a
+   * grouping or a roadmap zoom it offers; the shell writes it into the URL. Absent: the layout's
+   * controls that would change the view are read-only.
+   */
+  onViewChange?(change: Partial<SavedView>): void
+}
