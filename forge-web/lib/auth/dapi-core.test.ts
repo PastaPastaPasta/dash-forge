@@ -15,6 +15,7 @@ import {
   broadcastTx,
   buildAssetLock,
   buildPayment,
+  currentHeight,
   depositHeld,
   getTxHeight,
   hash160,
@@ -245,8 +246,12 @@ describe('identity creation through DAPI alone', () => {
     await expect(broadcastTx(EP, '00', 'ee'.repeat(32))).rejects.toThrow(/already-known/)
   })
 
-  it('without DAPI nodes nothing silently succeeds', async () => {
+  it('without DAPI nodes nothing silently succeeds, and no watch start is offered', async () => {
     await expect(broadcastTx({ dapi: [] }, '00', 'ab'.repeat(32))).rejects.toThrow(/no DAPI nodes/)
+    await expect(currentHeight({ dapi: [] })).rejects.toThrow(/no DAPI nodes/)
+    // A node that does not answer is only "height unknown".
+    vi.stubGlobal('fetch', async () => new Response(null, { status: 503 }))
+    expect(await currentHeight(EP)).toBeNull()
   })
 
   it('the tracker drops outputs a later transaction spends', () => {

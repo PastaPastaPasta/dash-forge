@@ -539,13 +539,14 @@ function parseTx(raw: Uint8Array): { inputs: { txid: string; vout: number }[]; o
   return { inputs, outputs: parseOutputs(raw) }
 }
 
-/** The Core height to start a deposit watch from (the tip, before the address is shown). */
+/**
+ * The Core height to start a deposit watch from (the tip, before the address is shown): null
+ * when no node answers. A build with no DAPI nodes throws, so no address is shown that nothing
+ * could watch.
+ */
 export async function currentHeight(ep: CoreEndpoints): Promise<number | null> {
-  try {
-    return await dapiOf(ep).bestHeight()
-  } catch {
-    return null
-  }
+  const dapi = dapiOf(ep)
+  return dapi.bestHeight().catch(() => null)
 }
 
 /** Where a deposit watch starts: a recorded height, else a height or start time. */

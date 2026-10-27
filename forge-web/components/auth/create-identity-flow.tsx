@@ -28,6 +28,7 @@ import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protecti
 import { StepFailed, Waiting } from '@/components/auth/step-status'
 import { FaucetLinks } from '@/components/faucet-links'
 import { faucetUrls } from '@/lib/faucets'
+import { coreEndpoints } from '@/lib/auth/asset-lock'
 import { ACTIVE_NETWORK, NotDeployedError } from '@/lib/constants'
 import { typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
@@ -212,6 +213,11 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     const v2 = ACTIVE_NETWORK.v2
     if (!v2) {
       setError(new NotDeployedError(ACTIVE_NETWORK).message + '.')
+      return
+    }
+    // Nothing could watch the deposit: never show an address for it.
+    if (coreEndpoints(network).dapi.length === 0) {
+      setError('This build lists no Dash network nodes, so it cannot watch a deposit. Use another Forge build or dg auth new.')
       return
     }
     const deposit = await checkWords(m)
