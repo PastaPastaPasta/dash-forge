@@ -1513,7 +1513,8 @@ pub struct BoardItem {
     pub number: u64,
     /// Its repository's id.
     pub repo_id: String,
-    /// `owner/name`, as shown, when known.
+    /// How this client labels the item's repository (`owner/name`), for display only:
+    /// `repo:`, grouping and sorting read [`Self::repo_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     /// Issue or PR.
@@ -1885,6 +1886,42 @@ fn unquote(s: &str) -> String {
     s.replace('"', "")
 }
 
+/// A query token's parts (the web's `tokenParts`): its key (lowercased, unquoted, without a
+/// leading `-`), whether it is negated, its raw value and its unquoted value; `None` for no key.
+fn token_parts(tok: &str) -> Option<(String, bool, &str, String)> {
+    let at = tok.find(':').filter(|&at| at > 0)?;
+    let raw_key = &tok[..at];
+    let not = raw_key.len() > 1 && raw_key.starts_with('-');
+    let key = unquote(if not { &raw_key[1..] } else { raw_key }).to_lowercase();
+    let raw_value = &tok[at + 1..];
+    Some((key, not, raw_value, unquote(raw_value)))
+}
+
+/// The repositories `text`'s `repo:` qualifiers name by name, as typed (unquoted), each once,
+/// in order (the web's `repoNamesOf`): `owner/name` (the owner an identity id or a DPNS name)
+/// or a bare `name` (a repository of the home repository's owner). A client resolves each to
+/// its repository id before parsing ([`parse_board_query`]'s `repos`), so `repo:` matches by id
+/// and never by how a client labels a repository; a value that is itself an id is not listed.
+#[must_use]
+pub fn repo_names_of(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in tokens(text) {
+        let Some((key, _, raw_value, value)) = token_parts(&tok) else {
+            continue;
+        };
+        if key != "repo"
+            || value.is_empty()
+            || raw_value.starts_with("//")
+            || is_identifier(&value)
+            || out.contains(&value)
+        {
+            continue;
+        }
+        out.push(value);
+    }
+    out
+}
+
 /// A person value: an identity id, or `me` (`@me`, any case).
 fn person_of(v: &str) -> Option<String> {
     let t = v.strip_prefix('@').unwrap_or(v);
@@ -2006,17 +2043,25 @@ fn field_pred(field: &BoardField, value: &str, not: bool) -> Option<QueryPred> {
 }
 
 /// Read a board query (§4.4): the web's `parseBoardQuery`, whose comment lists the grammar.
+/// `repos` maps the names the query's `repo:` qualifiers type ([`repo_names_of`]) to the
+/// repository ids the client resolved them to; one it did not resolve is reported.
 #[must_use]
-pub fn parse_board_query(text: &str, spec: &BoardSpec) -> BoardQuery {
-    parse_query(text, spec, false)
+#[allow(clippy::implicit_hasher)] // the caller's resolved names
+pub fn parse_board_query(
+    text: &str,
+    spec: &BoardSpec,
+    repos: &HashMap<String, String>,
+) -> BoardQuery {
+    parse_query(text, spec, false, repos)
 }
 
 /// A source's query (§2.3): [`parse_board_query`] less what depends on the board or the
 /// reader rather than the item (`status:`, `no:status`, custom fields, `is:archived`, `@me`),
-/// which goes to `unresolved`.
+/// which goes to `unresolved`. Its `repo:` takes a repository id only (the fold reads nothing
+/// to resolve a name; a source names its repository by `r` anyway).
 #[must_use]
 pub fn parse_source_query(text: &str, spec: &BoardSpec) -> BoardQuery {
-    parse_query(text, spec, true)
+    parse_query(text, spec, true, &HashMap::new())
 }
 
 /// Whether a predicate reads the board or the reader, not only the item.
@@ -2030,7 +2075,12 @@ fn board_only(p: &QueryPred) -> bool {
     }
 }
 
-fn parse_query(text: &str, spec: &BoardSpec, for_source: bool) -> BoardQuery {
+fn parse_query(
+    text: &str,
+    spec: &BoardSpec,
+    for_source: bool,
+    repos: &HashMap<String, String>,
+) -> BoardQuery {
     let mut preds = Vec::new();
     let mut free: Vec<String> = Vec::new();
     let mut unresolved = Vec::new();
@@ -2040,22 +2090,17 @@ fn parse_query(text: &str, spec: &BoardSpec, for_source: bool) -> BoardQuery {
         .map(|f| (f.name.to_lowercase(), f))
         .collect();
     for tok in tokens(text) {
-        let at = tok.find(':').filter(|&at| at > 0);
-        let raw_key = at.map_or("", |at| &tok[..at]);
-        let not = raw_key.len() > 1 && raw_key.starts_with('-');
-        let key = unquote(if not { &raw_key[1..] } else { raw_key }).to_lowercase();
-        let raw_value = at.map_or("", |at| &tok[at + 1..]);
-        let value = unquote(raw_value);
-        if key.is_empty()
-            || (value.is_empty()
-                && !QUERY_KEYS.contains(&key.as_str())
-                && !field_by_name.contains_key(&key))
-            || raw_value.starts_with("//")
-        {
+        let Some((key, not, _, value)) = token_parts(&tok).filter(|(key, _, raw, value)| {
+            !key.is_empty()
+                && (!value.is_empty()
+                    || QUERY_KEYS.contains(&key.as_str())
+                    || field_by_name.contains_key(key))
+                && !raw.starts_with("//")
+        }) else {
             free.push(tok);
             continue;
-        }
-        match qualifier(&key, &value, not, spec, &field_by_name) {
+        };
+        match qualifier(&key, &value, not, spec, &field_by_name, repos) {
             Some(pred) if !(for_source && board_only(&pred)) => preds.push(pred),
             _ => unresolved.push(tok),
         }
@@ -2073,6 +2118,7 @@ fn qualifier(
     not: bool,
     spec: &BoardSpec,
     field_by_name: &HashMap<String, &BoardField>,
+    repos: &HashMap<String, String>,
 ) -> Option<QueryPred> {
     let low = value.to_lowercase();
     match key {
@@ -2094,7 +2140,13 @@ fn qualifier(
             person_of(value).map(|who| QueryPred::of(k, not, Scalar::Text(who)))
         }
         "repo" => {
-            (!value.is_empty()).then(|| QueryPred::of("repo", not, Scalar::Text(value.into())))
+            let id = if is_identifier(value) {
+                Some(value)
+            } else {
+                repos.get(value).map(String::as_str)
+            };
+            id.filter(|id| is_identifier(id))
+                .map(|id| QueryPred::of("repo", not, Scalar::Text(id.into())))
         }
         "status" => spec
             .columns
@@ -2231,7 +2283,7 @@ fn pred_holds(
                 }
             })
         }
-        "repo" => item.repo_id == v || item.repo.as_deref().is_some_and(|r| eqi(r, v)),
+        "repo" => item.repo_id == v,
         "status" => placement.is_some_and(|pl| Some(Scalar::from(i64::from(pl.col))) == p.v),
         "no" => match v {
             "label" => item.labels.is_empty(),
@@ -2431,13 +2483,8 @@ fn sort_value(r: &BoardRow<'_>, key: &str, spec: &BoardSpec) -> Option<Scalar> {
         "number" => Some(Scalar::Num(r.item.number as f64)),
         "created" => Some(Scalar::from(r.item.created_at)),
         "status" => spec.column_index(r.placement.col).map(index),
-        "repo" => Some(Scalar::Text(
-            r.item
-                .repo
-                .as_deref()
-                .unwrap_or(&r.item.repo_id)
-                .to_lowercase(),
-        )),
+        // by id, as `group_rows` orders repositories: the label (`item.repo`) is each client's own
+        "repo" => Some(Scalar::Text(r.item.repo_id.clone())),
         "author" => Some(Scalar::Text(r.item.author.clone())),
         "milestone" => r
             .item

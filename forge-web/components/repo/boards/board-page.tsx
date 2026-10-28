@@ -8,7 +8,8 @@
  * - the view: the saved views as tabs, the URL's unsaved changes over one (`?view=&q=&group=
  *   &lane=&sort=&layout=`, a shareable cut), Save view (members who edit boards) and Reset;
  * - the filter: the board query (§4.4; qualifiers that name nothing here are listed under the box,
- *   `@me` is the signed-in identity), grouping, swimlanes and sort pickers, Only archived
+ *   `@me` is the signed-in identity, a `repo:` name is resolved to its repository's id first,
+ *   `useRepoNames`), grouping, swimlanes and sort pickers, Only archived
  *   (`is:archived`), and "Load older closed items";
  * - the current iteration's dates and progress, with "Move open items to the next iteration"
  *   (§5.4, priced first);
@@ -38,6 +39,7 @@ import { useSearchParams } from '@/hooks/use-route'
 import { useSdk } from '@/hooks/use-sdk'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { BoardWriteError, boardTextBytes, nextIterationPlan, ownRevision, readBoardDefinition, readLabels, repoContractIds, repoKey, type LabelDef, type RepoRef } from '@/lib/repo'
+import { resolveAnyRepoWith } from '@/lib/repo/resolveRepo'
 import { cachedDpnsName } from '@/lib/view/dpns'
 import {
   fieldById,
@@ -47,6 +49,7 @@ import {
   iterationRange,
   MAX_VIEWS,
   parseBoardQuery,
+  repoNamesOf,
   sumFieldOf,
   type BoardField,
   type BoardRow,
@@ -87,6 +90,37 @@ import {
 } from './view-state'
 
 const LAYOUT_ICON = { board: KanbanSquare, table: Table2, roadmap: CalendarRange } as const
+
+const NO_REPO_NAMES: ReadonlyMap<string, string> = new Map()
+
+/**
+ * The repository ids query `q`'s `repo:` names resolve to (§4.4, `repoNamesOf`), as `dg board
+ * view` resolves them: `owner/name` (the owner an identity id or a DPNS name) or a bare name of
+ * `home`'s owner; a name that names no repository is left out (the query reports it). Null while
+ * they resolve.
+ */
+function useRepoNames(q: string, home: RepoRef): ReadonlyMap<string, string> | null {
+  const { sdk, ready } = useSdk(repoContractIds(home))
+  const names = useMemo(() => repoNamesOf(q), [q])
+  const read = useAsync(
+    async () => {
+      const out = new Map<string, string>()
+      for (const name of names) {
+        const at = name.indexOf('/')
+        const addr = at < 0 ? { owner: home.ownerId, name } : { owner: name.slice(0, at), name: name.slice(at + 1) }
+        const found = await resolveAnyRepoWith(sdk!, home.forge, addr).catch(() => null)
+        if (found !== null) out.set(name, found.repo.repoId)
+      }
+      return out
+    },
+    [ready, home.repoId, names.join('\n')],
+    { enabled: ready && sdk !== null && names.length > 0 },
+  )
+  return names.length === 0 ? NO_REPO_NAMES : read.data
+}
+
+/** Whether query token `tok` is a `repo:` qualifier (one whose name may still be resolving). */
+const isRepoToken = (tok: string): boolean => /^-?"?repo"?:/i.test(tok)
 const LAYOUT_NAME: Readonly<Record<ViewLayout, string>> = { board: 'Board', table: 'Table', roadmap: 'Roadmap' }
 
 /** The page body: the board `b` of `home`. */
@@ -204,7 +238,10 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
   const resetView = (): Record<string, null> => Object.fromEntries(VIEW_PARAMS.map((p) => [p, null]))
   const onViewChange = (change: Partial<SavedView>): void => setParams(changeParams(change))
 
-  const query = useMemo(() => parseBoardQuery(view.q, spec), [view.q, spec])
+  const repoNames = useRepoNames(view.q, home.repo)
+  const query = useMemo(() => parseBoardQuery(view.q, spec, repoNames ?? NO_REPO_NAMES), [view.q, spec, repoNames])
+  // a `repo:` name still resolving is not reported as naming nothing
+  const unresolved = repoNames === null ? query.unresolved.filter((t) => !isRepoToken(t)) : query.unresolved
   const usesMe = query.preds.some((p) => (p.k === 'assignee' || p.k === 'author') && p.v === 'me')
   const rows = useMemo<BoardRow[]>(
     () => (state.fold === null || state.items === null ? [] : shownRows(state.items.items, state.fold, spec, query, { me: identity, now: state.now })),
@@ -332,9 +369,9 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
 
       {/* Filter bar */}
       <FilterBox q={view.q} placeholder={filterPlaceholder(spec)} onChange={(q) => setParams({ q })} />
-      {query.unresolved.length > 0 ? (
+      {unresolved.length > 0 ? (
         <p role="note" className="-mt-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="board-query-unresolved">
-          Not applied: {query.unresolved.join(' ')}. {query.unresolved.length === 1 ? 'It names' : 'They name'} nothing on this board.
+          Not applied: {unresolved.join(' ')}. {unresolved.length === 1 ? 'It names' : 'They name'} nothing on this board.
         </p>
       ) : null}
       {usesMe && identity === null ? <p className="-mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">Sign in to filter by @me.</p> : null}

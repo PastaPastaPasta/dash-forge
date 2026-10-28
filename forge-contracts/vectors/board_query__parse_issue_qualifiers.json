@@ -114,7 +114,10 @@
       ],
       "arch": 14
     },
-    "text": "IS:Open -label:wontfix label:\"good first\" no:assignee assignee:@ME author:Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r milestone:\"v1.0\" repo:alice/forge state:merged is:archived -is:pr crash #12 -windows"
+    "text": "IS:Open -label:wontfix label:\"good first\" no:assignee assignee:@ME author:Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r milestone:\"v1.0\" repo:alice/forge state:merged is:archived -is:pr crash #12 -windows",
+    "repos": {
+      "alice/forge": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h"
+    }
   },
   "expected": {
     "preds": [
@@ -156,7 +159,7 @@
       {
         "k": "repo",
         "not": false,
-        "v": "alice/forge"
+        "v": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h"
       },
       {
         "k": "is",

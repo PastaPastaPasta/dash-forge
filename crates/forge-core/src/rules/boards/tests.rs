@@ -22,6 +22,19 @@ fn opt_str(v: &Value) -> Option<String> {
     v.as_str().map(str::to_string)
 }
 
+/// The vector's `repos`: the names its `repo:` qualifiers type, resolved to repository ids (as
+/// a client resolves them before parsing); none when absent.
+fn repos_of(inp: &Value) -> HashMap<String, String> {
+    inp["repos"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The fold a vector describes, and its spec and items.
 fn fold_of(inp: &Value) -> (BoardSpec, Vec<BoardItem>, BoardFold) {
     let spec = spec_of(&inp["spec"]);
@@ -44,7 +57,7 @@ fn rows_of<'a>(
     items: &'a [BoardItem],
     fold: &'a BoardFold,
 ) -> Vec<BoardRow<'a>> {
-    let query = parse_board_query(inp["q"].as_str().unwrap_or(""), spec);
+    let query = parse_board_query(inp["q"].as_str().unwrap_or(""), spec, &repos_of(inp));
     let ctx = QueryContext {
         me: opt_str(&inp["me"]),
         now: inp["now"].as_i64().unwrap(),
@@ -126,8 +139,19 @@ fn run(case: &str, inp: &Value) -> Value {
         }
         ("board_query", "parse") => {
             let spec = spec_of(&inp["spec"]);
-            serde_json::to_value(parse_board_query(inp["text"].as_str().unwrap(), &spec)).unwrap()
+            serde_json::to_value(parse_board_query(
+                inp["text"].as_str().unwrap(),
+                &spec,
+                &repos_of(inp),
+            ))
+            .unwrap()
         }
+        ("board_query", "names") => inp["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| json!(repo_names_of(t.as_str().unwrap())))
+            .collect(),
         ("board_query", "source") => {
             let spec = spec_of(&inp["spec"]);
             serde_json::to_value(parse_source_query(inp["text"].as_str().unwrap(), &spec)).unwrap()

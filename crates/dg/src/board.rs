@@ -7,7 +7,7 @@
 //! and `pr#12` / `issue#12` where an issue and a pull request share a number. Every write is
 //! one document per item, priced and confirmed first (`--yes` skips the prompt).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -23,10 +23,10 @@ use forge_core::collab::boards::{
 use forge_core::collab::v2::Collab;
 use forge_core::rules::boards::{
     column_totals, date_of, default_spec, group_rows, iteration_at, iteration_progress,
-    iteration_range, matches_board_query, monday_of, parse_board_query, sort_rows, sum_field_of,
-    BoardColumn, BoardField, BoardItem, BoardRow, BoardSource, BoardSpec, BoardView, FieldOption,
-    FieldType, ItemKind, Placement, QueryContext, Scalar, SourceKind, ViewLayout, CARD_ACTIVE,
-    CARD_ARCHIVED, CARD_REMOVED, MAX_COLUMNS,
+    iteration_range, matches_board_query, monday_of, parse_board_query, repo_names_of, sort_rows,
+    sum_field_of, BoardColumn, BoardField, BoardItem, BoardRow, BoardSource, BoardSpec, BoardView,
+    FieldOption, FieldType, ItemKind, Placement, QueryContext, Scalar, SourceKind, ViewLayout,
+    CARD_ACTIVE, CARD_ARCHIVED, CARD_REMOVED, MAX_COLUMNS,
 };
 use forge_core::scope::RepoRef;
 
@@ -781,20 +781,54 @@ pub(crate) struct Shown {
     ids: Vec<String>,
 }
 
-/// The groups of `snap` as view `view` (`None`: the board's columns, every item) shows them.
+/// The query view `view` (`None`: every item) filters by, with `is:archived` when asked for.
+fn view_query(view: Option<&BoardView>, archived: bool) -> String {
+    let mut q = view.map_or_else(String::new, |v| v.q.clone());
+    if archived {
+        q.push_str(" is:archived");
+    }
+    q
+}
+
+/// The repository ids the `repo:` names of query `q` resolve to (§4.4, [`repo_names_of`]):
+/// `owner/name` (the owner an identity id or a DPNS name) or a bare name of `home`'s owner, as
+/// the web resolves them. A name that names no repository is left out (the query reports it).
+async fn resolve_repo_names(
+    client: &forge_core::platform::PlatformClient,
+    home: &RepoRef,
+    q: &str,
+) -> Result<HashMap<String, String>> {
+    use forge_core::Error;
+    let mut out = HashMap::new();
+    for name in repo_names_of(q) {
+        let found = match name.split_once('/') {
+            Some((owner, repo)) => forge_core::resolve::resolve_named(client, owner, repo).await,
+            None => forge_core::resolve::resolve_named(client, home.owner_id(), &name).await,
+        };
+        match found {
+            Ok(r) => {
+                out.insert(name, r.id().to_string());
+            }
+            Err(Error::NotFound | Error::User(_) | Error::Config(_)) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(out)
+}
+
+/// The groups of `snap` as view `view` (`None`: the board's columns, every item) shows them;
+/// `repos` are the ids its `repo:` names resolved to ([`resolve_repo_names`]).
 pub(crate) fn shown(
     snap: &BoardSnapshot,
     spec: &BoardSpec,
     view: Option<&BoardView>,
     archived: bool,
     me: Option<&str>,
+    repos: &HashMap<String, String>,
 ) -> Shown {
     let placements = snap.placement_index();
-    let mut q = view.map_or_else(String::new, |v| v.q.clone());
-    if archived {
-        q.push_str(" is:archived");
-    }
-    let query = parse_board_query(&q, spec);
+    let q = view_query(view, archived);
+    let query = parse_board_query(&q, spec, repos);
     let ctx = QueryContext {
         me: me.map(str::to_string),
         now: snap.now,
@@ -1067,7 +1101,9 @@ async fn show(
                 })?,
         ),
     };
-    let shown = shown(&snap, &spec, chosen.as_ref(), archived, r.viewer());
+    let repos =
+        resolve_repo_names(&r.client, &r.repo, &view_query(chosen.as_ref(), archived)).await?;
+    let shown = shown(&snap, &spec, chosen.as_ref(), archived, r.viewer(), &repos);
     ctx.emit(view_json(&snap, &shown), || {
         print_board(&snap, &spec, &shown);
     });

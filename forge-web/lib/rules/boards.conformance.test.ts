@@ -26,6 +26,7 @@ import {
   parseFieldValues,
   parseSourceQuery,
   parseSpec,
+  repoNamesOf,
   rankBetween,
   rerank,
   serializeFieldValues,
@@ -78,9 +79,12 @@ function foldOf(i: Obj): { spec: BoardSpec; items: BoardItem[]; fold: BoardFold 
   return { spec, items, fold }
 }
 
+/** The vector's `repos`: the names its `repo:` qualifiers type, resolved to repository ids (as a client resolves them before parsing). */
+const reposOf = (i: Obj): Map<string, string> => new Map(Object.entries((i.repos ?? {}) as Record<string, string>))
+
 /** The rows a query keeps, in input order. */
 function rowsOf(i: Obj, q: string, spec: BoardSpec, items: readonly BoardItem[], fold: BoardFold): BoardRow[] {
-  const query = parseBoardQuery(q, spec)
+  const query = parseBoardQuery(q, spec, reposOf(i))
   const ctx = { me: (i.me as string | null | undefined) ?? null, now: i.now as number }
   return items.map((item, n) => ({ item, placement: fold.items[n]! })).filter((r) => matchesBoardQuery(r.item, r.placement, spec, query, ctx))
 }
@@ -120,7 +124,9 @@ function run(v: Vector): Json {
     case 'board_fold/boards':
       return newestBoards(i.docs as unknown as BoardDoc[], i.withDeleted === true).map((d) => ({ key: d.key, id: d.id, state: d.state }))
     case 'board_query/parse':
-      return plain(parseBoardQuery(i.text as string, specOf(i.spec)))
+      return plain(parseBoardQuery(i.text as string, specOf(i.spec), reposOf(i)))
+    case 'board_query/names':
+      return arr(i.texts).map((t) => repoNamesOf(t as string))
     case 'board_query/source':
       return plain(parseSourceQuery(i.text as string, specOf(i.spec)))
     case 'board_query/match': {

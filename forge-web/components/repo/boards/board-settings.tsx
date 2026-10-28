@@ -69,6 +69,7 @@ import {
   mondayOf,
   parseBoardQuery,
   parseSourceQuery,
+  repoNamesOf,
   type BoardColumn,
   type BoardField,
   type BoardSource,
@@ -852,7 +853,7 @@ function SourceRow({
       <input aria-label={`Filter of source ${index + 1}`} placeholder="Filter, e.g. label:bug -is:pr (optional)" value={source.q} maxLength={QUERY_MAX} onChange={(e) => onChange({ q: e.target.value })} className={cn(controlClass, 'w-full font-mono')} />
       {unresolved.length > 0 ? (
         <p className="w-full text-[12px] text-caution-700 dark:text-caution-400" data-testid="source-unresolved">
-          {`Not applied: ${unresolved.join(' ')}`}. A source reads only the item, so status, fields, archived and @me don&apos;t apply here.
+          {`Not applied: ${unresolved.join(' ')}`}. A source reads only the item, so status, fields, archived and @me don&apos;t apply here, and repo: takes a repo id (the source names its repo above).
         </p>
       ) : null}
     </li>
@@ -876,7 +877,8 @@ function ViewsSection({ spec, edit }: { spec: BoardSpec; edit: SpecEdit }): JSX.
       {spec.views.length > 0 ? (
         <ol className={card} aria-label="Views">
           {spec.views.map((v, i) => {
-            const unresolved = parseBoardQuery(v.q, spec).unresolved
+            // a `repo:` name is resolved when the view is shown (it may name any repository), not checked here
+            const unresolved = parseBoardQuery(v.q, spec).unresolved.filter((t) => repoNamesOf(t).length === 0)
             return (
               <li key={v.id} className={cn(rowClass, 'items-start')} data-testid="view-row">
                 <div className="flex w-full flex-wrap items-center gap-2">

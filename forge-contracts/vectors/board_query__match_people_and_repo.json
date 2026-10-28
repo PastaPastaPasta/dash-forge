@@ -1,6 +1,6 @@
 {
   "name": "match_people_and_repo",
-  "description": "assignee:@me is the viewer (none without one), author:<id>, no:assignee, milestone in any case, repo by owner/name in any case or by id, -repo.",
+  "description": "assignee:@me is the viewer (none without one), author:<id>, no:assignee, milestone in any case, repo: by id or by a name the client resolved (`repos`), -repo; a name it did not resolve is reported and not applied, whatever the items' labels say.",
   "case": "board_query",
   "rules": "v2",
   "input": {
@@ -293,8 +293,13 @@
       "repo:EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
       "-repo:bob/lib",
       "label:BUG",
-      "no:label"
-    ]
+      "no:label",
+      "repo:Bob/Lib",
+      "-repo:nobody/none"
+    ],
+    "repos": {
+      "bob/lib": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx"
+    }
   },
   "expected": [
     [
@@ -335,6 +340,20 @@
       "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58"
     ],
     [
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
       "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
       "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
       "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",

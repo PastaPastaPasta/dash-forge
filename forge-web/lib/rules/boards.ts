@@ -864,7 +864,8 @@ export type ItemState = 'open' | 'closed' | 'merged'
 
 /**
  * What a board reads of an issue or PR. `closedAt` is the `$createdAt` of its latest transition
- * into closed or merged (null when open, or unknown); `repo` is `owner/name` as shown, when known.
+ * into closed or merged (null when open, or unknown); `repo` is how this client labels the item's
+ * repository (`owner/name`), for display only: `repo:`, grouping and sorting read `repoId`.
  * `assignees` / `author` are identity ids.
  */
 export interface BoardItem {
@@ -1059,7 +1060,8 @@ export type QueryOp = 'eq' | 'gt' | 'ge' | 'lt' | 'le' | 'range' | 'has'
 /**
  * One qualifier, every one ANDed, `not` for a leading `-`:
  * - `is`: `v` `open`, `closed` (closed or merged), `merged`, `unmerged` (open or closed), `issue`, `pr`, `archived`
- * - `label` / `milestone` (names, any case), `assignee` / `author` (an identity id or `me`), `repo` (`owner/name` or an id)
+ * - `label` / `milestone` (names, any case), `assignee` / `author` (an identity id or `me`), `repo` (a repository id:
+ *   typed as one, or a name the client resolved, {@link repoNamesOf})
  * - `status`: `v` a column id; `no`: `v` `label`, `assignee`, `milestone`, `status` or `f<id>`
  * - `field`: field `f`, `op`, `v` (and `v2` for a range: either end may be absent, `*`): an option id
  *   (`sel`), a number (`num`), `YYYY-MM-DD` or `@today` (`date`), an iteration index or `@current` /
@@ -1090,6 +1092,33 @@ const MILESTONE_MAX = 63
 const ITER_RELATIVE = ['@current', '@next', '@previous']
 
 const unquote = (s: string): string => s.replace(/"/g, '')
+
+/** A query token's key (lowercased, unquoted, without a leading `-`), whether it is negated, and its value; null for no key. */
+function tokenParts(tok: string): { readonly key: string; readonly not: boolean; readonly rawValue: string; readonly value: string } | null {
+  const at = tok.indexOf(':')
+  if (at <= 0) return null
+  const rawKey = tok.slice(0, at)
+  const not = rawKey.startsWith('-') && rawKey.length > 1
+  const rawValue = tok.slice(at + 1)
+  return { key: unquote(not ? rawKey.slice(1) : rawKey).toLowerCase(), not, rawValue, value: unquote(rawValue) }
+}
+
+/**
+ * The repositories `text`'s `repo:` qualifiers name by name, as typed (unquoted), each once, in
+ * order: `owner/name` (the owner an identity id or a DPNS name) or a bare `name` (a repository of
+ * the home repository's owner). A client resolves each to its repository id before parsing
+ * ({@link parseBoardQuery}'s `repos`), so `repo:` matches by id and never by how a client labels a
+ * repository; a value that is itself an id needs no resolving and is not listed.
+ */
+export function repoNamesOf(text: string): string[] {
+  const out: string[] = []
+  for (const tok of searchTokens(text)) {
+    const t = tokenParts(tok)
+    if (t === null || t.key !== 'repo' || t.value === '' || t.rawValue.startsWith('//') || IDENTIFIER.test(t.value) || out.includes(t.value)) continue
+    out.push(t.value)
+  }
+  return out
+}
 
 /** A person value: an identity id, or `me` (`@me`, any case). */
 function personOf(v: string): string | null {
@@ -1156,7 +1185,9 @@ function fieldPred(field: BoardField, value: string, not: boolean): QueryPred | 
 /**
  * Read a board query (§4.4): the Issues tab's qualifiers (`is:open|closed|merged|unmerged`,
  * `is:issue|pr`, `label:`, `assignee:`, `author:`, `milestone:`, `no:label|assignee|milestone`;
- * `state:` reads as `is:`), plus `status:<column>`, `no:status`, `repo:owner/name`,
+ * `state:` reads as `is:`), plus `status:<column>`, `no:status`, `repo:owner/name` (or a
+ * repository id; a name is looked up in `repos`, the ids the client resolved the query's
+ * {@link repoNamesOf} to, and one it did not resolve is reported),
  * `is:archived`, and `<field>:<value>` for a custom field by name (`priority:P0`,
  * `estimate:>3`, `estimate:1..5`, `target:<2026-11-01`, `iteration:@current`, `no:priority`).
  * Any qualifier takes a leading `-` (NOT). Keys and names match in any letter case; quote values
@@ -1165,17 +1196,21 @@ function fieldPred(field: BoardField, value: string, not: boolean): QueryPred | 
  * key with nothing after its colon (`note:`) and a URL stay text. Values naming people take an
  * identity id or `@me` (resolve DPNS names first, as the Issues tab does).
  */
-export function parseBoardQuery(text: string, spec: BoardSpec): BoardQuery {
-  return parseQuery(text, spec, false)
+export function parseBoardQuery(text: string, spec: BoardSpec, repos: ReadonlyMap<string, string> = NO_REPOS): BoardQuery {
+  return parseQuery(text, spec, false, repos)
 }
+
+const NO_REPOS: ReadonlyMap<string, string> = new Map()
 
 /**
  * A source's query (§2.3): {@link parseBoardQuery} less what depends on the board or the reader
  * rather than the item (`status:`, `no:status`, custom fields, `is:archived`, `@me`), which goes
- * to `unresolved`: a source includes the same items for every reader, before any card.
+ * to `unresolved`: a source includes the same items for every reader, before any card. Its
+ * `repo:` takes a repository id only (the fold reads nothing to resolve a name; a source names
+ * its repository by `r` anyway).
  */
 export function parseSourceQuery(text: string, spec: BoardSpec): BoardQuery {
-  return parseQuery(text, spec, true)
+  return parseQuery(text, spec, true, NO_REPOS)
 }
 
 /** Whether a predicate reads the board or the reader, not only the item. */
@@ -1186,30 +1221,26 @@ function boardOnly(p: QueryPred): boolean {
   return (p.k === 'assignee' || p.k === 'author') && p.v === 'me'
 }
 
-function parseQuery(text: string, spec: BoardSpec, forSource: boolean): BoardQuery {
+function parseQuery(text: string, spec: BoardSpec, forSource: boolean, repos: ReadonlyMap<string, string>): BoardQuery {
   const preds: QueryPred[] = []
   const free: string[] = []
   const unresolved: string[] = []
   const fieldByName = new Map(spec.fields.map((f) => [f.name.toLowerCase(), f]))
   for (const tok of searchTokens(text)) {
-    const at = tok.indexOf(':')
-    const rawKey = at > 0 ? tok.slice(0, at) : ''
-    const not = rawKey.startsWith('-') && rawKey.length > 1
-    const key = unquote(not ? rawKey.slice(1) : rawKey).toLowerCase()
-    const rawValue = at > 0 ? tok.slice(at + 1) : ''
-    const value = unquote(rawValue)
-    if (key === '' || (value === '' && !QUERY_KEYS.has(key) && !fieldByName.has(key)) || rawValue.startsWith('//')) {
+    const t = tokenParts(tok)
+    if (t === null || t.key === '' || (t.value === '' && !QUERY_KEYS.has(t.key) && !fieldByName.has(t.key)) || t.rawValue.startsWith('//')) {
       free.push(tok)
       continue
     }
-    const pred = qualifier(key, value, not, spec, fieldByName)
+    const { key, value, not } = t
+    const pred = qualifier(key, value, not, spec, fieldByName, repos)
     if (pred === null || (forSource && boardOnly(pred))) unresolved.push(tok)
     else preds.push(pred)
   }
   return { preds, text: free.join(' '), unresolved }
 }
 
-function qualifier(key: string, value: string, not: boolean, spec: BoardSpec, fieldByName: ReadonlyMap<string, BoardField>): QueryPred | null {
+function qualifier(key: string, value: string, not: boolean, spec: BoardSpec, fieldByName: ReadonlyMap<string, BoardField>, repos: ReadonlyMap<string, string>): QueryPred | null {
   const low = value.toLowerCase()
   switch (key) {
     case 'is':
@@ -1224,8 +1255,10 @@ function qualifier(key: string, value: string, not: boolean, spec: BoardSpec, fi
       const who = personOf(value)
       return who === null ? null : { k: key, not, v: who }
     }
-    case 'repo':
-      return value !== '' ? { k: 'repo', not, v: value } : null
+    case 'repo': {
+      const id = IDENTIFIER.test(value) ? value : repos.get(value)
+      return id !== undefined && IDENTIFIER.test(id) ? { k: 'repo', not, v: id } : null
+    }
     case 'status': {
       const col = spec.columns.find((c) => c.name.toLowerCase() === low)
       return col ? { k: 'status', not, v: col.id } : null
@@ -1335,7 +1368,7 @@ function predHolds(p: QueryPred, item: BoardItem, placement: Placement | null, s
       return p.k === 'author' ? item.author === who : item.assignees.includes(who)
     }
     case 'repo':
-      return item.repoId === p.v || (item.repo !== undefined && eqi(item.repo, p.v as string))
+      return item.repoId === p.v
     case 'status':
       return placement !== null && placement.col === p.v
     case 'no':
@@ -1443,7 +1476,8 @@ function sortValue(r: BoardRow, key: string, spec: BoardSpec): string | number |
       return i < 0 ? undefined : i
     }
     case 'repo':
-      return (r.item.repo ?? r.item.repoId).toLowerCase()
+      // by id, as `groupRows` orders repositories: the label (`item.repo`) is each client's own
+      return r.item.repoId
     case 'author':
       return r.item.author
     case 'milestone':
