@@ -51,4 +51,4 @@ dg board delete  <owner>/<repo> Roadmap
 
 A command that changes several items writes them one by one; when one fails, the ones before it have landed, and it stops with E106 saying which. Run it again: items that already have the change cost nothing more.
 
-A card is yours: each member has their own card for an item on a board, and everyone sees the newest. `dg` reads the item's newest card just before it signs and changes only what you asked for, so two members editing different fields of one item both land.
+A card is yours: each member has their own card for an item on a board, and everyone sees the newest. `dg` reads the item's newest card just before it signs and changes only what you asked for, so two members editing different fields of one item both land. Two `dg` commands run back to back on one item (a script's `set` then `move`) can, rarely, have the second read a node that has not seen the first write yet, and undo it; check with `dg board view` between them, or wait a few seconds.
