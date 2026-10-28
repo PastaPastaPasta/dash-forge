@@ -584,7 +584,7 @@ async fn find_board(collab: &Collab<'_>, repo: &RepoRef, arg: &str) -> Result<Bo
 /// The board's snapshot now, or E102.
 async fn snapshot(collab: &Collab<'_>, repo: &RepoRef, board: &Board) -> Result<BoardSnapshot> {
     collab
-        .board_snapshot(repo, board.key, now_ms())
+        .board_snapshot(repo, board.key, now_ms(), false)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
@@ -1063,6 +1063,25 @@ async fn list(ctx: &Ctx, repo: &str, deleted: bool) -> Result<()> {
     Ok(())
 }
 
+/// The view of `spec` named `name` (any case), or the refusal listing its views.
+fn find_view(spec: &BoardSpec, name: &str) -> Result<BoardView> {
+    spec.views
+        .iter()
+        .find(|v| v.name.to_lowercase() == name.trim().to_lowercase())
+        .cloned()
+        .ok_or_else(|| {
+            let names: Vec<String> = spec.views.iter().map(|v| format!("{:?}", v.name)).collect();
+            crate::errors::usage(format!(
+                "this board has no view {name:?}{}",
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!("; its views are {}", crate::fmt::join_and(&names))
+                }
+            ))
+        })
+}
+
 async fn show(
     ctx: &Ctx,
     repo: &str,
@@ -1073,36 +1092,32 @@ async fn show(
     let r = Reader::open_discussion(ctx, repo).await?;
     let collab = r.collab();
     let b = find_board(&collab, &r.repo, board).await?;
-    let Some(snap) = collab.board_snapshot(&r.repo, b.key, now_ms()).await? else {
+    let chosen = match view {
+        None => None,
+        Some(name) => Some(find_view(spec_of(&b)?, name)?),
+    };
+    let q = view_query(chosen.as_ref(), archived);
+    // a view asking for archived items reads the older closed ones too, as the web's does
+    let asks_archived = parse_board_query(&q, spec_of(&b)?, &HashMap::new())
+        .preds
+        .iter()
+        .any(|p| p.k == "is" && p.v == Some(Scalar::Text("archived".into())));
+    let Some(snap) = collab
+        .board_snapshot(&r.repo, b.key, now_ms(), asks_archived)
+        .await?
+    else {
         return Err(crate::errors::not_found(
             format!("no board {board:?} in {}", r.repo.display()),
             format!("`dg board list {repo}` lists its boards"),
         ));
     };
+    // the definition as the snapshot read it (a member may have saved it a moment ago)
     let spec = spec_of(&snap.read.board)?.clone();
     let chosen = match view {
         None => None,
-        Some(name) => Some(
-            spec.views
-                .iter()
-                .find(|v| v.name.to_lowercase() == name.trim().to_lowercase())
-                .cloned()
-                .ok_or_else(|| {
-                    let names: Vec<String> =
-                        spec.views.iter().map(|v| format!("{:?}", v.name)).collect();
-                    crate::errors::usage(format!(
-                        "this board has no view {name:?}{}",
-                        if names.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; its views are {}", crate::fmt::join_and(&names))
-                        }
-                    ))
-                })?,
-        ),
+        Some(name) => Some(find_view(&spec, name)?),
     };
-    let repos =
-        resolve_repo_names(&r.client, &r.repo, &view_query(chosen.as_ref(), archived)).await?;
+    let repos = resolve_repo_names(&r.client, &r.repo, &q).await?;
     let shown = shown(&snap, &spec, chosen.as_ref(), archived, r.viewer(), &repos);
     ctx.emit(view_json(&snap, &shown), || {
         print_board(&snap, &spec, &shown);
@@ -1205,7 +1220,10 @@ fn print_board(snap: &BoardSnapshot, spec: &BoardSpec, s: &Shown) {
         );
     }
     if snap.items.partial {
-        eprintln!("note: only the newest 100 pull requests of a source repository are read");
+        eprintln!(
+            "note: only the newest {} pull requests of a source repository are read",
+            forge_core::collab::boards::PR_PAGES * 100
+        );
     }
     if snap.items.has_older_closed {
         eprintln!(

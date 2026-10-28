@@ -14,8 +14,8 @@
 //!   pull requests, the closed ones inside the auto-archive window (or, with `arch` 0, the
 //!   [`CLOSED_PER_REPO`] most recently closed) and every closed one a card names; then every item
 //!   a card names outside the sources, by id, in any repository. The CLI reads the issue and PR
-//!   lists whole (the issues) or by their newest page (the PRs, as `dg pr list`), so it filters
-//!   in memory what the web's feed walk pages through ([`select_source_items`]).
+//!   lists whole (the PRs page after page, up to [`PR_PAGES`]), so it filters in memory what
+//!   the web's feed walk pages through ([`select_source_items`]).
 //! * **Writes**: one document operation each, the signer's role checked first (a board claims
 //!   `r` 1, writers and maintainers; a card 1 or 2, triage too: [`super::v2::gated_write`]), and
 //!   refused before signing where the contract or the board rules would refuse it. A board and a
@@ -163,6 +163,76 @@ pub struct BoardCard {
     /// Sealed and not opened here.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unreadable: bool,
+    /// The document's `$revision`, when the read has it: what tells a read that lags behind
+    /// this client's own write ([`Collab::write_card`], §3.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+}
+
+/// A card a [`Collab`]'s write landed: its document, the revision it wrote, and what it holds.
+#[derive(Debug, Clone)]
+pub struct LandedCard {
+    /// The signer's card document.
+    pub document_id: String,
+    /// The `$revision` the write made.
+    pub revision: u64,
+    /// What it holds.
+    pub card: CardDoc,
+}
+
+/// What a card write over `docs` (a fresh read of item `item_id`'s cards) builds on (§3.2,
+/// the web's `overIfAhead`): the newest card this reader opens (one it cannot open holds values
+/// it cannot carry over), or, while the read lacks `landed` (the last card this client's write
+/// of the item landed) or holds an older revision of it, `landed` (a member's own back-to-back
+/// writes must not undo each other); with the signer's own document (the read's, or the landed
+/// one's) and the revision it holds.
+#[must_use]
+pub fn card_base_of(
+    landed: Option<&LandedCard>,
+    item_id: &str,
+    docs: &ItemCardDocs,
+) -> (Option<CardDoc>, Option<String>, u64) {
+    let read_revision = |id: &str| {
+        docs.cards
+            .iter()
+            .find(|c| c.card.id == id)
+            .and_then(|c| c.revision)
+    };
+    if let Some(l) = landed {
+        if read_revision(&l.document_id).is_none_or(|r| r < l.revision) {
+            return (
+                Some(l.card.clone()),
+                Some(l.document_id.clone()),
+                l.revision,
+            );
+        }
+    }
+    let readable: Vec<CardDoc> = docs
+        .cards
+        .iter()
+        .filter(|c| !c.unreadable)
+        .map(|c| c.card.clone())
+        .collect();
+    (
+        newest_cards(&readable).get(item_id).map(|c| (*c).clone()),
+        docs.own.clone(),
+        docs.own.as_deref().and_then(read_revision).unwrap_or(0),
+    )
+}
+
+/// The repositories of `docs` (`repo` documents read by `repo`'s owner) whose boards `repo`'s
+/// items show in their sidebar (§5.6): `repo` itself and the owner's other public ones, by id.
+#[must_use]
+pub fn sidebar_homes_of(repo: &RepoRef, docs: &[FetchedDocument]) -> BTreeMap<String, RepoRef> {
+    let mut homes = BTreeMap::from([(repo.id().to_string(), repo.clone())]);
+    for d in docs {
+        if let Ok(r) = crate::resolve::repo_ref_from_doc(repo.forge(), d) {
+            if r.owner_id() == repo.owner_id() && r.visibility != Visibility::Private {
+                homes.entry(r.id().to_string()).or_insert(r);
+            }
+        }
+    }
+    homes
 }
 
 /// One board and every card on it, as [`Collab::board`] reads them.
@@ -209,7 +279,7 @@ pub struct BoardItemSet {
     pub hidden: BTreeSet<String>,
     /// Card items that are no issue or PR this reader can find (dropped from the board).
     pub missing: BTreeSet<String>,
-    /// A source's list stopped short (more than the newest page of pull requests).
+    /// A source's list stopped short (more than [`PR_PAGES`] pages of pull requests).
     pub partial: bool,
     /// Some source repository has closed items older than were kept.
     pub has_older_closed: bool,
@@ -408,6 +478,7 @@ pub fn card_doc_of(
         return Some(BoardCard {
             card,
             unreadable: false,
+            revision: d.revision,
         });
     }
     let bind = Bind::Card {
@@ -419,6 +490,7 @@ pub fn card_doc_of(
         Some(BoardCard {
             card,
             unreadable: true,
+            revision: d.revision,
         })
     };
     let Some(open) = open else {
@@ -433,6 +505,7 @@ pub fn card_doc_of(
             Some(BoardCard {
                 card,
                 unreadable: false,
+                revision: d.revision,
             })
         }
         Opened::Readable(Content::Board(_)) | Opened::Unreadable(_) => unread(card),
@@ -639,9 +712,11 @@ pub fn source_kinds(spec: &BoardSpec, home: &str) -> BTreeMap<String, BTreeSet<I
 
 /// The items of one source repository a board keeps (§2.4, the web's first walk): every open
 /// one; the closed and merged ones inside the auto-archive window (`arch` days before `now`;
-/// older ones are archived), or with `arch` 0 the [`CLOSED_PER_REPO`] most recently closed; and
-/// every closed one a card names (`carded`). `all` is every item of the repository of the
-/// sources' kinds. Returns the kept items and whether older closed ones were left out.
+/// older ones are archived), or with `arch` 0 the [`CLOSED_PER_REPO`] most recently closed;
+/// with `older`, the next [`CLOSED_PER_REPO`] closed ones past those (what the web's
+/// `loadOlderClosed` reads for a view asking for `is:archived`); and every closed one a card
+/// names (`carded`). `all` is every item of the repository of the sources' kinds. Returns the
+/// kept items and whether older closed ones were left out.
 #[must_use]
 #[allow(clippy::implicit_hasher)] // the caller's set of carded ids
 pub fn select_source_items(
@@ -649,6 +724,7 @@ pub fn select_source_items(
     arch: u16,
     carded: &HashSet<&str>,
     now: i64,
+    older: bool,
 ) -> (Vec<BoardItem>, bool) {
     let (mut kept, mut closed): (Vec<BoardItem>, Vec<BoardItem>) =
         all.into_iter().partition(|i| i.state == ItemState::Open);
@@ -660,20 +736,33 @@ pub fn select_source_items(
             .then_with(|| a.id.cmp(&b.id))
     });
     let cutoff = now - i64::from(arch) * DAY_MS;
-    let mut older = false;
-    for (n, i) in closed.into_iter().enumerate() {
-        let recent = if arch > 0 {
+    let recent = |n: usize, i: &BoardItem| {
+        if arch > 0 {
             i.closed_at.is_some_and(|at| at >= cutoff)
         } else {
             n < CLOSED_PER_REPO
-        };
-        if recent || carded.contains(i.id.as_str()) {
+        }
+    };
+    // the first walk's closed items; with `older`, the next stretch past them
+    let first = closed
+        .iter()
+        .enumerate()
+        .take_while(|(n, i)| recent(*n, i))
+        .count();
+    let reach = if older {
+        first + CLOSED_PER_REPO
+    } else {
+        first
+    };
+    let mut left_out = false;
+    for (n, i) in closed.into_iter().enumerate() {
+        if n < reach || carded.contains(i.id.as_str()) {
             kept.push(i);
         } else {
-            older = true;
+            left_out = true;
         }
     }
-    (kept, older)
+    (kept, left_out)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1232,11 +1321,15 @@ fn no_boards(repo: &RepoRef) -> Error {
 /// The two forge-collab item types, in the order the web looks an id or number up in.
 const ITEM_DOCS: [(&str, ItemKind); 2] = [(DOC_ISSUE, ItemKind::Issue), (DOC_PATCH, ItemKind::Pr)];
 
-/// Whether `repo` is a private repository other than `home`: its items are sealed with keys
-/// a read of `home`'s board does not hold.
-fn sealed_elsewhere(repo: &RepoRef, home: &RepoRef) -> bool {
-    repo.visibility == Visibility::Private && repo.id() != home.id()
-}
+/// The owner's repositories an item's sidebar read takes, at most, as the homes its boards may
+/// live in (the web's `OWNER_REPO_PAGES` pages of 100).
+pub const OWNER_REPO_ROWS: usize = 300;
+/// Cards one `card.onItem` read of an item's sidebar follows at most (the web's
+/// `ITEM_CARD_PAGES` pages of 100).
+pub const ITEM_CARD_ROWS: usize = 300;
+/// Pull request pages (100 each) a source repository's read follows at most (the web reads its
+/// open pull requests' list as far, `OPEN_PAGES`).
+pub const PR_PAGES: usize = 30;
 
 /// `content`'s set fields: a create's properties.
 fn present(content: &BTreeMap<String, Option<FieldValue>>) -> BTreeMap<String, FieldValue> {
@@ -1447,47 +1540,74 @@ impl Collab<'_> {
         })
     }
 
-    /// The boards issue or PR `item_id` of `repo` has a card on (`card.onItem`), keeping only
-    /// boards whose home is `repo` or another public repository of the same owner (§5.6: a
-    /// stranger's board naming the issue never shows; another private one is sealed with keys
-    /// this read does not hold). Deleted boards are left out, closed ones kept. Ordered by home
-    /// repository (`repo` first), then key.
-    pub async fn item_boards(&self, repo: &RepoRef, item_id: &str) -> Result<Vec<ItemBoard>> {
-        let contract = self.board_contract(repo).await?;
+    /// The repositories whose boards `repo`'s items show in their sidebar (§5.6, the web's
+    /// `sidebarHomes`): `repo` itself and its owner's other public repositories (at most
+    /// [`OWNER_REPO_ROWS`]; a private one's boards are sealed with keys this read does not
+    /// hold), by id.
+    async fn sidebar_homes(&self, repo: &RepoRef) -> Result<BTreeMap<String, RepoRef>> {
+        let core = self.core_contract(repo).await?;
+        let owner = platform::decode_identifier(repo.owner_id())?;
         let docs = self
             .client()
-            .query_all_documents(
-                &contract,
-                DOC_CARD,
-                &[QueryFilter::eq(
-                    "item",
-                    FieldValue::identifier(platform::decode_identifier(item_id)?),
-                )],
-                &[QueryOrder::asc("repoId"), QueryOrder::asc("board")],
+            .query_documents_up_to(
+                &core,
+                crate::resolve::DOC_REPO,
+                &[QueryFilter::eq("$ownerId", FieldValue::identifier(owner))],
+                &[QueryOrder::asc("name")],
+                OWNER_REPO_ROWS,
             )
             .await?;
+        Ok(sidebar_homes_of(
+            repo,
+            &docs[..docs.len().min(OWNER_REPO_ROWS)],
+        ))
+    }
+
+    /// The boards issue or PR `item_id` of `repo` has a card on, whose home is `repo` or
+    /// another public repository of the same owner (§5.6: a stranger's board naming the issue
+    /// is never read, nor a private repository's, sealed with keys this read does not hold).
+    /// The owner's repositories are read first ([`Self::sidebar_homes`]), then `card.onItem`
+    /// with `item ==` and `repoId in` them (100 a read, at most [`ITEM_CARD_ROWS`] each), so
+    /// cards anyone else writes naming the item cost this read nothing. Deleted boards are
+    /// left out, closed ones kept. Ordered by home repository (`repo` first), then key.
+    pub async fn item_boards(&self, repo: &RepoRef, item_id: &str) -> Result<Vec<ItemBoard>> {
+        let contract = self.board_contract(repo).await?;
+        let item = FieldValue::identifier(platform::decode_identifier(item_id)?);
+        let homes = self.sidebar_homes(repo).await?;
+        let ids: Vec<&String> = homes.keys().collect();
         let mut by_home: BTreeMap<String, Vec<FetchedDocument>> = BTreeMap::new();
-        for d in docs {
-            if let Some(home) = d.field_bytes32("repoId").map(platform::encode_identifier) {
-                by_home.entry(home).or_default().push(d);
+        for chunk in ids.chunks(100) {
+            let in_homes = chunk
+                .iter()
+                .map(|id| platform::decode_identifier(id).map(FieldValue::identifier))
+                .collect::<Result<Vec<_>>>()?;
+            let docs = self
+                .client()
+                .query_documents_up_to(
+                    &contract,
+                    DOC_CARD,
+                    &[
+                        QueryFilter::eq("item", item.clone()),
+                        QueryFilter::in_list("repoId", in_homes),
+                    ],
+                    &[QueryOrder::asc("repoId"), QueryOrder::asc("board")],
+                    ITEM_CARD_ROWS,
+                )
+                .await?;
+            for d in docs.into_iter().take(ITEM_CARD_ROWS) {
+                if let Some(home) = d.field_bytes32("repoId").map(platform::encode_identifier) {
+                    if homes.contains_key(&home) {
+                        by_home.entry(home).or_default().push(d);
+                    }
+                }
             }
         }
-        let mut homes: Vec<(String, Vec<FetchedDocument>)> = by_home.into_iter().collect();
-        homes.sort_by_key(|(h, _)| (h != repo.id(), h.clone()));
+        let mut ordered: Vec<(String, Vec<FetchedDocument>)> = by_home.into_iter().collect();
+        ordered.sort_by_key(|(h, _)| (h != repo.id(), h.clone()));
         let mut out = Vec::new();
-        for (home_id, home_docs) in homes {
-            let home = if home_id == repo.id() {
-                repo.clone()
-            } else {
-                match crate::resolve::resolve_id(self.client(), &home_id).await {
-                    Ok(h)
-                        if h.owner_id() == repo.owner_id()
-                            && h.visibility == Visibility::Public =>
-                    {
-                        h
-                    }
-                    _ => continue,
-                }
+        for (home_id, home_docs) in ordered {
+            let Some(home) = homes.get(&home_id).cloned() else {
+                continue;
             };
             let mut by_key: BTreeMap<u32, Vec<FetchedDocument>> = BTreeMap::new();
             for d in home_docs {
@@ -1517,8 +1637,10 @@ impl Collab<'_> {
         Ok(out)
     }
 
-    /// Every item of `repo` of `kinds`, as the board reads it: every issue, and the newest page
-    /// of pull requests (as `dg pr list`); `true` when more pull requests exist than were read.
+    /// Every item of `repo` of `kinds`, as the board reads it: every issue, and every pull
+    /// request, newest first, page after page ([`Self::list_patch_views_before`], at most
+    /// [`PR_PAGES`] pages, as the web reads its open ones); `true` when that cap left some
+    /// pull requests unread.
     async fn repo_items(
         &self,
         repo: &RepoRef,
@@ -1536,15 +1658,63 @@ impl Collab<'_> {
             );
         }
         if kinds.contains(&ItemKind::Pr) {
-            let page = self.list_patch_views(repo, 0).await?;
-            partial = page.more;
-            items.extend(
-                page.rows
+            let mut seen = HashSet::new();
+            let mut before: Option<u64> = None;
+            for page in 0..PR_PAGES {
+                let (listed, _) = self.list_patch_views_before(repo, 0, before).await?;
+                // the page's oldest row, readable or not: the next page starts at its time
+                let oldest = listed
+                    .rows
                     .iter()
-                    .map(|(v, _)| board_item_of_patch(v, repo.id(), &label)),
-            );
+                    .map(|(v, _)| v.patch.created_at)
+                    .chain(listed.members_only.iter().map(|m| m.created_at))
+                    .min();
+                let mut added = 0;
+                for (v, _) in &listed.rows {
+                    if seen.insert(v.patch.document_id.clone()) {
+                        items.push(board_item_of_patch(v, repo.id(), &label));
+                        added += 1;
+                    }
+                }
+                added += listed
+                    .members_only
+                    .iter()
+                    .filter(|m| seen.insert(m.document_id.clone()))
+                    .count();
+                // a full page that added nothing sits on one time shared by 100+ PRs
+                if !listed.more || oldest.is_none() || (added == 0 && before == oldest) {
+                    break;
+                }
+                partial = page + 1 == PR_PAGES;
+                before = oldest;
+            }
         }
         Ok((items, partial))
+    }
+
+    /// Whether this reader opens `repo`'s items on a board of `home`: a public repository, the
+    /// home, or another private repository whose keys this signer holds (a member of both,
+    /// §2.5); remembered in `known`. A key this signer does not hold is no error: those items
+    /// show as "a private item".
+    async fn opens_items(
+        &self,
+        repo: &RepoRef,
+        home: &RepoRef,
+        known: &mut BTreeMap<String, bool>,
+    ) -> Result<bool> {
+        if repo.visibility != Visibility::Private || repo.id() == home.id() {
+            return Ok(true);
+        }
+        if let Some(held) = known.get(repo.id()) {
+            return Ok(*held);
+        }
+        let held = match self.keyring(repo).await {
+            Ok(_) => true,
+            Err(Error::User(_)) => false,
+            Err(e) => return Err(e),
+        };
+        known.insert(repo.id().to_string(), held);
+        Ok(held)
     }
 
     /// Repository `repo_id`: `home` itself, one already read, or resolved.
@@ -1592,31 +1762,35 @@ impl Collab<'_> {
     }
 
     /// Every item of the board `spec` of `home` describes (§2.3, §2.4; the web's
-    /// `loadBoardItems`): its source repositories' items ([`select_source_items`]), then every
-    /// item `cards` name that the sources did not bring, by id in its own repository (a
-    /// placeholder where it cannot be opened). A source repository that is private and not the
-    /// home contributes nothing (its items show as placeholders where a card names them).
+    /// `loadBoardItems`): its source repositories' items ([`select_source_items`]; with
+    /// `archived`, the next stretch of older closed ones too, as the web reads for a view asking
+    /// for `is:archived`), then every item `cards` name that the sources did not bring, by id in
+    /// its own repository (a placeholder where it cannot be opened). A source repository that is
+    /// private, not the home and not one whose keys this signer holds ([`Self::opens_items`])
+    /// contributes nothing (its items show as placeholders where a card names them).
     pub async fn board_items(
         &self,
         home: &RepoRef,
         spec: &BoardSpec,
         cards: &[CardDoc],
         now: i64,
+        archived: bool,
     ) -> Result<BoardItemSet> {
         let carded: HashSet<&str> = cards.iter().map(|c| c.item.as_str()).collect();
         let mut known = BTreeMap::new();
+        let mut opens = BTreeMap::new();
         let mut set = BoardItemSet::default();
         let mut by_id: BTreeMap<String, BoardItem> = BTreeMap::new();
         for (repo_id, kinds) in source_kinds(spec, home.id()) {
             let Some(repo) = self.repo_of(home, &mut known, &repo_id).await else {
                 continue;
             };
-            if sealed_elsewhere(&repo, home) {
+            if !self.opens_items(&repo, home, &mut opens).await? {
                 continue;
             }
             let (all, partial) = self.repo_items(&repo, &kinds).await?;
             set.partial |= partial;
-            let (kept, older) = select_source_items(all, spec.arch, &carded, now);
+            let (kept, older) = select_source_items(all, spec.arch, &carded, now, archived);
             set.has_older_closed |= older;
             for i in kept {
                 by_id.insert(i.id.clone(), i);
@@ -1635,10 +1809,10 @@ impl Collab<'_> {
                 set.missing.insert(id.to_string());
                 continue;
             };
-            let item = if sealed_elsewhere(&repo, home) {
-                None
-            } else {
+            let item = if self.opens_items(&repo, home, &mut opens).await? {
                 self.item_by_doc(&repo, kind, &d).await?
+            } else {
+                None
             };
             if let Some(i) = item {
                 by_id.insert(i.id.clone(), i);
@@ -1686,12 +1860,14 @@ impl Collab<'_> {
     }
 
     /// Board `key` of `repo` read whole and folded at `now`: its definition and cards, its items
-    /// ([`Self::board_items`]) and the fold. `None` when the board has no revision.
+    /// ([`Self::board_items`], with the older closed ones when `archived`: a view asking for
+    /// `is:archived`) and the fold. `None` when the board has no revision.
     pub async fn board_snapshot(
         &self,
         repo: &RepoRef,
         key: u32,
         now: i64,
+        archived: bool,
     ) -> Result<Option<BoardSnapshot>> {
         let Some(read) = self.board(repo, key).await? else {
             return Ok(None);
@@ -1699,7 +1875,7 @@ impl Collab<'_> {
         let docs = card_docs(&read.cards);
         let (items, fold) = match &read.board.spec {
             Some(spec) => {
-                let items = self.board_items(repo, spec, &docs, now).await?;
+                let items = self.board_items(repo, spec, &docs, now, archived).await?;
                 let fold =
                     crate::rules::boards::fold_board(spec, repo.id(), &items.items, &docs, now);
                 (items, Some(fold))
@@ -1976,8 +2152,10 @@ impl Collab<'_> {
     /// Write the signer's card for `item` on `board` of `repo` (§3.2): refused for a closed
     /// board, a patch the board does not admit, or (unconfirmed) a private home's
     /// cross-repository item; then the definition and the item's cards are read fresh, `patch`
-    /// is applied to the newest card this reader opens, and the signer's own card is replaced
-    /// (or created: a create that meets the signer's card made meanwhile replaces it instead).
+    /// is applied to its base ([`Self::card_base`]: the newest card this reader opens, or this
+    /// `Collab`'s last landed card while the read lags behind it), and the signer's own card is
+    /// replaced (or created: a create that meets the signer's card made meanwhile re-reads,
+    /// applies the patch over the newest card then, and replaces it instead).
     pub async fn write_card(
         &self,
         repo: &RepoRef,
@@ -2002,36 +2180,51 @@ impl Collab<'_> {
             return Err(unreadable(&fresh, "its cards can't be changed"));
         };
         check_patch(spec, patch)?;
-        let docs = self.item_card_docs(repo, board.key, &item.id, &me).await?;
-        // a newest card this reader cannot open holds values it cannot carry over: the newest
-        // it can open is the base
-        let readable: Vec<CardDoc> = docs
-            .cards
-            .iter()
-            .filter(|c| !c.unreadable)
-            .map(|c| c.card.clone())
-            .collect();
-        let next = patched_card(
-            spec,
-            newest_cards(&readable).get(item.id.as_str()).copied(),
-            patch,
-        )?;
+        let landed_key = format!("{}:{}:{}", repo.id(), board.key, item.id);
         let bind = Bind::Card {
             board: board.key,
             item: item_bytes,
         };
-        let content = self
-            .board_content(
-                repo,
-                bind,
-                &Content::Card(CardFields {
-                    col: next.col,
-                    rank: next.rank.clone(),
-                    f: next.f.clone(),
-                }),
-            )
-            .await?;
-        let written = |document_id: String, created: bool, changed: bool| CardWritten {
+        let docs = self.item_card_docs(repo, board.key, &item.id, &me).await?;
+        let (base, own, revision) = self.card_base(&landed_key, &item.id, &docs);
+        let mut next = patched_card(spec, base.as_ref(), patch)?;
+        let mut content = self.card_content(repo, bind, &next).await?;
+        let replace = async |id: &str, content: &BTreeMap<String, Option<FieldValue>>, state| {
+            self.replace_own(repo, &contract, DOC_CARD, Role::Triage, id, content, state)
+                .await
+        };
+        let (document_id, created, changed, revision) = if let Some(own) = own {
+            let changed = replace(&own, &content, next.state).await?;
+            (own, false, changed, revision + u64::from(changed))
+        } else {
+            let mut props = present(&content);
+            props.insert("board".into(), FieldValue::integer(u64::from(board.key)));
+            props.insert("item".into(), FieldValue::identifier(item_bytes));
+            props.insert(
+                "state".into(),
+                FieldValue::integer(next.state.unsigned_abs()),
+            );
+            match self.write(repo, &contract, DOC_CARD, props).await {
+                Ok(id) => (id, true, true, 1),
+                // The signer's card for this item appeared since the read (another device):
+                // apply the patch over the newest card now, that device's included, and
+                // replace it.
+                Err(Error::DuplicateUniqueIndex(m)) => {
+                    let again = self.item_card_docs(repo, board.key, &item.id, &me).await?;
+                    let (base, own, revision) = self.card_base(&landed_key, &item.id, &again);
+                    let Some(own) = own else {
+                        return Err(Error::DuplicateUniqueIndex(m));
+                    };
+                    next = patched_card(spec, base.as_ref(), patch)?;
+                    content = self.card_content(repo, bind, &next).await?;
+                    let changed = replace(&own, &content, next.state).await?;
+                    (own, false, changed, revision + u64::from(changed))
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        self.land_card(landed_key, &document_id, revision, &me, &item.id, &next);
+        Ok(CardWritten {
             item: item.id.clone(),
             document_id,
             created,
@@ -2040,45 +2233,72 @@ impl Collab<'_> {
             rank: next.rank.clone(),
             f: next.f.clone(),
             state: next.state,
+        })
+    }
+
+    /// [`card_base_of`] with this `Collab`'s last landed card for `landed_key`.
+    fn card_base(
+        &self,
+        landed_key: &str,
+        item_id: &str,
+        docs: &ItemCardDocs,
+    ) -> (Option<CardDoc>, Option<String>, u64) {
+        let landed = self
+            .landed_cards
+            .lock()
+            .ok()
+            .and_then(|m| m.get(landed_key).cloned());
+        card_base_of(landed.as_ref(), item_id, docs)
+    }
+
+    /// A card's stored content for `repo` ([`Self::board_content`]).
+    async fn card_content(
+        &self,
+        repo: &RepoRef,
+        bind: Bind,
+        next: &PatchedCard,
+    ) -> Result<BTreeMap<String, Option<FieldValue>>> {
+        self.board_content(
+            repo,
+            bind,
+            &Content::Card(CardFields {
+                col: next.col,
+                rank: next.rank.clone(),
+                f: next.f.clone(),
+            }),
+        )
+        .await
+    }
+
+    /// Remember the card a write landed ([`Self::card_base`]).
+    fn land_card(
+        &self,
+        landed_key: String,
+        document_id: &str,
+        revision: u64,
+        me: &str,
+        item: &str,
+        next: &PatchedCard,
+    ) {
+        let card = CardDoc {
+            id: document_id.to_string(),
+            owner_id: me.to_string(),
+            updated_at: 0,
+            item: item.to_string(),
+            col: next.col.map(i64::from),
+            rank: next.rank.clone(),
+            f: next.f.clone(),
+            state: next.state,
         };
-        let replace = async |id: &str| {
-            self.replace_own(
-                repo,
-                &contract,
-                DOC_CARD,
-                Role::Triage,
-                id,
-                &content,
-                next.state,
-            )
-            .await
-        };
-        if let Some(own) = docs.own {
-            let changed = replace(&own).await?;
-            return Ok(written(own, false, changed));
-        }
-        let mut props = present(&content);
-        props.insert("board".into(), FieldValue::integer(u64::from(board.key)));
-        props.insert("item".into(), FieldValue::identifier(item_bytes));
-        props.insert(
-            "state".into(),
-            FieldValue::integer(next.state.unsigned_abs()),
-        );
-        match self.write(repo, &contract, DOC_CARD, props).await {
-            Ok(id) => Ok(written(id, true, true)),
-            // the signer's card for this item appeared since the read (another device)
-            Err(Error::DuplicateUniqueIndex(m)) => {
-                let Some(own) = self
-                    .item_card_docs(repo, board.key, &item.id, &me)
-                    .await?
-                    .own
-                else {
-                    return Err(Error::DuplicateUniqueIndex(m));
-                };
-                let changed = replace(&own).await?;
-                Ok(written(own, false, changed))
-            }
-            Err(e) => Err(e),
+        if let Ok(mut m) = self.landed_cards.lock() {
+            m.insert(
+                landed_key,
+                LandedCard {
+                    document_id: document_id.to_string(),
+                    revision,
+                    card,
+                },
+            );
         }
     }
 

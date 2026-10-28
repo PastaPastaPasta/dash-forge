@@ -633,7 +633,14 @@ fn board_outputs_match_their_schemas() {
         now,
     };
     for view in [None, spec.views.get(1)] {
-        let shown = crate::board::shown(&snap, &spec, view, false, Some(home), &Default::default());
+        let shown = crate::board::shown(
+            &snap,
+            &spec,
+            view,
+            false,
+            Some(home),
+            &std::collections::HashMap::new(),
+        );
         let body = crate::board::view_json(&snap, &shown);
         assert_valid("board view", &body);
         assert_eq!(body["columns"].as_array().map(Vec::len), Some(3));

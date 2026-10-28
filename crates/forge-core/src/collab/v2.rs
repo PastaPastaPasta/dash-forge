@@ -3270,6 +3270,7 @@ fn pr_list_reads<'c>(
     core: &'c LoadedContract,
     scope: &crate::scope::DocScope,
     limit: u32,
+    before: Option<u64>,
 ) -> [crate::platform::BatchRead<'c>; 4] {
     use crate::platform::{BatchBind, BatchRead};
     let member = |role: Role| BatchRead {
@@ -3284,7 +3285,8 @@ fn pr_list_reads<'c>(
         BatchRead {
             contract: collab,
             document_type: DOC_PATCH,
-            filters: scope.filters([]),
+            filters: scope
+                .filters(before.map(|b| QueryFilter::lte("$createdAt", FieldValue::uint64(b)))),
             order: vec![QueryOrder::desc("$createdAt")],
             limit,
             bind: None,
@@ -3433,6 +3435,10 @@ pub struct Collab<'a> {
     /// A bot signer's `read` letter for the thread it replies on (§22.3), keyed by repository
     /// id ([`Self::use_read_letter`]): the members-only revisions it lists open with their keys.
     read_letter: std::sync::Mutex<Option<([u8; 32], Arc<crate::private::key_letter::ReadLetter>)>>,
+    /// The cards this `Collab`'s card writes landed, by card document id, with the revision
+    /// each wrote ([`Self::write_card`]): a later write of the same item applies its change over
+    /// one while a fresh read still holds an older revision (boards.md §3.2).
+    pub(super) landed_cards: std::sync::Mutex<BTreeMap<String, super::boards::LandedCard>>,
 }
 
 /// A bot's post keys in one repository, by epoch.
@@ -3494,6 +3500,7 @@ impl<'a> Collab<'a> {
             members_refs: std::sync::Mutex::default(),
             post_keys: std::sync::Mutex::default(),
             read_letter: std::sync::Mutex::default(),
+            landed_cards: std::sync::Mutex::default(),
         }
     }
 
@@ -3524,6 +3531,7 @@ impl<'a> Collab<'a> {
             members_refs: std::sync::Mutex::default(),
             post_keys: std::sync::Mutex::default(),
             read_letter: std::sync::Mutex::default(),
+            landed_cards: std::sync::Mutex::default(),
         }
     }
 
@@ -6038,11 +6046,24 @@ impl<'a> Collab<'a> {
     /// [`Self::list_patch_views`] with, for each members-only PR of the page this reader cannot
     /// open, its placeholder and its log (transitions and events: open, merged or closed, and
     /// what moderation needs), so a list can filter and order it like the others.
-    #[allow(clippy::too_many_lines)] // the reads, then one fold per row
     pub async fn list_patch_views_read(
         &self,
         repo: &RepoRef,
         limit: u32,
+    ) -> Result<(Listed<(PatchView, Approvals)>, Vec<SealedTarget>)> {
+        self.list_patch_views_before(repo, limit, None).await
+    }
+
+    /// [`Self::list_patch_views_read`] of the pull requests created at or before `before` (ms;
+    /// `None`: the newest): one page of a newest-first walk through every pull request, as a
+    /// board's source reads them (`collab::boards`). A page that repeats rows of the previous
+    /// one's last time is the caller's to dedupe.
+    #[allow(clippy::too_many_lines)] // the reads, then one fold per row
+    pub async fn list_patch_views_before(
+        &self,
+        repo: &RepoRef,
+        limit: u32,
+        before: Option<u64>,
     ) -> Result<(Listed<(PatchView, Approvals)>, Vec<SealedTarget>)> {
         let forge = repo.forge();
         self.client
@@ -6053,7 +6074,7 @@ impl<'a> Collab<'a> {
         let community = self.community_contract(repo).await?;
         let scope = repo.scope()?;
         let limit = page_limit(limit);
-        let reads = pr_list_reads(&collab, &core, &scope, limit);
+        let reads = pr_list_reads(&collab, &core, &scope, limit, before);
         let [feed_a, feed_b, feed_c] = Self::feed_specs(&collab, &community, &scope);
         let [refs_a, refs_b, refs_c] = crate::refs::GitState::specs(&core, &scope);
         let history = [feed_a, feed_b, feed_c, refs_a, refs_b, refs_c];

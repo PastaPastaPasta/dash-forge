@@ -507,7 +507,7 @@ fn a_source_keeps_its_open_items_and_its_recently_closed_ones() {
         item("old-carded", ItemState::Closed, Some(now - 30 * day)),
     ];
     let carded: HashSet<&str> = ["old-carded"].into();
-    let (kept, older) = select_source_items(all.clone(), 14, &carded, now);
+    let (kept, older) = select_source_items(all.clone(), 14, &carded, now, false);
     let ids: Vec<&str> = kept.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(ids, ["open", "recent", "old-carded"]);
     assert!(older);
@@ -521,11 +521,44 @@ fn a_source_keeps_its_open_items_and_its_recently_closed_ones() {
             )
         })
         .collect();
-    let (kept, older) = select_source_items(many, 0, &HashSet::new(), now);
+    let (kept, older) = select_source_items(many, 0, &HashSet::new(), now, false);
     assert_eq!(kept.len(), CLOSED_PER_REPO);
     assert!(older);
     assert!(kept.iter().all(|i| i.id.as_str() >= "c005"));
-    let (_, older) = select_source_items(all, 365, &HashSet::new(), now);
+    let (_, older) = select_source_items(all, 365, &HashSet::new(), now, false);
+    assert!(!older);
+}
+
+/// `dg board view --archived` (a view asking for `is:archived`) keeps the next
+/// `CLOSED_PER_REPO` closed items past the window, as the web's "Show older" reads them: an
+/// item auto-archived without a card shows.
+#[test]
+fn a_view_asking_for_archived_items_keeps_the_next_stretch_of_older_closed_ones() {
+    let day = 86_400_000;
+    let now = 1_000 * day;
+    let mut all = vec![
+        item("open", ItemState::Open, None),
+        item("recent", ItemState::Closed, Some(now - 2 * day)),
+    ];
+    // 205 closed past the 14-day window, newest first c000 … c204, none carded
+    all.extend((0..CLOSED_PER_REPO + 5).map(|n| {
+        item(
+            &format!("c{n:03}"),
+            ItemState::Closed,
+            Some(now - 30 * day - i64::try_from(n).unwrap() * day),
+        )
+    }));
+    let (kept, older) = select_source_items(all.clone(), 14, &HashSet::new(), now, false);
+    assert_eq!(kept.len(), 2);
+    assert!(older);
+    let (kept, older) = select_source_items(all.clone(), 14, &HashSet::new(), now, true);
+    let ids: Vec<&str> = kept.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids.len(), 2 + CLOSED_PER_REPO);
+    assert!(ids.contains(&"c000") && ids.contains(&"c199") && !ids.contains(&"c200"));
+    assert!(older);
+    // auto-archive off: the first 200, then 200 more
+    let (kept, older) = select_source_items(all, 0, &HashSet::new(), now, true);
+    assert_eq!(kept.len(), 1 + CLOSED_PER_REPO + 6);
     assert!(!older);
 }
 
@@ -723,4 +756,117 @@ fn a_snapshot_lists_a_columns_cards_with_their_ranks() {
     assert_eq!(col[0].rank, "1");
     assert!(col[1].rank.starts_with('V'));
     assert!(snap.placement("a").is_some() && snap.item("zz").is_none());
+}
+
+fn landed(document_id: &str, revision: u64, col: i64) -> LandedCard {
+    LandedCard {
+        document_id: document_id.into(),
+        revision,
+        card: CardDoc {
+            id: document_id.into(),
+            owner_id: encode_identifier(ALICE),
+            updated_at: 0,
+            item: encode_identifier(ITEM),
+            col: Some(col),
+            rank: None,
+            f: Some(r#"{"1":1}"#.into()),
+            state: CARD_ACTIVE,
+        },
+    }
+}
+
+/// §3.2: a member's own back-to-back writes must not undo each other. A write builds on the
+/// card this client's last write landed while the fresh read lags behind it (it lacks the
+/// document, or holds an older revision), and on the read once it caught up, another
+/// member's newer card included.
+#[test]
+fn a_write_builds_on_its_last_landed_card_only_while_the_read_lags_behind_it() {
+    let item = encode_identifier(ITEM);
+    let read = |docs: Vec<FetchedDocument>, own: Option<&str>| ItemCardDocs {
+        cards: docs
+            .iter()
+            .filter_map(|d| card_doc_of(d, Visibility::Public, None))
+            .collect(),
+        own: own.map(str::to_string),
+    };
+    let mut mine = card_doc(1, ALICE, 100, 2);
+    mine.revision = Some(3);
+    let mine_id = mine.id.clone();
+    let l = landed(&mine_id, 4, 3);
+    // the read holds revision 3: older than the landed 4, so the landed card is the base
+    let (base, own, revision) =
+        card_base_of(Some(&l), &item, &read(vec![mine.clone()], Some(&mine_id)));
+    assert_eq!(base.and_then(|b| b.col), Some(3));
+    assert_eq!((own.as_deref(), revision), (Some(mine_id.as_str()), 4));
+    // a create whose read does not show it yet: the landed document is the one to replace
+    let (base, own, _) = card_base_of(Some(&l), &item, &read(Vec::new(), None));
+    assert_eq!(
+        (base.and_then(|b| b.col), own.as_deref()),
+        (Some(3), Some(mine_id.as_str()))
+    );
+    // caught up, and Bob wrote since: the read is the base, Bob's card included
+    mine.revision = Some(4);
+    let bob = card_doc(2, BOB, 200, 1);
+    let (base, own, revision) = card_base_of(
+        Some(&l),
+        &item,
+        &read(vec![mine, bob.clone()], Some(&mine_id)),
+    );
+    assert_eq!(base.map(|b| b.id), Some(bob.id.clone()));
+    assert_eq!((own.as_deref(), revision), (Some(mine_id.as_str()), 4));
+    // nothing landed (another process, or a duplicate's re-read): the read's newest card,
+    // another device's own card included, never a card built before the conflict
+    let other_device = card_doc(3, ALICE, 300, 4);
+    let (base, own, revision) = card_base_of(
+        None,
+        &item,
+        &read(vec![bob, other_device.clone()], Some(&other_device.id)),
+    );
+    assert_eq!(base.and_then(|b| b.col), Some(4));
+    assert_eq!((own, revision), (Some(other_device.id), 1));
+}
+
+/// §5.6: an item's sidebar reads the boards of its repository and its owner's other public
+/// repositories only; a private one's and a stranger's are never read.
+#[test]
+fn an_items_sidebar_reads_its_owners_public_repositories_only() {
+    let forge = crate::network::ForgeIds {
+        core: "core".into(),
+        collab: "collab".into(),
+        community: "community".into(),
+        meta: Some("meta".into()),
+        group: "group".into(),
+        superseded_in_group: Vec::new(),
+        group_owner: None,
+    };
+    let owner = encode_identifier(ALICE);
+    let repo = RepoRef {
+        forge,
+        repo_id: encode_identifier(REPO),
+        owner_id: owner.clone(),
+        name: "forge".into(),
+        visibility: Visibility::Private,
+    };
+    let repo_doc = |id: u8, who: [u8; 32], name: &str, visibility: &str| {
+        doc(
+            id,
+            who,
+            1,
+            vec![
+                ("name", FieldValue::text(name)),
+                ("visibility", FieldValue::text(visibility)),
+            ],
+        )
+    };
+    let homes = sidebar_homes_of(
+        &repo,
+        &[
+            repo_doc(0x21, ALICE, "plan", "public"),
+            repo_doc(0x22, ALICE, "secret", "private"),
+            repo_doc(0x23, BOB, "theirs", "public"),
+        ],
+    );
+    let names: Vec<&str> = homes.values().map(|r| r.name.as_str()).collect();
+    assert_eq!(homes.len(), 2);
+    assert!(names.contains(&"forge") && names.contains(&"plan"));
 }
