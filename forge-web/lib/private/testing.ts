@@ -5,6 +5,7 @@
  * `no-restricted-imports` bans importing it anywhere but `*.test.ts`.
  */
 
+import { __unsafeSealBoardDocWithNonce, type BoardBind, type BoardFields, type CardFields } from './board'
 import { __unsafeSealBotPostWithNonce, type PostKey } from './bot-post'
 import { __unsafeSealBranchPackWith, __unsafeSealBranchRefWith, type BranchKeys } from './branch-key'
 import { sha256, utf8, type Bytes } from './bytes'
@@ -25,6 +26,17 @@ export function sealDocWithNonce(
   options: SealDocOptions = {},
 ): Promise<{ ad: Bytes; tlv: Bytes; enc: Bytes }> {
   return __unsafeSealDocWithNonce(keys, doc, fields, nonce, options)
+}
+
+/** `sealBoardDoc` with a fixed nonce; returns the AD and padded TLV too (the `sealed_board` vectors). */
+export function sealBoardDocWithNonce(
+  keys: EpochKeys,
+  ownerId: Uint8Array,
+  bind: BoardBind,
+  fields: BoardFields | CardFields,
+  nonce: Uint8Array,
+): Promise<{ ad: Bytes; tlv: Bytes; enc: Bytes }> {
+  return __unsafeSealBoardDocWithNonce(keys, ownerId, bind, fields, nonce)
 }
 
 /** `sealMembersDoc` with a fixed nonce; returns the AD, raw `K_obj`, `COMMIT_obj` and padded TLV too. */

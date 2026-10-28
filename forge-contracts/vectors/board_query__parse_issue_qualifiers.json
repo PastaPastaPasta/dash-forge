@@ -1,0 +1,183 @@
+{
+  "name": "parse_issue_qualifiers",
+  "description": "The Issues tab's qualifiers in a board query: is:/state:, label (quoted), -label, no:, assignee:@me, author:<id>, milestone (quoted), repo:, is:archived; keys in any case; the rest is free text (#12, -word).",
+  "case": "board_query",
+  "rules": "v2",
+  "input": {
+    "op": "parse",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        },
+        {
+          "id": 6,
+          "name": "Story points",
+          "type": "num"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "text": "IS:Open -label:wontfix label:\"good first\" no:assignee assignee:@ME author:Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r milestone:\"v1.0\" repo:alice/forge state:merged is:archived -is:pr crash #12 -windows",
+    "repos": {
+      "alice/forge": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h"
+    }
+  },
+  "expected": {
+    "preds": [
+      {
+        "k": "is",
+        "not": false,
+        "v": "open"
+      },
+      {
+        "k": "label",
+        "not": true,
+        "v": "wontfix"
+      },
+      {
+        "k": "label",
+        "not": false,
+        "v": "good first"
+      },
+      {
+        "k": "no",
+        "not": false,
+        "v": "assignee"
+      },
+      {
+        "k": "assignee",
+        "not": false,
+        "v": "me"
+      },
+      {
+        "k": "author",
+        "not": false,
+        "v": "Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r"
+      },
+      {
+        "k": "milestone",
+        "not": false,
+        "v": "v1.0"
+      },
+      {
+        "k": "repo",
+        "not": false,
+        "v": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h"
+      },
+      {
+        "k": "is",
+        "not": false,
+        "v": "merged"
+      },
+      {
+        "k": "is",
+        "not": false,
+        "v": "archived"
+      },
+      {
+        "k": "is",
+        "not": true,
+        "v": "pr"
+      }
+    ],
+    "text": "crash #12 -windows",
+    "unresolved": []
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "range_leap_year",
+  "description": "Ten-day iterations from 2024-02-20 cross 29 February.",
+  "case": "board_iteration",
+  "rules": "v2",
+  "input": {
+    "op": "range",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "C1"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Sprint",
+          "type": "iter",
+          "start": "2024-02-20",
+          "days": 10
+        }
+      ]
+    },
+    "field": 1,
+    "ks": [
+      0,
+      1
+    ]
+  },
+  "expected": [
+    {
+      "index": 0,
+      "name": "Sprint 1",
+      "start": "2024-02-20",
+      "end": "2024-02-29",
+      "startMs": 1708387200000,
+      "endMs": 1709251200000
+    },
+    {
+      "index": 1,
+      "name": "Sprint 2",
+      "start": "2024-03-01",
+      "end": "2024-03-10",
+      "startMs": 1709251200000,
+      "endMs": 1710115200000
+    }
+  ]
+}

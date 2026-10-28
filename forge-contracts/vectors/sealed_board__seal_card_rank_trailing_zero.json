@@ -1,0 +1,25 @@
+{
+  "name": "seal_card_rank_trailing_zero",
+  "description": "an explicit rank never ends in 0.",
+  "case": "sealed_board",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "nonce": "000102030405060708090a0b",
+    "doc": {
+      "type": "card",
+      "board": 7,
+      "item": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "fields": {
+      "rank": "V0"
+    }
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

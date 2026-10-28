@@ -26,7 +26,7 @@ Four contracts, in one contract group (`dash-forge`) that has an owner and **no 
 | 1 | `forge-core` | repositories, members (`writer`, `maintainer`, `consent`), packs, refs, releases, config, `pushGrant`. Its create transition also creates the contract group. |
 | 2 | `forge-collab` | issues, pull requests, reviews, comments, transitions |
 | 3 | `forge-community` | `authorEvent`, `checkRun`, `event`, `milestone`, `policy`, `runner`, `star`, `watch`, `webhook` |
-| 4 | `forge-meta` | `ban`, `follow`, `label`, `packMirror`, `profile`, `repoKey`, `topic`, `vaultEntry` ([forge-v2.md §2](contracts/forge-v2.md#forge-meta-mainnet-set-only)) |
+| 4 | `forge-meta` | `ban`, `board`, `card`, `follow`, `label`, `packMirror`, `profile`, `repoKey`, `topic`, `vaultEntry` ([forge-v2.md §2](contracts/forge-v2.md#forge-meta-mainnet-set-only)) |
 
 The order is fixed. Each contract takes the deployer's next identity nonce, the contract and group ids derive from those nonces, and each later contract's schema names the ids of the ones registered before it. [forge-v2.md §8](contracts/forge-v2.md#8-deploying) has the details.
 

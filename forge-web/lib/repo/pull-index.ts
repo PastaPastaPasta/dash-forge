@@ -57,6 +57,7 @@ import {
   authorCandidates,
   candidatesCheaper,
   feedOf,
+  hydrate,
   indexCache,
   membersOnlyOfIndex,
   intersect,
@@ -67,7 +68,9 @@ import {
   pageOf,
   pageWalk,
   repoCountsOf,
+  resolveIds,
   rowsInAnyState,
+  rowsOf,
   rowsWithEvent,
   scanCheaper,
   scanSelect,
@@ -513,4 +516,16 @@ export async function openPullsOnBranch(
     .filter((p) => p.repoId !== repo.repoId || !named.has(p.number))
     .map((p) => ({ ...p, repoId: p.repoId === repo.repoId ? null : p.repoId }))
   return { pulls: [...here, ...elsewhere], searched: selected.complete ? null : selected.searched }
+}
+
+/**
+ * The PR rows of `ids` (any not this repo's PRs, or not shown, are left out), each with its
+ * labels, assignees and milestone: a board's closed and card-named items (`./board-items`).
+ */
+export async function pullRowsById(sdk: EvoSDK, repo: RepoRef, ids: readonly string[], network: Network = DEFAULT_NETWORK): Promise<PullRow[]> {
+  if (ids.length === 0) return []
+  const index = await indexOf(sdk, repo, network)
+  await resolveIds(sdk, index, ids)
+  await hydrate(sdk, index, ids)
+  return rowsOf(index, ids)
 }

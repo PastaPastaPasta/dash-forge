@@ -15,6 +15,7 @@ import {
   previewCreate,
   previewDelete,
   previewReplace,
+  priceBoardWrites,
   REPLACE_MIN_CREDITS,
   sumPreviews,
   type FirstWrite,
@@ -375,5 +376,64 @@ describe('a passkey entry (vaultEntry)', () => {
     expect(previewCreate('vaultEntry', {}, S).credits).toBeGreaterThanOrEqual(33_110_400)
     expect(previewCreate('vaultEntry', {}, { ...S, author: true }).credits).toBeGreaterThanOrEqual(51_513_300)
     expect(-previewDelete('vaultEntry').credits).toBeLessThanOrEqual(26_654_372)
+  })
+})
+
+describe('boards (UPDATE-3, measured on testnet)', () => {
+  // boards.live.test.ts on testnet (2026-10-27): what each write cost, in credits
+  const KANBAN = { name: 'Second board', spec: 'x'.repeat(728) }
+
+  it('is priced at or above what testnet charged', () => {
+    // a board: a repository's later one, and its first
+    expect(previewCreate('board', KANBAN, S).credits).toBeGreaterThanOrEqual(54_681_460)
+    expect(previewCreate('board', KANBAN, { ...S, repo: true }).credits).toBeGreaterThanOrEqual(63_818_180)
+    // a card: for an item the board holds a card for, an item's first, and the board's first too
+    expect(previewCreate('card', {}, S).credits).toBeGreaterThanOrEqual(43_197_820)
+    expect(previewCreate('card', {}, { ...S, target: true }).credits).toBeGreaterThanOrEqual(70_860_620)
+    expect(previewCreate('card', {}, { ...S, target: true, repo: true }).credits).toBeGreaterThanOrEqual(89_120_880)
+    // replaces: a board closed or deleted (state only), a card moved (one rank digit), its fields set
+    expect(previewReplace('board', {}).credits).toBeGreaterThanOrEqual(4_440_040)
+    expect(previewReplace('board', { state: 1 }).credits).toBeGreaterThanOrEqual(4_386_040)
+    expect(previewReplace('card', { rank: 'F' }).credits).toBeGreaterThanOrEqual(4_879_382)
+    expect(previewReplace('card', { rank: 'F', f: '{"1":1,"2":3}' }).credits).toBeGreaterThanOrEqual(5_209_102)
+  })
+
+  it('prices a card as design §7 quotes: about 0.0004-0.0009 DASH to create, about 0.00005 to move', () => {
+    // for an item another member has a card for, an item's first, a board's first
+    const creates = [S, { ...S, target: true }, { ...S, target: true, repo: true }].map((first) => previewCreate('card', { rank: 'V' }, first).dash)
+    expect(creates[0]).toBeGreaterThan(0.0004)
+    expect(creates[2]).toBeLessThan(0.001)
+    expect([...creates].sort()).toEqual(creates)
+    const move = previewReplace('card', { rank: 'Vx' })
+    expect(move.dash).toBeLessThan(0.00006)
+    expect(move.minCredits).toBeLessThanOrEqual(move.credits)
+  })
+
+  it('admits a board or card replace as its create would be admitted (never probed)', () => {
+    for (const type of ['board', 'card']) {
+      const replace = previewReplace(type, { rank: 'F' })
+      expect(replace.admit).toEqual(previewCreate(type, { rank: 'F' }).admit)
+      expect(replace.admit.budget).toBeGreaterThan(replace.credits)
+    }
+  })
+
+  it('prices a board by its definition’s bytes when the caller knows them', () => {
+    const typical = priceBoardWrites(1, 0, { type: 'board' }).credits
+    const large = priceBoardWrites(1, 0, { type: 'board', bytes: 4096 }).credits
+    // every byte past the typical 1200 is priced (27,500 credits each, with headroom)
+    expect(large - typical).toBeGreaterThanOrEqual((4096 - 1200) * 27_500)
+    expect(large).toBeGreaterThan(previewCreate('board', { spec: 'x'.repeat(4000) }, { ...S, repo: true }).credits)
+    expect(priceBoardWrites(0, 1, { type: 'board', bytes: 0 }).credits).toBe(previewReplace('board').credits)
+  })
+
+  it('priceBoardWrites sums creates and replaces, and nothing costs nothing', () => {
+    expect(priceBoardWrites(0, 0).credits).toBe(0)
+    const one = priceBoardWrites(1, 0).credits
+    const replace = priceBoardWrites(0, 1).credits
+    expect(replace).toBeLessThan(one / 5)
+    expect(priceBoardWrites(3, 2).credits).toBe(3 * one + 2 * replace)
+    // sealed writes store their framing too; a board pays for its definition's bytes
+    expect(priceBoardWrites(1, 0, { sealed: true }).credits).toBeGreaterThan(one)
+    expect(priceBoardWrites(1, 0, { type: 'board' }).credits).toBeGreaterThan(previewCreate('board').credits)
   })
 })

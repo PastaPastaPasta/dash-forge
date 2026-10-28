@@ -13,8 +13,10 @@
 
 import Link from 'next/link'
 import { usePathname } from '@/hooks/use-route'
-import { Code2, GitPullRequest, MessageSquare, Tag } from 'lucide-react'
+import { Code2, GitPullRequest, KanbanSquare, MessageSquare, Tag } from 'lucide-react'
 import { activeRepoTab } from '@/components/repo/repo-header'
+import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
+import { useKnownBoardsDeployed } from '@/hooks/use-board'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 import { ownerLabel } from '@/lib/page-title'
@@ -26,10 +28,14 @@ const TABS = [
   { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false },
   { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false },
 ] as const
+const BOARDS_TAB = { key: 'boards', label: 'Boards', path: '/repo/boards', icon: KanbanSquare, refAware: false } as const
 
 export function RepoShellHeader({ addr }: { addr: RepoAddress }): JSX.Element {
   const current = activeRepoTab(usePathname())
   const refParam = useParam('ref')
+  // Boards where this session already read that the network has them (the real header asks).
+  const boards = useKnownBoardsDeployed(NETWORKS[DEFAULT_NETWORK].v2?.meta) === true
+  const tabs = boards ? [...TABS.slice(0, 3), BOARDS_TAB, ...TABS.slice(3)] : TABS
   return (
     <div className="mb-5" data-testid="repo-shell-header">
       {/* The page's h1 while it loads, one line on a phone (L-58, L-60), like the real header. */}
@@ -46,7 +52,7 @@ export function RepoShellHeader({ addr }: { addr: RepoAddress }): JSX.Element {
         </Link>
       </h1>
       <TabStrip activeKey={current ?? ''} label="Repository" className="mt-4">
-        {TABS.map((tab) => {
+        {tabs.map((tab) => {
           const Icon = tab.icon
           const active = tab.key === current
           return (

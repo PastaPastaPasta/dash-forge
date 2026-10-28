@@ -7,7 +7,8 @@
 //!
 //! DESIGN rev 4.1 D44 adds a fourth contract, forge-meta, registered last: `repoKey`, `ban`,
 //! `label`, `topic`, `packMirror`, `profile` and `follow` ([`META_TYPES`]) move there, and
-//! `vaultEntry` (UPDATE-2, the passkey vault) exists there only. The
+//! `vaultEntry` (UPDATE-2, the passkey vault), `board` and `card` (UPDATE-3, boards) exist there
+//! only ([`META_ONLY_TYPES`]). The
 //! deployment record says which layout a network has (`v2.forgeMeta` present,
 //! [`ForgeIds::meta`]), so one build serves sakura's three-contract set and four-contract sets:
 //! [`ForgeIds::contract_of`] is the layout-aware map, [`ForgeContract::of`] the three-contract
@@ -87,10 +88,10 @@ pub const COMMUNITY_TYPES: [&str; 12] = [
 /// The types forge-meta holds on a four-contract set (D44). On a three-contract set they stay
 /// in [`CORE_TYPES`] (`label`, `topic`, `packMirror`), [`COLLAB_TYPES`] (`repoKey`, `ban`) and
 /// [`COMMUNITY_TYPES`] (`profile`, `follow`). None of them is read by a rule, total or derived
-/// index of its old contract, so the move changes no consensus rule. `vaultEntry` (UPDATE-2) is
-/// the exception: `build.py` builds it with the four-contract layout only, so it has no
-/// three-contract home and [`ForgeContract::of`] knows no contract for it.
-pub const META_TYPES: [&str; 8] = [
+/// index of its old contract, so the move changes no consensus rule. [`META_ONLY_TYPES`] are the
+/// exception: `build.py` builds them with the four-contract layout only, so they have no
+/// three-contract home and [`ForgeContract::of`] knows no contract for them.
+pub const META_TYPES: [&str; 10] = [
     "repoKey",
     "ban",
     "label",
@@ -99,7 +100,14 @@ pub const META_TYPES: [&str; 8] = [
     "profile",
     "follow",
     "vaultEntry",
+    "board",
+    "card",
 ];
+
+/// The [`META_TYPES`] no three-contract set has: `vaultEntry` (UPDATE-2, the passkey vault) and
+/// `board` and `card` (UPDATE-3, `docs/design/boards.md` §3). On a network without forge-meta
+/// [`ForgeIds::contract_of`] answers `None` for them.
+pub const META_ONLY_TYPES: [&str; 3] = ["vaultEntry", "board", "card"];
 
 /// The listed types a contract build may leave out: RC2's fused star (C1, a `build.py` flag)
 /// drops `starBeat`, whose count the star's own `byWeek` index takes over. Clients read the
@@ -419,8 +427,18 @@ mod tests {
             assert_eq!(four.contract_id_of(t), Some("META"), "{t}");
             assert_eq!(four.home(t), "META", "{t}");
             assert_ne!(three.contract_id_of(t), Some("META"), "{t}");
-            // (vaultEntry, UPDATE-2, is a four-contract type: no home in the three-contract set)
-            assert_eq!(three.contract_id_of(t).is_some(), t != "vaultEntry", "{t}");
+            // (vaultEntry, board and card are four-contract types: no home in the three-contract set)
+            assert_eq!(
+                three.contract_id_of(t).is_some(),
+                !META_ONLY_TYPES.contains(&t),
+                "{t}"
+            );
+        }
+        for t in META_ONLY_TYPES {
+            assert!(META_TYPES.contains(&t), "{t}");
+            assert_eq!(ForgeContract::of(t), None, "{t}");
+            assert_eq!(three.contract_of(t), None, "{t}");
+            assert_eq!(four.contract_of(t), Some(ForgeContract::Meta), "{t}");
         }
         for (t, old) in [
             ("repoKey", "COLLAB"),

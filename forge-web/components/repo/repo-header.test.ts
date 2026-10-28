@@ -16,6 +16,9 @@ describe('activeRepoTab', () => {
     ['/repo/issue/', 'issues'],
     ['/repo/pulls/new/', 'pulls'],
     ['/repo/release', 'releases'],
+    ['/repo/boards/', 'boards'],
+    ['/repo/board', 'boards'],
+    ['/repo/board/settings/', 'boards'],
     ['/repo/settings/', 'settings'],
     ['/repo/settings/environments/', 'settings'],
     ['/repo/settings/bots/', 'settings'],
@@ -32,3 +35,4 @@ describe('activeRepoTab', () => {
     expect(activeRepoTab('/repo/security/')).toBeNull()
   })
 })
+

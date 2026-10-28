@@ -21,7 +21,8 @@
  * publish one document revision's per-object key (`membersObjKey`, `letterObjKey`) and open it
  * with no other key (`openMembersWithKey`, `openLetterWithKey`). `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
  * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
- * randomness, and only their fixed-nonce twins stay test-only.
+ * randomness, and only their fixed-nonce twins stay test-only. `./board` seals a private repository's
+ * boards and cards (§4.6, `docs/design/boards.md` §3.3); its fixed-nonce twin is test-only too.
  */
 
 export { bytesToHex, concat as concatBytes, constantTimeEqual, hexToBytes, isU32, randomBytes, type Bytes } from './bytes'
@@ -170,6 +171,23 @@ export {
   type ReleaseStatus,
   type StoredRelease,
 } from './release'
+export {
+  BOARD_MAX_PLAINTEXT,
+  BOARD_TAG,
+  CARD_MAX_PLAINTEXT,
+  boardAd,
+  encodeBoardTlv,
+  encodeCardTlv,
+  openBoardDoc,
+  parseBoardTlv,
+  sealBoardDoc,
+  type BoardBind,
+  type BoardDocType,
+  type BoardFields,
+  type BoardOpenResult,
+  type CardFields,
+  type StoredBoardDoc,
+} from './board'
 export {
   BlindMap,
   SALT_LEN,

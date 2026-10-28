@@ -1,0 +1,182 @@
+{
+  "name": "no_done_no_default",
+  "description": "A board without a Done column applies only \"the card's column, else the default\"; with default 0 the items without a column show in \"No status\" (column 0, listed first while it holds an item).",
+  "case": "board_fold",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Backlog"
+        },
+        {
+          "id": 2,
+          "name": "Doing"
+        }
+      ],
+      "sources": [
+        {
+          "k": "i"
+        }
+      ]
+    },
+    "home": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+    "now": 1793102400000,
+    "items": [
+      {
+        "id": "59jC2F3PtR5FccD7R7Kijqzx56bJBprCMDCRSthYsBye",
+        "number": 61,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791032400000,
+        "closedAt": null,
+        "title": "Item 61",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "5DjqLqRAMcU7xHVjLN3zME67TxJxH4jGvA4vnuJp8sJu",
+        "number": 62,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "closed",
+        "createdAt": 1791036000000,
+        "closedAt": 1793016000000,
+        "title": "Item 62",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "5HkUfRnvporzHxnMFcnFxcBGrp2cNJcMV6wS8uv5QYeA",
+        "number": 63,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "closed",
+        "createdAt": 1791039600000,
+        "closedAt": 1793016000000,
+        "title": "Item 63",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "5Mm7z2AhJ1Frde4yAsWXZzGSFfkGTYVS43owUvXLgDyR",
+        "number": 64,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "pr",
+        "state": "open",
+        "createdAt": 1791043200000,
+        "closedAt": null,
+        "title": "Item 64",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      }
+    ],
+    "cards": [
+      {
+        "id": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244801000,
+        "item": "5HkUfRnvporzHxnMFcnFxcBGrp2cNJcMV6wS8uv5QYeA",
+        "col": 2,
+        "rank": null,
+        "f": null,
+        "state": 0
+      },
+      {
+        "id": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244802000,
+        "item": "5Mm7z2AhJ1Frde4yAsWXZzGSFfkGTYVS43owUvXLgDyR",
+        "col": 1,
+        "rank": null,
+        "f": null,
+        "state": 0
+      }
+    ]
+  },
+  "expected": {
+    "items": [
+      {
+        "id": "59jC2F3PtR5FccD7R7Kijqzx56bJBprCMDCRSthYsBye",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": null,
+        "col": 0,
+        "rank": "V0VWzVQQqGxNR",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "5DjqLqRAMcU7xHVjLN3zME67TxJxH4jGvA4vnuJp8sJu",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": null,
+        "col": 0,
+        "rank": "V0VWzkWxMHEta",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "5HkUfRnvporzHxnMFcnFxcBGrp2cNJcMV6wS8uv5QYeA",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "col": 2,
+        "rank": "V0VWzzdTsHWPj",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "5Mm7z2AhJ1Frde4yAsWXZzGSFfkGTYVS43owUvXLgDyR",
+        "on": true,
+        "sourced": false,
+        "removed": false,
+        "card": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "col": 1,
+        "rank": "V0VX0Ek0OHnvs",
+        "archived": null,
+        "fields": {}
+      }
+    ],
+    "columns": [
+      {
+        "id": 0,
+        "items": [
+          "59jC2F3PtR5FccD7R7Kijqzx56bJBprCMDCRSthYsBye",
+          "5DjqLqRAMcU7xHVjLN3zME67TxJxH4jGvA4vnuJp8sJu"
+        ]
+      },
+      {
+        "id": 1,
+        "items": [
+          "5Mm7z2AhJ1Frde4yAsWXZzGSFfkGTYVS43owUvXLgDyR"
+        ]
+      },
+      {
+        "id": 2,
+        "items": [
+          "5HkUfRnvporzHxnMFcnFxcBGrp2cNJcMV6wS8uv5QYeA"
+        ]
+      }
+    ]
+  }
+}

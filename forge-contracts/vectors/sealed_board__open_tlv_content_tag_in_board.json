@@ -1,0 +1,33 @@
+{
+  "name": "open_tlv_content_tag_in_board",
+  "description": "another kind's tag (2, a body) in a board is malformed.",
+  "case": "sealed_board",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "board",
+      "key": 7,
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "plaintext": false,
+      "enc": "01000102030405060708090a0b1c702e8ae332eb2b301d70dea15bdc0ec9665db047c83eab7bf5ed30ecf0ab82335a6bf0f0284735347076c86f0bac76e486f07947e2d43ff6e67b7db2c5fa0ccb3522c7b9b821769b50e37228d95b85ed673eb35e7340abb254ad205f0f6b11ae8c5525a00b59d6857eedc3da23e14654d057576e26f3e866277e357a863abd577bfdd067ea604e8b54bb3d810534a994"
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

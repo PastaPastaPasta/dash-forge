@@ -1,0 +1,158 @@
+{
+  "name": "range",
+  "description": "iterationRange: iteration k runs from start + k·days for days days, named \"<field> k+1\"; across a year end; the last index; past it none.",
+  "case": "board_iteration",
+  "rules": "v2",
+  "input": {
+    "op": "range",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "field": 3,
+    "ks": [
+      0,
+      1,
+      6,
+      65535,
+      65536,
+      -1
+    ]
+  },
+  "expected": [
+    {
+      "index": 0,
+      "name": "Iteration 1",
+      "start": "2026-10-12",
+      "end": "2026-10-25",
+      "startMs": 1791763200000,
+      "endMs": 1792972800000
+    },
+    {
+      "index": 1,
+      "name": "Iteration 2",
+      "start": "2026-10-26",
+      "end": "2026-11-08",
+      "startMs": 1792972800000,
+      "endMs": 1794182400000
+    },
+    {
+      "index": 6,
+      "name": "Iteration 7",
+      "start": "2027-01-04",
+      "end": "2027-01-17",
+      "startMs": 1799020800000,
+      "endMs": 1800230400000
+    },
+    {
+      "index": 65535,
+      "name": "Iteration 65536",
+      "start": "4538-10-13",
+      "end": "4538-10-26",
+      "startMs": 81062899200000,
+      "endMs": 81064108800000
+    },
+    null,
+    null
+  ]
+}

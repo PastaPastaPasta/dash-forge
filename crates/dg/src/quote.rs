@@ -104,6 +104,43 @@ pub fn milestone_definition(text_bytes: u64) -> u64 {
     collab_doc_credits(CollabDoc::Label, DEFINITION_FIXED_BYTES + text_bytes) + 10_000_000
 }
 
+/// What a `board` or `card` (UPDATE-3, `docs/design/boards.md` §7) stores per byte of text,
+/// as every write: forge-web's `CREDITS_PER_TEXT_BYTE`.
+const BOARD_CREDITS_PER_BYTE: u64 = 27_500;
+
+/// A member's first revision of a board carrying `text_bytes` of name and definition (sealed:
+/// its `enc`), priced as the repository's first and the signer's first forge-meta write: forge-web's
+/// `BASE_CREDITS.board` (34M), its first-board surcharge (10M) and the contract nonce (12M), with
+/// headroom (1.06), and the bytes. Measured on testnet (2026-10-27,
+/// `boards.live.test.ts`): 62.8M-63.8M for a repository's first with 738 bytes, 53.7M-54.7M later.
+pub fn board_create(text_bytes: u64) -> u64 {
+    60_000_000 + BOARD_CREDITS_PER_BYTE * text_bytes
+}
+
+/// A replace of the signer's own board revision or card carrying `text_bytes`: forge-web's
+/// `REPLACE_BASE_BY_TYPE` (4.7M a board, 5.15M a card), rounded up. Measured on a testnet scratch
+/// set: a board's rename, close or delete 3.4M-4.6M, a card's move, field change or archive 4.2M-5.2M.
+pub fn board_replace(text_bytes: u64) -> u64 {
+    5_200_000 + BOARD_CREDITS_PER_BYTE * text_bytes
+}
+
+/// A member's first card for an item carrying `text_bytes` of column, rank and fields, priced as
+/// a board's first card and the signer's first forge-meta write: forge-web's `BASE_CREDITS.card`
+/// (43M) with the board's first card (18.5M), the item's first (28.5M) and the contract nonce (12M)
+/// surcharges, with headroom (1.06). Measured on testnet: 88.3M-89.1M a board's first
+/// card, 70.5M-70.9M an item's first, 42.8M-43.2M for an item another member has a card for.
+pub fn card_create(text_bytes: u64) -> u64 {
+    109_000_000 + BOARD_CREDITS_PER_BYTE * text_bytes
+}
+
+/// `creates` first cards and `replaces` card replaces of about `text_bytes` each (a re-rank, a
+/// bulk archive, "move to the next iteration"): the web's `priceBoardWrites`.
+pub fn card_writes(creates: usize, replaces: usize, text_bytes: u64) -> u64 {
+    let n = |k: usize| u64::try_from(k).unwrap_or(u64::MAX);
+    n(creates).saturating_mul(card_create(text_bytes))
+        + n(replaces).saturating_mul(board_replace(text_bytes))
+}
+
 /// A `topic` document, priced as the repository's first: 61.7M-62.6M on bonsia (QA wave 3),
 /// the repository's first 72.9M.
 pub const TOPIC: u64 = 78_000_000;

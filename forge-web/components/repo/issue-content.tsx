@@ -113,6 +113,7 @@ import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy,
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { EmbargoPanel, embargoShows } from '@/components/repo/embargo-panel'
+import { ItemBoards } from '@/components/repo/boards/item-boards'
 
 /** No requests or members yet (stable empty inputs for the request flags). */
 const NO_REQUESTS: readonly AgentRequest[] = []
@@ -947,6 +948,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <SidebarSection title="Development" icon={GitPullRequest}>
           <LinkedPulls addr={addr} number={issue.number} backlinks={backlinks.linking} />
         </SidebarSection>
+        {/* Boards (boards.md §5.6): read once in view, after the page's own load. */}
+        <ItemBoards
+          repo={home.repo}
+          addr={addr}
+          item={{ id: issue.id, number: issue.number, repoId: home.repo.repoId, repo: home.repo.name, kind: 'issue', state: open ? 'open' : 'closed', createdAt: issue.createdAt, closedAt: null, title: issue.title, labels: issue.state.labels, assignees: issue.state.assignees, milestone: meta.milestone, author: issue.author }}
+        />
         {/* Bots this issue can be handed to (DESIGN §4.9): shown when a bot's access covers it. */}
         <AgentsSection
           home={home}

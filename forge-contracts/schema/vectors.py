@@ -931,6 +931,101 @@ if F['passkey_vault'] and F['layout_meta']:   # (build.py builds it with the fou
 else:
     index('U2', 'no vaultEntry type', 'vaultEntry', None, False)
 
+# ---------------- UPDATE-3: boards (docs/design/boards.md §3) ----------------
+# The shapes, the plaintext/sealed rules and the frozen keys. The member gate (a maintainer, or a writer of
+# the claimed role), its re-check on a replace and `card.item` naming an issue or a PR are references, judged
+# by the offline chain (scripts/lib/offline-chain.test.mjs); no live suite case covers them yet.
+CONTRACT_OF.update(board='forge-community', card='forge-community')
+if F['boards'] and F['layout_meta']:   # (build.py builds them with the four-contract layout only)
+    BASE['board'] = {"repoId": i(1), "key": 1, "name": "Roadmap", "spec": '{"v":1,"cols":[{"id":1,"name":"Todo"}]}',
+                     "state": 0, "r": 1}
+    BASE['card'] = {"repoId": i(1), "board": 1, "item": i(2), "col": 1, "rank": "V", "f": '{"1":3}', "state": 0, "r": 1}
+    for _t in ('board', 'card'):
+        ok('base', f'{_t} ok', _t)
+    # board
+    ok('U3', 'a sealed board', 'board', name=DROP, spec=DROP, **SEALED)
+    ok('U3', 'a closed board', 'board', state=1)
+    ok('U3', 'a deleted board', 'board', state=2)
+    no('U3', 'a board in state 3', 'board', 'maximum', state=3)
+    ok('U3', 'board key 4294967295', 'board', key=4294967295)
+    no('U3', 'board key 0', 'board', 'minimum', key=0)
+    no('U3', 'board key 4294967296', 'board', 'maximum', key=4294967296)
+    no('U3', 'a board claiming role 2 (triage defines no board)', 'board', 'maximum', r=2)
+    no('U3', 'a board claiming role 0', 'board', 'minimum', r=0)
+    no('U3', 'a sealed board with a plaintext name', 'board', 'noPlain', spec=DROP, **SEALED)
+    no('U3', 'a sealed board with a plaintext definition', 'board', 'noPlain', name=DROP, **SEALED)
+    no('U3', 'a plaintext board without a name', 'board', 'hasName', name=DROP)
+    no('U3', 'a plaintext board without a definition', 'board', 'hasName', spec=DROP)
+    no('U3', 'a sealed board without its epoch', 'board', 'required', name=DROP, spec=DROP, enc=b(5, 61))
+    ok('U3', 'a board name of 63 four-byte characters', 'board', name='\U0001F600' * 63)
+    no('U3', 'a board name of 64 characters', 'board', 'maxLength', name='x' * 64)
+    no('U3', 'an empty board name', 'board', 'minLength', name='')
+    no('U3', 'a board name of spaces', 'board', 'pattern', name='   ')
+    no('U3', 'a board name with a control character', 'board', 'pattern', name='a\nb')
+    ok('U3', 'a definition of 4096 bytes', 'board', spec='x' * 4096)
+    no('U3', 'a definition of 4097 characters', 'board', 'maxLength', spec='x' * 4097)
+    no('U3', 'a definition over 4096 bytes', 'board', 'maxBytes', spec='é' * 2049)
+    ok('U3', 'a sealed board of 5120 bytes', 'board', name=DROP, spec=DROP, enc=b(5, 5120), epoch=0)
+    no('U3', 'a board enc of 28 bytes', 'board', 'minItems', name=DROP, spec=DROP, enc=b(5, 28), epoch=0)
+    no('U3', 'a board enc over the 5120-byte field limit', 'board', '10417', name=DROP, spec=DROP, enc=b(5, 5121), epoch=0)
+    for _p in ('repoId', 'key', 'state', 'r'):
+        no('U3', f'a board without {_p}', 'board', 'required', **{_p: DROP})
+    no('U3', 'a board with another property', 'board', 'additionalProperties', color='#00ff00')
+    _STORED = doc('board')
+    replace('U3', 'a board renamed, redefined and closed', 'board', _STORED, None, name='Plan', spec='{"v":1}', state=1)
+    replace('U3', 'a board deleted (state 2)', 'board', _STORED, None, state=2)
+    replace('U3', 'board key changed (immutable)', 'board', _STORED, '40128', key=2)
+    replace('U3', 'board repoId changed (immutable)', 'board', _STORED, '40128', repoId=i(3))
+    index('U3', "one definition per repo, board and member; a repo's boards by its prefix", 'board', 'byKey', True,
+          properties=['repoId', 'key', '$ownerId'], unique=True)
+    # card
+    ok('U3', 'a sealed card', 'card', col=DROP, rank=DROP, f=DROP, **SEALED)
+    ok('U3', 'a card with no column, rank or fields', 'card', col=DROP, rank=DROP, f=DROP)
+    ok('U3', 'an archived card', 'card', state=1)
+    ok('U3', 'a removed card', 'card', state=2)
+    no('U3', 'a card in state 3', 'card', 'maximum', state=3)
+    ok('U3', 'a triage card (role 2)', 'card', r=2)
+    no('U3', 'a card claiming role 3 (a reader places nothing)', 'card', 'maximum', r=3)
+    no('U3', 'a card claiming role 0', 'card', 'minimum', r=0)
+    no('U3', 'a sealed card with a plaintext column', 'card', 'noPlain', rank=DROP, f=DROP, **SEALED)
+    no('U3', 'a sealed card with a plaintext rank', 'card', 'noPlain', col=DROP, f=DROP, **SEALED)
+    no('U3', 'a sealed card with plaintext field values', 'card', 'noPlain', col=DROP, rank=DROP, **SEALED)
+    no('U3', 'a sealed card without its epoch', 'card', 'required', col=DROP, rank=DROP, f=DROP, enc=b(5, 61))
+    ok('U3', 'column 255', 'card', col=255)
+    no('U3', 'column 256', 'card', 'maximum', col=256)
+    no('U3', 'column -1', 'card', 'minimum', col=-1)
+    no('U3', 'card board key 0', 'card', 'minimum', board=0)
+    ok('U3', 'a rank of 63 digits', 'card', rank='z' * 63)
+    ok('U3', 'a rank of one digit 1', 'card', rank='1')
+    no('U3', 'a rank of 64 digits', 'card', 'maxLength', rank='z' * 64)
+    no('U3', 'an empty rank', 'card', 'minLength', rank='')
+    no('U3', 'a rank ending in 0', 'card', 'pattern', rank='V0')
+    no('U3', 'a rank of 0 alone', 'card', 'pattern', rank='0')
+    no('U3', 'a rank outside the 62 digits', 'card', 'pattern', rank='a-b')
+    ok('U3', 'field values of 2048 bytes', 'card', f='x' * 2048)
+    no('U3', 'field values of 2049 characters', 'card', 'maxLength', f='x' * 2049)
+    no('U3', 'field values over 2048 bytes', 'card', 'maxBytes', f='é' * 1025)
+    ok('U3', 'a sealed card of 2560 bytes', 'card', col=DROP, rank=DROP, f=DROP, enc=b(5, 2560), epoch=0)
+    no('U3', 'a card enc of 28 bytes', 'card', 'minItems', col=DROP, rank=DROP, f=DROP, enc=b(5, 28), epoch=0)
+    no('U3', 'a card enc of 2561 bytes', 'card', 'maxItems', col=DROP, rank=DROP, f=DROP, enc=b(5, 2561), epoch=0)
+    for _p in ('repoId', 'board', 'item', 'state', 'r'):
+        no('U3', f'a card without {_p}', 'card', 'required', **{_p: DROP})
+    no('U3', 'a card with another property', 'card', 'additionalProperties', note='hi')
+    _STORED = doc('card')
+    replace('U3', 'a card moved and re-ranked', 'card', _STORED, None, col=2, rank='Vk')
+    replace('U3', 'a card archived', 'card', _STORED, None, state=1)
+    replace('U3', 'a card removed', 'card', _STORED, None, state=2)
+    replace('U3', 'card item changed (immutable)', 'card', _STORED, '40128', item=i(3))
+    replace('U3', 'card board changed (immutable)', 'card', _STORED, '40128', board=2)
+    replace('U3', 'card repoId changed (immutable)', 'card', _STORED, '40128', repoId=i(3))
+    index('U3', 'one card per item, board and member; the boards an item is on by its prefix', 'card', 'onItem', True,
+          properties=['item', 'repoId', 'board', '$ownerId'], unique=True)
+    index('U3', "a board's cards, changed since a time", 'card', 'recent', True,
+          properties=['repoId', 'board', '$updatedAt'], unique=False)
+else:
+    for _t in ('board', 'card'):
+        index('U3', f'no {_t} type', _t, None, False)
+
 # ---------------- the other mainnet-only rules (forge-v2.md §9.1) ----------------
 if F['mainnet_release_target']:
     no('MN', 'a public publish without targetOid', 'release', 'targetOnPublish', targetOid=DROP)
@@ -1159,7 +1254,9 @@ LIVE_ONLY |= {('refUpdate', 'grantPrefix'), ('review', 'authorNoVerdict')}
 UPDATE_GUARDS = {('transition', 'k_kinds'), ('checkRun', 'rClaim'), ('event', 'rClaim'), ('milestone', 'rClaim'),
                  ('label', 'rClaim'), ('repoKey', 'mrClaim'),
                  # a build without B1 (variants only): the push class's claims
-                 ('refUpdate', 'rClaim'), ('packManifest', 'rClaim'), ('chunk', 'rClaim')}
+                 ('refUpdate', 'rClaim'), ('packManifest', 'rClaim'), ('chunk', 'rClaim'),
+                 # UPDATE-3: role-1 writers define boards, triage places cards too
+                 ('board', 'rClaim'), ('card', 'rClaim')}
 
 
 def uncovered():
@@ -1184,6 +1281,8 @@ GUARD_LOOSENINGS = [('transition', 'r', {'maximum': 4}, 3, 'e_mergeOid'),
                     ('label', 'r', {'maximum': 4}, 3, 'rClaim'),
                     ('checkRun', 'r', {'maximum': 4}, 2, 'rClaim'),
                     ('repoKey', 'mr', {'maximum': 4}, 4, 'mrClaim')]
+if 'board' in BASE:
+    GUARD_LOOSENINGS += [('board', 'r', {'maximum': 4}, 2, 'rClaim'), ('card', 'r', {'maximum': 4}, 3, 'rClaim')]
 
 
 def guard_check(out):

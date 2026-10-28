@@ -1,0 +1,168 @@
+{
+  "name": "arch_off",
+  "description": "arch 0 turns auto-archive off: an item closed 23 days ago with no card stays in Done.",
+  "case": "board_fold",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 0
+    },
+    "home": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+    "now": 1793102400000,
+    "items": [
+      {
+        "id": "4ffa5ETTYcoqTsb1MHqvKzwPDVT2m6GswoJjQ18swZrm",
+        "number": 54,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "closed",
+        "createdAt": 1791007200000,
+        "closedAt": 1791072000000,
+        "title": "Item 54",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      }
+    ],
+    "cards": []
+  },
+  "expected": {
+    "items": [
+      {
+        "id": "4ffa5ETTYcoqTsb1MHqvKzwPDVT2m6GswoJjQ18swZrm",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": null,
+        "col": 3,
+        "rank": "V0VWxnglEEyoY",
+        "archived": null,
+        "fields": {}
+      }
+    ],
+    "columns": [
+      {
+        "id": 1,
+        "items": []
+      },
+      {
+        "id": 2,
+        "items": []
+      },
+      {
+        "id": 3,
+        "items": [
+          "4ffa5ETTYcoqTsb1MHqvKzwPDVT2m6GswoJjQ18swZrm"
+        ]
+      },
+      {
+        "id": 4,
+        "items": []
+      }
+    ]
+  }
+}

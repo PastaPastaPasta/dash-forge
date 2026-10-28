@@ -1,0 +1,85 @@
+{
+  "name": "parse_serde_refusals",
+  "description": "What forge-core's JSON reader (serde_json) refuses, the web refuses too, anywhere in the spec (an unknown key included): an unpaired surrogate escape, a number out of range (JavaScript would read 1e400 as Infinity), nesting past 127 levels. 127 levels read; an empty desc is none.",
+  "case": "board_spec",
+  "rules": "v2",
+  "input": {
+    "op": "parse",
+    "cases": [
+      {
+        "name": "lone_surrogate_unknown_key",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"x\":\"\\ud800\"}"
+      },
+      {
+        "name": "lone_trailing_surrogate_name",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"a\\udc00\"}]}"
+      },
+      {
+        "name": "lone_surrogate_desc",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"desc\":\"\\ud800x\"}"
+      },
+      {
+        "name": "surrogate_pair_ok",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"desc\":\"\\ud83d\\ude80\"}"
+      },
+      {
+        "name": "number_out_of_range",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"x\":1e400}"
+      },
+      {
+        "name": "arch_out_of_range",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"arch\":-1e400}"
+      },
+      {
+        "name": "depth_127",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+      },
+      {
+        "name": "depth_128",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+      },
+      {
+        "name": "empty_desc",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}],\"desc\":\"\"}"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "name": "lone_surrogate_unknown_key",
+      "error": "json"
+    },
+    {
+      "name": "lone_trailing_surrogate_name",
+      "error": "json"
+    },
+    {
+      "name": "lone_surrogate_desc",
+      "error": "json"
+    },
+    {
+      "name": "surrogate_pair_ok",
+      "json": "{\"v\":1,\"desc\":\"🚀\",\"columns\":[{\"id\":1,\"name\":\"A\"}]}"
+    },
+    {
+      "name": "number_out_of_range",
+      "error": "json"
+    },
+    {
+      "name": "arch_out_of_range",
+      "error": "json"
+    },
+    {
+      "name": "depth_127",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}]}"
+    },
+    {
+      "name": "depth_128",
+      "error": "json"
+    },
+    {
+      "name": "empty_desc",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"}]}"
+    }
+  ]
+}

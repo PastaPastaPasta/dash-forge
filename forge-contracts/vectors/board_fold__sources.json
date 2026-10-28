@@ -1,0 +1,309 @@
+{
+  "name": "sources",
+  "description": "Sources (§2.3): issues of the home repo labelled bug, and open PRs of another repo. A source query applies only item qualifiers: its status: and field qualifiers are ignored (unresolved), so \"status:Todo label:bug\" includes every home issue labelled bug. A PR of the home repo does not match an issues source.",
+  "case": "board_fold",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "i",
+          "q": "status:Todo LABEL:bug"
+        },
+        {
+          "r": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx",
+          "k": "p",
+          "q": "is:open"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "home": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+    "now": 1793102400000,
+    "items": [
+      {
+        "id": "6U2mVTnDRvyEmTSHuj1aBiUPnqWL5imdZ46oUireapkY",
+        "number": 81,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791104400000,
+        "closedAt": null,
+        "title": "Item 81",
+        "labels": [
+          "Bug"
+        ],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "6Y3Qp49yu8N778iupyjqo6ZZBhDzAxei7zyJpjTurW5o",
+        "number": 82,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791108000000,
+        "closedAt": null,
+        "title": "Item 82",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "6c448eXkNKkySp1XkEU7QUeiaYweGCXngwqpAk5B8BR4",
+        "number": 83,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "pr",
+        "state": "open",
+        "createdAt": 1791111600000,
+        "closedAt": null,
+        "title": "Item 83",
+        "labels": [
+          "bug"
+        ],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "6g4hTEuWqX9qnVJ9fVCP1rjsyQfJMSQsFtiKWkgSPrkK",
+        "number": 84,
+        "repoId": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx",
+        "repo": "alice/forge",
+        "kind": "pr",
+        "state": "open",
+        "createdAt": 1791115200000,
+        "closedAt": null,
+        "title": "Item 84",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "6k5LmqHHJiYi8AamajvedEq3NGNxSgHwpqaprmHhfY5a",
+        "number": 85,
+        "repoId": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx",
+        "repo": "alice/forge",
+        "kind": "pr",
+        "state": "merged",
+        "createdAt": 1791118800000,
+        "closedAt": 1793016000000,
+        "title": "Item 85",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "6p5z6Rf3muwaTqsPVzevEcvCm86cXvB2PnTLCmtxwDQq",
+        "number": 86,
+        "repoId": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791122400000,
+        "closedAt": null,
+        "title": "Item 86",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      }
+    ],
+    "cards": []
+  },
+  "expected": {
+    "items": [
+      {
+        "id": "6U2mVTnDRvyEmTSHuj1aBiUPnqWL5imdZ46oUireapkY",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": null,
+        "col": 1,
+        "rank": "V0VX4NWvAMKdB",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "6Y3Qp49yu8N778iupyjqo6ZZBhDzAxei7zyJpjTurW5o",
+        "on": false,
+        "sourced": false,
+        "removed": false,
+        "card": null,
+        "col": 1,
+        "rank": "V0VX4cdRgMc9K",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "6c448eXkNKkySp1XkEU7QUeiaYweGCXngwqpAk5B8BR4",
+        "on": false,
+        "sourced": false,
+        "removed": false,
+        "card": null,
+        "col": 1,
+        "rank": "V0VX4rjyCMtfT",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "6g4hTEuWqX9qnVJ9fVCP1rjsyQfJMSQsFtiKWkgSPrkK",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": null,
+        "col": 1,
+        "rank": "V0VX56qUiNBBc",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "6k5LmqHHJiYi8AamajvedEq3NGNxSgHwpqaprmHhfY5a",
+        "on": false,
+        "sourced": false,
+        "removed": false,
+        "card": null,
+        "col": 3,
+        "rank": "V0VX5Lx1ENShl",
+        "archived": null,
+        "fields": {}
+      },
+      {
+        "id": "6p5z6Rf3muwaTqsPVzevEcvCm86cXvB2PnTLCmtxwDQq",
+        "on": false,
+        "sourced": false,
+        "removed": false,
+        "card": null,
+        "col": 1,
+        "rank": "V0VX5b3XkNkDu",
+        "archived": null,
+        "fields": {}
+      }
+    ],
+    "columns": [
+      {
+        "id": 1,
+        "items": [
+          "6U2mVTnDRvyEmTSHuj1aBiUPnqWL5imdZ46oUireapkY",
+          "6g4hTEuWqX9qnVJ9fVCP1rjsyQfJMSQsFtiKWkgSPrkK"
+        ]
+      },
+      {
+        "id": 2,
+        "items": []
+      },
+      {
+        "id": 3,
+        "items": []
+      },
+      {
+        "id": 4,
+        "items": []
+      }
+    ]
+  }
+}

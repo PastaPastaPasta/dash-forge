@@ -50,6 +50,7 @@ pub mod agent_request;
 pub mod asset_name;
 pub mod aud;
 pub mod bans;
+pub mod boards;
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod embargo;
@@ -3871,7 +3872,8 @@ mod tests {
             let v: Vector = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             // the private-repository and mixed-visibility envelope vectors run in
-            // `private::conformance`, the environment snapshots in `env::conformance`
+            // `private::conformance`, the environment snapshots in `env::conformance`, the
+            // boards' (`board_*`) in `boards::tests::board_vectors`
             if crate::private::conformance::CRYPTO_CASE_PREFIXES
                 .iter()
                 .any(|p| v.case.starts_with(p))
@@ -3880,10 +3882,14 @@ mod tests {
                 || v.case == crate::private::access_notice::VECTOR_CASE
                 || v.case == crate::private::bot_post::VECTOR_CASE
                 || v.case == crate::rules::push_grant::VECTOR_CASE
+                || v.case.starts_with(crate::rules::boards::VECTOR_CASE_PREFIX)
                 || crate::members_git::conformance::CASES.contains(&v.case.as_str())
                 || v.case == crate::private::branch_key::conformance::CASE
                 || v.case == crate::private::members_check::CASE
                 || v.case == "seal_off_marker"
+                // a private repository's sealed boards and cards: `private::board`'s own
+                // harness runs them (as forge-web `lib/private/board.conformance.test.ts` does)
+                || v.case == crate::private::board::VECTOR_CASE
             {
                 continue;
             }

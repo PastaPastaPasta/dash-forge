@@ -1,0 +1,60 @@
+{
+  "name": "values_numbers",
+  "description": "Number fields: 1e15 and 1.5e-6 are kept (written without an exponent), 1e16 and 1e-7 dropped.",
+  "case": "board_spec",
+  "rules": "v2",
+  "input": {
+    "op": "values",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "C1"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "N1",
+          "type": "num"
+        },
+        {
+          "id": 2,
+          "name": "N2",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "N3",
+          "type": "num"
+        },
+        {
+          "id": 4,
+          "name": "N4",
+          "type": "num"
+        },
+        {
+          "id": 5,
+          "name": "N5",
+          "type": "num"
+        },
+        {
+          "id": 6,
+          "name": "N6",
+          "type": "num"
+        }
+      ]
+    },
+    "f": "{\"1\":1e15,\"2\":1.5e-6,\"3\":1e16,\"4\":1e-7,\"5\":-123456.789,\"6\":0.1}"
+  },
+  "expected": {
+    "values": {
+      "1": 1000000000000000,
+      "2": 0.0000015,
+      "5": -123456.789,
+      "6": 0.1
+    },
+    "json": "{\"1\":1000000000000000,\"2\":0.0000015,\"5\":-123456.789,\"6\":0.1}"
+  }
+}

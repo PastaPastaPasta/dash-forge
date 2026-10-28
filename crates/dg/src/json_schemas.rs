@@ -559,3 +559,131 @@ fn ipfs_pin_reports_match() {
         ),
     );
 }
+
+/// `dg board`'s builders: a board with a carded and a sourced item, viewed as the board and as
+/// a saved view, a list, a card write and a bulk write that stopped early.
+#[test]
+#[allow(clippy::too_many_lines)] // one board, built up, then each output
+fn board_outputs_match_their_schemas() {
+    use forge_core::collab::boards::{
+        Board, BoardItemSet, BoardRead, BoardRevision, BoardSnapshot, BoardState, BulkWritten,
+        CardWritten,
+    };
+    use forge_core::rules::boards::{
+        default_spec, fold_board, BoardItem, CardDoc, ItemKind, ItemState,
+    };
+    let home = "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi";
+    let spec = default_spec(home, 0);
+    let item = |id: &str, kind, state| BoardItem {
+        id: id.into(),
+        number: 3,
+        repo_id: home.into(),
+        repo: Some(format!("{home}/proj")),
+        kind,
+        state,
+        created_at: 5,
+        closed_at: (state != ItemState::Open).then_some(9),
+        title: "Fix it".into(),
+        labels: vec!["bug".into()],
+        assignees: Vec::new(),
+        milestone: None,
+        author: home.into(),
+    };
+    let items = vec![
+        item("a", ItemKind::Issue, ItemState::Open),
+        item("b", ItemKind::Pr, ItemState::Merged),
+    ];
+    let cards = vec![CardDoc {
+        id: "c".into(),
+        owner_id: home.into(),
+        updated_at: 10,
+        item: "a".into(),
+        col: Some(2),
+        rank: Some("1".into()),
+        f: Some(r#"{"1":2,"2":3,"3":0}"#.into()),
+        state: 0,
+    }];
+    let now = 86_400_000;
+    let board = Board {
+        key: 7,
+        repo_id: home.into(),
+        state: BoardState::Open,
+        name: Some("Roadmap".into()),
+        spec: Some(spec.clone()),
+        spec_error: None,
+        sealed: false,
+        newest: BoardRevision {
+            id: "r".into(),
+            owner_id: home.into(),
+            updated_at: 1,
+        },
+        revisions: Vec::new(),
+    };
+    let snap = BoardSnapshot {
+        read: BoardRead {
+            board: board.clone(),
+            cards: Vec::new(),
+            since: 10,
+        },
+        fold: Some(fold_board(&spec, home, &items, &cards, now)),
+        items: BoardItemSet {
+            items,
+            ..BoardItemSet::default()
+        },
+        now,
+    };
+    for view in [None, spec.views.get(1)] {
+        let shown = crate::board::shown(
+            &snap,
+            &spec,
+            view,
+            false,
+            Some(home),
+            &std::collections::HashMap::new(),
+        );
+        let body = crate::board::view_json(&snap, &shown);
+        assert_valid("board view", &body);
+        assert_eq!(body["columns"].as_array().map(Vec::len), Some(3));
+    }
+    let mut sealed = board.clone();
+    (sealed.name, sealed.spec, sealed.spec_error) = (None, None, Some("unreadable".into()));
+    assert_valid("board list", &crate::board::list_json(&[board, sealed]));
+    let w = CardWritten {
+        item: "a".into(),
+        document_id: "d".into(),
+        created: true,
+        changed: true,
+        col: Some(2),
+        rank: Some("1".into()),
+        f: None,
+        state: 1,
+    };
+    let price = crate::fmt::Price::new(false);
+    assert_valid(
+        "board move",
+        &json!({"status":"moved","board":7,"column":"Done","card":crate::board::card_json(&w, "#3"),
+                "cost":crate::fmt::cost_json(1, price)}),
+    );
+    let done = BulkWritten {
+        written: vec![w],
+        failed: Some(("b".into(), forge_core::error::Error::NotFound)),
+        skipped: vec!["e".into()],
+    };
+    let labels = [("a".to_string(), "#3".to_string())].into();
+    let body = crate::board::bulk_json(
+        "archived",
+        7,
+        &done,
+        &labels,
+        &crate::fmt::cost_json(1, price),
+    );
+    assert_valid("board archive", &body);
+    assert_valid("board remove", &body);
+    assert_error_valid(
+        &body,
+        &forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::PARTIAL,
+            "1 of 3 archived",
+        ),
+    );
+}

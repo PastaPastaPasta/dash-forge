@@ -1206,7 +1206,8 @@ describe('FORGE_RULES conformance vectors', () => {
   // to bots (`access_notice`) in `lib/private/access-notice.conformance.test.ts`; the narrower branches
   // (`branch_key`) in `lib/private/branch-key.conformance.test.ts`; a bot's members-only posts
   // (`bot_post`) in `lib/private/bot-post.conformance.test.ts`; bot push grants (`bot_push`) in
-  // `./push-grant.conformance.test.ts`.
+  // `./push-grant.conformance.test.ts`; a private repository's sealed boards and cards
+  // (`sealed_board`, boards.md §3.3) in `lib/private/board.conformance.test.ts`.
   // The members-only branch and PR cases (private-repos.md §19): `oid_blind`, `sealed_ref` and
   // `sealed_patch` run in `lib/private/members-git.conformance.test.ts`; `members_pack_plan` and
   // `publish_guard` pin the git remote helper's push planning and publish guard, which only the
@@ -1217,8 +1218,10 @@ describe('FORGE_RULES conformance vectors', () => {
   const isMembersGit = (v: Vector) => MEMBERS_GIT_CASES.includes(v.case) || v.case === 'members_check' || v.case === 'members_index'
   const isPrivate = (v: Vector) =>
     isMembersGit(v) ||
-    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'seal_off_marker', 'env_snapshot', 'key_letter', 'access_notice', 'branch_key', 'bot_post', 'bot_push'].some((p) => v.case.startsWith(p))
-  const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
+    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'seal_off_marker', 'env_snapshot', 'key_letter', 'access_notice', 'branch_key', 'bot_post', 'bot_push', 'sealed_board'].some((p) => v.case.startsWith(p))
+  // boards (`board_*`, boards.md) run in `./boards.conformance.test.ts`
+  const isBoard = (v: Vector) => v.case.startsWith('board_')
+  const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v) && !isBoard(v))
   const privateVectors = vectors.filter(isPrivate)
 
   it('loads the full vector corpus', () => {
@@ -1226,7 +1229,7 @@ describe('FORGE_RULES conformance vectors', () => {
     expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
     expect(privateVectors.length).toBeGreaterThanOrEqual(138)
     expect(vectors.filter((v) => v.case === 'branch_key').length).toBeGreaterThanOrEqual(59)
-    expect(base.length + v2Vectors.length + privateVectors.length).toBe(vectors.length)
+    expect(base.length + v2Vectors.length + privateVectors.length + vectors.filter(isBoard).length).toBe(vectors.length)
     // every members-git case is present (forge-core `members_git::conformance` runs all five)
     for (const c of MEMBERS_GIT_CASES) expect(vectors.filter((v) => v.case === c).length, c).toBeGreaterThanOrEqual(5)
     expect(vectors.filter(isMembersGit).length).toBeGreaterThanOrEqual(98)

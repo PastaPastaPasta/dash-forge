@@ -1,0 +1,35 @@
+{
+  "name": "open_card_empty",
+  "description": "a card sealed with no fields opens to none.",
+  "case": "sealed_board",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "card",
+      "board": 7,
+      "item": "4444444444444444444444444444444444444444444444444444444444444444",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "plaintext": false,
+      "enc": "01000102030405060708090a0b5e7032f2c332ec795f7c14b3c02bfd0eb91d7fc665f20f875996825c999dc5f1eb65592e9a7b12b6a67c5d40a1fb72bd"
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {}
+  }
+}

@@ -748,6 +748,355 @@
         "sealed"
       ],
       "additionalProperties": false
+    },
+    "board": {
+      "type": "object",
+      "documentsMutable": true,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            },
+            "where": {
+              "role": "r"
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "key": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "position": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "maxBytes": 252,
+          "pattern": "^[^\\x00-\\x1f\\x7f]*[^\\s\\x00-\\x1f\\x7f][^\\x00-\\x1f\\x7f]*$",
+          "position": 2
+        },
+        "spec": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "maxBytes": 4096,
+          "position": 3
+        },
+        "state": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2,
+          "position": 4
+        },
+        "enc": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 29,
+          "maxItems": 5120,
+          "position": 5
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 6
+        },
+        "r": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1,
+          "position": 7
+        }
+      },
+      "immutable": [
+        "repoId",
+        "key"
+      ],
+      "indices": [
+        {
+          "name": "byKey",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "key": "asc"
+            },
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$updatedAt",
+        "repoId",
+        "key",
+        "state",
+        "r"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "name"
+                },
+                {
+                  "absent": "spec"
+                }
+              ]
+            }
+          ]
+        },
+        "hasName": {
+          "anyOf": [
+            {
+              "present": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "present": "name"
+                },
+                {
+                  "present": "spec"
+                }
+              ]
+            }
+          ]
+        },
+        "rClaim": {
+          "equal": [
+            "r",
+            1
+          ]
+        }
+      }
+    },
+    "card": {
+      "type": "object",
+      "documentsMutable": true,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            },
+            "where": {
+              "role": "r"
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "board": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "position": 1
+        },
+        "item": {
+          "type": "identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "contractId": "FORGE_COLLAB_CONTRACT_ID",
+                "documentType": "issue"
+              },
+              {
+                "type": "permanentDocument",
+                "contractId": "FORGE_COLLAB_CONTRACT_ID",
+                "documentType": "patch"
+              }
+            ]
+          },
+          "position": 2
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "position": 3
+        },
+        "rank": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[0-9A-Za-z]*[1-9A-Za-z]$",
+          "position": 4
+        },
+        "f": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "maxBytes": 2048,
+          "position": 5
+        },
+        "state": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2,
+          "position": 6
+        },
+        "enc": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 29,
+          "maxItems": 2560,
+          "position": 7
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 8
+        },
+        "r": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "position": 9
+        }
+      },
+      "immutable": [
+        "repoId",
+        "board",
+        "item"
+      ],
+      "indices": [
+        {
+          "name": "onItem",
+          "properties": [
+            {
+              "item": "asc"
+            },
+            {
+              "repoId": "asc"
+            },
+            {
+              "board": "asc"
+            },
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "recent",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "board": "asc"
+            },
+            {
+              "$updatedAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$updatedAt",
+        "repoId",
+        "board",
+        "item",
+        "state",
+        "r"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "col"
+                },
+                {
+                  "absent": "rank"
+                },
+                {
+                  "absent": "f"
+                }
+              ]
+            }
+          ]
+        },
+        "rClaim": {
+          "in": [
+            "r",
+            [
+              1,
+              2
+            ]
+          ]
+        }
+      }
     }
   },
   "config": {

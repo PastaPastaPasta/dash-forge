@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { CONTRACTS, CONTRACT_OF, META_TYPES, ROOT, TRANSITION, VIS, b58encode, contractOn, documentReader, documentWriter, idBytes, membership, shapeOfSet, transition } from './seed-io.mjs';
+import { CONTRACTS, CONTRACT_OF, META_ONLY_TYPES, META_TYPES, ROOT, TRANSITION, VIS, b58encode, contractOn, documentReader, documentWriter, idBytes, membership, shapeOfSet, transition } from './seed-io.mjs';
 
 // The default set's shape, as the seeds read it from the loaded contract.
 const SHAPE = shapeOfSet({ contracts: CONTRACTS, contractOf: CONTRACT_OF });
@@ -188,8 +188,8 @@ test('the deployment record picks the layout: forge-meta holds the moved types o
   const three = { core: 'C', collab: 'L', community: 'M' };
   const four = { ...three, meta: 'X' };
   for (const t of META_TYPES) {
-    // (vaultEntry, UPDATE-2, is a four-contract type: no home in the three-contract set)
-    if (t !== 'vaultEntry') {
+    // (vaultEntry, board and card are four-contract types: no home in the three-contract set)
+    if (!META_ONLY_TYPES.has(t)) {
       assert.ok(CONTRACT_OF[t], `${t} has a three-contract home`);
       assert.equal(contractOn(three, t), CONTRACT_OF[t], t);
     }
@@ -272,6 +272,44 @@ test('a four-contract set: identifier lookups, no topic vis, and asMember with t
   assert.equal(byWriter.view.mRole, 1);
   // a non-member's asMember is refused by the chain, not papered over
   await assert.rejects(write(person('stranger'), 'issue', asMember(person('stranger'))), refusedWith(40120, 'issue.asMember'));
+});
+
+// UPDATE-3 (docs/design/boards.md §3): a board or a card is written by the home repo's members only
+// (a maintainer, or a writer of the claimed role: triage places cards and defines no board), the gate is
+// asked again on every replace, a card names an issue or a PR, and neither is ever deleted.
+test('a four-contract set: boards and cards are the home repo members\', and a card names an issue or a PR', async () => {
+  const chain = new OfflineChain({ contractsDir: join(ROOT, 'contracts', 'mainnet') });
+  const evo = chain.evo();
+  const sdk = new evo.EvoSDK();
+  const write = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { shape: shapeOfSet(chain.set), retries: 0 });
+  const R = idBytes((await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58());
+  await write(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
+  const item = idBytes((await write(OWNER, 'issue', issue(R, 1))).id.toBase58());
+  const board = { repoId: R, key: 7, name: 'Roadmap', spec: '{"v":1}', state: 0, r: 1 };
+  const card = { repoId: R, board: 7, item, col: 1, rank: 'V', state: 0, r: 1 };
+  const stranger = person('stranger');
+  await assert.rejects(write(stranger, 'board', board), refusedWith(40120, 'board.ownerRefersTo'));
+  await assert.rejects(write(stranger, 'card', card), refusedWith(40120, 'card.ownerRefersTo'));
+  const defined = await write(OWNER, 'board', board);
+  await write(OWNER, 'card', card);
+  // a card names an issue or a PR: the repo's own id is neither
+  await assert.rejects(write(OWNER, 'card', { ...card, item: R }), refusedWith(40120, 'card.item'));
+  // triage (role 2) places a card and defines no board
+  await write(OTHER, 'consent', { repoId: R });
+  const row = await write(OWNER, 'writer', { ...membership(R, OWNER.id, OTHER.id), role: 2 });
+  await assert.rejects(write(OTHER, 'board', board), refusedWith(40127, 'board.ownerRefersTo'));
+  const placed = await write(OTHER, 'card', { ...card, r: 2 });
+  // a move is a replace of the member's own card, and the gate is asked again on it
+  const move = (doc, type, owner, data) => {
+    const d = evo.Document.fromObject({ __meta: { type, contractId: chain.ids.meta, owner: owner.id, id: doc.id.toBase58() }, ...data });
+    return sdk.documents.replace({ document: d });
+  };
+  await move(placed, 'card', OTHER, { ...card, r: 2, col: 2, rank: 'W' });
+  await sdk.documents.delete({ document: row });
+  await assert.rejects(move(placed, 'card', OTHER, { ...card, r: 2, col: 3 }), refusedWith(40120, 'card.ownerRefersTo'));
+  // never deleted: `state` 2 is the delete
+  await assert.rejects(sdk.documents.delete({ document: defined }), refusedWith(10404));
+  await move(defined, 'board', OWNER, { ...board, state: 2 });
 });
 
 // A lagging node just after an enrolment answers the role read without the writer row: `mRole` is

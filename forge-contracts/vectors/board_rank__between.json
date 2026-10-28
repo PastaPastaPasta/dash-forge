@@ -1,0 +1,167 @@
+{
+  "name": "between",
+  "description": "rankBetween(a, b): strictly between in byte order, never ending in 0, the midpoint of the free digits (\"\" is open at either end). Prefix pairs (V / V1, V1 / V11), neighbours with no digit between (A / B: one more digit), the top (z) and bottom (0) of the alphabet.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "between",
+    "pairs": [
+      [
+        "",
+        ""
+      ],
+      [
+        null,
+        null
+      ],
+      [
+        "",
+        "V"
+      ],
+      [
+        "W",
+        ""
+      ],
+      [
+        "A",
+        "C"
+      ],
+      [
+        "A",
+        "B"
+      ],
+      [
+        "Az",
+        "B"
+      ],
+      [
+        "U",
+        "V1"
+      ],
+      [
+        "V",
+        "V1"
+      ],
+      [
+        "V",
+        "W"
+      ],
+      [
+        "V1",
+        "V11"
+      ],
+      [
+        "V1",
+        "V2"
+      ],
+      [
+        "0",
+        "1"
+      ],
+      [
+        "",
+        "1"
+      ],
+      [
+        "",
+        "01"
+      ],
+      [
+        "",
+        "001"
+      ],
+      [
+        "z",
+        ""
+      ],
+      [
+        "zz",
+        ""
+      ],
+      [
+        "y",
+        "z"
+      ],
+      [
+        "yz",
+        "z"
+      ],
+      [
+        "F",
+        "F1"
+      ],
+      [
+        "F",
+        "F01"
+      ]
+    ]
+  },
+  "expected": [
+    {
+      "rank": "V"
+    },
+    {
+      "rank": "V"
+    },
+    {
+      "rank": "F"
+    },
+    {
+      "rank": "l"
+    },
+    {
+      "rank": "B"
+    },
+    {
+      "rank": "AV"
+    },
+    {
+      "rank": "AzV"
+    },
+    {
+      "rank": "V"
+    },
+    {
+      "rank": "V0V"
+    },
+    {
+      "rank": "VV"
+    },
+    {
+      "rank": "V10V"
+    },
+    {
+      "rank": "V1V"
+    },
+    {
+      "rank": "0V"
+    },
+    {
+      "rank": "0V"
+    },
+    {
+      "rank": "00V"
+    },
+    {
+      "rank": "000V"
+    },
+    {
+      "rank": "zV"
+    },
+    {
+      "rank": "zzV"
+    },
+    {
+      "rank": "yV"
+    },
+    {
+      "rank": "yzV"
+    },
+    {
+      "rank": "F0V"
+    },
+    {
+      "rank": "F00V"
+    }
+  ]
+}

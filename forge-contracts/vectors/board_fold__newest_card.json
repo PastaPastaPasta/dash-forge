@@ -1,0 +1,248 @@
+{
+  "name": "newest_card",
+  "description": "The newest card over every member's wins whole, by ($updatedAt, $id): a later card of another member replaces the column and the field values; on equal $updatedAt the greater $id (by code point) wins. A card's values for unknown fields or options are dropped.",
+  "case": "board_fold",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "home": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+    "now": 1793102400000,
+    "items": [
+      {
+        "id": "2TDdSJqfuYnZuDdmvNgZxBJqNcCTh5uRMf5mt35Mi7mW",
+        "number": 21,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1790888400000,
+        "closedAt": null,
+        "title": "Item 21",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "2XEGkuDSNkBSEtvPqdQqZZPzmTv7nKnVvbxHE3gcyo6m",
+        "number": 22,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1790892000000,
+        "closedAt": null,
+        "title": "Item 22",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      }
+    ],
+    "cards": [
+      {
+        "id": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1790812800100,
+        "item": "2TDdSJqfuYnZuDdmvNgZxBJqNcCTh5uRMf5mt35Mi7mW",
+        "col": 2,
+        "rank": null,
+        "f": "{\"1\":1,\"2\":5}",
+        "state": 0
+      },
+      {
+        "id": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "ownerId": "FFftTC944VmyJQ2VaUDieXSMpssQULQkDB9odPorkphY",
+        "updatedAt": 1790812800200,
+        "item": "2TDdSJqfuYnZuDdmvNgZxBJqNcCTh5uRMf5mt35Mi7mW",
+        "col": 4,
+        "rank": null,
+        "f": "{\"2\":3,\"1\":9,\"7\":1}",
+        "state": 0
+      },
+      {
+        "id": "56whRx6fB5hignpPAMtzugSQknH7HWZYrxxPBW7Jtdiu",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1790812800300,
+        "item": "2XEGkuDSNkBSEtvPqdQqZZPzmTv7nKnVvbxHE3gcyo6m",
+        "col": 2,
+        "rank": null,
+        "f": null,
+        "state": 0
+      },
+      {
+        "id": "z6whRx6fB5hignpPAMtzugSQknH7HWZYrxxPBW7Jtdiu",
+        "ownerId": "FFftTC944VmyJQ2VaUDieXSMpssQULQkDB9odPorkphY",
+        "updatedAt": 1790812800300,
+        "item": "2XEGkuDSNkBSEtvPqdQqZZPzmTv7nKnVvbxHE3gcyo6m",
+        "col": 4,
+        "rank": null,
+        "f": null,
+        "state": 0
+      },
+      {
+        "id": "A6whRx6fB5hignpPAMtzugSQknH7HWZYrxxPBW7Jtdiu",
+        "ownerId": "FFftTC944VmyJQ2VaUDieXSMpssQULQkDB9odPorkphY",
+        "updatedAt": 1790812800300,
+        "item": "2XEGkuDSNkBSEtvPqdQqZZPzmTv7nKnVvbxHE3gcyo6m",
+        "col": 1,
+        "rank": null,
+        "f": null,
+        "state": 0
+      }
+    ]
+  },
+  "expected": {
+    "items": [
+      {
+        "id": "2TDdSJqfuYnZuDdmvNgZxBJqNcCTh5uRMf5mt35Mi7mW",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "col": 4,
+        "rank": "V0VWplDSC5vov",
+        "archived": null,
+        "fields": {
+          "2": 3
+        }
+      },
+      {
+        "id": "2XEGkuDSNkBSEtvPqdQqZZPzmTv7nKnVvbxHE3gcyo6m",
+        "on": true,
+        "sourced": true,
+        "removed": false,
+        "card": "z6whRx6fB5hignpPAMtzugSQknH7HWZYrxxPBW7Jtdiu",
+        "col": 4,
+        "rank": "V0VWq0Jyi6DL4",
+        "archived": null,
+        "fields": {}
+      }
+    ],
+    "columns": [
+      {
+        "id": 1,
+        "items": []
+      },
+      {
+        "id": 2,
+        "items": []
+      },
+      {
+        "id": 3,
+        "items": []
+      },
+      {
+        "id": 4,
+        "items": [
+          "2TDdSJqfuYnZuDdmvNgZxBJqNcCTh5uRMf5mt35Mi7mW",
+          "2XEGkuDSNkBSEtvPqdQqZZPzmTv7nKnVvbxHE3gcyo6m"
+        ]
+      }
+    ]
+  }
+}

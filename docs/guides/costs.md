@@ -258,6 +258,17 @@ A passkey's entry is one small stored item, written with this browser's key (so 
 
 At most 10 passkeys per identity. An entry is always the same size, whatever keys it holds.
 
+### Boards
+
+A board's definition is one document per member who edits it, and a card one document per member, item and board, replaced in place by every later change ([boards design](../design/boards.md#7-costs)). Measured on testnet (2026-10-27, on the scratch set and the live set) with the live test (`lib/repo/boards.live.test.ts`), which prints what each write costs.
+
+| Action | About | Notes |
+|---|---|---|
+| Create a board | 0.00064 DASH, 0.00055 for a repository's later boards | with the Kanban template's 738 bytes of name and definition; a longer definition costs more |
+| Edit, close, reopen or delete a board | 0.00004–0.00005 DASH | a replace of your revision |
+| Put an item on a board, or move a sourced item for the first time | 0.00071 DASH for the item's first card, 0.00089 for the board's first, 0.00043 when another member already has a card for it | your first card for the item |
+| Move a card, set its fields, archive or remove it | 0.00005 DASH | a replace of your card |
+
 ## Platform or your own bucket
 
 Pack bytes are almost all of a repository's size, so where you keep them decides the cost:

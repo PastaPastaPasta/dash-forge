@@ -8,7 +8,7 @@
 
 import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { Archive, Code2, GitFork, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
+import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CopyLinkButton } from '@/components/ui/copy-link'
@@ -16,6 +16,7 @@ import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
 import { WatchButton } from '@/components/repo/watch-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
+import { useBoardsDeployed } from '@/hooks/use-board'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { usePathname, useShortAddressBar } from '@/hooks/use-route'
 import { cn, shortId } from '@/lib/utils'
@@ -80,19 +81,21 @@ function ForkedFrom({ home }: { home: RepoHome }): JSX.Element {
 }
 
 /**
- * The five tabs (`ux-dx-spec.md` §5.2): Code · Issues (n) · Pull requests (n) · Releases ·
- * Settings. Commits live under Code (the ref bar's `n commits`). Settings is a maintainer's
- * tab; a writer sees the same page as a read-only Members list.
+ * The tabs (`ux-dx-spec.md` §5.2): Code · Issues (n) · Pull requests (n) · Boards · Releases ·
+ * Settings. Commits live under Code (the ref bar's `n commits`). Boards (`docs/design/boards.md`)
+ * sit where GitHub puts Projects, on a network whose forge-meta has them (`useBoardsDeployed`).
+ * Settings is a maintainer's tab; a writer sees the same page as a read-only Members list.
  */
 export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/activity', '/repo/commits', '/repo/commit', '/repo/compare', '/repo/search']
 
 /** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
-export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
+export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'boards' | 'releases' | 'settings' | null {
   const p = bareRoute(pathname)
   if (CODE_ROUTES.includes(p)) return 'code'
   // Labels and Milestones sit under Issues, as on GitHub.
   if (p === '/repo/issues' || p === '/repo/issue' || p === '/repo/labels' || p === '/repo/milestones') return 'issues'
   if (p === '/repo/pulls' || p === '/repo/pull' || p === '/repo/pulls/new') return 'pulls'
+  if (p === '/repo/boards' || p === '/repo/board' || p === '/repo/board/settings') return 'boards'
   if (p === '/repo/releases' || p === '/repo/release') return 'releases'
   if (p === '/repo/settings' || p === '/repo/settings/environments' || p === '/repo/settings/bots') return 'settings'
   return null
@@ -109,6 +112,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const counts = useTargetCounts(home.repo)
   const membersOnly = useMembersOnlyOpen(home.repo)
   const { role } = useViewerRole(home.repo)
+  const boards = useBoardsDeployed(home.repo.forge)
   const TitleTag = VIEWS_WITH_OWN_H1.includes(pathname) ? 'div' : 'h1'
   // The owner pill reads the same name: no extra request. Look-alikes of known names (TS-24).
   const ownerLookup = useSettledDpnsName(home.repo.ownerId)
@@ -125,6 +129,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
     { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues, membersOnly: membersOnly.issues, letters: membersOnly.issueLetters },
     { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls, membersOnly: membersOnly.pulls, letters: membersOnly.pullLetters },
+    ...(boards === true ? [{ key: 'boards', label: 'Boards', path: '/repo/boards', icon: KanbanSquare, refAware: false, count: null }] : []),
     { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, count: null },
     ...(role === 'maintainer'
       ? [{ key: 'settings', label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, count: null }]

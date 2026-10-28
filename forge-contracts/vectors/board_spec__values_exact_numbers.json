@@ -1,0 +1,50 @@
+{
+  "name": "values_exact_numbers",
+  "description": "Numbers read exactly (forge-core reads JSON with float_roundtrip, as JSON.parse does) and are written with JavaScript's shortest digits, an exact tie to even: 71292843364840.125 is written 71292843364840.12.",
+  "case": "board_spec",
+  "rules": "v2",
+  "input": {
+    "op": "values",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "C1"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "N1",
+          "type": "num"
+        },
+        {
+          "id": 2,
+          "name": "N2",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "N3",
+          "type": "num"
+        },
+        {
+          "id": 4,
+          "name": "N4",
+          "type": "num"
+        }
+      ]
+    },
+    "f": "{\"1\":989238.7673074775,\"2\":123456789012345.67,\"3\":71292843364840.125,\"4\":1e-400}"
+  },
+  "expected": {
+    "values": {
+      "1": 989238.7673074775,
+      "2": 123456789012345.67,
+      "3": 71292843364840.12,
+      "4": 0
+    },
+    "json": "{\"1\":989238.7673074775,\"2\":123456789012345.67,\"3\":71292843364840.12,\"4\":0}"
+  }
+}

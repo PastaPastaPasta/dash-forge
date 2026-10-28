@@ -1,0 +1,55 @@
+{
+  "name": "between_implicit_bounds",
+  "description": "Bounds that are implicit ranks (13 digits, may end in 0): between two sourced items of one block, between a card and a sourced item, and below / above one.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "between",
+    "pairs": [
+      [
+        "V0ABCDEFG1230",
+        "V0ABCDEFG1231"
+      ],
+      [
+        "V0ABCDEFG1230",
+        "V0ABCDEFG1300"
+      ],
+      [
+        "V0ABCDEFGzzz0",
+        "V0ABCDEFH0000"
+      ],
+      [
+        "F",
+        "V0ABCDEFG1230"
+      ],
+      [
+        "V0ABCDEFG1230",
+        "l"
+      ],
+      [
+        "V0ABCDEFG1230",
+        "V0ABCDEFG12300V"
+      ]
+    ]
+  },
+  "expected": [
+    {
+      "rank": "V0ABCDEFG1230V"
+    },
+    {
+      "rank": "V0ABCDEFG13"
+    },
+    {
+      "rank": "V0ABCDEFH"
+    },
+    {
+      "rank": "N"
+    },
+    {
+      "rank": "d"
+    },
+    {
+      "rank": "V0ABCDEFG12300F"
+    }
+  ]
+}

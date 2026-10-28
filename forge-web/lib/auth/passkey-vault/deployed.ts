@@ -18,7 +18,7 @@ import { isContractMissingError } from '../../sdk/contract-missing'
 const VAULT_ENTRY_TYPE = 'vaultEntry'
 
 /** The document types a fetched contract declares (the wasm contract's `schemas`, else its JSON). */
-function documentTypesOf(contract: unknown): readonly string[] {
+export function documentTypesOf(contract: unknown): readonly string[] {
   const c = contract as { schemas?: unknown; toJSON?: () => { documentSchemas?: unknown } }
   const schemas = c.schemas ?? c.toJSON?.().documentSchemas
   return typeof schemas === 'object' && schemas !== null ? Object.keys(schemas) : []

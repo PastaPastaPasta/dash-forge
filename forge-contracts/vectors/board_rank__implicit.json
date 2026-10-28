@@ -1,0 +1,48 @@
+{
+  "name": "implicit",
+  "description": "Implicit ranks: V + $createdAt in 8 base-62 digits + the first 3 bytes of the item $id (big-endian, mod 62^4) in 4. Items of one block (same $createdAt) differ by id; 0xFFFFFF wraps mod 62^4; leading zero bytes (base58 \"1…\"); a time past 62^8 clamps; an id that is not base58 reads as zero bytes.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "implicit",
+    "items": [
+      {
+        "createdAt": 0,
+        "id": "1113eKEmP3gmGaNeoKSVoYwPpyfTmrmizMbi1TqGj2"
+      },
+      {
+        "createdAt": 1793102400000,
+        "id": "4wBqjG7ot2Yh7rmZH2TnTTiNfnkjtVZAZBzCrpAzziV"
+      },
+      {
+        "createdAt": 1793102400000,
+        "id": "4wC3PxcZmLQCWc587TrKavgTRYrW4VEZtLuPrrc4QAv"
+      },
+      {
+        "createdAt": 1793102400000,
+        "id": "JEKNJMGgDzL9VWNzXbjVraMJri27JLwhwLkBfTRecuQw"
+      },
+      {
+        "createdAt": 1793102400000,
+        "id": "112QabqpfPtBDgyDYU5suefhVfk1HR3Gs6i8bH6kHjz"
+      },
+      {
+        "createdAt": 218340105584901,
+        "id": "R4rvZFbpBND34iiWXNcfHXyN9JwYSHUQgE354ead4zZ"
+      },
+      {
+        "createdAt": 1793102400000,
+        "id": "not-base58-0OIl"
+      }
+    ]
+  },
+  "expected": [
+    "V000000000000",
+    "V0VZFavzc0HBL",
+    "V0VZFavzc0HBM",
+    "V0VZFavzc8OWF",
+    "V0VZFavzc0007",
+    "Vzzzzzzzz1h6s",
+    "V0VZFavzc0000"
+  ]
+}

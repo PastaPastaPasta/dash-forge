@@ -559,6 +559,56 @@ MS = {'status': S, 'title': S, 'closed': B, 'documentId': S, 'id': S, 'cost': CO
 cmd('milestone create', 'A milestone defined.', MS, ['status', 'title'])
 cmd('milestone close', 'A milestone closed.', MS, ['status', 'title'])
 
+# -- boards (docs/design/boards.md §6) --------------------------------------------------------
+BOARD = O({
+    'key': I, 'name': nl(S), 'state': E('open', 'closed', 'deleted'), 'sealed': B, 'repoId': S, 'columns': nl(SA),
+    'specError': D('Why the definition is not shown: a refusal of the board rules, or `unreadable` (sealed).', nl(S)),
+    'updatedAt': I, 'editedBy': S,
+}, ['key', 'state'])
+CARD = O({
+    'item': S, 'label': S, 'documentId': S, 'created': B, 'changed': B, 'col': nl(I), 'rank': nl(S),
+    'state': E('active', 'archived', 'removed'),
+}, ['item', 'documentId', 'state'])
+cmd('board list', 'The repository\'s boards.', {'count': I, 'boards': A(BOARD)}, ['count', 'boards'])
+cmd('board view', 'A board: its columns (or the view\'s groups) with their items, totals and work-in-progress limits; '
+    'every item with where it shows; and `fold`, the placement both clients compute (docs/design/boards.md §2.4).', {
+    'board': BOARD, 'view': nl(S), 'groupBy': S, 'sumField': nl(S), 'now': I,
+    'columns': A(O({'key': ANY, 'name': S, 'count': I, 'sum': ANY, 'wip': nl(I), 'over': B, 'items': SA},
+                   ['name', 'count', 'items'])),
+    'items': A(O({
+        'id': S, 'number': I, 'repoId': S, 'repo': nl(S), 'kind': E('issue', 'pr'), 'state': E('open', 'closed', 'merged'),
+        'title': S, 'labels': SA, 'assignees': SA, 'milestone': nl(S), 'author': S, 'closedAt': nl(I), 'hidden': B,
+        'on': B, 'shown': B, 'column': nl(S), 'col': nl(I), 'rank': nl(S), 'archived': nl(E('card', 'auto')),
+        'removed': B, 'fields': OBJ,
+    }, ['id', 'number', 'kind', 'state'])),
+    'progress': nl(OBJ), 'unresolved': SA, 'hidden': SA, 'missing': SA, 'partial': B, 'hasOlderClosed': B,
+    'fold': nl(OBJ),
+}, ['board', 'columns', 'items'])
+cmd('board create', 'A board created (`exists`: an earlier run of the same create had already made it).', {
+    'status': E('created', 'exists'), 'key': I, 'name': S, 'documentId': S, 'id': S, 'columns': SA, 'cost': COST,
+}, ['status', 'key', 'documentId'])
+BOARD_STATE = {'status': E('closed', 'reopened', 'deleted'), 'key': I, 'documentId': S, 'changed': B, 'cost': COST}
+cmd('board close', 'A board closed or reopened.', BOARD_STATE, ['status', 'key'])
+cmd('board delete', 'A board deleted.', BOARD_STATE, ['status', 'key'])
+cmd('board move', 'An item moved on a board.', {
+    'status': E('moved'), 'board': I, 'column': S, 'card': CARD, 'cost': COST,
+}, ['status', 'board', 'card'])
+cmd('board set', 'An item\'s fields set on a board.', {
+    'status': E('set'), 'board': I, 'fields': OBJ, 'card': CARD, 'cost': COST,
+}, ['status', 'board', 'card'])
+BOARD_BULK = {
+    'status': S, 'board': I, 'count': I, 'cards': A(CARD), 'failed': nl(O({'item': S, 'error': S}, ['item'])),
+    'skipped': SA, 'cost': COST,
+}
+cmd('board add', 'Items put on a board, or a new issue opened there (`--title`).', {
+    **BOARD_BULK, 'issue': O({'number': I, 'id': S}, ['number', 'id']), 'column': S, 'card': CARD,
+}, ['status', 'board'])
+cmd('board archive', 'Items archived on a board, or restored.', BOARD_BULK, ['status', 'board', 'count'])
+cmd('board remove', 'Items removed from a board.', BOARD_BULK, ['status', 'board', 'count'])
+cmd('board next-iteration', 'The current iteration\'s open items moved into the next.', {
+    **BOARD_BULK, 'iteration': S,
+}, ['status', 'board', 'count'])
+
 # -- profile, signing keys, collaborators -----------------------------------------------------
 cmd('profile show', 'An identity\'s public profile.', {
     'identityId': S, 'profile': nl(OBJ),

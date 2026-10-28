@@ -155,12 +155,18 @@ FLAGS = dict(
     # (META_TYPES): on a registered network it ships as `deploy-v2.mjs --update meta`, on one not yet
     # registered it is part of the registration set.
     passkey_vault=True,          # vaultEntry: a passkey-sealed key bundle per (owner, credential id)
+    # ---- UPDATE-3 (boards, docs/design/boards.md §3): two new document types only, as UPDATE-2. Four-contract
+    # set only (`layout_meta`), moved to forge-meta by META_TYPES; `deploy-v2.mjs --update meta` on a
+    # registered network (forge-meta v3 on testnet), part of the registration set elsewhere.
+    boards=True,                 # board (a board's definition) and card (a member's placement of one item)
 )
 # The UPDATE-1 items: every one off is the registered v1 set (registered/*.v1.json).
 UPDATE1_FLAGS = ('release_target_oid', 'config_moved_to', 'pack_mirror', 'transition_closed_by_pr', 'profile_key_proofs',
                  'profile_bot', 'author_retarget', 'policy_code_owners', 'repo_ban')
 # The UPDATE-2 items: added after UPDATE-1, so the registered v1 set has them off too (stale_registered).
 UPDATE2_FLAGS = ('passkey_vault',)
+# The UPDATE-3 items: added after UPDATE-2, off in the registered v1 set too (stale_registered).
+UPDATE3_FLAGS = ('boards',)
 # Each production network's registration (CONT-03): the committed set it registered, and the flags added after
 # it. `contracts/registered/<network>/<name>.v1.json` is a byte copy of what that network registered
 # (`freeze-registered.mjs` writes it at the registration commit, P4) and the build with the `since` flags off
@@ -171,7 +177,7 @@ UPDATE2_FLAGS = ('passkey_vault',)
 # registration; a flag that was on and is later turned off cannot be expressed (--check fails loudly).
 NETWORK_REGISTRATIONS = {
     # testnet (dash-testnet-51), Platform 5.0.0-rc.8, 2026-10-26: forge-core D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9
-    'testnet': {'set': 'mainnet', 'since': ('passkey_vault',)},
+    'testnet': {'set': 'mainnet', 'since': ('passkey_vault', 'boards')},
 }
 # ---- Mainnet-only (a fresh registration may add them; an update never can: rules, references and
 # required fields on existing types are frozen, forge-v2.md §9). Off in every devnet build; the mainnet
@@ -308,7 +314,7 @@ BOT_PACK_KINDS = [0, 1, 6, 64, 65, 70]
 GRANT_TTL_MS = 90 * 24 * 3600 * 1000
 # D44: the types forge-meta takes, from the contract that holds them in the three-contract set
 META_TYPES = {'forge-collab': ('repoKey', 'ban'), 'forge-core': ('label', 'topic', 'packMirror'),
-              'forge-community': ('profile', 'follow', 'vaultEntry')}
+              'forge-community': ('profile', 'follow', 'vaultEntry', 'board', 'card')}
 # The riders: independent of the RC2 items (other types and properties), so variants.py turns
 # each off only with every RC2 item on, the largest build.
 RIDER_FLAGS = ('close_reason', 'review_hunk')
@@ -1016,6 +1022,87 @@ def build(flags):
             "required": ["$createdAt", "$updatedAt", "credentialId", "recipientKey", "version", "authKeyId", "enc", "sealed"],
             "additionalProperties": False}
 
+    # ======================= UPDATE-3 (boards, docs/design/boards.md §3) =======================
+    # Two new document types with their own indexes, so protocol 14 lets an update add them, as UPDATE-2.
+    # Built with the four-contract layout only and moved to forge-meta (META_TYPES): their references name
+    # forge-core (the member gate) and forge-collab (the item) by id, which only a later contract may.
+    # Both are mutable and never deleted, one document per (member, board[, item]): a member's later write
+    # replaces their own (a replace costs a fraction of a create) and readers take the newest across
+    # members. A delete would silently bring back an older member's document, which no poll of
+    # `$updatedAt` sees, and a removed member could still delete theirs, so `state` 2 is the delete. Every
+    # index key and both timestamps are required: an unrequired `$updatedAt` is never recorded, and a unique
+    # index holds no document missing a key part. The gate is label's: a maintainer of the home repo, or a
+    # writer whose role is the claimed `r`; a `deletableDocument` found by `findBy` is asked again on every
+    # replace (book contract-keywords/owner-refers-to.md "On replace"), so a removed member cannot touch
+    # their old documents and a role change holds from the next write. No `ownerRefersTo` operand can be
+    # added by a later update (§9): only the home repo's members write, and a card always names an issue or
+    # a PR. `enc` is inlined in both: forge-meta's `$defs.enc` (label's, 1,536 B) is too small for a board.
+    if up['boards'] and f['layout_meta']:
+        if not f['member_roles']:   # (not in NEEDS: the three-contract builds have `boards` on and no forge-meta)
+            sys.exit('boards needs member_roles: the writer leaf proves `r` against writer.role')
+        u32 = {"type": "integer", "minimum": 0, "maximum": 4294967295}
+        key = {"type": "integer", "minimum": 1, "maximum": 4294967295}
+        gate = {"anyOf": [find_leaf("maintainer", CORE), dict(find_leaf("writer", CORE), where={"role": "r"})]}
+        # A board's definition, one per (home repo, key, member): `name` and `spec` (§2, JSON, `v: 1`) in a
+        # public repo, sealed together in `enc` in a private one (bound to `u32(key)`, private-repos.md §4.4).
+        # `state` 0 open, 1 closed, 2 deleted. Maintainers and role-1 writers define boards (r = 1).
+        md['board'] = {
+            "type": "object", "documentsMutable": True, "canBeDeleted": False,
+            "ownerRefersTo": copy.deepcopy(gate),
+            "properties": {
+                "repoId": {"$ref": "#/$defs/id", "position": 0},
+                "key": dict(key, position=1),
+                "name": {"type": "string", "minLength": 1, "maxLength": 63, "maxBytes": 252, "pattern": TITLE, "position": 2},
+                "spec": {"type": "string", "minLength": 1, "maxLength": 4096, "maxBytes": 4096, "position": 3},
+                "state": {"type": "integer", "minimum": 0, "maximum": 2, "position": 4},
+                "enc": {"type": "array", "byteArray": True, "minItems": 29, "maxItems": 5120, "position": 5},
+                "epoch": dict(u32, position=6),
+                "r": {"type": "integer", "minimum": 1, "maximum": 1, "position": 7}},
+            "immutable": ["repoId", "key"],
+            "indices": [
+                # One definition per (repo, board, member); the repoId prefix lists a repo's boards
+                {"name": "byKey", "properties": [{"repoId": "asc"}, {"key": "asc"}, {"$ownerId": "asc"}], "unique": True}],
+            "required": ["$createdAt", "$updatedAt", "repoId", "key", "state", "r"],
+            "additionalProperties": False,
+            "dependentRequired": {"enc": ["epoch"]},
+            "propertyConstraints": {
+                "noPlain": {"anyOf": [{"absent": "enc"}, {"allOf": [{"absent": "name"}, {"absent": "spec"}]}]},
+                "hasName": {"anyOf": [{"present": "enc"}, {"allOf": [{"present": "name"}, {"present": "spec"}]}]}}}
+        # A member's placement and field values for one item on one board: `col` (0 = none), `rank` (§2.6,
+        # base-62, never ending in `0`) and `f` (JSON field values) in a public repo, sealed in `enc` in a
+        # private one (bound to `u32(board) ‖ item`). `item` is any repository's issue or PR (no `where`).
+        # `state` 0 active, 1 archived, 2 removed, plaintext everywhere. Maintainers, writers and triage
+        # place cards (r 1-2).
+        md['card'] = {
+            "type": "object", "documentsMutable": True, "canBeDeleted": False,
+            "ownerRefersTo": copy.deepcopy(gate),
+            "properties": {
+                "repoId": {"$ref": "#/$defs/id", "position": 0},
+                "board": dict(key, position=1),
+                "item": ident(refersTo={"anyOf": [
+                    {"type": "permanentDocument", "contractId": COLLAB, "documentType": "issue"},
+                    {"type": "permanentDocument", "contractId": COLLAB, "documentType": "patch"}]}, position=2),
+                "col": {"type": "integer", "minimum": 0, "maximum": 255, "position": 3},
+                "rank": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[0-9A-Za-z]*[1-9A-Za-z]$",
+                         "position": 4},
+                "f": {"type": "string", "minLength": 1, "maxLength": 2048, "maxBytes": 2048, "position": 5},
+                "state": {"type": "integer", "minimum": 0, "maximum": 2, "position": 6},
+                "enc": {"type": "array", "byteArray": True, "minItems": 29, "maxItems": 2560, "position": 7},
+                "epoch": dict(u32, position=8),
+                "r": {"type": "integer", "minimum": 1, "maximum": 2, "position": 9}},
+            "immutable": ["repoId", "board", "item"],
+            "indices": [
+                # One card per (item, board, member); the item prefix answers "which boards is this on"
+                {"name": "onItem", "properties": [{"item": "asc"}, {"repoId": "asc"}, {"board": "asc"}, {"$ownerId": "asc"}],
+                 "unique": True},
+                # Load a board, and poll it for what changed since a time
+                {"name": "recent", "properties": [{"repoId": "asc"}, {"board": "asc"}, {"$updatedAt": "asc"}]}],
+            "required": ["$createdAt", "$updatedAt", "repoId", "board", "item", "state", "r"],
+            "additionalProperties": False,
+            "dependentRequired": {"enc": ["epoch"]},
+            "propertyConstraints": {
+                "noPlain": {"anyOf": [{"absent": "enc"}, {"allOf": [{"absent": "col"}, {"absent": "rank"}, {"absent": "f"}]}]}}}
+
     # ======================= mixed visibility (DESIGN rev 4.1 §8.3) =======================
     # A fresh registration only: each adds a rule, a reference or a required field to a type that
     # exists, which no update can (§9). Row numbers are DESIGN §8.2's; forge-v2.md §9.1 has each.
@@ -1342,6 +1429,9 @@ def build(flags):
         for t in (ev_home['event'], ev_home['milestone'], cd['label']):
             t.setdefault('propertyConstraints', {})['rClaim'] = {"in": ["r", [1, 2]]}
         md['checkRun']['propertyConstraints']['rClaim'] = {"equal": ["r", 1]}
+        if 'board' in md:   # UPDATE-3: role-1 writers define boards, triage places cards too
+            md['board']['propertyConstraints']['rClaim'] = {"equal": ["r", 1]}
+            md['card']['propertyConstraints']['rClaim'] = {"in": ["r", [1, 2]]}
         rk_home['repoKey'].setdefault('propertyConstraints', {})['mrClaim'] = {"in": ["mr", [1, 2, 3]]}
         # The push class is bounded by B1's own rules (botGrant, botPack, botChunk); a build without B1
         # bounds each claim by its schema range instead
@@ -1585,11 +1675,11 @@ def stale_registered(registered_root, registrations):
     or an entry with no directory, is stale: what a network registered is frozen in the same commit that
     names it."""
     stale = []
-    v1 = build(flags_from(','.join(UPDATE1_FLAGS + UPDATE2_FLAGS)))
+    v1 = build(flags_from(','.join(UPDATE1_FLAGS + UPDATE2_FLAGS + UPDATE3_FLAGS)))
     for n in NAMES:
         p = os.path.join(registered_root, f'{n}.v1.json')
         if not os.path.exists(p) or open(p).read() != dumps(v1[n]):
-            stale.append((p, 'is not the build with every UPDATE-1 and UPDATE-2 flag off'))
+            stale.append((p, 'is not the build with every UPDATE-1, UPDATE-2 and UPDATE-3 flag off'))
     dirs = sorted(d for d in os.listdir(registered_root) if os.path.isdir(os.path.join(registered_root, d))) \
         if os.path.isdir(registered_root) else []
     for d in dirs:

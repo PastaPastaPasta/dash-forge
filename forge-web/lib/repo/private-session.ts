@@ -590,6 +590,17 @@ export function loadPublishedSessionCached(sdk: EvoSDK, repo: RepoRef, network: 
   )
 }
 
+/**
+ * The session {@link loadPrivateSessionCached} would hand `reader` for `repo` at once: one this tab
+ * already read (the member opened the repository), still fresh and open; undefined otherwise.
+ * Nothing is read: a board names a private repository's items as "a private item" unless this
+ * finds its session (boards.md §2.5).
+ */
+export function peekPrivateSession(repo: RepoRef, network: Network, reader: string): PrivateSession | undefined {
+  const hit = sessionCache.get(cacheKey(network, repo, reader))
+  return hit !== undefined && fresh(hit) ? hit.session : undefined
+}
+
 /** A cached session still within its TTL and not closed. */
 const fresh = (hit: { at: number; session?: PrivateSession }): boolean => Date.now() - hit.at < SESSION_TTL_MS && hit.session?.closed !== true
 

@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/board-view.schema.json",
+  "title": "dg board view --json",
+  "description": "A board: its columns (or the view's groups) with their items, totals and work-in-progress limits; every item with where it shows; and `fold`, the placement both clients compute (docs/design/boards.md §2.4).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "board": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "integer"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed",
+            "deleted"
+          ]
+        },
+        "sealed": {
+          "type": "boolean"
+        },
+        "repoId": {
+          "type": "string"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "specError": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the definition is not shown: a refusal of the board rules, or `unreadable` (sealed)."
+        },
+        "updatedAt": {
+          "type": "integer"
+        },
+        "editedBy": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "state"
+      ]
+    },
+    "view": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "groupBy": {
+      "type": "string"
+    },
+    "sumField": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "now": {
+      "type": "integer"
+    },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {},
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "sum": {},
+          "wip": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "over": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "count",
+          "items"
+        ]
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "repoId": {
+            "type": "string"
+          },
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "issue",
+              "pr"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed",
+              "merged"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "milestone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author": {
+            "type": "string"
+          },
+          "closedAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "on": {
+            "type": "boolean"
+          },
+          "shown": {
+            "type": "boolean"
+          },
+          "column": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "col": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "card",
+                  "auto"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "kind",
+          "state"
+        ]
+      }
+    },
+    "progress": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "hidden": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "partial": {
+      "type": "boolean"
+    },
+    "hasOlderClosed": {
+      "type": "boolean"
+    },
+    "fold": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "board",
+    "columns",
+    "items"
+  ],
+  "additionalProperties": true
+}

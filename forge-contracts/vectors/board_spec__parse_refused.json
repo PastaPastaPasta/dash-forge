@@ -1,0 +1,501 @@
+{
+  "name": "parse_refused",
+  "description": "Every refusal names the first problem in the canonical key order: not JSON / not an object (json), v not 1 (version), over 4096 bytes (size), a list over its limit (columns, fields, sources, views), a malformed or repeated entry (an id, or a name in any letter case) (column, field, options, source, view), a dangling def / done, arch, desc.",
+  "case": "board_spec",
+  "rules": "v2",
+  "input": {
+    "op": "parse",
+    "cases": [
+      {
+        "name": "not_json",
+        "json": "{\"v\":1,"
+      },
+      {
+        "name": "array",
+        "json": "[1]"
+      },
+      {
+        "name": "version_2",
+        "json": "{\"v\":2,\"columns\":[{\"id\":1,\"name\":\"C1\"}]}"
+      },
+      {
+        "name": "version_missing",
+        "json": "{\"columns\":[{\"id\":1,\"name\":\"C1\"}]}"
+      },
+      {
+        "name": "oversize",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"desc\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\",\"q\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"}],\"sources\":[{\"k\":\"a\",\"q\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"},{\"k\":\"a\",\"q\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"},{\"k\":\"a\",\"q\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"},{\"k\":\"a\",\"q\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"},{\"k\":\"a\",\"q\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"}]}"
+      },
+      {
+        "name": "no_columns",
+        "json": "{\"v\":1,\"columns\":[]}"
+      },
+      {
+        "name": "columns_21",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"C1\"},{\"id\":2,\"name\":\"C2\"},{\"id\":3,\"name\":\"C3\"},{\"id\":4,\"name\":\"C4\"},{\"id\":5,\"name\":\"C5\"},{\"id\":6,\"name\":\"C6\"},{\"id\":7,\"name\":\"C7\"},{\"id\":8,\"name\":\"C8\"},{\"id\":9,\"name\":\"C9\"},{\"id\":10,\"name\":\"C10\"},{\"id\":11,\"name\":\"C11\"},{\"id\":12,\"name\":\"C12\"},{\"id\":13,\"name\":\"C13\"},{\"id\":14,\"name\":\"C14\"},{\"id\":15,\"name\":\"C15\"},{\"id\":16,\"name\":\"C16\"},{\"id\":17,\"name\":\"C17\"},{\"id\":18,\"name\":\"C18\"},{\"id\":19,\"name\":\"C19\"},{\"id\":20,\"name\":\"C20\"},{\"id\":21,\"name\":\"C21\"}]}"
+      },
+      {
+        "name": "columns_20",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"C1\"},{\"id\":2,\"name\":\"C2\"},{\"id\":3,\"name\":\"C3\"},{\"id\":4,\"name\":\"C4\"},{\"id\":5,\"name\":\"C5\"},{\"id\":6,\"name\":\"C6\"},{\"id\":7,\"name\":\"C7\"},{\"id\":8,\"name\":\"C8\"},{\"id\":9,\"name\":\"C9\"},{\"id\":10,\"name\":\"C10\"},{\"id\":11,\"name\":\"C11\"},{\"id\":12,\"name\":\"C12\"},{\"id\":13,\"name\":\"C13\"},{\"id\":14,\"name\":\"C14\"},{\"id\":15,\"name\":\"C15\"},{\"id\":16,\"name\":\"C16\"},{\"id\":17,\"name\":\"C17\"},{\"id\":18,\"name\":\"C18\"},{\"id\":19,\"name\":\"C19\"},{\"id\":20,\"name\":\"C20\"}]}"
+      },
+      {
+        "name": "column_id_0",
+        "json": "{\"v\":1,\"columns\":[{\"id\":0,\"name\":\"C0\"}]}"
+      },
+      {
+        "name": "column_id_256",
+        "json": "{\"v\":1,\"columns\":[{\"id\":256,\"name\":\"C256\"}]}"
+      },
+      {
+        "name": "column_id_fraction",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1.5,\"name\":\"C1.5\"}]}"
+      },
+      {
+        "name": "column_id_repeated",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\"},{\"id\":1,\"name\":\"B\"}]}"
+      },
+      {
+        "name": "column_name_repeated_case",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"TODO\"}]}"
+      },
+      {
+        "name": "column_name_quote",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"say \\\"hi\\\"\"}]}"
+      },
+      {
+        "name": "column_name_leading_space",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\" Todo\"}]}"
+      },
+      {
+        "name": "column_name_nbsp_end",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo \"}]}"
+      },
+      {
+        "name": "column_name_control",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"To\\u0007do\"}]}"
+      },
+      {
+        "name": "column_name_64",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀\"}]}"
+      },
+      {
+        "name": "column_name_empty",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"\"}]}"
+      },
+      {
+        "name": "column_color",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\",\"color\":\"red\"}]}"
+      },
+      {
+        "name": "column_color_null",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\",\"color\":null}]}"
+      },
+      {
+        "name": "column_wip_0",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"A\",\"wip\":0}]}"
+      },
+      {
+        "name": "def_missing_column",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"def\":9}"
+      },
+      {
+        "name": "done_missing_column",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"done\":9}"
+      },
+      {
+        "name": "done_string",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"done\":\"2\"}"
+      },
+      {
+        "name": "sources_6",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"sources\":[{\"k\":\"a\"},{\"k\":\"a\"},{\"k\":\"a\"},{\"k\":\"a\"},{\"k\":\"a\"},{\"k\":\"a\"}]}"
+      },
+      {
+        "name": "source_kind",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"sources\":[{\"k\":\"x\"}]}"
+      },
+      {
+        "name": "source_repo_not_id",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"sources\":[{\"k\":\"a\",\"r\":\"alice/forge\"}]}"
+      },
+      {
+        "name": "source_query_513",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"sources\":[{\"k\":\"a\",\"q\":\"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\"}]}"
+      },
+      {
+        "name": "fields_13",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"F0\",\"type\":\"num\"},{\"id\":2,\"name\":\"F1\",\"type\":\"num\"},{\"id\":3,\"name\":\"F2\",\"type\":\"num\"},{\"id\":4,\"name\":\"F3\",\"type\":\"num\"},{\"id\":5,\"name\":\"F4\",\"type\":\"num\"},{\"id\":6,\"name\":\"F5\",\"type\":\"num\"},{\"id\":7,\"name\":\"F6\",\"type\":\"num\"},{\"id\":8,\"name\":\"F7\",\"type\":\"num\"},{\"id\":9,\"name\":\"F8\",\"type\":\"num\"},{\"id\":10,\"name\":\"F9\",\"type\":\"num\"},{\"id\":11,\"name\":\"F10\",\"type\":\"num\"},{\"id\":12,\"name\":\"F11\",\"type\":\"num\"},{\"id\":13,\"name\":\"F12\",\"type\":\"num\"}]}"
+      },
+      {
+        "name": "field_reserved_status",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"Status\",\"type\":\"sel\",\"options\":[]}]}"
+      },
+      {
+        "name": "field_reserved_labels",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"labels\",\"type\":\"text\"}]}"
+      },
+      {
+        "name": "field_name_colon",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"a:b\",\"type\":\"text\"}]}"
+      },
+      {
+        "name": "field_name_dash",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"-x\",\"type\":\"text\"}]}"
+      },
+      {
+        "name": "field_type",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"multi\"}]}"
+      },
+      {
+        "name": "field_options_on_num",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"num\",\"options\":[]}]}"
+      },
+      {
+        "name": "field_sel_without_options",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"sel\"}]}"
+      },
+      {
+        "name": "field_start_on_date",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"date\",\"start\":\"2026-01-01\"}]}"
+      },
+      {
+        "name": "field_repeated_name",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"Pts\",\"type\":\"num\"},{\"id\":2,\"name\":\"pts\",\"type\":\"text\"}]}"
+      },
+      {
+        "name": "options_31",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"sel\",\"options\":[{\"id\":1,\"name\":\"o0\"},{\"id\":2,\"name\":\"o1\"},{\"id\":3,\"name\":\"o2\"},{\"id\":4,\"name\":\"o3\"},{\"id\":5,\"name\":\"o4\"},{\"id\":6,\"name\":\"o5\"},{\"id\":7,\"name\":\"o6\"},{\"id\":8,\"name\":\"o7\"},{\"id\":9,\"name\":\"o8\"},{\"id\":10,\"name\":\"o9\"},{\"id\":11,\"name\":\"o10\"},{\"id\":12,\"name\":\"o11\"},{\"id\":13,\"name\":\"o12\"},{\"id\":14,\"name\":\"o13\"},{\"id\":15,\"name\":\"o14\"},{\"id\":16,\"name\":\"o15\"},{\"id\":17,\"name\":\"o16\"},{\"id\":18,\"name\":\"o17\"},{\"id\":19,\"name\":\"o18\"},{\"id\":20,\"name\":\"o19\"},{\"id\":21,\"name\":\"o20\"},{\"id\":22,\"name\":\"o21\"},{\"id\":23,\"name\":\"o22\"},{\"id\":24,\"name\":\"o23\"},{\"id\":25,\"name\":\"o24\"},{\"id\":26,\"name\":\"o25\"},{\"id\":27,\"name\":\"o26\"},{\"id\":28,\"name\":\"o27\"},{\"id\":29,\"name\":\"o28\"},{\"id\":30,\"name\":\"o29\"},{\"id\":31,\"name\":\"o30\"}]}]}"
+      },
+      {
+        "name": "options_repeated",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"sel\",\"options\":[{\"id\":1,\"name\":\"a\"},{\"id\":2,\"name\":\"A\"}]}]}"
+      },
+      {
+        "name": "options_0_ok",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"sel\",\"options\":[]}]}"
+      },
+      {
+        "name": "iter_no_start",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"It\",\"type\":\"iter\",\"days\":14}]}"
+      },
+      {
+        "name": "iter_days_91",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"It\",\"type\":\"iter\",\"start\":\"2026-01-05\",\"days\":91}]}"
+      },
+      {
+        "name": "iter_start_feb_30",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"It\",\"type\":\"iter\",\"start\":\"2026-02-30\",\"days\":14}]}"
+      },
+      {
+        "name": "views_9",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V0\",\"layout\":\"table\"},{\"id\":2,\"name\":\"V1\",\"layout\":\"table\"},{\"id\":3,\"name\":\"V2\",\"layout\":\"table\"},{\"id\":4,\"name\":\"V3\",\"layout\":\"table\"},{\"id\":5,\"name\":\"V4\",\"layout\":\"table\"},{\"id\":6,\"name\":\"V5\",\"layout\":\"table\"},{\"id\":7,\"name\":\"V6\",\"layout\":\"table\"},{\"id\":8,\"name\":\"V7\",\"layout\":\"table\"},{\"id\":9,\"name\":\"V8\",\"layout\":\"table\"}]}"
+      },
+      {
+        "name": "view_layout",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"kanban\"}]}"
+      },
+      {
+        "name": "view_board_group_assignee",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"board\",\"group\":\"assignee\"}]}"
+      },
+      {
+        "name": "view_lane_is_group",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\",\"group\":\"label\",\"lane\":\"label\"}]}"
+      },
+      {
+        "name": "view_lane_status",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"board\",\"lane\":\"status\"}]}"
+      },
+      {
+        "name": "view_group_num_field",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"E\",\"type\":\"num\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\",\"group\":\"f1\"}]}"
+      },
+      {
+        "name": "view_sort_unknown",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\",\"sort\":\"priority\"}]}"
+      },
+      {
+        "name": "view_sort_missing_field",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\",\"sort\":\"-f9\"}]}"
+      },
+      {
+        "name": "view_cols_repeated",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\",\"cols\":[\"title\",\"title\"]}]}"
+      },
+      {
+        "name": "view_cols_f01",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"E\",\"type\":\"num\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\",\"cols\":[\"f01\"]}]}"
+      },
+      {
+        "name": "view_date_num_field",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"E\",\"type\":\"num\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"roadmap\",\"date\":[1]}]}"
+      },
+      {
+        "name": "view_repeated_name",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"views\":[{\"id\":1,\"name\":\"V\",\"layout\":\"table\"},{\"id\":2,\"name\":\"v\",\"layout\":\"board\"}]}"
+      },
+      {
+        "name": "arch_3651",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"arch\":3651}"
+      },
+      {
+        "name": "desc_type",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"desc\":5}"
+      },
+      {
+        "name": "desc_1025",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"desc\":\"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}"
+      },
+      {
+        "name": "view_date_same_field",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"Start\",\"type\":\"date\"}],\"views\":[{\"id\":1,\"name\":\"R\",\"layout\":\"roadmap\",\"date\":[1,1]}]}"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "name": "not_json",
+      "error": "json"
+    },
+    {
+      "name": "array",
+      "error": "json"
+    },
+    {
+      "name": "version_2",
+      "error": "version"
+    },
+    {
+      "name": "version_missing",
+      "error": "version"
+    },
+    {
+      "name": "oversize",
+      "error": "size"
+    },
+    {
+      "name": "no_columns",
+      "error": "columns"
+    },
+    {
+      "name": "columns_21",
+      "error": "columns"
+    },
+    {
+      "name": "columns_20",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"C1\"},{\"id\":2,\"name\":\"C2\"},{\"id\":3,\"name\":\"C3\"},{\"id\":4,\"name\":\"C4\"},{\"id\":5,\"name\":\"C5\"},{\"id\":6,\"name\":\"C6\"},{\"id\":7,\"name\":\"C7\"},{\"id\":8,\"name\":\"C8\"},{\"id\":9,\"name\":\"C9\"},{\"id\":10,\"name\":\"C10\"},{\"id\":11,\"name\":\"C11\"},{\"id\":12,\"name\":\"C12\"},{\"id\":13,\"name\":\"C13\"},{\"id\":14,\"name\":\"C14\"},{\"id\":15,\"name\":\"C15\"},{\"id\":16,\"name\":\"C16\"},{\"id\":17,\"name\":\"C17\"},{\"id\":18,\"name\":\"C18\"},{\"id\":19,\"name\":\"C19\"},{\"id\":20,\"name\":\"C20\"}]}"
+    },
+    {
+      "name": "column_id_0",
+      "error": "column"
+    },
+    {
+      "name": "column_id_256",
+      "error": "column"
+    },
+    {
+      "name": "column_id_fraction",
+      "error": "column"
+    },
+    {
+      "name": "column_id_repeated",
+      "error": "column"
+    },
+    {
+      "name": "column_name_repeated_case",
+      "error": "column"
+    },
+    {
+      "name": "column_name_quote",
+      "error": "column"
+    },
+    {
+      "name": "column_name_leading_space",
+      "error": "column"
+    },
+    {
+      "name": "column_name_nbsp_end",
+      "error": "column"
+    },
+    {
+      "name": "column_name_control",
+      "error": "column"
+    },
+    {
+      "name": "column_name_64",
+      "error": "column"
+    },
+    {
+      "name": "column_name_empty",
+      "error": "column"
+    },
+    {
+      "name": "column_color",
+      "error": "column"
+    },
+    {
+      "name": "column_color_null",
+      "error": "column"
+    },
+    {
+      "name": "column_wip_0",
+      "error": "column"
+    },
+    {
+      "name": "def_missing_column",
+      "error": "def"
+    },
+    {
+      "name": "done_missing_column",
+      "error": "done"
+    },
+    {
+      "name": "done_string",
+      "error": "done"
+    },
+    {
+      "name": "sources_6",
+      "error": "sources"
+    },
+    {
+      "name": "source_kind",
+      "error": "source"
+    },
+    {
+      "name": "source_repo_not_id",
+      "error": "source"
+    },
+    {
+      "name": "source_query_513",
+      "error": "source"
+    },
+    {
+      "name": "fields_13",
+      "error": "fields"
+    },
+    {
+      "name": "field_reserved_status",
+      "error": "field"
+    },
+    {
+      "name": "field_reserved_labels",
+      "error": "field"
+    },
+    {
+      "name": "field_name_colon",
+      "error": "field"
+    },
+    {
+      "name": "field_name_dash",
+      "error": "field"
+    },
+    {
+      "name": "field_type",
+      "error": "field"
+    },
+    {
+      "name": "field_options_on_num",
+      "error": "field"
+    },
+    {
+      "name": "field_sel_without_options",
+      "error": "field"
+    },
+    {
+      "name": "field_start_on_date",
+      "error": "field"
+    },
+    {
+      "name": "field_repeated_name",
+      "error": "field"
+    },
+    {
+      "name": "options_31",
+      "error": "options"
+    },
+    {
+      "name": "options_repeated",
+      "error": "options"
+    },
+    {
+      "name": "options_0_ok",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"X\",\"type\":\"sel\",\"options\":[]}]}"
+    },
+    {
+      "name": "iter_no_start",
+      "error": "field"
+    },
+    {
+      "name": "iter_days_91",
+      "error": "field"
+    },
+    {
+      "name": "iter_start_feb_30",
+      "error": "field"
+    },
+    {
+      "name": "views_9",
+      "error": "views"
+    },
+    {
+      "name": "view_layout",
+      "error": "view"
+    },
+    {
+      "name": "view_board_group_assignee",
+      "error": "view"
+    },
+    {
+      "name": "view_lane_is_group",
+      "error": "view"
+    },
+    {
+      "name": "view_lane_status",
+      "error": "view"
+    },
+    {
+      "name": "view_group_num_field",
+      "error": "view"
+    },
+    {
+      "name": "view_sort_unknown",
+      "error": "view"
+    },
+    {
+      "name": "view_sort_missing_field",
+      "error": "view"
+    },
+    {
+      "name": "view_cols_repeated",
+      "error": "view"
+    },
+    {
+      "name": "view_cols_f01",
+      "error": "view"
+    },
+    {
+      "name": "view_date_num_field",
+      "error": "view"
+    },
+    {
+      "name": "view_repeated_name",
+      "error": "view"
+    },
+    {
+      "name": "arch_3651",
+      "error": "arch"
+    },
+    {
+      "name": "desc_type",
+      "error": "desc"
+    },
+    {
+      "name": "desc_1025",
+      "error": "desc"
+    },
+    {
+      "name": "view_date_same_field",
+      "error": "view"
+    }
+  ]
+}

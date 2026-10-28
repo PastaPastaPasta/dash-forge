@@ -57,12 +57,15 @@ pub const WRITER_ROLE: &str = "role";
 
 /// The property a role-gated write claims its signer's role in (RC2 member roles): on
 /// `refUpdate`, `packManifest`, `chunk` and `checkRun` (always 1), and `label`, `milestone`,
-/// `transition` and `event` (1 or 2). The contract's writer leaf proves it equals the signer's
-/// `writer.role`; the maintainer, author and runner operands prove nothing about it.
+/// `transition` and `event` (1 or 2); forge-meta's `board` (1 only: writers define boards,
+/// triage does not) and `card` (1 or 2: triage places cards; UPDATE-3,
+/// `docs/design/boards.md` §3, parity: forge-web `lib/rules/roles.ts`). The contract's writer
+/// leaf proves it equals the signer's `writer.role`; the maintainer, author and runner
+/// operands prove nothing about it.
 pub const CLAIMED_ROLE: &str = "r";
 
 /// The document types that carry [`CLAIMED_ROLE`].
-pub const ROLE_GATED_TYPES: [&str; 8] = [
+pub const ROLE_GATED_TYPES: [&str; 10] = [
     "refUpdate",
     "packManifest",
     "chunk",
@@ -71,6 +74,8 @@ pub const ROLE_GATED_TYPES: [&str; 8] = [
     "milestone",
     "transition",
     "event",
+    "board",
+    "card",
 ];
 
 /// The `r` a role-gated write claims ([`CLAIMED_ROLE`]): 1 when the signer writes as a

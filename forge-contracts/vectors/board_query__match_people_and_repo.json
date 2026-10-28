@@ -1,0 +1,363 @@
+{
+  "name": "match_people_and_repo",
+  "description": "assignee:@me is the viewer (none without one), author:<id>, no:assignee, milestone in any case, repo: by id or by a name the client resolved (`repos`), -repo; a name it did not resolve is reported and not applied, whatever the items' labels say.",
+  "case": "board_query",
+  "rules": "v2",
+  "input": {
+    "op": "match",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        },
+        {
+          "id": 6,
+          "name": "Story points",
+          "type": "num"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "home": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+    "now": 1793102400000,
+    "me": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb",
+    "items": [
+      {
+        "id": "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+        "number": 91,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791140400000,
+        "closedAt": null,
+        "title": "Crash on start",
+        "labels": [
+          "bug"
+        ],
+        "assignees": [
+          "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+        ],
+        "milestone": "v1.0",
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+        "number": 12,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791144000000,
+        "closedAt": null,
+        "title": "Docs: exact phrase here",
+        "labels": [],
+        "assignees": [
+          "Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r",
+          "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+        ],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+        "number": 93,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "pr",
+        "state": "merged",
+        "createdAt": 1791147600000,
+        "closedAt": 1793016000000,
+        "title": "Refactor",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r"
+      },
+      {
+        "id": "7NB8fAfBXV6XBGALr2V57fdVuyqsFqDewMRNxrm56e4u",
+        "number": 94,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "closed",
+        "createdAt": 1791151200000,
+        "closedAt": 1791374400000,
+        "title": "Old crash",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+        "number": 95,
+        "repoId": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx",
+        "repo": "Bob/Lib",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791154800000,
+        "closedAt": null,
+        "title": "Other repo thing",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "7WCRJMQiTstFrcjagXwcLRophhHBSJyp5FAPesybdzjR",
+        "number": 96,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791158400000,
+        "closedAt": null,
+        "title": "Removed one",
+        "labels": [],
+        "assignees": [],
+        "milestone": null,
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      },
+      {
+        "id": "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g",
+        "number": 97,
+        "repoId": "EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+        "repo": "alice/forge",
+        "kind": "issue",
+        "state": "open",
+        "createdAt": 1791162000000,
+        "closedAt": null,
+        "title": "No fields",
+        "labels": [],
+        "assignees": [],
+        "milestone": "V1.0",
+        "author": "ForPPtkSSrLQio6ryHtcPCw2DBtDNbeKAcUcs7H4Vzpb"
+      }
+    ],
+    "cards": [
+      {
+        "id": "7rEkcBF7sHMwKznSuqxsXWh4maz8gZnyLmK51kKk2GBn",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244801000,
+        "item": "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+        "col": 2,
+        "rank": null,
+        "f": "{\"1\":1,\"2\":5,\"3\":1,\"4\":\"2026-10-27\",\"5\":\"needs review soon\"}",
+        "state": 0
+      },
+      {
+        "id": "7vFPvmctLUkofg54q6h98tnEAShnmog3uiBaMkw1HwX3",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244802000,
+        "item": "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+        "col": 1,
+        "rank": null,
+        "f": "{\"1\":2,\"2\":3,\"3\":0,\"4\":\"2026-11-15\"}",
+        "state": 0
+      },
+      {
+        "id": "7zG3FMzeog9g1MMgkMRQkGsPZJRSs3Z8Uf45hmYGZcrJ",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244803000,
+        "item": "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+        "col": 4,
+        "rank": null,
+        "f": "{\"1\":1,\"2\":8,\"3\":2,\"4\":\"2026-10-01\"}",
+        "state": 0
+      },
+      {
+        "id": "84GgZxNRGsYYM2eJfc9gMexYxA96xHSD3bvb3n9XqJBZ",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244804000,
+        "item": "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+        "col": 1,
+        "rank": null,
+        "f": "{\"2\":1.5,\"3\":1}",
+        "state": 0
+      },
+      {
+        "id": "88HKtYkBk4wQghvvarswy33iM1rm3XKHcYo6Pnko6yWp",
+        "ownerId": "FBfF8bmHbJP6xijsfDVT39MCS29kP6XfeEHJHPCbV9NH",
+        "updatedAt": 1791244805000,
+        "item": "7WCRJMQiTstFrcjagXwcLRophhHBSJyp5FAPesybdzjR",
+        "col": null,
+        "rank": null,
+        "f": null,
+        "state": 2
+      }
+    ],
+    "texts": [
+      "assignee:@me",
+      "assignee:Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r",
+      "author:Fss2iV8Cv3jH4UPUtYcszb2Bc3bsTqXPjZM8D7tKmg9r",
+      "no:assignee",
+      "milestone:v1.0",
+      "repo:bob/lib",
+      "repo:EVYovg1cuLSRZwsgUgCkwLTaVSyBUhisxmaEqH7xnN3h",
+      "-repo:bob/lib",
+      "label:BUG",
+      "no:label",
+      "repo:Bob/Lib",
+      "-repo:nobody/none"
+    ],
+    "repos": {
+      "bob/lib": "EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx"
+    }
+  },
+  "expected": [
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP"
+    ],
+    [
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP"
+    ],
+    [
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje"
+    ],
+    [
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58"
+    ],
+    [
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ],
+    [
+      "7A9ChPXt7tuvAEJV6GJGHXN1jQgtz7aREWorvpwHHc58",
+      "7E9r1yueb6JnVub71X2XtuTB8GQZ5MTVoTgNGqYYZHQP",
+      "7JAVLaHR4HheqasivmkoWHYLX88DAbLaNQYscr9opxje",
+      "7SBmym2wzgVPWwSxmHDLj3ifJqZXM56jWJHtJsNLNKQA",
+      "7aD4cwnUw5H8CJ2Cbnfswotz6YzqXYrteC2tztarug4g"
+    ]
+  ]
+}

@@ -1,0 +1,111 @@
+{
+  "name": "between_refused",
+  "description": "Refusals: the lower bound above the upper (order); equal bounds (two members dropped into one gap at once and wrote one rank) are re-rank; a bound that is not rank digits or over 63 (invalid), and no rank of at most 63 digits between (re-rank): b = a + 0…0 (V / V0, \"\" / 0) and a 63-digit lower bound with nothing above it in 63 digits.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "between",
+    "pairs": [
+      [
+        "B",
+        "A"
+      ],
+      [
+        "A",
+        "A"
+      ],
+      [
+        "V1",
+        "V"
+      ],
+      [
+        "a-b",
+        ""
+      ],
+      [
+        "",
+        "é"
+      ],
+      [
+        "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+        ""
+      ],
+      [
+        "V",
+        "V0"
+      ],
+      [
+        "V1",
+        "V100"
+      ],
+      [
+        "",
+        "0"
+      ],
+      [
+        "",
+        "000"
+      ],
+      [
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        ""
+      ],
+      [
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        ""
+      ],
+      [
+        "",
+        "000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      [
+        "V0ABCDEFG1230",
+        "V0ABCDEFG1230"
+      ]
+    ]
+  },
+  "expected": [
+    {
+      "error": "order"
+    },
+    {
+      "error": "re-rank"
+    },
+    {
+      "error": "order"
+    },
+    {
+      "error": "invalid"
+    },
+    {
+      "error": "invalid"
+    },
+    {
+      "error": "invalid"
+    },
+    {
+      "error": "re-rank"
+    },
+    {
+      "error": "re-rank"
+    },
+    {
+      "error": "re-rank"
+    },
+    {
+      "error": "re-rank"
+    },
+    {
+      "error": "re-rank"
+    },
+    {
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzV"
+    },
+    {
+      "error": "re-rank"
+    },
+    {
+      "error": "re-rank"
+    }
+  ]
+}

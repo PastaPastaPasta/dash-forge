@@ -9,7 +9,7 @@
  *
  * DESIGN rev 4.1 D44 adds a fourth contract, forge-meta: `repoKey`, `ban`, `label`, `topic`,
  * `packMirror`, `profile` and `follow` ({@link META_TYPES}) move there, and `vaultEntry` (UPDATE-2,
- * the passkey vault) exists there only. The deployment record
+ * the passkey vault), `board` and `card` (UPDATE-3, boards) exist there only ({@link META_ONLY_TYPES}). The deployment record
  * says which layout a network has (`v2.forgeMeta`, `ForgeIds.meta`), so one build serves
  * sakura's three-contract set and four-contract sets: pass the network's ids to
  * {@link contractKindOfType}; without them it answers the three-contract home.
@@ -70,10 +70,10 @@ export const COMMUNITY_TYPES: ReadonlySet<string> = typesOf('community')
 
 /**
  * The types forge-meta holds on a four-contract set (D44). None is read by a rule, total or
- * derived index of its old contract, so the move changes no consensus rule. `vaultEntry` is the
- * exception: it has no three-contract home (`build.py` builds it with the four-contract layout
- * only), so on a network without forge-meta no contract holds it. Parity: forge-core
- * `layout::META_TYPES`.
+ * derived index of its old contract, so the move changes no consensus rule. {@link META_ONLY_TYPES}
+ * are the exception: they have no three-contract home (`build.py` builds them with the
+ * four-contract layout only), so on a network without forge-meta no contract holds them. Parity:
+ * forge-core `layout::META_TYPES`.
  */
 export const META_TYPES: ReadonlySet<string> = new Set([
   'repoKey',
@@ -84,7 +84,16 @@ export const META_TYPES: ReadonlySet<string> = new Set([
   'profile',
   'follow',
   'vaultEntry',
+  'board',
+  'card',
 ])
+
+/**
+ * The {@link META_TYPES} no three-contract set has: `vaultEntry` (UPDATE-2, the passkey vault),
+ * `board` and `card` (UPDATE-3, `docs/design/boards.md` §3). On a network without forge-meta
+ * {@link contractKindOfType} answers null for them. Parity: forge-core `layout::META_ONLY_TYPES`.
+ */
+export const META_ONLY_TYPES: ReadonlySet<string> = new Set(['vaultEntry', 'board', 'card'])
 
 /**
  * The contract that holds `type` on the network `forge` describes: forge-meta for

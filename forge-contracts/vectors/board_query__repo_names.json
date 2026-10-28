@@ -1,0 +1,35 @@
+{
+  "name": "repo_names",
+  "description": "The names a query's repo: qualifiers type, as a client resolves them: unquoted, each once, in order; ids, empty values, URLs and other keys are left out.",
+  "case": "board_query",
+  "rules": "v2",
+  "input": {
+    "op": "names",
+    "texts": [
+      "repo:alice/forge -repo:\"bob/lib\" repo:alice/forge label:x",
+      "repo:EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx repo:forge",
+      "Repo:Forge -REPO:x/y",
+      "repo: repo://host/path",
+      "crash repo:\"a b/c\"",
+      "status:Done"
+    ]
+  },
+  "expected": [
+    [
+      "alice/forge",
+      "bob/lib"
+    ],
+    [
+      "forge"
+    ],
+    [
+      "Forge",
+      "x/y"
+    ],
+    [],
+    [
+      "a b/c"
+    ],
+    []
+  ]
+}

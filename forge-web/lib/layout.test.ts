@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest'
 
 import { checkMembers } from './auth/group-trust'
 import { forgeContractIds, forgeV2Ids, groupTrust, type DeploymentFile, type ForgeIds } from './deployments'
-import { META_TYPES, contractKindOfType, rc1WriteProblem, writeContractKind } from './layout'
+import { META_ONLY_TYPES, META_TYPES, contractKindOfType, rc1WriteProblem, writeContractKind } from './layout'
 import { contractOf } from './repo/source'
 
 const THREE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'G' }
@@ -28,12 +28,13 @@ const OLD_HOME: Readonly<Record<string, string>> = {
   profile: 'COMMUNITY',
   follow: 'COMMUNITY',
 }
-// UPDATE-2 (the passkey vault): in forge-meta only; the three-contract set has no home for it.
-const FOUR_CONTRACT_ONLY: ReadonlySet<string> = new Set(['vaultEntry'])
+// UPDATE-2 (the passkey vault) and UPDATE-3 (boards): in forge-meta only; the three-contract set has no home for them.
+const FOUR_CONTRACT_ONLY: ReadonlySet<string> = new Set(['vaultEntry', 'board', 'card'])
 
 describe('the layout follows the deployment record', () => {
-  it('forge-meta holds the seven moved types, and vaultEntry, only on a four-contract set', () => {
+  it('forge-meta holds the seven moved types, and vaultEntry, board and card, only on a four-contract set', () => {
     expect([...META_TYPES].sort()).toEqual([...Object.keys(OLD_HOME), ...FOUR_CONTRACT_ONLY].sort())
+    expect([...META_ONLY_TYPES].sort()).toEqual([...FOUR_CONTRACT_ONLY].sort())
     for (const t of META_TYPES) {
       if (FOUR_CONTRACT_ONLY.has(t)) {
         expect(() => contractOf(THREE, t), t).toThrow(/no Forge contract holds/)

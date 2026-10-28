@@ -22,6 +22,17 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg auth name register` | [`auth-name-register.schema.json`](dg/auth-name-register.schema.json) |
 | `dg auth new` | [`auth-new.schema.json`](dg/auth-new.schema.json) |
 | `dg auth status` | [`auth-status.schema.json`](dg/auth-status.schema.json) |
+| `dg board add` | [`board-add.schema.json`](dg/board-add.schema.json) |
+| `dg board archive` | [`board-archive.schema.json`](dg/board-archive.schema.json) |
+| `dg board close` | [`board-close.schema.json`](dg/board-close.schema.json) |
+| `dg board create` | [`board-create.schema.json`](dg/board-create.schema.json) |
+| `dg board delete` | [`board-delete.schema.json`](dg/board-delete.schema.json) |
+| `dg board list` | [`board-list.schema.json`](dg/board-list.schema.json) |
+| `dg board move` | [`board-move.schema.json`](dg/board-move.schema.json) |
+| `dg board next-iteration` | [`board-next-iteration.schema.json`](dg/board-next-iteration.schema.json) |
+| `dg board remove` | [`board-remove.schema.json`](dg/board-remove.schema.json) |
+| `dg board set` | [`board-set.schema.json`](dg/board-set.schema.json) |
+| `dg board view` | [`board-view.schema.json`](dg/board-view.schema.json) |
 | `dg bot allow` | [`bot-allow.schema.json`](dg/bot-allow.schema.json) |
 | `dg bot ask` | [`bot-ask.schema.json`](dg/bot-ask.schema.json) |
 | `dg bot jobs` | [`bot-jobs.schema.json`](dg/bot-jobs.schema.json) |

@@ -1,0 +1,45 @@
+{
+  "name": "bottom",
+  "description": "bottomRank(last) = rankBetween(max(last, \"W\"), \"\"): below the column and the sourced pool, so later sourced items (V…) never pass it.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "bottom",
+    "lasts": [
+      null,
+      "V",
+      "W",
+      "l",
+      "z",
+      "zz",
+      "V0ABCDEFG1230",
+      "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    ]
+  },
+  "expected": [
+    {
+      "rank": "l"
+    },
+    {
+      "rank": "l"
+    },
+    {
+      "rank": "l"
+    },
+    {
+      "rank": "s"
+    },
+    {
+      "rank": "zV"
+    },
+    {
+      "rank": "zzV"
+    },
+    {
+      "rank": "l"
+    },
+    {
+      "error": "re-rank"
+    }
+  ]
+}

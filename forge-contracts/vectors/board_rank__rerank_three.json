@@ -1,0 +1,17 @@
+{
+  "name": "rerank_three",
+  "description": "rerank(3): k/4 of the way from 0 to V in 2 digits (31·62 = 1922 ≥ 62·4), trailing zeros dropped: all below the sourced pool.",
+  "case": "board_rank",
+  "rules": "v2",
+  "input": {
+    "op": "rerank",
+    "n": 3
+  },
+  "expected": {
+    "ranks": [
+      "7k",
+      "FV",
+      "NF"
+    ]
+  }
+}

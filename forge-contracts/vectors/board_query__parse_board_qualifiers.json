@@ -1,0 +1,287 @@
+{
+  "name": "parse_board_qualifiers",
+  "description": "Board qualifiers: status by column name (any case, quoted), -status, no:status; a select field by option name; number comparisons (>3 >=3 <3 <=2.5 1..5 *..5 2..*); date comparisons and ranges, @today; iterations by @current/@next/@previous, number, or name; no:<field>; text fields (has); a quoted field name with a space.",
+  "case": "board_query",
+  "rules": "v2",
+  "input": {
+    "op": "parse",
+    "spec": {
+      "v": 1,
+      "columns": [
+        {
+          "id": 1,
+          "name": "Todo"
+        },
+        {
+          "id": 2,
+          "name": "In progress",
+          "wip": 1
+        },
+        {
+          "id": 3,
+          "name": "Done"
+        },
+        {
+          "id": 4,
+          "name": "Verified"
+        }
+      ],
+      "def": 1,
+      "done": 3,
+      "sources": [
+        {
+          "k": "a"
+        }
+      ],
+      "fields": [
+        {
+          "id": 1,
+          "name": "Priority",
+          "type": "sel",
+          "options": [
+            {
+              "id": 1,
+              "name": "P0"
+            },
+            {
+              "id": 2,
+              "name": "P1"
+            },
+            {
+              "id": 3,
+              "name": "P2"
+            },
+            {
+              "id": 4,
+              "name": "P3"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Estimate",
+          "type": "num"
+        },
+        {
+          "id": 3,
+          "name": "Iteration",
+          "type": "iter",
+          "start": "2026-10-12",
+          "days": 14
+        },
+        {
+          "id": 4,
+          "name": "Target",
+          "type": "date"
+        },
+        {
+          "id": 5,
+          "name": "Notes",
+          "type": "text"
+        },
+        {
+          "id": 6,
+          "name": "Story points",
+          "type": "num"
+        }
+      ],
+      "views": [
+        {
+          "id": 1,
+          "name": "Board",
+          "layout": "board"
+        },
+        {
+          "id": 2,
+          "name": "Table",
+          "layout": "table",
+          "cols": [
+            "title",
+            "status",
+            "f1",
+            "f2"
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Plain",
+          "layout": "table",
+          "cols": [
+            "title",
+            "f5"
+          ]
+        }
+      ],
+      "arch": 14
+    },
+    "text": "status:\"in progress\" -status:Done no:status priority:p0 -Priority:P1 estimate:>3 estimate:>=3 estimate:<3 estimate:<=2.5 estimate:1..5 estimate:*..5 estimate:-2..* target:<2026-11-01 target:2026-10-01..2026-10-31 target:>=@today iteration:@current iteration:@NEXT iteration:@previous iteration:2 iteration:\"Iteration 3\" iteration:<@current no:priority notes:\"Needs Review\" \"story points\":>=8"
+  },
+  "expected": {
+    "preds": [
+      {
+        "k": "status",
+        "not": false,
+        "v": 2
+      },
+      {
+        "k": "status",
+        "not": true,
+        "v": 3
+      },
+      {
+        "k": "no",
+        "not": false,
+        "v": "status"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 1,
+        "op": "eq",
+        "v": 1
+      },
+      {
+        "k": "field",
+        "not": true,
+        "f": 1,
+        "op": "eq",
+        "v": 2
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 2,
+        "op": "gt",
+        "v": 3
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 2,
+        "op": "ge",
+        "v": 3
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 2,
+        "op": "lt",
+        "v": 3
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 2,
+        "op": "le",
+        "v": 2.5
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 2,
+        "op": "range",
+        "v": 1,
+        "v2": 5
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 2,
+        "op": "le",
+        "v": 5
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 2,
+        "op": "ge",
+        "v": -2
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 4,
+        "op": "lt",
+        "v": "2026-11-01"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 4,
+        "op": "range",
+        "v": "2026-10-01",
+        "v2": "2026-10-31"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 4,
+        "op": "ge",
+        "v": "@today"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 3,
+        "op": "eq",
+        "v": "@current"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 3,
+        "op": "eq",
+        "v": "@next"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 3,
+        "op": "eq",
+        "v": "@previous"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 3,
+        "op": "eq",
+        "v": 1
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 3,
+        "op": "eq",
+        "v": 2
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 3,
+        "op": "lt",
+        "v": "@current"
+      },
+      {
+        "k": "no",
+        "not": false,
+        "v": "f1"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 5,
+        "op": "has",
+        "v": "needs review"
+      },
+      {
+        "k": "field",
+        "not": false,
+        "f": 6,
+        "op": "ge",
+        "v": 8
+      }
+    ],
+    "text": "",
+    "unresolved": []
+  }
+}

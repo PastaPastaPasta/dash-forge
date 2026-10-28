@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/board-close.schema.json",
+  "title": "dg board close --json",
+  "description": "A board closed or reopened.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "closed",
+        "reopened",
+        "deleted"
+      ]
+    },
+    "key": {
+      "type": "integer"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "changed": {
+      "type": "boolean"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "key"
+  ],
+  "additionalProperties": true
+}

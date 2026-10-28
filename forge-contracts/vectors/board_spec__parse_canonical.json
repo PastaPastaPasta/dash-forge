@@ -1,0 +1,61 @@
+{
+  "name": "parse_canonical",
+  "description": "A spec in any key order, with white space, an unknown key (tolerated, dropped), defaults written out and 1.0 for an id, reads back as canonical JSON: the declared key order, defaults (def/done/arch 0, empty q, empty lists) omitted.",
+  "case": "board_spec",
+  "rules": "v2",
+  "input": {
+    "op": "parse",
+    "cases": [
+      {
+        "name": "scrambled",
+        "json": "{ \"arch\": 0, \"future\": {\"x\": 1}, \"views\": [{\"q\": \"\", \"layout\": \"table\", \"name\": \"T\", \"id\": 1.0, \"sort\": \"-f1\", \"cols\": [\"title\", \"f1\"]}],\n  \"fields\": [{\"type\": \"num\", \"name\": \"Estimate\", \"id\": 1}], \"sources\": [], \"done\": 2, \"def\": 0,\n  \"columns\": [{\"wip\": 3, \"name\": \"Todo\", \"id\": 1, \"color\": \"#AbCdEf\"}, {\"name\": \"Done\", \"id\": 2}], \"v\": 1 }"
+      },
+      {
+        "name": "minimal",
+        "json": "{\"v\":1,\"columns\":[{\"id\":7,\"name\":\"Only\"}]}"
+      },
+      {
+        "name": "source_defaults",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"sources\":[{\"k\":\"i\",\"q\":\"\"},{\"k\":\"p\",\"r\":\"EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx\",\"q\":\"label:bug\"}]}"
+      },
+      {
+        "name": "unicode_names",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀\"},{\"id\":2,\"name\":\"Ünïcødé\"}]}"
+      },
+      {
+        "name": "desc",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"desc\":\"Line one\\nline \\\"two\\\"\"}"
+      },
+      {
+        "name": "views_all_keys",
+        "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"Pri\",\"type\":\"sel\",\"options\":[{\"id\":1,\"name\":\"High\",\"color\":\"#ff0000\"}]},{\"id\":2,\"name\":\"Start\",\"type\":\"date\"},{\"id\":3,\"name\":\"End\",\"type\":\"date\"},{\"id\":4,\"name\":\"Sprint\",\"type\":\"iter\",\"start\":\"2026-01-05\",\"days\":7}],\"views\":[{\"id\":1,\"name\":\"B\",\"layout\":\"board\",\"group\":\"f1\",\"lane\":\"assignee\",\"q\":\"is:open\"},{\"id\":2,\"name\":\"R\",\"layout\":\"roadmap\",\"date\":[2,3]},{\"id\":3,\"name\":\"S\",\"layout\":\"roadmap\",\"date\":[4],\"group\":\"f4\"},{\"id\":4,\"name\":\"T\",\"layout\":\"table\",\"group\":\"milestone\",\"lane\":\"f4\",\"sort\":\"created\"}]}"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "name": "scrambled",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\",\"color\":\"#AbCdEf\",\"wip\":3},{\"id\":2,\"name\":\"Done\"}],\"done\":2,\"fields\":[{\"id\":1,\"name\":\"Estimate\",\"type\":\"num\"}],\"views\":[{\"id\":1,\"name\":\"T\",\"layout\":\"table\",\"sort\":\"-f1\",\"cols\":[\"title\",\"f1\"]}]}"
+    },
+    {
+      "name": "minimal",
+      "json": "{\"v\":1,\"columns\":[{\"id\":7,\"name\":\"Only\"}]}"
+    },
+    {
+      "name": "source_defaults",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"sources\":[{\"k\":\"i\"},{\"r\":\"EZZTFGPPNXqHudAJPvw2YiYjtJgqZwbxXiSkBHjE43Nx\",\"k\":\"p\",\"q\":\"label:bug\"}]}"
+    },
+    {
+      "name": "unicode_names",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀\"},{\"id\":2,\"name\":\"Ünïcødé\"}]}"
+    },
+    {
+      "name": "desc",
+      "json": "{\"v\":1,\"desc\":\"Line one\\nline \\\"two\\\"\",\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}]}"
+    },
+    {
+      "name": "views_all_keys",
+      "json": "{\"v\":1,\"columns\":[{\"id\":1,\"name\":\"Todo\"},{\"id\":2,\"name\":\"Done\"}],\"fields\":[{\"id\":1,\"name\":\"Pri\",\"type\":\"sel\",\"options\":[{\"id\":1,\"name\":\"High\",\"color\":\"#ff0000\"}]},{\"id\":2,\"name\":\"Start\",\"type\":\"date\"},{\"id\":3,\"name\":\"End\",\"type\":\"date\"},{\"id\":4,\"name\":\"Sprint\",\"type\":\"iter\",\"start\":\"2026-01-05\",\"days\":7}],\"views\":[{\"id\":1,\"name\":\"B\",\"layout\":\"board\",\"q\":\"is:open\",\"group\":\"f1\",\"lane\":\"assignee\"},{\"id\":2,\"name\":\"R\",\"layout\":\"roadmap\",\"date\":[2,3]},{\"id\":3,\"name\":\"S\",\"layout\":\"roadmap\",\"group\":\"f4\",\"date\":[4]},{\"id\":4,\"name\":\"T\",\"layout\":\"table\",\"group\":\"milestone\",\"lane\":\"f4\",\"sort\":\"created\"}]}"
+    }
+  ]
+}

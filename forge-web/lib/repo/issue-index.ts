@@ -516,3 +516,16 @@ export async function issueMilestoneItems(sdk: EvoSDK, repo: RepoRef, network: N
   const rows = await rowsWithEvent(sdk, await indexOf(sdk, repo, network), 'milestoneSet')
   return rows?.map((r) => ({ open: r.state.open, milestone: r.milestone ?? null })) ?? null
 }
+
+/**
+ * The issue rows of `ids` (any not this repo's issues, or not shown, are left out), each with its
+ * labels, assignees and milestone: a board's closed and card-named items (`./board-items`). Read
+ * through the list's index, so a row the list already holds costs nothing.
+ */
+export async function issueRowsById(sdk: EvoSDK, repo: RepoRef, ids: readonly string[], network: Network = DEFAULT_NETWORK): Promise<IssueRow[]> {
+  if (ids.length === 0) return []
+  const index = await indexOf(sdk, repo, network)
+  await resolveIds(sdk, index, ids)
+  await hydrate(sdk, index, ids)
+  return rowsOf(index, ids)
+}
