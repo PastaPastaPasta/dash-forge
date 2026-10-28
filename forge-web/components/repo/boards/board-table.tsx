@@ -34,7 +34,7 @@ import { Author } from '@/components/author'
 import { EmptyState } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn, shortId } from '@/lib/utils'
-import { DotLabel, FieldInput, GroupHeading, ItemStateIcon, StatusSelect, dayText, fieldValueText, viewKeyLabel } from './board-fields'
+import { DotLabel, FieldInput, GroupHeading, ItemStateIcon, StatusSelect, dayText, fieldValueText, repoLabelText, viewKeyLabel } from './board-fields'
 import { ItemRef } from './board-bits'
 import type { BoardLayoutProps } from './layout-props'
 
@@ -360,7 +360,13 @@ function Cell({ spec, item, keyName, placement, priv, pending, multiRepo, labels
     case 'number':
       return <span className={cn('font-mono tabular-nums', muted)}>#{item.number}</span>
     case 'repo':
-      return <span className="font-mono">{item.repo ?? shortId(item.repoId)}</span>
+      return item.repo !== undefined ? (
+        <span className="font-mono" title={item.repo}>
+          {repoLabelText(item.repo)}
+        </span>
+      ) : (
+        <span className="font-mono">{shortId(item.repoId)}</span>
+      )
     case 'state':
       return <span>{priv ? '' : STATE_WORD[item.state]}</span>
     case 'author':

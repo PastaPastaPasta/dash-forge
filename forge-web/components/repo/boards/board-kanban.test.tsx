@@ -139,6 +139,11 @@ describe('board layout', () => {
     expect(card(5).textContent).not.toContain(owner)
     expect(card(5).querySelector(`[title="${owner}/tools#5"]`)).not.toBeNull()
     expect(card(5).getAttribute('aria-label')).toMatch(/^tools #5 Secret/)
+    // Swimlanes by repository name the owner shortly (the full label is what repo: matches).
+    await render({ ...p, rows: p.rows.map((r) => ({ ...r, item: items.find((i) => i.id === r.item.id) ?? r.item })), view: { ...p.view, lane: 'repo' } })
+    expect([...el.querySelectorAll('[data-testid="kanban-lane"]')].map((l) => l.getAttribute('aria-label'))).toEqual(['G1SAVd3…nC8ce/project', 'G1SAVd3…nC8ce/tools'])
+    const { repoLabelText } = await import('./board-fields')
+    expect(repoLabelText('alice/tools')).toBe('alice/tools')
   })
 
   it('cancels a keyboard move with Escape, writing nothing', async () => {

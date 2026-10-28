@@ -15,7 +15,7 @@ import { disabledField } from '@/components/ui/input'
 import { pullStateView } from '@/components/repo/pull-state'
 import { LabelChip } from '@/components/repo/issue-bits'
 import { Author } from '@/components/author'
-import { cn } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------------------------
 // URLs (§2.1: `/repo/board?owner=&name=&b=<key>`)
@@ -128,6 +128,18 @@ export function DotLabel({ color, children, className }: { readonly color?: stri
 }
 
 /** An issue's or PR's state icon, as the lists draw it, with its name for screen readers. */
+/**
+ * A repository's `owner/name` label (`board-page.tsx`) as headings and cells show it: an owner
+ * that is an identity id shortened (`G1SAVd3…nC8ce/forge`), a DPNS name as it is. The full label
+ * stays the tooltip and what `repo:` matches.
+ */
+export function repoLabelText(label: string): string {
+  const cut = label.lastIndexOf('/')
+  if (cut < 0) return label
+  const owner = label.slice(0, cut)
+  return `${/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(owner) ? shortId(owner) : owner}${label.slice(cut)}`
+}
+
 export function ItemStateIcon({ item, className, decorative = false }: { readonly item: Pick<BoardItem, 'kind' | 'state'>; readonly className?: string; /** The state is said in words beside it: no screen-reader text of its own. */ readonly decorative?: boolean }): JSX.Element {
   if (item.kind === 'pr') {
     const v = pullStateView({ open: item.state === 'open', merged: item.state === 'merged' })
@@ -499,8 +511,14 @@ export function GroupHeading({ spec, by, groupKey, items }: { readonly spec: Boa
       return <Author identityId={String(groupKey)} link={false} />
     case 'label':
       return <LabelChip name={String(groupKey)} />
-    case 'repo':
-      return <span className="font-mono">{items.find((i) => i.repoId === groupKey)?.repo ?? String(groupKey)}</span>
+    case 'repo': {
+      const label = items.find((i) => i.repoId === groupKey)?.repo ?? String(groupKey)
+      return (
+        <span className="font-mono" title={label}>
+          {repoLabelText(label)}
+        </span>
+      )
+    }
     default:
       return <span className="truncate">{String(groupKey)}</span>
   }

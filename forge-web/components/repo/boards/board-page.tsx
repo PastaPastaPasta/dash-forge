@@ -477,19 +477,20 @@ function ViewTabs({ spec, active, dirty, onPick, actions }: { spec: BoardSpec; a
   )
 }
 
-/** The query box: filters as you type (the URL follows a moment later). */
 /**
  * The filter box's example, in this board's own terms: a column after the first (quoted when it
- * has a space), `assignee:@me`, and the first single-select field's first option.
+ * has a space or a colon; names never hold `"`, §2.7), `assignee:@me`, and the first
+ * single-select field's first option.
  */
 export function filterPlaceholder(spec: BoardSpec): string {
-  const quote = (s: string): string => (/\s/.test(s) ? `"${s}"` : s)
+  const quote = (s: string): string => (/[\s:]/.test(s) ? `"${s}"` : s)
   const col = spec.columns[1] ?? spec.columns[0]
   const sel = spec.fields.find((f) => f.type === 'sel' && (f.options?.length ?? 0) > 0)
   const opt = sel?.options?.[0]
   return [col !== undefined ? `status:${quote(col.name)}` : 'is:open', 'assignee:@me', ...(sel !== undefined && opt !== undefined ? [`${quote(sel.name.toLowerCase())}:${quote(opt.name)}`] : [])].join(' ')
 }
 
+/** The query box: filters as you type (the URL follows a moment later). */
 function FilterBox({ q, placeholder, onChange }: { q: string; placeholder: string; onChange: (q: string) => void }): JSX.Element {
   const [draft, setDraft] = useState(q)
   const last = useRef(q)
@@ -629,13 +630,16 @@ function DatesPicker({ spec, view, onChange }: { spec: BoardSpec; view: SavedVie
     ...spec.fields.filter((f) => f.type === 'iter').map((f) => ({ ids: [f.id], name: f.name })),
     ...dates.flatMap((a, i) => dates.slice(i + 1).map((b) => ({ ids: [a.id, b.id], name: `${a.name} to ${b.name}` }))),
   ]
-  if (options.length < 2) return null
   const now = roadmapDates(spec, view)
   const value = now === null ? '' : now.kind === 'iter' ? String(now.field.id) : `${now.start.id},${now.end.id}`
+  // a pair the URL or a saved view names the other way round is offered as it is
+  if (now?.kind === 'range' && !options.some((o) => o.ids.join(',') === value)) options.push({ ids: [now.start.id, now.end.id], name: `${now.start.name} to ${now.end.name}` })
+  if (options.length < 2) return null
   return (
     <label className="inline-flex items-center gap-1.5 text-anvil-600 dark:text-anvil-300">
       Dates
       <select value={value} onChange={(e) => onChange(e.target.value.split(',').map(Number))} className={PICKER} data-testid="dates-picker">
+        {value === '' ? <option value="">None</option> : null}
         {options.map((o) => (
           <option key={o.ids.join(',')} value={o.ids.join(',')}>
             {o.name}

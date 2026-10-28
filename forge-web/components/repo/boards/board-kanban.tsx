@@ -45,7 +45,7 @@ import {
 import { cn, shortId } from '@/lib/utils'
 
 import { FieldChip, ItemRef, itemRepoName, itemStateWords } from './board-bits'
-import { ColorDot, GroupHeading, ItemStateIcon, dayRangeText, fieldValueText } from './board-fields'
+import { ColorDot, GroupHeading, ItemStateIcon, dayRangeText, fieldValueText, repoLabelText } from './board-fields'
 import { BulkActionDialog, cardCount, rerankAction, type BulkAction } from './board-dialogs'
 import type { BoardLayoutProps } from './layout-props'
 import { QuickAdd, type QuickAddTarget } from './quick-add'
@@ -268,7 +268,7 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
     const field = f === null ? undefined : fieldById(spec, f)
     if (field?.type === 'sel') return field.options?.find((o) => o.id === key)?.name ?? String(key)
     if (field?.type === 'iter' && typeof key === 'number') return iterationRange(field, key)?.name ?? String(key)
-    if (layout.lane === 'repo') return items.find((i) => i.repoId === key)?.repo ?? String(key)
+    if (layout.lane === 'repo') return repoLabelText(items.find((i) => i.repoId === key)?.repo ?? String(key))
     return String(key)
   }
 
@@ -379,7 +379,9 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
     const el = cardEl(f.id, f)
     if (el === null && f.until !== undefined && Date.now() < f.until) return
     focusAfter.current = null
-    el?.focus()
+    // not when the focus went somewhere else meanwhile (a dialog the move opened, a click away)
+    const at = document.activeElement
+    if (at === null || at === document.body || rootRef.current?.contains(at) === true) el?.focus()
   })
 
   // ---------------------------------------------------------------------------------------------
