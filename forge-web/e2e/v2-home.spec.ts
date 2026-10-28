@@ -14,7 +14,7 @@ test.beforeEach(quorumGuard)
 
 /**
  * Repo home launch UX against the moutai forge-v2 fixture (read-only; nothing is signed):
- * the Verification card and its quorum-key cross-check, the rail, the five-tab header, the
+ * the Verification card and its quorum-key cross-check, the rail, the repo tab header, the
  * clone box (zip + install sheet), the empty repo, short URLs through the 404 shim, the
  * Releases tab, axe, and a 390px phone.
  *
@@ -118,13 +118,15 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expectNoSeriousA11y(page, 'b-home-expanded')
   })
 
-  test('b-3. five-tab header: Code · Issues (n) · Pull requests (n) · Releases (Settings for maintainers)', async ({ page }) => {
+  test('b-3. tab header: Code · Issues (n) · Pull requests (n) · Boards · Releases (Settings for maintainers)', async ({ page }) => {
     await openHome(page)
     const nav = page.getByRole('navigation', { name: 'Repository' })
     // The tab counts are OPEN counts folded from the lists, so a number appears only once the
     // fixture's fold is complete (every row read, every state verified): b-3 and b-3b both
-    // depend on that, hence the longer wait.
-    await expect(nav.getByRole('link')).toHaveText([/^Code$/, /^Issues\s*\d+$/, /^Pull requests\s*\d+$/, /^Releases$/], {
+    // depend on that, hence the longer wait. Boards shows where forge-meta has them (testnet's
+    // v3, docs/design/boards.md §3), for every reader.
+    const boards = ON_TESTNET ? [/^Boards$/] : []
+    await expect(nav.getByRole('link')).toHaveText([/^Code$/, /^Issues\s*\d+$/, /^Pull requests\s*\d+$/, ...boards, /^Releases$/], {
       timeout: 60_000,
     })
     // Signed out: no Settings, and the old Commits tab is gone (commits live under Code).
