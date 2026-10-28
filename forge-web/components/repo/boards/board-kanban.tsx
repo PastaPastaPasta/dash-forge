@@ -633,7 +633,7 @@ export function BoardKanban(props: BoardLayoutProps): JSX.Element {
         {indicatorAt === others.length ? <DropLine /> : null}
         {ids.length === 0 && target === null ? <p className="px-1 py-2 text-center text-[12px] text-anvil-500 dark:text-anvil-400">{refused ? drag?.invalid : 'No items'}</p> : null}
         {quickAddIn(lane) && home !== undefined ? (
-          <QuickAdd state={state} spec={spec} home={home} homeLabel={items.find((i) => i.repoId === home.repoId)?.repo ?? home.name} target={quickTarget(column, lane, meta.name)} />
+          <QuickAdd state={state} spec={spec} home={home} homeLabel={home.name} target={quickTarget(column, lane, meta.name)} />
         ) : null}
       </div>
     )
