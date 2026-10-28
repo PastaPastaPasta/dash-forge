@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * The issue / PR sidebar's Boards section (design `docs/design/boards.md` §5.6): nothing read
- * before it is in view, each board with the item's status and fields (editable by members, one
+ * before it is in view and the page's load is past (a scroll, or idle a while after), each board with the item's status and fields (editable by members, one
  * card write each), read-only for others, and "Add to board" for the repo's other open boards.
  */
 
@@ -41,6 +41,7 @@ vi.mock('@/hooks/use-board', () => ({
 }))
 
 const { ItemBoards } = await import('./item-boards')
+const { DEFERRED_READ_MS } = await import('@/hooks/use-in-view')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -74,7 +75,11 @@ afterEach(() => {
 })
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)) })
 const button = (text: RegExp): HTMLButtonElement | undefined => [...document.querySelectorAll('button')].find((b) => text.test(b.textContent ?? ''))
-const render = (repo: RepoRef = REPO): void => act(() => root.render(<ItemBoards repo={repo} addr={addr} item={ITEM} />))
+/** Render the section, then scroll the page (what lets a section in view read at once). */
+const render = (repo: RepoRef = REPO, scroll = true): void => {
+  act(() => root.render(<ItemBoards repo={repo} addr={addr} item={ITEM} />))
+  if (scroll) act(() => void window.dispatchEvent(new Event('scroll')))
+}
 
 describe('ItemBoards', () => {
   it('reads nothing until the section is in view', () => {
@@ -82,6 +87,33 @@ describe('ItemBoards', () => {
     render()
     expect(seenItems.every((i) => i === null)).toBe(true)
     expect(el.textContent).toContain('Reading boards')
+  })
+
+  it('in view on load, reads only after a scroll, or once the page has been idle a while: a cold page load reads no board', () => {
+    vi.useFakeTimers()
+    try {
+      const idle = vi.fn((go: () => void) => {
+        go()
+        return 1
+      })
+      vi.stubGlobal('requestIdleCallback', idle)
+      render(REPO, false)
+      expect(seenItems.every((i) => i === null)).toBe(true)
+      act(() => void vi.advanceTimersByTime(DEFERRED_READ_MS - 1))
+      expect(seenItems.every((i) => i === null)).toBe(true)
+      act(() => void vi.advanceTimersByTime(1))
+      expect(idle).toHaveBeenCalled()
+      expect(seenItems.at(-1)).toEqual(ITEM)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('in view on load, reads at once when the reader scrolls', () => {
+    render(REPO, false)
+    expect(seenItems.every((i) => i === null)).toBe(true)
+    act(() => void window.dispatchEvent(new Event('scroll')))
+    expect(seenItems.at(-1)).toEqual(ITEM)
   })
 
   it('shows each board with the item’s status and fields; a member changes them with one card write', async () => {

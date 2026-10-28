@@ -948,7 +948,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <SidebarSection title="Development" icon={GitPullRequest}>
           <LinkedPulls addr={addr} number={issue.number} backlinks={backlinks.linking} />
         </SidebarSection>
-        {/* Boards (boards.md §5.6): read once scrolled into view. */}
+        {/* Boards (boards.md §5.6): read once in view, after the page's own load. */}
         <ItemBoards
           repo={home.repo}
           addr={addr}

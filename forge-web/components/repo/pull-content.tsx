@@ -2492,7 +2492,7 @@ function PullPage({
                 manageHref={repoHref('/repo/milestones', addr)}
               />
             </SidebarSection>
-            {/* Boards (boards.md §5.6): read once scrolled into view. */}
+            {/* Boards (boards.md §5.6): read once in view, after the page's own load. */}
             <ItemBoards
               repo={repo}
               addr={addr}

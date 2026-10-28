@@ -243,7 +243,10 @@ test.describe('page request budget (S-1)', () => {
   /**
    * Bot badges (UPDATE-1 `profile.bot`): a thread reads its participants' profiles in one batch
    * once its data is in (one `$ownerId in` query, and one more for the operators any of them
-   * name), never once per author or per render wave.
+   * name), never once per author or per render wave. And the sidebar's Boards section (boards.md
+   * §5.6), even where it starts in view, reads no `card` or `board` within the cold load: it waits
+   * for a scroll, or for the page to be idle a while (`useDeferredInView`), on a network with
+   * boards (testnet) as on one without.
    */
   test('pb-6. an issue thread and a PR conversation read the bot badges in at most 2 profile queries', async ({ browser }) => {
     const merged = loadSeedPulls().merged
@@ -260,6 +263,8 @@ test.describe('page request budget (S-1)', () => {
       await settle(page)
       const all = dapi.all()
       const profileReads = all.filter((r) => r.method === 'getDocuments' && decodeDocumentsRequest(r.body)?.documentType === 'profile')
+      const boardReads = all.filter((r) => r.method === 'getDocuments' && ['card', 'board'].includes(decodeDocumentsRequest(r.body)?.documentType ?? ''))
+      expect(boardReads.length, `${label}: the sidebar's Boards read waits past the cold load`).toBe(0)
       test.info().annotations.push({ type: 'dapi', description: `${label}: ${all.length} ${summary(all)}; profile reads ${profileReads.length}` })
       expect(profileReads.length, `${label}: the bot badges' profile reads`).toBeLessThanOrEqual(2)
       expect(all.length, summary(all)).toBeLessThanOrEqual(COLD_BUDGET)

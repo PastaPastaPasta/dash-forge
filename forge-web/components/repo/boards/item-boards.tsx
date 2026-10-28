@@ -7,9 +7,10 @@
  * there, edited in place by that board's members (one card write each, as on the board); and,
  * for the repository's members who place cards, "Add to board" for its other open boards.
  *
- * It reads nothing until it scrolls into view (`useInView`): the page's first render and its
- * request budget are the thread's alone. The board list behind "Add to board" is read only
- * when the menu opens. Auto-archive is not applied here (the sidebar does not read when the
+ * It reads nothing until it is in view and the page's own load is past (`useDeferredInView`: the
+ * reader scrolled, pointed at or focused it, or the browser went idle a while after the page
+ * loaded), so a cold page load, and its request budget, are the thread's alone even where the
+ * sidebar starts in view. The board list behind "Add to board" is read only when the menu opens. Auto-archive is not applied here (the sidebar does not read when the
  * item closed); a card's own archive is.
  */
 
@@ -20,7 +21,7 @@ import { canPlaceCards, type BoardView, type CardPatch, type RepoRef } from '@/l
 import type { BoardItem, FieldValue } from '@/lib/rules/boards'
 import { priceBoardWrites } from '@/lib/sdk'
 import { useBoards, useBoardsDeployed, useItemBoards, type ItemBoardPlacement } from '@/hooks/use-board'
-import { useInView } from '@/hooks/use-in-view'
+import { useDeferredInView } from '@/hooks/use-in-view'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useAuth } from '@/contexts/auth-context'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -42,7 +43,7 @@ export function ItemBoards({ repo, addr, item }: { repo: RepoRef; addr: RepoAddr
 }
 
 function ItemBoardsSection({ repo, addr, item }: { repo: RepoRef; addr: RepoAddress | undefined; item: BoardItem }): JSX.Element {
-  const [ref, seen] = useInView<HTMLDivElement>()
+  const [ref, seen] = useDeferredInView<HTMLDivElement>()
   const boards = useItemBoards(repo, seen ? item : null)
   const { role } = useViewerRole(repo)
   const { signer } = useAuth()
