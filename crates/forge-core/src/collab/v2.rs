@@ -3435,7 +3435,7 @@ pub struct Collab<'a> {
     /// A bot signer's `read` letter for the thread it replies on (§22.3), keyed by repository
     /// id ([`Self::use_read_letter`]): the members-only revisions it lists open with their keys.
     read_letter: std::sync::Mutex<Option<([u8; 32], Arc<crate::private::key_letter::ReadLetter>)>>,
-    /// The cards this `Collab`'s card writes landed, by card document id, with the revision
+    /// The cards this `Collab`'s card writes landed, by `repoId:board:item`, with the revision
     /// each wrote ([`Self::write_card`]): a later write of the same item applies its change over
     /// one while a fresh read still holds an older revision (boards.md §3.2).
     pub(super) landed_cards: std::sync::Mutex<BTreeMap<String, super::boards::LandedCard>>,

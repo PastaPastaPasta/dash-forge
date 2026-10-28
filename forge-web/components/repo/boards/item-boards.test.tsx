@@ -78,7 +78,7 @@ const button = (text: RegExp): HTMLButtonElement | undefined => [...document.que
 /** Render the section, then scroll the page (what lets a section in view read at once). */
 const render = (repo: RepoRef = REPO, scroll = true): void => {
   act(() => root.render(<ItemBoards repo={repo} addr={addr} item={ITEM} />))
-  if (scroll) act(() => void window.dispatchEvent(new Event('scroll')))
+  if (scroll) act(() => void document.dispatchEvent(new Event('scroll')))
 }
 
 describe('ItemBoards', () => {
@@ -112,7 +112,7 @@ describe('ItemBoards', () => {
   it('in view on load, reads at once when the reader scrolls', () => {
     render(REPO, false)
     expect(seenItems.every((i) => i === null)).toBe(true)
-    act(() => void window.dispatchEvent(new Event('scroll')))
+    act(() => void document.dispatchEvent(new Event('scroll')))
     expect(seenItems.at(-1)).toEqual(ITEM)
   })
 

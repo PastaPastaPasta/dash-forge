@@ -814,6 +814,30 @@ fn a_write_builds_on_its_last_landed_card_only_while_the_read_lags_behind_it() {
     );
     assert_eq!(base.map(|b| b.id), Some(bob.id.clone()));
     assert_eq!((own.as_deref(), revision), (Some(mine_id.as_str()), 4));
+    // a read without revisions: behind while it holds other content than the landed card
+    let mut unrevised = card_doc(1, ALICE, 100, 2);
+    unrevised.revision = None;
+    let (base, ..) = card_base_of(Some(&l), &item, &read(vec![unrevised], Some(&mine_id)));
+    assert_eq!(base.and_then(|b| b.col), Some(3));
+    let same = doc(
+        1,
+        ALICE,
+        100,
+        vec![
+            ("repoId", FieldValue::identifier(REPO)),
+            ("board", FieldValue::integer(7)),
+            ("item", FieldValue::identifier(ITEM)),
+            ("col", FieldValue::integer(3)),
+            ("f", FieldValue::text(r#"{"1":1}"#)),
+            ("state", FieldValue::integer(0)),
+        ],
+    );
+    let same = FetchedDocument {
+        revision: None,
+        ..same
+    };
+    let (base, ..) = card_base_of(Some(&l), &item, &read(vec![same], Some(&mine_id)));
+    assert_eq!(base.map(|b| b.updated_at), Some(100));
     // nothing landed (another process, or a duplicate's re-read): the read's newest card,
     // another device's own card included, never a card built before the conflict
     let other_device = card_doc(3, ALICE, 300, 4);

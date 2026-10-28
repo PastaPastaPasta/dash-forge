@@ -321,6 +321,20 @@ describe('writeCard: a fresh read of the newest card, then only the change (§3.
     expect(out.card.revision).toBe(2)
   })
 
+  it("a second edit right after a first that created the card replaces that card while the read lacks it", async () => {
+    const board = await openBoard()
+    // the first edit created `new1`; the read does not show it yet
+    stored['card'] = []
+    const landed = { id: 'new1', ownerId: ME, updatedAt: 1, item: ITEM, col: 2, rank: 'Vx', f: null, state: 0, revision: 1 }
+    const out = await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { fields: { 2: 5 } }, { over: landed })
+    expect(created).toHaveLength(0)
+    expect(replaced[0]).toMatchObject({ id: 'new1', changes: { col: 2, rank: 'Vx', f: '{"2":5}' } })
+    expect(out.created).toBe(false)
+    // a card another identity landed (the signer changed) is never taken as the signer's
+    await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { col: 1 }, { over: { ...landed, ownerId: OTHER } })
+    expect(created).toHaveLength(1)
+  })
+
   it('a bulk write applies each item over its own landed card (`overs`)', async () => {
     const board = await openBoard()
     stored['card'] = [cardDoc({ $id: 'mine', $revision: 1, $updatedAt: 90, col: 1 })]

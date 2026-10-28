@@ -44,7 +44,8 @@ export function useDeferredInView<T extends HTMLElement>(): readonly [React.RefO
     if (nudged) return
     const go = (): void => setNudged(true)
     const el = ref.current
-    window.addEventListener('scroll', go, { passive: true })
+    // capture: a scroll of any scrolling container counts, not only the window's
+    document.addEventListener('scroll', go, { passive: true, capture: true })
     el?.addEventListener('pointerenter', go)
     el?.addEventListener('focusin', go)
     let idle: number | null = null
@@ -53,7 +54,7 @@ export function useDeferredInView<T extends HTMLElement>(): readonly [React.RefO
       else go()
     }, DEFERRED_READ_MS)
     return () => {
-      window.removeEventListener('scroll', go)
+      document.removeEventListener('scroll', go, { capture: true })
       el?.removeEventListener('pointerenter', go)
       el?.removeEventListener('focusin', go)
       clearTimeout(timer)

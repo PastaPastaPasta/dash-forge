@@ -183,9 +183,9 @@ pub struct LandedCard {
 /// What a card write over `docs` (a fresh read of item `item_id`'s cards) builds on (§3.2,
 /// the web's `overIfAhead`): the newest card this reader opens (one it cannot open holds values
 /// it cannot carry over), or, while the read lacks `landed` (the last card this client's write
-/// of the item landed) or holds an older revision of it, `landed` (a member's own back-to-back
-/// writes must not undo each other); with the signer's own document (the read's, or the landed
-/// one's) and the revision it holds.
+/// of the item landed), holds an older revision of it, or (its revision unknown) holds other
+/// content, `landed` (a member's own back-to-back writes must not undo each other); with the
+/// signer's own document (the read's, or the landed one's) and the revision it holds.
 #[must_use]
 pub fn card_base_of(
     landed: Option<&LandedCard>,
@@ -199,7 +199,18 @@ pub fn card_base_of(
             .and_then(|c| c.revision)
     };
     if let Some(l) = landed {
-        if read_revision(&l.document_id).is_none_or(|r| r < l.revision) {
+        let read = docs.cards.iter().find(|c| c.card.id == l.document_id);
+        let behind = match read {
+            None => true,
+            Some(c) => match c.revision {
+                Some(r) => r < l.revision,
+                None => {
+                    (&c.card.col, &c.card.rank, &c.card.f, c.card.state)
+                        != (&l.card.col, &l.card.rank, &l.card.f, l.card.state)
+                }
+            },
+        };
+        if behind {
             return (
                 Some(l.card.clone()),
                 Some(l.document_id.clone()),
@@ -1681,11 +1692,15 @@ impl Collab<'_> {
                     .iter()
                     .filter(|m| seen.insert(m.document_id.clone()))
                     .count();
-                // a full page that added nothing sits on one time shared by 100+ PRs
-                if !listed.more || oldest.is_none() || (added == 0 && before == oldest) {
+                if !listed.more {
                     break;
                 }
-                partial = page + 1 == PR_PAGES;
+                // a full page with no readable time to go on from, or one that added nothing
+                // (one time shared by 100+ PRs), or the last page read: some PRs are left out
+                if oldest.is_none() || (added == 0 && before == oldest) || page + 1 == PR_PAGES {
+                    partial = true;
+                    break;
+                }
                 before = oldest;
             }
         }
@@ -1708,8 +1723,9 @@ impl Collab<'_> {
         if let Some(held) = known.get(repo.id()) {
             return Ok(*held);
         }
+        // a keyring loads for a reader with no key too: holding one is `require_key`'s answer
         let held = match self.keyring(repo).await {
-            Ok(_) => true,
+            Ok(kr) => kr.require_key(repo).is_ok(),
             Err(Error::User(_)) => false,
             Err(e) => return Err(e),
         };

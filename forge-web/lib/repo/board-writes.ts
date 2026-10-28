@@ -54,7 +54,7 @@ import {
 import { ConsensusRefusal, DUPLICATE_UNIQUE_CODE, contentHash, createDocumentIdempotent, queryDocumentsWithProof, replaceDocumentIdempotent, type ReplaceResult, type WriteAuth, type WriteResult } from '../sdk'
 import { BASE_PATH, expandShortPath } from '../short-url'
 import { utf8Length } from '../view/issue-query'
-import { BOARD_STATE_CODE, noteBoardWrite, ownRevision, readBoardDefinition, readItemCardDocs, type BoardCard, type BoardState, type BoardView } from './boards'
+import { BOARD_STATE_CODE, noteBoardWrite, ownRevision, readBoardDefinition, readItemCardDocs, type BoardCard, type BoardState, type BoardView, type ItemCardDocs } from './boards'
 import { DOC, type RepoRef } from './contract'
 import { keyedContentKey } from './members-writes'
 import { privateWriter, sealedIntent } from './private-writes'
@@ -408,11 +408,18 @@ export async function writeCard(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, boa
   if (spec === null) throw new BoardWriteError('unreadable', "this board's definition can't be read here, so its cards can't be changed")
   checkPatch(spec, patch)
   const contractId = contractOf(repo.forge, DOC.card)
+  // this client's last landed card for the item, when the signer wrote it
+  const landed = [opts.over ?? opts.overs?.get(item.id)].find((c) => c?.ownerId === auth.identityId)
+  /**
+   * The signer's own card document in `read`: the read's, or (a create the read does not show
+   * yet) the one this client's last write landed.
+   */
+  const ownIn = (read: ItemCardDocs): string | null => read.own ?? (overIfAhead(landed, read.cards) !== undefined ? (landed?.id ?? null) : null)
   /** What the write stores over `cards` (a fresh read of the item's cards): `patch` applied to its base. */
   const build = async (cards: readonly BoardCard[]) => {
     // This client's last landed card while the read lags behind it; else the newest card this
     // reader can open (one it cannot open holds values it cannot carry over).
-    const next = patchedCard(spec, overIfAhead(opts.over ?? opts.overs?.get(item.id), cards) ?? newestCards(cards.filter((c) => c.unreadable !== true)).get(item.id) ?? null, patch)
+    const next = patchedCard(spec, overIfAhead(landed, cards) ?? newestCards(cards.filter((c) => c.unreadable !== true)).get(item.id) ?? null, patch)
     const fields: CardFields = { ...(next.col !== null ? { col: next.col } : {}), ...(next.rank !== null ? { rank: next.rank } : {}), ...(next.f !== null ? { f: next.f } : {}) }
     if (writer === null) return { next, content: { ...fields } as Record<string, unknown>, intent: opts.intent, contentKey: undefined }
     return {
@@ -438,7 +445,8 @@ export async function writeCard(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, boa
   }
   try {
     const built = await build(read.cards)
-    if (read.own !== null) return written(read.own, built, false, await replace(read.own, built))
+    const own = ownIn(read)
+    if (own !== null) return written(own, built, false, await replace(own, built))
     try {
       const result = await refreshRoleOnRefusal(repo, auth, DOC.card, () =>
         createDocumentIdempotent(sdk, auth, { contractId, documentType: DOC.card, data: { ...ids, state: built.next.state, ...built.content, ...claim }, ...(built.intent ? { intent: built.intent } : {}), ...(built.contentKey ? { contentKey: built.contentKey } : {}) }),
@@ -449,9 +457,10 @@ export async function writeCard(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, boa
       // The signer's card for this item appeared since the read (another tab): apply the patch
       // over the newest card now, that tab's included, and replace it.
       const again = await readItemCardDocs(sdk, repo, board.key, item.id, auth.identityId)
-      if (again.own === null) throw e
+      const mine = ownIn(again)
+      if (mine === null) throw e
       const rebuilt = await build(again.cards)
-      return written(again.own, rebuilt, false, await replace(again.own, rebuilt))
+      return written(mine, rebuilt, false, await replace(mine, rebuilt))
     }
   } finally {
     noteBoardWrite(repo)

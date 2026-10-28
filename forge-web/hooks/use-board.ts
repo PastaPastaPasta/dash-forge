@@ -325,11 +325,12 @@ function useCardQueue(): CardQueue {
         const out = (async () => {
           await Promise.all(before)
           const now = Date.now()
+          // a landed card older than the hold is no help (a read shows it by then): drop them all
+          for (const [k, l] of landed.current) if (now - l.at > LANDED_HOLD_MS) landed.current.delete(k)
           const overs = new Map<string, BoardCard>()
           for (const k of keys) {
             const l = landed.current.get(k)
-            if (l !== undefined && now - l.at <= LANDED_HOLD_MS) overs.set(k, l.card)
-            else landed.current.delete(k)
+            if (l !== undefined) overs.set(k, l.card)
           }
           return start(overs)
         })()
