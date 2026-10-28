@@ -445,6 +445,10 @@ describe('quick add references', () => {
     expect(writes.parseItemReference('https://git-forge.dashhq.org/alice/forge/issues')).toBeNull()
     expect(writes.parseItemReference('https://github.com/alice/forge/issues/3')).toBeNull()
   })
+
+  it('takes a title with a colon for a title (it parses as a URL of another scheme)', () => {
+    for (const t of ['Bug: the build fails', 'TODO: rename', 'mailto:a@b.c', 'Fix: x/y/issues/3', 'a:']) expect(writes.parseItemReference(t)).toBeNull()
+  })
 })
 
 describe('a private repository: sealed boards and cards (§3.3)', () => {

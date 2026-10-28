@@ -652,14 +652,17 @@ export function parseItemReference(text: string): { readonly owner?: string; rea
   m = /^([^\s/#]+)\/([^\s/#]+)#(\d{1,10})$/.exec(t)
   if (m) return { owner: m[1] as string, name: m[2] as string, number: Number(m[3]) }
   let url: URL
+  let route: URL
   try {
+    // A title such as "Bug: the build fails" parses as a URL too (scheme `bug:`): only web links count.
     url = new URL(t)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+    route = new URL(expandShortPath(url.pathname, BASE_PATH) ?? `${url.pathname}${url.search}`, url)
   } catch {
     return null
   }
   // GitHub's own issue URLs have the short URL's shape: not this app's.
   if (/^(www\.)?github\.com$/i.test(url.hostname)) return null
-  const route = new URL(expandShortPath(url.pathname, BASE_PATH) ?? `${url.pathname}${url.search}`, url)
   const path = BASE_PATH !== '' && route.pathname.startsWith(`${BASE_PATH}/`) ? route.pathname.slice(BASE_PATH.length) : route.pathname
   if (!/^\/repo\/(issue|pull|number)\/?$/.test(path)) return null
   const owner = route.searchParams.get('owner')
