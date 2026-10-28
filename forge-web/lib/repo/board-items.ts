@@ -21,9 +21,11 @@
  * or a public repository's members-only one it cannot open, is a placeholder
  * ({@link BoardItemSet.hidden}: "a private item"), placed by its card like any other.
  *
- * A source repository that is private and that this reader holds no session for contributes
- * nothing (its lists hide every item from a non-member); its items still show as placeholders
- * where a card names them.
+ * A private repository other than the home opens with the session the page holds for it
+ * ({@link BoardItemsInput.repos}, {@link BoardItemsInput.sessionOf}: a member who opened it in
+ * this tab). A source repository that is private and that this reader holds no session for
+ * contributes nothing and is not read (its lists hide every item from a non-member); its items
+ * still show as placeholders where a card names them.
  *
  * The reads go through a {@link BoardItemReader} ({@link boardItemReader} is the SDK's), so the
  * assembly is tested without one.
@@ -33,6 +35,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
+import type { PrivateSession } from './private-session'
 import { foldBoard, type BoardFold, type BoardItem, type BoardSpec, type CardDoc, type ItemKind } from '../rules/boards'
 import { compareStrings } from '../rules/oid'
 import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT_CLOSE, PR_LOCK, PR_MERGE, PR_UNLOCK } from '../rules/transition'
@@ -87,8 +90,14 @@ export interface BoardItemsInput {
    * repository found here is read as is, so a private one the reader is a member of opens.
    */
   readonly repos?: ReadonlyMap<string, RepoRef>
-  /** How a repository is named on its items (`owner/name`, for `repo:` and the card's label); default its name. */
+  /** How a repository is named on its items (`owner/name`, the card's label; display only); default its name. */
   readonly label?: (repo: RepoRef) => string
+  /**
+   * The session this reader already holds for a private repository other than the home (a
+   * member who opened it in this tab), if any: its items then open instead of showing as "a
+   * private item" (§2.5). Nothing is read to find one.
+   */
+  readonly sessionOf?: (repo: RepoRef) => PrivateSession | undefined
 }
 
 /** One source repository's closed-item walk. */
@@ -131,10 +140,17 @@ function sourceKinds(spec: BoardSpec, home: string): Map<string, Set<ItemKind>> 
   return out
 }
 
+/** Repository `repoId`: the home, one the page holds, or read; a private one with the session this reader holds for it, if any. */
 async function repoOf(reader: BoardItemReader, input: BoardItemsInput, repoId: string): Promise<RepoRef | null> {
   if (repoId === input.home.repoId) return input.home
-  return input.repos?.get(repoId) ?? (await reader.repo(repoId))
+  const repo = input.repos?.get(repoId) ?? (await reader.repo(repoId))
+  if (repo === null || repo.visibility !== 'private' || repo.session !== undefined) return repo
+  const session = input.sessionOf?.(repo)
+  return session === undefined ? repo : { ...repo, session }
 }
+
+/** Whether `repo` is private and this reader holds no session for it: its lists show nothing. */
+const sealedFor = (repo: RepoRef): boolean => repo.visibility === 'private' && repo.session === undefined
 
 /** A placeholder for an item this reader cannot open ("a private item"): only what is plaintext about it. */
 function placeholder(id: string, repoId: string, kind: ItemKind): BoardItem {
@@ -297,7 +313,7 @@ async function cardItems(reader: BoardItemReader, input: BoardItemsInput, have: 
       for (const id of ids) missing.add(id)
       continue
     }
-    if (repo.visibility === 'private' && repo.session === undefined) {
+    if (sealedFor(repo)) {
       for (const id of ids) {
         hidden.add(id)
         items.push(placeholder(id, repoId, located.get(id)?.kind ?? 'issue'))
@@ -337,7 +353,8 @@ export async function loadBoardItems(reader: BoardItemReader, input: BoardItemsI
   let partial = false
   for (const [repoId, kinds] of sources) {
     const repo = await repoOf(reader, input, repoId)
-    if (repo === null) continue
+    // a private source without a session: its lists would hide every row, so it is not read
+    if (repo === null || sealedFor(repo)) continue
     for (const kind of kinds) {
       const open = await reader.openItems(repo, kind)
       partial ||= !open.complete
@@ -374,7 +391,7 @@ export async function loadOlderClosed(reader: BoardItemReader, input: BoardItems
     if (walk.done) continue
     const repo = await repoOf(reader, input, repoId)
     const kinds = sources.get(repoId)
-    if (repo === null || kinds === undefined) continue
+    if (repo === null || kinds === undefined || sealedFor(repo)) continue
     const { closed, walk: next } = await walkClosed(reader, repo, walk, kinds, stopAtCount)
     walks.set(repoId, next)
     await addClosed(reader, repo, kinds, closed, byId)

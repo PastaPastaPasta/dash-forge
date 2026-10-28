@@ -257,6 +257,16 @@ describe('quick add', () => {
     expect(input.value).toBe('')
   })
 
+  it('in a column of a field, sets the field in the new issue\'s one card (no second write)', async () => {
+    const p = props({ quickAdd: vi.fn(async () => ({ item: { ...ITEMS[0], id: id('z'), number: 9 }, card: null, cardError: null }) as never) }, { view: { id: 1, name: 'Board', layout: 'board', q: '', group: 'f1' } })
+    await render(p)
+    // the first column is "No Priority" while it holds an item; the next is P0 (option 1)
+    const p0 = columns().findIndex((c) => c.getAttribute('aria-label')?.startsWith('P0'))
+    await submit(await openIn(p0), 'Write the docs')
+    expect(p.state.quickAdd).toHaveBeenCalledWith(expect.objectContaining({ title: 'Write the docs', col: SPEC.def, fields: { 1: 1 } }))
+    expect(p.state.write).not.toHaveBeenCalled()
+  })
+
   it('adds an existing item by #number in this repo', async () => {
     resolveItemByNumber.mockResolvedValue({ id: id('z'), kind: 'issue' })
     const p = props()

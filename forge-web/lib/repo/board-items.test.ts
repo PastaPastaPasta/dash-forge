@@ -206,6 +206,34 @@ describe('loadBoardItems', () => {
     expect(set.hasOlderClosed).toBe(false)
   })
 
+  it('a private source repository this reader holds no session for is not read at all', async () => {
+    const spec: BoardSpec = { ...SPEC, sources: [...SPEC.sources, { r: PRIVATE_REPO, k: 'a', q: '' }] }
+    const { r, calls } = reader({ open: [item(1)], repos: { [PRIVATE_REPO]: repo(PRIVATE_REPO, 'private') } })
+    await loadBoardItems(r, { home: repo(HOME), spec, cards: [], now: NOW })
+    // the home's two kinds, its closed walk and the read of what it found; nothing of the private source
+    expect(calls).toEqual(['open:issue', 'open:pr', 'transitions:newest', 'byId:0'])
+  })
+
+  it("opens a private repository's items with the session this reader already holds for it (§2.5)", async () => {
+    const session = { id: 's' } as unknown as NonNullable<RepoRef['session']>
+    const elsewhere = { [PRIVATE_REPO]: [item(8, { repoId: PRIVATE_REPO })] }
+    const { r } = reader({ elsewhere, repos: { [PRIVATE_REPO]: repo(PRIVATE_REPO, 'private') } })
+    const asked: string[] = []
+    const set = await loadBoardItems(r, {
+      home: repo(HOME),
+      spec: SPEC,
+      cards: [card(8)],
+      now: NOW,
+      sessionOf: (rp) => {
+        asked.push(rp.repoId)
+        return session
+      },
+    })
+    expect(asked).toEqual([PRIVATE_REPO])
+    expect(set.hidden.size).toBe(0)
+    expect(set.items.find((i) => i.id === id(108))).toMatchObject({ number: 8, title: 'Item 8' })
+  })
+
   it('reads only the kinds the sources name', async () => {
     const spec: BoardSpec = { ...SPEC, sources: [{ r: HOME, k: 'p', q: '' }] }
     const { r, calls } = reader({ open: [item(1), item(2, { kind: 'pr' })] })

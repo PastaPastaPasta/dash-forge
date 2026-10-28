@@ -36,10 +36,10 @@ import { openBoardDoc, type BoardBind, type BoardFields, type CardFields, type S
 import { BOARD_CLOSED, BOARD_DELETED, BOARD_OPEN, foldBoard, newestBoards, newestCards, parseSpec, type BoardDoc, type BoardItem, type BoardSpec, type CardDoc, type Placement, type SpecError } from '../rules/boards'
 import { compareStrings } from '../rules/oid'
 import type { Role } from '../rules/v2'
-import { queryAllDocuments, type PlainDocument } from '../sdk'
+import { queryAllDocuments, queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, num, str, type RepoRef } from './contract'
 import { bytesField, idField } from './private-content'
-import { readRepoById, repoRefOf } from './resolveRepo'
+import { readOwnerRepos, repoRefOf } from './resolveRepo'
 import { repoSource } from './source'
 
 /** A board's state (§3.1 `state`): open, closed (read-only, listed under Closed) or deleted. */
@@ -82,8 +82,17 @@ export interface BoardView {
 /**
  * A card as read (the rules' {@link CardDoc}). `unreadable`: a sealed card this reader could not
  * open (no key, a later client's version): its column, rank and fields are unknown, not empty.
+ * `revision`: the document's `$revision` when the read (or the write that made it) knows it: what
+ * tells a fresh read that lags behind this client's own write (`overIfAhead`, §3.2).
  */
-export type BoardCard = CardDoc & { readonly unreadable?: true }
+export type BoardCard = CardDoc & { readonly unreadable?: true; readonly revision?: number }
+
+/** A document's `$revision`, when it has one. */
+function revisionOf(doc: PlainDocument): number | undefined {
+  const v = doc['$revision']
+  const n = typeof v === 'bigint' ? Number(v) : v
+  return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : undefined
+}
 
 /** One board and every card on it, as {@link readBoard} reads them. */
 export interface BoardRead {
@@ -171,7 +180,8 @@ export async function cardDocOf(repo: RepoRef, doc: PlainDocument): Promise<Boar
   const state = u32Of(doc, 'state')
   const item = asIdentifierString(doc['item'])
   if (board === null || board === 0 || state === null || state > 2 || item === '') return null
-  const base = { id: str(doc, '$id'), ownerId: str(doc, '$ownerId'), updatedAt: num(doc, '$updatedAt'), item, state }
+  const revision = revisionOf(doc)
+  const base = { id: str(doc, '$id'), ownerId: str(doc, '$ownerId'), updatedAt: num(doc, '$updatedAt'), item, state, ...(revision !== undefined ? { revision } : {}) }
   if (!present(doc, 'enc')) {
     if (repo.visibility === 'private') return null
     const col = u32Of(doc, 'col')
@@ -341,28 +351,63 @@ export interface ItemBoard {
   readonly card: BoardCard | null
 }
 
+/** Pages of an owner's repositories the sidebar reads (100 each): the homes its boards may live in. */
+export const OWNER_REPO_PAGES = 3
+/** Pages of cards one `card.onItem` read of the sidebar follows at most (100 each). */
+export const ITEM_CARD_PAGES = 3
+
+/** Up to `maxPages` pages of `query` (100 each), page after page: a bounded window, never an error past it. */
+async function readPages(sdk: EvoSDK, query: DocumentQuery, maxPages: number): Promise<PlainDocument[]> {
+  const out: PlainDocument[] = []
+  let startAfter: string | undefined
+  for (let page = 0; page < maxPages; page++) {
+    const { documents } = await queryDocumentsWithProof(sdk, { ...query, limit: 100, ...(startAfter !== undefined ? { startAfter } : {}) })
+    out.push(...documents)
+    const last = documents[documents.length - 1]?.['$id']
+    if (documents.length < 100 || typeof last !== 'string') break
+    startAfter = last
+  }
+  return out
+}
+
 /**
- * The boards issue or PR `itemId` of `repo` has a card on (`card.onItem`, `item ==`), keeping
- * only boards whose home is `repo` or another repository of the same owner (§5.6: a stranger's
- * board naming the issue never shows) that this reader can open: another owner repository that
- * is private is left out (its boards are sealed with a key this page does not hold). Deleted
- * boards are left out; closed ones are kept (read-only). Ordered by home repository, then key.
+ * The repositories whose boards `repo`'s items show in their sidebar (§5.6): `repo` itself, and
+ * its owner's other public repositories (at most {@link OWNER_REPO_PAGES} pages of them; a
+ * private one's boards are sealed with a key the item's page does not hold), by id.
+ */
+async function sidebarHomes(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, RepoRef>> {
+  const homes = new Map<string, RepoRef>([[repo.repoId, repo]])
+  for (const doc of await readOwnerRepos(sdk, repo.forge, repo.ownerId, OWNER_REPO_PAGES)) {
+    if (doc.ownerId === repo.ownerId && doc.visibility !== 'private' && !homes.has(doc.repoId)) homes.set(doc.repoId, repoRefOf(repo.forge, doc))
+  }
+  return homes
+}
+
+/**
+ * The boards issue or PR `itemId` of `repo` has a card on, whose home is `repo` or another
+ * public repository of the same owner (§5.6: a stranger's board naming the issue is never read,
+ * nor a private repository's, sealed with a key this page does not hold). The owner's
+ * repositories are read first ({@link sidebarHomes}), then `card.onItem` with `item ==` and
+ * `repoId in` them (100 a read, {@link ITEM_CARD_PAGES} pages each), so cards anyone else writes
+ * naming the item cost this read nothing. Deleted boards are left out; closed ones are kept
+ * (read-only). Ordered by home repository (`repo` first), then key.
  */
 export async function readItemCards(sdk: EvoSDK, repo: RepoRef, itemId: string): Promise<ItemBoard[]> {
-  const docs = await queryAllDocuments(sdk, repoSource(repo).targetQuery(DOC.card, { where: [['item', '==', itemId]], orderBy: [['repoId', 'asc'], ['board', 'asc']] }))
+  const homes = await sidebarHomes(sdk, repo)
+  const ids = [...homes.keys()].sort(compareStrings)
+  const docs: PlainDocument[] = []
+  for (let i = 0; i < ids.length; i += 100) {
+    const query = repoSource(repo).targetQuery(DOC.card, { where: [['item', '==', itemId], ['repoId', 'in', ids.slice(i, i + 100)]], orderBy: [['repoId', 'asc'], ['board', 'asc']] })
+    docs.push(...(await readPages(sdk, query, ITEM_CARD_PAGES)))
+  }
   const byHome = new Map<string, PlainDocument[]>()
   for (const d of docs) {
     const home = asIdentifierString(d['repoId'])
-    if (home !== '') byHome.set(home, [...(byHome.get(home) ?? []), d])
+    if (homes.has(home)) byHome.set(home, [...(byHome.get(home) ?? []), d])
   }
   const out: ItemBoard[] = []
   for (const [homeId, homeDocs] of [...byHome].sort(([a], [b]) => (a === repo.repoId ? -1 : b === repo.repoId ? 1 : compareStrings(a, b)))) {
-    let home: RepoRef | null = homeId === repo.repoId ? repo : null
-    if (home === null) {
-      const doc = await readRepoById(sdk, repo.forge, homeId)
-      if (doc === null || doc.ownerId !== repo.ownerId || doc.visibility === 'private') continue
-      home = repoRefOf(repo.forge, doc)
-    }
+    const home = homes.get(homeId) as RepoRef
     const byKey = new Map<number, PlainDocument[]>()
     for (const d of homeDocs) {
       const key = u32Of(d, 'board')

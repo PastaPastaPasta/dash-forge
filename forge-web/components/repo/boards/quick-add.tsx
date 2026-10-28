@@ -118,16 +118,12 @@ export function QuickAdd({ state, spec, home, homeLabel, target, onAdded }: { st
     try {
       if (plan.kind === 'title') {
         if (!(await confirmCrossRepo(chosen.repo.repoId))) return
-        const out = await state.quickAdd({ title: plan.title, col: target.col ?? spec.def, column: target.column, target: chosen.repo, confirmCrossRepo: true })
+        // the column's or swimlane's field values go in the issue's one card
+        const out = await state.quickAdd({ title: plan.title, col: target.col ?? spec.def, column: target.column, ...(fieldsPatch !== null ? { fields: fieldsPatch } : {}), target: chosen.repo, confirmCrossRepo: true })
         // The issue exists now, whatever follows: the box empties so a second Create makes no second issue.
         setText('')
         onAdded?.(out.item.id)
-        const placed = (e: unknown): string => `Issue #${out.item.number} was created, but it could not be placed here: ${errorMessage(e)}`
-        if (out.cardError !== null) {
-          setError(placed(out.cardError))
-          return
-        }
-        if (fieldsPatch !== null) await state.write({ id: out.item.id, repoId: out.item.repoId }, { fields: fieldsPatch }, { confirmCrossRepo: true }).catch((e: unknown) => setError(placed(e)))
+        if (out.cardError !== null) setError(`Issue #${out.item.number} was created, but it could not be placed here: ${errorMessage(out.cardError)}`)
         return
       }
       const repo = plan.owner !== undefined && plan.name !== undefined ? (await resolveAnyRepoWith(sdk, home.forge, { owner: plan.owner, name: plan.name }))?.repo ?? null : chosen.repo
@@ -172,7 +168,7 @@ export function QuickAdd({ state, spec, home, homeLabel, target, onAdded }: { st
 
   const cost =
     plan.kind === 'title'
-      ? sumPreviews([previewCreate('issue', { title: plan.title, body: '' }), priceBoardWrites(1, hasFields ? 1 : 0, { sealed })])
+      ? sumPreviews([previewCreate('issue', { title: plan.title, body: '' }), priceBoardWrites(1, 0, { sealed })])
       : plan.kind === 'ref'
         ? priceBoardWrites(1, 0, { sealed })
         : null

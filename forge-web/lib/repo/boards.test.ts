@@ -45,7 +45,10 @@ function matches(d: Doc, [field, op, value]: readonly [string, string, unknown])
   if (op === 'in') return (value as unknown[]).includes(v)
   throw new Error(`mock: ${op}`)
 }
+/** Every query asked, in order. */
+const asked: { documentTypeName: string; where?: readonly (readonly [string, string, unknown])[] }[] = []
 function answer(q: { documentTypeName: string; where?: readonly (readonly [string, string, unknown])[] }): Doc[] {
+  asked.push(q)
   return (stored[q.documentTypeName] ?? []).filter((d) => (q.where ?? []).every((w) => matches(d, w)))
 }
 
@@ -79,9 +82,15 @@ vi.mock('./private-writes', async (orig) => ({
   privateWriter: async () => ({ keys: writerKeys, protectedPatterns: [], isMember: true }),
 }))
 const repos: Record<string, Doc> = {}
+const readRepoById = vi.fn(async (_sdk: unknown, _forge: unknown, repoId: string) => repos[repoId] ?? null)
 vi.mock('./resolveRepo', async (orig) => ({
   ...(await orig<typeof import('./resolveRepo')>()),
-  readRepoById: async (_sdk: unknown, _forge: unknown, repoId: string) => repos[repoId] ?? null,
+  readRepoById,
+  readOwnerRepos: async (_sdk: unknown, _forge: unknown, ownerId: string) => Object.values(repos).filter((r) => r['ownerId'] === ownerId),
+}))
+vi.mock('./writes', async (orig) => ({
+  ...(await orig<typeof import('./writes')>()),
+  createIssue: async () => ({ documentId: ITEM2, number: 9 }),
 }))
 
 const boards = await import('./boards')
@@ -102,6 +111,9 @@ function cardDoc(over: Doc): Doc {
 
 beforeEach(() => {
   stored = {}
+  asked.length = 0
+  readRepoById.mockClear()
+  for (const k of Object.keys(repos)) delete repos[k]
   created.length = 0
   replaced.length = 0
   role = 'writer'
@@ -190,6 +202,25 @@ describe('readItemCards (§5.6)', () => {
     const item: BoardItem = { id: ITEM, number: 1, repoId: REPO_ID, kind: 'issue', state: 'open', createdAt: 1, closedAt: null, title: 't', labels: [], assignees: [], milestone: null, author: ME }
     expect(boards.itemPlacement(list[0] as (typeof list)[number], item, 1000)?.col).toBe(2)
   })
+
+  it("reads only the owner's repositories' cards: a stranger's cards naming the item are never read, nor their repositories", async () => {
+    const SIBLING = id(10)
+    repos[SIBLING] = { repoId: SIBLING, ownerId: ME, name: 'plan', visibility: 'public' }
+    repos[id(12)] = { repoId: id(12), ownerId: ME, name: 'secret', visibility: 'private' }
+    stored['board'] = [boardDoc({})]
+    // a hundred strangers' cards naming the item
+    stored['card'] = [cardDoc({ $id: 'c1', col: 2 }), ...Array.from({ length: 100 }, (_, n) => cardDoc({ $id: `x${n}`, $ownerId: OTHER, repoId: id(100 + n), board: 4 }))]
+    const list = await boards.readItemCards(sdk, REPO, ITEM)
+    expect(list.map((e) => [e.home.repoId, e.board.key])).toEqual([[REPO_ID, 7]])
+    const cardReads = asked.filter((q) => q.documentTypeName === 'card')
+    expect(cardReads).toHaveLength(1)
+    // the item's repo and its owner's public one, never the private one or a stranger's
+    expect(cardReads[0]?.where).toEqual([
+      ['item', '==', ITEM],
+      ['repoId', 'in', [REPO_ID, SIBLING].sort()],
+    ])
+    expect(readRepoById).not.toHaveBeenCalled()
+  })
 })
 
 const ITEM_REF = { id: ITEM, repoId: REPO_ID }
@@ -252,20 +283,62 @@ describe('writeCard: a fresh read of the newest card, then only the change (§3.
     await expect(writes.writeCard(sdk, AUTH, REPO, stale, ITEM_REF, { col: 1 })).rejects.toMatchObject({ refusal: 'closed' })
   })
 
-  it('a create that meets the signer\'s card made meanwhile replaces it instead', async () => {
+  it('a create that meets the signer\'s card made meanwhile replaces it instead, applying the patch over that card', async () => {
     const board = await openBoard()
     duplicateOnCreate = true
     const read = { n: 0 }
     const original = stored
     stored = new Proxy(original, {
       get(t, k: string) {
-        if (k === 'card') return read.n++ === 0 ? [] : [cardDoc({ $id: 'tab2' })]
+        // the other tab's card: column 2, a rank and a priority, which this write must keep
+        if (k === 'card') return read.n++ === 0 ? [] : [cardDoc({ $id: 'tab2', col: 2, rank: 'Vx', f: '{"1":1}' })]
         return t[k]
       },
     })
-    const out = await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { col: 1 })
+    const out = await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { fields: { 2: 5 } })
     expect(out.created).toBe(false)
-    expect(replaced.map((r) => r.id)).toEqual(['tab2'])
+    expect(replaced).toEqual([{ type: 'card', id: 'tab2', changes: expect.objectContaining({ col: 2, rank: 'Vx', state: 0 }) }])
+    expect(parseFieldValues(replaced[0]?.changes['f'] as string, SPEC)).toEqual({ 1: 1, 2: 5 })
+    expect(out.card).toMatchObject({ id: 'tab2', col: 2, rank: 'Vx' })
+  })
+
+  it("uses the signer's last landed card only while the read lags behind it, by `$revision`", async () => {
+    const board = await openBoard()
+    const landed = { id: 'mine', ownerId: ME, updatedAt: 1, item: ITEM, col: 3, rank: 'Vx', f: '{"1":1}', state: 0, revision: 4 }
+    // the read holds revision 3 of the signer's card: an older one, so the landed card is the base
+    stored['card'] = [cardDoc({ $id: 'mine', $revision: 3, $updatedAt: 90, col: 2, rank: 'Vx' })]
+    const read = await boards.cardDocOf(REPO, stored['card'][0] as Doc)
+    expect(read?.revision).toBe(3)
+    expect(writes.overIfAhead(landed, [read!])).toBe(landed)
+    await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { state: 1 }, { over: landed })
+    expect(replaced[0]).toMatchObject({ id: 'mine', changes: { col: 3, rank: 'Vx', f: '{"1":1}', state: 1 } })
+    // caught up (revision 4), and another member wrote since: the read is the base, theirs included
+    stored['card'] = [cardDoc({ $id: 'mine', $revision: 4, $updatedAt: 90, col: 3, rank: 'Vx', f: '{"1":1}' }), cardDoc({ $id: 'theirs', $ownerId: OTHER, $updatedAt: 95, col: 1, rank: 'Vx', f: '{"1":2}' })]
+    await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { state: 1 }, { over: landed })
+    expect(replaced[1]).toMatchObject({ id: 'mine', changes: { col: 1, f: '{"1":2}', state: 1 } })
+    // the write's own card carries the revision it wrote
+    const out = await writes.writeCard(sdk, AUTH, REPO, board, ITEM_REF, { col: 2 })
+    expect(out.card.revision).toBe(2)
+  })
+
+  it('a bulk write applies each item over its own landed card (`overs`)', async () => {
+    const board = await openBoard()
+    stored['card'] = [cardDoc({ $id: 'mine', $revision: 1, $updatedAt: 90, col: 1 })]
+    const landed = { id: 'mine', ownerId: ME, updatedAt: 1, item: ITEM, col: 3, rank: null, f: '{"1":4}', state: 0, revision: 2 }
+    const out = await writes.archiveItems(sdk, AUTH, REPO, board, [ITEM_REF], { overs: new Map([[ITEM, landed]]) })
+    expect(out.failed).toBeNull()
+    expect(replaced[0]).toMatchObject({ id: 'mine', changes: { col: 3, f: '{"1":4}', state: 1 } })
+  })
+
+  it('quick add places the new issue with its column\'s field values in one card', async () => {
+    const board = await openBoard()
+    const out = await writes.quickAddIssue(sdk, AUTH, REPO, board, { title: 'Docs', col: 1, column: [{ id: ITEM, rank: 'V0001' }], fields: { 1: 2 } })
+    expect(out.cardError).toBeNull()
+    expect(created).toHaveLength(1)
+    expect(created[0]?.data).toMatchObject({ item: new Uint8Array(32).fill(21), col: 1, state: 0 })
+    expect(typeof created[0]?.data['rank']).toBe('string')
+    expect(parseFieldValues(created[0]?.data['f'] as string, SPEC)).toEqual({ 1: 2 })
+    expect(replaced).toHaveLength(0)
   })
 })
 

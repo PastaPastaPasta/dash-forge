@@ -303,11 +303,27 @@ export interface CardWriteOptions {
   /** The signer confirmed a private home repository's card for another repository's item (§3.3). */
   readonly confirmCrossRepo?: boolean
   /**
-   * The card this client's previous write of the item just made (its write queue, `useBoard`):
-   * the patch applies over it rather than over the fresh read, which may not show that write yet
-   * (§3.2: a member's own back-to-back edits must not undo each other).
+   * The card this client's last write of the item landed (its write queue, `useBoard`): while
+   * the fresh read does not show it yet ({@link overIfAhead}), the patch applies over it rather
+   * than over the read (§3.2: a member's own back-to-back edits must not undo each other).
    */
   readonly over?: BoardCard
+  /** {@link over} for each item of a write to several cards, by item id. */
+  readonly overs?: ReadonlyMap<string, BoardCard>
+}
+
+/**
+ * `over` (the card this client's last write of the item landed) when the fresh read `cards`
+ * does not show it yet, else undefined (the read is the base, another member's later card
+ * included): the read lacks its document, holds an older `$revision` of it, or (a revision
+ * unknown) holds other content.
+ */
+export function overIfAhead(over: BoardCard | undefined, cards: readonly BoardCard[]): BoardCard | undefined {
+  if (over === undefined) return undefined
+  const read = cards.find((c) => c.id === over.id)
+  if (read === undefined) return over
+  if (read.revision !== undefined && over.revision !== undefined) return read.revision < over.revision ? over : undefined
+  return read.col === over.col && read.rank === over.rank && read.f === over.f && read.state === over.state ? undefined : over
 }
 
 /** The outcome of a card write. */
@@ -368,9 +384,11 @@ export function patchedCard(spec: BoardSpec, base: BoardCard | null, patch: Card
 /**
  * Write the signer's card for `item` on `board` of `repo` (§3.2): refused for a closed board, a
  * patch the board does not admit, or (unconfirmed) a private home's cross-repository item; then
- * the item's cards are read fresh, `patch` is applied to the newest, and the signer's own card is
- * replaced (or created: a create that meets the signer's card made meanwhile, in another tab,
- * replaces it instead).
+ * the item's cards are read fresh, `patch` is applied to the newest (or to `opts.over`, this
+ * client's last landed card, while the read lags behind it: {@link overIfAhead}), and the
+ * signer's own card is replaced (or created: a create that meets the signer's card made
+ * meanwhile, in another tab, re-reads and applies the patch over the newest card then, so that
+ * tab's card is not overwritten whole, and replaces it instead).
  */
 export async function writeCard(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, board: BoardView, item: CardItem, patch: CardPatch, opts: CardWriteOptions = {}): Promise<CardWritten> {
   // What the page's copy of the board refuses is refused at once; the fresh read below decides.
@@ -383,48 +401,57 @@ export async function writeCard(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, boa
   // The definition read with the cards: a field, option or column another member added since the
   // page read it is kept (the values a stale definition does not know would be dropped), and a
   // board closed meanwhile is read-only.
-  const [fresh, { cards, own: ownId }] = await Promise.all([readBoardDefinition(sdk, repo, board.key), readItemCardDocs(sdk, repo, board.key, item.id, auth.identityId)])
+  const [fresh, read] = await Promise.all([readBoardDefinition(sdk, repo, board.key), readItemCardDocs(sdk, repo, board.key, item.id, auth.identityId)])
   if (fresh === null) throw new BoardWriteError('missing', 'no such board')
   refuseUnlessOpen(fresh)
   const spec = fresh.spec
   if (spec === null) throw new BoardWriteError('unreadable', "this board's definition can't be read here, so its cards can't be changed")
   checkPatch(spec, patch)
-  // A newest card this reader cannot open holds values it cannot carry over: the newest it can open is the base.
-  const next = patchedCard(spec, opts.over ?? newestCards(cards.filter((c) => c.unreadable !== true)).get(item.id) ?? null, patch)
   const contractId = contractOf(repo.forge, DOC.card)
-  const base = { ...ids, state: next.state }
-  const fields: CardFields = { ...(next.col !== null ? { col: next.col } : {}), ...(next.rank !== null ? { rank: next.rank } : {}), ...(next.f !== null ? { f: next.f } : {}) }
-  let content: Record<string, unknown> = { ...fields }
-  let intent = opts.intent
-  let contentKey: string | undefined
-  if (writer !== null) {
-    content = { epoch: writer.keys.epoch, enc: await sealBoardDoc(writer.keys, decodeIdentifier(auth.identityId), { type: 'card', board: board.key, item: ids.item }, fields) }
-    intent = sealedIntent(intent, writer.keys)
-    contentKey = await keyedContentKey(writer.keys,contentHash(DOC.card, { repoId: repo.repoId, board: board.key, item: item.id, state: next.state, ...fields }))
+  /** What the write stores over `cards` (a fresh read of the item's cards): `patch` applied to its base. */
+  const build = async (cards: readonly BoardCard[]) => {
+    // This client's last landed card while the read lags behind it; else the newest card this
+    // reader can open (one it cannot open holds values it cannot carry over).
+    const next = patchedCard(spec, overIfAhead(opts.over ?? opts.overs?.get(item.id), cards) ?? newestCards(cards.filter((c) => c.unreadable !== true)).get(item.id) ?? null, patch)
+    const fields: CardFields = { ...(next.col !== null ? { col: next.col } : {}), ...(next.rank !== null ? { rank: next.rank } : {}), ...(next.f !== null ? { f: next.f } : {}) }
+    if (writer === null) return { next, content: { ...fields } as Record<string, unknown>, intent: opts.intent, contentKey: undefined }
+    return {
+      next,
+      content: { epoch: writer.keys.epoch, enc: await sealBoardDoc(writer.keys, decodeIdentifier(auth.identityId), { type: 'card', board: board.key, item: ids.item }, fields) } as Record<string, unknown>,
+      intent: sealedIntent(opts.intent, writer.keys),
+      contentKey: await keyedContentKey(writer.keys, contentHash(DOC.card, { repoId: repo.repoId, board: board.key, item: item.id, state: next.state, ...fields })),
+    }
   }
-  const replace = (documentId: string): Promise<ReplaceResult> => {
+  type Built = Awaited<ReturnType<typeof build>>
+  const replace = (documentId: string, { next, content }: Built): Promise<ReplaceResult> => {
     // every content field re-stated: an absent one is removed (a cleared rank or field values)
     const plain = repo.visibility === 'private' ? { col: undefined, rank: undefined, f: undefined } : { col: next.col ?? undefined, rank: next.rank ?? undefined, f: next.f ?? undefined, enc: undefined, epoch: undefined }
     return refreshRoleOnRefusal(repo, auth, DOC.card, () => replaceDocumentIdempotent(sdk, auth, { contractId, documentType: DOC.card, documentId, changes: { ...plain, ...content, state: next.state, ...claim }, repo: repo.repoId, expectRepoId: repo.repoId }))
   }
-  const written = (documentId: string, created: boolean, result: WriteResult | ReplaceResult): CardWritten => ({
-    card: { id: documentId, ownerId: auth.identityId, updatedAt: Date.now(), item: item.id, col: next.col, rank: next.rank, f: next.f, state: next.state },
-    created,
-    result,
-  })
+  const written = (documentId: string, { next }: Built, created: boolean, result: WriteResult | ReplaceResult): CardWritten => {
+    const revision = created ? 1 : Number((result as ReplaceResult).revision)
+    return {
+      card: { id: documentId, ownerId: auth.identityId, updatedAt: Date.now(), item: item.id, col: next.col, rank: next.rank, f: next.f, state: next.state, ...(Number.isSafeInteger(revision) && revision > 0 ? { revision } : {}) },
+      created,
+      result,
+    }
+  }
   try {
-    if (ownId !== null) return written(ownId, false, await replace(ownId))
+    const built = await build(read.cards)
+    if (read.own !== null) return written(read.own, built, false, await replace(read.own, built))
     try {
       const result = await refreshRoleOnRefusal(repo, auth, DOC.card, () =>
-        createDocumentIdempotent(sdk, auth, { contractId, documentType: DOC.card, data: { ...base, ...content, ...claim }, ...(intent ? { intent } : {}), ...(contentKey ? { contentKey } : {}) }),
+        createDocumentIdempotent(sdk, auth, { contractId, documentType: DOC.card, data: { ...ids, state: built.next.state, ...built.content, ...claim }, ...(built.intent ? { intent: built.intent } : {}), ...(built.contentKey ? { contentKey: built.contentKey } : {}) }),
       )
-      return written(result.documentId, true, result)
+      return written(result.documentId, built, true, result)
     } catch (e) {
       if (!(e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE)) throw e
-      // the signer's card for this item appeared since the read (another tab): replace it
-      const mine = (await readItemCardDocs(sdk, repo, board.key, item.id, auth.identityId)).own
-      if (mine === null) throw e
-      return written(mine, false, await replace(mine))
+      // The signer's card for this item appeared since the read (another tab): apply the patch
+      // over the newest card now, that tab's included, and replace it.
+      const again = await readItemCardDocs(sdk, repo, board.key, item.id, auth.identityId)
+      if (again.own === null) throw e
+      const rebuilt = await build(again.cards)
+      return written(again.own, rebuilt, false, await replace(again.own, rebuilt))
     }
   } finally {
     noteBoardWrite(repo)
@@ -609,19 +636,28 @@ export interface QuickAdded {
 /**
  * Quick add (§5.3): a title makes a real issue in `target` (the home repository, or a source
  * repository from the menu) with the issue create everyone uses, then places it in column `col`
- * at the bottom of `column` (the column's cards in rank order). Two writes; a card that fails
- * after the issue landed is reported, not thrown, so the issue is not made twice.
+ * at the bottom of `column` (the column's cards in rank order), with `fields` (the values the
+ * column or swimlane of a field grouping stands for) in the same card. Two writes; a card that
+ * fails after the issue landed is reported, not thrown, so the issue is not made twice.
  */
 export async function quickAddIssue(
   sdk: EvoSDK,
   auth: WriteAuth,
   home: RepoRef,
   board: BoardView,
-  input: { readonly title: string; readonly col: number; readonly column?: readonly RankedCard[]; readonly target?: RepoRef; readonly intent?: string; readonly confirmCrossRepo?: boolean },
+  input: {
+    readonly title: string
+    readonly col: number
+    readonly column?: readonly RankedCard[]
+    readonly fields?: CardPatch['fields']
+    readonly target?: RepoRef
+    readonly intent?: string
+    readonly confirmCrossRepo?: boolean
+  },
 ): Promise<QuickAdded> {
   refuseUnlessOpen(board)
   if (board.spec === null) throw new BoardWriteError('unreadable', "this board's definition can't be read here")
-  checkPatch(board.spec, { col: input.col })
+  checkPatch(board.spec, { col: input.col, ...(input.fields !== undefined ? { fields: input.fields } : {}) })
   const target = input.target ?? home
   refuseUnlessConfirmed(home, target.repoId, input.confirmCrossRepo)
   const title = input.title.trim()
@@ -631,7 +667,8 @@ export async function quickAddIssue(
   const column = input.column ?? []
   const rank = column.length === 0 ? null : rankBefore(column, '', null)
   try {
-    const card = await writeCard(sdk, auth, home, board, item, { col: input.col, ...(rank !== null && 'rank' in rank ? { rank: rank.rank } : {}) }, { ...(input.intent ? { intent: `${input.intent}:card` } : {}), confirmCrossRepo: true })
+    const patch: CardPatch = { col: input.col, ...(rank !== null && 'rank' in rank ? { rank: rank.rank } : {}), ...(input.fields !== undefined ? { fields: input.fields } : {}) }
+    const card = await writeCard(sdk, auth, home, board, item, patch, { ...(input.intent ? { intent: `${input.intent}:card` } : {}), confirmCrossRepo: true })
     return { item, card, cardError: null }
   } catch (cardError) {
     return { item, card: null, cardError }

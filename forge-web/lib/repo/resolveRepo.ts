@@ -149,6 +149,30 @@ export function readRepoById(sdk: EvoSDK, forge: ForgeIds, repoId: string): Prom
   return readRepoDoc(sdk, forge, [['$id', '==', repoId]])
 }
 
+/**
+ * The forge-v2 `repo` documents `ownerId` holds (the `($ownerId, name)` index), by name, at most
+ * `maxPages` pages of 100: a bounded window, never an error for an owner with more.
+ */
+export async function readOwnerRepos(sdk: EvoSDK, forge: ForgeIds, ownerId: string, maxPages: number): Promise<RepoDoc[]> {
+  const out: RepoDoc[] = []
+  let startAfter: string | undefined
+  for (let page = 0; page < maxPages; page++) {
+    const { documents } = await queryDocumentsWithProof(sdk, {
+      dataContractId: forge.core,
+      documentTypeName: DOC.repo,
+      where: [['$ownerId', '==', ownerId]],
+      orderBy: [['name', 'asc']],
+      limit: 100,
+      ...(startAfter !== undefined ? { startAfter } : {}),
+    })
+    out.push(...documents.map(toRepoDoc))
+    const last = documents[documents.length - 1]?.['$id']
+    if (documents.length < 100 || typeof last !== 'string') break
+    startAfter = last
+  }
+  return out
+}
+
 /** What resolved: the repo and its `repo` document. */
 export interface ResolvedRepo {
   readonly repo: RepoRef

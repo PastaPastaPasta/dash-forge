@@ -19,7 +19,7 @@ const CARD: CardDoc = { id: 'c1', ownerId: 'me', updatedAt: 100, item: ITEM.id, 
 
 const state = vi.hoisted(() => ({
   move: null as null | { resolve: (v: unknown) => void; reject: (e: unknown) => void },
-  writes: [] as { patch: unknown; opts: { over?: unknown } | undefined; resolve: (v: unknown) => void }[],
+  writes: [] as { patch: unknown; opts: { overs?: ReadonlyMap<string, unknown> } | undefined; resolve: (v: unknown) => void }[],
   since: vi.fn(),
   read: null as unknown,
   // the SDK and the signer are stable across renders, as the app's are
@@ -36,9 +36,13 @@ vi.mock('@/lib/repo', async (load) => ({
   loadBoardItems: async (): Promise<BoardItemSet> => ({ items: [ITEM], hidden: new Set(), missing: new Set(), partial: false, hasOlderClosed: false, walks: new Map() }),
   addCardItems: async (_r: unknown, _i: unknown, set: BoardItemSet) => set,
   readCardsSince: state.since,
-  writeCard: (_sdk: unknown, _auth: unknown, _repo: unknown, _board: unknown, _item: unknown, patch: unknown, opts?: { over?: unknown }) =>
+  writeCard: (_sdk: unknown, _auth: unknown, _repo: unknown, _board: unknown, _item: unknown, patch: unknown, opts?: { overs?: ReadonlyMap<string, unknown> }) =>
     new Promise((resolve) => {
       state.writes.push({ patch, opts, resolve })
+    }),
+  archiveItems: (_sdk: unknown, _auth: unknown, _repo: unknown, _board: unknown, _items: unknown, opts?: { overs?: ReadonlyMap<string, unknown> }) =>
+    new Promise((resolve) => {
+      state.writes.push({ patch: { state: 1 }, opts, resolve })
     }),
   moveCard: () =>
     new Promise((resolve, reject) => {
@@ -173,9 +177,33 @@ describe('useBoard', () => {
     expect(state.writes).toHaveLength(2)
     expect(state.writes[1]?.patch).toEqual({ fields: { 2: 5 } })
     // built over the first write's card, not a read that may not show it yet
-    expect(state.writes[1]?.opts?.over).toEqual(first)
+    expect(state.writes[1]?.opts?.overs?.get(ITEM.id)).toEqual(first)
     await act(async () => {
       state.writes[1]?.resolve({ card: { ...first, f: '{"2":5}' }, created: false, result: {} })
+      await b
+    })
+  })
+
+  it('an edit made after the last one landed still gets its card (a read may lag), archive included', async () => {
+    const item = { id: ITEM.id, repoId: HOME }
+    let a!: Promise<unknown>
+    await act(async () => {
+      a = view.write(item, { fields: { 1: 1 } })
+    })
+    const landed = { id: 'c1', ownerId: 'me', updatedAt: 300, item: ITEM.id, col: 1, rank: null, f: '{"1":1}', state: 0, revision: 2 }
+    await act(async () => {
+      state.writes[0]?.resolve({ card: landed, created: false, result: {} })
+      await a
+    })
+    // nothing in flight now: the archive starts at once, with the landed card for `writeCard` to weigh against its read
+    let b!: Promise<unknown>
+    await act(async () => {
+      b = view.archive([item])
+    })
+    expect(state.writes).toHaveLength(2)
+    expect(state.writes[1]?.opts?.overs?.get(ITEM.id)).toEqual(landed)
+    await act(async () => {
+      state.writes[1]?.resolve({ written: [], failed: null, skipped: [] })
       await b
     })
   })

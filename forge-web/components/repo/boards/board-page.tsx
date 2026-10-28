@@ -39,6 +39,7 @@ import { useSearchParams } from '@/hooks/use-route'
 import { useSdk } from '@/hooks/use-sdk'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { BoardWriteError, boardTextBytes, nextIterationPlan, ownRevision, readBoardDefinition, readLabels, repoContractIds, repoKey, type LabelDef, type RepoRef } from '@/lib/repo'
+import { peekPrivateSession, type PrivateSession } from '@/lib/repo/private-session'
 import { resolveAnyRepoWith } from '@/lib/repo/resolveRepo'
 import { cachedDpnsName } from '@/lib/view/dpns'
 import {
@@ -154,7 +155,10 @@ function BoardScreen({ home, addr, boardKey }: { home: RepoHome; addr: RepoAddre
   // `owner/name`, as `repo:` is written (§4.4): an owner by DPNS name or whole identity id (cards
   // show only the name, `ItemRef`), never a shortened id that cannot be typed.
   const label = (r: RepoRef): string => `${r.repoId === home.repo.repoId ? addr.owner : (cachedDpnsName(network, r.ownerId) ?? r.ownerId)}/${r.name}`
-  const raw = useBoard(home.repo, boardKey, { label })
+  // Another private repository's items open where this tab already holds its session (§2.5).
+  const { identity } = useAuth()
+  const sessionOf = (r: RepoRef): PrivateSession | undefined => (identity === null ? undefined : peekPrivateSession(r, network, identity))
+  const raw = useBoard(home.repo, boardKey, { label, sessionOf })
   const [state, crossRepoDialog] = useGuardedBoard(raw, home.repo)
 
   if (state.loading) return <LoadingBlock label="Reading the board" />
