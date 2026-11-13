@@ -11,7 +11,7 @@
 # docs/guides/self-host-runner.md §Security.
 # Base images are pinned by digest; bump them deliberately (same pins as forge-relay's Dockerfile).
 
-FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+FROM rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS builder
 ARG PROTOC_VERSION=28.3
 RUN apt-get update \
  && apt-get install -y --no-install-recommends unzip cmake \
@@ -41,7 +41,7 @@ RUN cargo build --locked --release -p dg -p git-remote-dash -p forge-runner --fe
 
 # nektos/act, a pinned release. Its archive is checked against a digest pinned here (bump both
 # with ACT_VERSION; the digests match the release's checksums.txt for v0.2.89).
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS act
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS act
 ARG ACT_VERSION=0.2.89
 ARG ACT_SHA256_X86_64=0191d6f1f3b716b5c55820032605d05fc3c1cdbf581ebeff655019e5dd1524c0
 ARG ACT_SHA256_ARM64=daa8679ba9615a74d2d0cec321dc593f21948a2a11bb65862b063d8b930f4bcb
@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && echo "${sum}  /tmp/act.tgz" | sha256sum -c - \
  && tar -xzf /tmp/act.tgz -C /usr/local/bin act && act --version
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git docker.io \
  && rm -rf /var/lib/apt/lists/* \

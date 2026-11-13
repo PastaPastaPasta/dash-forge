@@ -5,7 +5,7 @@
 # Release images are built from the prebuilt static binary instead (Dockerfile.release).
 # Base images are pinned by digest; bump them deliberately.
 
-FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+FROM rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS builder
 # tenderdash-proto needs protoc >= 25; Debian's is older, so take the pinned upstream zip and
 # check it against the same digests .github/workflows/release.yml pins.
 ARG PROTOC_VERSION=28.3
@@ -53,7 +53,7 @@ RUN apt-get update \
  && build-support/licenses/generate.sh /out-licenses \
  && rm /out-licenses/licenses/MUSL-COPYRIGHT
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
