@@ -82,3 +82,12 @@ paths = [
     '''crates/forge-core/src/envelope\.rs''',
     '''crates/git-remote-dash/src/options\.rs''',
 ]
+
+[[allowlists]]
+description = "Public client-side tokens"
+targetRules = ["generic-api-key"]
+regexes = [
+    # forge.dashhq.org's Cloudflare Web Analytics site token (forge-web/lib/cf-beacon.ts): public by
+    # design, it ships in every page's HTML. By value, so any other key in the same files is reported.
+    '''87b4d7fbbb4f476895825bf0e361acb6''',
+]

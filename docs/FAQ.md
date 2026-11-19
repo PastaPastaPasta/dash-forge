@@ -40,7 +40,7 @@ Mostly not. Every Platform read is checked against a proof, and every byte is ch
 
 ## Does the website track me?
 
-forge.dashhq.org counts visits with Cloudflare Web Analytics: page views, the referrer, the browser, the country and load times. Cloudflare says it uses no cookies or local storage and does not fingerprint visitors. The script is pinned by its hash, and the app works the same if you block it. Builds you run yourself and the IPFS release have no analytics. See [Hosting §6](hosting.md#privacy-the-hosted-site-counts-visits).
+forge.dashhq.org counts visits with Cloudflare Web Analytics: page views, the referrer, the browser, the country and load times. Cloudflare says it uses no cookies or local storage and does not fingerprint visitors. The script is pinned by its hash, and the app works the same if you block it. Builds you run yourself have none unless you set `NEXT_PUBLIC_CF_BEACON_TOKEN`, and the IPFS release never has any. See [Hosting §6](hosting.md#privacy-the-hosted-site-counts-visits).
 
 ## Who pays for it?
 
