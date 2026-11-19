@@ -19,9 +19,9 @@
  * - After {@link STOP_AFTER_MS}, or when one of the app's own scripts (same-origin, under
  *   `_next/static/` at any depth: an IPFS path gateway serves the app under `/ipfs/<cid>/`)
  *   fails to load, the catcher stops and the busy state clears, so a page that never hydrates
- *   does not keep a spinner forever. Other scripts failing do not stop it: the host may inject
- *   its own (Cloudflare's analytics beacon on forge.dashhq.org, refused by the page CSP), and
- *   that refusal says nothing about the app.
+ *   does not keep a spinner forever. Other scripts failing do not stop it: a host may inject
+ *   its own (an analytics beacon Cloudflare adds at the edge, refused by the page CSP), or a
+ *   visitor may block forge.dashhq.org's own beacon, and neither says anything about the app.
  * - The replayed action runs in an effect, without the user's click: browser APIs that need a
  *   fresh user activation (a popup, the clipboard, a passkey prompt) may refuse it. The sign-in
  *   sheet needs none; it asks for any of those on the user's next click inside it.

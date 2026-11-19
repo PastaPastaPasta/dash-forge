@@ -38,6 +38,10 @@ Nothing is lost. Your repositories live on Platform and in your storage, not on 
 
 Mostly not. Every Platform read is checked against a proof, and every byte is checked against its hash. Two things are still trusted. First, the HTTPS endpoint that supplies the validator quorum keys proofs are checked against; the web app compares those keys with a second source (Platform nodes themselves) on every repository page and says **Failed** if they disagree. Second, the code doing the checking: the web app's checks protect you only if the JavaScript you loaded is the real app, so if you don't trust forge.dashhq.org (GitHub Pages), build the app yourself from source you have read and serve it, or use the CLI, which needs no website. [Verify Forge](guides/verify-forge.md) explains the Verification card, and shows how to cross-check the keys against your own Dash node.
 
+## Does the website track me?
+
+forge.dashhq.org counts visits with Cloudflare Web Analytics: page views, the referrer, the browser, the country and load times. Cloudflare says it uses no cookies or local storage and does not fingerprint visitors. The script is pinned by its hash, and the app works the same if you block it. Builds you run yourself and the IPFS release have no analytics. See [Hosting §6](hosting.md#privacy-the-hosted-site-counts-visits).
+
 ## Who pays for it?
 
 You, directly, and only for what you write. Platform fees come from your identity's credits. Storage bills come from your own provider, if you use one. Reading and cloning are free. Nobody sponsors identities. See [Costs](guides/costs.md).

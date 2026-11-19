@@ -106,8 +106,9 @@ test.describe('a tap before hydration', () => {
     await expect(signInButton(page)).toBeVisible()
     await page.waitForLoadState('load')
     // `frame-ancestors` in a <meta> CSP is only ignored with a console error: not a refusal. The
-    // host's own analytics beacon (Cloudflare injects it on forge.dashhq.org) is refused by the
-    // page CSP on purpose; it is not the app's.
+    // analytics beacon a host injects (Cloudflare's automatic setup does) is refused by the page
+    // CSP on purpose; it is not the app's. (The e2e builds have no beacon of their own: with
+    // NEXT_PUBLIC_CF_BEACON_TOKEN set, this filter would hide a refusal of the built one.)
     expect(csp.filter((t) => !/frame-ancestors/i.test(t) && !/static\.cloudflareinsights\.com/.test(t))).toEqual([])
     expect(errors).toEqual([])
   })
@@ -148,8 +149,8 @@ test.describe('a tap before hydration', () => {
   })
 
   test("a script the host injects, refused by the CSP, does not stop the catcher (forge.dashhq.org)", async ({ page }) => {
-    // Cloudflare adds its analytics beacon to every page; the CSP refuses it, which fires a script
-    // error before the app loads. The tap must still be caught and replayed.
+    // Cloudflare's automatic setup adds its analytics beacon to every page; the CSP refuses it,
+    // which fires a script error before the app loads. The tap must still be caught and replayed.
     await page.route(/\/explore\/(\?.*)?$/, async (route) => {
       const res = await route.fetch()
       const html = (await res.text()).replace('</body>', '<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v1"></script></body>')

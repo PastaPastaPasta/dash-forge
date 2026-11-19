@@ -79,22 +79,31 @@ The security headers in section 7 are a separate matter: every host should send 
 
 `next.config.js` `headers()` does the same in development.
 
-### 6. Cloudflare Web Analytics stays off
+### 6. Cloudflare Web Analytics: the page carries the beacon, Cloudflare injects nothing
 
-A zone proxied by Cloudflare gets Web Analytics' JavaScript beacon injected into every HTML response while automatic setup is on, which is the default. The app's CSP refuses it (`script-src 'self' 'wasm-unsafe-eval'` plus the hash of each inline script the page ships, `forge-web/scripts/csp-hashes.mjs`; an inline script Cloudflare or anyone else adds to the HTML is refused the same way), so on every page the console logs `Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/…' violates the following Content Security Policy directive`, and Playwright sees a failed `(csp)` request (QW3-040). Nothing loads, so nothing is collected. But a third-party script the site never asked for is against the point of the site (no server to trust, nothing in the page that phones home), and it keeps the console from being clean.
+forge.dashhq.org uses Cloudflare Web Analytics, which is cookieless (see [Privacy](#privacy-the-hosted-site-counts-visits)). The beacon is part of the build, not added at the edge.
 
-Do not add `static.cloudflareinsights.com` to the CSP. Turn the injection off instead. The same goes for every Cloudflare feature that rewrites HTML (Rocket Loader, Email Address Obfuscation, the old Auto Minify): the inline scripts are allowed by their exact bytes, so a rewritten script no longer matches its hash and the page does not start (and `dg verify-app` reports the changed file).
+**Why the build carries it.** With automatic setup (Cloudflare's default for a proxied zone), Cloudflare inserts its beacon `<script>` before `</body>` in every HTML response. That changes the bytes of every page that the build manifest lists, so [`dg verify-app`](guides/verify-the-app.md#check-a-deployed-copy-dg-verify-app) fails with "N files differ" ([E504](errors.md#e504)). The page CSP also refused the injected script, so the old setup collected nothing. The same goes for every Cloudflare feature that rewrites HTML (Rocket Loader, Email Address Obfuscation, the old Auto Minify). The inline scripts are allowed by their exact bytes, so a rewritten script no longer matches its hash, the page does not start, and `dg verify-app` reports the changed file. Keep all of them off.
 
-- Cloudflare dashboard → **Web Analytics** → the site `forge.dashhq.org` → **Manage site** → set automatic setup to **Disable**. (Or delete the site there.)
+**What the build does.** With `NEXT_PUBLIC_CF_BEACON_TOKEN` set to the site token (public: it is in every page), every page ends with the beacon, pinned to one version with its SRI hash. The page CSP's `script-src` allows that exact URL and nothing else from Cloudflare (`forge-web/lib/cf-beacon.ts`). It carries the token alone, like the snippet Cloudflare gives for manual installation, so it reports to `https://cloudflareinsights.com/cdn-cgi/rum` (which `connect-src https:` already allows), not to the zone's own `/cdn-cgi/rum` that automatic setup uses. With the variable unset, there is no beacon and no CSP entry. That is the default for self-hosted builds, and the IPFS build refuses the variable. `pages.yml` sets it for this repository; a fork's deploy sets `PAGES_CF_BEACON_TOKEN` or gets none. To move to a newer beacon, copy `src` and `integrity` from a tag Cloudflare injects (automatic setup on a test hostname shows one) into `lib/cf-beacon.ts`. If Cloudflare retires the pinned URL, the beacon stops loading and the app is unaffected, so look at the dashboard now and then: numbers that stop mean the pin needs updating.
+
+**The zone setting.** Cloudflare dashboard → **Web Analytics** → the site `forge.dashhq.org` → **Manage site** → **Enable with JS Snippet installation**. Not **Enable** (automatic, injects a second beacon) and not **Disable** (stops collection). The site token shown there must be the one `pages.yml` builds with. If it differs, set the repository variable `PAGES_CF_BEACON_TOKEN` to it and redeploy.
+
+To switch from automatic setup without a gap in the numbers, deploy the build with the beacon first, then change the setting. Until you change it, pages carry two beacons (a few minutes of double counting) and `dg verify-app` still fails.
+
 - Not a substitute: a `Cache-Control: no-transform` response header also stops the injection, but only as a side effect that Cloudflare does not support as the way to turn it off, and GitHub Pages sets no such header.
 
 Verify it:
 
 ```sh
-curl -s -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' https://forge.dashhq.org/ | grep -c -i -E 'cloudflareinsights|data-cf-beacon'
+curl -s -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' https://forge.dashhq.org/ | grep -o -i '<script[^>]*static\.cloudflareinsights\.com' | wc -l
 ```
 
-Expect `0`. `pages.yml` runs the same check after each deploy and prints a warning (it does not fail the deploy) when the beacon is back, so a zone setting that drifts shows up in the workflow run.
+Expect `1`: the build's own beacon. `2` means automatic setup is still on. `pages.yml` runs the same check after each deploy and prints a warning (it does not fail the deploy) when a beacon is injected, so a zone setting that drifts shows up in the workflow run. `dg verify-app https://forge.dashhq.org` is the full check.
+
+#### Privacy: the hosted site counts visits
+
+The site at forge.dashhq.org loads Cloudflare's Web Analytics script. Cloudflare says it sets no cookies, uses no local storage, and does not fingerprint visitors or follow them by IP address. It reports page views (the path and referrer), the browser, the country and page-load timings to Cloudflare, which already serves every request to the site. The script runs with the page's privileges, which is why it is pinned by its hash: Cloudflare cannot swap in other code without the browser refusing it. Builds you run yourself and the IPFS release carry no analytics. Blocking `static.cloudflareinsights.com` in your browser changes nothing in the app.
 
 ### 7. Security headers
 

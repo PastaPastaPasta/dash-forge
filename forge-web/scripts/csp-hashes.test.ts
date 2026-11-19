@@ -44,6 +44,16 @@ describe('the CSP of an exported page', () => {
     expect(out.replace(/<meta http-equiv="Content-Security-Policy" content="script-src [^"]*"\/>/, '')).toBe(PAGE)
   })
 
+  it("keeps a build's analytics beacon URL in the strict policy, and does not hash its tag", () => {
+    const beacon = 'https://static.cloudflareinsights.com/beacon.min.js/v1'
+    const tag = `<script type="module" defer="" src="${beacon}" integrity="sha512-x" crossorigin="anonymous" data-cf-beacon="{&quot;token&quot;:&quot;t&quot;}"></script>`
+    const hashed = hashPage(page(tag, `${LAYOUT} ${beacon}`))
+    const [strict] = scriptPolicies(hashed)
+    expect(strict?.slice(0, 3)).toEqual(["'self'", "'wasm-unsafe-eval'", beacon])
+    expect(strict?.filter((s: string) => s.startsWith("'sha256-"))).toHaveLength(3)
+    expect(cspProblem(hashed)).toBeNull()
+  })
+
   it('skips scripts loaded by URL and lists a repeated script once', () => {
     const twice = page('<script>window.__forgePrehydration={}</script>')
     expect(inlineScripts(twice)).toHaveLength(4)
