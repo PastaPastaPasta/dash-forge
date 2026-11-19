@@ -259,7 +259,8 @@ jobs:
 
       # Fail in one line, before the build, when a fixture identity or the funding wallet cannot pay
       # for a run, instead of twenty scenarios failing on E401. The minimums are a little over one
-      # run's spend, which the "Testnet spend" step below measures on every run.
+      # run's spend, which the "Testnet spend" step below measures on every run; the funding
+      # wallet's covers the batch mint and, if it fails part way, the scenarios minting again.
       - name: Testnet balance pre-flight
         id: preflight
         timeout-minutes: 5
@@ -272,7 +273,7 @@ jobs:
             ids+=(--identity "CI-RUNNER=$dir/testnet-scratch/CI-RUNNER.identity.json=0.02")
           fi
           node tools/mint-identity/credits.mjs --network testnet "${ids[@]}" \
-            --funding "$E2E_MINT_FUNDING=1.2" --out "${RUNNER_TEMP}/balances-before.json"
+            --funding "$E2E_MINT_FUNDING=2" --out "${RUNNER_TEMP}/balances-before.json"
 
       # Scenarios 19, 24, 25 and 26 each run as identities minted for the run. Mint all five in
       # one batch in the background while the CLI builds (a testnet mint waits minutes for its
@@ -282,12 +283,15 @@ jobs:
         run: |
           dir="${RUNNER_TEMP}/run-ids"
           mkdir -m 700 "$dir"
-          nohup flock -w 600 /tmp/qa-mint-testnet.lock node tools/mint-identity/mint.mjs pool --network testnet \
+          # Its own process group, so the hand-over step can stop all of it (flock and node).
+          # shellcheck disable=SC2016 # $$ and $0 belong to the inner bash
+          setsid --fork bash -c 'echo $$ >"$0"; exec flock -w 600 /tmp/qa-mint-testnet.lock "$@"' \
+            "${RUNNER_TEMP}/run-ids.pid" node tools/mint-identity/mint.mjs pool --network testnet \
             --funding fund-from-key --funding-key-file "$E2E_MINT_FUNDING" --out "$dir" \
             --labels P_OWNER,P_MEMBER,S25,FRESH,S26 \
             --role-amounts P_OWNER=0.2,P_MEMBER=0.2,S25=0.3,FRESH=0.1,S26=0.05 \
-            >"${RUNNER_TEMP}/run-ids.log" 2>&1 &
-          echo $! >"${RUNNER_TEMP}/run-ids.pid"
+            >"${RUNNER_TEMP}/run-ids.log" 2>&1 </dev/null
+          for _ in $(seq 1 50); do [ -s "${RUNNER_TEMP}/run-ids.pid" ] && break; sleep 0.1; done
 
       # The local S3 store from the storage fixture the Rust workflow's `storage-it` step
       # uses (infra/docker-compose.yml): RustFS and its bucket setup only, since no CLI
@@ -350,11 +354,17 @@ jobs:
       - name: Hand the run-only identities to the suite
         timeout-minutes: 15
         run: |
-          # Never past 12 min: a pool still running is left alone (it holds the mint lock, so a
-          # scenario minting for itself queues behind it) and the suite runs without it.
+          # Never past 12 min: a pool still running then is stopped, so it releases the mint lock
+          # before a scenario mints for itself. Its identity files keep any funded deposit.
           pid=$(cat "${RUNNER_TEMP}/run-ids.pid")
           deadline=$((SECONDS + 720))
           while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 5; done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::warning title=Run-only identities::the batch mint was still running after 12 min; stopped it"
+            kill -TERM -- "-$pid" 2>/dev/null || true
+            sleep 5
+            kill -KILL -- "-$pid" 2>/dev/null || true
+          fi
           grep -E '^[0-9:]+ ' "${RUNNER_TEMP}/run-ids.log" | grep -vi 'mnemonic' | tail -n 40 || true
           dir="${RUNNER_TEMP}/run-ids"
           minted() { python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("identityId") else 1)' "$dir/$1.identity.json" 2>/dev/null; }

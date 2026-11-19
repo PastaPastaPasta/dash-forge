@@ -58,14 +58,29 @@ function parseArgs(argv) {
   return args;
 }
 
-async function retry(fn, attempts = 3) {
-  for (let i = 1; ; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (i >= attempts) throw err;
-      await new Promise((r) => setTimeout(r, 5000 * i));
+/** Every balance read shares this budget, so an unreadable one is reported before the CI step's limit. */
+const READ_BUDGET_MS = 150000;
+
+/** `fn` with retries, abandoned (an error) once `deadline` passes. */
+async function retry(fn, deadline, attempts = 3) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('read budget spent')), Math.max(0, deadline - Date.now()));
+  });
+  const attempt = async () => {
+    for (let i = 1; ; i++) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (i >= attempts || Date.now() + 5000 * i >= deadline) throw err;
+        await new Promise((r) => setTimeout(r, 5000 * i));
+      }
     }
+  };
+  try {
+    return await Promise.race([attempt(), expired]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -73,6 +88,7 @@ async function readRows(args, log) {
   const { resolveNetwork } = await import('./src/config.mjs');
   const platform = await import('./src/platform.mjs');
   const network = resolveNetwork({ network: args.network });
+  const deadline = Date.now() + READ_BUDGET_MS;
   const rows = [];
   for (const spec of args.identity) {
     const { name: label, file, min } = parseSpec(spec, '--identity');
@@ -85,7 +101,7 @@ async function readRows(args, log) {
     if (typeof id !== 'string' || !id) throw new Error(`${label}: ${file} has no identityId`);
     let dash = null;
     try {
-      dash = (await retry(() => platform.getBalance(network, id, log))) / CREDITS_PER_DASH;
+      dash = (await retry(() => platform.getBalance(network, id, log), deadline)) / CREDITS_PER_DASH;
     } catch (err) {
       log(`cannot read ${label}'s balance: ${err.message}`);
     }
@@ -99,7 +115,7 @@ async function readRows(args, log) {
     let dash = null;
     try {
       const chain = new ChainClient(network, { log });
-      dash = (await retry(() => chain.insight.getBalance(address))) / DUFFS_PER_DASH;
+      dash = (await retry(() => chain.insight.getBalance(address), deadline)) / DUFFS_PER_DASH;
     } catch (err) {
       log(`cannot read the funding wallet's balance: ${err.message}`);
     }
@@ -153,8 +169,11 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err) => {
-    process.stderr.write(`credits: ${err.message}\n`);
-    process.exit(2);
-  });
+  main().then(
+    () => process.exit(process.exitCode ?? 0),
+    (err) => {
+      process.stderr.write(`credits: ${err.message}\n`);
+      process.exit(2);
+    }
+  );
 }

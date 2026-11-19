@@ -182,7 +182,7 @@ function minDepositDuffs(duffs) {
 
 /** Parse `DEPLOYER=50,TREASURY=10` into { DEPLOYER: 50, TREASURY: 10 } (DASH). */
 function parseRoleAmounts(spec, labels = POOL_ROLES) {
-  const out = {};
+  const out = Object.create(null);
   if (!spec) return out;
   for (const part of String(spec).split(',')) {
     const [label, value] = part.split('=');
@@ -262,6 +262,7 @@ async function cmdMint(args) {
 /** `--labels A,B` (run-only identities) or the standard 9-role pool. */
 function poolLabels(spec) {
   if (spec === undefined) return POOL_ROLES;
+  if (typeof spec !== 'string') throw new Error('--labels needs a value (comma-separated labels)');
   const labels = String(spec).split(',').filter(Boolean);
   if (labels.length === 0 || labels.some((l) => !/^[A-Za-z0-9_-]+$/.test(l)) || new Set(labels).size !== labels.length) {
     throw new Error(`Bad --labels "${spec}" (comma-separated, unique, [A-Za-z0-9_-])`);
