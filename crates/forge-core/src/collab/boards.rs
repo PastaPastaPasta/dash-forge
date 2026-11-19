@@ -1577,39 +1577,51 @@ impl Collab<'_> {
     /// The boards issue or PR `item_id` of `repo` has a card on, whose home is `repo` or
     /// another public repository of the same owner (§5.6: a stranger's board naming the issue
     /// is never read, nor a private repository's, sealed with keys this read does not hold).
-    /// The owner's repositories are read first ([`Self::sidebar_homes`]), then `card.onItem`
-    /// with `item ==` and `repoId in` them (100 a read, at most [`ITEM_CARD_ROWS`] each), so
-    /// cards anyone else writes naming the item cost this read nothing. Deleted boards are
-    /// left out, closed ones kept. Ordered by home repository (`repo` first), then key.
+    /// The owner's repositories are read first ([`Self::sidebar_homes`]). Then `card.onItem`
+    /// is read with `item ==` and `repoId ==` the item's repository, so strangers' cards naming
+    /// the item never crowd out its own boards; and, when the owner has other public
+    /// repositories, once more with `item ==` alone (at most [`ITEM_CARD_ROWS`]), keeping only
+    /// theirs. Drive accepts an `in` clause only on an index's last two properties, and
+    /// `repoId` is second of `onItem`'s four. Deleted boards are left out, closed ones kept.
+    /// Ordered by home repository (`repo` first), then key.
     pub async fn item_boards(&self, repo: &RepoRef, item_id: &str) -> Result<Vec<ItemBoard>> {
         let contract = self.board_contract(repo).await?;
         let item = FieldValue::identifier(platform::decode_identifier(item_id)?);
         let homes = self.sidebar_homes(repo).await?;
-        let ids: Vec<&String> = homes.keys().collect();
         let mut by_home: BTreeMap<String, Vec<FetchedDocument>> = BTreeMap::new();
-        for chunk in ids.chunks(100) {
-            let in_homes = chunk
-                .iter()
-                .map(|id| platform::decode_identifier(id).map(FieldValue::identifier))
-                .collect::<Result<Vec<_>>>()?;
-            let docs = self
-                .client()
+        let order = [QueryOrder::asc("repoId"), QueryOrder::asc("board")];
+        let own = self
+            .client()
+            .query_documents_up_to(
+                &contract,
+                DOC_CARD,
+                &[
+                    QueryFilter::eq("item", item.clone()),
+                    Self::repo_filter(repo)?,
+                ],
+                &order,
+                ITEM_CARD_ROWS,
+            )
+            .await?;
+        let others = if homes.keys().any(|h| h != repo.id()) {
+            self.client()
                 .query_documents_up_to(
                     &contract,
                     DOC_CARD,
-                    &[
-                        QueryFilter::eq("item", item.clone()),
-                        QueryFilter::in_list("repoId", in_homes),
-                    ],
-                    &[QueryOrder::asc("repoId"), QueryOrder::asc("board")],
+                    &[QueryFilter::eq("item", item)],
+                    &order,
                     ITEM_CARD_ROWS,
                 )
-                .await?;
-            for d in docs.into_iter().take(ITEM_CARD_ROWS) {
-                if let Some(home) = d.field_bytes32("repoId").map(platform::encode_identifier) {
-                    if homes.contains_key(&home) {
-                        by_home.entry(home).or_default().push(d);
-                    }
+                .await?
+        } else {
+            Vec::new()
+        };
+        let own = own.into_iter().take(ITEM_CARD_ROWS);
+        let others = others.into_iter().take(ITEM_CARD_ROWS);
+        for (d, from_own) in own.map(|d| (d, true)).chain(others.map(|d| (d, false))) {
+            if let Some(home) = d.field_bytes32("repoId").map(platform::encode_identifier) {
+                if (home == repo.id()) == from_own && homes.contains_key(&home) {
+                    by_home.entry(home).or_default().push(d);
                 }
             }
         }
