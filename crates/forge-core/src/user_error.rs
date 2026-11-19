@@ -754,7 +754,10 @@ pub fn classify<'e>(
     if lower.contains("connecting to dash platform") {
         return unreachable(ctx, &text);
     }
-    if lower.contains("gh auth login") || lower.contains("running `gh`") {
+    if lower.contains("gh auth login")
+        || lower.contains("running `gh`")
+        || lower.contains("is the github cli installed")
+    {
         return UserError::new(
             codes::INVALID_CONFIG,
             ctx.goal.unwrap_or("the GitHub CLI is not ready").to_string(),

@@ -76,6 +76,7 @@ Severity: **blocker** stops a newcomer outright; **major** breaks a main path or
   - Testnet answers `where clause on non indexed property`.
   - The bug came in with 6631c1e2 in #611. Its unit test's mock never checked index rules.
 - **Fix in this PR:** read the item's own repo with `repoId ==`. Then, only when the owner has other public repos, read with `item ==` alone (bounded) and keep only theirs. Both query shapes were checked live against testnet with the SDK.
+- **Trade-off:** the item's own repo's boards are read exactly. The owner's *other* repos' boards come from a bounded `item ==` scan, so a stranger who writes about 300 cards naming the item could push them out of the sidebar. One `repoId ==` read per sibling repo would close that if it ever matters.
 - **Screenshot:** `21-issue-boards-sidebar.png`.
 
 ### F2 — Major — `dg import` fails halfway when the key is passphrase-sealed — not fixed (bigger than copy)

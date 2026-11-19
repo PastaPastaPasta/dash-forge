@@ -212,6 +212,8 @@ describe('readItemCards (§5.6)', () => {
     stored['card'] = [cardDoc({ $id: 'c1', col: 2 }), ...Array.from({ length: 100 }, (_, n) => cardDoc({ $id: `x${n}`, $ownerId: OTHER, repoId: id(100 + n), board: 4 }))]
     const list = await boards.readItemCards(sdk, REPO, ITEM)
     expect(list.map((e) => [e.home.repoId, e.board.key])).toEqual([[REPO_ID, 7]])
+    // the own repo's card is read by both queries but kept once
+    expect(list[0]?.cards).toHaveLength(1)
     const cardReads = asked.filter((q) => q.documentTypeName === 'card')
     // Drive takes `in` only on an index's last two properties: never on onItem's `repoId`
     expect(cardReads.flatMap((q) => q.where ?? []).some((w) => w[1] === 'in')).toBe(false)
