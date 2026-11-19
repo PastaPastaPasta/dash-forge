@@ -8,6 +8,9 @@ test('parseSpec splits name, file and minimum, keeping = inside the file path', 
   assert.throws(() => parseSpec('OWNER=/f', '--identity'), /min DASH/);
   assert.throws(() => parseSpec('0.5', '--identity'), /min DASH/);
   assert.throws(() => parseSpec('OWNER=/f=x', '--identity'), /min DASH/);
+  assert.throws(() => parseSpec('OWNER=/f=', '--identity'), /min DASH/);
+  assert.throws(() => parseSpec('OWNER=/f=0x10', '--identity'), /min DASH/);
+  assert.throws(() => parseSpec('cNotAKeyButShapedLikeOne', '--funding', { named: false }), (e) => !e.message.includes('cNotAKey'));
 });
 
 test('evaluate names each identity below its minimum and never fails an unreadable one', () => {

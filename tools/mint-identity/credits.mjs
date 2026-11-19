@@ -20,11 +20,12 @@ export function parseSpec(spec, what, { named = true } = {}) {
   const s = String(spec);
   const last = s.lastIndexOf('=');
   const first = named ? s.indexOf('=') : -1;
-  const min = Number(s.slice(last + 1));
+  const minText = s.slice(last + 1);
+  const min = /^\d+(\.\d+)?$/.test(minText) ? Number(minText) : NaN;
   const file = s.slice(first + 1, last);
   const name = named ? s.slice(0, first) : undefined;
   if (last < 0 || (named && (first === last || !name)) || !file || !Number.isFinite(min) || min < 0) {
-    throw new Error(`${what} must be ${named ? '<name>=' : ''}<file>=<min DASH>, got '${spec}'`);
+    throw new Error(`${what} must be ${named ? '<name>=' : ''}<file>=<min DASH>`);
   }
   return { name, file, min };
 }
@@ -75,7 +76,13 @@ async function readRows(args, log) {
   const rows = [];
   for (const spec of args.identity) {
     const { name: label, file, min } = parseSpec(spec, '--identity');
-    const id = JSON.parse(readFileSync(file, 'utf8')).identityId;
+    let id;
+    try {
+      id = JSON.parse(readFileSync(file, 'utf8')).identityId;
+    } catch {
+      throw new Error(`${label}: ${file} is not a readable identity file`);
+    }
+    if (typeof id !== 'string' || !id) throw new Error(`${label}: ${file} has no identityId`);
     let dash = null;
     try {
       dash = (await retry(() => platform.getBalance(network, id, log))) / CREDITS_PER_DASH;
@@ -145,7 +152,7 @@ async function main() {
   if (summary) appendFileSync(summary, `${md.join('\n')}\n`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     process.stderr.write(`credits: ${err.message}\n`);
     process.exit(2);

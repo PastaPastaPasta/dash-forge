@@ -210,7 +210,8 @@ jobs:
     needs: [fixtures, seed-read-fixture]
     if: ${{ !cancelled() && needs.fixtures.outputs.present == 'true' }}
     runs-on: ubuntu-latest
-    # checkout + protoc + toolchain + cache (~3 min), storage fixture (≤3), build (≤30),
+    # checkout + node, expect, balance pre-flight (≤5) + protoc + toolchain + cache (~3 min),
+    # storage fixture (≤3), build (≤30),
     # fixture wait (≤3), suite (≤45), plus room for the log upload after a failure.
     timeout-minutes: 95
     env:
@@ -261,6 +262,7 @@ jobs:
       # run's spend, which the "Testnet spend" step below measures on every run.
       - name: Testnet balance pre-flight
         id: preflight
+        timeout-minutes: 5
         run: |
           dir="${HOME}/.config/dash-forge/test-identities"
           ids=(--identity "OWNER=$dir/testnet-scratch/OWNER.identity.json=${E2E_MIN_OWNER:-0.5}"
@@ -365,6 +367,7 @@ jobs:
 
       # What this run cost each identity and the funding wallet: the data for the top-up cadence.
       - name: Testnet spend
+        timeout-minutes: 5
         if: always() && steps.preflight.outcome == 'success'
         continue-on-error: true
         run: |
