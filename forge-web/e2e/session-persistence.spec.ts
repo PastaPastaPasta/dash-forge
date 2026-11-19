@@ -82,14 +82,14 @@ test('p1. import once, then a reload and a new tab stay signed in', async () => 
   const star = page.getByTestId('star-button')
   await expect(star).toBeEnabled({ timeout: 90_000 })
   const wasStarred = /^Starred/.test(await star.innerText())
-  const flipped = wasStarred ? /^Star\b/ : /^Starred/
+  const flipped = wasStarred ? /^Star \d+$/ : /^Starred \d+$/
   await star.click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect(star).toHaveAccessibleName(flipped, { timeout: 120_000 })
   await shot(page, 'session-p1-star-after-reload')
   // Put it back (an unstar refunds the star's storage).
   await star.click()
-  await expect(star).toHaveAccessibleName(wasStarred ? /^Starred/ : /^Star\b/, { timeout: 120_000 })
+  await expect(star).toHaveAccessibleName(wasStarred ? /^Starred \d+$/ : /^Star \d+$/, { timeout: 120_000 })
 
   const tab = await context.newPage()
   await tab.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
