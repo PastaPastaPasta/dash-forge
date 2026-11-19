@@ -45,3 +45,32 @@ export async function waitForInstantSendLock(rpcUrl, txid, { timeoutMs = 120000,
   }
   throw new Error(`Timed out waiting for InstantSend lock for ${txid} after ${timeoutMs}ms`);
 }
+
+/** How far behind the chain tip the islock node may be before its getislocks is not trusted. */
+export const ISLOCK_MAX_LAG_BLOCKS = 6;
+
+/**
+ * Whether `rpcUrl` can serve islocks for new transactions: its node must be within
+ * ISLOCK_MAX_LAG_BLOCKS of `tipHeight` (a node stuck weeks behind answers every getislocks with
+ * "None", so each lock would wait out its full timeout). Returns { ok, reason }.
+ */
+export async function checkIslockSource(rpcUrl, tipHeight, { fetchImpl = fetch, timeoutMs = 15000 } = {}) {
+  let height;
+  try {
+    const res = await fetchImpl(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: 'getblockcount', params: [] }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return { ok: false, reason: `getblockcount HTTP ${res.status}` };
+    height = (await res.json()).result;
+  } catch (err) {
+    return { ok: false, reason: `getblockcount failed: ${err.message}` };
+  }
+  if (!Number.isInteger(height)) return { ok: false, reason: 'getblockcount returned no height' };
+  if (!Number.isInteger(tipHeight)) return { ok: true, reason: 'chain tip unknown' };
+  const lag = tipHeight - height;
+  if (lag > ISLOCK_MAX_LAG_BLOCKS) return { ok: false, reason: `its node is at block ${height}, ${lag} behind the tip ${tipHeight}` };
+  return { ok: true, reason: `at block ${height}` };
+}

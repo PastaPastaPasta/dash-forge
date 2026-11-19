@@ -3,7 +3,7 @@
 //
 //   node mint.mjs [--network testnet|devnet --devnet-name moutai] --out <dir> [--label OWNER] [--amount 0.5]
 //                 [--mnemonic-file <path> | --mnemonic -]   (an existing recovery phrase; - reads stdin)
-//   node mint.mjs pool --out <dir> [--amount 0.05] [--role-amounts DEPLOYER=50]
+//   node mint.mjs pool --out <dir> [--amount 0.05] [--role-amounts DEPLOYER=50] [--labels A,B]
 //   node mint.mjs topup --identity <file> [--amount 0.1]
 //   node mint.mjs balance --identity <file>
 //   node mint.mjs verify --dir <dir>
@@ -32,7 +32,7 @@ import {
   MIN_ASSET_LOCK_DUFFS,
 } from './src/flow.mjs';
 import { loadFundingKey, fundFromKey } from './src/funding.mjs';
-import { waitForFundingTx } from './src/lock.mjs';
+import { islockSourceUsable, waitForFundingTx } from './src/lock.mjs';
 import { buildIdentityBackup, ensurePrivateDir, withExclusiveLock, writeIdentityFile, writeSecretFile } from './src/backup.mjs';
 import { resolveMnemonicArg } from './src/mnemonic-arg.mjs';
 import { generateKeyPair, getPublicKey, publicKeyToAddress } from './src/keys.mjs';
@@ -181,12 +181,12 @@ function minDepositDuffs(duffs) {
 }
 
 /** Parse `DEPLOYER=50,TREASURY=10` into { DEPLOYER: 50, TREASURY: 10 } (DASH). */
-function parseRoleAmounts(spec) {
+function parseRoleAmounts(spec, labels = POOL_ROLES) {
   const out = {};
   if (!spec) return out;
   for (const part of String(spec).split(',')) {
     const [label, value] = part.split('=');
-    if (!POOL_ROLES.includes(label) || !(Number(value) > 0)) throw new Error(`Bad --role-amounts entry "${part}"`);
+    if (!labels.includes(label) || !(Number(value) > 0)) throw new Error(`Bad --role-amounts entry "${part}"`);
     out[label] = Number(value);
   }
   return out;
@@ -259,19 +259,30 @@ async function cmdMint(args) {
   return { network: network.name, label, identityId: result.identityId, balance: result.balance, depositAddress: role.depositAddress, assetLockTxid: role.txid, file: outFile };
 }
 
+/** `--labels A,B` (run-only identities) or the standard 9-role pool. */
+function poolLabels(spec) {
+  if (spec === undefined) return POOL_ROLES;
+  const labels = String(spec).split(',').filter(Boolean);
+  if (labels.length === 0 || labels.some((l) => !/^[A-Za-z0-9_-]+$/.test(l)) || new Set(labels).size !== labels.length) {
+    throw new Error(`Bad --labels "${spec}" (comma-separated, unique, [A-Za-z0-9_-])`);
+  }
+  return labels;
+}
+
 // --- mint the 9-role pool ---
 async function cmdPool(args) {
   const network = networkFromArgs(args);
   const dir = ensureOutDir(args.out);
   const funding = fundingMode(args, network);
   const perRoleDash = Number(args.amount || (network.type === 'devnet' ? 5 : 0.05));
-  const overrides = parseRoleAmounts(args['role-amounts']);
+  const labels = poolLabels(args.labels);
+  const overrides = parseRoleAmounts(args['role-amounts'], labels);
   if (funding === 'faucet' && Object.keys(overrides).length > 0) {
     throw new Error('--role-amounts needs --funding fund-from-key or manual (the faucet fan-out pays every role --amount)');
   }
   const duffsFor = (r) => dashToDuffs(overrides[r.label] ?? perRoleDash);
 
-  const roles = POOL_ROLES.map((label) => loadOrCreateRole(fileForLabel(dir, label), label, network));
+  const roles = labels.map((label) => loadOrCreateRole(fileForLabel(dir, label), label, network));
   const todo = roles.filter((r) => !r.identityId);
   for (const r of roles) {
     log(`[${r.label}] deposit address: ${r.depositAddress}${r.identityId ? ` (already minted: ${r.identityId})` : ''}`);
@@ -294,6 +305,7 @@ async function cmdPool(args) {
   if (unfunded.length === 0) {
     log(todo.length === 0 ? 'Every role is already minted; nothing to fund.' : 'Every role still to mint is already funded.');
   } else if (funding === 'faucet') {
+    if (labels !== POOL_ROLES) throw new Error('--funding faucet funds the standard pool only; --labels needs fund-from-key or manual');
     if (unfunded.length !== roles.length) {
       throw new Error('--funding faucet funds a fresh pool only; finish a partial pool with --funding fund-from-key or manual');
     }
@@ -308,7 +320,8 @@ async function cmdPool(args) {
   // Devnets broadcast every asset lock first and then register, so the whole
   // pool pays the chain-lock wait once. Testnet registers each role right after
   // its broadcast, while its InstantSend lock can still be fetched.
-  const batch = network.lockProof === 'chain';
+  // So does testnet when its islock source is unusable: every lock then waits for a chain lock.
+  const batch = network.lockProof === 'chain' || !(await islockSourceUsable(network, log));
   const broadcast = async (r) => {
     const known = outpoints.get(r.label);
     const utxo = await waitForDeposit(chain, r.depositAddress, known ? 1 : minDepositDuffs(duffsFor(r)), { known, timeoutMs: DEPOSIT_WAIT_MS, log });

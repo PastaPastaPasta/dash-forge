@@ -211,9 +211,9 @@ jobs:
     if: ${{ !cancelled() && needs.fixtures.outputs.present == 'true' }}
     runs-on: ubuntu-latest
     # checkout + node, expect, balance pre-flight (≤5) + protoc + toolchain + cache (~3 min),
-    # storage fixture (≤3), build (≤30),
-    # fixture wait (≤3), suite (≤45), plus room for the log upload after a failure.
-    timeout-minutes: 95
+    # storage fixture (≤3), build (≤30), run-only identities (≤15),
+    # fixture wait (≤3), suite (≤60), plus room for the log upload after a failure.
+    timeout-minutes: 125
     env:
       DASH_FORGE_FIAT: "off"
       # e2e/cli/config.sh: testnet, written knowingly (QA-14), with the identities and the
@@ -274,6 +274,21 @@ jobs:
           node tools/mint-identity/credits.mjs --network testnet "${ids[@]}" \
             --funding "$E2E_MINT_FUNDING=1.2" --out "${RUNNER_TEMP}/balances-before.json"
 
+      # Scenarios 19, 24, 25 and 26 each run as identities minted for the run. Mint all five in
+      # one batch in the background while the CLI builds (a testnet mint waits minutes for its
+      # lock), and hand them over through the scenarios' own overrides below. If the batch fails
+      # the scenarios mint for themselves, as before.
+      - name: Mint the run-only identities (background)
+        run: |
+          dir="${RUNNER_TEMP}/run-ids"
+          mkdir -m 700 "$dir"
+          nohup flock -w 600 /tmp/qa-mint-testnet.lock node tools/mint-identity/mint.mjs pool --network testnet \
+            --funding fund-from-key --funding-key-file "$E2E_MINT_FUNDING" --out "$dir" \
+            --labels P_OWNER,P_MEMBER,S25,FRESH,S26 \
+            --role-amounts P_OWNER=0.2,P_MEMBER=0.2,S25=0.3,FRESH=0.1,S26=0.05 \
+            >"${RUNNER_TEMP}/run-ids.log" 2>&1 &
+          echo $! >"${RUNNER_TEMP}/run-ids.pid"
+
       # The local S3 store from the storage fixture the Rust workflow's `storage-it` step
       # uses (infra/docker-compose.yml): RustFS and its bucket setup only, since no CLI
       # scenario needs kubo or nginx. Scenarios 11, 13 and 20 store packs on it. Not fatal:
@@ -332,15 +347,40 @@ jobs:
             sleep 2
           done
 
+      - name: Hand the run-only identities to the suite
+        timeout-minutes: 15
+        run: |
+          pid=$(cat "${RUNNER_TEMP}/run-ids.pid")
+          while kill -0 "$pid" 2>/dev/null; do sleep 5; done
+          grep -E '^[0-9:]+ ' "${RUNNER_TEMP}/run-ids.log" | grep -vi 'mnemonic' | tail -n 40 || true
+          dir="${RUNNER_TEMP}/run-ids"
+          minted() { python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("identityId") else 1)' "$dir/$1.identity.json" 2>/dev/null; }
+          missing=()
+          for pair in E2E_P_OWNER:P_OWNER E2E_P_MEMBER:P_MEMBER E2E_S25_IDENTITY:S25 \
+                      E2E_FRESH_IDENTITY:FRESH E2E_S26_OWNER:S26; do
+            if minted "${pair#*:}"; then
+              echo "${pair%%:*}=$dir/${pair#*:}.identity.json" >> "$GITHUB_ENV"
+            else
+              missing+=("${pair#*:}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::warning title=Run-only identities::not minted: ${missing[*]}; those scenarios mint their own"
+          fi
+
       # run.sh exits non-zero if any scenario FAILs, or if more than E2E_MAX_SKIPS scenarios
       # SKIP (a SKIP means a check flaked on every one of its retries). Every command is
       # bounded by E2E_TIMEOUT, every scenario by E2E_SCENARIO_TIMEOUT and the suite,
-      # cleanup included, by E2E_SUITE_BUDGET (40 min), so a hang costs one scenario and the
+      # cleanup included, by E2E_SUITE_BUDGET (55 min), so a hang costs one scenario and the
       # matrix is always written; the step timeout is only a backstop. The matrix goes to
       # stderr, so capture it, put it in the step summary, and still warn loudly when
       # nothing actually ran.
       - name: CLI e2e suite
-        timeout-minutes: 45
+        timeout-minutes: 60
+        env:
+          # The default 40 min predates the minting scenarios and 35 running: about 45 min of
+          # scenarios on testnet, plus the cleanup reserve.
+          E2E_SUITE_BUDGET: '3300'
         run: |
           # GH Actions runs this under `bash -e`, so the pipeline's failure must be caught
           # with `|| rc=$?` — otherwise the step exits before writing the summary, which is

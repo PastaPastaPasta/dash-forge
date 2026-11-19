@@ -10,12 +10,38 @@
 //                      tx height <= proof height <= its last committed core height.
 import { sleep } from './insight.mjs';
 import { ChainClient } from './chain.mjs';
-import { waitForInstantSendLock } from './islock.mjs';
+import { checkIslockSource, waitForInstantSendLock } from './islock.mjs';
 import * as platform from './platform.mjs';
 
 const CHAIN_LOCK_TIMEOUT_MS = 15 * 60 * 1000;
 const ISLOCK_TIMEOUT_MS = 150000;
 const POLL_MS = 5000;
+
+const islockSources = new Map();
+
+async function chainTipHeight(network) {
+  const chain = new ChainClient(network);
+  if (chain.dapi) return chain.dapi.getBestBlockHeight();
+  const res = await chain.insight.request('/status?q=getInfo', 'Failed to get the chain tip');
+  return (await res.json()).info?.blocks;
+}
+
+/**
+ * Whether `network`'s islock endpoint is worth waiting on, checked once per process. When it is
+ * not, locks go straight to the chain-lock proof instead of each waiting out ISLOCK_TIMEOUT_MS.
+ */
+export function islockSourceUsable(network, log = () => {}) {
+  if (!islockSources.has(network.rpcUrl)) {
+    const probe = (async () => {
+      const tip = await chainTipHeight(network).catch(() => undefined);
+      const { ok, reason } = await checkIslockSource(network.rpcUrl, tip);
+      if (!ok) log(`InstantSend lock source ${network.rpcUrl} unusable (${reason}); proving asset locks by chain lock`);
+      return ok;
+    })();
+    islockSources.set(network.rpcUrl, probe);
+  }
+  return islockSources.get(network.rpcUrl);
+}
 
 /** Wait until `txid` is mined (Insight, or DAPI Core when Insight is down); returns its block height. */
 export async function waitForTxHeight(network, txid, { timeoutMs = CHAIN_LOCK_TIMEOUT_MS, log = () => {}, chain = new ChainClient(network, { log }), pollMs = POLL_MS } = {}) {
@@ -67,7 +93,7 @@ export function lockProofFor(network, { proof } = {}) {
  * credit output).
  */
 export async function obtainAssetLock(network, { txid, transactionBytes, log = () => {}, proof }) {
-  if (lockProofFor(network, { proof }) === 'instant') {
+  if (lockProofFor(network, { proof }) === 'instant' && (await islockSourceUsable(network, log))) {
     log('Waiting for InstantSend lock (can take 30-90s)...');
     try {
       const instantLockBytes = await waitForInstantSendLock(network.rpcUrl, txid, { timeoutMs: ISLOCK_TIMEOUT_MS, log });
@@ -92,7 +118,7 @@ export async function obtainAssetLock(network, { txid, transactionBytes, log = (
  * chain proof waits for both txs to be mined anyway.
  */
 export async function waitForFundingTx(network, txid, log = () => {}) {
-  if (network.lockProof === 'chain') return;
+  if (network.lockProof === 'chain' || !(await islockSourceUsable(network, log))) return;
   log('Waiting for the funding tx InstantSend lock so outputs are spendable...');
   try {
     await waitForInstantSendLock(network.rpcUrl, txid, { timeoutMs: ISLOCK_TIMEOUT_MS, log });
