@@ -350,8 +350,11 @@ jobs:
       - name: Hand the run-only identities to the suite
         timeout-minutes: 15
         run: |
+          # Never past 12 min: a pool still running is left alone (it holds the mint lock, so a
+          # scenario minting for itself queues behind it) and the suite runs without it.
           pid=$(cat "${RUNNER_TEMP}/run-ids.pid")
-          while kill -0 "$pid" 2>/dev/null; do sleep 5; done
+          deadline=$((SECONDS + 720))
+          while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 5; done
           grep -E '^[0-9:]+ ' "${RUNNER_TEMP}/run-ids.log" | grep -vi 'mnemonic' | tail -n 40 || true
           dir="${RUNNER_TEMP}/run-ids"
           minted() { python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("identityId") else 1)' "$dir/$1.identity.json" 2>/dev/null; }

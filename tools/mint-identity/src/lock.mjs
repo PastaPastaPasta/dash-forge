@@ -22,8 +22,14 @@ const islockSources = new Map();
 async function chainTipHeight(network) {
   const chain = new ChainClient(network);
   if (chain.dapi) return chain.dapi.getBestBlockHeight();
-  const res = await chain.insight.request('/status?q=getInfo', 'Failed to get the chain tip');
-  return (await res.json()).info?.blocks;
+  try {
+    const res = await chain.insight.request('/status?q=getInfo', 'Failed to get the chain tip');
+    const blocks = (await res.json()).info?.blocks;
+    if (Number.isInteger(blocks)) return blocks;
+  } catch {
+    // Platform's chain-locked height trails the tip by a block or two: close enough.
+  }
+  return platform.getCoreChainLockedHeight(network);
 }
 
 /**
@@ -35,7 +41,7 @@ export function islockSourceUsable(network, log = () => {}) {
     const probe = (async () => {
       const tip = await chainTipHeight(network).catch(() => undefined);
       const { ok, reason } = await checkIslockSource(network.rpcUrl, tip);
-      if (!ok) log(`InstantSend lock source ${network.rpcUrl} unusable (${reason}); proving asset locks by chain lock`);
+      log(ok ? `InstantSend lock source ${network.rpcUrl}: ${reason}` : `InstantSend lock source ${network.rpcUrl} unusable (${reason}); proving asset locks by chain lock`);
       return ok;
     })();
     islockSources.set(network.rpcUrl, probe);

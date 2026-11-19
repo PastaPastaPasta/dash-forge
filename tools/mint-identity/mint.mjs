@@ -305,7 +305,7 @@ async function cmdPool(args) {
   if (unfunded.length === 0) {
     log(todo.length === 0 ? 'Every role is already minted; nothing to fund.' : 'Every role still to mint is already funded.');
   } else if (funding === 'faucet') {
-    if (labels !== POOL_ROLES) throw new Error('--funding faucet funds the standard pool only; --labels needs fund-from-key or manual');
+    if (args.labels !== undefined) throw new Error('--funding faucet funds the standard pool only; --labels needs fund-from-key or manual');
     if (unfunded.length !== roles.length) {
       throw new Error('--funding faucet funds a fresh pool only; finish a partial pool with --funding fund-from-key or manual');
     }
