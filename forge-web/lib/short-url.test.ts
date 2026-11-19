@@ -337,7 +337,7 @@ describe('expandShortPath: the shim in TypeScript (CJ-6)', () => {
     '/github.com/dashpay', '/dash-forge/alice/project/pull/7', '/dash-forge/', '/dash-forge/github.com/a/b', '/alice/project/blob/HEAD',
   ]
   // A seeded walk over segments that exercise every branch of the shim.
-  const pieces = ['alice', 'project', 'project.git', 'issues', 'pull', 'pulls', 'tree', 'blob', 'blame', 'commits', 'commit', 'compare', 'releases', 'settings', 'tag', 'new', 'HEAD', '7', '0', 'files', 'x%2Fy', 'a...b', '..', 'abc123', '%E2%9C%93', '%ZZ', '']
+  const pieces = ['alice', 'project', 'project.git', 'issues', 'pull', 'pulls', 'tree', 'blob', 'blame', 'commits', 'commit', 'compare', 'releases', 'settings', 'boards', 'tag', 'new', 'HEAD', '7', '0', 'files', 'x%2Fy', 'a...b', '..', 'abc123', '%E2%9C%93', '%ZZ', '']
   let seed = 7
   const next = (n: number): number => (seed = (seed * 1103515245 + 12345) % 2147483648) % n
   for (let i = 0; i < 2000; i++) paths.push(`/${Array.from({ length: 1 + next(6) }, () => pieces[next(pieces.length)]).join('/')}`)
@@ -346,6 +346,17 @@ describe('expandShortPath: the shim in TypeScript (CJ-6)', () => {
     for (const path of paths) {
       expect(expandShortPath(path, ''), path).toBe(expand(path))
       expect(expandShortPath(path, '/dash-forge'), path).toBe(expand(path, '/dash-forge'))
+    }
+  })
+
+  it('opens /<owner>/<repo>/boards and /boards/<key> on the Boards pages, as the shim does', () => {
+    for (const base of ['', '/dash-forge']) {
+      for (const run of [(p: string) => expandShortPath(p, base), (p: string) => expand(p, base)]) {
+        expect(run(`${base}/alice/project/boards`)).toBe(`${base}/repo/boards/?owner=alice&name=project`)
+        expect(run(`${base}/alice/project/boards/266338924`)).toBe(`${base}/repo/board/?owner=alice&name=project&b=266338924`)
+        expect(run(`${base}/alice/project/boards/x`)).toBeNull()
+        expect(run(`${base}/alice/project/boards/7/x`)).toBeNull()
+      }
     }
   })
 
