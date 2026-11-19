@@ -33,7 +33,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "pool", "hostname", "builder", "tokio1-rustls", "ring", "webpki-roots"] }
 url = "2"
 # The subscriber store: one SQLite file (bundled: no system library).
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Addresses and push endpoints are encrypted at rest (AES-256-GCM, keys from HKDF of the data
 # key); a keyed blind index finds an address without decrypting.
 aes-gcm = "0.10"

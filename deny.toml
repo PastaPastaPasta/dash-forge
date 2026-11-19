@@ -27,13 +27,25 @@ ignore = [
     # signatures with a public key (rules/signature.rs); no RSA private-key operation is done.
     { id = "RUSTSEC-2023-0071", reason = "no fix available; only public-key signature verification reaches rsa through pgp" },
 
-    # zip 8.x, extraction only (SUID bits, symlink targets, permissions through symlinks); no 8.x release fixes
-    # them. Two users: forge-runner, which only writes archives (ZipWriter; ZipArchive in a test, never
-    # extract), and tenderdash-proto-compiler, a build-time dependency of the Platform SDK that extracts the
-    # tenderdash proto archive of the release it pins. Remove when the SDK moves to zip >= 9.
-    { id = "RUSTSEC-2026-0367", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
-    { id = "RUSTSEC-2026-0368", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
-    { id = "RUSTSEC-2026-0369", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
+    # zip 8.x, extraction only (SUID bits, symlink targets, permissions through symlinks, symlink size abort,
+    # AES MAC skip, legacy decoder preallocation, ZipStreamReader name mismatch); fixed only in zip 9.
+    # forge-runner is on zip 9 since 2026-11-19. The one 8.x user left is tenderdash-proto-compiler, a
+    # build-time dependency of the Platform SDK whose build script downloads the dashpay/tenderdash archive
+    # of the tag it pins from GitHub over HTTPS and extracts it with ZipArchive::extract into a temp dir.
+    # Remove when the SDK's rs-tenderdash-abci moves to zip >= 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 extract: only the SDK build script, extracting the pinned tenderdash archive from GitHub" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8 extract: only the SDK build script, extracting the pinned tenderdash archive from GitHub" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8 extract: only the SDK build script, extracting the pinned tenderdash archive from GitHub" },
+    { id = "RUSTSEC-2026-0429", reason = "2026-11-19: zip 8 extract: only the SDK build script, extracting the pinned tenderdash archive from GitHub" },
+    { id = "RUSTSEC-2026-0545", reason = "2026-11-19: zip 8 AES: the SDK build script builds zip with deflate only (no aes-crypto) and reads a GitHub archive" },
+    { id = "RUSTSEC-2026-0546", reason = "2026-11-19: zip 8 extract: only the SDK build script, extracting the pinned tenderdash archive from GitHub" },
+    { id = "RUSTSEC-2026-0547", reason = "2026-11-19: zip 8 legacy decoders: not compiled in; the SDK build script enables deflate only" },
+    { id = "RUSTSEC-2026-0548", reason = "2026-11-19: zip 8 ZipStreamReader: not used; the SDK build script uses ZipArchive" },
+
+    # chrono: "unmaintained" notice (not a vulnerability), published 2026-09-14. No forge crate depends on
+    # chrono directly; it comes only through the Platform SDK (dash-sdk, dpp, rs-dapi-client) and
+    # tenderdash-proto. No replacement exists in that tree. Remove when the SDK drops chrono.
+    { id = "RUSTSEC-2026-0543", reason = "2026-11-19: chrono unmaintained, no fix; only through the pinned Platform SDK and tenderdash-proto" },
 
     # zvariant, zvariant_derive and zbus_names: "unmaintained" notices (not vulnerabilities), published
     # 2026-10-17. The crates were merged into zbus 6.0 and the standalone ones are frozen. They reach us
