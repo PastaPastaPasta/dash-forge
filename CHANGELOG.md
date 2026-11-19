@@ -19,6 +19,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Changed
 
+- **forge.dashhq.org carries its Cloudflare Web Analytics beacon in the build**, so Cloudflare no longer has to inject it and `dg verify-app` matches the hosted site again. The beacon is pinned by URL and SRI hash, the page CSP allows only that URL, and only a build given `NEXT_PUBLIC_CF_BEACON_TOKEN` has it: self-hosted and IPFS builds have none. The hosted site's analytics are documented in docs/hosting.md §6 and the FAQ.
 - **The web app asks only the Dash network's evonodes** for an identity deposit: the Insight fallback and the **Fallback block explorer** setting are gone. It watches the deposit on two nodes at once, and moves a feed that fails or goes silent to another node.
 
 ## [0.2.0] - TODO(owner): the tagging date

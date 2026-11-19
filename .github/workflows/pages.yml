@@ -81,6 +81,10 @@ jobs:
           NEXT_PUBLIC_GATEWAY_URL: ${{ vars.PAGES_GATEWAY_URL }}
           NEXT_PUBLIC_GATEWAY_LABEL: ${{ vars.PAGES_GATEWAY_LABEL }}
           NEXT_PUBLIC_NOTIFY_URL: ${{ vars.PAGES_NOTIFY_URL }}
+          # Cloudflare Web Analytics (forge-web/lib/cf-beacon.ts, docs/hosting.md §6): the page
+          # carries the beacon so the zone's automatic injection stays off. The site token is
+          # public (it is in every page). A fork's deploy gets none unless it sets the variable.
+          NEXT_PUBLIC_CF_BEACON_TOKEN: ${{ vars.PAGES_CF_BEACON_TOKEN || (github.repository == 'PastaPastaPasta/dash-forge' && '87b4d7fbbb4f476895825bf0e361acb6' || '') }}
           # The /mirror wizard pins the Mirror Action and its binaries to the commit deployed.
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         # An unset repository variable arrives as an empty string, which Next would inline as "".
@@ -88,7 +92,7 @@ jobs:
         # (docs/guides/verify-the-app.md). That includes NEXT_PUBLIC_DEVNET_NAME, empty on every
         # network but a devnet.
         run: |
-          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL; do
+          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL NEXT_PUBLIC_CF_BEACON_TOKEN; do
             [ -n "${!v}" ] || unset "$v"
           done
           pnpm build
@@ -256,21 +260,25 @@ jobs:
           else
             echo "::warning title=security.txt malformed::$url has no Contact field"
           fi
-      # forge.dashhq.org sits behind Cloudflare, whose Web Analytics injects a beacon script
-      # that the page's CSP refuses (a console error on every page; QW3-040). That is a zone
+      # forge.dashhq.org sits behind Cloudflare. The page carries its own Web Analytics beacon
+      # (forge-web/lib/cf-beacon.ts); while the zone's automatic setup is on, Cloudflare injects a
+      # second one, which changes every page's bytes so `dg verify-app` fails. That is a zone
       # setting this repository cannot change, so this only reports it (docs/hosting.md §6).
       - name: Check the live page for an injected third-party script
         continue-on-error: true
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          BUILT_BEACONS: ${{ (vars.PAGES_CF_BEACON_TOKEN || github.repository == 'PastaPastaPasta/dash-forge') && '1' || '0' }}
         run: |
           # A fresh deploy can take a moment to answer: retry on any error, not just timeouts.
           if ! html="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' "$PAGE_URL")"; then
             echo "::warning title=Beacon check skipped::could not fetch $PAGE_URL to look for an injected analytics beacon"
             exit 0
           fi
-          if printf '%s' "$html" | grep -q -i -E 'cloudflareinsights|data-cf-beacon'; then
-            echo "::warning title=Cloudflare Web Analytics beacon injected::$PAGE_URL serves a Cloudflare Web Analytics script that the page CSP blocks. Turn automatic setup off on the zone: docs/hosting.md section 6."
+          # Script tags only: the RSC payload holds a JSON copy of the build's own tag.
+          served=$(printf '%s' "$html" | grep -o -i '<script[^>]*static\.cloudflareinsights\.com' | wc -l)
+          if [ "$served" -gt "$BUILT_BEACONS" ]; then
+            echo "::warning title=Cloudflare Web Analytics beacon injected::$PAGE_URL serves $served Cloudflare Web Analytics beacons; the build has $BUILT_BEACONS. Cloudflare injects the rest, so dg verify-app fails. Set the site's automatic setup off: docs/hosting.md section 6."
           else
-            echo "No injected analytics beacon on $PAGE_URL"
+            echo "No injected analytics beacon on $PAGE_URL ($served, as built)"
           fi

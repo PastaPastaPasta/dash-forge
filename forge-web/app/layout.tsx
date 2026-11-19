@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import type { ReactNode } from 'react'
 import { Providers } from '@/components/providers'
+import { CF_BEACON } from '@/lib/cf-beacon'
 import { prehydrationScript } from '@/lib/prehydration'
 import { SITE_URL } from '@/lib/site'
 import './globals.css'
@@ -56,6 +57,8 @@ const ASSETS = process.env.FORGE_IPFS_BUILD === '1' ? '' : `${process.env.NEXT_P
 //   injects (Cloudflare does) is refused. The hashes cannot go in this <meta>: the RSC payload
 //   carries a copy of it inside the scripts being hashed, and React re-adds a <meta> that
 //   differs from its copy when the page hydrates. `next dev` gets this policy alone.
+// - script the Cloudflare beacon's exact URL, only in a build that carries it (lib/cf-beacon.ts);
+//   it reports to cloudflareinsights.com, which connect-src https: already allows.
 // - frame-ancestors is not here: browsers ignore it in a <meta> CSP (and log an error on every
 //   page). The host must send it as a header; GitHub Pages cannot, so Cloudflare in front of it
 //   has to (docs/hosting.md §7).
@@ -69,7 +72,7 @@ const ASSETS = process.env.FORGE_IPFS_BUILD === '1' ? '' : `${process.env.NEXT_P
 // - worker-src blob:: materialization / search / pack workers run off-main-thread.
 const CSP = [
   "default-src 'self'",
-  `script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'${process.env.NODE_ENV === 'development' ? " 'unsafe-eval'" : ''}`,
+  `script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'${process.env.NODE_ENV === 'development' ? " 'unsafe-eval'" : ''}${CF_BEACON ? ` ${CF_BEACON.src}` : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https: blob:",
   "font-src 'self'",
@@ -95,6 +98,9 @@ export default function RootLayout({
       </head>
       <body>
         <Providers>{children}</Providers>
+        {CF_BEACON ? (
+          <script type="module" defer src={CF_BEACON.src} integrity={CF_BEACON.integrity} crossOrigin="anonymous" data-cf-beacon={CF_BEACON.config} />
+        ) : null}
       </body>
     </html>
   )
