@@ -44,6 +44,7 @@ name: Testnet Nightly
 #   FORGE_TESTNET_MINT_FUNDING_WIF    - a testnet wallet key (WIF) the minting scenarios spend
 #                                       from (19, 24, 25, 26, 33, 36); on testnet they FAIL
 #                                       without it, so the CLI suite needs it too
+#   FORGE_TESTNET_IDENTITY_CI_RUNNER  - optional: the runner scenario 35 enrols (it SKIPs without)
 # Each identity secret holds the bridge-format identity JSON that `dg` reads from
 # ~/.config/dash-forge/test-identities/testnet-scratch/<ROLE>.identity.json. They must be fresh
 # identities, never the July-era testnet pool (config.sh refuses those ids).
@@ -221,8 +222,55 @@ jobs:
       ID_OWNER_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_OWNER }}
       ID_COLLAB_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_COLLAB }}
       ID_CONTRIB_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_CONTRIB }}
+      ID_CI_RUNNER_JSON: ${{ secrets.FORGE_TESTNET_IDENTITY_CI_RUNNER }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # The funding key lives only in this step's environment; the suite reads it from the file
+      # (config.sh accepts a testnet key named testnet-funding.wif).
+      - name: Materialize fixture identities and the funding key
+        env:
+          MINT_FUNDING_WIF: ${{ secrets.FORGE_TESTNET_MINT_FUNDING_WIF }}
+        run: |
+          dir="${HOME}/.config/dash-forge/test-identities"
+          mkdir -p "$dir/testnet-scratch" && chmod 700 "$dir" "$dir/testnet-scratch"
+          printf '%s' "$ID_OWNER_JSON"    > "$dir/testnet-scratch/OWNER.identity.json"
+          printf '%s' "$ID_COLLAB_JSON"   > "$dir/testnet-scratch/COLLAB.identity.json"
+          printf '%s' "$ID_CONTRIB_JSON"  > "$dir/testnet-scratch/CONTRIB.identity.json"
+          if [ -n "$ID_CI_RUNNER_JSON" ]; then
+            printf '%s' "$ID_CI_RUNNER_JSON" > "$dir/testnet-scratch/CI-RUNNER.identity.json"
+          fi
+          printf '%s' "$MINT_FUNDING_WIF" > "$dir/testnet-funding.wif"
+          chmod 600 "$dir"/testnet-scratch/*.identity.json "$dir/testnet-funding.wif"
+          echo "E2E_MINT_FUNDING=$dir/testnet-funding.wif" >> "$GITHUB_ENV"
+
+      # tools/mint-identity mints the run-only identities (19, 24, 25, 26) and reads balances;
+      # scenario 25 drives a tty with expect.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/mint-identity/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: tools/mint-identity
+      - name: Install expect
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends expect
+
+      # Fail in one line, before the build, when a fixture identity or the funding wallet cannot pay
+      # for a run, instead of twenty scenarios failing on E401. The minimums are a little over one
+      # run's spend, which the "Testnet spend" step below measures on every run.
+      - name: Testnet balance pre-flight
+        id: preflight
+        run: |
+          dir="${HOME}/.config/dash-forge/test-identities"
+          ids=(--identity "OWNER=$dir/testnet-scratch/OWNER.identity.json=${E2E_MIN_OWNER:-0.5}"
+               --identity "COLLAB=$dir/testnet-scratch/COLLAB.identity.json=0.05"
+               --identity "CONTRIB=$dir/testnet-scratch/CONTRIB.identity.json=0.05")
+          if [ -f "$dir/testnet-scratch/CI-RUNNER.identity.json" ]; then
+            ids+=(--identity "CI-RUNNER=$dir/testnet-scratch/CI-RUNNER.identity.json=0.02")
+          fi
+          node tools/mint-identity/credits.mjs --network testnet "${ids[@]}" \
+            --funding "$E2E_MINT_FUNDING=1.2" --out "${RUNNER_TEMP}/balances-before.json"
 
       # The local S3 store from the storage fixture the Rust workflow's `storage-it` step
       # uses (infra/docker-compose.yml): RustFS and its bucket setup only, since no CLI
@@ -258,21 +306,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: e2e-cli
-
-      # The funding key lives only in this step's environment; the suite reads it from the file
-      # (config.sh accepts a testnet key named testnet-funding.wif).
-      - name: Materialize fixture identities and the funding key
-        env:
-          MINT_FUNDING_WIF: ${{ secrets.FORGE_TESTNET_MINT_FUNDING_WIF }}
-        run: |
-          dir="${HOME}/.config/dash-forge/test-identities"
-          mkdir -p "$dir/testnet-scratch" && chmod 700 "$dir" "$dir/testnet-scratch"
-          printf '%s' "$ID_OWNER_JSON"    > "$dir/testnet-scratch/OWNER.identity.json"
-          printf '%s' "$ID_COLLAB_JSON"   > "$dir/testnet-scratch/COLLAB.identity.json"
-          printf '%s' "$ID_CONTRIB_JSON"  > "$dir/testnet-scratch/CONTRIB.identity.json"
-          printf '%s' "$MINT_FUNDING_WIF" > "$dir/testnet-funding.wif"
-          chmod 600 "$dir"/testnet-scratch/*.identity.json "$dir/testnet-funding.wif"
-          echo "E2E_MINT_FUNDING=$dir/testnet-funding.wif" >> "$GITHUB_ENV"
 
       # Built in its own step so a slow (cache-miss) build cannot eat into the suite's time
       # budget below; run.sh picks the binaries up from target/debug.
@@ -329,6 +362,20 @@ jobs:
             echo "::warning title=CLI e2e skipped ${skipped}::a scenario flaked on every retry; see the matrix"
           fi
           exit $rc
+
+      # What this run cost each identity and the funding wallet: the data for the top-up cadence.
+      - name: Testnet spend
+        if: always() && steps.preflight.outcome == 'success'
+        continue-on-error: true
+        run: |
+          dir="${HOME}/.config/dash-forge/test-identities"
+          ids=()
+          for role in OWNER COLLAB CONTRIB CI-RUNNER; do
+            f="$dir/testnet-scratch/$role.identity.json"
+            if [ -f "$f" ]; then ids+=(--identity "$role=$f=0"); fi
+          done
+          node tools/mint-identity/credits.mjs --network testnet "${ids[@]}" \
+            --funding "$E2E_MINT_FUNDING=0" --before "${RUNNER_TEMP}/balances-before.json"
 
       - name: Storage fixture logs
         if: failure() || steps.storage.outcome == 'failure' || steps.storage_wait.outcome == 'failure'
