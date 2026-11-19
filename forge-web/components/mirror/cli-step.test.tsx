@@ -50,7 +50,7 @@ describe('CliStep', () => {
     await fill('mirror-cli-cap', '0.5')
     await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
     expect(commands()).toContain('--repo my-copy --sync all --max-spend 0.5 --state my-copy.sync.json')
-    expect(commands()).toContain('dg auth login <identity file> --budget 0.5')
+    expect(commands()).toContain('dg auth login --mnemonic --budget 0.5')
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Copy the import command"]')!.click())
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('--repo my-copy --sync all --max-spend 0.5'))
     expect(host.querySelector('a[href^="/github.com/alice/Project"]')).not.toBeNull()

@@ -489,7 +489,7 @@ export function mirrorCliCommands({ github, name, collab, cap, config = ACTIVE_N
   const flags = dgNetworkFlags(config)
   const budget = Number(cap) > 0.25 ? ` --budget ${shellWord(cap.trim())}` : ''
   return {
-    login: `dg auth login <identity file>${budget} ${flags}`,
+    login: `dg auth login --mnemonic${budget} ${flags}`,
     newIdentity: `dg auth new${budget} ${flags}`,
     githubLogin: 'gh auth login',
     copy: [
