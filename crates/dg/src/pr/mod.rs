@@ -2529,16 +2529,22 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     // history is read again.
     // The transition is confirmed, so a re-read that does not show it yet came from a lagging
     // node: read again for a while before reporting the merge as only recorded.
-    collab.refs_changed();
+    // A retry's read error keeps the last read: the merge stands and is reported as recorded.
     let mut after = None;
     for attempt in 0..=MERGE_VISIBLE_RETRIES {
         if attempt > 0 {
             tokio::time::sleep(MERGE_VISIBLE_DELAY).await;
         }
-        after = match collab.patch(handle, view.patch.number).await? {
-            Some(p) => collab.patch_view(handle, p).await.ok(),
-            None => None,
+        collab.refs_changed();
+        let read = match collab.patch(handle, view.patch.number).await {
+            Ok(Some(p)) => collab.patch_view(handle, p).await.ok(),
+            Ok(None) => None,
+            Err(e) if attempt == 0 => return Err(e.into()),
+            Err(_) => continue,
         };
+        if read.is_some() || after.is_none() {
+            after = read;
+        }
         if after.as_ref().is_some_and(|v| v.state.merged) {
             break;
         }

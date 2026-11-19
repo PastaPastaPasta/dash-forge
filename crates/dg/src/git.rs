@@ -222,6 +222,21 @@ fn pin_network_with(ctx: &Ctx, root: &Path, env: &[(String, String)]) -> Result<
             out.push(format!("dash.quorumUrl={q}"));
         }
     }
+    // Testnet DAPI addresses chosen in dg's config: a clone pinned to testnet no longer reads
+    // that config, so it needs them too.
+    if let Some(addresses) = &ctx.target.testnet_dapi_override {
+        let list = addresses.join(",");
+        let current = git(
+            root,
+            &["config", "--local", "--get", "dash.dapiAddresses"],
+            env,
+        )
+        .ok();
+        if current.as_deref() != Some(list.as_str()) {
+            set("dash.dapiAddresses", &list)?;
+            out.push("dash.dapiAddresses".into());
+        }
+    }
     let helper = NetworkSettings::from_env().overlay(local());
     if !helper.resolve().is_ok_and(|t| t.network == *want) {
         tracing::warn!(
@@ -911,6 +926,21 @@ mod tests {
         assert!(
             pin_network_with(&ctx, &repo, &env).unwrap().is_empty(),
             "already pinned"
+        );
+        ctx.target.testnet_dapi_override = Some(vec!["https://10.0.0.1:443".into()]);
+        assert_eq!(
+            pin_network_with(&ctx, &repo, &env).unwrap(),
+            ["dash.dapiAddresses"],
+            "testnet DAPI addresses from dg's config go with the pin"
+        );
+        assert_eq!(
+            git(
+                &repo,
+                &["config", "--local", "--get", "dash.dapiAddresses"],
+                &env
+            )
+            .unwrap(),
+            "https://10.0.0.1:443"
         );
     }
 
