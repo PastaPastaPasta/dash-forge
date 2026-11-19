@@ -46,7 +46,7 @@ wait_for_role() { # wait_for_role <expected>
 
 step "COLLAB accepts, OWNER adds COLLAB as a writer (dg collab accept / add)"
 if ! collab_accept "$ID_COLLAB" "$REPO" "$LOG-add" \
-   || ! dg_as "$ID_OWNER" -y collab add "$REPO" "$IDID_COLLAB" --role writer >"$LOG-add.out" 2>"$LOG-add.err"; then
+   || ! dg_as "$ID_OWNER" -y collab add --wait 60 "$REPO" "$IDID_COLLAB" --role writer >"$LOG-add.out" 2>"$LOG-add.err"; then
   cat "$LOG-add.err" >&2 || true
   is_flake "$LOG-add.err" && skip_scenario "grant failed on a transport flake"
   bad "could not add COLLAB as a writer"; finish_scenario

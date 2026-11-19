@@ -387,18 +387,21 @@ async function sidebarHomes(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, Rep
  * The boards issue or PR `itemId` of `repo` has a card on, whose home is `repo` or another
  * public repository of the same owner (§5.6: a stranger's board naming the issue is never read,
  * nor a private repository's, sealed with a key this page does not hold). The owner's
- * repositories are read first ({@link sidebarHomes}), then `card.onItem` with `item ==` and
- * `repoId in` them (100 a read, {@link ITEM_CARD_PAGES} pages each), so cards anyone else writes
- * naming the item cost this read nothing. Deleted boards are left out; closed ones are kept
- * (read-only). Ordered by home repository (`repo` first), then key.
+ * repositories are read first ({@link sidebarHomes}). Then `card.onItem` is read with `item ==`
+ * and `repoId ==` the item's repository, so strangers' cards naming the item never crowd out its
+ * own boards; and, when the owner has other public repositories, once more with `item ==` alone
+ * ({@link ITEM_CARD_PAGES} pages), keeping only theirs. Drive accepts an `in` clause only on an
+ * index's last two properties, and `repoId` is second of `onItem`'s four, so `repoId in` is not a
+ * query it answers. Deleted boards are left out; closed ones are kept (read-only). Ordered by
+ * home repository (`repo` first), then key.
  */
 export async function readItemCards(sdk: EvoSDK, repo: RepoRef, itemId: string): Promise<ItemBoard[]> {
   const homes = await sidebarHomes(sdk, repo)
-  const ids = [...homes.keys()].sort(compareStrings)
-  const docs: PlainDocument[] = []
-  for (let i = 0; i < ids.length; i += 100) {
-    const query = repoSource(repo).targetQuery(DOC.card, { where: [['item', '==', itemId], ['repoId', 'in', ids.slice(i, i + 100)]], orderBy: [['repoId', 'asc'], ['board', 'asc']] })
-    docs.push(...(await readPages(sdk, query, ITEM_CARD_PAGES)))
+  const orderBy: DocumentQuery['orderBy'] = [['repoId', 'asc'], ['board', 'asc']]
+  const docs = await readPages(sdk, repoSource(repo).targetQuery(DOC.card, { where: [['item', '==', itemId], ['repoId', '==', repo.repoId]], orderBy }), ITEM_CARD_PAGES)
+  if ([...homes.keys()].some((h) => h !== repo.repoId)) {
+    const others = await readPages(sdk, repoSource(repo).targetQuery(DOC.card, { where: [['item', '==', itemId]], orderBy }), ITEM_CARD_PAGES)
+    docs.push(...others.filter((d) => asIdentifierString(d['repoId']) !== repo.repoId))
   }
   const byHome = new Map<string, PlainDocument[]>()
   for (const d of docs) {

@@ -379,7 +379,7 @@ describe('mirrorCliCommands', () => {
     const c = mirrorCliCommands(options)
     expect(c.copy).toBe("dg import github.com/alice/Project --repo project --sync code,releases --max-spend 0.2 --network devnet --devnet-name sakura")
     expect(c.copy).not.toMatch(/--state|--dry-run|--yes|--i-have-the-rights/)
-    expect(c.login).toBe('dg auth login <identity file> --network devnet --devnet-name sakura')
+    expect(c.login).toBe('dg auth login --mnemonic --network devnet --devnet-name sakura')
     expect(c.newIdentity).toBe('dg auth new --network devnet --devnet-name sakura')
     expect(c.githubLogin).toBe('gh auth login')
     expect(mirrorCliCommands({ ...options, cap: '1000' }).login).toContain('--budget 1000')
@@ -388,7 +388,7 @@ describe('mirrorCliCommands', () => {
   it('adds a state file only for collaboration, and raises both auth budgets above 0.25', () => {
     const c = mirrorCliCommands({ ...options, collab: true, cap: '0.3' })
     expect(c.copy).toContain('--sync all --max-spend 0.3 --state project.sync.json')
-    expect(c.login).toContain('<identity file> --budget 0.3 --network')
+    expect(c.login).toContain('--mnemonic --budget 0.3 --network')
     expect(c.newIdentity).toContain('dg auth new --budget 0.3 --network')
     expect(mirrorCliCommands({ ...options, cap: '0.25' }).login).not.toContain('--budget')
   })

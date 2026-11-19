@@ -78,6 +78,11 @@ TLS resets, the already-broadcast asset lock is proven with a chain-lock proof
 instead of being stranded. Mint and top-up both record the asset-lock txid in
 their pending file, so an interrupted run resumes from that tx.
 
+Each run first asks the endpoint for its block height. When its node is more
+than 6 blocks behind the chain tip (it answers every `getislocks` with `None`),
+or it does not answer, the run skips the InstantSend waits and proves every lock
+by chain lock straight away, and `pool` batches its locks as on a devnet.
+
 ## Funding modes
 
 `--funding faucet | fund-from-key | manual`
@@ -184,7 +189,8 @@ make devnet-identities                                                    # the 
 Mints `OWNER MAINTAINER COLLAB CONTRIB FROZEN CI-RUNNER RELAY DEPLOYER TREASURY`,
 writing one `<ROLE>.identity.json` per role. `--amount` is per role (default
 0.05 on testnet, 5 on devnets). `--role-amounts LABEL=DASH,...` overrides it for
-specific roles.
+specific roles. `--labels A,B,...` mints those labels instead of the 9 roles
+(with `fund-from-key` or `manual`), e.g. the e2e suite's run-only identities.
 
 - **Devnet (`fund-from-key`)**: one transaction from the funding key pays every
   unfunded deposit address, then every asset lock is broadcast, and all 9

@@ -114,11 +114,10 @@ export function StarButton({
         loading={star.busy || (unknown && star.error === null)}
         disabled={(unknown && star.error !== null) || (!starred && guard.disabledReason !== null)}
         title={price}
-        aria-label={`${starred ? 'Starred' : 'Star'} (${price})`}
         data-testid="star-button"
       >
         <Star className={starred ? 'h-3.5 w-3.5 fill-forge-500 text-forge-500' : 'h-3.5 w-3.5'} aria-hidden />
-        {starred ? 'Starred' : 'Star'}
+        {starred ? 'Starred' : 'Star'}{' '}
         <span className="ml-1 rounded bg-anvil-100 px-1 font-mono text-[11px] text-anvil-500 dark:bg-anvil-800 dark:text-anvil-400">
           {count === null ? '–' : Math.max(0, count + star.delta)}
         </span>

@@ -368,6 +368,8 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   // GitHub's \`/<owner>/<repo>/settings\`: a short form of its own is not made (no short URL is
   // shown for Settings), but the address people try opens the page.
   if (kind === 'settings' && rest.length === 1) return q('/repo/settings/', []);
+  if (kind === 'boards' && rest.length === 1) return q('/repo/boards/', []);
+  if (kind === 'boards' && number && rest.length === 2) return q('/repo/board/', ['b', number]);
   if (kind === 'releases') return q('/repo/release/', ['tag', arg]);
   if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers' || kind === 'compare' || kind === 'labels' || kind === 'milestones' || kind === 'security') && rest.length === 1) return q('/repo/' + kind + '/', []);
   if (kind === 'commit' && /^[0-9a-fA-F]{4,40}$/.test(arg)) return q('/repo/commit/', ['oid', arg.toLowerCase()]);
@@ -465,6 +467,8 @@ export function expandShortPath(pathname: string, base: string, reserved: readon
   // GitHub's `/<owner>/<repo>/settings`: no short URL is made for Settings, but the address
   // people try opens the page.
   if (kind === 'settings' && rest.length === 1) return q('/repo/settings/', [])
+  if (kind === 'boards' && rest.length === 1) return q('/repo/boards/', [])
+  if (kind === 'boards' && number && rest.length === 2) return q('/repo/board/', ['b', number])
   if (kind === 'releases') return q('/repo/release/', ['tag', arg])
   if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers' || kind === 'compare' || kind === 'labels' || kind === 'milestones' || kind === 'security') && rest.length === 1) {
     return q(`/repo/${kind}/`, [])
