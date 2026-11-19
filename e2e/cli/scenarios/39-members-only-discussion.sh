@@ -47,7 +47,7 @@ git_dash_retry "$ID_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" \
   || { cat "$LOG-push.err" >&2; is_flake "$LOG-push.err" && skip_scenario "push flaked"; bad "push failed"; finish_scenario; }
 # Already on (or finished here after a retried create): enable says so, or shares what is missing.
 w "$ID_OWNER" "$LOG-enable" repo members enable "$REPO" || fail_with "$LOG-enable" "members enable"
-if collab_accept "$ID_COLLAB" "$REPO" "$LOG-add" && w "$ID_OWNER" "$LOG-add" collab add "$REPO" "$IDID_COLLAB" --role writer; then
+if collab_accept "$ID_COLLAB" "$REPO" "$LOG-add" && w "$ID_OWNER" "$LOG-add" collab add --wait 60 "$REPO" "$IDID_COLLAB" --role writer; then
   [[ "$(json_field "$LOG-add.json" 'd["keyShared"]')" == True ]] && ok "COLLAB added as a writer; key shared" || bad "added without the key"
 else
   fail_with "$LOG-add" "collab add"
