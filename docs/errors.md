@@ -123,6 +123,8 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 `refusing to bind a key to the forge contract group` is also E204: the contract group on chain failed the trust check made before a limited key is bound to it ([forge-v2 § Contract group trust](contracts/forge-v2.md#contract-group-trust)). Its owner differs from the one `dg` pins, or it has admins. Or a member contract has another owner (proof-verified), or the group lacks forge-core and forge-collab. Do not bind a key to it. With `--strict-group` (or `DASH_FORGE_STRICT_GROUP=1`), any member `dg` does not know causes it too: update `dg`, or drop strict mode to accept members the Forge deployer owns.
 
+`dg import` of a GitHub repository reports E204 when the GitHub CLI it reads through is missing or not signed in. What to do: run `gh auth login`, or set `GH_TOKEN` to a GitHub token (read access is enough for a public repository); install `gh` from <https://cli.github.com> if it is missing.
+
 ## E205
 
 **Unsupported git operation.** `dash://` cannot serve shallow clones (`--depth`, `--shallow-since`, `--shallow-exclude`). It fails instead of quietly making a full clone.
@@ -277,7 +279,7 @@ Nothing was signed in either case.
 
 **What to do:** top up the identity from any Dash wallet at <https://bridge.thepasta.org>. `dg auth balance` shows the balance. Reading, cloning and browsing are free and still work.
 
-**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here before it stores anything. (A push with a public pack and members-only packs checks before each pack: if an earlier pack was already stored, the note says so.) The estimate is an upper bound, so a balance only just above the real cost can still be refused: top up a little more. On testnet, <https://faucet.thepasta.org> funds an identity.
+**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here before it stores anything. (A push with a public pack and members-only packs checks before each pack: if an earlier pack was already stored, the note says so.) The estimate is an upper bound, so a balance only just above the real cost can still be refused: top up a little more. On testnet the faucet pays Core addresses, not identities: open the web app, click your balance (**Top up credits**), enter your 12 words, and pay the address it shows from <https://faucet.thepasta.org>.
 
 ## E402
 

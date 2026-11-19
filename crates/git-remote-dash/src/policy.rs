@@ -494,7 +494,7 @@ pub fn check_affordable(
             forge_core::user_error::TOP_UP_URL
         ));
         let u = if testnet {
-            u.fix("on testnet the faucet at https://faucet.thepasta.org funds an identity")
+            u.fix("on testnet: open the web app, click your balance (Top up credits), enter your 12 words, and pay the address it shows from the faucet at https://faucet.thepasta.org")
         } else {
             u
         };
