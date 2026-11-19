@@ -47,8 +47,8 @@ if ! git_dash_retry "$ID_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" "refs/heads
   bad "push failed"; finish_scenario
 fi
 if collab_accept "$ID_COLLAB" "$REPO" "$LOG-addc" && collab_accept "$ID_CONTRIB" "$REPO" "$LOG-addw" \
-   && dg_as "$ID_OWNER" -y --json collab add "$REPO" "$IDID_COLLAB" --role maintainer >"$LOG-addc.json" 2>"$LOG-addc.err" \
-   && dg_as "$ID_OWNER" -y --json collab add "$REPO" "$IDID_CONTRIB" --role writer >"$LOG-addw.json" 2>"$LOG-addw.err"; then
+   && dg_as "$ID_OWNER" -y --json collab add --wait 60 "$REPO" "$IDID_COLLAB" --role maintainer >"$LOG-addc.json" 2>"$LOG-addc.err" \
+   && dg_as "$ID_OWNER" -y --json collab add --wait 60 "$REPO" "$IDID_CONTRIB" --role writer >"$LOG-addw.json" 2>"$LOG-addw.err"; then
   ok "created, pushed main @ ${TIP:0:12}, added COLLAB and CONTRIB"
 else
   cat "$LOG-addc.err" "$LOG-addw.err" >&2; bad "adding members failed"; finish_scenario
