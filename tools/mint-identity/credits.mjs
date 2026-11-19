@@ -20,11 +20,11 @@ export function parseSpec(spec, what, { named = true } = {}) {
   const s = String(spec);
   const last = s.lastIndexOf('=');
   const first = named ? s.indexOf('=') : -1;
+  const name = named ? s.slice(0, first) : undefined;
+  const file = s.slice(first + 1, last);
   const minText = s.slice(last + 1);
   const min = /^\d+(\.\d+)?$/.test(minText) ? Number(minText) : NaN;
-  const file = s.slice(first + 1, last);
-  const name = named ? s.slice(0, first) : undefined;
-  if (last < 0 || (named && (first === last || !name)) || !file || !Number.isFinite(min) || min < 0) {
+  if (last < 0 || (named && (first === last || !name)) || !file || !Number.isFinite(min)) {
     throw new Error(`${what} must be ${named ? '<name>=' : ''}<file>=<min DASH>`);
   }
   return { name, file, min };
@@ -138,8 +138,8 @@ async function main() {
     md.push(`| ${r.label} \`${r.id}\` | ${fmt(r.dash)} | ≥ ${r.min} tDASH |`);
     log(`${r.label.padEnd(15)} ${r.id}  ${fmt(r.dash).padStart(20)}  (needs >= ${r.min})`);
   }
-  for (const r of unknown) {
-    if (gh) log(`::warning title=Balance unreadable::${r.label} ${r.id}: balance could not be read; running anyway`);
+  if (gh) {
+    for (const r of unknown) log(`::warning title=Balance unreadable::${r.label} ${r.id}: balance could not be read; running anyway`);
   }
   if (short.length) {
     const msg = short
