@@ -2527,11 +2527,22 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     // Re-read: "merged" is the chain fact (the transition landed); whether its commit is on
     // the base is what readers label. The push above moved the base branch, so the ref
     // history is read again.
+    // The transition is confirmed, so a re-read that does not show it yet came from a lagging
+    // node: read again for a while before reporting the merge as only recorded.
     collab.refs_changed();
-    let after = match collab.patch(handle, view.patch.number).await? {
-        Some(p) => collab.patch_view(handle, p).await.ok(),
-        None => None,
-    };
+    let mut after = None;
+    for attempt in 0..=MERGE_VISIBLE_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(MERGE_VISIBLE_DELAY).await;
+        }
+        after = match collab.patch(handle, view.patch.number).await? {
+            Some(p) => collab.patch_view(handle, p).await.ok(),
+            None => None,
+        };
+        if after.as_ref().is_some_and(|v| v.state.merged) {
+            break;
+        }
+    }
     let merged = after.as_ref().is_some_and(|v| v.state.merged);
     let on_base = after.as_ref().and_then(|v| v.state.merge_on_base);
     let spent = s.spent_since(before).await;
@@ -2730,6 +2741,11 @@ struct MergeHow<'a> {
 
 /// Record the merge: a merge `transition` (kind 13, a member's) naming `merge_oid`; on
 /// failure, the user error saying what already happened.
+/// Re-reads after a confirmed merge transition before `dg pr merge` reports it as only
+/// recorded: about 15 s for a lagging node to catch up.
+const MERGE_VISIBLE_RETRIES: usize = 10;
+const MERGE_VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
 pub(crate) async fn post_merge_event(
     collab: &Collab<'_>,
     handle: &Repo,
