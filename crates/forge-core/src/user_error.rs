@@ -754,6 +754,18 @@ pub fn classify<'e>(
     if lower.contains("connecting to dash platform") {
         return unreachable(ctx, &text);
     }
+    if lower.contains("gh auth login")
+        || lower.contains("running `gh`")
+        || lower.contains("is the github cli installed")
+    {
+        return UserError::new(
+            codes::INVALID_CONFIG,
+            ctx.goal.unwrap_or("the GitHub CLI is not ready").to_string(),
+        )
+        .cause(text)
+        .fix("sign the GitHub CLI in with `gh auth login`, or set GH_TOKEN to a GitHub token (read access is enough for a public repository)")
+        .fix("no `gh` here? install the GitHub CLI: https://cli.github.com");
+    }
     UserError::new(
         codes::UNEXPECTED,
         ctx.goal.unwrap_or("the command failed").to_string(),
@@ -2376,6 +2388,28 @@ mod tests {
 
     fn render(u: &UserError) -> String {
         u.render("", false)
+    }
+
+    #[test]
+    fn a_signed_out_github_cli_says_how_to_sign_in() {
+        let signed_out = std::io::Error::other(
+            "reading github.com/octocat/Hello-World: `gh api repos/octocat/Hello-World` failed: To get started with GitHub CLI, please run:  gh auth login",
+        );
+        let u = classify(
+            [&signed_out as &(dyn StdError + 'static)],
+            &ErrorContext::default(),
+        );
+        assert_eq!(u.code, codes::INVALID_CONFIG);
+        assert!(u.fix.iter().any(|f| f.contains("GH_TOKEN")), "{u:?}");
+        let missing = std::io::Error::other("running `gh` (is the GitHub CLI installed?)");
+        assert_eq!(
+            classify(
+                [&missing as &(dyn StdError + 'static)],
+                &ErrorContext::default()
+            )
+            .code,
+            codes::INVALID_CONFIG
+        );
     }
 
     /// The six worked examples of UX spec §7.3, byte for byte (layout contract: code in

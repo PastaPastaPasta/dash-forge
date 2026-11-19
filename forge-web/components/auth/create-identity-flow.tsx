@@ -456,7 +456,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   return (
     <div className="space-y-3" data-testid="fund-step">
       <p className="text-dense">
-        Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span><FiatNote dash={MIN_DEPOSIT_DUFFS / 1e8} /> ({SUGGESTED_DEPOSIT_DASH} suggested<FiatNote dash={SUGGESTED_DEPOSIT_DASH} />) to this address from any Dash wallet. It becomes your
+        Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span><FiatNote dash={MIN_DEPOSIT_DUFFS / 1e8} /> to this address from any Dash wallet;{' '}
+        <span className="font-mono">{SUGGESTED_DEPOSIT_DASH} DASH</span><FiatNote dash={SUGGESTED_DEPOSIT_DASH} /> is suggested. It becomes your
         Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.
       </p>
       <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="push-storage-hint">

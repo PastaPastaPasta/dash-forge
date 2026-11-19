@@ -203,7 +203,7 @@ describe('readItemCards (§5.6)', () => {
     expect(boards.itemPlacement(list[0] as (typeof list)[number], item, 1000)?.col).toBe(2)
   })
 
-  it("reads only the owner's repositories' cards: a stranger's cards naming the item are never read, nor their repositories", async () => {
+  it("reads the item's own repository's cards exactly, then the owner's others: never a stranger's board", async () => {
     const SIBLING = id(10)
     repos[SIBLING] = { repoId: SIBLING, ownerId: ME, name: 'plan', visibility: 'public' }
     repos[id(12)] = { repoId: id(12), ownerId: ME, name: 'secret', visibility: 'private' }
@@ -212,14 +212,29 @@ describe('readItemCards (§5.6)', () => {
     stored['card'] = [cardDoc({ $id: 'c1', col: 2 }), ...Array.from({ length: 100 }, (_, n) => cardDoc({ $id: `x${n}`, $ownerId: OTHER, repoId: id(100 + n), board: 4 }))]
     const list = await boards.readItemCards(sdk, REPO, ITEM)
     expect(list.map((e) => [e.home.repoId, e.board.key])).toEqual([[REPO_ID, 7]])
+    // the own repo's card is read by both queries but kept once
+    expect(list[0]?.cards).toHaveLength(1)
     const cardReads = asked.filter((q) => q.documentTypeName === 'card')
-    expect(cardReads).toHaveLength(1)
-    // the item's repo and its owner's public one, never the private one or a stranger's
+    // Drive takes `in` only on an index's last two properties: never on onItem's `repoId`
+    expect(cardReads.flatMap((q) => q.where ?? []).some((w) => w[1] === 'in')).toBe(false)
     expect(cardReads[0]?.where).toEqual([
       ['item', '==', ITEM],
-      ['repoId', 'in', [REPO_ID, SIBLING].sort()],
+      ['repoId', '==', REPO_ID],
     ])
+    expect(cardReads[1]?.where).toEqual([['item', '==', ITEM]])
     expect(readRepoById).not.toHaveBeenCalled()
+  })
+
+  it("reads the item's own repository once when its owner has no other public repository", async () => {
+    stored['board'] = [boardDoc({})]
+    stored['card'] = [cardDoc({ $id: 'c1', col: 2 }), cardDoc({ $id: 'x', $ownerId: OTHER, repoId: id(100), board: 4 })]
+    expect((await boards.readItemCards(sdk, REPO, ITEM)).map((e) => [e.home.repoId, e.board.key])).toEqual([[REPO_ID, 7]])
+    expect(asked.filter((q) => q.documentTypeName === 'card').map((q) => q.where)).toEqual([
+      [
+        ['item', '==', ITEM],
+        ['repoId', '==', REPO_ID],
+      ],
+    ])
   })
 })
 
