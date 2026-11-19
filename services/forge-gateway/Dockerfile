@@ -10,7 +10,7 @@
 # Self-hosting: services/forge-gateway/docker-compose.yml and docs/hosting/forge-gateway.md.
 # Base images are pinned by digest; bump them deliberately (the same pins as forge-relay).
 
-FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+FROM rust:1.100-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS builder
 # tenderdash-proto needs protoc >= 25; Debian's is older, so take the pinned upstream zip and
 # check it against the same digests .github/workflows/release.yml pins.
 ARG PROTOC_VERSION=28.3
@@ -61,7 +61,7 @@ RUN apt-get update \
  && build-support/licenses/generate.sh /out-licenses \
  && rm /out-licenses/licenses/MUSL-COPYRIGHT
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 # git: `git http-backend` serves the mirrors and `git fetch` drives git-remote-dash.
 # fonts-dejavu-core: the text of the /og cards. curl: the container health check.
 RUN apt-get update \
