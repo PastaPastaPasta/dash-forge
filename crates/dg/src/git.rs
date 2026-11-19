@@ -184,7 +184,12 @@ fn pin_network_with(ctx: &Ctx, root: &Path, env: &[(String, String)]) -> Result<
                 .filter(|v| !v.is_empty())
         })
     };
-    let pinned = || local().resolve().is_ok_and(|t| t.network == *want);
+    // An empty config resolves to the built-in default (testnet), which a later `dg auth`
+    // default does not respect: only an explicit `dash.network` pins the clone.
+    let pinned = || {
+        git(root, &["config", "--local", "--get", "dash.network"], env).is_ok_and(|v| !v.is_empty())
+            && local().resolve().is_ok_and(|t| t.network == *want)
+    };
     let mut out = Vec::new();
     if !pinned() {
         for (k, v) in want.selection(GIT_NETWORK_KEYS) {
@@ -873,6 +878,35 @@ mod tests {
         assert_eq!(
             (get("dash.network"), get("dash.devnetName")),
             ("devnet".into(), "moutai".into())
+        );
+        assert!(
+            pin_network_with(&ctx, &repo, &env).unwrap().is_empty(),
+            "already pinned"
+        );
+    }
+
+    #[test]
+    fn a_testnet_clone_is_pinned_too() {
+        // Testnet is the default an empty config resolves to; the clone must still record it,
+        // or a later `dg auth` default (a devnet, mainnet) moves its plain `git push`.
+        let dir = tempfile::tempdir().unwrap();
+        let env = [
+            (
+                "GIT_CONFIG_GLOBAL".to_string(),
+                dir.path().join("none.gitconfig").display().to_string(),
+            ),
+            ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
+        ];
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"], &env).unwrap();
+        let mut ctx = Ctx::scripted(true, true, false, None);
+        ctx.target = NetworkSettings::from_flags(Some("testnet".into()), None, None)
+            .resolve()
+            .unwrap();
+        assert_eq!(
+            pin_network_with(&ctx, &repo, &env).unwrap(),
+            ["dash.network=testnet"]
         );
         assert!(
             pin_network_with(&ctx, &repo, &env).unwrap().is_empty(),
