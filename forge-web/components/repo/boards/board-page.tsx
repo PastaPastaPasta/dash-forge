@@ -28,6 +28,7 @@ import { AlertTriangle, ArrowDownUp, CalendarRange, KanbanSquare, Lock, RefreshC
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button, buttonClass } from '@/components/ui/button'
+import { FiatNote } from '@/components/ui/fiat-note'
 import { Input } from '@/components/ui/input'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useAuth } from '@/contexts/auth-context'
@@ -42,6 +43,7 @@ import { BoardWriteError, boardTextBytes, nextIterationPlan, ownRevision, readBo
 import { peekPrivateSession, type PrivateSession } from '@/lib/repo/private-session'
 import { resolveAnyRepoWith } from '@/lib/repo/resolveRepo'
 import { cachedDpnsName } from '@/lib/view/dpns'
+import { formatDash } from '@/lib/view/format'
 import {
   fieldById,
   fieldKeyId,
@@ -87,6 +89,7 @@ import {
   readUrlView,
   savedViews,
   shownRows,
+  viewsCoverLayouts,
   withArchived,
 } from './view-state'
 
@@ -347,6 +350,8 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
             Sign in
           </button>
         </p>
+      ) : state.can.place ? (
+        <BoardWriteCost sealed={home.repo.visibility === 'private'} />
       ) : null}
 
       {/* Views */}
@@ -381,7 +386,9 @@ function BoardLoaded({ home, addr, state, spec }: { home: RepoHome; addr: RepoAd
       {usesMe && identity === null ? <p className="-mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">Sign in to filter by @me.</p> : null}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-dense">
-        <LayoutPicker value={view.layout} onChange={(layout) => setParams({ layout: layout === base.layout ? null : layout })} />
+        {!viewsCoverLayouts(spec) || view.layout !== base.layout ? (
+          <LayoutPicker value={view.layout} onChange={(layout) => setParams({ layout: layout === base.layout ? null : layout })} />
+        ) : null}
         {view.layout !== 'roadmap' ? <GroupPicker spec={spec} view={view} onChange={(group) => onViewChange({ group })} /> : null}
         {view.layout === 'board' ? <LanePicker spec={spec} view={view} onChange={(lane) => onViewChange({ lane })} /> : null}
         {view.layout !== 'roadmap' ? <SortPicker spec={spec} value={view.sort} onChange={(sort) => onViewChange({ sort })} /> : null}
@@ -567,7 +574,7 @@ function FilterBox({ q, placeholder, onChange }: { q: string; placeholder: strin
       </label>
       <div className="relative flex-1">
         <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-        <Input id="board-filter" value={draft} onChange={(e) => setDraft(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder={placeholder} data-testid="board-filter" />
+        <Input id="board-filter" value={draft} onChange={(e) => setDraft(e.target.value)} className="pl-8 font-mono text-[13px] placeholder:font-sans placeholder:italic" placeholder={`e.g. ${placeholder}`} data-testid="board-filter" />
       </div>
       {draft !== '' ? (
         <Button
@@ -584,6 +591,17 @@ function FilterBox({ q, placeholder, onChange }: { q: string; placeholder: strin
         </Button>
       ) : null}
     </form>
+  )
+}
+
+/** The price cue for the writes a drag or a quick add signs at once, with no confirm (F17). */
+function BoardWriteCost({ sealed }: { sealed: boolean }): JSX.Element {
+  const move = priceBoardWrites(1, 0, { sealed })
+  return (
+    <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="board-write-cost">
+      Moving or adding a card writes to Dash Platform at once: up to ~{formatDash(move.dash)} DASH
+      <FiatNote dash={move.dash} /> each. Add item with a title also creates an issue (its cost shows as you type).
+    </p>
   )
 }
 

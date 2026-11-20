@@ -110,16 +110,23 @@ function sideProblem(state: BrowseReaderState, what: string): SideProblem | null
   }
 }
 
-function Frame({ children, action }: { children: ReactNode; action?: ReactNode }): JSX.Element {
+function Frame({ children, action, showTitle }: { children: ReactNode; action?: ReactNode; showTitle: boolean }): JSX.Element {
   return (
     <section className="space-y-3" aria-labelledby="files-changed-heading">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Files className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-          <h2 id="files-changed-heading" className="text-prose font-semibold">Files changed</h2>
+      {showTitle ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Files className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            <h2 id="files-changed-heading" className="text-prose font-semibold">Files changed</h2>
+          </div>
+          {action}
         </div>
-        {action}
-      </div>
+      ) : (
+        <>
+          <h2 id="files-changed-heading" className="sr-only">Files changed</h2>
+          {action ? <div className="flex flex-wrap items-center justify-end gap-2">{action}</div> : null}
+        </>
+      )}
       {children}
     </section>
   )
@@ -401,12 +408,15 @@ export function ComparisonView({
   noHead,
   wrap,
   action,
+  showTitle = true,
 }: {
   state: ComparisonState
   noHead: string
   wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
   /** Extra controls beside the heading. */
   action?: ReactNode
+  /** Show the "Files changed" heading (false under a "Files changed" tab, which names it already). */
+  showTitle?: boolean
 }): JSX.Element {
   const { spec, sides, problems, waiting, sidesKey, data, loading, error, reload, tryAgain, commitsRead } = state
   const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
@@ -438,14 +448,14 @@ export function ComparisonView({
 
   if (pull.headOid === '') {
     return (
-      <Frame>
+      <Frame showTitle={showTitle}>
         <Unavailable title="Diff unavailable" message={noHead} />
       </Frame>
     )
   }
   if (waiting !== null) {
     return (
-      <Frame>
+      <Frame showTitle={showTitle}>
         <div className="rounded-lg border border-anvil-200 px-4 py-6 text-center dark:border-anvil-800">
           <Spinner label={waiting} />
         </div>
@@ -454,7 +464,7 @@ export function ComparisonView({
   }
   if (sides === null) {
     return (
-      <Frame>
+      <Frame showTitle={showTitle}>
         <Unavailable
           title="Diff unavailable"
           message="Neither the base repo nor the repo holding the PR's head could be loaded, so there are no objects to compare."
@@ -463,11 +473,11 @@ export function ComparisonView({
       </Frame>
     )
   }
-  if (loading && data === null) return <Frame>{searchProgress}</Frame>
+  if (loading && data === null) return <Frame showTitle={showTitle}>{searchProgress}</Frame>
   if (error !== null || data === null) {
     const original = pull.imported ? originalDiffUrl(pull.importedUrl) : null
     return (
-      <Frame>
+      <Frame showTitle={showTitle}>
         <Unavailable
           title={pull.imported ? 'Native diff unavailable' : 'Diff unavailable'}
           message={
@@ -494,7 +504,7 @@ export function ComparisonView({
   }
 
   return (
-    <Frame action={range}>
+    <Frame action={range} showTitle={showTitle}>
       {problems.map((p) => (
         <div
           key={p.message}

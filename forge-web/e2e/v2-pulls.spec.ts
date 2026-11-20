@@ -119,7 +119,7 @@ test('c3. contributor opens a PR from the fork, diff shown before submit', async
   prNumber = Number(routeOf(page.url()).searchParams.get('number'))
   expect(prNumber).toBeGreaterThan(0)
   await expect(page.getByRole('heading', { name: new RegExp(PR_TITLE) })).toBeVisible({ timeout: 90_000 })
-  await expect(page.getByText(/Objects live in repo/)).toBeVisible()
+  await expect(page.getByTestId('pr-source-where')).toContainText(/From (the fork|repo)/)
 })
 
 test('c4. a signed-out visitor keeps the draft through the sign-in sheet', async ({ browser }) => {
