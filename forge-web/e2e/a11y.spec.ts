@@ -91,6 +91,7 @@ for (const theme of ['dark', 'light'] as const) {
       await expect(dialog).toBeVisible()
       const views: [string, () => Promise<void>][] = [
         ['tiles', async () => {}],
+        ['help', async () => dialog.getByTestId('signin-help').locator('summary').click()],
         ['import', async () => dialog.getByTestId('tile-import').click()],
         ['import-phrase', async () => dialog.getByRole('tab', { name: 'Recovery phrase' }).click()],
       ]

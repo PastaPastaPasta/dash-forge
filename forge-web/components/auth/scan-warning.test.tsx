@@ -61,6 +61,14 @@ describe('ScanOnlyHere', () => {
     }
   })
 
+  it('under an App Connect v2 request, does not contradict the limits the request proposes (F3)', () => {
+    act(() => root.render(<ScanOnlyHere capped />))
+    const limits = host.querySelector('[data-testid="scan-warning-limits"]')!.textContent
+    expect(limits).toContain('within the limits above')
+    expect(limits).not.toContain('no spending limit or expiry')
+    expect(limits).not.toContain('today’s wallets don’t')
+  })
+
   it('shows the host it is given (a self-hosted build)', () => {
     act(() => root.render(<ScanOnlyHere host="forge.example.org" />))
     expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toBe('forge.example.org')

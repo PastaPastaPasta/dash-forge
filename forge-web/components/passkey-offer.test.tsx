@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { putMarker } from '@/lib/auth/passkey-vault/markers'
 import { resetMemoryStores } from '@/lib/idb'
-import { MAX_OFFERS } from '@/lib/auth/passkey-vault/offer'
+import { MAX_OFFERS, deferOfferThisLoad, shouldOffer } from '@/lib/auth/passkey-vault/offer'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const session = vi.hoisted(() => ({
@@ -21,17 +21,20 @@ const session = vi.hoisted(() => ({
   storage: 'vault' as 'vault' | 'session' | null,
   unlimited: false,
   keyLimits: { remaining: 4n, total: 5n, expiresAt: Date.now() + 86_400_000 } as { remaining: bigint; total: bigint; expiresAt: number | null } | null,
+  methods: ['passphrase'] as ('passkey' | 'passphrase')[],
+  identity: '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD',
 }))
 
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
-    identity: ID,
+    identity: session.identity,
     storage: session.storage,
     unlockScope: session.scope,
     platformPasskeyProblem: session.problem,
     unlimitedKey: session.unlimited,
     unboundedKey: false,
     keyLimits: session.keyLimits,
+    vaults: [{ identityId: session.identity, keyId: 5, createdAt: 1, methods: session.methods }],
   }),
 }))
 
@@ -64,6 +67,8 @@ beforeEach(() => {
   session.storage = 'vault'
   session.unlimited = false
   session.keyLimits = { remaining: 4n, total: 5n, expiresAt: Date.now() + 86_400_000 }
+  session.methods = ['passphrase']
+  session.identity = ID
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -76,8 +81,9 @@ afterEach(() => {
 describe('the passkey offer', () => {
   it('shows after an interactive sign-in, and says what a passkey is not', async () => {
     await mount()
-    expect(offer()!.textContent).toMatch(/Sign in on your other devices with a passkey/)
+    expect(offer()!.textContent).toMatch(/Passkey Vault backup: sign in on your other devices too/)
     expect(offer()!.textContent).toMatch(/It doesn't recover an account/)
+    expect(offer()!.textContent).not.toMatch(/already locks this browser's key/)
     expect(host.querySelector('[data-testid="passkey-offer-setup"]')!.getAttribute('href')).toMatch(/^\/settings\/keys\/?#passkeys$/)
   })
 
@@ -104,7 +110,23 @@ describe('the passkey offer', () => {
     expect(offer()).toBeNull()
   })
 
-  it('"Set up a passkey" ends it too: Settings has the rest', async () => {
+  it('after a passkey sealed this key, says the backup is a separate thing (F14)', async () => {
+    session.methods = ['passkey']
+    await mount()
+    expect(offer()!.textContent).toMatch(/Your passkey already locks this browser's key; this is a separate, optional backup/)
+    expect(offer()!.querySelector('[data-testid="passkey-offer-setup"]')!.textContent).toBe('Set up backup')
+  })
+
+  it('waits for a later page load after a fresh sign-up, without spending one of its showings (F14)', async () => {
+    // Another identity: the deferral lasts for this module's life, as it does for a page load.
+    session.identity = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
+    deferOfferThisLoad(ACTIVE_NETWORK.network, session.identity)
+    await mount()
+    expect(offer()).toBeNull()
+    expect(shouldOffer(ACTIVE_NETWORK.network, session.identity)).toBe(true)
+  })
+
+  it('"Set up backup" ends it too: Settings has the rest', async () => {
     await mount()
     // No page loads in jsdom: the click is handled by the app, the navigation is not carried out.
     const stop = (e: Event): void => e.preventDefault()

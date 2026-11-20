@@ -15,6 +15,7 @@ import {
   IdentityNotCreatedError,
   createIdentityFromMnemonic,
   createOutcomeUnknown,
+  depositBalance,
   readCreationJournal,
   remainingLockCredits,
   type CreationJournal,
@@ -76,7 +77,8 @@ vi.mock('./asset-lock', () => ({
     throw new Error('the journal already holds the lock')
   },
   wifBytes: () => new Uint8Array(32),
-  depositHeld: async () => 0,
+  // The address holds what the feed paid it, unless the journal's lock is passed as a known spend.
+  depositHeld: async (_ep: unknown, _address: string, _from: unknown, spends: readonly Uint8Array[] = []) => (spends.length > 0 ? 0 : 3_000_000),
 }))
 vi.mock('./hd', async (orig) => {
   const real = await orig<typeof import('./hd')>()
@@ -582,5 +584,15 @@ describe('createOutcomeUnknown', () => {
   })
   it.each(['invalid signature', 'Failed to create identity: Protocol error: insufficient balance'])('definite refusal: %s', (m) => {
     expect(createOutcomeUnknown(new Error(m))).toBe(false)
+  })
+})
+
+describe('depositBalance', () => {
+  it('discarding an unfinished creation: a saved lock that no feed has seen is not a spend, so the deposit still warns', async () => {
+    expect(await depositBalance('devnet', JOURNAL)).toBe(3_000_000)
+  })
+  it('after registration (countLock): the broadcast lock counts as spent (F13)', async () => {
+    expect(await depositBalance('devnet', JOURNAL, { countLock: true })).toBe(0)
+    expect(await depositBalance('devnet', { ...JOURNAL, lockRaw: null }, { countLock: true })).toBe(3_000_000)
   })
 })

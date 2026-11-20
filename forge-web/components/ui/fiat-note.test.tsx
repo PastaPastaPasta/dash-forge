@@ -78,7 +78,7 @@ describe('FiatNote and CostPreview', () => {
   it('funding copy prices each storage choice next to its DASH phrase (ECON-06)', async () => {
     await render(<PushCostText />)
     expect(host.textContent?.replaceAll(' on mainnet', '')).toBe(
-      '0.004–0.0055 DASH per push with your own storage (≈ $0.16–$0.22), up to 0.011 (≤ $0.44) with packs on Platform, plus ~0.39 DASH per MiB (≈ $15.60) of code stored on Platform (permanent)',
+      '0.004–0.0055 DASH per push with your own storage (≈ $0.16–$0.22), up to 0.011 (≤ $0.44) with packs on Platform, plus ~0.39 DASH per MiB (≈ $15.60) of code stored on Platform (permanent). Each push shows its own estimate first, often above the charge',
     )
     await render(<PushStorageHint />)
     expect(host.textContent?.replaceAll(' on mainnet', '')).toBe('Pushing code? Add your own storage first, or deposit about 0.4 DASH per MiB (≈ $16.00).')

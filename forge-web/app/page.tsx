@@ -26,7 +26,9 @@ import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { deriveConnectionTrust, type DiscoveredRepo } from '@/lib/view'
 import { RECENT_PER_OWNER, landingRecent, listShowcaseRepos, recentFeed, showcaseFor } from '@/lib/view/showcase'
-import { creditsToDash, PUSH_COST_DASH, typicalIssueCredits } from '@/lib/sdk'
+import { creditsToDash, typicalIssueCredits } from '@/lib/sdk'
+import { PushCostShort } from '@/components/ui/push-cost-text'
+import { TestCreditsBadge, isTestNetwork } from '@/components/ui/test-credits'
 import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { faucetUrl } from '@/components/top-up-sheet'
@@ -66,7 +68,7 @@ export default function LandingPage(): JSX.Element {
   const capped = listed?.capped ?? 0
   const feedNotFeatured = settledFeed === null ? null : settledFeed.filter((r) => !shown.has(r.key))
   const faucet = faucetUrl()
-  const testNetwork = ACTIVE_NETWORK.network !== 'mainnet'
+  const testNetwork = isTestNetwork()
 
   return (
     <AppShell wide>
@@ -143,7 +145,14 @@ export default function LandingPage(): JSX.Element {
             icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
             title="2. Fund it with a little DASH"
             body={
-              <>Every write costs a small fee, shown before you sign. {testNetwork ? <>On {networkName()} the DASH is free test money{faucet ? ', from the faucet' : ''}; on mainnet </> : 'On mainnet, '}an issue costs about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and a push {PUSH_COST_DASH.byo.min}{'–\u2060'}{PUSH_COST_DASH.platform.max} DASH<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.byo.min} network="mainnet" />{testNetwork ? null : ", paid from your identity's credits"}. Reading is free.</>
+              testNetwork ? (
+                <>
+                  <TestCreditsBadge className="mb-1 mr-1" />
+                  Every write costs a small fee, shown before you sign. On {networkName()} it&apos;s paid in free test DASH{faucet ? ' from the faucet' : ''}. On mainnet an issue would cost about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and <PushCostShort network="mainnet" />. Reading is free.
+                </>
+              ) : (
+                <>Every write costs a small fee, shown before you sign: an issue about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and <PushCostShort network="mainnet" />, paid from your identity&apos;s credits. Reading is free.</>
+              )
             }
             link={faucet ? { href: faucet, label: `${networkName()} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
           />

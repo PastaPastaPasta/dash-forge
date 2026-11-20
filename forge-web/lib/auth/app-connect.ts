@@ -469,6 +469,16 @@ export function walletSignInSupported(network: Network): boolean {
   return network === 'testnet'
 }
 
+/**
+ * Whether a wallet a newcomer can install today finishes sign-in here, which decides whether the
+ * sheet leads with the wallet tile. Not on testnet: released Dash Wallet builds pin Platform
+ * protocol 13 while testnet runs 14, so Platform rejects their answer (#591). Not on a devnet:
+ * only internal iOS builds answer there. Mainnet leads with it once App Connect v2 is on offer.
+ */
+export function walletSignInReady(network: Network, v2Offered: boolean): boolean {
+  return network === 'mainnet' && v2Offered
+}
+
 /** Whether any response source exists here (hide the wallet tile otherwise). */
 export async function walletLoginAvailable(sdk: EvoSDK, deploymentKey: string): Promise<boolean> {
   return (await responseSources(sdk, deploymentKey)).length > 0
