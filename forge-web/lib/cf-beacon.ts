@@ -4,9 +4,9 @@
  * ships in every page). Unset, the build has no beacon, which is the default for self-hosted and
  * IPFS builds.
  *
- * The page carries the beacon itself so that Cloudflare's automatic setup can stay off: injected
- * at the edge, it changes every HTML file the build manifest lists and `dg verify-app` fails.
- * The script is pinned to one version and its SRI hash, and the page CSP allows that exact URL
+ * The page carries the beacon itself, so every byte of it is in the build manifest. Cloudflare's
+ * automatic setup may inject a second copy at the edge: `dg verify-app` removes exactly that tag,
+ * and it never runs twice (docs/hosting.md §6). The script is pinned to one version and its SRI hash, and the page CSP allows that exact URL
  * and nothing else from Cloudflare: the origin keeps the signing-key vault, so a third-party
  * script must not change under it. To move to a newer beacon, take `src` and `integrity` from the tag
  * Cloudflare injects and update both.

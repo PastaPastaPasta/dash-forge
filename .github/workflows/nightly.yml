@@ -33,8 +33,9 @@ name: Testnet Nightly
 #   * The browser WRITE specs (v2-writes, v2-auth) run by hand (`E2E_WRITE=1` with
 #     `E2E_LIVE_TARGET=1`, see forge-web/e2e/).
 #   * verify-app checks the hosted site on its own: nothing waits for it, so its failure never
-#     skips the other jobs. It fails while Cloudflare's Web Analytics automatic setup injects a
-#     beacon into the HTML (an operator setting, docs/hosting.md §6), not on a code change.
+#     skips the other jobs. The beacon Cloudflare's Web Analytics automatic setup injects is
+#     removed before hashing, in exactly Cloudflare's form (docs/hosting.md §6); any other change
+#     to the served bytes fails it.
 #
 # Fixture secrets (e2e/cli/config.sh names the roles):
 #   FORGE_TESTNET_IDENTITY_OWNER      - owns the e2e-cli repo and the read fixture's demo repo
