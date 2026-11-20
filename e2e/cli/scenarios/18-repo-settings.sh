@@ -168,8 +168,24 @@ git_dash_retry "$ID_COLLAB" "$LOG-f2push" -C "$SRC" push "$REMOTE" "HEAD:refs/he
 ( cd "$SRC" && dg_write "$ID_COLLAB" "$LOG-pr2" pr create "$REPO" --base "$FEATURE" --head "$FEATURE2" --head-repo "$REPO" --title "policy e2e ${RUN_ID}" ) \
   || fail_with "$LOG-pr2" "pr create (policy)"
 N2="$(jq_py "$LOG-pr2.json" 'd["number"]')"
-dg_write "$ID_COLLAB" "$LOG-pmerge" pr merge "$REPO" "$N2"
-check "writer's merge with 0 of 2 approvals is refused (E804)" refused_with E804 "$LOG-pmerge"
+# COLLAB's merge reads the PR and the policy from whichever node it reaches, and both were
+# written seconds ago: wait until COLLAB reads PR #N2 under the 2-approval policy.
+seen=1
+for _ in $(seq 1 10); do
+  dg_read_retry "$ID_COLLAB" "$LOG-cview.json" "$LOG-cview.err" --json pr view "$REPO" "$N2" \
+    && [[ "$(jq_py "$LOG-cview.json" '(d.get("policy") or {}).get("requiredApprovals")')" == 2 ]] \
+    && { seen=0; break; }
+  sleep 3
+done
+check "COLLAB reads the PR under the 2-approval policy" test "$seen" -eq 0
+# A refusal writes nothing, so another answer (a lagging read, a DAPI error) is shown and retried.
+refused=1
+for attempt in 1 2 3; do
+  dg_write "$ID_COLLAB" "$LOG-pmerge" pr merge "$REPO" "$N2" && { bad "the writer's merge landed with 0 of 2 approvals"; break; }
+  refused_with E804 "$LOG-pmerge" && { refused=0; break; }
+  sleep $((attempt * 10))
+done
+check "writer's merge with 0 of 2 approvals is refused (E804)" test "$refused" -eq 0
 check "the refusal says Platform does not enforce it" grep -q 'Forge apps enforce the branch policy, not Platform' "$LOG-pmerge.json"
 dg_write "$ID_COLLAB" "$LOG-pover" pr merge "$REPO" "$N2" --override-policy
 check "a writer cannot override the policy (E601)" refused_with E601 "$LOG-pover"
