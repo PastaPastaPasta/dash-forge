@@ -5,7 +5,7 @@
 
 import Link from 'next/link'
 import { BookOpen, CopyPlus, Hammer, Plus } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { buttonClass } from '@/components/ui/button'
 
 export function ForgeIntro({ title, heading: Heading = 'h3', testId = 'forge-intro' }: { title: string; heading?: 'h2' | 'h3'; testId?: string }): JSX.Element {
   return (
@@ -19,20 +19,14 @@ export function ForgeIntro({ title, heading: Heading = 'h3', testId = 'forge-int
             verifies everything it shows. Start a project, bring one over from GitHub, or read how it works.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Link href="/new/">
-              <Button variant="primary" size="sm">
-                <Plus className="h-4 w-4" aria-hidden /> Create a repository
-              </Button>
+            <Link href="/new/" className={buttonClass({ variant: 'primary', size: 'sm' })}>
+              <Plus className="h-4 w-4" aria-hidden /> Create a repository
             </Link>
-            <Link href="/mirror/">
-              <Button variant="outline" size="sm">
-                <CopyPlus className="h-4 w-4" aria-hidden /> Import from GitHub
-              </Button>
+            <Link href="/mirror/" className={buttonClass({ variant: 'outline', size: 'sm' })}>
+              <CopyPlus className="h-4 w-4" aria-hidden /> Import from GitHub
             </Link>
-            <Link href="/docs/">
-              <Button variant="ghost" size="sm">
-                <BookOpen className="h-4 w-4" aria-hidden /> Read the docs
-              </Button>
+            <Link href="/docs/" className={buttonClass({ variant: 'ghost', size: 'sm' })}>
+              <BookOpen className="h-4 w-4" aria-hidden /> Read the docs
             </Link>
           </div>
         </div>

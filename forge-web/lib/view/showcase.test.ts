@@ -152,6 +152,12 @@ describe('test fixtures stay off the showcase lists (F15)', () => {
     }
   })
 
+  it('keeps an owner’s most active repos under the cap, not their newest', () => {
+    const own = (slug: string, createdAt: number, pushedAt: number | null) => ({ ...repo(slug, createdAt, pushedAt), ownerId: 'same' })
+    const feed = [own('newest', 31, null), own('newer', 21, null), own('old-but-busy', 1, 100)]
+    expect(landingRecent(feed, { pushesKnown: false, showAll: false }).shown.map((x) => x.slug)).toEqual(['old-but-busy', 'newest'])
+  })
+
   it('orders the landing feed by newest activity: a push, else creation', () => {
     const feed = [repo('new-unpushed', 50, null), repo('old-pushed', 10, 90), repo('old', 5, 20)]
     expect(landingRecent(feed, { pushesKnown: false, showAll: false }).shown.map((x) => x.slug)).toEqual(['old-pushed', 'new-unpushed', 'old'])

@@ -109,11 +109,16 @@ export function ExploreClient(): JSX.Element {
   // Nothing on the network but test fixtures (or nothing at all): say what Forge is and how to start.
   const quiet = recent.settled && !recent.hasMore && recentShown.length === 0
   // A page of nothing but fixtures would leave "Recent repos" a bare "Load more": read on by
-  // itself, a few pages at most, until it has real repos to show.
-  const filling = recent.settled && !recent.loading && recent.error === null && recent.hasMore && recentShown.length < FILL_SHOWN && recent.repos.length < FILL_PAGES * REPO_PAGE
+  // itself, at most FILL_PAGES page reads in all (counted, however few rows each kept), until it
+  // has real repos to show.
+  const [fills, setFills] = useState({ network, n: 0 })
+  const autoFills = fills.network === network ? fills.n : 0
+  const filling = recent.settled && !recent.loading && recent.error === null && recent.hasMore && recentShown.length < FILL_SHOWN && autoFills < FILL_PAGES - 1
   useEffect(() => {
-    if (filling) recent.loadMore()
-  }, [filling, recent])
+    if (!filling) return
+    setFills({ network, n: autoFills + 1 })
+    recent.loadMore()
+  }, [filling, recent, network, autoFills])
   // The first page's repos, read once (later pages do not re-read releases).
   const recentRepos = useMemo(() => dropTestFixtures(recent.repos.slice(0, REPO_PAGE)), [recent.repos])
   const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
@@ -335,7 +340,7 @@ export function ExploreClient(): JSX.Element {
         <Section title="Recent repos" testId="explore-recent-repos" icon={GitBranch} state={pagesState(recent, recentShown)} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
           {(d) => (
             <>
-              <span hidden data-testid="explore-recent-read" data-read={recent.repos.length} />
+              <span hidden data-testid="explore-recent-read" data-read={recent.repos.length} data-pages={1 + autoFills} />
               <FallbackNote pages={recent} />
               <PagedGrid repos={d} pages={recent} what="repos" />
             </>

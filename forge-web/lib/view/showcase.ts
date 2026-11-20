@@ -98,8 +98,8 @@ export function capPerOwner<T extends { readonly ownerId: string }>(repos: reado
 /**
  * The landing page's recent feed: `repos` without the test fixtures and `exclude` (the featured
  * ones, shown above it), then, unless `showAll`, only the curated ones ({@link isCurated}), then at
- * most {@link RECENT_PER_OWNER} per owner, newest activity (a push, else creation) first. The cap comes last, so an owner's undescribed repos do not
- * take the slots of their described ones. `notCurated`: how many "Show all" would add back (the
+ * most {@link RECENT_PER_OWNER} per owner, newest activity (a push, else creation) first. The cap comes
+ * last, so an owner's undescribed repos do not take the slots of their described ones. `notCurated`: how many "Show all" would add back (the
  * per-owner cap is not counted: it holds there too); `capped`: how many the cap left out.
  */
 export function landingRecent<T extends DiscoveredRepo>(
@@ -108,7 +108,8 @@ export function landingRecent<T extends DiscoveredRepo>(
 ): { shown: T[]; notCurated: number; capped: number } {
   const base = dropTestFixtures(repos).filter((r) => !(opts.exclude?.has(r.key) ?? false))
   const list = opts.showAll ? base : base.filter((r) => isCurated(r, opts.pushesKnown))
-  const shown = capPerOwner(list).sort((a, b) => lastActivity(b) - lastActivity(a))
+  // Newest activity first, then the cap: an owner keeps their most active repos, not their newest.
+  const shown = capPerOwner([...list].sort((a, b) => lastActivity(b) - lastActivity(a)))
   return { shown, notCurated: base.length - list.length, capped: list.length - shown.length }
 }
 

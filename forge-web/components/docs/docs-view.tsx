@@ -88,7 +88,7 @@ export function DocsView({ slug, title, body }: { slug: string; title: string; b
   useUserContentHash()
 
   return (
-    <AppShell wide>
+    <AppShell wide staticContent>
       <div className="lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-8 xl:grid-cols-[220px_minmax(0,1fr)_200px]" data-testid="docs-page">
         <aside className="hidden lg:block">
           <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto pb-6">
