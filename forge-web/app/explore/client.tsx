@@ -40,7 +40,7 @@ import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo
 import { MIN_STARGAZERS } from '@/lib/repo/trending'
 import { curates } from '@/lib/view/curation'
 import { DOCS } from '@/lib/docs-links'
-import { rankedRepos, recentReposPage, recentlyActive, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
+import { rankedRepos, recentReposPage, recentlyActive, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, REPO_PAGE, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '@/lib/repo/settings'
 import { trendingNote, trendingWindowStart, type TrendingWindow } from '@/lib/repo/trending'
 import { useStarShape } from '@/hooks/use-star-shape'
@@ -59,6 +59,10 @@ import {
 const MY_REPOS_MAX = 50
 /** The assignment / mention scan looks at this many repos (one feed read each, 3 at a time). */
 const SCAN_REPOS_MAX = 20
+
+/** Explore reads on past test fixtures until "Recent repos" shows this many, at most FILL_PAGES pages in all. */
+const FILL_SHOWN = 6
+const FILL_PAGES = 4
 
 /** "Trending", "Most starred" and "Recently active" show this many. */
 const TOP_N = 12
@@ -104,7 +108,14 @@ export function ExploreClient(): JSX.Element {
   )
   // Nothing on the network but test fixtures (or nothing at all): say what Forge is and how to start.
   const quiet = recent.settled && !recent.hasMore && recentShown.length === 0
-  const recentRepos = recentShown.slice(0, 24)
+  // A page of nothing but fixtures would leave "Recent repos" a bare "Load more": read on by
+  // itself, a few pages at most, until it has real repos to show.
+  const filling = recent.settled && !recent.loading && recent.error === null && recent.hasMore && recentShown.length < FILL_SHOWN && recent.repos.length < FILL_PAGES * REPO_PAGE
+  useEffect(() => {
+    if (filling) recent.loadMore()
+  }, [filling, recent])
+  // The first page's repos, read once (later pages do not re-read releases).
+  const recentRepos = useMemo(() => dropTestFixtures(recent.repos.slice(0, REPO_PAGE)), [recent.repos])
   const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
     enabled: on && recent.settled,
   })
@@ -324,6 +335,7 @@ export function ExploreClient(): JSX.Element {
         <Section title="Recent repos" testId="explore-recent-repos" icon={GitBranch} state={pagesState(recent, recentShown)} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
           {(d) => (
             <>
+              <span hidden data-testid="explore-recent-read" data-read={recent.repos.length} />
               <FallbackNote pages={recent} />
               <PagedGrid repos={d} pages={recent} what="repos" />
             </>

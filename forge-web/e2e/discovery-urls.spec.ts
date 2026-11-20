@@ -122,11 +122,13 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   // the shared devnet grows, nothing else is read. A later recent page whose composite the node
   // refused fell back to the plain query and read each new owner's name on its own (it stepped
   // this past 40 as bonsia grew): no top-level `domain` read at all is allowed.
+  // Recent reads on by itself past pages of test fixtures (`e2e-…`), at most 4 pages, before the click.
+  const recentPages = Math.ceil(Number(await page.getByTestId('explore-recent-read').getAttribute('data-read')) / 24)
   const docs = dapi.get('getDocuments') ?? 0
   test.info().annotations.push({ type: 'dapi', description: JSON.stringify(Object.fromEntries(dapi)) })
   expect(dapi.get('getDocumentsCount') ?? 0, 'counts ride in the composites').toBe(0)
   expect(domainReads, 'owner names ride in the composites (no per-owner DPNS read)').toBe(0)
-  expect(docs, `getDocuments on Explore (1 featured + 6 ranked + 2 recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(1 + 6 + 2 + firstPage + DAPI_RESEND_SLACK)
+  expect(docs, `getDocuments on Explore (1 featured + 6 ranked + ${recentPages} recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(1 + 6 + Math.max(recentPages, 2) + firstPage + DAPI_RESEND_SLACK)
   expect(errors, errors.join('\n')).toEqual([])
 })
 

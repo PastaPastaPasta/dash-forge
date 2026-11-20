@@ -21,34 +21,37 @@ const NAV_LINK = 'flex items-center rounded-md px-2 py-1 text-dense coarse:min-h
 function Sidebar({ current, idPrefix }: { current: string; idPrefix: string }): JSX.Element {
   return (
     <nav aria-label="Docs" className="space-y-5">
-      {DOC_SECTIONS.map((s) => (
-        <div key={s.title}>
-          <p id={`${idPrefix}-${s.title.replace(/\W+/g, '-')}`} className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-anvil-500 dark:text-anvil-400">
-            {s.title}
-          </p>
-          <ul aria-labelledby={`${idPrefix}-${s.title.replace(/\W+/g, '-')}`}>
-            {s.pages.map((p) => {
-              const here = p.slug === current
-              return (
-                <li key={p.slug}>
-                  <Link
-                    href={docRoute(p)}
-                    aria-current={here ? 'page' : undefined}
-                    className={cn(
-                      NAV_LINK,
-                      here
-                        ? 'bg-forge-50 font-medium text-forge-800 dark:bg-forge-950/40 dark:text-forge-300'
-                        : 'text-anvil-700 hover:bg-anvil-100 dark:text-anvil-300 dark:hover:bg-anvil-800',
-                    )}
-                  >
-                    {p.title}
-                  </Link>
-                </li>
-              )
-            })}
-          </ul>
-        </div>
-      ))}
+      {DOC_SECTIONS.map((s) => {
+        const headingId = `${idPrefix}-${s.title.replace(/\W+/g, '-')}`
+        return (
+          <div key={s.title}>
+            <p id={headingId} className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-anvil-500 dark:text-anvil-400">
+              {s.title}
+            </p>
+            <ul aria-labelledby={headingId}>
+              {s.pages.map((p) => {
+                const here = p.slug === current
+                return (
+                  <li key={p.slug}>
+                    <Link
+                      href={docRoute(p)}
+                      aria-current={here ? 'page' : undefined}
+                      className={cn(
+                        NAV_LINK,
+                        here
+                          ? 'bg-forge-50 font-medium text-forge-800 dark:bg-forge-950/40 dark:text-forge-300'
+                          : 'text-anvil-700 hover:bg-anvil-100 dark:text-anvil-300 dark:hover:bg-anvil-800',
+                      )}
+                    >
+                      {p.title}
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )
+      })}
     </nav>
   )
 }

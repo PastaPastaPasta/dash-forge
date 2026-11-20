@@ -108,9 +108,8 @@ export function landingRecent<T extends DiscoveredRepo>(
 ): { shown: T[]; notCurated: number; capped: number } {
   const base = dropTestFixtures(repos).filter((r) => !(opts.exclude?.has(r.key) ?? false))
   const list = opts.showAll ? base : base.filter((r) => isCurated(r, opts.pushesKnown))
-  const capped = capPerOwner(list)
-  const shown = [...capped].sort((a, b) => lastActivity(b) - lastActivity(a))
-  return { shown, notCurated: base.length - list.length, capped: list.length - capped.length }
+  const shown = capPerOwner(list).sort((a, b) => lastActivity(b) - lastActivity(a))
+  return { shown, notCurated: base.length - list.length, capped: list.length - shown.length }
 }
 
 /** Repos the landing feed tries to show before it stops reading older pages. */
