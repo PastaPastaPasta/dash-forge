@@ -4169,8 +4169,18 @@ fn is_transient_node_error(e: &dash_sdk::Error) -> bool {
     match e {
         dash_sdk::Error::NoAvailableAddressesToRetry(_) => true,
         dash_sdk::Error::DapiClientError(d) => d.can_retry() || d.is_no_available_addresses(),
+        dash_sdk::Error::StateTransitionBroadcastError(ste) => is_node_unavailable_answer(ste),
         other => other.can_retry(),
     }
+}
+
+/// A result wait the DAPI node could not serve: rs-dapi answers `waitForStateTransitionResult`
+/// with an error body, not a gRPC status, so its `Unavailable` ("Tenderdash is not available":
+/// the node lost its own Tenderdash connection) reaches the SDK as a broadcast error with no
+/// consensus cause (v5.0.0-rc.8 rs-dapi wait_for_state_transition_result.rs:63-68, 421-443).
+/// The transition was not judged; another node, or the same one later, can answer.
+fn is_node_unavailable_answer(ste: &dash_sdk::error::StateTransitionBroadcastError) -> bool {
+    ste.cause.is_none() && ste.code == dapi_grpc::tonic::Code::Unavailable as u32
 }
 
 /// Base delay before the second read or broadcast attempt; later attempts double it
@@ -5805,6 +5815,31 @@ mod tests {
         )));
         assert!(!is_transient_node_error(&dash_sdk::Error::Config(
             "bad".into()
+        )));
+        // A result wait whose node lost its Tenderdash (nightly 2026-11-19, 22-issue-parity):
+        // an error body with Unavailable's code and no consensus cause.
+        let wait_answer = |code: u32| {
+            dash_sdk::Error::StateTransitionBroadcastError(
+                dash_sdk::error::StateTransitionBroadcastError {
+                    code,
+                    message: "Tenderdash is not available".into(),
+                    cause: None,
+                },
+            )
+        };
+        assert!(is_transient_node_error(&wait_answer(
+            dapi_grpc::tonic::Code::Unavailable as u32
+        )));
+        assert!(matches!(
+            super::classify_write_error(
+                &wait_answer(dapi_grpc::tonic::Code::Unavailable as u32),
+                "label"
+            ),
+            super::WriteFailure::Retryable(_)
+        ));
+        // Any other code without a cause is still an answer.
+        assert!(!is_transient_node_error(&wait_answer(
+            dapi_grpc::tonic::Code::Internal as u32
         )));
     }
 
