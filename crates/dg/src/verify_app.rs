@@ -214,8 +214,9 @@ impl Served {
     fn hash(path: &str, bytes: &[u8]) -> Self {
         Self {
             sha256: sha256_hex(bytes),
-            without_cf_beacon: path
-                .ends_with(".html")
+            without_cf_beacon: std::path::Path::new(path)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("html"))
                 .then(|| without_cf_injected_beacon(bytes))
                 .flatten()
                 .map(|b| sha256_hex(&b)),
