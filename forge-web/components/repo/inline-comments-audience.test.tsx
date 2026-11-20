@@ -131,7 +131,7 @@ describe('a public diff comment that repeats members-only text', () => {
     const pending = pendingWith({ comments: [draft], count: 1 })
     show({ pending })
     act(() => (document.querySelector('[aria-label="Edit pending comment"]') as HTMLButtonElement).click())
-    act(() => type(document.querySelector('textarea[aria-label="Edit pending comment"]') as HTMLTextAreaElement, `As they said:\n${SECRET}`))
+    act(() => type(document.querySelector('textarea[id^="edit-pending-"]') as HTMLTextAreaElement, `As they said:\n${SECRET}`))
     act(() => button('Save')!.click())
     expect(q('quote-confirm')).not.toBeNull()
     expect(pending.onEdit).not.toHaveBeenCalled()

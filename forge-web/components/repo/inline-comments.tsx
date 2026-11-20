@@ -46,8 +46,7 @@ import { InlineCommentsContext, type InlineComments } from '@/components/repo/di
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { LongBodyNote } from '@/components/repo/long-body'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/input'
-import { MarkdownEditor } from '@/components/repo/issue-bits'
+import { MarkdownEditor } from '@/components/repo/markdown-editor'
 import { BranchRunContext, BranchRunSlot, CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong } from '@/components/repo/private-compose'
@@ -516,6 +515,11 @@ function CommentBlock({
   // An imported line comment from a trusted mirror shows its original author and date (FG-6).
   const origin = trustedOrigin(c.origin, c.author, useMirrorTrust(repo))
   const own = actions !== undefined && actions.viewer !== null && actions.viewer === c.author && writeBlock === null
+  const saveEdit = (text: string): void => {
+    if (actions === undefined || text.trim() === '' || text === c.body) return
+    actions.onEdit(c, text)
+    setEditing(null)
+  }
   const hidden = actions?.hidden?.items[c.id]
   if (hidden !== undefined && !shown) {
     return (
@@ -561,18 +565,10 @@ function CommentBlock({
       </div>
       {editing !== null && actions ? (
         <div className="mt-1 space-y-2">
-          <Textarea aria-label="Edit comment" value={editing} onChange={(e) => setEditing(e.target.value)} className="min-h-[72px]" autoFocus />
+          <MarkdownEditor id={`edit-line-comment-${c.id}`} label="Edit comment" value={editing} onChange={setEditing} autoFocus hint={null} onSubmit={() => saveEdit(editing)} submitLabel="save" onCancel={() => setEditing(null)} changed={editing !== c.body} />
           <PublicEditHint marks={c} />
           <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="primary"
-              disabled={editing.trim() === '' || editing === c.body}
-              onClick={() => {
-                actions.onEdit(c, editing)
-                setEditing(null)
-              }}
-            >
+            <Button size="sm" variant="primary" disabled={editing.trim() === '' || editing === c.body} onClick={() => saveEdit(editing)}>
               Save
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
@@ -683,6 +679,14 @@ function PendingComment({
   const quoteGate = useQuoteGate()
 
   const ctx = useSuggestionContext(draft.body, anchor, suggestions)
+  const saveEdit = (text: string): void => {
+    if (pending === undefined || text.trim() === '') return
+    const save = (): void => {
+      pending.onEdit(draft.localId, text)
+      setEditing(null)
+    }
+    quoteGate.check(publicTextOf(text, draft.audience, who?.pr), who?.membersTexts ?? [], save, { before: draft.body, extra: pending.membersTexts })
+  }
   return (
     <div className="rounded-md border border-dashed border-caution/60 bg-caution/5 px-3 py-2" data-testid="pending-comment" data-local={draft.localId}>
       <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
@@ -702,24 +706,9 @@ function PendingComment({
       </div>
       {editing !== null && pending ? (
         <div className="mt-1 space-y-2">
-          <Textarea aria-label="Edit pending comment" value={editing} onChange={(e) => setEditing(e.target.value)} className="min-h-[72px]" autoFocus />
+          <MarkdownEditor id={`edit-pending-${draft.localId}`} label="Edit pending comment" value={editing} onChange={setEditing} autoFocus hint={null} suggestion={ctx} onSubmit={() => saveEdit(editing)} submitLabel="save" onCancel={() => setEditing(null)} changed={editing !== draft.body} />
           <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="primary"
-              disabled={editing.trim() === ''}
-              onClick={() =>
-                quoteGate.check(
-                  publicTextOf(editing, draft.audience, who?.pr),
-                  who?.membersTexts ?? [],
-                  () => {
-                    pending.onEdit(draft.localId, editing)
-                    setEditing(null)
-                  },
-                  { before: draft.body, extra: pending.membersTexts },
-                )
-              }
-            >
+            <Button size="sm" variant="primary" disabled={editing.trim() === ''} onClick={() => saveEdit(editing)}>
               Save
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
@@ -835,7 +824,7 @@ function Composer({
   )
   const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
   const submit = (): void => {
-    if (posting || body.trim() === '' || tooLong || !guard.check(cost, 'collab') || !sdk || !signer) return
+    if (posting || body.trim() === '' || tooLong || audience.blocked !== null || !guard.check(cost, 'collab') || !sdk || !signer) return
     quoteGate.check(publicText(), who?.membersTexts ?? [], () => void send(), { extra: pending?.membersTexts })
   }
   const send = async (): Promise<void> => {
@@ -917,6 +906,8 @@ function Composer({
         initialTab={restoredTab}
         {...(unsent !== undefined ? { onTabChange: (tab: 'write' | 'preview') => unsent.store.write(unsent.key, { tab }) } : {})}
         hint={null}
+        submitLabel={reviewing ? 'add to the review' : 'comment'}
+        cost={reviewing ? undefined : cost}
         onSubmit={() => {
           // What the main button would do, and only when it is enabled.
           if (posting || tooLong || body.trim() === '') return

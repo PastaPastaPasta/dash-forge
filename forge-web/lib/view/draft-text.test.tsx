@@ -9,7 +9,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { MarkdownEditor } from '@/components/repo/issue-bits'
+import { MarkdownEditor } from '@/components/repo/markdown-editor'
 import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, useEditDraft, useQuotedUntilEmptied, writeDraft, type DraftPersist } from './draft-text'
 import { quotesMembersText } from './audience'
 

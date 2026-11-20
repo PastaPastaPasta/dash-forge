@@ -2,17 +2,14 @@
 
 /**
  * Small pieces the issue list and the issue page share: a label chip in the label's colour,
- * the assignee avatar stack, a markdown editor with Write / Preview tabs, and the "edited"
- * marker.
+ * the assignee avatar stack, and the "edited" marker.
  */
 
-import { useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
+import type { ReactNode } from 'react'
 import { Check } from 'lucide-react'
 import { labelTextColor, type LabelDef } from '@/lib/repo'
 import { Identicon } from '@/components/ui/identicon'
 import { timeAgo } from '@/lib/view'
-import { MarkdownView, type MarkdownLinks, type SuggestionContext } from '@/components/markdown-view'
-import { Textarea } from '@/components/ui/input'
 import { cn, shortId } from '@/lib/utils'
 import { DISCARDED_COMMENT_EDIT } from '@/lib/view/draft-text'
 
@@ -93,16 +90,6 @@ export function EditedMarker({ createdAt, updatedAt }: { createdAt: number; upda
   )
 }
 
-const EDITOR_HINT = 'Markdown supported. #12 links an issue, @name a profile.'
-
-/** Cmd+Enter or Ctrl+Enter (not while an input method is composing) runs `submit`. */
-export function submitShortcut(e: KeyboardEvent<HTMLTextAreaElement>, submit: () => void): void {
-  if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey) || e.nativeEvent.isComposing) return
-  e.preventDefault()
-  submit()
-}
-
-/** A markdown field with Write / Preview tabs (the preview renders exactly what will be shown). */
 /** A comment's header with the mark that its stored edit was discarded (Q5-A11, `discardedEdits`). */
 export function withDiscardedEdit(header: ReactNode): JSX.Element {
   return (
@@ -115,89 +102,3 @@ export function withDiscardedEdit(header: ReactNode): JSX.Element {
   )
 }
 
-export function MarkdownEditor({
-  id,
-  label,
-  value,
-  onChange,
-  placeholder,
-  links,
-  className,
-  autoFocus,
-  textareaRef,
-  tools,
-  suggestion = null,
-  hint = EDITOR_HINT,
-  onSubmit,
-  initialTab = 'write',
-  onTabChange,
-}: {
-  id: string
-  label: string
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  links?: MarkdownLinks
-  className?: string
-  autoFocus?: boolean
-  textareaRef?: Ref<HTMLTextAreaElement>
-  /** Buttons beside the tabs (a review comment's "Insert a suggestion"). */
-  tools?: ReactNode
-  /** How the preview shows ```suggestion blocks (a review comment on lines); keep it stable. */
-  suggestion?: SuggestionContext | null
-  /** The line under the field; null: none. */
-  hint?: string | null
-  /** Cmd+Enter (Ctrl+Enter) in the field: the composer's main action, as on GitHub. */
-  onSubmit?: () => void
-  /** The tab the field opens on (a composer that remounts restores it). */
-  initialTab?: 'write' | 'preview'
-  /** Told when the viewer switches tab. */
-  onTabChange?: (tab: 'write' | 'preview') => void
-}): JSX.Element {
-  const [tab, setTabState] = useState<'write' | 'preview'>(initialTab)
-  const setTab = (next: 'write' | 'preview'): void => {
-    setTabState(next)
-    onTabChange?.(next)
-  }
-  const tabClass = (on: boolean) =>
-    cn(
-      'rounded-t px-3 py-1.5 text-dense font-medium coarse:min-h-11',
-      on ? 'border border-b-0 border-anvil-200 bg-white text-anvil-900 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-50' : 'text-anvil-500 dark:text-anvil-400 hover:text-anvil-800 dark:text-anvil-400',
-    )
-  return (
-    <div className={className}>
-      <div className="flex flex-wrap items-end gap-1">
-        <div role="tablist" aria-label="Write or preview" className="flex gap-1">
-          <button type="button" role="tab" aria-selected={tab === 'write'} className={tabClass(tab === 'write')} onClick={() => setTab('write')}>
-            Write
-          </button>
-          <button type="button" role="tab" aria-selected={tab === 'preview'} className={tabClass(tab === 'preview')} onClick={() => setTab('preview')}>
-            Preview
-          </button>
-        </div>
-        {tools ? <div className="ml-auto flex items-center gap-1 pb-1">{tools}</div> : null}
-      </div>
-      {tab === 'write' ? (
-        <>
-          <label htmlFor={id} className="sr-only">{label}</label>
-          <Textarea
-            ref={textareaRef}
-            id={id}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            onKeyDown={onSubmit ? (e) => submitShortcut(e, onSubmit) : undefined}
-            aria-keyshortcuts={onSubmit ? 'Meta+Enter Control+Enter' : undefined}
-            placeholder={placeholder}
-            className="min-h-[120px] rounded-tl-none"
-            autoFocus={autoFocus}
-          />
-        </>
-      ) : (
-        <div role="tabpanel" aria-label="Rendered preview" className="min-h-[120px] rounded-md rounded-tl-none border border-anvil-300 px-3 py-2 dark:border-anvil-700" data-testid="markdown-preview">
-          {value.trim() === '' ? <p className="italic text-anvil-500 dark:text-anvil-400">Nothing to preview.</p> : <MarkdownView source={value} links={links} suggestion={suggestion} />}
-        </div>
-      )}
-      {hint !== null ? <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">{hint}</p> : null}
-    </div>
-  )
-}
