@@ -729,6 +729,29 @@ impl Mirrors {
             .await;
     }
 
+    /// When no Platform read finished within `every`, read one mirror's repository document
+    /// (at most `every` long), so `/readyz` reports Platform as it is now: with no warm mirror
+    /// to poll, a failed read would otherwise stand as the latest outcome indefinitely. Skipped
+    /// when every refresh permit is taken (those refreshes record their own outcomes) and when
+    /// there is no mirror to read.
+    pub async fn heartbeat(&self, every: Duration) {
+        let (ok, failed) = self.metrics.upstream_times();
+        if ok
+            .max(failed)
+            .is_some_and(|t| t.elapsed().is_ok_and(|d| d < every))
+        {
+            return;
+        }
+        let Some(slot) = self.all().into_iter().next() else {
+            return;
+        };
+        let Ok(_permit) = self.refreshes.try_acquire() else {
+            return;
+        };
+        let read = tokio::time::timeout(every, self.upstream.exists(&slot.repo)).await;
+        self.metrics.upstream(matches!(read, Ok(Ok(_))));
+    }
+
     /// Remove `slot`, whose repository Platform proved gone ([`Self::remove`]).
     fn forget(&self, slot: &Arc<Slot>) {
         self.remove(slot, Removal::Gone);
