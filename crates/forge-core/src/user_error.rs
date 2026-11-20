@@ -1944,6 +1944,7 @@ fn is_network_text(m: &str) -> bool {
         "deadline exceeded",
         "timed out",
         "timeout",
+        "tenderdash is not available",
     ]
     .iter()
     .any(|p| m.contains(p))
@@ -3572,6 +3573,19 @@ mod tests {
                 format!("push rejected: only maintainers of alice/project can change {what}")
             );
         }
+    }
+
+    #[test]
+    fn a_node_without_its_tenderdash_is_unreachable_not_a_refusal() {
+        // A DAPI node that lost its Tenderdash answers in a broadcast error's words; it judged
+        // nothing (nightly 2026-11-19, 22-issue-parity read E604 "Platform rejected the write").
+        let u = core_chain(
+            CoreError::Platform(
+                "state transition broadcast error: Tenderdash is not available".into(),
+            ),
+            &ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E701");
     }
 
     #[test]
