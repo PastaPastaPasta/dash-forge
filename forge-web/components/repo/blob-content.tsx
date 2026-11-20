@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
-import { Check, Download, FileText, Link2 } from 'lucide-react'
+import { Check, Copy, Download, ExternalLink, FileText, Link2 } from 'lucide-react'
 import { MODE_TREE, type BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
@@ -79,6 +79,26 @@ export function opensAsCode(hash: string, search: string): boolean {
 export function blameable(size: number, text: string | null): boolean {
   return text !== null && size <= BLAME_MAX_BYTES
 }
+
+/**
+ * A file's lines as an editor numbers them: the newline that ends the last line starts no
+ * line of its own (GitHub shows no empty row after it). An empty file is one empty line.
+ */
+export function fileLines(text: string): string[] {
+  const lines = text.split('\n')
+  return lines.length > 1 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+}
+
+/** {@link fileLines}' length, without building the array. */
+export function countLines(text: string): number {
+  let n = 1
+  for (let i = 0; i < text.length - 1; i++) if (text.charCodeAt(i) === 10) n++
+  return n
+}
+
+/** The file header's buttons and links: one size, readable contrast, a 44 px target on touch. */
+const HEADER_BTN =
+  'inline-flex h-7 items-center gap-1 rounded-md border border-anvil-300 bg-white px-2 text-[12px] font-medium text-anvil-700 hover:bg-anvil-100 hover:text-anvil-900 coarse:h-11 coarse:px-3 dark:border-anvil-700 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:bg-anvil-800 dark:hover:text-anvil-50'
 
 /** A path that names a directory: the view sends it to the tree route (L-63). */
 class IsDirectory extends Error {}
@@ -209,8 +229,11 @@ function BlobBody({
     if (data !== null) onBlameable?.(blameable(data.bytes.length, data.text))
   }, [data, onBlameable])
   const downloadHref = useObjectUrl(data?.bytes, 'application/octet-stream')
-  // "View raw" shows text in the tab (text/plain runs no script, even for HTML content).
-  const rawHref = useObjectUrl(shown?.kind === 'confirm-large' ? data?.bytes : undefined, 'text/plain;charset=utf-8')
+  // Raw shows text in a tab (text/plain runs no script, even for HTML content).
+  const isText = data != null && (data.text !== null || shown?.kind === 'confirm-large')
+  const rawHref = useObjectUrl(isText ? data?.bytes : undefined, 'text/plain;charset=utf-8')
+  const [copied, copyFile] = useCopy(data?.text ?? '')
+  const lineCount = useMemo(() => (data?.text != null ? countLines(data.text) : null), [data])
   const imageHref = useImageUrl(data?.bytes, shown?.kind === 'image' ? shown.type : null)
 
   if (loading || isDir) return <LoadingBlock label={isDir ? 'Opening the directory' : 'Reconstructing blob'} />
@@ -227,13 +250,16 @@ function BlobBody({
 
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-      <div className="flex items-center justify-between gap-3 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-3 py-2 text-dense sm:px-4 dark:border-anvil-800 dark:bg-anvil-900">
         <div className="flex min-w-0 items-center gap-2">
-          <FileText className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-          <span className="truncate font-mono">{name}</span>
-          <span className="shrink-0 text-anvil-500 dark:text-anvil-400">{formatBytes(data.bytes.length)}</span>
+          <FileText className="h-3.5 w-3.5 shrink-0 text-anvil-600 dark:text-anvil-300" aria-hidden />
+          <span className="truncate font-mono font-medium text-anvil-900 dark:text-anvil-50">{name}</span>
+          <span className="shrink-0 text-anvil-600 dark:text-anvil-300" data-testid="blob-stats">
+            {lineCount === null ? null : `${lineCount.toLocaleString('en-US')} ${lineCount === 1 ? 'line' : 'lines'} · `}
+            {formatBytes(data.bytes.length)}
+          </span>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {toggles ? (
             <div className="inline-flex rounded-md border border-anvil-200 p-0.5 text-[12px] dark:border-anvil-750" role="group" aria-label="View">
               {(['Preview', 'Code'] as const).map((label) => (
@@ -243,7 +269,10 @@ function BlobBody({
                   aria-pressed={showCode === (label === 'Code')}
                   data-testid={`blob-${label.toLowerCase()}`}
                   onClick={() => setShowCode(label === 'Code')}
-                  className={cn('rounded px-2 py-0.5 coarse:min-h-11 coarse:px-3', showCode === (label === 'Code') && 'bg-anvil-200 dark:bg-anvil-750')}
+                  className={cn(
+                    'rounded px-2 py-0.5 font-medium text-anvil-700 coarse:min-h-11 coarse:px-3 dark:text-anvil-200',
+                    showCode === (label === 'Code') && 'bg-anvil-200 text-anvil-900 dark:bg-anvil-750 dark:text-anvil-50',
+                  )}
                 >
                   {label}
                 </button>
@@ -251,15 +280,27 @@ function BlobBody({
             </div>
           ) : null}
           <Oid value={data.oid} chars={9} />
-          {downloadHref ? (
-            <a
-              href={downloadHref}
-              download={name}
-              className="inline-flex items-center gap-1 rounded border border-anvil-300 px-2 py-1 text-[12px] hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 dark:border-anvil-700 dark:hover:bg-anvil-800"
-            >
-              <Download className="h-3 w-3" aria-hidden /> Raw
+          {rawHref ? (
+            <a href={rawHref} target="_blank" rel="noopener noreferrer" className={HEADER_BTN} data-testid="blob-raw">
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden /> Raw
+              <span className="sr-only"> (opens in a new tab)</span>
             </a>
           ) : null}
+          {data.text !== null ? (
+            <button type="button" onClick={() => void copyFile()} className={HEADER_BTN} data-testid="blob-copy">
+              {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
+              {copied ? 'Copied' : 'Copy'}
+              {copied ? null : <span className="sr-only"> file contents</span>}
+            </button>
+          ) : null}
+          {downloadHref ? (
+            <a href={downloadHref} download={name} className={HEADER_BTN} data-testid="blob-download">
+              <Download className="h-3.5 w-3.5" aria-hidden /> Download
+            </a>
+          ) : null}
+          <span role="status" className="sr-only">
+            {copied ? 'File copied to clipboard' : ''}
+          </span>
         </div>
       </div>
       <BlobView
@@ -348,7 +389,7 @@ function BlobView({
         <>
           <BlobToolbar href={permalink} />
           <div className="px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
-            Binary file ({formatBytes(size)}) — use Raw to download.
+            Binary file ({formatBytes(size)}) — use Download to save it.
           </div>
         </>
       )
@@ -415,7 +456,7 @@ function useImageUrl(bytes: Uint8Array | undefined, type: string | null): string
   return dataUrl ?? blobUrl
 }
 
-const CODE_CELL = 'whitespace-pre py-0 px-4 align-top text-anvil-800 dark:text-anvil-200'
+const CODE_CELL = 'whitespace-pre py-0 pl-3 pr-4 sm:pl-4 align-top text-anvil-800 dark:text-anvil-200'
 
 /**
  * Characters some engines break a `whitespace-pre` line on (WebKit wraps U+2028/U+2029),
@@ -452,7 +493,7 @@ export function useLineSelection(lineCount: number, onHash: (range: LineRange) =
 }
 
 function TextLines({ text, name, permalink }: { text: string; name: string; permalink: string | null }): JSX.Element {
-  const lines = useMemo(() => text.split('\n'), [text])
+  const lines = useMemo(() => fileLines(text), [text])
   const tableRef = useRef<HTMLTableElement>(null)
   // Scroll a range from the URL into view (the table is laid out by the time effects run).
   const [range, select] = useLineSelection(lines.length, (r) => {
@@ -473,7 +514,8 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
       active = false
     }
   }, [text, name])
-  const hlLines = highlighted && highlighted.lines.length === lines.length ? highlighted.lines : null
+  // highlight.js splits as text.split does, so a final newline leaves it one empty line more.
+  const hlLines = highlighted && highlighted.lines.length === lines.length + (text.endsWith('\n') ? 1 : 0) ? highlighted.lines : null
 
   // Long files render only the rows near the viewport (D-055: a 1 MB file was 81k DOM nodes).
   const { from, to } = useRowWindow(tableRef, lines.length)
@@ -489,7 +531,7 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
         data-selected={on || undefined}
         className={cn('h-5', on ? 'bg-line-highlight/15' : 'hover:bg-anvil-50 dark:hover:bg-anvil-900/60')}
       >
-        <td className="select-none whitespace-nowrap border-r border-anvil-100 px-3 py-0 text-right align-top text-anvil-500 dark:text-anvil-400 dark:border-anvil-850">
+        <td className="w-px select-none whitespace-nowrap border-r border-anvil-100 py-0 px-2 text-right align-top text-anvil-500 sm:pl-3 dark:border-anvil-850 dark:text-anvil-400">
           <a
             href={`#L${n}`}
             // Not a tab stop per line: a long file would put thousands before the page's rail.

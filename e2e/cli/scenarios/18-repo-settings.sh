@@ -36,7 +36,11 @@ dg_write() { local id="$1" out="$2"; shift 2; dg_as "$id" --yes --json "$@" >"${
 fail_with() { cat "$1.err" "$1.json" >&2 2>/dev/null; is_flake "$1.err" && skip_scenario "$2 flaked"; bad "$2 failed"; finish_scenario; }
 # A dg refusal: exit 6 and the code in the JSON error.
 refused_with() { # refused_with <code> <out> -> 0 when the command was refused with <code>
-  grep -q "\"code\": *\"$1\"" "$2.json" 2>/dev/null || grep -q "\[$1\]" "$2.err" 2>/dev/null
+  grep -q "\"code\": *\"$1\"" "$2.json" 2>/dev/null || grep -q "\[$1\]" "$2.err" 2>/dev/null && return 0
+  # What it answered instead: the .json is not in the run's artifact.
+  echo "expected $1 from ${2##*/}; it answered:" >&2
+  cat "$2.json" "$2.err" >&2 2>/dev/null || true
+  return 1
 }
 main_tip() { # the remote's refs/heads/main, read as OWNER
   git_dash_retry "$ID_OWNER" "$LOG-ls" ls-remote "$REMOTE" refs/heads/main >/dev/null 2>&1

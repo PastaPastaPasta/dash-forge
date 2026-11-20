@@ -79,12 +79,33 @@ test.describe('blob view (showcase repos)', () => {
   test('bv-3. a long file renders only the rows in view (D-055)', async ({ page }) => {
     await page.goto(repoUrl('blob', '&path=vendor/decNumber/decNumber.c', JQ) + '#L8000', { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expect(page.locator('table[data-lines="8144"]')).toBeVisible({ timeout: 60_000 })
+    await expect(page.locator('table[data-lines="8143"]')).toBeVisible({ timeout: 60_000 })
     await expect(page.locator('#L8000')).toBeInViewport()
     expect(await page.locator('tr[id^="L"]').count()).toBeLessThan(300)
     // Before: 35,410 DOM elements for this 388 KB file.
     expect(await page.evaluate(() => document.getElementsByTagName('*').length)).toBeLessThan(3000)
     await page.evaluate(() => window.scrollTo(0, 0))
     await expect(page.locator('#L1')).toBeAttached()
+  })
+  test('bv-4. the file header copies and downloads the file; no empty row after the final newline', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await page.goto(repoUrl('blob', '&path=src/main.rs', FD), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    const table = page.locator('table[data-lines]')
+    await expect(table).toBeVisible({ timeout: 60_000 })
+    const lines = Number(await table.getAttribute('data-lines'))
+    await expect(page.getByTestId('blob-stats')).toContainText(`${lines.toLocaleString('en-US')} lines`)
+
+    await page.getByRole('button', { name: 'Copy file contents' }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('')
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+    // Numbered as an editor numbers it: no row for the empty string after the final newline.
+    expect(copied.endsWith('\n')).toBe(true)
+    expect(copied.split('\n').length - 1).toBe(lines)
+
+    const [download] = await Promise.all([page.waitForEvent('download', { timeout: 30_000 }), page.getByTestId('blob-download').click()])
+    expect(download.suggestedFilename()).toBe('main.rs')
+    await expect(page.getByTestId('blob-raw')).toHaveAttribute('target', '_blank')
+    await shot(page, 'bv-04-file-header')
   })
 })

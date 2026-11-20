@@ -2,24 +2,24 @@
 
 /**
  * Clone box (`ux-dx-spec.md` §5.4): the `dash://owner/name` remote with copy, the git and dg
- * commands, and a .zip of the shown ref built in the browser. On mobile only the remote and
- * the zip show.
+ * commands as tabs (the Dash remote first and recommended), and a .zip of the shown ref built in
+ * the browser. Each command sits on one line that scrolls sideways, on phones too.
  *
  * An HTTPS clone URL shows only when the build names an optional forge-gateway
  * (`NEXT_PUBLIC_GATEWAY_URL`, `lib/gateway.ts`): `dash://` stays first, the HTTPS URL is labelled
  * with who runs it, and "verify" checks the gateway's refs against the ones this page proved.
  */
 
-import { useRef, useState } from 'react'
-import { Download, TerminalSquare } from 'lucide-react'
+import { useId, useRef, useState, type ReactNode } from 'react'
+import { Check, Copy, Download, TerminalSquare } from 'lucide-react'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { Button } from '@/components/ui/button'
-import { CopyRow } from '@/components/ui/copy-row'
 import { Dialog } from '@/components/ui/dialog'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { errorMessage } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
+import { useCopy } from '@/hooks/use-copy'
 import { saveBytes } from '@/lib/view/release-download'
 import { GATEWAY, gatewayCloneUrl, verifyGateway, type GatewayCheck, type GatewayConfig, type ProvedRef } from '@/lib/gateway'
 import { formatBytes, isPublicRef, plural, selectedTip, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
@@ -39,15 +39,60 @@ import {
   type ZipProgress,
 } from '@/lib/view/zip'
 
+type CloneTab = 'dash' | 'https' | 'dg'
+
+const TAB_LABEL: Readonly<Record<CloneTab, string>> = { dash: 'Dash remote', https: 'HTTPS', dg: 'dg CLI' }
+
+const HELP_LINK = 'hit-area font-medium text-forge-700 underline underline-offset-2 hover:text-forge-800 dark:text-forge-400 dark:hover:text-forge-300'
+
 export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
   const cmd = repoCommands(addr.owner, addr.name)
   const [installing, setInstalling] = useState(false)
+  const gateway = GATEWAY !== null && home.repo.visibility === 'public' ? GATEWAY : null
+  const tabs: CloneTab[] = gateway !== null ? ['dash', 'https', 'dg'] : ['dash', 'dg']
+  const [picked, setTab] = useState<CloneTab>('dash')
+  // A tab that went away (the repo turned private) falls back to the first.
+  const tab: CloneTab = tabs.includes(picked) ? picked : 'dash'
+  const uid = useId()
+  const tabId = (t: CloneTab): string => `${uid}-tab-${t}`
+  const panelId = (t: CloneTab): string => `${uid}-panel-${t}`
+  const tabRefs = useRef<Partial<Record<CloneTab, HTMLButtonElement | null>>>({})
+
+  const onTabKey = (e: React.KeyboardEvent): void => {
+    const i = tabs.indexOf(tab)
+    let next: CloneTab | undefined
+    switch (e.key) {
+      case 'ArrowRight':
+        next = tabs[(i + 1) % tabs.length]
+        break
+      case 'ArrowLeft':
+        next = tabs[(i - 1 + tabs.length) % tabs.length]
+        break
+      case 'Home':
+        next = tabs[0]
+        break
+      case 'End':
+        next = tabs[tabs.length - 1]
+        break
+      default:
+        return
+    }
+    if (next === undefined) return
+    e.preventDefault()
+    setTab(next)
+    tabRefs.current[next]?.focus()
+  }
+  const install = (
+    <button type="button" onClick={() => setInstalling(true)} className={HELP_LINK}>
+      Install
+    </button>
+  )
 
   return (
     <section
       aria-label="Clone"
       data-testid="clone-box"
-      className="rounded-lg border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-900"
+      className="min-w-0 rounded-lg border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-900"
     >
       <div className="flex items-center justify-between border-b border-anvil-200 px-3 py-2 dark:border-anvil-800">
         <h2 className="flex items-center gap-1.5 text-dense font-medium">
@@ -55,26 +100,120 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
         </h2>
         <BackendBadge backend={home.backend} />
       </div>
-      <div className="p-3">
-        <CopyRow text={cmd.remote} label="Copy clone URL" />
-        <div className="hidden sm:block">
-          <CopyRow text={cmd.gitClone} label="Copy git clone command" />
-          <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">
-            needs git-remote-dash ·{' '}
-            <button type="button" onClick={() => setInstalling(true)} className="hit-area underline hover:text-forge-800 dark:hover:text-forge-400">
-              install
+      <div role="tablist" aria-label="Clone with" className="flex gap-0.5 overflow-x-auto overflow-y-hidden border-b border-anvil-200 px-2 dark:border-anvil-800" onKeyDown={onTabKey}>
+        {tabs.map((t) => {
+          const on = t === tab
+          return (
+            <button
+              key={t}
+              ref={(el) => {
+                tabRefs.current[t] = el
+              }}
+              id={tabId(t)}
+              type="button"
+              role="tab"
+              aria-selected={on}
+              aria-controls={panelId(t)}
+              tabIndex={on ? 0 : -1}
+              data-testid={`clone-tab-${t}`}
+              onClick={() => setTab(t)}
+              className={cn(
+                '-mb-px inline-flex shrink-0 items-center gap-1 whitespace-nowrap border-b-2 px-1.5 py-2 text-[12px] font-medium coarse:min-h-11',
+                on
+                  ? 'border-forge-500 text-anvil-900 dark:text-anvil-50'
+                  : 'border-transparent text-anvil-600 hover:border-anvil-300 hover:text-anvil-900 dark:text-anvil-300 dark:hover:border-anvil-600 dark:hover:text-anvil-50',
+              )}
+            >
+              {TAB_LABEL[t]}
+              {t === 'dash' ? (
+                <>
+                  <span className="sr-only">,</span>
+                  <span className="rounded-full bg-verify/15 px-1.5 py-px text-[10px] font-semibold leading-4 text-verify-700 dark:text-verify-400">
+                    Recommended
+                  </span>
+                </>
+              ) : null}
             </button>
+          )
+        })}
+      </div>
+      <div className="p-3">
+        <ClonePanel id={panelId('dash')} tabId={tabId('dash')} shown={tab === 'dash'}>
+          <CommandBox text={cmd.gitClone} what="git clone command" />
+          <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">Verified end to end from Dash Platform. Needs git-remote-dash · {install}</p>
+          <p className="mt-1 flex min-w-0 items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
+            <span className="shrink-0">Remote URL</span>
+            <CommandBox text={cmd.remote} what="clone URL" compact />
           </p>
-          <CopyRow text={cmd.dgClone} label="Copy dg repo clone command" />
-          {GATEWAY !== null && home.repo.visibility === 'public' ? <GatewayRow gateway={GATEWAY} home={home} addr={addr} /> : null}
+        </ClonePanel>
+        {gateway !== null ? (
+          <ClonePanel id={panelId('https')} tabId={tabId('https')} shown={tab === 'https'}>
+            <GatewayRow gateway={gateway} home={home} addr={addr} />
+          </ClonePanel>
+        ) : null}
+        <ClonePanel id={panelId('dg')} tabId={tabId('dg')} shown={tab === 'dg'}>
+          <CommandBox text={cmd.dgClone} what="dg repo clone command" />
+          <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">Clones and remembers the network; dg also pushes, opens PRs and more · {install}</p>
+        </ClonePanel>
+        <div className="mt-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+          <ZipDownload home={home} addr={addr} selected={selected} />
+          <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="clone-default-branch">
+            A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.
+          </p>
         </div>
-        <p className="mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
-          A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.
-        </p>
-        <ZipDownload home={home} addr={addr} selected={selected} />
       </div>
       <InstallSheet open={installing} onClose={() => setInstalling(false)} />
     </section>
+  )
+}
+
+/** One tab's panel; the hidden ones stay mounted so a verify in flight keeps its result. */
+function ClonePanel({ id, tabId, shown, children }: { id: string; tabId: string; shown: boolean; children: ReactNode }): JSX.Element {
+  return (
+    <div id={id} role="tabpanel" aria-labelledby={tabId} hidden={!shown}>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * A command on one line that scrolls sideways rather than wrapping mid-id, with a Copy button
+ * that says when it copied. `what` completes the button's name for screen readers.
+ */
+export function CommandBox({ text, what, compact = false }: { text: string; what: string; compact?: boolean }): JSX.Element {
+  const [copied, copy] = useCopy(text)
+  return (
+    <span
+      className={cn(
+        'flex min-w-0 flex-1 items-stretch overflow-hidden rounded-md border border-anvil-300 bg-anvil-50 dark:border-anvil-700 dark:bg-anvil-950',
+        compact ? 'text-[12px]' : 'text-dense',
+      )}
+    >
+      <code
+        tabIndex={0}
+        className={cn(
+          'min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-anvil-900 outline-none [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-forge-500 dark:text-anvil-100',
+          compact ? 'px-1.5 py-0.5' : 'px-2 py-1.5',
+        )}
+      >
+        {text}
+      </code>
+      <button
+        type="button"
+        onClick={() => void copy()}
+        className={cn(
+          'inline-flex shrink-0 items-center gap-1 border-l border-anvil-300 bg-white px-2 font-medium text-anvil-700 hover:bg-anvil-100 hover:text-anvil-900 coarse:min-h-11 coarse:px-3 dark:border-anvil-700 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:bg-anvil-800 dark:hover:text-anvil-50',
+          compact ? 'text-[11px]' : 'text-[12px]',
+        )}
+      >
+        {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
+        {copied ? 'Copied!' : 'Copy'}
+        {copied ? null : <span className="sr-only"> {what}</span>}
+      </button>
+      <span role="status" className="sr-only">
+        {copied ? 'Copied to clipboard' : ''}
+      </span>
+    </span>
   )
 }
 
@@ -116,14 +255,13 @@ export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; ho
       setState({ kind: 'error', message: errorMessage(e) })
     }
   }
-  const link = 'hit-area underline hover:text-forge-800 dark:hover:text-forge-400'
   return (
     <div data-testid="gateway-clone">
-      <CopyRow text={`git clone ${url}`} label="Copy HTTPS clone command" />
-      <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">
-        HTTPS via {gateway.label} · plain git, read only, an optional mirror ·{' '}
-        <button type="button" onClick={() => void verify()} disabled={state.kind === 'checking'} className={link} data-testid="gateway-verify">
-          verify
+      <CommandBox text={`git clone ${url}`} what="HTTPS clone command" />
+      <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">
+        HTTPS via {gateway.label}: plain git, nothing to install, read only ·{' '}
+        <button type="button" onClick={() => void verify()} disabled={state.kind === 'checking'} className={HELP_LINK} data-testid="gateway-verify">
+          Verify
         </button>
       </p>
       <GatewayVerdict state={state} />
@@ -133,7 +271,7 @@ export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; ho
 
 function GatewayVerdict({ state }: { state: VerifyState }): JSX.Element | null {
   if (state.kind === 'idle') return null
-  const base = 'mb-1.5 text-[11px] leading-snug'
+  const base = 'mt-1.5 text-[12px] leading-snug'
   if (state.kind === 'checking') {
     return (
       <p role="status" className={`${base} text-anvil-500 dark:text-anvil-400`}>
@@ -144,7 +282,7 @@ function GatewayVerdict({ state }: { state: VerifyState }): JSX.Element | null {
   if (state.kind === 'error') {
     return (
       <p role="status" className={`${base} text-caution-700 dark:text-caution-400`} data-testid="gateway-verdict">
-        The gateway could not be checked ({state.message}). dash:// above does not need it.
+        The gateway could not be checked ({state.message}). The Dash remote does not need it.
       </p>
     )
   }
@@ -271,7 +409,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
           ) : null}
         </div>
       )}
-      <p role="status" className="mt-1 text-[11px] text-anvil-500 dark:text-anvil-400">
+      <p role="status" className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         {label ?? message ?? (state.kind === 'ready' ? `Built in your browser, up to ${formatBytes(ZIP_MAX_BYTES)}.` : 'Available once the code loads.')}
       </p>
     </div>
@@ -294,8 +432,12 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
       <div className="space-y-3 text-dense">
         <div>
           <h3 className="mb-1 font-medium">From source (any OS)</h3>
-          <CopyRow text="git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge" label="Copy the source clone command" />
-          <CopyRow text="cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash" label="Copy the cargo install command" />
+          <div className="mb-1.5 flex">
+            <CommandBox text="git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge" what="source clone command" />
+          </div>
+          <div className="mb-1.5 flex">
+            <CommandBox text="cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash" what="cargo install command" />
+          </div>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             Needs Rust and protoc 25 or newer (
             <a href={BUILDING_URL} target="_blank" rel="noreferrer noopener" className={link}>
@@ -309,7 +451,9 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
           <p className="mb-1 text-[12px] text-anvil-500 dark:text-anvil-400">
             For when a release is published. Until then the script stops and tells you to build from source.
           </p>
-          <CopyRow text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" label="Copy the install command" />
+          <div className="mb-1.5 flex">
+            <CommandBox text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" what="install command" />
+          </div>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             It downloads the latest release, checks its SHA-256 (and its GitHub attestation when <span className="font-mono">gh</span> is signed in),
             then installs into <span className="font-mono">~/.local/bin</span>. Windows: the .zip on the{' '}
