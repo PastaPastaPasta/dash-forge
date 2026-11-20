@@ -190,7 +190,7 @@ Deferred, none blocking a testnet launch (stated as known limitations, not promi
 
 ### Phase 6a — Testnet launch (M) · *gate: criteria L1–L12 in §7*
 - [ ] Register the four-contract production set on testnet after the owner signs the contract hashes ([Deploying Forge to a network](deploying-to-a-network.md)); commit `deployments/testnet.json`, the frozen `registered/testnet/` copies and the snapshot.
-- [ ] Tag and publish the first release (v0.2.0), with the default network changed to a deployed one; move the hosted app, the gateway, the Actions and the nightly to testnet.
+- [x] Tag and publish the first release (v0.2.0), with the default network changed to a deployed one; move the hosted app, the gateway, the Actions and the nightly to testnet.
 - [ ] Durability and risk statement, terms, privacy notice and an announcement channel (owner-approved); the soft-launch period; the announcement.
 
 ### Phase 6 — Mainnet launch (S, gated on PV14 mainnet)

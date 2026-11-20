@@ -79,7 +79,7 @@ GitLab's own push mirroring cannot target Forge: it accepts only `http://`, `htt
 
 Both jobs run only on protected refs. That is where the protected key is available, and an unprotected branch's pipeline must never reach it.
 
-Add to the project's `.gitlab-ci.yml`, pinning a Dash Forge commit you have reviewed (the commit in the URL and `FORGE_SOURCE_REF` must agree). No release is published yet; once one is, you can pin its tag in the URL and set `FORGE_VERSION` to its version instead:
+Add to the project's `.gitlab-ci.yml`, pinning a Dash Forge commit you have reviewed (the commit in the URL and `FORGE_SOURCE_REF` must agree). Or pin a release: its tag in the URL (`v0.2.0`) and `FORGE_VERSION: "0.2.0"` instead of `FORGE_SOURCE_REF`:
 
 ```yaml
 include:
@@ -87,7 +87,7 @@ include:
 
 variables:
   FORGE_REPO: dash://<owner identity id>/<repo name>
-  FORGE_VERSION: ""                              # no release is published yet: build from the commit
+  FORGE_VERSION: ""                              # empty: build from the commit
   FORGE_SOURCE_REF: <40-character commit>        # the same commit as in the URL
   FORGE_IMPORT: "true"
   FORGE_COST_CAP: "0.05"
