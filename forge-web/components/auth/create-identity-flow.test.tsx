@@ -15,9 +15,16 @@ const { WORDS } = vi.hoisted(() => ({ WORDS: Array.from({ length: 12 }, (_, i) =
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({ controller: { checkGroup: async () => ({ notice: null }) }, reloadVaults: () => undefined }),
 }))
+const store = vi.hoisted(() => ({ journal: null as unknown, balanceCalls: [] as unknown[][] }))
 vi.mock('@/lib/auth/create-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/auth/create-identity')>()),
-  readCreationJournal: async () => null,
+  readCreationJournal: async () => store.journal,
+  // The deposit is still on the address unless the saved lock is counted as spent.
+  depositBalance: async (...args: unknown[]) => {
+    store.balanceCalls.push(args)
+    return (args[2] as { countLock?: boolean } | undefined)?.countLock ? 0 : 3_000_000
+  },
+  clearCreationJournal: async () => undefined,
 }))
 vi.mock('@/lib/auth/connect', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/auth/connect')>()),
@@ -102,5 +109,24 @@ describe('CreateIdentityFlow: the recovery words', () => {
     act(() => byText('I wrote them down')!.click())
     expect(host.querySelector<HTMLInputElement>('#quiz-0')!.value).toBe('')
     expect(byText('Continue')!.disabled).toBe(true)
+  })
+})
+
+describe('CreateIdentityFlow: discarding an unfinished creation', () => {
+  it('warns about the deposit even when a lock was saved (it may never have been broadcast)', async () => {
+    act(() => root.unmount())
+    store.journal = { network: 'devnet', depositAddress: 'yUnfinishedDeposit', identityId: null, lockTxid: 'ab'.repeat(32), lockRaw: '00', startedAt: 1 }
+    store.balanceCalls.length = 0
+    root = createRoot(host)
+    act(() => root.render(<CreateIdentityFlow onDone={() => undefined} />))
+    await flush()
+    expect(host.querySelector('[data-testid="create-resume"]')).not.toBeNull()
+    await act(async () => byText('Discard this creation')!.click())
+    await flush()
+    expect(store.balanceCalls).toHaveLength(1)
+    expect(store.balanceCalls[0]![2]).toBeUndefined()
+    expect(host.textContent).toMatch(/The deposit address still holds 0\.0300 DASH/)
+    expect(byText('Discard anyway')).toBeDefined()
+    store.journal = null
   })
 })

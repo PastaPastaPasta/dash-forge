@@ -487,6 +487,7 @@ function SignInHelp({ onLeave }: { onLeave: () => void }): JSX.Element {
  */
 function WelcomeView({ created, onDone }: { created: CreatedIdentity; onDone: () => void }): JSX.Element {
   const leftover = useLeftoverDeposit(created.deposit)
+  const depositAddress = typeof created.deposit === 'object' ? created.deposit?.depositAddress : undefined
   const steps = [
     { href: '/new/', icon: Plus, title: 'Create your first repo', body: 'Name it, then push to it with git.', testId: 'welcome-new-repo' },
     { href: '/mirror/', icon: CopyPlus, title: 'Import from GitHub', body: 'Mirror a repo you already have, with its issues.', testId: 'welcome-mirror' },
@@ -524,7 +525,7 @@ function WelcomeView({ created, onDone }: { created: CreatedIdentity; onDone: ()
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
             {(leftover.duffs / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} DASH<FiatNote dash={leftover.duffs / 1e8} balance /> is still on the deposit address{' '}
-            <span className="break-all font-mono">{typeof created.deposit === 'object' ? created.deposit?.depositAddress : null}</span>: it wasn&apos;t included in your identity and
+            <span className="break-all font-mono">{depositAddress}</span>: it wasn&apos;t included in your identity and
             isn&apos;t in your balance. Only your 12 words can recover it, with tools outside Forge.
           </span>
         </div>

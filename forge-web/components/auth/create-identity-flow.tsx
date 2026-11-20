@@ -267,9 +267,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: (created: CreatedIdenti
       deferOfferThisLoad(network, identityId)
       await controller.openStored(identityId, null, key.limits)
       // Kept past the journal: the welcome view checks its address for a payment the lock missed.
-      const deposit = await readCreationJournal(network).then((j) => j ?? null, () => 'unreadable' as const)
+      const deposit = await withTimeout(readCreationJournal(network), STEP_MS, "Reading this browser's storage").then((j) => j ?? null, () => 'unreadable' as const)
       // An unreadable record is kept: a later sign-up run can still read its deposit address and check it.
-      if (deposit !== 'unreadable') await clearCreationJournal(network)
+      if (deposit !== 'unreadable') await clearCreationJournal(network).catch(() => undefined)
       setMnemonic(null)
       runWords.current = null
       storedKey.current = null
