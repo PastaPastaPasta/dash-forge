@@ -11,7 +11,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { discoverReposById, recentReposPage, REPO_PAGE, type DiscoveredRepo } from './discovery'
+import { discoverReposById, lastActivity, recentReposPage, REPO_PAGE, type DiscoveredRepo } from './discovery'
 
 export interface ShowcaseEntry {
   readonly owner: string
@@ -52,6 +52,23 @@ export async function listShowcaseRepos(
 }
 
 /**
+ * Repos Forge's own automated tests create on the public network (the nightly's `e2e-cli`,
+ * `e2e-settings-…`, their forks `e2e-cli-fork-…`; every fixture name starts with `e2e`). They are
+ * left out of the landing page and Explore's lists (F15); search, topics and profiles still list
+ * them, and they stay on Dash Platform like any repo.
+ */
+const TEST_FIXTURE_NAME = /^e2e(?:[-_.]|$)/i
+
+export function isTestFixture(repo: Pick<DiscoveredRepo, 'slug'>): boolean {
+  return TEST_FIXTURE_NAME.test(repo.slug)
+}
+
+/** `repos` without the test fixtures ({@link isTestFixture}). */
+export function dropTestFixtures<T extends Pick<DiscoveredRepo, 'slug'>>(repos: readonly T[]): T[] {
+  return repos.filter((r) => !isTestFixture(r))
+}
+
+/**
  * The landing page's recent feed without the test debris (CJ-1): only repos with a description
  * and a push the page's push lookup saw (one in the last week, which every repo created in that
  * week and ever pushed has). When the lookup was cut short or refused (`pushesKnown` false), a
@@ -79,9 +96,9 @@ export function capPerOwner<T extends { readonly ownerId: string }>(repos: reado
 }
 
 /**
- * The landing page's recent feed: `repos` without `exclude` (the featured ones, shown above it),
- * then, unless `showAll`, only the curated ones ({@link isCurated}), then at most
- * {@link RECENT_PER_OWNER} per owner. The cap comes last, so an owner's undescribed repos do not
+ * The landing page's recent feed: `repos` without the test fixtures and `exclude` (the featured
+ * ones, shown above it), then, unless `showAll`, only the curated ones ({@link isCurated}), then at
+ * most {@link RECENT_PER_OWNER} per owner, newest activity (a push, else creation) first. The cap comes last, so an owner's undescribed repos do not
  * take the slots of their described ones. `notCurated`: how many "Show all" would add back (the
  * per-owner cap is not counted: it holds there too); `capped`: how many the cap left out.
  */
@@ -89,10 +106,11 @@ export function landingRecent<T extends DiscoveredRepo>(
   repos: readonly T[],
   opts: { exclude?: ReadonlySet<string>; pushesKnown: boolean; showAll: boolean },
 ): { shown: T[]; notCurated: number; capped: number } {
-  const base = repos.filter((r) => !(opts.exclude?.has(r.key) ?? false))
+  const base = dropTestFixtures(repos).filter((r) => !(opts.exclude?.has(r.key) ?? false))
   const list = opts.showAll ? base : base.filter((r) => isCurated(r, opts.pushesKnown))
-  const shown = capPerOwner(list)
-  return { shown, notCurated: base.length - list.length, capped: list.length - shown.length }
+  const capped = capPerOwner(list)
+  const shown = [...capped].sort((a, b) => lastActivity(b) - lastActivity(a))
+  return { shown, notCurated: base.length - list.length, capped: list.length - capped.length }
 }
 
 /** Repos the landing feed tries to show before it stops reading older pages. */

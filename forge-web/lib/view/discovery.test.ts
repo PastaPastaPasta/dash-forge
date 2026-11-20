@@ -23,7 +23,7 @@ import {
   rankedRepos,
   prefixUpperBound,
   recentReposPage,
-  recentlyUpdated,
+  recentlyActive,
   reposNamed,
   reposWithTopic,
   searchPrefix,
@@ -720,16 +720,18 @@ describe('the composite refused (an older node)', () => {
   })
 })
 
-describe('recentlyUpdated', () => {
+describe('recentlyActive', () => {
+  const row = (key: string, pushedAt: number | null, createdAt = 0): DiscoveredRepo => ({ key, ownerId: OWNER_A, name: key, slug: key, description: '', createdAt, visibility: 'public', pushedAt })
   it('keeps the copy with the newest push when a repo is in two lists', () => {
-    const row = (key: string, pushedAt: number | null): DiscoveredRepo => ({ key, ownerId: OWNER_A, name: key, slug: key, description: '', createdAt: 0, visibility: 'public', pushedAt })
-    const out = recentlyUpdated([[row('a', 5)], [row('a', 9)]])
+    const out = recentlyActive([[row('a', 5)], [row('a', 9)]])
     expect(out[0]?.pushedAt).toBe(9)
   })
-  const row = (key: string, pushedAt: number | null): DiscoveredRepo => ({ key, ownerId: OWNER_A, name: key, slug: key, description: '', createdAt: 0, visibility: 'public', pushedAt })
-  it('ranks the repos with a push, newest first, each once', () => {
-    const out = recentlyUpdated([[row('a', 5), row('b', null), row('c', 9)], [row('a', 5), row('d', 7)]])
-    expect(out.map((r) => r.key)).toEqual(['c', 'd', 'a'])
+  it('ranks by the newest push, else creation, each repo once', () => {
+    const out = recentlyActive([[row('a', 5), row('b', null, 8), row('c', 9)], [row('a', 5), row('d', 7), row('e', null, 1)]])
+    expect(out.map((r) => r.key)).toEqual(['c', 'b', 'd', 'a', 'e'])
+  })
+  it('stops at the limit', () => {
+    expect(recentlyActive([[row('a', 1), row('b', 2), row('c', 3)]], 2).map((r) => r.key)).toEqual(['c', 'b'])
   })
 })
 

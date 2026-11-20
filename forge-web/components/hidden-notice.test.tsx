@@ -37,8 +37,8 @@ describe('HiddenNotice', () => {
     expect(cloneByIdCommand(REPO_ID)).toMatch(new RegExp(`^git clone -c dash\\.network=\\w+.* dash://${REPO_ID}$`))
     expect(text).toMatch(/still exists on Dash Platform, and other clients can read it/)
     const link = host.querySelector('a')!
-    expect(link.getAttribute('href')).toBe(DOCS.hostedCuration)
-    expect(DOCS.hostedCuration).toMatch(/\/docs\/hosted-curation\.md$/)
+    expect(link.getAttribute('href')).toBe('/docs/hosted-curation')
+    expect(DOCS.hostedCuration).toBe('/docs/hosted-curation/')
   })
 
   it('for an identity: no clone line, the same truth, and a heading level the page can place', () => {

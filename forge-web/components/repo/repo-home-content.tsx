@@ -62,6 +62,7 @@ import { RecentPushBanner } from '@/components/repo/recent-push-banner'
 import { ownerLabel } from '@/lib/page-title'
 import { BeingMadePublicState } from '@/components/repo/conversion-status'
 import { FiatNote } from '@/components/ui/fiat-note'
+import { DOCS } from '@/lib/docs-links'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
 const HOME_COMMIT_COUNT_CAP = 100
@@ -360,14 +361,9 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
       </p>
       <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         No git-remote-dash yet?{' '}
-        <a
-          href="https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/INSTALL.md"
-          target="_blank"
-          rel="noreferrer noopener"
-          className="hit-area text-forge-700 underline dark:text-forge-400"
-        >
+        <Link href={DOCS.install} className="hit-area text-forge-700 underline dark:text-forge-400">
           Install →
-        </a>
+        </Link>
       </p>
       {!configured && canConfigure ? (
         // Touch: far enough below Install that the two links' 44 px hit areas do not overlap (QW3-060).

@@ -89,7 +89,7 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   if (await partial.isVisible()) await expect(starred.getByRole('heading')).toContainText(/Most starred among \d+ stars read/)
 
   const updated = page.getByTestId('explore-recently-updated')
-  await expect(updated.getByRole('heading')).toContainText('among the repos on this page')
+  await expect(updated.getByRole('heading')).toContainText('Recently active')
   await expect(updated.locator('a[href*="/repo"], [data-empty]').first()).toBeVisible({ timeout: 60_000 })
 
   const recent = page.getByTestId('explore-recent-repos')
@@ -100,13 +100,14 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   // it and offers no more, so what it protects is the page size and the paging, not a fixture size.
   expect(firstPage).toBeGreaterThan(0)
   expect(firstPage).toBeLessThanOrEqual(24)
+  // Test fixtures (`e2e-…`) are left out of the list, so a full page read can show fewer cards:
+  // "Load more" is the signal that repos remain, not the card count.
   const more = recent.getByRole('button', { name: 'Load more repos' })
-  if (firstPage < 24) {
-    await expect(more).toHaveCount(0)
-  } else {
-    await expect(more).toBeVisible()
+  if (await more.isVisible()) {
     await more.click()
-    await expect.poll(() => recent.locator('a[href*="/repo"]').count(), { timeout: 60_000 }).toBeGreaterThan(firstPage)
+    await expect
+      .poll(async () => (await recent.locator('a[href*="/repo"]').count()) > firstPage || !(await more.isVisible()), { timeout: 60_000 })
+      .toBe(true)
   }
   await shot(page, 'g14-explore-sections')
 

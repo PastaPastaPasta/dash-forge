@@ -2,6 +2,7 @@
 
 /** The mirror's Action setup resumes per identity. CLI settings resume from the URL. */
 
+import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { GitFork, Lock } from 'lucide-react'
 import { StepCard, type StepState } from '@/components/mirror/step-card'
@@ -389,7 +390,7 @@ export function MirrorWizard(): JSX.Element {
             <>
               <h2 className="text-dense font-medium text-fg-muted">What you need</h2>
               <ul className="space-y-2">
-                <RailItem label="dg and git-remote-dash" note={<>Build them from source with the <a href={DOCS.quickStart} className="underline">install guide</a>.</>} />
+                <RailItem label="dg and git-remote-dash" note={<>Build them from source with the <Link href={DOCS.quickStart} className="underline">install guide</Link>.</>} />
                 <RailItem label="The GitHub CLI, signed in" note="It reads the source repo." />
                 <RailItem label="A funded identity" note="The estimate comes before anything is written." />
               </ul>

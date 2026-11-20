@@ -57,6 +57,7 @@ const ROUTES: [label: string, href: Href, ready: (page: Page) => ReturnType<Page
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['private', '/private/', (page) => page.getByRole('heading', { name: 'Private repositories', exact: true })],
   ['networks', '/networks/', (page) => page.getByRole('heading', { name: 'All networks' })],
+  ['docs', '/docs/quick-start/', (page) => page.getByRole('heading', { name: 'Quick start', level: 1 })],
   ['repo settings', repoUrl('settings'), (page) => page.getByRole('navigation', { name: 'Settings sections' })],
 ]
 

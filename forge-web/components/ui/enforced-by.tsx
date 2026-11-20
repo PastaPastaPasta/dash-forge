@@ -10,6 +10,7 @@
  * differently on every screen. The chip links to the guide section that explains the difference.
  */
 
+import Link from 'next/link'
 import { AppWindow, ShieldCheck } from 'lucide-react'
 
 import { DOCS } from '@/lib/docs-links'
@@ -32,7 +33,7 @@ export function EnforcedBy({ by, className }: { by: Enforcer; className?: string
   const { label, detail } = ENFORCED_BY[by]
   const Icon = by === 'platform' ? ShieldCheck : AppWindow
   return (
-    <a
+    <Link prefetch={false}
       href={DOCS.enforcement}
       target="_blank"
       rel="noreferrer"
@@ -48,6 +49,6 @@ export function EnforcedBy({ by, className }: { by: Enforcer; className?: string
       <Icon className="h-3 w-3 shrink-0" aria-hidden />
       {label}
       <span className="sr-only">. {detail} How enforcement works, opens in a new tab.</span>
-    </a>
+    </Link>
   )
 }

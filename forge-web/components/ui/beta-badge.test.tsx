@@ -28,8 +28,8 @@ describe('BetaBadge', () => {
     const a = host.querySelector<HTMLAnchorElement>('[data-testid="beta-badge"]')!
     expect(a.textContent).toBe('Beta')
     expect(a.title).toBe(BETA_TOOLTIP)
-    expect(a.href).toBe(DOCS.knownLimitations)
-    expect(a.href).toContain('collaborating.md#known-limitations')
+    expect(DOCS.knownLimitations).toBe('/docs/collaborating/#known-limitations')
+    expect(a.getAttribute('href')).toBe('/docs/collaborating#known-limitations')
     expect(a.getAttribute('aria-label')).toBe(`Publication dates is in beta. ${BETA_TOOLTIP}`)
     expect(a.rel).toContain('noopener')
   })

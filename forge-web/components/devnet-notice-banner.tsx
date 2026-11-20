@@ -12,6 +12,7 @@
  * It is a `status`, not an alert: it does not interrupt a screen reader on every navigation.
  */
 
+import Link from 'next/link'
 import { useCallback, useSyncExternalStore } from 'react'
 import { Info, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -95,14 +96,14 @@ export function DevnetNoticeBanner({
         />
         <p className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">
           <span className="font-medium">{copy.lead}</span> {copy.body}{' '}
-          <a
+          <Link prefetch={false}
             href={DEVNET_MOVE_DOC}
             target="_blank"
             rel="noreferrer noopener"
             className="whitespace-nowrap text-forge-700 underline dark:text-forge-400 coarse:inline-flex coarse:min-h-11 coarse:items-center"
           >
             What this means
-          </a>
+          </Link>
         </p>
         {moving ? null : (
           <Button size="icon" variant="ghost" onClick={dismiss} aria-label="Dismiss this notice" className="-my-1 -mr-2">

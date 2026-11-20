@@ -2,7 +2,7 @@
 
 /**
  * `/explore` (`ux-dx-spec.md` §5.11): search repos by name, trending (new stargazers this week or
- * today), most starred, recently updated,
+ * today), most starred, recently active,
  * recent repos (paged), recently released, and, signed in, my repos, the repos I maintain or
  * write to, my issues, my PRs, my stars, and what is assigned to me or mentions me. Every
  * section reads an index that answers it; where none exists the section says so rather than
@@ -13,7 +13,7 @@
  *
  * Request budget, signed out: search 1 composite per page; a topic 2 (its tags, then those repos); trending, most starred and most forked
  * 2 each (a proved ranked read, then the ranked repos in one composite); recent 1
- * composite per page (its pushes feed "Recently updated", its first 24 repos "Recently released").
+ * composite per page (its pushes feed "Recently active", its first 24 repos "Recently released").
  */
 
 import Link from 'next/link'
@@ -34,12 +34,13 @@ import { repoHref } from '@/hooks/use-query-param'
 import { useRepoPages, type RepoPages } from '@/hooks/use-repo-pages'
 import { useSdk } from '@/hooks/use-sdk'
 import { ACTIVE_NETWORK, NETWORKS, networkName, type Network } from '@/lib/constants'
-import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
+import { dropTestFixtures, isTestFixture, listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
+import { ForgeIntro } from '@/components/forge-intro'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import { MIN_STARGAZERS } from '@/lib/repo/trending'
 import { curates } from '@/lib/view/curation'
 import { DOCS } from '@/lib/docs-links'
-import { rankedRepos, recentReposPage, recentlyUpdated, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
+import { rankedRepos, recentReposPage, recentlyActive, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '@/lib/repo/settings'
 import { trendingNote, trendingWindowStart, type TrendingWindow } from '@/lib/repo/trending'
 import { useStarShape } from '@/hooks/use-star-shape'
@@ -59,7 +60,7 @@ const MY_REPOS_MAX = 50
 /** The assignment / mention scan looks at this many repos (one feed read each, 3 at a time). */
 const SCAN_REPOS_MAX = 20
 
-/** "Trending", "Most starred" and "Recently updated" show this many. */
+/** "Trending", "Most starred" and "Recently active" show this many. */
 const TOP_N = 12
 
 /** What both star rankings say about their counts (ABU-02). */
@@ -90,12 +91,20 @@ export function ExploreClient(): JSX.Element {
   const trendNote = useMemo(() => trendingNote(starShape, trendWindow, now), [starShape, trendWindow, now])
   const starred = useAsync(() => rankedRepos(sdk!, 'most-starred', { network, limit: TOP_N }), [ready, network], { enabled: on })
   const forked = useAsync(() => rankedRepos(sdk!, 'most-forked', { network, limit: TOP_N }), [ready, network], { enabled: on })
-  // Pushes rode along with the repos already read; rank those (the section says so).
-  const updated = useMemo(
-    () => recentlyUpdated([recent.repos, starred.data?.repos ?? [], trending.data?.repos ?? [], forked.data?.repos ?? []], TOP_N),
-    [recent.repos, starred.data, trending.data, forked.data],
+  // The automated tests' fixture repos are left out of every list here (F15); search finds them.
+  const recentShown = useMemo(() => dropTestFixtures(recent.repos), [recent.repos])
+  const fixturesLeftOut = [recent.repos, trending.data?.repos ?? [], starred.data?.repos ?? [], forked.data?.repos ?? []].some((l) => l.some(isTestFixture))
+  const trendingShown = withoutFixtures(trending)
+  const starredShown = withoutFixtures(starred)
+  const forkedShown = withoutFixtures(forked)
+  // Pushes rode along with the repos already read; rank those by activity (the section says so).
+  const active = useMemo(
+    () => recentlyActive([recentShown, ...[starred.data, trending.data, forked.data].map((d) => dropTestFixtures(d?.repos ?? []))], TOP_N),
+    [recentShown, starred.data, trending.data, forked.data],
   )
-  const recentRepos = recent.repos.slice(0, 24)
+  // Nothing on the network but test fixtures (or nothing at all): say what Forge is and how to start.
+  const quiet = recent.settled && !recent.hasMore && recentShown.length === 0
+  const recentRepos = recentShown.slice(0, 24)
   const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
     enabled: on && recent.settled,
   })
@@ -144,11 +153,14 @@ export function ExploreClient(): JSX.Element {
               {curates() ? (
                 <>
                   This site hides some repos from these lists; they stay on Dash Platform, and other sites and clients can show them.{' '}
-                  <a href={DOCS.hostedCuration} target="_blank" rel="noreferrer noopener" className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="explore-curation-link">
+                  <Link href={DOCS.hostedCuration} className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="explore-curation-link">
                     What that means
-                  </a>
+                  </Link>
                   .
                 </>
+              ) : null}
+              {fixturesLeftOut ? (
+                <span data-testid="explore-fixtures-note"> Repos made by Forge&apos;s automated tests (named e2e-…) are left out of these lists; search still finds them.</span>
               ) : null}
             </p>
           </div>
@@ -173,19 +185,40 @@ export function ExploreClient(): JSX.Element {
             icon={Award}
             state={featured}
             empty="None of the featured repos could be read on this network."
-            note="Picked by the Dash Forge maintainers for this network. Everything below is ranked by the network itself, test repos included."
+            note="Picked by the Dash Forge maintainers for this network. Everything below is ranked by the network itself, without the automated tests' repos."
           >
             {(d) => <RepoGrid repos={d} />}
             {(d) => d.length === 0}
           </Section>
         ) : null}
 
+        {quiet ? <ForgeIntro title="No projects on this network yet" heading="h2" testId="explore-intro" /> : null}
+
+        <Section
+          title="Recently active"
+          testId="explore-recently-updated"
+          icon={History}
+          state={activeState(recent, [starredShown, trendingShown, forkedShown], active)}
+          empty="No repos to show yet."
+          note={`Newest first, by a push in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days or else by creation. Pushes have no cross-repo index, so this ranks only the repos read on this page; load more recent repos to widen it.`}
+          partial={() =>
+            recent.fallback
+              ? 'This node refused the combined read, so recent repos came without their pushes and are ranked by when they were created.'
+              : recent.pushesComplete && (starred.data?.pushesComplete ?? true) && (trending.data?.pushesComplete ?? true) && (forked.data?.pushesComplete ?? true)
+                ? null
+                : 'Each read looks at the newest 100 pushes of its repos; a push past those 100 is not counted here.'
+          }
+        >
+          {(d) => <RepoGrid repos={d} />}
+          {(d) => d.length === 0}
+        </Section>
+
         <Section
           title={trendWindow === 'week' ? 'Trending this week' : 'Trending today (UTC)'}
           testId="explore-trending"
           icon={Flame}
-          state={trending}
-          empty={trendWindow === 'week' ? `No repo has ${MIN_STARGAZERS} new stars in the last week.` : `No repo has ${MIN_STARGAZERS} new stars since ${todayStart ?? '00:00 UTC'} yet.`}
+          state={trendingShown}
+          empty={onlyFixtures(trending) ? ONLY_FIXTURES : trendWindow === 'week' ? `No repo has ${MIN_STARGAZERS} new stars in the last week.` : `No repo has ${MIN_STARGAZERS} new stars since ${todayStart ?? '00:00 UTC'} yet.`}
           emptyAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
           note={`${trendNote} ${TRENDING_FLOOR}`}
           partial={missingNote}
@@ -203,8 +236,8 @@ export function ExploreClient(): JSX.Element {
           title="Most starred"
           testId="explore-most-starred"
           icon={Star}
-          state={starred}
-          empty={`No repo on this network has ${MIN_STARGAZERS} stars yet.`}
+          state={starredShown}
+          empty={onlyFixtures(starred) ? ONLY_FIXTURES : `No repo on this network has ${MIN_STARGAZERS} stars yet.`}
           note={`All time, over every star on the network, proved by the ranked star index. ${STARRED_FLOOR}`}
           partial={missingNote}
         >
@@ -216,8 +249,8 @@ export function ExploreClient(): JSX.Element {
           title="Most forked"
           testId="explore-most-forked"
           icon={GitFork}
-          state={forked}
-          empty="No repo on this network has been forked yet."
+          state={forkedShown}
+          empty={onlyFixtures(forked) ? ONLY_FIXTURES : 'No repo on this network has been forked yet.'}
           note="All time, ranked by how many different identities forked a repo, not by how many forks exist. A fork counts when it exists; forks are not checked for a push. Counts are unweighted."
           partial={(d) =>
             missingNote(d) ??
@@ -229,24 +262,6 @@ export function ExploreClient(): JSX.Element {
           {(d) => d.repos.length === 0}
         </Section>
 
-        <Section
-          title="Recently updated, among the repos on this page"
-          testId="explore-recently-updated"
-          icon={History}
-          state={updatedState(recent, [starred, trending, forked], updated)}
-          empty="None of the repos shown here was pushed to in the last week."
-          note={`Pushes have no cross-repo index, so this ranks the recent, trending, most-starred and most-forked repos above by their newest push that uploaded objects in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
-          partial={() =>
-            recent.fallback
-              ? 'This node refused the combined read, so recent repos came without their pushes and are not ranked here.'
-              : recent.pushesComplete && (starred.data?.pushesComplete ?? true) && (trending.data?.pushesComplete ?? true) && (forked.data?.pushesComplete ?? true)
-                ? null
-                : 'Each read looks at the newest 100 pushes of its repos; repos whose pushes fell past those 100 are not ranked here.'
-          }
-        >
-          {(d) => <RepoGrid repos={d} />}
-          {(d) => d.length === 0}
-        </Section>
 
         {signedIn ? (
           <div className="space-y-10" data-testid="explore-mine">
@@ -306,7 +321,7 @@ export function ExploreClient(): JSX.Element {
           </div>
         ) : null}
 
-        <Section title="Recent repos" testId="explore-recent-repos" icon={GitBranch} state={pagesState(recent)} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
+        <Section title="Recent repos" testId="explore-recent-repos" icon={GitBranch} state={pagesState(recent, recentShown)} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
           {(d) => (
             <>
               <FallbackNote pages={recent} />
@@ -516,9 +531,21 @@ function FirstN({ shown, cap, what, order }: { shown: number; cap: number; what:
   )
 }
 
-/** A paged list as a section's state: data once the first page settled. */
-function pagesState(p: RepoPages): SectionState<DiscoveredRepo[]> {
-  return { data: p.settled ? p.repos : null, loading: p.loading, error: p.settled ? null : p.error, reload: p.reload }
+/** A paged list as a section's state: data (`shown`, default all it read) once the first page settled. */
+function pagesState(p: RepoPages, shown: DiscoveredRepo[] = p.repos): SectionState<DiscoveredRepo[]> {
+  return { data: p.settled ? shown : null, loading: p.loading, error: p.settled ? null : p.error, reload: p.reload }
+}
+
+/** A ranked list that read only test fixtures: its empty line must not say nothing ranks. */
+const ONLY_FIXTURES = 'Only repos made by Forge\'s automated tests rank here so far.'
+
+function onlyFixtures(s: AsyncState<RankedRepos>): boolean {
+  return s.data !== null && s.data.repos.length > 0 && s.data.repos.every(isTestFixture)
+}
+
+/** A ranked read's state without the test fixtures (F15). */
+function withoutFixtures<T extends { readonly repos: readonly DiscoveredRepo[] }>(s: AsyncState<T>): AsyncState<T> {
+  return s.data === null ? s : { ...s, data: { ...s.data, repos: dropTestFixtures(s.data.repos) } as T }
 }
 
 /** A ranked repo the ranked read named but whose `repo` document could not be read. */
@@ -562,8 +589,8 @@ function RankedGrid({ repos, unit }: { repos: RankedRepos['repos']; unit: string
   )
 }
 
-/** "Recently updated" settles with the reads it ranks (recent, most starred and trending). */
-function updatedState(recent: RepoPages, ranked: readonly AsyncState<unknown>[], rows: DiscoveredRepo[]): SectionState<DiscoveredRepo[]> {
+/** "Recently active" settles with the reads it ranks (recent, most starred, trending, most forked). */
+function activeState(recent: RepoPages, ranked: readonly AsyncState<unknown>[], rows: DiscoveredRepo[]): SectionState<DiscoveredRepo[]> {
   const settled = recent.settled && ranked.every((r) => r.data !== null || r.error !== null)
   return { data: settled ? rows : null, loading: recent.loading || ranked.some((r) => r.loading), error: recent.settled ? null : recent.error, reload: recent.reload }
 }
@@ -625,7 +652,7 @@ function PagedGrid({ repos, pages, what }: { repos: readonly DiscoveredRepo[]; p
     <div className="space-y-3">
       {repos.length === 0 && pages.hasMore ? (
         <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="explore-page-hidden">
-          Nothing read so far is shown on this site (some repos are hidden here). Load more to keep reading.
+          Nothing read so far is shown here: test repos, and any this site hides, are left out. Load more to keep reading.
         </p>
       ) : (
         <RepoGrid repos={repos} />

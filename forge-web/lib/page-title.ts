@@ -8,6 +8,7 @@
  */
 
 import { isIdentityId, shortId } from './utils'
+import { docBySlug } from './docs/catalog'
 
 export const SITE_TITLE = 'Dash Forge'
 
@@ -106,6 +107,10 @@ export function pageTitle(pathname: string, query: Query, ownerName?: string | n
   const profile = PROFILE_TITLES[path]
   const who = query.get('id') || query.get('name')
   if (profile !== undefined && who) return withSite(profile(ownerLabel(who, ownerName)))
+  if (path === '/docs' || path.startsWith('/docs/')) {
+    const doc = docBySlug(path.slice('/docs/'.length))
+    return withSite(doc === undefined || doc.slug === '' ? 'Docs' : `${doc.title} · Docs`)
+  }
   if (path === '/explore' && query.get('q')) return withSite(`Search “${query.get('q')}”`)
   return withSite(SITE_TITLES[path] ?? SITE_TITLE)
 }

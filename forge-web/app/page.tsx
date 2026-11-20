@@ -10,7 +10,7 @@
  */
 
 import Link from 'next/link'
-import { BookOpen, Coins, Compass, CopyPlus, ExternalLink, GitBranch, KeyRound, Lock, Plus, ShieldCheck, Upload } from 'lucide-react'
+import { BookOpen, Coins, Compass, CopyPlus, ExternalLink, KeyRound, Lock, ShieldCheck, Upload } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { FiatNote } from '@/components/ui/fiat-note'
 import { creditsAsDash } from '@/lib/view/format'
@@ -18,7 +18,8 @@ import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { VerificationChip } from '@/components/ui/verification-chip'
-import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
+import { ErrorState, Spinner } from '@/components/ui/states'
+import { ForgeIntro } from '@/components/forge-intro'
 import { DownloadProgressBar, UnreachableBanner } from '@/components/ui/platform-status'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useSdk } from '@/hooks/use-sdk'
@@ -115,7 +116,7 @@ export default function LandingPage(): JSX.Element {
           icon={<ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />}
           title="Can’t go down, can’t be taken down"
           body="No company runs a server. Your browser verifies every branch and file against Dash Platform, and this app is a static bundle anyone can host."
-          link={{ href: verifyGuideUrl(), label: 'Verify this build', external: true }}
+          link={{ href: verifyGuideUrl(), label: 'Verify this build' }}
         />
         <Feature
           icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />}
@@ -127,7 +128,7 @@ export default function LandingPage(): JSX.Element {
           icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
           title="Spam has a price"
           body={<>Opening an issue costs its author about {creditsAsDash(typicalIssueCredits())} DASH on mainnet<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" />, so flooding a project costs real money. Reading and cloning are free.</>}
-          link={{ href: DOCS.costs, label: 'What it costs', external: true }}
+          link={{ href: DOCS.costs, label: 'What it costs' }}
         />
       </section>
 
@@ -168,13 +169,13 @@ export default function LandingPage(): JSX.Element {
             Getting started
           </Link>
           {' · '}
-          <a href={DOCS.guides} target="_blank" rel="noreferrer noopener" className="hit-area text-forge-700 underline dark:text-forge-300">
+          <Link href={DOCS.guides} className="hit-area text-forge-700 underline dark:text-forge-300">
             All user guides
-          </a>
+          </Link>
           {' · '}
-          <a href={DOCS.movingFromGithub} target="_blank" rel="noreferrer noopener" className="hit-area text-forge-700 underline dark:text-forge-300">
+          <Link href={DOCS.movingFromGithub} className="hit-area text-forge-700 underline dark:text-forge-300">
             Moving from GitHub
-          </a>
+          </Link>
         </p>
       </section>
 
@@ -214,24 +215,13 @@ export default function LandingPage(): JSX.Element {
             lists older ones.
           </p>
         ) : feed.data && feed.data.length === 0 ? (
-          <EmptyState
-            icon={GitBranch}
-            title="The forge is quiet"
-            body="No repos have been created on this network yet. Forge the first one."
-            action={
-              <Link href="/new/">
-                <Button variant="primary">
-                  <Plus className="h-4 w-4" aria-hidden /> New repo
-                </Button>
-              </Link>
-            }
-          />
+          <ForgeIntro title="The forge is quiet: be the first project here" testId="landing-intro" />
         ) : feedNotFeatured && feedNotFeatured.length === 0 ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">The newest repos are the featured ones above.</p>
         ) : recent ? (
           <>
             {recent.length === 0 ? (
-              <p className="text-dense text-anvil-500 dark:text-anvil-400">No new repos with a description and a push this week.</p>
+              <ForgeIntro title="No new projects this week yet" testId="landing-intro" />
             ) : (
               <RepoGrid repos={recent} />
             )}
@@ -282,14 +272,30 @@ function Step({ icon, title, body, link }: { icon: ReactNode; title: string; bod
         <h3 className="text-dense font-semibold">{title}</h3>
       </div>
       <p className="mt-2 flex-1 text-dense text-anvil-600 dark:text-anvil-400">{body}</p>
-      <a href={link.href} target="_blank" rel="noreferrer noopener" className="hit-area mt-2 inline-flex items-center gap-1 text-dense text-forge-700 underline dark:text-forge-300">
-        {link.label} <ExternalLink className="h-3 w-3" aria-hidden />
-      </a>
+      <MaybeExternal href={link.href} className="hit-area mt-2 inline-flex items-center gap-1 text-dense text-forge-700 underline dark:text-forge-300">
+        {link.label}
+      </MaybeExternal>
     </li>
   )
 }
 
-function Feature({ icon, title, body, link }: { icon: ReactNode; title: string; body: ReactNode; link: { href: string; label: string; external?: boolean } }): JSX.Element {
+/** An in-app route (`/…`) as a client-side link; anything else opens in a new tab, marked as such. */
+function MaybeExternal({ href, className, children }: { href: string; className: string; children: ReactNode }): JSX.Element {
+  if (href.startsWith('/')) {
+    return (
+      <Link href={href} className={className}>
+        {children}
+      </Link>
+    )
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer noopener" className={className}>
+      {children} <ExternalLink className="h-3 w-3" aria-hidden />
+    </a>
+  )
+}
+
+function Feature({ icon, title, body, link }: { icon: ReactNode; title: string; body: ReactNode; link: { href: string; label: string } }): JSX.Element {
   const linkClass = 'hit-area mt-2 inline-flex items-center gap-1 text-dense text-forge-700 underline dark:text-forge-300'
   return (
     <div className="flex flex-col rounded-lg border border-anvil-200 bg-anvil-50 p-4 dark:border-anvil-800 dark:bg-anvil-900">
@@ -298,15 +304,9 @@ function Feature({ icon, title, body, link }: { icon: ReactNode; title: string; 
         <h3 className="text-dense font-semibold">{title}</h3>
       </div>
       <p className="mt-2 flex-1 text-dense text-anvil-600 dark:text-anvil-400">{body}</p>
-      {link.external ? (
-        <a href={link.href} target="_blank" rel="noreferrer noopener" className={linkClass}>
-          {link.label} <ExternalLink className="h-3 w-3" aria-hidden />
-        </a>
-      ) : (
-        <Link href={link.href} className={linkClass}>
-          {link.label}
-        </Link>
-      )}
+      <MaybeExternal href={link.href} className={linkClass}>
+        {link.label}
+      </MaybeExternal>
     </div>
   )
 }

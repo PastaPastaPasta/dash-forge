@@ -21,6 +21,8 @@ on:
     branches: [master]
     paths:
       - 'forge-web/**'
+      # Bundled into the web app: the /docs hub renders docs/ at build time (forge-web/lib/docs).
+      - 'docs/**'
       - 'forge-contracts/deployments/**'
       - 'forge-contracts/config/**'
       - '.github/workflows/web-e2e.yml'
@@ -67,7 +69,7 @@ jobs:
           fi
           echo "Changed files:"
           printf '%s\n' "$files"
-          pattern='^(forge-web/|forge-contracts/deployments/|forge-contracts/config/|forge-contracts/scripts/seed-v2-fixture\.mjs$|\.github/workflows/web-e2e\.yml$)'
+          pattern='^(forge-web/|docs/|forge-contracts/deployments/|forge-contracts/config/|forge-contracts/scripts/seed-v2-fixture\.mjs$|\.github/workflows/web-e2e\.yml$)'
           if printf '%s\n' "$files" | grep -Eq "$pattern"; then
             echo "web=true" >> "$GITHUB_OUTPUT"
           else
