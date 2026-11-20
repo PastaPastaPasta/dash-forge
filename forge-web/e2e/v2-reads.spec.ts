@@ -104,10 +104,11 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-4. issues list reads state from transitions and labels from events', async ({ page }) => {
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expectLanded(page, page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split'))
+    await expectLanded(page, page.getByRole('list', { name: 'Pinned issues' }).getByText('README should explain the event split'))
     await expect(page.getByText('question').first()).toBeVisible()
-    // The fixture pins #1 (member event kind 19): it is also shown above the list.
+    // The fixture pins #1 (member event kind 19): it shows above the list, not again in it.
     await expect(page.getByTestId('pinned-issue').filter({ hasText: 'README should explain the event split' })).toBeVisible()
+    await expect(page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split')).toHaveCount(0)
     await page.getByRole('tab', { name: /Closed/ }).click()
     await expect(page.getByText('Duplicate of #1')).toBeVisible()
     await expect(page.getByText('Add a rules page')).toBeVisible()
@@ -135,7 +136,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     const approvals = page.getByRole('region', { name: 'Approvals' })
     // MAINTAINER's seeded approval; the write spec (v2-writes w6) may have added OWNER's.
     await expect(approvals.getByText(/approved · Maintain access/).first()).toBeVisible()
-    await expect(page.getByText(/Objects live in this repo/)).toBeVisible()
+    await expect(page.getByTestId('pr-source-where')).toHaveText('In this repo')
     // The diff (the Files changed tab) reads both sides through the browse plane.
     await page.getByRole('tab', { name: /Files changed/ }).click()
     await expect(page.getByText('src/main.rs').first()).toBeVisible({ timeout: 45_000 })

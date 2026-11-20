@@ -42,7 +42,7 @@ import {
   GitPullRequest,
   GitPullRequestClosed,
   GitPullRequestDraft,
-  HardDrive,
+  GitBranch,
   Link2,
   ListChecks,
   Lock,
@@ -2380,6 +2380,7 @@ function PullPage({
             <ComparisonView
               state={comparison}
               noHead="This PR does not record a head commit."
+              showTitle={false}
               action={
                 identity !== null && open && !writeBlocked ? (
                   <ReviewDrawer
@@ -2548,29 +2549,34 @@ function PullPage({
                 Convert to draft
               </button>
             ) : null}
-            <SidebarSection title="Where it lives" icon={HardDrive}>
-              <p className="text-anvil-500 dark:text-anvil-400">
+            <SidebarSection title="Source branch" icon={GitBranch}>
+              <p className="flex flex-wrap items-center gap-1.5 text-anvil-700 dark:text-anvil-200" data-testid="pr-source-branch">
+                {pull.sourceRefName ? (
+                  <span className="break-all font-mono">{shortBranch(pull.sourceRefName)}</span>
+                ) : (
+                  <span className="text-anvil-500 dark:text-anvil-400">Branch name not recorded</span>
+                )}
+                {sync?.kind === 'deleted' ? (
+                  <span className="rounded-full border border-anvil-300 px-1.5 py-px text-[11px] font-medium text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="source-branch-deleted">
+                    Deleted
+                  </span>
+                ) : null}
+              </p>
+              <p className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="pr-source-where">
                 {!crossRepo ? (
-                  <>Objects live in this repo</>
+                  <>In this repo</>
                 ) : sourceRef && sourceAddr ? (
                   <>
-                    Objects live in{' '}
+                    From the fork{' '}
                     <Link href={repoHref('/repo', sourceAddr)} className="break-all text-forge-700 underline underline-offset-2 dark:text-forge-400" data-testid="pr-source-repo">
                       {forkOwnerLabel}/{sourceRef.name}
                     </Link>
                   </>
                 ) : (
                   <>
-                    Objects live in repo <span className="break-all font-mono">{pull.sourceId}</span>
+                    From repo <span className="break-all font-mono">{pull.sourceId}</span>
                   </>
                 )}
-                {pull.sourceRefName ? (
-                  <>
-                    {' '}
-                    on <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
-                    {sync?.kind === 'deleted' ? <span data-testid="source-branch-deleted"> (deleted)</span> : null}
-                  </>
-                ) : null}
               </p>
               <PullSourceCheckout
                 deleted={sync?.kind === 'deleted'}

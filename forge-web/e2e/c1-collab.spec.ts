@@ -52,14 +52,14 @@ test('c1. watch a repo, then set an issue milestone and pin it', async ({ browse
 
   const flags = page.getByTestId('thread-flags')
   await expect(flags).toBeVisible()
-  const pinned = (await flags.textContent())?.startsWith('Pinned') ?? false
+  const pinned = (await flags.getByTestId('pinned-badge').count()) > 0
   await page.getByTestId('pin-toggle').click()
   await page.getByRole('button', { name: pinned ? /sign & unpin/i : /sign & pin/i }).click()
-  await expectLanded(page, flags.getByText(pinned ? /^Not pinned/ : /^Pinned/), 120_000)
+  await expectLanded(page, page.getByTestId('pin-toggle').filter({ hasText: pinned ? /^Pin$/ : /^Unpin$/ }), 120_000)
   await shot(page, 'c1-issue-rail')
   // Leave it as it was.
   await page.getByTestId('pin-toggle').click()
   await page.getByRole('button', { name: pinned ? /sign & pin/i : /sign & unpin/i }).click()
-  await expectLanded(page, flags.getByText(pinned ? /^Pinned/ : /^Not pinned/), 120_000)
+  await expectLanded(page, page.getByTestId('pin-toggle').filter({ hasText: pinned ? /^Unpin$/ : /^Pin$/ }), 120_000)
   expect(errors, errors.join('\n')).toEqual([])
 })

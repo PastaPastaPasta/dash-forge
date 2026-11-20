@@ -52,7 +52,7 @@ const ROUTES: [label: string, href: Href, ready: (page: Page) => ReturnType<Page
   ['history', repoUrl('commits', '&path=src/main.rs'), (page) => page.getByTestId('commit-row').first()],
   ['blame', repoUrl('blame', '&path=src/main.rs'), (page) => page.getByTestId('blame-table')],
   ['commits', repoUrl('commits'), (page) => page.getByRole('link', { name: 'Initial import' }).first()],
-  ['issues', repoUrl('issues'), (page) => page.getByRole('list', { name: 'Issues', exact: true }).getByRole('link', { name: 'README should explain the event split' })],
+  ['issues', repoUrl('issues'), (page) => page.getByRole('list', { name: 'Pinned issues' }).getByRole('link', { name: 'README should explain the event split' })],
   ['pull', () => repoUrl('pull', `&number=${loadSeedPulls().approved}&tab=files`), (page) => page.getByRole('heading', { name: /Files changed/ })],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['private', '/private/', (page) => page.getByRole('heading', { name: 'Private repositories', exact: true })],

@@ -97,6 +97,7 @@ import type { Membership } from '@/lib/rules/v2'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
+import { PinnedBadge } from '@/components/repo/pinned-badge'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, editCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
@@ -903,8 +904,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         </SidebarSection>
         {isMember || meta.pinned || meta.locked ? (
           <SidebarSection title="Conversation" icon={Pin}>
-            <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-flags">
-              {meta.pinned ? 'Pinned' : 'Not pinned'} · {lockStateText(meta.locked)}
+            <p className="flex flex-wrap items-center gap-1.5 text-anvil-600 dark:text-anvil-300" data-testid="thread-flags">
+              {meta.pinned ? <PinnedBadge /> : null}
+              <span>{lockStateText(meta.locked)}</span>
             </p>
             {(caps.canPin || caps.canLock) && !archived && guard.disabledReason === null ? (
               <div className="mt-2 flex flex-wrap gap-2">

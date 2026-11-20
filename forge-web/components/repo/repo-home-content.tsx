@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, FileText, GitCommit, Rocket } from 'lucide-react'
+import { AlertTriangle, FileText, GitBranch, GitCommit, Rocket } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
@@ -23,9 +23,11 @@ import type { RepoHome, SelectedRef } from '@/lib/view'
 import {
   commitRootTree,
   decodeTextBlob,
+  isLive,
   pickReadme,
   readBlob,
   readTree,
+  refParamFor,
   selectRef,
   selectedTip,
   type TreeEntry,
@@ -40,6 +42,8 @@ import {
   useLastCommits,
 } from '@/components/repo/commit-column'
 import { useAsync } from '@/hooks/use-async'
+import { useAuth } from '@/contexts/auth-context'
+import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
@@ -108,6 +112,11 @@ export function RepoHomeContent({
   if (!tipOid && selected.ref) {
     return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
   }
+
+  // The default branch was never pushed, but other refs were (a repo pushed only to feature
+  // branches): never call it empty; list what it does have.
+  const liveRefs = [...home.branches, ...home.tags].filter(isLive)
+  if (!tipOid && !refParam && liveRefs.length > 0) return <BeingMadePublicState home={home} empty={<DefaultBranchUnbornState home={home} addr={addr} />} loading={<LoadingBlock label="Reading this repo" />} />
 
   // A repo being made public has no public branch until its code is published: say so to everyone
   // rather than invite them to push to an empty repo (DESIGN §4.10).
@@ -243,6 +252,70 @@ function RootBody({
   )
 }
 
+/** How many branches the unborn-default state links before pointing at the Branches page. */
+const UNBORN_DEFAULT_BRANCHES = 6
+
+/**
+ * A repo whose default branch has no commit while other branches or tags do: its refs, to open one.
+ */
+function DefaultBranchUnbornState({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
+  const branches = home.branches.filter(isLive).map((b) => b.refName.replace(/^refs\/heads\//, ''))
+  const tags = home.tags.filter(isLive).length
+  const shown = branches.slice(0, UNBORN_DEFAULT_BRANCHES)
+  const counted = [branches.length > 0 ? `${branches.length} ${branches.length === 1 ? 'branch' : 'branches'}` : null, tags > 0 ? `${tags} ${tags === 1 ? 'tag' : 'tags'}` : null].filter((x) => x !== null).join(' and ')
+  return (
+    <section
+      aria-labelledby="unborn-default-heading"
+      className="rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
+      data-testid="default-branch-unborn"
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <GitBranch className="h-5 w-5 text-fg-muted" aria-hidden />
+        <h2 id="unborn-default-heading" className="text-prose">
+          The default branch <span className="font-mono">{home.defaultBranch}</span> has no commits yet
+        </h2>
+      </div>
+      <p className="text-dense text-anvil-600 dark:text-anvil-300">
+        This repo has {counted}. Pick one to browse its code.
+      </p>
+      {shown.length > 0 ? (
+        <ul aria-label="Branches" className="mt-3 flex flex-wrap gap-x-2 gap-y-3 coarse:gap-y-5">
+          {shown.map((name) => (
+            <li key={name}>
+              <Link
+                href={repoHref('/repo', addr, { ref: refParamFor(name, false, home.defaultBranch) })}
+                className="hit-area inline-flex max-w-full items-center gap-1 rounded-md border border-anvil-200 px-2 py-1 font-mono text-[12px] text-forge-700 hover:bg-anvil-50 dark:border-anvil-750 dark:text-forge-400 dark:hover:bg-anvil-850"
+              >
+                <GitBranch className="h-3 w-3 shrink-0" aria-hidden />
+                <span className="truncate">{name}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="mt-3 flex flex-wrap gap-x-4 text-dense">
+        {branches.length > 0 ? (
+          <Link href={repoHref('/repo/branches', addr)} className="hit-area text-forge-700 underline dark:text-forge-400">
+            All branches →
+          </Link>
+        ) : null}
+        {tags > 0 ? (
+          <Link href={repoHref('/repo/tags', addr)} className="hit-area text-forge-700 underline dark:text-forge-400">
+            Tags →
+          </Link>
+        ) : null}
+      </p>
+    </section>
+  )
+}
+
+/** Whether the viewer pushes here, so its storage warning is theirs: the owner, a maintainer or a writer (false until the role is read). */
+function useCanConfigureStorage(home: RepoHome): boolean {
+  const { identity } = useAuth()
+  const { role } = useViewerRole(home.repo)
+  return identity !== null && (identity === home.repo.ownerId || role === 'maintainer' || role === 'writer')
+}
+
 /**
  * The empty-repository state (`ux-dx-spec.md` §5.5): the commands that push an existing
  * repository, or start from scratch, and where the bytes will go.
@@ -250,6 +323,7 @@ function RootBody({
 function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddress; branch: string }): JSX.Element {
   const cmd = repoCommands(addr.owner, addr.name)
   const configured = home.backend.kind !== 'platform' || home.backend.uris.length > 0
+  const canConfigure = useCanConfigureStorage(home)
   return (
     <section
       aria-label="Empty repository"
@@ -295,7 +369,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
           Install →
         </a>
       </p>
-      {!configured ? (
+      {!configured && canConfigure ? (
         // Touch: far enough below Install that the two links' 44 px hit areas do not overlap (QW3-060).
         <p role="note" className="mt-3 flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] coarse:mt-6 text-anvil-700 dark:text-anvil-200">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
