@@ -165,7 +165,7 @@ export function LoginModal(): JSX.Element {
 
   return (
     <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">
-      {intent && view !== 'grant' ? (
+      {intent && view !== 'grant' && view !== 'welcome' ? (
         <p data-testid="signin-intent" className="mb-3 rounded-md bg-anvil-100 px-3 py-2 text-dense text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
           {intent.privateRepo
             ? 'Private repos are encrypted for their members. Import your identity with "Read and write members-only and private content" ticked: this browser then keeps your encryption key and opens the private repos you are a member of. Reading costs nothing.'
@@ -439,7 +439,7 @@ function GroupLabel({ children }: { children: ReactNode }): JSX.Element {
 
 /** The words the sheet uses, in plain English, without leaving it (F3; QW-013 linked out instead). */
 const GLOSSARY: readonly (readonly [string, string])[] = [
-  ['Identity', 'Your Dash account. It comes from 12 words only you hold; nobody, Forge included, can reset it or take it away.'],
+  ['Identity', 'Your Dash account. Your 12 words (or identity file) control it; nobody, Forge included, can reset it or take it away.'],
   ['Recovery phrase', 'Those 12 words. Write them on paper and keep them offline: anyone who has them controls the identity.'],
   ['Master key', 'The all-powerful key your 12 words make. Forge uses it once, to set up this browser’s key, and never stores it.'],
   ['This browser’s key', `A key just for Forge, kept in this browser. It can spend at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH and expires (after ${BROWSER_KEY_DEFAULTS.days} days by default), so a lost or shared computer can’t empty your identity.`],
@@ -524,7 +524,7 @@ function WelcomeView({ created, onDone }: { created: CreatedIdentity; onDone: ()
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
             {(leftover.duffs / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} DASH<FiatNote dash={leftover.duffs / 1e8} balance /> is still on the deposit address{' '}
-            <span className="break-all font-mono">{created.deposit?.depositAddress}</span>: it wasn&apos;t included in your identity and
+            <span className="break-all font-mono">{typeof created.deposit === 'object' ? created.deposit?.depositAddress : null}</span>: it wasn&apos;t included in your identity and
             isn&apos;t in your balance. Only your 12 words can recover it, with tools outside Forge.
           </span>
         </div>
@@ -544,11 +544,11 @@ type Leftover = { readonly kind: 'checking' | 'none' | 'unknown' } | { readonly 
 
 /** What the finished creation's deposit address still holds, once (nothing to check without its record). */
 function useLeftoverDeposit(deposit: CreatedIdentity['deposit']): Leftover {
-  const [state, setState] = useState<Leftover>(deposit === null ? { kind: 'none' } : { kind: 'checking' })
+  const [state, setState] = useState<Leftover>(deposit === null ? { kind: 'none' } : deposit === 'unreadable' ? { kind: 'unknown' } : { kind: 'checking' })
   useEffect(() => {
-    if (deposit === null) return
+    if (deposit === null || deposit === 'unreadable') return
     let cancelled = false
-    depositBalance(ACTIVE_NETWORK.network, deposit).then(
+    depositBalance(ACTIVE_NETWORK.network, deposit, { countLock: true }).then(
       (duffs) => !cancelled && setState(duffs > 0 ? { kind: 'held', duffs } : { kind: 'none' }),
       () => !cancelled && setState({ kind: 'unknown' }),
     )

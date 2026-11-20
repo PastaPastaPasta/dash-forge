@@ -96,11 +96,17 @@ export function clearCreationJournal(network: Network): Promise<void> {
 
 /**
  * What a creation's deposit address holds (duffs): before discarding an unfinished one, and after
- * a finished one for a payment its lock did not take (F13). The journal's own lock counts as a
- * spend even where a feed has not delivered it yet.
+ * a finished one for a payment its lock did not take (F13). `countLock` (only once the identity is
+ * registered, so the lock was broadcast) counts the journal's lock as a spend even where a feed has
+ * not delivered it yet; an unfinished creation's lock may never have been sent.
  */
-export async function depositBalance(network: Network, journal: CreationJournal, endpoints = coreEndpoints(network)): Promise<number> {
-  const spends = journal.lockRaw ? [hexToBytes(journal.lockRaw)] : []
+export async function depositBalance(
+  network: Network,
+  journal: CreationJournal,
+  { countLock = false }: { countLock?: boolean } = {},
+  endpoints = coreEndpoints(network),
+): Promise<number> {
+  const spends = countLock && journal.lockRaw ? [hexToBytes(journal.lockRaw)] : []
   return depositHeld(endpoints, journal.depositAddress, journal.startHeight ?? { startedAt: journal.startedAt }, spends)
 }
 

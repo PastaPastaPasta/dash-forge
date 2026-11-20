@@ -76,10 +76,13 @@ vi.mock('@/lib/auth/app-connect', async (orig) => {
 let walletReady: boolean | null = null
 /** What the finished creation's deposit address still holds (duffs), or an Error when unreadable. */
 let leftover: number | Error | Promise<number> = 0
+const WELCOME_DEPOSIT = { depositAddress: 'yDepositAddressForTheWelcomeView1', startedAt: 1 }
+let createdDeposit: unknown = WELCOME_DEPOSIT
+const balanceCalls: unknown[][] = []
 const created = vi.hoisted(() => ({ identityId: 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec' }))
 vi.mock('@/components/auth/create-identity-flow', () => ({
   CreateIdentityFlow: ({ onDone }: { onDone: (c: unknown) => void }) => (
-    <button type="button" data-testid="fake-create-done" onClick={() => onDone({ identityId: created.identityId, deposit: { depositAddress: 'yDepositAddressForTheWelcomeView1', startedAt: 1 } })}>
+    <button type="button" data-testid="fake-create-done" onClick={() => onDone({ identityId: created.identityId, deposit: createdDeposit })}>
       finish
     </button>
   ),
@@ -87,7 +90,8 @@ vi.mock('@/components/auth/create-identity-flow', () => ({
 vi.mock('@/lib/auth/create-identity', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/create-identity')>()),
   readCreationJournal: async () => journal,
-  depositBalance: async () => {
+  depositBalance: async (...args: unknown[]) => {
+    balanceCalls.push(args)
     if (leftover instanceof Error) throw leftover
     return await leftover
   },
@@ -180,6 +184,8 @@ beforeEach(() => {
   walletSupported = null
   walletReady = null
   leftover = 0
+  createdDeposit = WELCOME_DEPOSIT
+  balanceCalls.length = 0
   platformUp = false
   v2Available = false
   auth.importIdentity.mockReset()
@@ -622,6 +628,8 @@ describe('after a new identity registers (F13, F14)', () => {
     expect(q('[data-testid="welcome-explore"]')!.getAttribute('href')).toMatch(/^\/explore\/?$/)
     expect(byText(/All options/)).toBeNull()
     expect(q('[data-testid="welcome-leftover"]')).toBeNull()
+    // The identity registered, so its lock was broadcast: it counts as a spend.
+    expect(balanceCalls).toEqual([[expect.any(String), WELCOME_DEPOSIT, { countLock: true }]])
     await click(q('[data-testid="welcome-done"]'))
     expect(useUiStore.getState().loginOpen).toBe(false)
   })
@@ -655,5 +663,13 @@ describe('after a new identity registers (F13, F14)', () => {
     leftover = new Error('no node answered')
     await finish()
     expect(q('[data-testid="welcome-deposit-unknown"]')).not.toBeNull()
+  })
+
+  it('an unreadable creation record shows the "could not check" line, not silence', async () => {
+    createdDeposit = 'unreadable'
+    await finish()
+    expect(q('[data-testid="welcome-deposit-unknown"]')).not.toBeNull()
+    expect(q('[data-testid="welcome-deposit-checking"]')).toBeNull()
+    expect(balanceCalls).toEqual([])
   })
 })

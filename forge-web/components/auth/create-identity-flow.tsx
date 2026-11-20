@@ -65,10 +65,13 @@ const STAGE_TEXT: Readonly<Record<CreateStage, string>> = {
 /** What the funding step suggests sending, and the amount its wallet link fills in (DASH). */
 const SUGGESTED_DEPOSIT_DASH = 0.05
 
-/** What a finished creation hands the sheet: the new identity, and the deposit to check for a second payment (F13). */
+/**
+ * What a finished creation hands the sheet: the new identity, and the deposit to check for a second
+ * payment (F13), or 'unreadable' when this browser's record of it could not be read.
+ */
 export interface CreatedIdentity {
   readonly identityId: string
-  readonly deposit: CreationJournal | null
+  readonly deposit: CreationJournal | 'unreadable' | null
 }
 
 export function CreateIdentityFlow({ onDone }: { onDone: (created: CreatedIdentity) => void }): JSX.Element {
@@ -264,8 +267,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: (created: CreatedIdenti
       deferOfferThisLoad(network, identityId)
       await controller.openStored(identityId, null, key.limits)
       // Kept past the journal: the welcome view checks its address for a payment the lock missed.
-      const deposit = (await readCreationJournal(network).catch(() => undefined)) ?? null
-      await clearCreationJournal(network)
+      const deposit = await readCreationJournal(network).then((j) => j ?? null, () => 'unreadable' as const)
+      // An unreadable record is kept: a later sign-up run can still read its deposit address and check it.
+      if (deposit !== 'unreadable') await clearCreationJournal(network)
       setMnemonic(null)
       runWords.current = null
       storedKey.current = null
