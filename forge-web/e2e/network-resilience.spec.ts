@@ -142,7 +142,9 @@ test.describe('network resilience', () => {
     )
     // An issue page this tab has not read: it has to ask Platform.
     await issue.click()
-    const retry = page.getByRole('button', { name: 'Try again' }).first()
+    // The outage's own Try again (the page's unreachable state or the banner), not a slow
+    // loading view's re-read, which does not reconnect.
+    const retry = page.locator('[data-testid=read-unreachable], [data-testid=platform-unreachable]').getByRole('button', { name: 'Try again' }).first()
     await expect(retry).toBeVisible({ timeout: 90_000 })
     // Nothing read before the outage is presented as verified while Platform is away (M4).
     await expect(page.getByText(/^Verified/)).toHaveCount(0)
@@ -216,7 +218,7 @@ test.describe('network resilience: refresh under navigation and writes', () => {
     await expect(README(page)).toBeVisible({ timeout: 60_000 })
     await page.waitForTimeout(5_000)
     await expect(BANNER(page)).toHaveCount(0)
-    await expect(page.getByText(/Connecting to Platform/)).toHaveCount(0)
+    await expect(page.getByText(/Connecting to (Dash )?Platform/)).toHaveCount(0)
 
     // The next refresh still runs: the service did not strand its config.
     const before = hits

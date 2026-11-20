@@ -361,26 +361,19 @@ export async function expectPlatformPreAllowed(panel: Locator): Promise<void> {
 }
 
 /**
- * Wait until the repo scaffold has finished the "Connecting to Platform" / "Resolving …"
- * loading shell — i.e. the WASM SDK connected and the forge-v2 `repo` document resolved.
- * Resolves when either real content or an explicit terminal state (error / not-found) is on
- * screen.
+ * Wait until the repo scaffold has finished its loading view (`repo-loading`: connecting to
+ * Platform, finding the repo, loading its branches), i.e. the WASM SDK connected and the
+ * forge-v2 `repo` document resolved. Resolves when either real content or an explicit terminal
+ * state (error / not-found) is on screen.
  */
 export async function waitForRepoResolved(page: Page, timeout = 60_000): Promise<void> {
-  await page
-    .getByText(/Connecting to Platform|Resolving /i)
-    .first()
-    .waitFor({ state: 'visible', timeout: 10_000 })
-    .catch(() => {
-      /* the shell may already be gone if the SDK was warm */
-    })
-  await page
-    .getByText(/Connecting to Platform|Resolving /i)
-    .first()
-    .waitFor({ state: 'hidden', timeout })
-    .catch(() => {
-      /* fall through — assertions below decide pass/fail */
-    })
+  const loading = page.getByTestId('repo-loading')
+  await loading.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {
+    /* the shell may already be gone if the SDK was warm */
+  })
+  await loading.waitFor({ state: 'hidden', timeout }).catch(() => {
+    /* fall through — assertions below decide pass/fail */
+  })
 }
 
 /**

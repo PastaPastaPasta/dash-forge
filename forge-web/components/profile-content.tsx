@@ -196,7 +196,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
 
   if (!address) return <EmptyState heading="h1" icon={Users} title="No profile addressed" body="Add ?id= (an identity id) or ?name= (a DPNS name) to the URL." />
   if (!isForgeDeployed()) return <NotDeployedState />
-  if (loading) return <LoadingBlock label="Reading profile" />
+  if (loading) return <LoadingBlock label={byId || isIdentifier(address) ? 'Reading profile' : `Looking up ${address} on DPNS`} onRetry={reload} />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null && ready) {
     return (

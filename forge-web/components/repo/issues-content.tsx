@@ -62,7 +62,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { EmptyState, ErrorState, ListLoading } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorComposeHint, MirrorNote } from '@/components/repo/mirror-note'
 import { useRepoLinks } from '@/components/repo/target-href'
@@ -342,7 +342,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own issues, assignments and mentions.</p>
         ) : ((loading || awaitingTrust) && !data) || (empty && data?.searchedOf?.auto) ? (
-          <LoadingBlock label={readingLabel('issues', progress ?? data?.searchedOf?.searched ?? null, totals)} />
+          <ListLoading label={readingLabel('issues', progress ?? data?.searchedOf?.searched ?? null, totals)} onRetry={reload} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (

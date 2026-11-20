@@ -12,7 +12,7 @@
  */
 
 import { AlertTriangle, Clock, Loader2, ShieldX, WifiOff, type LucideIcon } from 'lucide-react'
-import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
 import { clockSkewErrorCopy } from '@/lib/sdk/clock-skew'
 import { DEFAULT_NETWORK } from '@/lib/constants'
@@ -32,11 +32,107 @@ export function Spinner({ label = 'Loading', className }: { label?: string; clas
   )
 }
 
-/** A centered loading block for whole-view fetches. */
-export function LoadingBlock({ label = 'Reading from Platform' }: { label?: string }): JSX.Element {
+/** When a loading state adds that the network is slow (and offers Try again where it can). */
+export const SLOW_AFTER_MS = 10_000
+
+/** Whole seconds since mount, or since `resetKey` last changed; ticks once a second. */
+export function useElapsed(resetKey: string = ''): number {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    const start = Date.now()
+    setElapsed(0)
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => clearInterval(t)
+  }, [resetKey])
+  return elapsed
+}
+
+/** Whether `resetKey` has stayed the same for {@link SLOW_AFTER_MS} (one timer, no ticking). */
+export function useSlow(resetKey: string = ''): boolean {
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    setSlow(false)
+    const t = setTimeout(() => setSlow(true), SLOW_AFTER_MS)
+    return () => clearTimeout(t)
+  }, [resetKey])
+  return slow
+}
+
+/** A retry that also restarts the caller's slow-read clock: the attempt count keys it. */
+export function useRetryAttempt(onRetry: (() => void) | undefined): [attempt: number, retry: (() => void) | undefined] {
+  const [attempt, setAttempt] = useState(0)
+  if (onRetry === undefined) return [attempt, undefined]
+  return [
+    attempt,
+    () => {
+      setAttempt((n) => n + 1)
+      onRetry()
+    },
+  ]
+}
+
+/**
+ * A centered loading block for whole-view fetches. Past {@link SLOW_AFTER_MS} it says the
+ * network is slow, with Try again when the caller passes `onRetry`, so a long read never looks
+ * stuck.
+ */
+export function LoadingBlock({ label = 'Reading from Platform', onRetry }: { label?: string; onRetry?: () => void }): JSX.Element {
+  const [attempt, retry] = useRetryAttempt(onRetry)
+  const slow = useSlow(String(attempt))
   return (
-    <div className="flex min-h-[40vh] items-center justify-center">
+    <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 px-4 text-center">
       <Spinner label={label} />
+      {slow ? <SlowNote onRetry={retry} /> : null}
+    </div>
+  )
+}
+
+/** "Taking longer than usual", with Try again when the read can be restarted. */
+export function SlowNote({ onRetry }: { onRetry?: (() => void) | undefined }): JSX.Element {
+  return (
+    <div className="flex flex-col items-center" data-testid="loading-slow">
+      <p role="status" className="max-w-sm text-dense text-anvil-500 dark:text-anvil-400">
+        This is taking longer than usual: the network is slow. Still trying…
+      </p>
+      {onRetry ? <RetryButton onClick={onRetry} className="mt-2" /> : null}
+    </div>
+  )
+}
+
+/**
+ * A list's loading state inside its frame (issues, pull requests): what is read, rows shaped like
+ * the list under it, and past {@link SLOW_AFTER_MS} the slow note with Try again.
+ */
+export function ListLoading({ label, onRetry, rows = 5 }: { label: string; onRetry?: () => void; rows?: number }): JSX.Element {
+  const [attempt, retry] = useRetryAttempt(onRetry)
+  const slow = useSlow(String(attempt))
+  return (
+    <div className="space-y-3 px-4 py-4" data-testid="list-loading">
+      <Spinner label={label} />
+      {slow ? <SlowNote onRetry={retry} /> : null}
+      <ListSkeleton rows={rows} className="border-0" />
+    </div>
+  )
+}
+
+/**
+ * The shape of a list (files, issues, pull requests) while it loads: static blocks, no shimmer
+ * (style guide). Hidden from assistive tech: the loading label beside it says what is read.
+ */
+export function ListSkeleton({ rows = 5, className }: { rows?: number; className?: string }): JSX.Element {
+  return (
+    <div aria-hidden className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', className)} data-testid="list-skeleton">
+      <div className="flex items-center gap-3 border-b border-anvil-200 bg-anvil-50 px-4 py-2.5 dark:border-anvil-800 dark:bg-anvil-900">
+        <span className="h-3 w-24 rounded bg-anvil-200 dark:bg-anvil-800" />
+        <span className="h-3 w-16 rounded bg-anvil-200 dark:bg-anvil-800" />
+      </div>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 dark:border-anvil-850">
+          <span className="h-4 w-4 shrink-0 rounded-full bg-anvil-200 dark:bg-anvil-800" />
+          <span className="h-3 rounded bg-anvil-200 dark:bg-anvil-800" style={{ width: `${40 + ((i * 37) % 45)}%` }} />
+          <span className="ml-auto h-3 w-12 shrink-0 rounded bg-anvil-100 dark:bg-anvil-850" />
+        </div>
+      ))}
     </div>
   )
 }
@@ -76,12 +172,12 @@ export function useOffline(): boolean {
 }
 
 /** "Try again" for an offline or unreachable state (the words the Platform banner uses). */
-export function RetryButton({ onClick }: { onClick: () => void }): JSX.Element {
+export function RetryButton({ onClick, className = 'mt-4' }: { onClick: () => void; className?: string }): JSX.Element {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="mt-4 rounded-md border border-anvil-300 px-3 py-1.5 text-dense hover:bg-anvil-100 coarse:min-h-11 dark:border-anvil-700 dark:hover:bg-anvil-800"
+      className={cn(className, 'rounded-md border border-anvil-300 px-3 py-1.5 text-dense hover:bg-anvil-100 coarse:min-h-11 dark:border-anvil-700 dark:hover:bg-anvil-800')}
     >
       Try again
     </button>
