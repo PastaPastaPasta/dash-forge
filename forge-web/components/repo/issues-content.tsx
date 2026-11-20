@@ -66,7 +66,8 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorComposeHint, MirrorNote } from '@/components/repo/mirror-note'
 import { useRepoLinks } from '@/components/repo/target-href'
-import { AssigneeAvatars, MarkdownEditor } from '@/components/repo/issue-bits'
+import { AssigneeAvatars } from '@/components/repo/issue-bits'
+import { MarkdownEditor, submitShortcut } from '@/components/repo/markdown-editor'
 import {
   AuthorLoginNote,
   CommentCount,
@@ -566,6 +567,11 @@ function ComposeIssueDialog({
     quoteGate.check(audience.audience === 'public' ? `${title}\n${issueBody}` : null, membersTexts, () => void send())
   }
 
+  // Cmd/Ctrl+Enter: what Submit does, refused where the button is disabled.
+  const submitFromKeys = (): void => {
+    if (title.trim() !== '' && audience.blocked === null) submit()
+  }
+
   const send = async (): Promise<void> => {
     if (pending || !sdk || !signer) return
     setPending(true)
@@ -650,7 +656,7 @@ function ComposeIssueDialog({
           </>
         ) : null}
         <Field label="Title" htmlFor="issue-title">
-          <Input id="issue-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Something is broken…" autoFocus maxLength={256} />
+          <Input id="issue-title" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => submitShortcut(e, submitFromKeys)} placeholder="Something is broken…" autoFocus maxLength={256} />
         </Field>
         {form !== null ? (
           <IssueFormFields form={form} values={answers} onChange={answer} idBase="issue-form" />
@@ -662,6 +668,9 @@ function ComposeIssueDialog({
             onChange={setBody}
             placeholder="What happened, and how to reproduce it."
             links={links}
+            onSubmit={submitFromKeys}
+            submitLabel="submit the issue"
+            cost={cost}
           />
         )}
         <SealedLimit repo={repo} kind="issue" text={title.trim() + issueBody} long={longBody} />

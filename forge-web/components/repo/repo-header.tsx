@@ -200,6 +200,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
             <Link
               key={tab.path}
               href={repoHref(tab.path, addr, tab.refAware && refParam ? { ref: refParam } : {})}
+              data-repo-tab={tab.key}
               aria-current={active ? 'page' : undefined}
               className={cn(
                 'inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-dense transition-colors coarse:min-h-11',

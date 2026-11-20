@@ -25,6 +25,7 @@ import { PlatformBusy } from '@/components/platform-busy'
 import { StorageUpdated } from '@/components/storage-updated'
 import { TopUpSheet } from '@/components/top-up-sheet'
 import { Toaster } from '@/components/ui/toaster'
+import { KeyboardShortcuts } from '@/components/keyboard-shortcuts'
 import { TrustAnchorGate } from '@/components/ui/trust-alert'
 
 export function AppShell({
@@ -70,6 +71,7 @@ export function AppShell({
       <Toaster />
       <PlatformBusy />
       <StorageUpdated />
+      <KeyboardShortcuts />
     </div>
   )
 }

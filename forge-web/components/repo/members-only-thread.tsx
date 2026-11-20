@@ -18,7 +18,7 @@ import { HiddenNote } from '@/components/repo/hidden-note'
 import { LockedBanner, lockViewerOf } from '@/components/repo/locked-banner'
 import { BodyCounter, PrivateComposeNote, composeCost } from '@/components/repo/private-compose'
 import { useLongCompose } from '@/components/repo/long-body'
-import { MarkdownEditor } from '@/components/repo/issue-bits'
+import { MarkdownEditor } from '@/components/repo/markdown-editor'
 import { Timeline } from '@/components/repo/timeline'
 import { useRepoLinks } from '@/components/repo/target-href'
 import { Button } from '@/components/ui/button'
@@ -172,7 +172,7 @@ function PublicReplyComposer({ home, target, kind, onPosted }: { home: RepoHome;
       <LockedBanner locked={lockApplies} viewer={lockViewerOf(identity, holdings)} target={kind}>
         <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
         {block !== null ? <PrivateComposeNote reason={block} /> : null}
-        <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" onSubmit={block === null ? () => void postComment() : undefined} />
+        <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" onSubmit={block === null ? () => void postComment() : undefined} submitLabel="comment" cost={cost} />
         <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="while-private-note">
           {whilePrivateNote(false)}
         </p>

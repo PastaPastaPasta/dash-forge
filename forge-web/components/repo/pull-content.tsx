@@ -188,7 +188,8 @@ import { PullSourceCheckout } from '@/components/repo/pull-source-checkout'
 import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
-import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { EditedMarker, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { MarkdownEditor } from '@/components/repo/markdown-editor'
 import { AgentsSection, useRequestsOutsideAccess } from '@/components/repo/agents-section'
 import type { AgentRequest } from '@/lib/rules/agent-request'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
@@ -1111,7 +1112,7 @@ function PullPage({
       guard.check(commentCost, 'collab', 'comment')
       return
     }
-    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
+    if (posting || comment.trim() === '' || commentTooLong || audience.blocked !== null || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     if (quoting && !confirmed) {
       quoteCheck(comment, membersTexts, () => void postComment(true))
@@ -1607,6 +1608,13 @@ function PullPage({
   }
 
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
+  const editBlocked = editing === null || editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null
+  const saveEdit = (): void => {
+    if (editing === null || editBlocked) return
+    const edit = { kind: 'edit-pull' as const, title: editing.title.trim(), body: editing.body }
+    // A public PR's edit is public text: it asks first when it repeats members-only text.
+    quoteCheck(publicTextOf(`${edit.title}\n${edit.body}`, pull.audience), membersTexts, () => setPending(edit), { before: `${pull.title}\n${pull.body}` })
+  }
 
   return (
     <AuthorRolesProvider owner={repo.ownerId} members={thread.members} authors={tab === 'conversation' ? threadAuthorIds(pull.author, thread.timeline) : []}>
@@ -1623,12 +1631,8 @@ function PullPage({
               <Button
                 variant="primary"
                 size="sm"
-                disabled={editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null}
-                onClick={() => {
-                  const edit = { kind: 'edit-pull' as const, title: editing.title.trim(), body: editing.body }
-                  // A public PR's edit is public text: it asks first when it repeats members-only text.
-                  quoteCheck(publicTextOf(`${edit.title}\n${edit.body}`, pull.audience), membersTexts, () => setPending(edit), { before: `${pull.title}\n${pull.body}` })
-                }}
+                disabled={editBlocked}
+                onClick={saveEdit}
               >
                 Save
               </Button>
@@ -1878,7 +1882,7 @@ function PullPage({
                   ) : null}
                   {editing ? (
                     <>
-                      <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
+                      <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} onSubmit={saveEdit} submitLabel="save" onCancel={() => setEditing(null)} changed={editing.title.trim() !== pull.title || editing.body !== pull.body} />
                       <BodyCounter repo={repo} text={editing.body} field="description" long={editLong} />
                     </>
                   ) : pull.body ? (
@@ -2232,7 +2236,7 @@ function PullPage({
                     <PrivateComposeNote reason={composeBlock} />
                   ) : (
                     <>
-                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} submitLabel="comment" cost={commentCost} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
                       <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} members={audience.audience === 'members' ? 'comment' : undefined} />
                       <AudienceWarnings warnings={warnings} />
@@ -2965,15 +2969,16 @@ function commentSlots({
     </>
   )
   if (editing?.id === c.id) {
+    const saveBlocked = editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)
     return {
       header: tags,
       body: (
         <div className="space-y-2 px-4 py-3">
-          <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
+          <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus onSubmit={() => { if (!saveBlocked) onSave(c.id, editing.body) }} submitLabel="save" onCancel={() => onEdit(null)} changed={editing.body !== c.body} />
           <BodyCounter repo={repo} text={editing.body} field="comment" long={editLong} />
           <PublicEditHint marks={c} />
           <div className="flex gap-2">
-            <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)} onClick={() => onSave(c.id, editing.body)}>
+            <Button variant="primary" size="sm" disabled={saveBlocked} onClick={() => onSave(c.id, editing.body)}>
               Save
             </Button>
             <Button variant="ghost" size="sm" onClick={() => onEdit(null)}>

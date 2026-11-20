@@ -57,7 +57,7 @@ import {
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { MarkdownEditor } from '@/components/repo/issue-bits'
+import { MarkdownEditor } from '@/components/repo/markdown-editor'
 import { Button } from '@/components/ui/button'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Oid } from '@/components/ui/oid'
@@ -513,7 +513,7 @@ export function ReviewDrawer({
             </>
           ) : (
             <>
-              <MarkdownEditor id="review-summary" label="Review summary" value={summary} onChange={setSummary} placeholder="Leave a summary (optional)" />
+              <MarkdownEditor id="review-summary" label="Review summary" value={summary} onChange={setSummary} placeholder="Leave a summary (optional)" onSubmit={() => { if (progress === null && guard.disabledReason === null && textAudience.blocked === null) submit() }} submitLabel="submit the review" cost={cost ?? undefined} />
               <AudienceWarnings warnings={warnings} />
               {textAudience.choice !== null ? (
                 <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
