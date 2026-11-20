@@ -26,7 +26,9 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
+use forge_core::keystore::Secret;
 use forge_core::network::NetworkTarget;
+use forge_core::user_error::{codes, UserError};
 
 use forge_core::cost::push_fees;
 
@@ -231,6 +233,10 @@ pub struct GitPusher {
     pub url: String,
     /// The signing identity source (a file path or an inline `dfk1:` key).
     pub key: PathBuf,
+    /// That source's contents, already unlocked: handed to the helper on an inherited pipe
+    /// ([`forge_core::key_handoff`]), so a passphrase-sealed key is not asked for again (the
+    /// helper has no terminal here, and would refuse with E303).
+    pub handoff: Option<Secret>,
     /// The network (its env vars are handed to the helper).
     pub network: NetworkTarget,
     /// What to push.
@@ -826,6 +832,9 @@ impl GitPusher {
             .env("DASH_FORGE_DEFAULT_BRANCH", &self.default_branch)
             .env("DASH_FORGE_SPAWNED_BY", "forge-import")
             .envs(self.network.env_vars());
+        if let Some(key) = &self.handoff {
+            forge_core::key_handoff::attach(&mut cmd, key)?;
+        }
         let out = cmd.output().context("running git")?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -861,6 +870,72 @@ impl GitPusher {
     }
 }
 
+/// Before anything is paid for: check that the `git-remote-dash` the pushes will run reads the
+/// signing key as `identity_id` (`git remote-dash --check-key`), with the key handed over the
+/// way the pushes hand it. An older helper that ignores the handoff, or one that cannot open
+/// a sealed key, is refused here rather than after the repository was created.
+pub fn check_helper_key(
+    key: &Secret,
+    source: &Path,
+    network: &NetworkTarget,
+    identity_id: &str,
+) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.args(["remote-dash", "--check-key"])
+        .env("PATH", helper_path()?)
+        .env("DASH_FORGE_KEY", source)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(network.env_vars())
+        .stdin(std::process::Stdio::null());
+    forge_core::key_handoff::attach(&mut cmd, key)?;
+    let checked = match cmd.output() {
+        Ok(out) => check_key_answer(
+            out.status.success(),
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+            identity_id,
+        ),
+        Err(e) => Err(format!("running `git remote-dash --check-key`: {e}")),
+    };
+    checked.map_err(|cause| {
+        UserError::new(
+            codes::IDENTITY_UNREADABLE,
+            "not imported: `git push` could not use your key",
+        )
+        .cause(cause)
+        .fix("install dg (or forge-import) and git-remote-dash from the same release (docs/INSTALL.md); `dg doctor` compares their versions")
+        .fix("`dg auth status` shows which key source dg uses")
+        .note("checked before anything was paid for; nothing was written")
+        .into()
+    })
+}
+
+/// What `git remote-dash --check-key` answered: `Ok` when it read the key as `identity_id`,
+/// else why not.
+fn check_key_answer(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+    identity_id: &str,
+) -> std::result::Result<(), String> {
+    if !success {
+        let tail: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+        let tail = tail[tail.len().saturating_sub(3)..].join("\n");
+        return Err(format!(
+            "`git remote-dash --check-key` failed: {}",
+            tail.trim()
+        ));
+    }
+    let report = serde_json::from_str::<Value>(stdout.trim()).unwrap_or_default();
+    match report["identityId"].as_str() {
+        Some(id) if id == identity_id => Ok(()),
+        Some(id) => Err(format!(
+            "git-remote-dash read identity {id}, and this import signs as {identity_id}"
+        )),
+        None => Err("git-remote-dash did not report the identity it would push as".into()),
+    }
+}
+
 /// Whether a push error is the helper's cost guard refusing before it stored anything
 /// (E801 with its "nothing was stored or paid for" note).
 pub fn refused_before_storing(e: &anyhow::Error) -> bool {
@@ -889,6 +964,28 @@ fn helper_path() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F2: the pre-flight passes only when the helper read the key as the importing identity.
+    #[test]
+    fn the_helper_key_check_needs_the_same_identity() {
+        let ok = r#"{"identityId":"Abc"}"#;
+        assert_eq!(check_key_answer(true, ok, "", "Abc"), Ok(()));
+        let other = check_key_answer(true, ok, "", "Xyz").unwrap_err();
+        assert!(other.contains("read identity Abc"), "{other}");
+        let silent = check_key_answer(true, "", "", "Abc").unwrap_err();
+        assert!(silent.contains("did not report"), "{silent}");
+        let sealed = check_key_answer(
+            false,
+            "",
+            "noise\n\nerror: your key is sealed with a passphrase [E303]\n",
+            "Abc",
+        )
+        .unwrap_err();
+        assert!(
+            sealed.contains("noise\nerror: your key is sealed"),
+            "{sealed}"
+        );
+    }
 
     #[test]
     fn helper_events_and_porcelain_fold_into_a_report() {

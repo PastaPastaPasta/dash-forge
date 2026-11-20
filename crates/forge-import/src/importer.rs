@@ -67,6 +67,7 @@ pub struct ImportConfig {
 /// spent before it is still reported).
 pub async fn run(cfg: &ImportConfig) -> Summary {
     let mut summary = Summary::new(cfg.network.network.key(), cfg.source.display());
+    summary.limit = cfg.limit;
     let client = match PlatformClient::connect(cfg.network.clone()).await {
         Ok(c) => c,
         Err(e) => {
@@ -78,6 +79,24 @@ pub async fn run(cfg: &ImportConfig) -> Summary {
         Ok(s) => s,
         Err(e) => return dest::finish(summary, Outcome::default(), Err(e)).await,
     };
+    // A real run's pushes sign through git-remote-dash: check it reads the key this run
+    // unlocked before the source is read and the repository paid for (F2: a sealed key, and
+    // no terminal for the helper to ask on).
+    if let (false, true, Some(signer), Some(source)) = (
+        cfg.dry_run,
+        cfg.classes.code,
+        signer.as_ref(),
+        cfg.key.as_deref(),
+    ) {
+        if let Err(e) = crate::gitsync::check_helper_key(
+            &signer.unlocked,
+            source,
+            &cfg.network,
+            &signer.bridge.identity_id,
+        ) {
+            return dest::finish(summary, Outcome::default(), Err(e)).await;
+        }
+    }
     let mut outcome = Outcome {
         ledger: None,
         signer: signer.as_ref().map(|s| (&client, s)),
@@ -209,6 +228,7 @@ async fn run_inner<'a>(
         git_dir: work.clone(),
         url,
         key: cfg.key.clone().unwrap_or_default(),
+        handoff: signer.map(|s| s.unlocked.clone()),
         network: cfg.network.clone(),
         refs: refs.clone(),
         fallback,

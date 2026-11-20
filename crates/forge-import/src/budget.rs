@@ -253,6 +253,11 @@ impl Budget {
         self.balance_start = Some(balance);
     }
 
+    /// The balance the run started from, when [`Self::start`] recorded one.
+    pub fn balance_start(&self) -> Option<u64> {
+        self.balance_start
+    }
+
     /// What this run has spent, as far as it can tell (credits): the estimates of every write
     /// admitted, or the measured drop plus the reserved writes it may not show yet, whichever
     /// is larger.
