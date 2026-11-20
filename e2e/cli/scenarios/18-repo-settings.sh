@@ -191,6 +191,8 @@ dg_write "$ID_COLLAB" "$LOG-pover" pr merge "$REPO" "$N2" --override-policy
 check "a writer cannot override the policy (E601)" refused_with E601 "$LOG-pover"
 dg_write "$ID_OWNER" "$LOG-omerge2" pr merge "$REPO" "$N2" --override-policy || fail_with "$LOG-omerge2" "maintainer override merge"
 check "the maintainer's override merge lands" merge_landed "$LOG-omerge2" "$N2"
+# A retried writer's merge that recorded the merge and then failed would leave nothing to merge.
+check "no writer's attempt merged the PR first" test "$(jq_py "$LOG-omerge2.json" 'd.get("status")')" != already_merged
 
 step "archive: the helper refuses a member's push (E606); unarchive clears it"
 dg_write "$ID_OWNER" "$LOG-arch" repo archive "$REPO" || fail_with "$LOG-arch" "archive"
