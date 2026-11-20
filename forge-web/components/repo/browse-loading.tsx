@@ -3,12 +3,12 @@
 /**
  * What a code page shows while the repo's browse index resolves (QW3-001): the bytes read so far
  * when the index is read whole (a private repo's, or one whose rows do not add up), and after
- * {@link SLOW_AFTER_MS} a plain note that the network is slow, rather than a bare spinner that
+ * ten seconds a plain note that the network is slow, rather than a bare spinner that
  * could as well be stuck.
  */
 
 import { useSyncExternalStore } from 'react'
-import { SLOW_AFTER_MS, Spinner, useSlow } from '@/components/ui/states'
+import { Spinner, useSlow } from '@/components/ui/states'
 import { ProgressBar } from '@/components/ui/platform-status'
 import { formatBytes } from '@/lib/view/format'
 import { indexProgress, subscribeIndexProgress } from '@/lib/view/index-progress'
