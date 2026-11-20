@@ -216,12 +216,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     // from the cost module (re-measured on bonsia, QW-080), never a literal.
     await expect(empty.getByText(/0\.0003 DASH/)).toHaveCount(0)
     await expect(empty.getByText(`a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH`)).toBeVisible()
-    // The rate comes from the cost module (the chunk fees `dg` and the docs quote), never a literal.
-    await expect(empty.getByText(`~${PUSH_COST_DASH.perMib} DASH/MiB`)).toBeVisible()
     await expect(empty.getByRole('link', { name: 'Install →' })).toBeVisible()
-    // With no storage configured, the amber note links to the storage settings.
-    const note = empty.getByRole('note')
-    if (await note.count()) await expect(note.getByRole('link', { name: 'Configure storage →' })).toHaveAttribute('href', /\/settings\/storage/)
+    // The "No storage configured" note (and its per-MiB rate) is for whoever pushes here, not a signed-out visitor.
+    await expect(empty.getByText(`~${PUSH_COST_DASH.perMib} DASH/MiB`)).toHaveCount(0)
+    await expect(empty.getByRole('link', { name: 'Configure storage →' })).toHaveCount(0)
     await shot(page, 'b-empty-repo')
     await expectNoSeriousA11y(page, 'b-empty-repo')
   })
