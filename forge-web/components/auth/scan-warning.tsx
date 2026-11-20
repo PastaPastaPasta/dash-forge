@@ -61,9 +61,9 @@ export function ScanOnlyHere({ host: given, capped = false }: { host?: string; c
             Settings → Devices &amp; keys → Disable all other keys
           </Link>{' '}
           (needs your recovery phrase or identity file), then replace your encryption key.{' '}
-          <a href={DOCS.revokeKeys} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
+          <Link prefetch={false} href={DOCS.revokeKeys} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
             How
-          </a>
+          </Link>
         </li>
       </ul>
     </div>

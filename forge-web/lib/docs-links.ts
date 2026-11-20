@@ -29,11 +29,8 @@ export const DOCS = {
   hostedCuration: '/docs/hosted-curation/',
   /** Every network Forge has run on, and what a devnet reset means. */
   networks: '/docs/networks/',
-  /**
-   * What to do when a key may be compromised (disable all other keys, replace the encryption key).
-   * On GitHub until its one caller (components/auth/scan-warning.tsx) links in-app.
-   */
-  revokeKeys: `${REPO_URL}/blob/master/docs/guides/revoke-keys.md`,
+  /** What to do when a key may be compromised (disable all other keys, replace the encryption key). */
+  revokeKeys: '/docs/revoke-keys/',
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
 } as const
