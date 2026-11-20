@@ -31,10 +31,16 @@ import { TrustAnchorGate } from '@/components/ui/trust-alert'
 export function AppShell({
   children,
   wide = false,
+  staticContent = false,
 }: {
   children: ReactNode
   /** Use the full 1280px column (repo pages) vs a narrower reading column. */
   wide?: boolean
+  /**
+   * The page shows only what the build contains (the docs hub), never a Platform read: it stays
+   * readable when the network lacks this build's contracts, where the "moved" state links to it.
+   */
+  staticContent?: boolean
 }): JSX.Element {
   // The network does not have this build's contracts (a devnet reset): one state for the whole
   // app, not a read error in every view.
@@ -63,7 +69,7 @@ export function AppShell({
         className={`mx-auto w-full flex-1 px-4 py-6 outline-none sm:px-6 ${wide ? 'max-w-[1280px]' : 'max-w-[1080px]'}`}
       >
         {/* A failed trust anchor heads every page and withholds it (QW-004). */}
-        {contractsMissing !== null ? <ContractsMissingState detail={contractsMissing} /> : <TrustAnchorGate>{children}</TrustAnchorGate>}
+        {contractsMissing !== null && !staticContent ? <ContractsMissingState detail={contractsMissing} /> : <TrustAnchorGate>{children}</TrustAnchorGate>}
       </main>
       <AppFooter />
       <LoginModal />

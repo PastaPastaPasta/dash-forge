@@ -15,6 +15,12 @@ describe('pageTitle (L-59)', () => {
     expect(pageTitle('/repo/pull/', q('owner=alice&name=p&number=7762'))).toBe('Pull request #7762 · alice/p · Dash Forge')
   })
 
+  it('names the docs hub and each guide', () => {
+    expect(pageTitle('/docs/', q(''))).toBe('Docs · Dash Forge')
+    expect(pageTitle('/docs/costs/', q(''))).toBe('What things cost · Docs · Dash Forge')
+    expect(pageTitle('/docs/no-such-guide/', q(''))).toBe('Docs · Dash Forge')
+  })
+
   it('shortens an identity id until its DPNS name is known', () => {
     expect(pageTitle('/repo/pulls', q(`owner=${ID}&name=dash`))).toBe('Pull requests · Bdx8pb9…ajRDB/dash · Dash Forge')
   })

@@ -11,6 +11,7 @@
  * encryption key, which the note says when it applies.
  */
 
+import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { DOCS } from '@/lib/docs-links'
@@ -66,9 +67,9 @@ export function RemovePasskeysOption({
       {holding.encryption ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400" data-testid="remove-passkeys-encryption">
           A passkey that holds your encryption key still opens it for anyone who has the passkey. Removing it doesn&apos;t change that: replace the{' '}
-          <a href={`${DOCS.identity}#replacing-it-after-a-lost-device`} target="_blank" rel="noreferrer noopener" className="underline">
+          <Link prefetch={false} href={`${DOCS.identity}#replacing-it-after-a-lost-device`} target="_blank" rel="noreferrer noopener" className="underline">
             encryption key
-          </a>{' '}
+          </Link>{' '}
           too.
         </p>
       ) : null}

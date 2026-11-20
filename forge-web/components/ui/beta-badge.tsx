@@ -7,6 +7,7 @@
  * guide's "Known limitations".
  */
 
+import Link from 'next/link'
 import { BETA_FEATURES, BETA_TOOLTIP, isBeta, type BetaFeature } from '@/lib/beta'
 import { DOCS } from '@/lib/docs-links'
 import { cn } from '@/lib/utils'
@@ -14,7 +15,7 @@ import { cn } from '@/lib/utils'
 export function BetaBadge({ feature, className }: { feature: BetaFeature; className?: string }): JSX.Element | null {
   if (!isBeta(feature)) return null
   return (
-    <a
+    <Link prefetch={false}
       href={DOCS.knownLimitations}
       target="_blank"
       rel="noreferrer noopener"
@@ -28,6 +29,6 @@ export function BetaBadge({ feature, className }: { feature: BetaFeature; classN
       )}
     >
       Beta
-    </a>
+    </Link>
   )
 }

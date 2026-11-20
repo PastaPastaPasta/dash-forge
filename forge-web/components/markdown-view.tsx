@@ -45,6 +45,7 @@ import { bytesToBase64 } from '@/lib/sdk/query'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
+import type { DocHref } from '@/lib/docs/catalog'
 
 /** The repo file a Markdown document is part of, for relative links and images. */
 export interface MarkdownRepoContext {
@@ -80,8 +81,12 @@ export interface SuggestionContext {
   readonly original: readonly string[] | null
 }
 
+/** Where a repo-path link in an in-app document goes (`/docs`, lib/docs/catalog `resolveDocHref`). */
+export type DocLinkResolver = (href: string) => DocHref | null
+
 interface RenderContext {
   readonly repo: MarkdownRepoContext | null
+  readonly docLinks: DocLinkResolver | null
   readonly images: 'auto' | 'ask'
   readonly links: MarkdownLinks | null
   readonly suggestion: SuggestionContext | null
@@ -93,7 +98,7 @@ interface RenderContext {
   readonly budget: { left: number }
 }
 
-const EMPTY_CTX: RenderContext = { repo: null, images: 'ask', links: null, suggestion: null, refs: { source: null, imported: null }, notes: '', budget: { left: 0 } }
+const EMPTY_CTX: RenderContext = { repo: null, docLinks: null, images: 'ask', links: null, suggestion: null, refs: { source: null, imported: null }, notes: '', budget: { left: 0 } }
 const Ctx = createContext<RenderContext>(EMPTY_CTX)
 
 /** How references resolve for `links`, in content whose `imported.url` is `imported`. */
@@ -230,7 +235,7 @@ function MdLink({ href, id, children }: { href: string; id?: string; children: R
 }
 
 function LinkTarget({ href, id, children }: { href: string; id?: string; children: ReactNode }): JSX.Element {
-  const { repo, refs } = useContext(Ctx)
+  const { repo, refs, docLinks } = useContext(Ctx)
   // An `<a href name>` is also an in-page target; a link that goes nowhere keeps only that.
   const target = id === undefined ? undefined : anchorTarget(id)
   if (href === '#') return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
@@ -239,6 +244,18 @@ function LinkTarget({ href, id, children }: { href: string; id?: string; childre
     const to = anchorTarget(decodeURIComponentSafe(href.slice(1)))
     return (
       <a id={target} href={`#${to}`} className={LINK}>
+        {children}
+      </a>
+    )
+  }
+  const doc = docLinks?.(href) ?? null
+  if (doc !== null) {
+    return 'internal' in doc ? (
+      <Link id={target} href={doc.internal} className={LINK}>
+        {children}
+      </Link>
+    ) : (
+      <a id={target} href={doc.external} target="_blank" rel="noreferrer noopener" className={LINK}>
         {children}
       </a>
     )
@@ -348,7 +365,7 @@ function repoPathHref(repo: MarkdownRepoContext, path: string, route: '/repo/blo
 }
 
 /** The DOM id an in-page anchor (a heading slug, `<a name>` or `id`) renders with, as on GitHub. */
-function anchorTarget(name: string): string {
+export function anchorTarget(name: string): string {
   return `user-content-${name.toLowerCase()}`
 }
 
@@ -597,7 +614,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
 }
 
 /** Plain text of inline nodes, for heading ids. */
-function textOf(nodes: readonly Inline[]): string {
+export function textOf(nodes: readonly Inline[]): string {
   return nodes
     .map((n) => (n.t === 'text' || n.t === 'code' ? n.v : n.t === 'image' ? n.alt : n.t === 'br' ? ' ' : n.t === 'fnref' ? '' : textOf(n.c)))
     .join('')
@@ -938,6 +955,7 @@ export const MarkdownView = memo(function MarkdownView({
   suggestion = null,
   mode = repo === null ? 'comment' : 'document',
   imported = null,
+  docLinks = null,
 }: {
   source: string
   className?: string
@@ -961,11 +979,13 @@ export const MarkdownView = memo(function MarkdownView({
    * references then go to that forge, never to a Forge profile anyone could register (L-38).
    */
   imported?: string | null
+  /** An in-app document (`/docs`): resolves its links to other documents; keep it referentially stable. */
+  docLinks?: DocLinkResolver | null
 }): JSX.Element {
   const notes = useId().replace(/[^a-zA-Z0-9]/g, '')
   const ctx = useMemo<RenderContext>(
-    () => ({ repo, images, links, suggestion, refs: refsOf(links, imported), notes: `${notes}-`, budget: { left: MAX_AUTOLINKS } }),
-    [repo, images, links, suggestion, imported, notes],
+    () => ({ repo, docLinks, images, links, suggestion, refs: refsOf(links, imported), notes: `${notes}-`, budget: { left: MAX_AUTOLINKS } }),
+    [repo, docLinks, images, links, suggestion, imported, notes],
   )
   // Every render of the document spends a full budget (its text nodes render in this pass).
   ctx.budget.left = MAX_AUTOLINKS

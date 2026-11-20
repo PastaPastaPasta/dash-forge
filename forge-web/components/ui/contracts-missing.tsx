@@ -17,6 +17,7 @@
  * contracts missing — not a date or the build's devnet notice, so a live network's build never matches it.
  */
 
+import Link from 'next/link'
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -68,9 +69,9 @@ export function ContractsMissingState({
           Dash Forge on GitHub
         </a>
         {moved ? (
-          <a href={DEVNET_MOVE_DOC} className="text-dense text-forge-700 underline dark:text-forge-400">
+          <Link href={DEVNET_MOVE_DOC} className="text-dense text-forge-700 underline dark:text-forge-400">
             What is lost and kept
-          </a>
+          </Link>
         ) : null}
       </div>
       <details className="mt-4 w-full max-w-md text-left text-dense text-anvil-600 dark:text-anvil-300">

@@ -43,7 +43,7 @@ describe('ScanOnlyHere', () => {
     expect(note.textContent).toContain('no spending limit or expiry')
     expect(note.textContent).toContain('Disable all other keys')
     expect(note.textContent).toContain('then replace your encryption key')
-    expect(host.querySelector('a[href$="revoke-keys.md"]')).not.toBeNull()
+    expect(host.querySelector('a[href*="/docs/revoke-keys"]')).not.toBeNull()
     expect(note.textContent).not.toContain('CID')
     expect(host.querySelector('[data-testid="scan-warning-keys"]')!.getAttribute('href')).toBe('/settings/keys/')
   })

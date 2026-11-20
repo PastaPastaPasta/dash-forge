@@ -17,9 +17,9 @@ export function AppFooter(): JSX.Element {
           <Link href="/start/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Getting started
           </Link>
-          <a href={DOCS.guides} target="_blank" rel="noreferrer noopener" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+          <Link href={DOCS.guides} className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             User guides
-          </a>
+          </Link>
           <Link href="/private/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Private repositories
           </Link>

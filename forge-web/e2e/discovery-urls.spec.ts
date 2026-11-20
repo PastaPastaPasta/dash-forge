@@ -89,7 +89,7 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   if (await partial.isVisible()) await expect(starred.getByRole('heading')).toContainText(/Most starred among \d+ stars read/)
 
   const updated = page.getByTestId('explore-recently-updated')
-  await expect(updated.getByRole('heading')).toContainText('among the repos on this page')
+  await expect(updated.getByRole('heading')).toContainText('Recently active')
   await expect(updated.locator('a[href*="/repo"], [data-empty]').first()).toBeVisible({ timeout: 60_000 })
 
   const recent = page.getByTestId('explore-recent-repos')
@@ -100,13 +100,22 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   // it and offers no more, so what it protects is the page size and the paging, not a fixture size.
   expect(firstPage).toBeGreaterThan(0)
   expect(firstPage).toBeLessThanOrEqual(24)
+  // Test fixtures (`e2e-…`) are left out of the list, so a full page read can show fewer cards:
+  // "Load more" is the signal that repos remain, not the card count.
+  // Recent reads on by itself past pages of test fixtures, at most 4 page reads, before any click.
+  const readMarker = page.getByTestId('explore-recent-read')
+  const autoPages = Number(await readMarker.getAttribute('data-pages'))
+  expect(autoPages).toBeLessThanOrEqual(4)
   const more = recent.getByRole('button', { name: 'Load more repos' })
-  if (firstPage < 24) {
-    await expect(more).toHaveCount(0)
-  } else {
-    await expect(more).toBeVisible()
+  let clicked = 0
+  if (await more.isVisible()) {
+    const readBefore = Number(await readMarker.getAttribute('data-read'))
     await more.click()
-    await expect.poll(() => recent.locator('a[href*="/repo"]').count(), { timeout: 60_000 }).toBeGreaterThan(firstPage)
+    clicked = 1
+    // A page of only fixtures adds no card: the read itself (rows read, or no more to read) is the progress.
+    await expect
+      .poll(async () => Number(await readMarker.getAttribute('data-read')) > readBefore || !(await more.isVisible()), { timeout: 60_000 })
+      .toBe(true)
   }
   await shot(page, 'g14-explore-sections')
 
@@ -121,11 +130,12 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   // the shared devnet grows, nothing else is read. A later recent page whose composite the node
   // refused fell back to the plain query and read each new owner's name on its own (it stepped
   // this past 40 as bonsia grew): no top-level `domain` read at all is allowed.
+  const recentPages = autoPages + clicked
   const docs = dapi.get('getDocuments') ?? 0
   test.info().annotations.push({ type: 'dapi', description: JSON.stringify(Object.fromEntries(dapi)) })
   expect(dapi.get('getDocumentsCount') ?? 0, 'counts ride in the composites').toBe(0)
   expect(domainReads, 'owner names ride in the composites (no per-owner DPNS read)').toBe(0)
-  expect(docs, `getDocuments on Explore (1 featured + 6 ranked + 2 recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(1 + 6 + 2 + firstPage + DAPI_RESEND_SLACK)
+  expect(docs, `getDocuments on Explore (1 featured + 6 ranked + ${recentPages} recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(1 + 6 + recentPages + firstPage + DAPI_RESEND_SLACK)
   expect(errors, errors.join('\n')).toEqual([])
 })
 
