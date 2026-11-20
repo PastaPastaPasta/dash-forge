@@ -140,6 +140,13 @@ pub struct Summary {
     pub credits_per_dash: u64,
     /// The signer's balance at the end.
     pub balance_credits: Option<u64>,
+    /// The signer's balance when the write phase started (`null`: nothing was written, or
+    /// it could not be read).
+    pub balance_start_credits: Option<u64>,
+    /// What the balance really fell by over the run (`balanceStartCredits` less
+    /// `balanceCredits`; `null` when either could not be read). `spentCredits` stays the
+    /// larger of this and the estimates charged, the figure the cap is checked against.
+    pub measured_credits: Option<u64>,
     /// The signing key.
     pub key: KeyInfo,
     /// Non-fatal problems.
@@ -153,6 +160,13 @@ pub struct Summary {
     /// Human-only rendering of a budget error; the JSON contract keeps the original text.
     #[serde(skip)]
     pub(crate) human_error: Option<String>,
+    /// The phrased error the run failed with, when it was one (its code, fixes and note), so
+    /// a caller reports it as raised rather than as an unexpected failure.
+    #[serde(skip)]
+    pub user_error: Option<forge_core::user_error::UserError>,
+    /// `--limit` (0: none): the summary says what it bounds.
+    #[serde(skip)]
+    pub limit: usize,
     /// Part of what was asked for was left out (the warnings say what): the source refused to
     /// list it, or a release's asset could not be sealed or listed. The run ends `partial`,
     /// its state does not advance, and the next run tries it again.
@@ -173,12 +187,16 @@ impl Summary {
             spent_credits: 0,
             credits_per_dash: CREDITS_PER_DASH,
             balance_credits: None,
+            balance_start_credits: None,
+            measured_credits: None,
             key: KeyInfo::default(),
             warnings: Vec::new(),
             source_license: None,
             lfs_detected: false,
             error: None,
             human_error: None,
+            user_error: None,
+            limit: 0,
             incomplete: false,
         }
     }
@@ -217,6 +235,9 @@ impl Summary {
             c.releases,
             c.labels
         );
+        if let Some(note) = self.limit_note() {
+            eprintln!("  {note}");
+        }
         if self.status == Status::DryRun {
             eprintln!(
                 "  estimate: {:.6} DASH{} (dry run: nothing written)",
@@ -224,14 +245,7 @@ impl Summary {
                 forge_core::fiat::note_credits(self.spent_credits.max(self.estimate_credits))
             );
         } else {
-            eprintln!(
-                "  spent: {:.6} DASH{} (the larger of the estimates charged and the measured \
-                 balance drop; estimated {:.6}{} up front)",
-                credits_to_dash(self.spent_credits),
-                forge_core::fiat::note_credits(self.spent_credits),
-                credits_to_dash(self.estimate_credits),
-                forge_core::fiat::note_credits(self.estimate_credits)
-            );
+            eprintln!("  {}", self.spent_line());
         }
         if let Some(b) = self.balance_credits {
             eprintln!(
@@ -279,6 +293,60 @@ impl Summary {
         }
         if let Some(hint) = self.backlink_hint() {
             eprintln!("  {hint}");
+        }
+    }
+
+    /// What `--limit` bounded: the counts above are easy to read as the whole repository's.
+    fn limit_note(&self) -> Option<String> {
+        (self.limit > 0).then(|| {
+            format!(
+                "--limit {n}: the first {n} issues and PRs (oldest first), with every comment \
+                 and review on them; branches, tags and the open PRs' heads are not limited \
+                 (on GitLab, the first {n} open merge requests' heads and releases)",
+                n = self.limit
+            )
+        })
+    }
+
+    /// A real run's spend: what the balance fell by when it was read before and after,
+    /// else the estimates charged, labelled as such.
+    fn spent_line(&self) -> String {
+        let est = format!(
+            "estimated {:.6}{} up front",
+            credits_to_dash(self.estimate_credits),
+            forge_core::fiat::note_credits(self.estimate_credits)
+        );
+        match (
+            self.measured_credits,
+            self.balance_start_credits,
+            self.balance_credits,
+        ) {
+            (Some(m), Some(start), Some(end)) => {
+                // A read a block behind, or a top-up during the run, can hide spending: the
+                // charged figure the cap used is shown beside it when it is larger.
+                let charged = if self.spent_credits > m {
+                    format!(
+                        "; charged at the estimates {:.6}",
+                        credits_to_dash(self.spent_credits)
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "spent: {:.6} DASH{} (balance {:.6} → {:.6}{charged}; {est})",
+                    credits_to_dash(m),
+                    forge_core::fiat::note_credits(m),
+                    credits_to_dash(start),
+                    credits_to_dash(end),
+                )
+            }
+            (_, None, _) if self.spent_credits == 0 => format!("spent: nothing ({est})"),
+            _ => format!(
+                "spent: ~{:.6} DASH{} (charged at the estimates: the balance could not be read \
+                 to measure it; {est})",
+                credits_to_dash(self.spent_credits),
+                forge_core::fiat::note_credits(self.spent_credits),
+            ),
         }
     }
 
@@ -331,6 +399,52 @@ mod tests {
         assert_eq!(gitlab.backlink_hint(), None, "only GitHub is checked");
     }
 
+    /// F2: a real run reports what the balance fell by, not the estimate; without both
+    /// balance reads it says the figure is the estimates charged.
+    #[test]
+    fn the_spend_is_the_measured_balance_drop_when_known() {
+        let mut s = Summary::new("testnet".into(), "github.com/o/r".into());
+        s.estimate_credits = 1_942_700_000;
+        s.spent_credits = 1_942_700_000;
+        s.balance_start_credits = Some(10_000_000_000);
+        s.balance_credits = Some(8_796_700_000);
+        s.measured_credits = Some(1_203_300_000);
+        let line = s.spent_line();
+        assert!(line.starts_with("spent: 0.012033 DASH"), "{line}");
+        assert!(
+            line.contains("balance 0.100000 → 0.087967; charged at the estimates 0.019427"),
+            "{line}"
+        );
+        assert!(line.contains("estimated 0.019427 up front"), "{line}");
+        s.balance_credits = None;
+        s.measured_credits = None;
+        let line = s.spent_line();
+        assert!(line.starts_with("spent: ~0.019427 DASH"), "{line}");
+        assert!(line.contains("could not be read"), "{line}");
+        let mut none = Summary::new("testnet".into(), "github.com/o/r".into());
+        none.estimate_credits = 5;
+        assert!(
+            none.spent_line().starts_with("spent: nothing"),
+            "{}",
+            none.spent_line()
+        );
+    }
+
+    /// F18: `--limit` says the comments and reviews counted belong to the limited items.
+    #[test]
+    fn a_limited_run_says_what_the_limit_bounds() {
+        let mut s = Summary::new("testnet".into(), "github.com/octocat/Hello-World".into());
+        assert_eq!(s.limit_note(), None);
+        s.limit = 5;
+        let note = s.limit_note().unwrap();
+        assert!(
+            note.contains("first 5 issues and PRs (oldest first)"),
+            "{note}"
+        );
+        assert!(note.contains("every comment and review on them"), "{note}");
+        assert!(note.contains("open PRs' heads are not limited"), "{note}");
+    }
+
     #[test]
     fn the_json_shape_matches_the_action_contract() {
         let mut s = Summary::new("devnet-moutai".into(), "o/r".into());
@@ -347,6 +461,8 @@ mod tests {
             "estimateCredits",
             "spentCredits",
             "balanceCredits",
+            "balanceStartCredits",
+            "measuredCredits",
             "key",
             "warnings",
             "error",
