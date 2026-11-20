@@ -666,6 +666,32 @@ async fn a_refresh_follows_platform_and_platform_down_keeps_serving() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn readyz_follows_platform_back_up_with_no_mirror_to_poll() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    let info = gw.stub.add("alice", "proj", true, &src);
+    assert!(gw.clone("/alice/proj.git", "c1").await.status.success());
+    gw.stub.world().down = true;
+    assert!(gw.refresh(&info).await.is_some());
+    gw.stub.world().down = false;
+    let every = Duration::from_secs(2);
+    // The failed read is recent: it stands, and no heartbeat read is made.
+    gw.mirrors.heartbeat(every).await;
+    assert_eq!(gw.get("/readyz").await.0, 503);
+    // Once it is older than the poll interval, one read of Platform settles it.
+    tokio::time::sleep(every).await;
+    gw.mirrors.heartbeat(every).await;
+    let (s, _, body) = gw.get("/readyz").await;
+    assert_eq!(s, 200, "{body}");
+    assert!(body.contains(r#""platform":"reachable""#), "{body}");
+    // And Platform going down while idle is seen the same way.
+    gw.stub.world().down = true;
+    tokio::time::sleep(every).await;
+    gw.mirrors.heartbeat(every).await;
+    assert_eq!(gw.get("/readyz").await.0, 503);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn private_unknown_and_oversized_repos_are_refused() {
     let gw = start(|c| c.repo_max_bytes = 1 << 20).await;
     let src = source(&gw.tmp);

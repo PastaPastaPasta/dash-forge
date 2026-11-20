@@ -178,7 +178,8 @@ fn spawn_listed(
     });
 }
 
-/// The poller: warm mirrors are checked against Platform every `every`, and the cache trimmed.
+/// The poller: warm mirrors are checked against Platform every `every` (and, with no read
+/// finished meanwhile, one mirror's repository for `/readyz`), and the cache trimmed.
 fn spawn_poller(mirrors: Arc<Mirrors>, every: Duration) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
@@ -190,6 +191,7 @@ fn spawn_poller(mirrors: Arc<Mirrors>, every: Duration) {
                     mirrors.trigger(&slot);
                 }
             }
+            mirrors.heartbeat(every).await;
             mirrors.evict().await;
         }
     });
