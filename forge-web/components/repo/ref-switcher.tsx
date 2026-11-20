@@ -114,6 +114,10 @@ export function RefSwitcher({
     setOpen(!open)
   }
   const close = (): void => setOpen(false)
+  const dismiss = (): void => {
+    close()
+    triggerRef.current?.focus()
+  }
 
   // Scroll the keyboard-highlighted row into view as it moves past the popover's visible edge.
   // Inlines the id (rather than calling optionId, which is recreated every render) so the
@@ -127,8 +131,7 @@ export function RefSwitcher({
     switch (e.key) {
       case 'Escape':
         e.preventDefault()
-        close()
-        triggerRef.current?.focus()
+        dismiss()
         break
       case 'ArrowDown':
         e.preventDefault()
@@ -237,8 +240,7 @@ export function RefSwitcher({
               onKeyDown={(e) => {
                 if (e.key !== 'Escape') return
                 e.preventDefault()
-                close()
-                triggerRef.current?.focus()
+                dismiss()
               }}
             >
               <Link href={repoHref('/repo/branches', addr)} onClick={close} className={FOOTER_LINK}>

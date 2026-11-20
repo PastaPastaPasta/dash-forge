@@ -60,8 +60,23 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
 
   const onTabKey = (e: React.KeyboardEvent): void => {
     const i = tabs.indexOf(tab)
-    const next =
-      e.key === 'ArrowRight' ? tabs[(i + 1) % tabs.length] : e.key === 'ArrowLeft' ? tabs[(i - 1 + tabs.length) % tabs.length] : e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs[tabs.length - 1] : undefined
+    let next: CloneTab | undefined
+    switch (e.key) {
+      case 'ArrowRight':
+        next = tabs[(i + 1) % tabs.length]
+        break
+      case 'ArrowLeft':
+        next = tabs[(i - 1 + tabs.length) % tabs.length]
+        break
+      case 'Home':
+        next = tabs[0]
+        break
+      case 'End':
+        next = tabs[tabs.length - 1]
+        break
+      default:
+        return
+    }
     if (next === undefined) return
     e.preventDefault()
     setTab(next)
@@ -110,11 +125,13 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
               )}
             >
               {TAB_LABEL[t]}
-              {t === 'dash' ? <span className="sr-only">,</span> : null}
               {t === 'dash' ? (
-                <span className="rounded-full bg-verify/15 px-1.5 py-px text-[10px] font-semibold leading-4 text-verify-700 dark:text-verify-400">
-                  Recommended
-                </span>
+                <>
+                  <span className="sr-only">,</span>
+                  <span className="rounded-full bg-verify/15 px-1.5 py-px text-[10px] font-semibold leading-4 text-verify-700 dark:text-verify-400">
+                    Recommended
+                  </span>
+                </>
               ) : null}
             </button>
           )
