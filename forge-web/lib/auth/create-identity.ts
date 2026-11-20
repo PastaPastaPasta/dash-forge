@@ -94,9 +94,14 @@ export function clearCreationJournal(network: Network): Promise<void> {
   return idbDelete('journal', journalKey(network))
 }
 
-/** What an unfinished creation's deposit address holds (duffs), to warn before discarding. */
+/**
+ * What a creation's deposit address holds (duffs): before discarding an unfinished one, and after
+ * a finished one for a payment its lock did not take (F13). The journal's own lock counts as a
+ * spend even where a feed has not delivered it yet.
+ */
 export async function depositBalance(network: Network, journal: CreationJournal, endpoints = coreEndpoints(network)): Promise<number> {
-  return depositHeld(endpoints, journal.depositAddress, journal.startHeight ?? { startedAt: journal.startedAt })
+  const spends = journal.lockRaw ? [hexToBytes(journal.lockRaw)] : []
+  return depositHeld(endpoints, journal.depositAddress, journal.startHeight ?? { startedAt: journal.startedAt }, spends)
 }
 
 /** The deposit address a mnemonic funds (its BIP-44 asset-lock key). */

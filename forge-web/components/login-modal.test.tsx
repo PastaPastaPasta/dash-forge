@@ -66,11 +66,31 @@ vi.mock('@/lib/auth/app-connect-v2', async (orig) => ({
 let walletSupported: boolean | null = null
 vi.mock('@/lib/auth/app-connect', async (orig) => {
   const real = await orig<typeof import('@/lib/auth/app-connect')>()
-  return { ...real, walletSignInSupported: (n: Parameters<typeof real.walletSignInSupported>[0]) => walletSupported ?? real.walletSignInSupported(n) }
+  return {
+    ...real,
+    walletSignInSupported: (n: Parameters<typeof real.walletSignInSupported>[0]) => walletSupported ?? real.walletSignInSupported(n),
+    walletSignInReady: (n: Parameters<typeof real.walletSignInReady>[0], v2: boolean) => walletReady ?? real.walletSignInReady(n, v2),
+  }
 })
+/** Whether a released wallet answers here (mainnet with v2); null keeps the real rule (testnet: no, #591). */
+let walletReady: boolean | null = null
+/** What the finished creation's deposit address still holds (duffs), or an Error when unreadable. */
+let leftover: number | Error | Promise<number> = 0
+const created = vi.hoisted(() => ({ identityId: 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec' }))
+vi.mock('@/components/auth/create-identity-flow', () => ({
+  CreateIdentityFlow: ({ onDone }: { onDone: (c: unknown) => void }) => (
+    <button type="button" data-testid="fake-create-done" onClick={() => onDone({ identityId: created.identityId, deposit: { depositAddress: 'yDepositAddressForTheWelcomeView1', startedAt: 1 } })}>
+      finish
+    </button>
+  ),
+}))
 vi.mock('@/lib/auth/create-identity', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/create-identity')>()),
   readCreationJournal: async () => journal,
+  depositBalance: async () => {
+    if (leftover instanceof Error) throw leftover
+    return await leftover
+  },
 }))
 vi.mock('@/lib/auth', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth')>()),
@@ -158,6 +178,8 @@ beforeEach(() => {
   auth.storage = null
   journal = undefined
   walletSupported = null
+  walletReady = null
+  leftover = 0
   platformUp = false
   v2Available = false
   auth.importIdentity.mockReset()
@@ -447,7 +469,7 @@ describe('Q5-C04: the key lifetime is worded for each path', () => {
     act(() => useUiStore.getState().openLogin())
     await flush()
     const text = host.ownerDocument.body.textContent ?? ''
-    expect(text).toContain('for 90 days by default. An import can pick up to a year; a new identity\'s key can be renewed for up to a year later.')
+    expect(text).toContain("An import can pick up to a year; a new identity's key can be renewed for up to a year later.")
     expect(text).not.toContain('you can renew it for up to a year later')
     // Create fixes the lifetime; Import offers the picker.
     await click(q('[data-testid="tile-create"]'))
@@ -461,9 +483,10 @@ describe('Q5-C04: the key lifetime is worded for each path', () => {
 describe('App Connect v2 in the sheet', () => {
   const tileOrder = (): (string | undefined)[] => [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].map((t) => t.dataset['testid'])
 
-  it('puts the wallet tile first where v2 is on offer, and says one approval covers Forge', async () => {
+  it('puts the wallet tile first where a released wallet answers v2, and says one approval covers Forge', async () => {
     auth.vaults = []
     walletSupported = false
+    walletReady = true
     platformUp = true
     v2Available = true
     act(() => useUiStore.getState().openLogin())
@@ -471,6 +494,22 @@ describe('App Connect v2 in the sheet', () => {
     expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
     expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/approve once for all of Forge/)
+    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-create-badge"]')).toBeNull()
+  })
+
+  it('F3: on testnet, v2 on offer still leaves the wallet last, badged, and recommends creating an identity', async () => {
+    auth.vaults = []
+    platformUp = true
+    v2Available = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder().slice(0, 4)).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBe('true')
+    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Not available yet')
+    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/#591/)
+    expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-create-cost"]')!.textContent).toMatch(/Testnet · free test credits/)
   })
 
   it('keeps the wallet tile last where no wallet can answer and v2 is not on offer', async () => {
@@ -514,13 +553,13 @@ describe('Sign in with a passkey (passkeys that hold a key on Platform)', () => 
     expect(q('[data-testid="tile-create"]')).not.toBeNull()
   })
 
-  it('shows once passkeys are offered, after the wallet and before create, and says what it does not do', async () => {
+  it('shows once passkeys are offered, first for an existing identity, and says what it does not do', async () => {
     auth.passkeyProblem = null
     walletSupported = true
     await openChooser()
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
     const order = [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].map((b) => b.dataset.testid)
-    expect(order.slice(0, 3)).toEqual(['tile-wallet', 'tile-passkey', 'tile-create'])
+    expect(order.slice(0, 3)).toEqual(['tile-create', 'tile-passkey', 'tile-import'])
     expect(q('[data-testid="tile-passkey"]')!.textContent).toMatch(/Sign in with a passkey/)
     expect(q('[data-testid="tile-passkey"]')!.textContent).toMatch(/It doesn't recover an account/)
   })
@@ -562,5 +601,59 @@ describe('Sign in with a passkey (passkeys that hold a key on Platform)', () => 
     await click(q('[data-testid="passkey-unlock-instead"]'))
     // The Unlock view, for the key this browser holds.
     expect(q('#unlock-passphrase')).not.toBeNull()
+  })
+})
+
+describe('after a new identity registers (F13, F14)', () => {
+  const finish = async (): Promise<void> => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin('create'))
+    await flush()
+    await click(q('[data-testid="fake-create-done"]'))
+    for (let i = 0; i < 5; i++) await flush()
+  }
+
+  it("lands on \"You're in\" with next steps, not a closed sheet", async () => {
+    await finish()
+    expect(useUiStore.getState().loginOpen).toBe(true)
+    expect(host.ownerDocument.body.textContent).toMatch(/You're in/)
+    expect(q('[data-testid="welcome-new-repo"]')!.getAttribute('href')).toMatch(/^\/new\/?$/)
+    expect(q('[data-testid="welcome-mirror"]')!.getAttribute('href')).toMatch(/^\/mirror\/?$/)
+    expect(q('[data-testid="welcome-explore"]')!.getAttribute('href')).toMatch(/^\/explore\/?$/)
+    expect(byText(/All options/)).toBeNull()
+    expect(q('[data-testid="welcome-leftover"]')).toBeNull()
+    await click(q('[data-testid="welcome-done"]'))
+    expect(useUiStore.getState().loginOpen).toBe(false)
+  })
+
+  it('closing on the welcome view and reopening lands on the chooser, not the welcome view', async () => {
+    await finish()
+    await click(q('[data-testid="welcome-done"]'))
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 5; i++) await flush()
+    expect(q('[data-testid="signup-welcome"]')).toBeNull()
+    expect(q('[data-testid="tile-create"]')).not.toBeNull()
+  })
+
+  it('says it is checking the deposit address while the check runs', async () => {
+    leftover = new Promise<number>(() => undefined)
+    await finish()
+    expect(q('[data-testid="welcome-deposit-checking"]')).not.toBeNull()
+  })
+
+  it('warns when a second payment is still on the deposit address', async () => {
+    leftover = 100_000_000
+    await finish()
+    const warning = q('[data-testid="welcome-leftover"]')!
+    expect(warning.getAttribute('role')).toBe('alert')
+    expect(warning.textContent).toMatch(/1 DASH/)
+    expect(warning.textContent).toMatch(/yDepositAddressForTheWelcomeView1/)
+    expect(warning.textContent).toMatch(/Only your 12 words can recover it/)
+  })
+
+  it('says so when the deposit address could not be checked', async () => {
+    leftover = new Error('no node answered')
+    await finish()
+    expect(q('[data-testid="welcome-deposit-unknown"]')).not.toBeNull()
   })
 })

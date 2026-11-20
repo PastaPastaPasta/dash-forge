@@ -744,7 +744,7 @@ export function WalletConnectFlow({
           {mobile ? 'Open it in the wallet again.' : 'Scan this second code with the wallet.'}
         </p>
       ) : null}
-      {step?.kind === 'request' || isRegister ? <ScanOnlyHere /> : null}
+      {step?.kind === 'request' || isRegister ? <ScanOnlyHere capped={v2 !== undefined && (v2.budget !== null || v2.expiresAt !== null)} /> : null}
       {uri ? (
         mobile ? (
           <>
@@ -827,6 +827,7 @@ export function WalletSupportNote({ protocol = 'v1' }: { protocol?: 'v1' | 'v2' 
     return (
       <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Needs a Dash Wallet build that supports App Connect v2, which may be a development build. Wallets without it can answer the older code.
+        {network === 'testnet' ? ' On testnet, released wallets can’t answer either code yet: they’re waiting on support for testnet’s current Platform version (issue #591).' : null}
       </p>
     )
   }
@@ -843,7 +844,7 @@ export function WalletSupportNote({ protocol = 'v1' }: { protocol?: 'v1' | 'v2' 
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
       Needs a testnet development build of the Dash Wallet app (More → Tools → Connections → Scan QR) updated for testnet&apos;s current Platform. No build
-      has that yet. On iOS, each Forge contract needs its own approval.
+      has that yet (issue #591). On iOS, each Forge contract needs its own approval.
     </p>
   )
 }

@@ -20,6 +20,7 @@ import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { PushCostText, PushStorageHint } from '@/components/ui/push-cost-text'
 import { FiatNote } from '@/components/ui/fiat-note'
+import { TestCreditsBadge, TestCreditsNote } from '@/components/ui/test-credits'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
@@ -48,6 +49,7 @@ import {
 } from '@/lib/auth/create-identity'
 import { invalidMnemonicMessage, isValidMnemonic, newMnemonic, normalizeMnemonic, quizAnswerOk, quizPositions } from '@/lib/auth/hd'
 import { errorMessage } from '@/lib/utils'
+import { deferOfferThisLoad } from '@/lib/auth/passkey-vault/offer'
 import { PhraseWarning } from '@/components/auth/phrase-warning'
 
 type Step = 'loading' | 'words' | 'quiz' | 'protect' | 'fund' | 'resume'
@@ -63,7 +65,13 @@ const STAGE_TEXT: Readonly<Record<CreateStage, string>> = {
 /** What the funding step suggests sending, and the amount its wallet link fills in (DASH). */
 const SUGGESTED_DEPOSIT_DASH = 0.05
 
-export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Element {
+/** What a finished creation hands the sheet: the new identity, and the deposit to check for a second payment (F13). */
+export interface CreatedIdentity {
+  readonly identityId: string
+  readonly deposit: CreationJournal | null
+}
+
+export function CreateIdentityFlow({ onDone }: { onDone: (created: CreatedIdentity) => void }): JSX.Element {
   const { controller, reloadVaults } = useAuth()
   const network = ACTIVE_NETWORK.network
   const [step, setStep] = useState<Step>('loading')
@@ -252,12 +260,16 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         onCharge: (id, charge) => controller.reportCharge(id, charge),
       })
       reloadVaults()
+      // Before the session opens: the always-mounted backup offer must not race the sheet (F14).
+      deferOfferThisLoad(network, identityId)
       await controller.openStored(identityId, null, key.limits)
+      // Kept past the journal: the welcome view checks its address for a payment the lock missed.
+      const deposit = (await readCreationJournal(network).catch(() => undefined)) ?? null
       await clearCreationJournal(network)
       setMnemonic(null)
       runWords.current = null
       storedKey.current = null
-      onDone()
+      onDone({ identityId, deposit })
     } catch (e) {
       // Drop the key this attempt unlocked in this tab (other tabs keep their sessions). A
       // session already opened and kept by an earlier step stays kept: a reload picks it up.
@@ -455,10 +467,15 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
 
   return (
     <div className="space-y-3" data-testid="fund-step">
+      <TestCreditsBadge />
       <p className="text-dense">
         Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span><FiatNote dash={MIN_DEPOSIT_DUFFS / 1e8} /> to this address from any Dash wallet;{' '}
         <span className="font-mono">{SUGGESTED_DEPOSIT_DASH} DASH</span><FiatNote dash={SUGGESTED_DEPOSIT_DASH} /> is suggested. It becomes your
-        Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.
+        Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.{' '}
+        <TestCreditsNote />
+      </p>
+      <p className="text-dense font-medium" data-testid="fund-once">
+        Send one payment. Once the address holds enough, Forge turns what is there into your identity; anything sent after that stays on the address.
       </p>
       <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="push-storage-hint">
         <PushStorageHint />

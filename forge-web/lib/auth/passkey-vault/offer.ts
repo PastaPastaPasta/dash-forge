@@ -55,3 +55,18 @@ export function dismissOffer(network: Network, identityId: string): void {
   const r = read(network, identityId)
   write(network, identityId, { shown: r?.shown ?? 0, done: true })
 }
+
+/**
+ * Identities that should not be offered a backup in this page load: one that just signed up and
+ * sealed its key with a passkey would read a second "passkey" prompt as that one having failed
+ * (F14, 2026-11 new-user pass). Memory only, so a later sign-in can still make the offer.
+ */
+const deferred = new Set<string>()
+
+export function deferOfferThisLoad(network: Network, identityId: string): void {
+  deferred.add(key(network, identityId))
+}
+
+export function offerDeferred(network: Network, identityId: string): boolean {
+  return deferred.has(key(network, identityId))
+}

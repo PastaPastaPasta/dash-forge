@@ -284,11 +284,11 @@ describe('where a deposit watch starts', () => {
   })
 
   /** `depositHeld`, with fake timers run until it settles. */
-  async function held(address: string): Promise<number> {
+  async function held(address: string, spends: readonly Uint8Array[] = []): Promise<number> {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     try {
       let out: number | Error | undefined
-      depositHeld(EP, address, TIP - 3).then(
+      depositHeld(EP, address, TIP - 3, spends).then(
         (n) => (out = n),
         (e: Error) => (out = e),
       )
@@ -313,6 +313,17 @@ describe('where a deposit watch starts', () => {
     const d = deposit(4_000_000)
     network({ feed: [[d.raw]], feedDelayMs: 8_000 })
     expect(await held(d.address)).toBe(4_000_000)
+  })
+
+  it('a known spend (the creation\'s own lock) counts even when no feed delivers it (F13)', async () => {
+    const d = deposit(4_000_000)
+    const lock = buildAssetLock([{ txid: d.id, vout: 0, satoshis: 4_000_000, scriptPubKey: d.script, confirmations: 0 }], PRIV)
+    network({ feed: [[d.raw]] })
+    expect(await held(d.address, [lock.raw])).toBe(0)
+    // A second payment the lock did not take is still reported.
+    const second = deposit(2_500_000)
+    network({ feed: [[d.raw, second.raw]] })
+    expect(await held(d.address, [lock.raw])).toBe(2_500_000)
   })
 
   it('no node answering is an error, not "empty"', async () => {

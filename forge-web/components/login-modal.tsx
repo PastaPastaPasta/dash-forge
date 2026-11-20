@@ -1,18 +1,21 @@
 'use client'
 
 /**
- * The sign-in sheet (`ux-dx-spec.md` §2.2). Three tiles plus an Advanced disclosure:
+ * The sign-in sheet (`ux-dx-spec.md` §2.2), in two groups plus an Advanced disclosure and a
+ * plain-English glossary (F3, 2026-11 new-user pass):
  *
- *   1. Use my Dash wallet — App Connect v2 where the chain supports it (one approval covers all
- *      of Forge, with a budget and an expiry), else the DashConnect key exchange (shown only when
- *      a response contract exists here). First where a wallet can answer (v2 offered, or
- *      testnet's Dash Wallet), else last. The older exchange approves one Forge contract per
- *      scan, so a finished sign-in walks through the rest in one guided sequence ("Step 2 of 3"),
- *      each step skippable (FEAT-04, lib/auth/guided-grants.ts);
- *   2. Create a new identity — mnemonic + backup quiz + deposit QR, registered with a limited
- *      key inside the IdentityCreate;
- *   3. Import an identity file (or mnemonic) — the master key signs one IdentityUpdate that
- *      registers a limited key for this browser, and is not stored;
+ *   New to Dash: Create a new identity, badged Recommended — mnemonic + backup quiz + deposit
+ *      QR, registered with a limited key inside the IdentityCreate. It ends on a "You're in"
+ *      view with next steps and a check for a second payment left on the deposit address (F13, F14).
+ *   Already have one: a passkey from another device; Import an identity file (or mnemonic) — the
+ *      master key signs one IdentityUpdate that registers a limited key for this browser, and is
+ *      not stored; dg; and Use my Dash wallet — App Connect v2 where the chain supports it (one
+ *      approval covers all of Forge, with a budget and an expiry), else the DashConnect key
+ *      exchange (shown only when a response contract exists here). The wallet leads (and is the
+ *      one recommended) only where a released wallet can answer (`walletSignInReady`); on testnet
+ *      it is last, badged as waiting on wallet support (#591). The older exchange approves one
+ *      Forge contract per scan, so a finished sign-in walks through the rest in one guided
+ *      sequence ("Step 2 of 3"), each step skippable (FEAT-04, lib/auth/guided-grants.ts);
  *   Advanced: paste a raw key (developer path; this tab only; red warning).
  *
  * When this device already holds an encrypted key, the sheet opens on "Unlock" instead
@@ -24,7 +27,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, Compass, CopyPlus, Fingerprint, HelpCircle, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { PushCostText } from '@/components/ui/push-cost-text'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -34,7 +37,8 @@ import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
-import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
+import { CreateIdentityFlow, type CreatedIdentity } from '@/components/auth/create-identity-flow'
+import { TestCreditsBadge, isTestNetwork } from '@/components/ui/test-credits'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { Tile } from '@/components/auth/sign-in-tile'
 import { PasskeySignIn } from '@/components/auth/passkey-sign-in'
@@ -53,11 +57,12 @@ import { BROWSER_KEY_DEFAULTS, lifetimeLabel, limitsFor, masterMaterialFromFile,
 import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
-import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
+import { walletLoginAvailable, walletSignInReady } from '@/lib/auth/app-connect'
 import { appConnectV2Available } from '@/lib/auth/app-connect-v2'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { lockedIdentityOf } from '@/lib/auth/last-identity'
-import { readCreationJournal } from '@/lib/auth/create-identity'
+import { faucetUrls } from '@/lib/faucets'
+import { depositBalance, readCreationJournal } from '@/lib/auth/create-identity'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
 import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, typicalIssueCredits } from '@/lib/sdk'
@@ -65,7 +70,7 @@ import { writesPausedReason } from '@/lib/devnet-notice'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage, shortId } from '@/lib/utils'
 
-type View = 'choose' | 'unlock' | 'advanced' | LoginView
+type View = 'choose' | 'unlock' | 'advanced' | 'welcome' | LoginView
 
 export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
@@ -88,6 +93,8 @@ export function LoginModal(): JSX.Element {
   const [unlockFor, setUnlockFor] = useState<string | null>(null)
   // The locked key a dg handoff replaces (Unlock → "Replace this key with dg").
   const [dgReplace, setDgReplace] = useState<HandoffTarget | null>(null)
+  // The identity this sheet just created: the "You're in" view's subject.
+  const [created, setCreated] = useState<CreatedIdentity | null>(null)
   const hasVault = vaults.length > 0
 
   // Pick the view when the sheet opens: once the stored-key list has been read, so a returning
@@ -101,6 +108,7 @@ export function LoginModal(): JSX.Element {
       setView(null)
       setWalletDone(false)
       setGuide(null)
+      setCreated(null)
       return
     }
     if (opened.current === null) {
@@ -149,7 +157,7 @@ export function LoginModal(): JSX.Element {
     setUnlockFor(id)
     setView('unlock')
   }
-  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' || view === 'wallet-renew' ? null : () => setView('choose')
+  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' || view === 'wallet-renew' || view === 'welcome' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
   const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys, origin === 'passkey')
@@ -162,7 +170,7 @@ export function LoginModal(): JSX.Element {
           {intent.privateRepo
             ? 'Private repos are encrypted for their members. Import your identity with "Read and write members-only and private content" ticked: this browser then keeps your encryption key and opens the private repos you are a member of. Reading costs nothing.'
             : intent.credits !== undefined
-              ? <>Once you&apos;re signed in, this costs at most about {creditsAsDash(intent.credits)} DASH<FiatNote dash={creditsToDash(intent.credits)} kind="bound" />, paid from your identity&apos;s balance (often less: the exact price shows before you confirm).</>
+              ? <>Once you&apos;re signed in, this costs at most about {creditsAsDash(intent.credits)} DASH<FiatNote dash={creditsToDash(intent.credits)} kind="bound" />, paid from your identity&apos;s balance (often less: the exact price shows before you confirm).{isTestNetwork() ? <> On {networkName()} that is free test DASH.</> : null}</>
               : "Once you're signed in, you see what it costs and confirm before anything is signed."}
         </p>
       ) : null}
@@ -211,7 +219,15 @@ export function LoginModal(): JSX.Element {
         )
       ) : null}
       {view === 'dg' ? limitedKeys ? <DgHandoffFlow onDone={close} {...(dgReplace !== null ? { target: dgReplace } : {})} /> : <NotDeployedState /> : null}
-      {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
+      {view === 'create' ? (
+        <CreateIdentityFlow
+          onDone={(c) => {
+            setCreated(c)
+            setView('welcome')
+          }}
+        />
+      ) : null}
+      {view === 'welcome' && created ? <WelcomeView created={created} onDone={close} /> : null}
       {view === 'wallet' ? <WalletConnectFlow onDone={() => setWalletDone(true)} onUnlock={() => setView('unlock')} /> : null}
       {view === 'wallet-renew' ? (
         <>
@@ -249,6 +265,8 @@ function titleFor(view: View | null, grantTitle: string, action: string | undefi
       return "Renew this browser's key in your wallet"
     case 'create':
       return 'Create your identity'
+    case 'welcome':
+      return "You're in"
     case 'dg':
       return 'Sign in with dg'
     default:
@@ -279,6 +297,7 @@ function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number
 
 /** The sheet's description line for a view. */
 function describeView(view: View, limitedKeys: boolean, fromPasskey = false): ReactNode {
+  if (view === 'welcome') return 'Your identity is registered and this browser is signed in. Pick a first step, or close this and look around.'
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet gives this browser a key for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (view === 'wallet-renew') {
@@ -294,12 +313,12 @@ function describeView(view: View, limitedKeys: boolean, fromPasskey = false): Re
   const fixedLimits = <>{base}, for {BROWSER_KEY_DEFAULTS.days} days; you can renew it for up to a year later</>
   if (view === 'renew') return <>A new key for this browser ({limits}) replaces the current one, which is disabled in the same update.</>
   if (view === 'dg') return <>dg registers a limited key for this browser ({limits}). Your recovery phrase stays out of the browser.</>
-  if (view === 'import') return <>Forge signs with a limited key: {limits}.</>
-  if (view === 'create') return <>Forge signs with a limited key: {fixedLimits}.</>
+  if (view === 'import') return <>This browser gets its own Forge key: it can spend {limits}.</>
+  if (view === 'create') return <>This browser gets its own Forge key: it can spend {fixedLimits}.</>
   if (view === 'unlock') return 'Unlock the key this browser already holds.'
   // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md). Creating
   // fixes the lifetime (renewable later); importing lets you pick up to a year at once (Q5-C04).
-  return <>A new or imported identity gives this browser a limited key: {base}, for {BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity&apos;s key can be renewed for up to a year later.</>
+  return <>This browser gets its own Forge key: {base}, for {BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity&apos;s key can be renewed for up to a year later.</>
 }
 
 function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () => void }): JSX.Element {
@@ -313,24 +332,28 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
   const pausedReason = writesPausedReason()
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
-  // First where a wallet can answer: App Connect v2 is on offer here, or Dash Wallet answers the
-  // older exchange (testnet). Elsewhere last, saying why.
-  const walletFirst = walletV2 || walletSignInSupported(ACTIVE_NETWORK.network)
+  const network = ACTIVE_NETWORK.network
+  // The wallet leads only where a wallet a newcomer can install answers; elsewhere it is last,
+  // saying why, so the first thing a newcomer tries is not a dead end (F3).
+  const walletFirst = walletSignInReady(network, walletV2)
+  const recommended = { label: 'Recommended', tone: 'recommended' } as const
+  const createLeads = !walletFirst && creating === null
   const walletTile = walletAvailable ? (
     <Tile
       testId="tile-wallet"
       icon={Wallet}
       title="Use my Dash wallet"
       body={
-        walletV2
+        walletFirst
           ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
-          : walletFirst
-          ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve.'
-          : ACTIVE_NETWORK.network === 'devnet'
-            ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
-            : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
+          : network === 'testnet'
+            ? "Released Dash Wallet apps can't finish sign-in on testnet yet: they're waiting on support for testnet's current Platform version (issue #591). Use another option for now."
+            : network === 'devnet'
+              ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
+              : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
       }
       muted={!walletFirst}
+      badge={walletFirst ? (creating === null ? recommended : null) : { label: 'Not available yet', tone: 'waiting' }}
       onClick={() => onPick('wallet')}
       // The wallet broadcasts a key-adding update for Forge: paused with every other write.
       pausedReason={pausedReason}
@@ -354,15 +377,35 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
         />
       ) : null}
       {walletFirst ? walletTile : null}
+      <GroupLabel>New to Dash?</GroupLabel>
+      <Tile
+        testId="tile-create"
+        icon={Plus}
+        title="Create a new identity"
+        body={
+          isTestNetwork(network)
+            ? `Write down 12 words, lock this browser with a passkey or passphrase, then fund it with free test DASH${faucetUrls().length > 0 ? ' from the faucet' : ''}. Takes a few minutes.`
+            : 'Write down 12 words, lock this browser with a passkey or passphrase, then fund it from any Dash wallet.'
+        }
+        badge={createLeads ? recommended : null}
+        highlight={createLeads}
+        onClick={() => onPick('create')}
+        pausedReason={pausedReason}
+      />
+      <p data-testid="tile-create-cost" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+        <TestCreditsBadge />
+        <span>
+          About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.
+        </span>
+      </p>
+      <GroupLabel>Already have a Dash identity?</GroupLabel>
       {/* A passkey added on another device: reads only, so it is offered even while writes are paused. */}
       <PasskeySignIn onDone={onDone} onUnlock={() => onPick('unlock')} />
-      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet." onClick={() => onPick('create')} pausedReason={pausedReason} />
-      <p data-testid="tile-create-cost" className="text-[12px] text-anvil-500 dark:text-anvil-400">About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.</p>
       <Tile
         testId="tile-import"
         icon={Upload}
-        title="Import an identity file or recovery phrase"
-        body="Your master key is used once, right now, to create a limited key for this browser. It is not stored."
+        title="Use my recovery phrase or identity file"
+        body="Forge uses your 12 words (or file) once, to give this browser its own key, then forgets them."
         onClick={() => onPick('import')}
         pausedReason={pausedReason}
       />
@@ -385,15 +428,135 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
           </div>
         ) : null}
       </div>
-      {/* New to Dash (QW-013): what an identity, credits and test DASH are, before choosing a tile. */}
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        New to Dash Forge?{' '}
-        <Link href="/start/" onClick={closeLogin} className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="signin-docs">
-          How identities, keys and credits work
-        </Link>
-      </p>
+      <SignInHelp onLeave={closeLogin} />
     </div>
   )
+}
+
+function GroupLabel({ children }: { children: ReactNode }): JSX.Element {
+  return <h3 className="pt-2 text-[12px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">{children}</h3>
+}
+
+/** The words the sheet uses, in plain English, without leaving it (F3; QW-013 linked out instead). */
+const GLOSSARY: readonly (readonly [string, string])[] = [
+  ['Identity', 'Your Dash account. It comes from 12 words only you hold; nobody, Forge included, can reset it or take it away.'],
+  ['Recovery phrase', 'Those 12 words. Write them on paper and keep them offline: anyone who has them controls the identity.'],
+  ['Master key', 'The all-powerful key your 12 words make. Forge uses it once, to set up this browser’s key, and never stores it.'],
+  ['This browser’s key', `A key just for Forge, kept in this browser. It can spend at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH and expires (after ${BROWSER_KEY_DEFAULTS.days} days by default), so a lost or shared computer can’t empty your identity.`],
+  ['Passkey', 'Your device’s fingerprint, face or PIN unlock. Here it locks this browser’s key. Your fingerprint or face never leaves the device.'],
+  ['Credits', 'What writes cost, paid from your identity’s balance; every write shows its price first. Reading and cloning are free.'],
+]
+
+function SignInHelp({ onLeave }: { onLeave: () => void }): JSX.Element {
+  return (
+    <details data-testid="signin-help" className="group rounded-md border border-anvil-200 text-[12px] dark:border-anvil-800">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-anvil-600 coarse:py-3 dark:text-anvil-300 [&::-webkit-details-marker]:hidden">
+        <HelpCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="flex-1">New to Dash Forge? What these words mean</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <dl className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
+        {GLOSSARY.map(([term, meaning]) => (
+          <div key={term}>
+            <dt className="font-medium text-anvil-800 dark:text-anvil-100">{term}</dt>
+            <dd className="text-anvil-600 dark:text-anvil-300">{meaning}</dd>
+          </div>
+        ))}
+        {isTestNetwork() ? (
+          <div>
+            <dt className="font-medium text-anvil-800 dark:text-anvil-100">Test DASH</dt>
+            <dd className="text-anvil-600 dark:text-anvil-300">
+              On {networkName()} everything is paid with free test DASH from a faucet. Dollar figures in brackets show what the same thing would cost on mainnet.
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+      <p className="px-3 pb-2">
+        <Link href="/start/" onClick={onLeave} className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="signin-docs">
+          More in Getting started
+        </Link>
+      </p>
+    </details>
+  )
+}
+
+/**
+ * After a new identity registers (F14): next steps instead of the anonymous landing page, and a
+ * check of the deposit address for a payment that arrived after the lock (F13: a second payment
+ * there was silently left behind; the discard path warned, the success path did not).
+ */
+function WelcomeView({ created, onDone }: { created: CreatedIdentity; onDone: () => void }): JSX.Element {
+  const leftover = useLeftoverDeposit(created.deposit)
+  const steps = [
+    { href: '/new/', icon: Plus, title: 'Create your first repo', body: 'Name it, then push to it with git.', testId: 'welcome-new-repo' },
+    { href: '/mirror/', icon: CopyPlus, title: 'Import from GitHub', body: 'Mirror a repo you already have, with its issues.', testId: 'welcome-mirror' },
+    { href: '/explore/', icon: Compass, title: 'Browse repos', body: 'See what others have built here.', testId: 'welcome-explore' },
+  ] as const
+  return (
+    <div className="space-y-3" data-testid="signup-welcome">
+      <p className="text-dense">
+        Signed in as <span className="font-mono">{shortId(created.identityId)}</span>.
+      </p>
+      <ul className="space-y-2">
+        {steps.map(({ href, icon: Icon, title, body, testId }) => (
+          <li key={href}>
+            <Link
+              href={href}
+              onClick={onDone}
+              data-testid={testId}
+              className="flex w-full items-start gap-3 rounded-lg border border-anvil-200 px-3 py-3 text-left transition-colors hover:border-forge-400 hover:bg-anvil-50 dark:border-anvil-750 dark:hover:bg-anvil-850"
+            >
+              <Icon className="mt-0.5 h-5 w-5 shrink-0 text-forge-500" aria-hidden />
+              <span>
+                <span className="block text-dense font-medium text-anvil-900 dark:text-anvil-50">{title}</span>
+                <span className="mt-0.5 block text-[12px] text-anvil-500 dark:text-anvil-400">{body}</span>
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {leftover.kind === 'checking' ? (
+        <p role="status" className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="welcome-deposit-checking">
+          Checking your deposit address for any extra payment (up to a minute)…
+        </p>
+      ) : leftover.kind === 'held' ? (
+        <div role="alert" data-testid="welcome-leftover" className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <span>
+            {(leftover.duffs / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} DASH<FiatNote dash={leftover.duffs / 1e8} balance /> is still on the deposit address{' '}
+            <span className="break-all font-mono">{created.deposit?.depositAddress}</span>: it wasn&apos;t included in your identity and
+            isn&apos;t in your balance. Only your 12 words can recover it, with tools outside Forge.
+          </span>
+        </div>
+      ) : leftover.kind === 'unknown' ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="welcome-deposit-unknown">
+          Couldn&apos;t check the deposit address for a second payment. If you paid it more than once, the extra stays there, and only your 12 words can recover it.
+        </p>
+      ) : null}
+      <Button variant="outline" className="w-full" onClick={onDone} data-testid="welcome-done">
+        Done
+      </Button>
+    </div>
+  )
+}
+
+type Leftover = { readonly kind: 'checking' | 'none' | 'unknown' } | { readonly kind: 'held'; readonly duffs: number }
+
+/** What the finished creation's deposit address still holds, once (nothing to check without its record). */
+function useLeftoverDeposit(deposit: CreatedIdentity['deposit']): Leftover {
+  const [state, setState] = useState<Leftover>(deposit === null ? { kind: 'none' } : { kind: 'checking' })
+  useEffect(() => {
+    if (deposit === null) return
+    let cancelled = false
+    depositBalance(ACTIVE_NETWORK.network, deposit).then(
+      (duffs) => !cancelled && setState(duffs > 0 ? { kind: 'held', duffs } : { kind: 'none' }),
+      () => !cancelled && setState({ kind: 'unknown' }),
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [deposit])
+  return state
 }
 
 /**

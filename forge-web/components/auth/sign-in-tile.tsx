@@ -17,6 +17,7 @@ export function Tile({
   muted = false,
   highlight = false,
   pausedReason = null,
+  badge = null,
 }: {
   icon: LucideIcon
   title: string
@@ -33,6 +34,8 @@ export function Tile({
   highlight?: boolean
   /** Why this option cannot be used now (the devnet is moving): disabled, with the reason as its text. */
   pausedReason?: string | null
+  /** A short label beside the title: the option to start with, or why it is not ready yet. */
+  badge?: { readonly label: string; readonly tone: 'recommended' | 'waiting' } | null
 }): JSX.Element {
   return (
     <button
@@ -50,8 +53,23 @@ export function Tile({
     >
       <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', muted ? 'text-anvil-500 dark:text-anvil-400' : 'text-forge-500')} aria-hidden />
       <span>
-        <span className="block text-dense font-medium text-anvil-900 dark:text-anvil-50">{title}</span>
-        <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">{pausedReason ?? body}</span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-dense font-medium text-anvil-900 dark:text-anvil-50">
+          {title}
+          {badge ? (
+            <span
+              data-testid={`${testId}-badge`}
+              className={cn(
+                'rounded-full border px-2 py-px text-[11px] font-medium leading-4',
+                badge.tone === 'recommended'
+                  ? 'border-forge-500/50 bg-forge-500/10 text-forge-800 dark:text-forge-400'
+                  : 'border-caution/40 bg-caution/5 text-caution-700 dark:text-caution-400',
+              )}
+            >
+              {badge.label}
+            </span>
+          ) : null}
+        </span>
+        <span className="mt-0.5 block text-[12px] text-anvil-500 dark:text-anvil-400">{pausedReason ?? body}</span>
       </span>
     </button>
   )

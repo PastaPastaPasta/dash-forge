@@ -1,12 +1,14 @@
 /**
  * Cost preview — signature element (style guide §A.2, `ux-dx-spec.md` §4 rule 1). Every
- * signing button shows its price before the click: DASH primary, fiat secondary. A delete that
+ * signing button shows its price before the click: DASH primary, fiat secondary (on a test network
+ * the DASH is marked as free test money, and fiat is what mainnet would charge). A delete that
  * returns storage shows the refund in green.
  */
 
 import type { CostPreview as Cost } from '@/lib/sdk'
 import { formatDash } from '@/lib/view/format'
 import { FiatNote } from './fiat-note'
+import { isTestNetwork } from './test-credits'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { creditsAsDash } from '@/lib/view/format'
 import { cn } from '@/lib/utils'
@@ -46,6 +48,7 @@ export function CostPreview({
         {formatDash(dash)} DASH
       </span>
       {isRefund ? <span className="text-anvil-500 dark:text-anvil-400">if deleted soon; less as it ages</span> : null}
+      {!isRefund && isTestNetwork() ? <span className="text-anvil-500 dark:text-anvil-400" data-testid="cost-test-credits">free test DASH</span> : null}
       <FiatNote dash={dash} range={min !== null ? creditsToDash(min) : undefined} variant="bare" />
     </div>
   )
