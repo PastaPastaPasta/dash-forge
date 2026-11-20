@@ -231,18 +231,22 @@ impl Served {
 /// <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v<hex>" integrity="sha512-<base64>" data-cf-beacon='{"version":"…","token":"<token>","r":1,"spa":2}' crossorigin="anonymous"></script>\n
 /// ```
 ///
-/// It is removed only when the config holds those keys and no others, and the rest of the page
-/// already carries the build's own beacon for the same site token (`forge-web/lib/cf-beacon.ts`).
-/// The injected copy then changes nothing the page does: the browser runs a module URL once, the
-/// beacon runs once per page and reads the first `data-cf-beacon` (the build's), and the page CSP
-/// refuses any other beacon version. Any other script, position, token or setting is not removed.
+/// It is removed only when the config holds those keys and no others, with no character reference
+/// (a browser decodes `&quot;` in the attribute before the beacon reads it, so one could hide
+/// another key), and the rest of the page already carries the build's own beacon for the same site
+/// token (`forge-web/lib/cf-beacon.ts`). The injected copy then changes nothing the page does: the
+/// browser runs a module URL once, the beacon runs once per page and reads the first
+/// `data-cf-beacon` (the build's), and the page CSP, part of the hashed bytes, allows only the
+/// build's beacon URL, so it refuses any other version. That is why any `v<hex>` and integrity
+/// pass here: a CSP that allowed more of Cloudflare's host would make this removal wider. Any
+/// other script, position, token or setting is not removed.
 pub fn without_cf_injected_beacon(page: &[u8]) -> Option<Vec<u8>> {
     const HEAD: &[u8] =
         b"<script type=\"module\" src=\"https://static.cloudflareinsights.com/beacon.min.js/v";
     const TAIL: &[u8] = b"' crossorigin=\"anonymous\"></script>\n";
-    let find = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).rposition(|w| w == needle);
-    let end = find(page, b"</body>")?;
-    let start = find(&page[..end], HEAD)?;
+    let rfind = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).rposition(|w| w == needle);
+    let end = rfind(page, b"</body>")?;
+    let start = rfind(&page[..end], HEAD)?;
     let attrs = page[start + HEAD.len()..end].strip_suffix(TAIL)?;
     let attrs = std::str::from_utf8(attrs).ok()?;
     let (version, rest) = attrs.split_once('"')?;
@@ -254,7 +258,7 @@ pub fn without_cf_injected_beacon(page: &[u8]) -> Option<Vec<u8>> {
         || !version.bytes().all(|b| b.is_ascii_hexdigit())
         || integrity.is_empty()
         || !integrity.chars().all(base64)
-        || config.contains(['\'', '<', '>'])
+        || config.contains(['\'', '<', '>', '&'])
     {
         return None;
     }
@@ -266,18 +270,13 @@ pub fn without_cf_injected_beacon(page: &[u8]) -> Option<Vec<u8>> {
         "r" | "spa" => v.is_number(),
         _ => false,
     });
-    if !known
-        || token.len() != 32
-        || !token
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    {
+    if !known {
         return None;
     }
     let mut without = page[..start].to_vec();
     without.extend_from_slice(&page[end..]);
     let own = format!(" data-cf-beacon=\"{{&quot;token&quot;:&quot;{token}&quot;}}\"");
-    find(&without, own.as_bytes())?;
+    rfind(&without, own.as_bytes())?;
     Some(without)
 }
 
@@ -514,7 +513,7 @@ pub async fn run(ctx: &Ctx, args: &VerifyAppArgs) -> Result<()> {
         "servedManifestAgrees": manifest_agrees,
         "files": trusted.files.len(),
         "matched": result.matched,
-        "cfInjectedBeacon": result.cf_beacon,
+        "cfBeaconRemoved": result.cf_beacon,
         "differ": result.differ,
         "missing": result.missing,
         "ok": result.ok(),
@@ -710,13 +709,22 @@ mod tests {
         refused(OWN, &format!("{INJECTED}<script>alert(1)</script>"));
         refused(OWN, &INJECTED.replace('\n', ""));
         refused(OWN, &INJECTED.replace("'{", "'{\"x\":'<script>',"));
-        // Not before </body>.
-        assert_eq!(
-            without_cf_injected_beacon(
-                format!("<html><body>{OWN}</body>{INJECTED}</html>").as_bytes()
+        // A key hidden in a character reference, which the browser decodes before the beacon
+        // parses the config: {"version":"","send":{"to":"https://evil.example/"},"x":"",…}.
+        refused(
+            OWN,
+            &INJECTED.replace(
+                r#""version":"2024.11.0""#,
+                r#""version":"&quot;,&quot;send&quot;:{&quot;to&quot;:&quot;https://evil.example/&quot;},&quot;x&quot;:&quot;""#,
             ),
-            None
         );
+        // Not before the last </body>.
+        for page in [
+            format!("<html><body>{OWN}</body>{INJECTED}</html>"),
+            format!("<html><body>{OWN}{INJECTED}</body></body></html>"),
+        ] {
+            assert_eq!(without_cf_injected_beacon(page.as_bytes()), None, "{page}");
+        }
     }
 
     #[test]

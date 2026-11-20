@@ -6,8 +6,9 @@
  *
  * The page carries the beacon itself, so every byte of it is in the build manifest. Cloudflare's
  * automatic setup may inject a second copy at the edge: `dg verify-app` removes exactly that tag,
- * and it never runs twice (docs/hosting.md §6). The script is pinned to one version and its SRI hash, and the page CSP allows that exact URL
- * and nothing else from Cloudflare: the origin keeps the signing-key vault, so a third-party
+ * and it never runs twice (docs/hosting.md §6). The script is pinned to one version and its SRI
+ * hash, and the page CSP allows that exact URL and nothing else from Cloudflare (verify-app's
+ * removal relies on that): the origin keeps the signing-key vault, so a third-party
  * script must not change under it. To move to a newer beacon, take `src` and `integrity` from the tag
  * Cloudflare injects and update both.
  */
