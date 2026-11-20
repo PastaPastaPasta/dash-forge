@@ -238,8 +238,8 @@ impl Served {
 /// token (`forge-web/lib/cf-beacon.ts`). The injected copy then changes nothing the page does: the
 /// browser runs a module URL once, the beacon runs once per page and reads the first
 /// `data-cf-beacon` (the build's), and the page CSP, part of the hashed bytes, allows only the
-/// build's beacon URL, so it refuses any other version. That is why any `v<hex>` and integrity
-/// pass here: a CSP that allowed more of Cloudflare's host would make this removal wider. Any
+/// build's beacon URL, so it refuses any other version. That is why any other `v<hex>` and its
+/// integrity pass here, while the build's own URL must come with the build's pinned digest: a CSP that allowed more of Cloudflare's host would make this removal wider. Any
 /// other script, position, token or setting is not removed.
 pub fn without_cf_injected_beacon(page: &[u8]) -> Option<Vec<u8>> {
     const HEAD: &[u8] =
@@ -278,6 +278,12 @@ pub fn without_cf_injected_beacon(page: &[u8]) -> Option<Vec<u8>> {
     without.extend_from_slice(&page[end..]);
     let own = format!(" data-cf-beacon=\"{{&quot;token&quot;:&quot;{token}&quot;}}\"");
     rfind(&without, own.as_bytes())?;
+    // The build's own beacon URL, which the CSP allows, only with the build's pinned digest.
+    let src = format!(" src=\"https://static.cloudflareinsights.com/beacon.min.js/v{version}\"");
+    if rfind(&without, src.as_bytes()).is_some() {
+        let pinned = format!("{src} integrity=\"sha512-{integrity}\"");
+        rfind(&without, pinned.as_bytes())?;
+    }
     Some(without)
 }
 
@@ -707,6 +713,8 @@ mod tests {
             OWN,
             &INJECTED.replace("sha512-UKNk", "sha512-\" onload=\"x"),
         );
+        // The build's own URL (which the CSP allows) with the digest of other bytes.
+        refused(OWN, &INJECTED.replace("sha512-UKNk", "sha512-AAAA"));
         refused(OWN, &format!("{INJECTED}<script>alert(1)</script>"));
         refused(OWN, &INJECTED.replace('\n', ""));
         refused(OWN, &INJECTED.replace("'{", "'{\"x\":'<script>',"));
