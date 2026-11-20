@@ -8,7 +8,7 @@
  * clickable, so a signed-in user never sees "Sign in" flash.
  */
 
-import { Loader2, Lock } from 'lucide-react'
+import { Clock, Loader2, Lock } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button, type ButtonProps } from '@/components/ui/button'
@@ -20,7 +20,7 @@ export function SignInButton({
   className,
   label = 'short',
 }: Pick<ButtonProps, 'size' | 'variant' | 'className'> & { readonly label?: 'short' | 'long' }): JSX.Element {
-  const { locked, resuming, vaultsLoaded, vaultsError } = useAuth()
+  const { locked, resuming, vaultsLoaded, vaultsError, vaultsSlow } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const requestSignIn = useUiStore((s) => s.requestSignIn)
   const common = { size, variant, className }
@@ -42,6 +42,24 @@ export function SignInButton({
         className={cn(common.className, 'cursor-progress opacity-70')}
       >
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+      </Button>
+    )
+  }
+  // Storage too slow to say whether a key is kept here (F21): not "Sign in", which read as being
+  // signed out. The session is picked up by itself once storage opens; the sheet says why.
+  if (vaultsSlow && !vaultsLoaded) {
+    return (
+      <Button
+        {...common}
+        variant="outline"
+        onClick={() => openLogin()}
+        data-replay="sign-in"
+        data-testid="session-storage-slow"
+        aria-label="Still checking this browser's session: storage is slow"
+        title="This browser's storage is slow to open, so it is not known yet whether you are signed in here. Dash Forge keeps waiting and picks up your session by itself."
+      >
+        <Clock className="h-3.5 w-3.5" aria-hidden />
+        {label === 'long' ? <span className="hidden sm:inline">Storage slow —</span> : null} Checking
       </Button>
     )
   }

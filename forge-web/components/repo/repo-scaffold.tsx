@@ -12,7 +12,8 @@ import Link from 'next/link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { Button } from '@/components/ui/button'
-import { ConnectingBlock, UnreachableBanner } from '@/components/ui/platform-status'
+import { UnreachableBanner } from '@/components/ui/platform-status'
+import { RepoLoading } from '@/components/repo/repo-loading'
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoShellHeader } from '@/components/repo/repo-shell-header'
 import { RepoRail } from '@/components/repo/repo-rail'
@@ -142,12 +143,7 @@ function ScaffoldBody({
   if (offline === null && (!ready || (loading && !settled))) {
     // The repo's name and tabs from its address, while the SDK downloads or the repo resolves
     // (L-54): a slow link shows what it is loading, not a bare spinner.
-    return (
-      <>
-        <RepoShellHeader addr={addr} />
-        {ready ? <LoadingBlock label={`Resolving ${addr.name}`} /> : <ConnectingBlock status={sdkStatus} />}
-      </>
-    )
+    return <RepoLoading addr={addr} ready={ready} stage={repoHome.stage} sdkStatus={sdkStatus} onRetry={() => reload()} />
   }
 
   if (error) {
@@ -172,7 +168,7 @@ function ScaffoldBody({
     return (
       <>
         <RepoShellHeader addr={addr} />
-        <LoadingBlock label="Checking membership and keys" />
+        <LoadingBlock label="Checking membership and keys" onRetry={privateHome?.retry} />
       </>
     )
   }

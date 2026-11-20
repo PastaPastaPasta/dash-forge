@@ -337,7 +337,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   // A members-only page re-reading for a reply it posted stays up meanwhile.
-  if (loading && !data && !isMembersOnlyTarget(read)) return <LoadingBlock label="Loading issue" />
+  if (loading && !data && !isMembersOnlyTarget(read)) return <LoadingBlock label="Loading issue" onRetry={reload} />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (isMembersOnlyTarget(read)) {
     const posted = (id: string): void => {

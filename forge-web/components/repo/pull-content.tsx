@@ -371,7 +371,7 @@ export function PullContent({
   }, [reload, draftGate])
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label={draftGate.plan() ? 'Opening your draft pull request' : 'Loading pull request'} />
+  if (loading && !data) return <LoadingBlock label={draftGate.plan() ? 'Opening your draft pull request' : 'Loading pull request'} onRetry={reload} />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
   if (isMembersOnlyTarget(data)) {
     const posted = (id: string): void => {

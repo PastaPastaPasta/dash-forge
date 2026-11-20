@@ -26,6 +26,19 @@ export class IdbSupersededError extends Error {
   }
 }
 
+/**
+ * The database did not open within {@link IDB_OPEN_TIMEOUT_MS}: usually a very busy computer.
+ * The open goes on; {@link onStorageOpened} tells when it lands, so a caller can read again.
+ */
+export class IdbSlowError extends Error {
+  constructor() {
+    super(
+      `This browser’s storage (IndexedDB) did not answer within ${IDB_OPEN_TIMEOUT_MS / 1000} s, usually because the computer is very busy. It is still opening: try again in a moment.`,
+    )
+    this.name = 'IdbSlowError'
+  }
+}
+
 /** Another tab holds an older version of the database open, so this one cannot upgrade it. */
 export class IdbBlockedError extends Error {
   constructor() {
@@ -50,6 +63,21 @@ const memory = new Map<StoreName, Map<string, unknown>>()
  * runs an older build, so it should reload. The app shell shows a banner.
  */
 let superseded = false
+
+/**
+ * A caller gave up on the open (slow or blocked) since the database last opened: the open that
+ * lands later tells {@link onStorageOpened}'s listeners, so what failed is read again.
+ */
+let gaveUp = false
+const openedListeners = new Set<() => void>()
+
+/** The database opened after a caller had given up waiting for it (F21). */
+export function onStorageOpened(listener: () => void): () => void {
+  openedListeners.add(listener)
+  return () => {
+    openedListeners.delete(listener)
+  }
+}
 const supersededListeners = new Set<() => void>()
 
 function markSuperseded(): void {
@@ -102,6 +130,10 @@ function startOpen(): Promise<IDBDatabase> {
         if (opening === p) opening = null
       }
       resolve(db)
+      if (gaveUp) {
+        gaveUp = false
+        for (const l of openedListeners) l()
+      }
     }
     req.onerror = () => {
       blocked = false
@@ -124,14 +156,18 @@ function startOpen(): Promise<IDBDatabase> {
 function open(): Promise<IDBDatabase> {
   if (superseded) return Promise.reject(new IdbSupersededError())
   if (!opening) opening = startOpen()
-  if (blocked) return Promise.reject(new IdbBlockedError())
+  if (blocked) {
+    gaveUp = true
+    return Promise.reject(new IdbBlockedError())
+  }
   const request = opening
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const onBlocked = (): void => settle(() => reject(new IdbBlockedError()))
-    const timer = setTimeout(
-      () => settle(() => reject(new Error(`This browser’s storage (IndexedDB) did not open within ${IDB_OPEN_TIMEOUT_MS / 1000} s. If Dash Forge is open in other tabs, close or reload them; otherwise reload this page.`))),
-      IDB_OPEN_TIMEOUT_MS,
-    )
+    const giveUp = (e: Error): void => {
+      gaveUp = true
+      settle(() => reject(e))
+    }
+    const onBlocked = (): void => giveUp(new IdbBlockedError())
+    const timer = setTimeout(() => giveUp(new IdbSlowError()), IDB_OPEN_TIMEOUT_MS)
     const settle = (fn: () => void): void => {
       clearTimeout(timer)
       blockedWaiters.delete(onBlocked)

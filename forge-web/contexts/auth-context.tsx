@@ -33,6 +33,7 @@ import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
 import { lockedIdentityOf, readLastIdentity } from '../lib/auth/last-identity'
 import { errorMessage } from '../lib/utils'
+import { IdbSlowError, onStorageOpened } from '../lib/idb'
 import { fundsState, nextFundsChange, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
 import { toastSpend } from '../lib/spend-toast'
@@ -83,6 +84,11 @@ interface AuthContextValue {
   readonly vaultsError: string | null
   /** Whether the stored-key list has been read at least once. */
   readonly vaultsLoaded: boolean
+  /**
+   * The stored-key list could not be read because this browser's storage is slow to open (F21):
+   * not signed out, still waiting. Both the list and the kept session are read again once it opens.
+   */
+  readonly vaultsSlow: boolean
   /**
    * A session an earlier page load kept is still being picked up (a reload, a new tab): show
    * neither "Sign in" nor "Unlock" yet.
@@ -228,6 +234,7 @@ export function AuthProvider({
   // The list has been read successfully at least once. The sheet also proceeds on `vaultsError`:
   // a caller waiting on this flag alone would wait forever while storage is blocked.
   const [vaultsLoaded, setVaultsLoaded] = useState(false)
+  const [vaultsSlow, setVaultsSlow] = useState(false)
   // Only the latest read may update the list: an older read that fails after a newer one
   // succeeded must not report a failure.
   const vaultRead = useRef(0)
@@ -238,14 +245,28 @@ export function AuthProvider({
         if (read !== vaultRead.current) return
         setVaults(v)
         setVaultsError(null)
+        setVaultsSlow(false)
         setVaultsLoaded(true)
       },
       (e: unknown) => {
-        if (read === vaultRead.current) setVaultsError(errorMessage(e))
+        if (read !== vaultRead.current) return
+        setVaultsError(errorMessage(e))
+        setVaultsSlow(e instanceof IdbSlowError)
       },
     )
   }, [controller])
   useEffect(reloadVaults, [reloadVaults])
+  // Storage that was too slow to open, or held by another tab, opened after all: read the key
+  // list and the kept session again, so a slow start never stays a sign-out.
+  useEffect(
+    () =>
+      onStorageOpened(() => {
+        reloadVaults()
+        // Not under an interactive sign-in in progress (as the kept-session path).
+        if (!controller.getState().isLoading) void controller.resume()
+      }),
+    [controller, reloadVaults],
+  )
 
   // Every sign-in path ends with a reload of the stored-key list, success or not: a key stored
   // before a later step failed must show up in Unlock.
@@ -398,6 +419,7 @@ export function AuthProvider({
       vaults,
       vaultsError,
       vaultsLoaded,
+      vaultsSlow,
       resuming,
       locked,
       lastIdentity,
@@ -409,7 +431,7 @@ export function AuthProvider({
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, lastIdentity, locked, platformPasskeyProblem, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.newKeys, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, lastIdentity, locked, platformPasskeyProblem, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.newKeys, state.scope, state.step, vaults, vaultsError, vaultsLoaded, vaultsSlow],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
@@ -444,6 +466,7 @@ export function SignedOutView({ children }: { children: React.ReactNode }): JSX.
       vaults: [],
       vaultsError: null,
       vaultsLoaded: true,
+      vaultsSlow: false,
       resuming: false,
       locked: false,
       lastIdentity: null,

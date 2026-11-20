@@ -8,13 +8,10 @@
  */
 
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { Spinner } from '@/components/ui/states'
+import { SLOW_AFTER_MS, Spinner } from '@/components/ui/states'
 import { ProgressBar } from '@/components/ui/platform-status'
 import { formatBytes } from '@/lib/view/format'
 import { indexProgress, subscribeIndexProgress } from '@/lib/view/index-progress'
-
-/** When the slow-network note appears. */
-export const SLOW_AFTER_MS = 10_000
 
 export function BrowseLoading({ repoKey, label }: { repoKey: string; label: string }): JSX.Element {
   const progress = useSyncExternalStore(subscribeIndexProgress, () => indexProgress(repoKey), () => undefined)

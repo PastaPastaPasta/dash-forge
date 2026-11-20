@@ -84,7 +84,7 @@ import { AssigneeAvatars } from '@/components/repo/issue-bits'
 import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorNote } from '@/components/repo/mirror-note'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { EmptyState, ErrorState, ListLoading } from '@/components/ui/states'
 import { Button } from '@/components/ui/button'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
@@ -240,7 +240,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own pull requests, assignments and review requests.</p>
         ) : ((loading || awaitingTrust) && !data) || (data !== null && data.rows.length === 0 && data.searchedOf?.auto) ? (
-          <LoadingBlock label={readingLabel('pull requests', progress ?? data?.searchedOf?.searched ?? null, total)} />
+          <ListLoading label={readingLabel('pull requests', progress ?? data?.searchedOf?.searched ?? null, total)} onRetry={reload} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (

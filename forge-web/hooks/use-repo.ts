@@ -20,13 +20,15 @@
  * it. Such a page takes a full home when one is cached, since that answers it too.
  */
 
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useSyncExternalStore } from 'react'
 
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { invalidateBrowseContext, loadBrowseContextCached, loadRepoHome, type RepoHome, type RepoHomeRefs } from '@/lib/view'
 import { awaitingOwnRefMoves, forgetOwnRefMoves, showsOwnRefMoves } from '@/lib/view/own-ref-moves'
 import { retryUntil, retryWhileMissing } from '@/lib/view/retry'
+import { homeStage, startHomeStages, subscribeHomeStage } from '@/lib/view/home-progress'
+import type { HomeStage } from '@/lib/view/home-progress'
 import { useParam } from '@/hooks/use-query-param'
 import { forgetPrivateHome } from '@/hooks/use-private-home'
 import { onRepoContentWritten, repoKey, type RepoRef } from '@/lib/repo'
@@ -40,6 +42,8 @@ export interface UseRepoResult extends AsyncState<RepoHome | null> {
   readonly network: Network
   /** Re-read the home past the cache, dropping its browse context ({@link HomeReloadOptions}). */
   readonly reload: (options?: HomeReloadOptions) => void
+  /** The step a cold read is on, for the loading view; undefined when none is running. */
+  readonly stage: HomeStage | undefined
 }
 
 /** How {@link UseRepoResult.reload} re-reads. */
@@ -122,7 +126,8 @@ function prefetchBrowse(sdk: EvoSDK): (repo: RepoRef) => void {
 }
 
 function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress, browse: boolean, refs: RepoHomeRefs): HomeCacheEntry {
-  const load = (): Promise<RepoHome | null> => loadRepoHome(sdk, { network, ...addr }, browse ? prefetchBrowse(sdk) : undefined, { refs })
+  const onStage = startHomeStages(key)
+  const load = (): Promise<RepoHome | null> => loadRepoHome(sdk, { network, ...addr }, browse ? prefetchBrowse(sdk) : undefined, { refs, onStage })
   // Zero extra reads unless this tab is waiting for its own ref move to show. A home of the
   // default branch alone judges only that branch's moves, and leaves the others to a full home.
   const scope = (home: RepoHome): ReadonlySet<string> | undefined => (home.refsPartial ? new Set(home.branches.map((b) => b.refName)) : undefined)
@@ -247,5 +252,7 @@ export function useRepoHome(
     }
     rerun()
   }, [key, data, rerun])
-  return { ...state, reload, ready, network }
+  // A page of the default branch alone may be joining a full home's read (recorded under its key).
+  const stage = useSyncExternalStore(subscribeHomeStage, () => homeCacheKeys(key).map(homeStage).find((s) => s !== undefined), () => undefined)
+  return { ...state, reload, ready, network, stage }
 }
