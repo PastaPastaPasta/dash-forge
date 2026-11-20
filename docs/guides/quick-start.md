@@ -41,9 +41,9 @@ cargo install --locked --path crates/git-remote-dash
 
 `cargo install` puts both binaries in `~/.cargo/bin`, which rustup already added to your `PATH`.
 
-### Prebuilt binaries (Linux and macOS)
+### Prebuilt binaries (Linux and macOS), once a release is published
 
-This one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
+No release is published yet, so this script stops with a message that points back to the build above. When one is, this one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh

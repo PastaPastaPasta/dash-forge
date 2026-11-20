@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge runs on **testnet** (Forge's contracts are registered on Platform v5.0.0-rc.8), the network [forge.dashhq.org](https://forge.dashhq.org) runs on, and that is the Action's default network. It is not deployed on mainnet yet. Pin a release tag: at `@v0.2.0` the Action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
+> **Status.** Forge runs on **testnet** (Forge's contracts are registered on Platform v5.0.0-rc.8), the network [forge.dashhq.org](https://forge.dashhq.org) runs on, and that is the Action's default network. It is not deployed on mainnet yet. Pin a release tag: at `@v0.1.0` the Action's `version` defaults to `0.1.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
 
 ## Quick start
 
@@ -32,7 +32,7 @@ jobs:
     permissions: { contents: read, issues: read, pull-requests: read }
     steps:
       # A release tag: installs that release's checksum-verified binaries, which run with your key.
-      - uses: PastaPastaPasta/dash-forge/action@v0.2.0
+      - uses: PastaPastaPasta/dash-forge/action@v0.1.0
         with:
           repo: dash://<owner identity id>/project
           network: testnet               # Forge's network today (the default)

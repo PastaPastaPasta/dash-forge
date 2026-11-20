@@ -153,8 +153,9 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
 ```yaml
       - name: Report to Dash Forge
         if: always()
-        uses: PastaPastaPasta/dash-forge/check-action@v0.2.0   # installs the v0.2.0 dg
+        uses: PastaPastaPasta/dash-forge/check-action@<40-character commit>   # a commit you have reviewed
         with:
+          install: 'source'         # no release is published yet; once one is, pin its tag and drop this
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
           network: testnet          # Forge runs on testnet (the default)
@@ -162,4 +163,4 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```
 
-Pinned to a release tag, the action downloads that release's checksum-verified `dg` in seconds, on Linux and macOS runners. To run code that is not in a release, pin a commit you have reviewed and set `install: 'source'`: the action then builds `dg` from its own source, the ref after `@` in `uses:`. That works on Linux runners only and takes a few minutes in every job that reports, so report from one Linux leg, or from one summary job that `needs:` the others. The [check action's README](../../check-action/README.md#quick-start) has the details. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.
+No release is published yet, so build `dg` from source: with `install: 'source'` the action builds it from its own source, the ref after `@` in `uses:`. That works on Linux runners only and takes a few minutes in every job that reports, so report from one Linux leg, or from one summary job that `needs:` the others. Once a release is published, pinning its tag downloads that release's checksum-verified `dg` in seconds, on Linux and macOS runners. The [check action's README](../../check-action/README.md#quick-start) has the details. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.

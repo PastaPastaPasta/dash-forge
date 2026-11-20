@@ -22,7 +22,7 @@ Reports a GitHub Actions job's result as a [Dash Forge](../README.md) check run 
 
 2. **Report each job.** Add the action as the last step, with `if: always()` so failures are reported too.
 
-> **Pin a release tag.** At `@v0.2.0` the action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg` with [`install.sh`](../install.sh), which checks its SHA-256 against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. That takes seconds and works on Linux and macOS runners. Windows runners are not supported: put `dg` on `PATH` yourself and set `install: 'false'`. `install: 'source'` (or an empty `version`) builds `dg` from the action's own source instead, the ref after `@` in `uses:`. That works on **Linux runners only** (it needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on x86_64 and arm64) and costs several minutes per job, so report from one Linux leg of a matrix, or from one summary job that `needs:` the others. `@master` pins the latest release's binaries while running master's scripts; use a release tag, or a commit you have reviewed with `install: 'source'`, since the key is handed to that `dg`.
+> **Pin a release tag.** At `@v0.1.0` the action's `version` defaults to `0.1.0`, so the default `install: 'true'` downloads that release's `dg` with [`install.sh`](../install.sh), which checks its SHA-256 against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. That takes seconds and works on Linux and macOS runners. Windows runners are not supported: put `dg` on `PATH` yourself and set `install: 'false'`. `install: 'source'` (or an empty `version`) builds `dg` from the action's own source instead, the ref after `@` in `uses:`. That works on **Linux runners only** (it needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on x86_64 and arm64) and costs several minutes per job, so report from one Linux leg of a matrix, or from one summary job that `needs:` the others. `@master` pins the latest release's binaries while running master's scripts; use a release tag, or a commit you have reviewed with `install: 'source'`, since the key is handed to that `dg`.
 
 ```yaml
 jobs:
@@ -33,7 +33,7 @@ jobs:
       - run: cargo test
       - name: Report to Dash Forge
         if: always()
-        uses: PastaPastaPasta/dash-forge/check-action@v0.2.0   # installs the v0.2.0 dg
+        uses: PastaPastaPasta/dash-forge/check-action@v0.1.0   # installs the v0.1.0 dg
         with:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}

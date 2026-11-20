@@ -284,7 +284,8 @@ const BUILDING_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/
 
 /**
  * Where the CLI comes from (`ux-dx-spec.md` §7.6; `docs/INSTALL.md`). Building from source works
- * from any commit, so it leads; the checksum-verified installer of the latest release follows.
+ * from any commit, so it leads; the checksum-verified installer follows, for when a release is
+ * published (`install.sh` says so and points back here while there is none).
  */
 function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element {
   const link = 'text-forge-700 underline dark:text-forge-400'
@@ -305,6 +306,9 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
         </div>
         <div>
           <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS)</h3>
+          <p className="mb-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+            For when a release is published. Until then the script stops and tells you to build from source.
+          </p>
           <CopyRow text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" label="Copy the install command" />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             It downloads the latest release, checks its SHA-256 (and its GitHub attestation when <span className="font-mono">gh</span> is signed in),
