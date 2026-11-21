@@ -197,6 +197,21 @@ describe('recentFeed: read on while a flood leaves the feed short', () => {
     expect(feedReads).toHaveLength(1)
   })
 
+  it('reads past pages of nothing but test fixtures, up to ten', async () => {
+    const fixtures = (n: number) => Array.from({ length: 24 }, (_, i) => row(`e2e-${n}-${i}`, `t${n}-${i}`))
+    feedPages = [
+      ...[1, 2, 3, 4].map((n) => ({ repos: fixtures(n), next: { at: 10 - n, seen: [] } })),
+      { repos: Array.from({ length: 14 }, (_, i) => row(`r${i}`, `o${i}`)), next: { at: 1, seen: [] } },
+    ]
+    const r = await recentFeed({} as EvoSDK, { network: 'devnet' })
+    expect(feedReads).toHaveLength(5)
+    expect(landingRecent(r.repos, { pushesKnown: true, showAll: false }).shown.map((x) => x.slug)).toContain('r0')
+    feedReads.length = 0
+    feedPages = Array.from({ length: 12 }, (_, n) => ({ repos: fixtures(n), next: { at: 20 - n, seen: [] } }))
+    await recentFeed({} as EvoSDK, { network: 'devnet' })
+    expect(feedReads).toHaveLength(10)
+  })
+
   it('says older repos follow when every row read was hidden, so the page is not called empty', async () => {
     feedPages = [1, 2, 3].map((n) => ({ repos: [], next: { at: n, seen: [] } }))
     const r = await recentFeed({} as EvoSDK, { network: 'devnet' })
