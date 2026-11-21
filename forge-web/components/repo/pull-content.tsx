@@ -24,6 +24,7 @@ import { aliasedReader } from '@/lib/view/blind-reader'
 import { membersLane } from '@/lib/repo'
 import { blindBook } from '@/lib/repo/members-blinds'
 import { hexToBytes } from '@/lib/private'
+import { SignedOutComposer, useSignedOut } from '@/components/repo/signed-out-composer'
 import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
@@ -405,6 +406,7 @@ function PullPage({
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer, locked, lockedIdentity } = useAuth()
+  const signedOut = useSignedOut()
   // A locked session is still that member (QW2-033): permissions, the merge box and the review
   // controls are read for the identity Unlock would open, and each write opens Unlock (the
   // guard), as the header's "Session locked — Unlock" says. Signed out, there is none.
@@ -1868,7 +1870,7 @@ function PullPage({
               {/* Description */}
               <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(pull.audience) && MEMBERS_CARD)}>
                 <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(pull.audience) && MEMBERS_CARD_HEADER)}>
-                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
+                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="commented" />
                   <AudienceMark audience={pull.audience} letter={pull.letter} writtenWhilePrivate={pull.writtenWhilePrivate} />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                   <MadePublicBy marks={pull} />
@@ -2229,6 +2231,10 @@ function PullPage({
 
               {/* Composer */}
               <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="pr-composer">
+                {signedOut && !thread.locked && !archived ? (
+                  <SignedOutComposer cost={commentCost} />
+                ) : (
+                <>
                 {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
                 <LockedBanner locked={thread.locked && !archived} viewer={lockViewer} target="pull">
                   <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
@@ -2340,6 +2346,8 @@ function PullPage({
                     {commentError}
                   </div>
                 ) : null}
+                </>
+                )}
               </div>
               {suggest.bar}
             </>
@@ -2519,7 +2527,7 @@ function PullPage({
             ) : null}
             <SidebarSection title="Linked issues" icon={Link2}>
               {linked.length === 0 ? (
-                <p className="text-anvil-500 dark:text-anvil-400">None. &ldquo;Fixes #12&rdquo; in the description links one.</p>
+                <p className="text-anvil-500 dark:text-anvil-400">None yet. An issue named as &ldquo;Fixes #12&rdquo; in the description shows up here.</p>
               ) : (
                 <ul className="space-y-1" data-testid="linked-issues">
                   {linked.map((n) => (
@@ -3182,11 +3190,11 @@ function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeO
   // Files both sides changed: the check sees that, not whether the merge's version holds the PR's change.
   const combined = content.combined.length > 0 ? `, except ${plural(content.combined.length, 'file')} changed on both sides and not checked for this PR's change` : ''
   const words: Record<MergeContent['verdict'], string> = {
-    contains: 'contains this PR',
-    squash: `squash of this PR${combined}`,
-    rebase: `rebase of this PR${combined}`,
-    missing: "does not contain this PR's commits",
-    unknown: "couldn't check: its commits could not be read",
+    contains: 'includes this PR',
+    squash: `is a squash of this PR${combined}`,
+    rebase: `is a rebase of this PR${combined}`,
+    missing: "doesn't contain this PR's commits",
+    unknown: "couldn't be checked: its commits could not be read",
   }
   const missing = content.verdict === 'missing'
   const partly = content.combined.length > 0
@@ -3205,7 +3213,7 @@ function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeO
       }
     >
       {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' || partly ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
-      merge <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
+      {content.verdict === 'squash' || content.verdict === 'rebase' ? 'commit' : 'merge commit'} <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
     </span>
   )
 }

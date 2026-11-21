@@ -246,7 +246,7 @@ export function ReviewersCard({
       ) : null}
       {headOid ? (
         <p className="mt-2 text-[11px] text-anvil-500 dark:text-anvil-400">
-          Verdicts count on the head <Oid value={headOid} chars={7} copyable={false} />, by current members, newest per reviewer.
+          Only each current member&apos;s latest approval or change request on <Oid value={headOid} chars={7} copyable={false} /> counts.
         </p>
       ) : null}
     </div>
