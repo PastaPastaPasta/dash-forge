@@ -117,11 +117,17 @@ export function landingRecent<T extends DiscoveredRepo>(
 const LANDING_TARGET = 12
 /** Most pages the landing feed reads to reach {@link LANDING_TARGET}. */
 const LANDING_PAGES = 3
+/**
+ * Most pages it reads in all: a page of nothing but test fixtures does not count toward
+ * {@link LANDING_PAGES}, so a night of e2e runs cannot push every real repo off the landing.
+ */
+const LANDING_MAX_PAGES = 10
 
 /**
  * The newest public repos for the landing page, read on while one owner's (or the hidden ones')
- * flood leaves the visible feed short, at most {@link LANDING_PAGES} pages. One page, when it
- * already fills the feed. Hidden repos are already gone (`recentReposPage`).
+ * flood leaves the visible feed short, at most {@link LANDING_PAGES} pages, not counting pages of
+ * nothing but test fixtures, and {@link LANDING_MAX_PAGES} in all. One page, when it already fills
+ * the feed. Hidden repos are already gone (`recentReposPage`).
  */
 export async function recentFeed(
   sdk: EvoSDK,
@@ -131,8 +137,9 @@ export async function recentFeed(
   let pushesComplete = true
   let fallback = false
   let after = null as Awaited<ReturnType<typeof recentReposPage>>['next']
-  for (let i = 0; i < LANDING_PAGES; i++) {
+  for (let i = 0, counted = 0; i < LANDING_MAX_PAGES && counted < LANDING_PAGES; i++) {
     const page = await recentReposPage(sdk, { network: opts.network, limit: opts.limit ?? REPO_PAGE, after })
+    if (page.repos.length === 0 || dropTestFixtures(page.repos).length > 0) counted++
     repos.push(...page.repos)
     pushesComplete &&= page.pushesComplete
     fallback ||= page.fallback
