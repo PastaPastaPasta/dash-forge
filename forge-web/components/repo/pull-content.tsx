@@ -3071,7 +3071,7 @@ function BranchRules({
           <span>
             <span className="font-mono">{short}</span> is protected. Only maintainers can merge into it.
           </span>
-          <EnforcedBy by="platform" />
+          <EnforcedBy by="both" />
         </p>
       ) : null}
       {policy === 'unknown' || status === 'unknown' ? (
