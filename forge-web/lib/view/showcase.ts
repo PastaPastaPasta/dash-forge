@@ -125,8 +125,9 @@ const LANDING_MAX_PAGES = 10
 
 /**
  * The newest public repos for the landing page, read on while one owner's (or the hidden ones')
- * flood leaves the visible feed short, at most {@link LANDING_PAGES} pages. One page, when it
- * already fills the feed. Hidden repos are already gone (`recentReposPage`).
+ * flood leaves the visible feed short, at most {@link LANDING_PAGES} pages, not counting pages of
+ * nothing but test fixtures, and {@link LANDING_MAX_PAGES} in all. One page, when it already fills
+ * the feed. Hidden repos are already gone (`recentReposPage`).
  */
 export async function recentFeed(
   sdk: EvoSDK,
