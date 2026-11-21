@@ -593,7 +593,7 @@ function TrendWindowToggle({ value, onChange }: { value: TrendingWindow; onChang
 /** A ranked grid: the repo cards in the proved order, each with its count in the window. */
 function RankedGrid({ repos, unit }: { repos: RankedRepos['repos']; unit: string }): JSX.Element {
   return (
-    <ol className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="ranked-grid">
+    <ol className="grid grid-cols-1 gap-3 sm:auto-rows-fr sm:grid-cols-2 lg:grid-cols-3" data-testid="ranked-grid">
       {repos.map((r, i) => (
         <li key={r.key} className="relative" data-testid="ranked-row" data-repo-id={r.key} data-count={r.rankCount}>
           <span className="absolute right-2 top-2 z-10 rounded bg-anvil-100 px-1.5 font-mono text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" aria-label={`rank ${i + 1}, ${plural(r.rankCount, unit)}`}>
@@ -685,7 +685,7 @@ function PagedGrid({ repos, pages, what }: { repos: readonly DiscoveredRepo[]; p
 
 function RepoGrid({ repos }: { repos: readonly DiscoveredRepo[] }): JSX.Element {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-3 sm:auto-rows-fr sm:grid-cols-2 lg:grid-cols-3">
       {repos.map((r) => (
         <RepoCard key={r.key} repo={r} />
       ))}

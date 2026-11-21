@@ -29,7 +29,7 @@ export function RepoCard({
   // owner and name can never stand in for it.
   const href = repoHref('/repo', { owner: repo.ownerId, name: repo.slug, repoId: repo.key })
   return (
-    <div className="group rounded-lg border border-anvil-200 bg-white p-4 transition-colors hover:border-forge-400/60 dark:border-anvil-800 dark:bg-anvil-900">
+    <div className="group flex h-full flex-col rounded-lg border border-anvil-200 bg-white p-4 transition-colors hover:border-forge-400/60 dark:border-anvil-800 dark:bg-anvil-900">
       <div className="flex items-center gap-2">
         {repo.visibility === 'private' ? (
           <Lock className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-label="private" />
@@ -52,7 +52,7 @@ export function RepoCard({
       ) : (
         <p className="mt-2 italic text-anvil-500 dark:text-anvil-400">No description</p>
       )}
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+      <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 pt-3 text-[12px] text-anvil-500 dark:text-anvil-400">
         {showOwner ? <Author identityId={repo.ownerId} /> : null}
         {typeof repo.pushedAt === 'number' ? (
           <span title="Newest push">{showOwner ? '· ' : ''}pushed {timeAgo(repo.pushedAt)}</span>
