@@ -16,6 +16,7 @@
  * label definitions, the members and the authors' names under one proof.
  */
 
+import { SignedOutComposer, useSignedOut } from '@/components/repo/signed-out-composer'
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
@@ -151,6 +152,7 @@ type Pending =
 export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer, locked } = useAuth()
+  const signedOut = useSignedOut()
   const guard = useWriteGuard()
 
   // Just created here: a node that has not applied the block yet answers "not found", so keep
@@ -701,7 +703,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               {open ? 'Open' : 'Closed'}
             </span>
             <span className="inline-flex flex-wrap items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
-              <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="opened this" link={false} />
+              <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="opened this issue" link={false} />
             </span>
             {addr ? <CopyLinkButton repo={addr} target={{ kind: 'issue', number: issue.number }} visibility={home.repo.visibility} className="ml-auto" /> : null}
           </div>
@@ -713,7 +715,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         {threadCollapsed ? null : (
         <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(issue.audience) && MEMBERS_CARD)}>
           <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(issue.audience) && MEMBERS_CARD_HEADER)}>
-            <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
+            <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="commented" />
             <AudienceMark audience={issue.audience} letter={issue.letter} writtenWhilePrivate={issue.writtenWhilePrivate} />
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
             <MadePublicBy marks={issue} />
@@ -829,6 +831,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
+          {signedOut && !lockApplies ? (
+            <SignedOutComposer cost={commentCost} />
+          ) : (
+          <>
           {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
           <LockedBanner locked={lockApplies} viewer={lockViewer} target="issue">
             <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
@@ -882,6 +888,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
           ) : null}
+          </>
+          )}
         </div>
       </div>
 
