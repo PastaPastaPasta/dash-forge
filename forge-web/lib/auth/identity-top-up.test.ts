@@ -9,7 +9,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { resetMemoryStores } from '../idb'
+import { idbPut, resetMemoryStores } from '../idb'
 import { encodeWif } from './wif'
 import { discardTopUp, readTopUpJournal, topUpIdentity, topUpKeyPath } from './identity-top-up'
 
@@ -167,6 +167,18 @@ describe('topUpIdentity', () => {
     Object.assign(chain, { lock: 'unused', topUp: 'ok', height: 150 })
     await run()
     expect(chain.watched.at(-1)).toEqual({ address: `addr:${topUpKeyPath(NET, 1)}`, from: 150 })
+  })
+
+  it('a saved lock that cannot be decoded counts as an unreadable address (reused, never stranded)', async () => {
+    chain.topUp = 'refused'
+    await expect(run()).rejects.toThrow()
+    const j = await readTopUpJournal(NET, ID)
+    await idbPut('journal', `top-up:${NET}:${ID}`, { ...j, lockRaw: 'not hex' })
+    chain.lock = 'fully'
+    await run()
+    Object.assign(chain, { lock: 'unused', topUp: 'ok', height: 150 })
+    await run()
+    expect(chain.watched.at(-1)).toEqual({ address: `addr:${topUpKeyPath(NET, 0)}`, from: 100 })
   })
 
   it('an address that could not be read is treated as not empty (never stranded)', async () => {
