@@ -9,7 +9,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { resetMemoryStores } from '../idb'
+import { idbPut, resetMemoryStores } from '../idb'
 import { encodeWif } from './wif'
 import { discardTopUp, readTopUpJournal, topUpIdentity, topUpKeyPath } from './identity-top-up'
 
@@ -30,6 +30,8 @@ const chain = vi.hoisted(() => ({
   topUps: 0,
   broadcasts: 0,
   watched: [] as { address: string; from: unknown }[],
+  /** The deposit the lock spent, still reported by a feed that has not delivered the lock (null: none). */
+  unseenLockSpend: null as number | null,
 }))
 
 vi.mock('@dashevo/evo-sdk', () => ({
@@ -52,9 +54,9 @@ vi.mock('./asset-lock', () => ({
     return { type: 'chain', txid: 'ab'.repeat(32), height: 100 }
   },
   currentHeight: async () => chain.height,
-  depositHeld: async () => {
+  depositHeld: async (_ep: unknown, _address: string, _from: unknown, spends: readonly Uint8Array[] = []) => {
     if (chain.left === null) throw new Error('unreachable')
-    return chain.left
+    return chain.left + (spends.length === 0 && chain.unseenLockSpend !== null ? chain.unseenLockSpend : 0)
   },
   waitForDeposit: async (_ep: unknown, address: string, _min: number, o: { from: unknown }) => {
     chain.watched.push({ address, from: o.from })
@@ -98,7 +100,7 @@ const run = (extra: Partial<Parameters<typeof topUpIdentity>[1]> = {}): ReturnTy
 
 beforeEach(() => {
   resetMemoryStores()
-  Object.assign(chain, { wordsMatch: true, lock: 'unused', topUp: 'ok', left: 0, height: 100, locksBuilt: 0, topUps: 0, broadcasts: 0, watched: [] })
+  Object.assign(chain, { wordsMatch: true, lock: 'unused', topUp: 'ok', left: 0, height: 100, locksBuilt: 0, topUps: 0, broadcasts: 0, watched: [], unseenLockSpend: null })
 })
 
 describe('the top-up deposit key', () => {
@@ -145,6 +147,38 @@ describe('topUpIdentity', () => {
     chain.height = 150
     await run()
     expect(chain.watched[1]).toEqual({ address: `addr:${topUpKeyPath(NET, 0)}`, from: 100 })
+  })
+
+  it("the lock this run broadcast counts as a spend: a feed that hasn't delivered it is not money left over", async () => {
+    chain.unseenLockSpend = 2_000_000
+    await run()
+    chain.lock = 'unused'
+    chain.height = 150
+    await run()
+    expect(chain.watched[1]).toEqual({ address: `addr:${topUpKeyPath(NET, 1)}`, from: 150 })
+  })
+
+  it('a resumed run whose lock Platform already used also counts that lock as spent', async () => {
+    chain.topUp = 'refused'
+    await expect(run()).rejects.toThrow()
+    chain.lock = 'fully'
+    chain.unseenLockSpend = 2_000_000
+    await run()
+    Object.assign(chain, { lock: 'unused', topUp: 'ok', height: 150 })
+    await run()
+    expect(chain.watched.at(-1)).toEqual({ address: `addr:${topUpKeyPath(NET, 1)}`, from: 150 })
+  })
+
+  it('a saved lock that cannot be decoded counts as an unreadable address (reused, never stranded)', async () => {
+    chain.topUp = 'refused'
+    await expect(run()).rejects.toThrow()
+    const j = await readTopUpJournal(NET, ID)
+    await idbPut('journal', `top-up:${NET}:${ID}`, { ...j, lockRaw: 'not hex' })
+    chain.lock = 'fully'
+    await run()
+    Object.assign(chain, { lock: 'unused', topUp: 'ok', height: 150 })
+    await run()
+    expect(chain.watched.at(-1)).toEqual({ address: `addr:${topUpKeyPath(NET, 0)}`, from: 100 })
   })
 
   it('an address that could not be read is treated as not empty (never stranded)', async () => {
