@@ -210,8 +210,10 @@ async function runTopUp(
     // left there). Saved before the journal goes, so a crash in between never reuses a finished
     // index with a fresh start height. Platform used the lock, so it was broadcast: count it as a
     // spend even where a feed has not delivered it yet, or its own deposit reads as left over.
-    const spends = journal.lockRaw !== null ? [hexToBytes(journal.lockRaw)] : []
-    const left = await depositHeld(ep, journal.depositAddress, journal.startHeight ?? { startedAt: journal.startedAt }, spends).catch(() => null)
+    const { lockRaw } = journal
+    const left = await Promise.resolve()
+      .then(() => depositHeld(ep, journal.depositAddress, journal.startHeight ?? { startedAt: journal.startedAt }, lockRaw !== null ? [hexToBytes(lockRaw)] : []))
+      .catch(() => null)
     const upcoming: NextTopUp = left === 0 ? { index: journal.index + 1 } : { index: journal.index, fromHeight: journal.startHeight ?? null, fromTime: journal.startedAt }
     await idbPut<NextTopUp>('journal', nextKey(network, identityId), upcoming)
     await idbDelete('journal', journalKey(network, identityId))
