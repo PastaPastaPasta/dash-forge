@@ -1870,7 +1870,7 @@ function PullPage({
               {/* Description */}
               <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(pull.audience) && MEMBERS_CARD)}>
                 <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(pull.audience) && MEMBERS_CARD_HEADER)}>
-                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
+                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="commented" />
                   <AudienceMark audience={pull.audience} letter={pull.letter} writtenWhilePrivate={pull.writtenWhilePrivate} />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                   <MadePublicBy marks={pull} />
@@ -2231,7 +2231,7 @@ function PullPage({
 
               {/* Composer */}
               <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="pr-composer">
-                {signedOut && !(thread.locked && !archived) ? (
+                {signedOut && !thread.locked && !archived ? (
                   <SignedOutComposer cost={commentCost} />
                 ) : (
                 <>
@@ -2527,7 +2527,7 @@ function PullPage({
             ) : null}
             <SidebarSection title="Linked issues" icon={Link2}>
               {linked.length === 0 ? (
-                <p className="text-anvil-500 dark:text-anvil-400">None yet. Write &ldquo;Fixes #12&rdquo; in the description to link an issue.</p>
+                <p className="text-anvil-500 dark:text-anvil-400">None yet. An issue named as &ldquo;Fixes #12&rdquo; in the description shows up here.</p>
               ) : (
                 <ul className="space-y-1" data-testid="linked-issues">
                   {linked.map((n) => (
@@ -3213,7 +3213,7 @@ function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeO
       }
     >
       {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' || partly ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
-      merge commit <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
+      {content.verdict === 'squash' || content.verdict === 'rebase' ? 'commit' : 'merge commit'} <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
     </span>
   )
 }

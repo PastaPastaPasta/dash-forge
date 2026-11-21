@@ -48,6 +48,7 @@ describe('SignedOutComposer', () => {
     ['signed in', { identity: 'abc' }],
     ['locked', { locked: true }],
     ['resuming a kept session', { resuming: true }],
+    ['still reading the stored keys', { vaultsLoaded: false }],
   ])('keeps the box when %s', (_name, patch) => {
     auth = { ...base, ...patch }
     act(() => root.render(<Probe />))

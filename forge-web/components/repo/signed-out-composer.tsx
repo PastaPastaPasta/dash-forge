@@ -15,12 +15,13 @@ import type { CostPreview as Cost } from '@/lib/sdk'
 
 /**
  * Whether to show {@link SignedOutComposer}: nobody signed in, and no stored key to unlock (a
- * locked session keeps the box and its "Unlock to comment"). While a kept session is still being
- * picked up the box stays, so a signed-in user never sees this flash.
+ * locked session keeps the box and its "Unlock to comment"). While a kept session or the stored
+ * keys are still being read the box stays, so a signed-in or locked user never sees this flash.
  */
 export function useSignedOut(): boolean {
-  const { identity, locked, resuming } = useAuth()
-  return identity === null && !locked && !resuming
+  const { identity, locked, resuming, vaultsLoaded, vaultsError } = useAuth()
+  // Until the stored keys are read, `locked` can't be known: keep the box rather than flash this.
+  return identity === null && !locked && !resuming && (vaultsLoaded || vaultsError !== null)
 }
 
 export function SignedOutComposer({ cost }: { cost: Cost }): JSX.Element {
