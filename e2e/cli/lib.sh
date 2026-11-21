@@ -240,8 +240,10 @@ is_flake() { # is_flake <logfile.err>
     || _json_network_error "${1%.err}.json"
 }
 # With --json, dg's error is on stdout: `<out>.json` beside `<out>.err`. E701 (unreachable) and
-# E704 (broadcast, not confirmed in time) are the network's answer, not dg's. 15 FAILed on
-# exactly that E704 during the 2026-11-20 testnet block stall.
+# E704 (dg gave up waiting for Platform: an unconfirmed broadcast, or a keyring poll whose state
+# never arrived) count as testnet weather, as "timed out" on stderr always has. A keyring poll
+# that can never succeed therefore SKIPs rather than FAILs: watch for repeated SKIPs at one step.
+# 15 FAILed on an E704 during the 2026-11-20 testnet block stall.
 _json_network_error() { # _json_network_error <out.json>
   [[ -s "$1" ]] && python3 - "$1" <<'PY' 2>/dev/null
 import json, sys
