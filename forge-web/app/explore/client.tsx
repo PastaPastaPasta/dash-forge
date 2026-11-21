@@ -62,7 +62,7 @@ const SCAN_REPOS_MAX = 20
 
 /** Explore reads on past test fixtures until "Recent repos" shows this many, at most FILL_PAGES pages in all. */
 const FILL_SHOWN = 6
-const FILL_PAGES = 4
+const FILL_PAGES = 8
 
 /** "Trending", "Most starred" and "Recently active" show this many. */
 const TOP_N = 12

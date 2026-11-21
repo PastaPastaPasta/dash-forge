@@ -186,11 +186,11 @@ describe('recentFeed: read on while a flood leaves the feed short', () => {
     expect(landingRecent(r.repos, { pushesKnown: true, showAll: false }).shown.length).toBeGreaterThanOrEqual(12)
   })
 
-  it('stops at three pages, and at the end of the list', async () => {
+  it('stops at eight pages, and at the end of the list', async () => {
     const flood = (n: number) => Array.from({ length: 24 }, (_, i) => row(`f${n}-${i}`, 'spammer'))
-    feedPages = [1, 2, 3, 4].map((n) => ({ repos: flood(n), next: { at: n, seen: [] } }))
+    feedPages = Array.from({ length: 9 }, (_, i) => ({ repos: flood(i + 1), next: { at: i + 1, seen: [] } }))
     await recentFeed({} as EvoSDK, { network: 'devnet' })
-    expect(feedReads).toHaveLength(3)
+    expect(feedReads).toHaveLength(8)
     feedReads.length = 0
     feedPages = [{ repos: flood(1), next: null }]
     await recentFeed({} as EvoSDK, { network: 'devnet' })
@@ -198,12 +198,23 @@ describe('recentFeed: read on while a flood leaves the feed short', () => {
   })
 
   it('says older repos follow when every row read was hidden, so the page is not called empty', async () => {
-    feedPages = [1, 2, 3].map((n) => ({ repos: [], next: { at: n, seen: [] } }))
+    feedPages = Array.from({ length: 8 }, (_, i) => ({ repos: [], next: { at: i + 1, seen: [] } }))
     const r = await recentFeed({} as EvoSDK, { network: 'devnet' })
     expect(r.repos).toHaveLength(0)
     expect(r.more).toBe(true)
     feedReads.length = 0
     feedPages = [{ repos: [], next: null }]
     expect((await recentFeed({} as EvoSDK, { network: 'devnet' })).more).toBe(false)
+  })
+
+  it('reads past pages of test fixtures to the real repos behind them', async () => {
+    const fixtures = (n: number) => Array.from({ length: 24 }, (_, i) => row(`e2e-${n}-${i}`, `t${n}-${i}`))
+    feedPages = [
+      ...[1, 2, 3, 4].map((n) => ({ repos: fixtures(n), next: { at: n, seen: [] } })),
+      { repos: Array.from({ length: 14 }, (_, i) => row(`r${i}`, `o${i}`)), next: null },
+    ]
+    const r = await recentFeed({} as EvoSDK, { network: 'devnet' })
+    expect(feedReads).toHaveLength(5)
+    expect(landingRecent(r.repos, { pushesKnown: true, showAll: false }).shown.length).toBe(14)
   })
 })

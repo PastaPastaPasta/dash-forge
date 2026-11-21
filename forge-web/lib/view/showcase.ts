@@ -115,8 +115,12 @@ export function landingRecent<T extends DiscoveredRepo>(
 
 /** Repos the landing feed tries to show before it stops reading older pages. */
 const LANDING_TARGET = 12
-/** Most pages the landing feed reads to reach {@link LANDING_TARGET}. */
-const LANDING_PAGES = 3
+/**
+ * Most pages the landing feed reads to reach {@link LANDING_TARGET}. Testnet's CI runs create
+ * test fixtures by the dozen, which the feed drops: three pages of them left the landing saying
+ * "No new projects this week" while Explore listed real ones.
+ */
+const LANDING_PAGES = 8
 
 /**
  * The newest public repos for the landing page, read on while one owner's (or the hidden ones')
