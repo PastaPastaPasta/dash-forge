@@ -32,7 +32,7 @@ export const ENFORCED_BY: Readonly<Record<Enforcer, { readonly label: string; re
   both: {
     label: 'Enforced by Dash Platform and Forge apps',
     detail:
-      "Dash Platform lets only maintainers write a protected branch's update. Forge apps ignore any other update to it, so a writer's push never moves the branch in Forge.",
+      "Dash Platform lets only maintainers write an update to a protected branch or tag. Forge apps ignore any other update to it, so a writer's push never moves it in Forge.",
   },
 }
 
