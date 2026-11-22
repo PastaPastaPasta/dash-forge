@@ -1081,6 +1081,15 @@ impl LoadedIdentity {
         })
     }
 
+    /// Whether key `key_id` is disabled, or `None` when the identity has no such key (a node
+    /// that does not show a new key yet).
+    pub fn key_disabled(&self, key_id: u32) -> Option<bool> {
+        self.0
+            .public_keys()
+            .get(&key_id)
+            .map(IdentityPublicKeyGettersV0::is_disabled)
+    }
+
     /// The contract group key `key_id` is bound to (base58), if it is group-bound.
     pub fn key_group(&self, key_id: u32) -> Option<String> {
         match self.0.public_keys().get(&key_id)?.contract_bounds()? {

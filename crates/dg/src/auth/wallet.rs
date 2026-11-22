@@ -27,10 +27,12 @@ use forge_core::app_connect::forge::{
 };
 use forge_core::app_connect::poll::ResponsePort;
 use forge_core::app_connect::verify::IdentityPort;
+use forge_core::app_connect::verify::RejectReason;
+use forge_core::app_connect::Id;
 use forge_core::keystore::{BridgeIdentity, Secret};
 use forge_core::network::{ForgeIds, Network};
 use forge_core::platform::identity::LimitedKeySpec;
-use forge_core::platform::PlatformClient;
+use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::user_error::{codes, UserError};
 
 use super::{store, LoginArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS, DAY_MS};
@@ -77,45 +79,42 @@ impl State {
     /// The state in `path`, or an empty one when there is none. A file that does not parse is
     /// an error: a fresh connection id would leave the previous grant's key live.
     fn load(path: &Path) -> Result<Self> {
-        let unreadable = |why: String| -> anyhow::Error {
-            UserError::new(codes::INVALID_CONFIG, format!("{} could not be read", path.display()))
-                .cause(why)
-                .fix(format!("repair {}, or delete it: dg then makes a new connection id, and the key your wallet last granted this computer stays live until it expires or you disconnect Dash Forge in the wallet", path.display()))
-                .into()
-        };
         match std::fs::read_to_string(path) {
-            Ok(raw) => toml::from_str(&raw).map_err(|e| unreadable(e.message().to_string())),
+            Ok(raw) => toml::from_str(&raw).map_err(|e| unreadable(path, e.message())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(unreadable(e.to_string())),
+            Err(e) => Err(unreadable(path, &e.to_string())),
         }
     }
 
     fn save(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        }
         let raw = toml::to_string_pretty(self).context("serializing the App Connect state")?;
         forge_core::keystore::write_private_file(path, raw.as_bytes())
             .with_context(|| format!("writing {}", path.display()))
     }
 
-    /// This network's connection id, made (and saved) on first use.
-    fn connection_id(path: &Path, network: &str) -> Result<[u8; 16]> {
+    /// This network's connection id, made (and saved) on first use, and whether it was there
+    /// before. A recorded id that is not 32 hex digits is an error, like a file that does not
+    /// parse.
+    fn connection_id(path: &Path, network: &str) -> Result<([u8; 16], bool)> {
         let mut state = Self::load(path)?;
-        if let Some(id) = state
-            .connections
-            .get(network)
-            .and_then(|h| hex::decode(h).ok())
-            .and_then(|b| <[u8; 16]>::try_from(b).ok())
-        {
-            return Ok(id);
+        if let Some(text) = state.connections.get(network) {
+            return hex::decode(text)
+                .ok()
+                .and_then(|b| <[u8; 16]>::try_from(b).ok())
+                .map(|id| (id, true))
+                .ok_or_else(|| {
+                    unreadable(
+                        path,
+                        &format!("the connection id for {network} is not 32 hex digits"),
+                    )
+                });
         }
         let id = new_connection_id()?;
         state
             .connections
             .insert(network.to_string(), hex::encode(id));
         state.save(path)?;
-        Ok(id)
+        Ok((id, false))
     }
 
     fn record_wallet_key(path: &Path, network: &str, identity_id: &str, key_id: u32) -> Result<()> {
@@ -133,6 +132,14 @@ impl State {
             .get(&wallet_key_name(network, identity_id))
             .copied()
     }
+}
+
+/// `app-connect.toml` cannot be used, and why.
+fn unreadable(path: &Path, why: &str) -> anyhow::Error {
+    UserError::new(codes::INVALID_CONFIG, format!("{} could not be read", path.display()))
+        .cause(why)
+        .fix(format!("repair {}, or delete it: dg then makes a new connection id, and the key your wallet last granted this computer stays live until it expires or you disconnect Dash Forge in the wallet", path.display()))
+        .into()
 }
 
 /// Whether key `key_id` of `identity_id` on `network` is the one a wallet granted this computer.
@@ -207,17 +214,20 @@ pub(crate) trait LoginUi: Sync {
 }
 
 /// Show Forge's request until a wallet answers it, a new code is declined, or the answer is
-/// refused. Every request carries `connection_id`; `renewing` says this computer holds a key
-/// the wallet granted before (which the wallet disables when it answers).
+/// refused. Every request carries `connection_id`. `renew` names the identity when this
+/// computer holds a key a wallet granted it under that connection id (which the wallet disables
+/// when it answers): the request then carries it as `IDENTITY_HINT`, as the web app's renewal
+/// does, and only that identity's answer is read.
 pub(crate) async fn request_grant<C: WalletChain>(
     chain: &C,
     network: &Network,
     forge: &ForgeIds,
     proposal: Proposal,
     connection_id: [u8; 16],
-    renewing: bool,
+    renew: Option<Id>,
     ui: &impl LoginUi,
 ) -> Result<WalletGrant> {
+    let renewing = renew.is_some();
     let protocol = chain
         .protocol_version()
         .await
@@ -248,7 +258,7 @@ pub(crate) async fn request_grant<C: WalletChain>(
                 lifetime_ms: proposal.lifetime_ms,
                 chain_now_ms,
                 now_ms: now(),
-                identity_hint: None,
+                identity_hint: renew,
             },
         )?;
         ui.show(&req);
@@ -311,12 +321,84 @@ fn login_error(network: &Network, e: &LoginError, renewing: bool) -> anyhow::Err
             "too many answers reached the sign-in code to check them all",
         )
         .fix(format!("run `{RENEW}` again and keep the code private")),
-        LoginError::Refused(_) => UserError::new(codes::REJECTED, "dg did not use the key your wallet sent")
-            .cause(e.to_string())
-            .fix(format!("run `{RENEW}` again; if it happens again, sign in with `dg auth login <identity file>` or `--mnemonic`"))
-            .note(nothing_stored(renewing, "disconnect Dash Forge in your wallet (More → Tools → Connections) to disable that key")),
+        LoginError::Refused(_) => refused(e.to_string(), renewing),
     };
     u.into()
+}
+
+/// The key the wallet sent is not used, because of `cause`.
+fn refused(cause: String, renewing: bool) -> UserError {
+    UserError::new(codes::REJECTED, "dg did not use the key your wallet sent")
+        .cause(cause)
+        .fix(format!("run `{RENEW}` again; if it happens again, sign in with `dg auth login <identity file>` or `--mnemonic`"))
+        .note(nothing_stored(renewing, "disconnect Dash Forge in your wallet (More → Tools → Connections) to disable that key"))
+}
+
+/// What a read of the granted key on chain says.
+#[derive(Debug)]
+enum OnChain {
+    /// The key is what the wallet granted.
+    Granted,
+    /// This node does not show the key yet: read again.
+    NotYet,
+    /// The key never will be usable (disabled, or not what was granted).
+    Refused(UserError),
+}
+
+/// Judge a read of the granted key: `disabled` is `None` when the identity read has no such
+/// key, and `check` is [`LoadedIdentity::check_limited_key`].
+fn on_chain(
+    disabled: Option<bool>,
+    check: impl FnOnce() -> forge_core::Result<()>,
+    renewing: bool,
+) -> OnChain {
+    match disabled {
+        None => OnChain::NotYet,
+        Some(true) => OnChain::Refused(refused(
+            LoginError::Refused(RejectReason::KeyDisabled).to_string(),
+            renewing,
+        )),
+        Some(false) => match check() {
+            Ok(()) => OnChain::Granted,
+            Err(e) => OnChain::Refused(refused(
+                format!("the key your wallet sent is not what it granted on chain ({e})"),
+                renewing,
+            )),
+        },
+    }
+}
+
+/// Read the granted key back from the chain (a node may be a block behind) until it is there,
+/// and refuse at once a key that is disabled or not what was granted.
+async fn verify_grant(
+    client: &PlatformClient,
+    ctx: &Ctx,
+    grant: &WalletGrant,
+    spec: &LimitedKeySpec,
+    renewing: bool,
+) -> Result<LoadedIdentity> {
+    let wif = grant.wif(ctx.network());
+    let mut last = None;
+    for attempt in 0..8u64 {
+        match client.fetch_identity(&grant.identity_id).await {
+            Ok(identity) => {
+                let check =
+                    || identity.check_limited_key(grant.key_id, wif.expose(), ctx.network(), spec);
+                match on_chain(identity.key_disabled(grant.key_id), check, renewing) {
+                    OnChain::Granted => return Ok(identity),
+                    OnChain::Refused(u) => return Err(u.into()),
+                    OnChain::NotYet => {}
+                }
+            }
+            Err(e) => last = Some(e),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500 * (attempt + 1))).await;
+    }
+    Err(last.map_or_else(
+        || anyhow::anyhow!("key {} is not on {} yet", grant.key_id, grant.identity_id),
+        Into::into,
+    ))
+    .context("verifying the new key on chain")
 }
 
 // ---------------------------------------------------------------------------------------
@@ -384,9 +466,8 @@ impl LoginUi for Terminal<'_> {
         if self.tty {
             eprintln!();
         }
-        Ok(self.ctx.stdin_tty
-            && !self.ctx.json
-            && self.ctx.ask("The code expired. Show a new one?", true)?)
+        // Not under --yes: it would answer yes to every new code, forever.
+        Ok(self.ctx.interactive() && self.ctx.ask("The code expired. Show a new one?", true)?)
     }
 }
 
@@ -424,8 +505,8 @@ fn changed_limits(
 }
 
 /// Refuse before any code is shown what would fail after the wallet answered: a confirmation
-/// that cannot be asked, or a key that cannot be stored.
-fn preflight(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
+/// that cannot be asked, or a key that cannot be stored ([`store::can_store`]).
+fn preflight(ctx: &Ctx, storable: bool) -> Result<()> {
     if let Some(why) = crate::context::prompt_blocker(ctx.yes, ctx.json, ctx.stdin_tty) {
         return Err(UserError::new(
             codes::CONFIRMATION_REQUIRED,
@@ -436,9 +517,6 @@ fn preflight(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .note("nothing was shown or stored")
         .into());
     }
-    let storable = forge_core::keychain::available()
-        || args.storage.insecure_plaintext
-        || forge_core::sealed::passphrase_available();
     if !storable {
         return Err(UserError::new(codes::USAGE, "the key your wallet grants could not be stored here")
             .cause("there is no OS keychain, and no passphrase can be asked for the key file (no terminal, and DASH_FORGE_PASSPHRASE is not set)")
@@ -450,43 +528,112 @@ fn preflight(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     Ok(())
 }
 
-/// The key this computer stores for `identity_id` now, if it can be opened: what a new wallet
-/// key replaces.
-fn current_key(ctx: &Ctx, identity_id: &str) -> Option<BridgeIdentity> {
-    if ctx.identity_id_hint().as_deref() != Some(identity_id) {
-        return None;
-    }
-    ctx.load_bridge()
-        .map_err(|e| {
-            if !ctx.json {
-                eprintln!("note: the key in use was not opened ({e:#}), so no encryption key is carried over to the new one");
-            }
-        })
-        .ok()
+/// A key this computer keeps for the identity that answered, which the wallet's key takes the
+/// place of: its key source, and what it holds (or why it did not open).
+struct HeldKey {
+    source: String,
+    key: std::result::Result<BridgeIdentity, String>,
 }
 
-/// What happens to the key the wallet's key replaces: a full identity (master key included) is
-/// replaced only when asked, and a limited key dg registered stays live on Platform, said so.
-fn replace_current(
-    ctx: &Ctx,
-    current: &BridgeIdentity,
-    grant: &WalletGrant,
-) -> Result<Option<String>> {
-    if current.master_key().is_some() {
-        let prompt = "This computer stores this identity's master key. Replace it with the wallet's key (the master key is then deleted here; keep your recovery words)?";
-        if ctx.yes || !ctx.ask(prompt, false)? {
-            return Err(UserError::new(codes::CANCELLED, "the master key stored here was kept")
-                .cause("the wallet's key would replace the full identity this computer stores")
-                .fix(format!("keep using it, or `dg auth logout` (keep your recovery words) and run `{RENEW}` again"))
-                .note("nothing was stored; the key your wallet added stays on the identity until you disconnect Dash Forge in the wallet")
-                .into());
-        }
-        return Ok(None);
+/// What this computer keeps for `identity_id`: `main_slot` (its keychain entry and key file,
+/// which the wallet's key is written to: [`store::main_slot_sources`]) and the default identity
+/// when it is this one.
+fn held_keys(ctx: &Ctx, main_slot: Vec<String>, identity_id: &str) -> Vec<HeldKey> {
+    let default = ctx
+        .identity_path
+        .as_ref()
+        .filter(|_| ctx.identity_id_hint().as_deref() == Some(identity_id))
+        .map(|p| p.to_string_lossy().into_owned());
+    let mut sources = main_slot;
+    if let Some(d) = default.as_ref().filter(|d| !sources.contains(d)) {
+        sources.push(d.clone());
     }
-    let old = current.doc_op_key().ok().map(|k| k.id);
-    Ok(old
-        .filter(|&id| id != grant.key_id && !is_wallet_key(&ctx.network_label(), &grant.identity_id, id))
-        .map(|id| format!("key #{id} this computer held stays live on Platform: `dg auth keys disable {id}` (your master key signs once)")))
+    sources
+        .into_iter()
+        .map(|source| {
+            // The default through the context: a sealed file asks for its passphrase once.
+            let key = if default.as_ref() == Some(&source) {
+                ctx.load_bridge()
+            } else {
+                BridgeIdentity::load_from_file(&source).map_err(anyhow::Error::from)
+            };
+            HeldKey {
+                key: key.map_err(|e| format!("{e:#}")),
+                source,
+            }
+        })
+        .collect()
+}
+
+/// Before the wallet's key takes the place of what `held` holds: ask when that is a master key
+/// or a key that does not open (it may be one), and refuse under `--yes`.
+fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> {
+    let mut unopened = false;
+    let at_risk: Vec<String> = held
+        .iter()
+        .filter_map(|h| {
+            let at = store::describe_source(&h.source).0;
+            match &h.key {
+                Ok(b) if b.master_key().is_some() => {
+                    Some(format!("{at} holds this identity's master key"))
+                }
+                Ok(_) => None,
+                Err(why) => {
+                    unopened = true;
+                    Some(format!(
+                        "{at} did not open, so it may hold the master key ({why})"
+                    ))
+                }
+            }
+        })
+        .collect();
+    if at_risk.is_empty() {
+        return Ok(());
+    }
+    let cause = at_risk.join("; ");
+    if !ctx.yes {
+        eprintln!("The wallet's key would replace what this computer stores: {cause}.");
+        let prompt = "Sign in with the wallet's key instead (dg's own stored copy is overwritten; keep your recovery words)?";
+        if ctx.ask(prompt, false)? {
+            return Ok(());
+        }
+    }
+    let mut u = if ctx.yes {
+        UserError::new(
+            codes::CONFIRMATION_REQUIRED,
+            "the key stored here was kept: --yes never replaces a master key or a key dg cannot open",
+        )
+        .fix("run it in a terminal without --yes and confirm the replacement")
+    } else {
+        UserError::new(codes::CANCELLED, "the key stored here was kept")
+    }
+    .cause(cause);
+    if unopened {
+        u = u
+            .fix("set DASH_FORGE_PASSPHRASE (or run it in a terminal) so dg can open the key file");
+    }
+    Err(u
+        .fix(format!("keep using it, or `dg auth logout` (keep your recovery words) and run `{RENEW}` again"))
+        .note(nothing_stored(renewing, "the key your wallet added stays on the identity until you disconnect Dash Forge in the wallet (More → Tools → Connections)"))
+        .into())
+}
+
+/// The limited keys `held` signed with that stay live on Platform once the wallet's key
+/// replaces them, said so: not the granted key, nor the key a wallet granted before
+/// (`wallet_key`, which the wallet disables).
+fn left_live(held: &[HeldKey], grant: &WalletGrant, wallet_key: Option<u32>) -> Option<String> {
+    let ids: std::collections::BTreeSet<u32> = held
+        .iter()
+        .filter_map(|h| h.key.as_ref().ok())
+        .filter(|b| b.identity_id == grant.identity_id && b.master_key().is_none())
+        .filter_map(|b| b.doc_op_key().ok().map(|k| k.id))
+        .filter(|&id| id != grant.key_id && Some(id) != wallet_key)
+        .collect();
+    let lines: Vec<String> = ids
+        .iter()
+        .map(|id| format!("key #{id} this computer held stays live on Platform: `dg auth keys disable {id}` (your master key signs once)"))
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("; "))
 }
 
 /// Show who answered and ask the user to confirm it is the identity the wallet showed.
@@ -520,13 +667,15 @@ fn confirm_identity(
 pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let forge = ctx.target.require_v2()?;
     let proposal = Proposal::from_args(&args.limits)?;
-    preflight(ctx, args)?;
+    preflight(ctx, store::can_store(args.storage.insecure_plaintext))?;
     let network = ctx.network_label();
     let state = state_path()?;
-    let connection_id = State::connection_id(&state, &network)?;
-    let renewing = ctx
+    let (connection_id, known) = State::connection_id(&state, &network)?;
+    let renew = ctx
         .identity_id_hint()
-        .is_some_and(|id| State::wallet_key(&state, &network, &id).is_some());
+        .filter(|id| known && State::wallet_key(&state, &network, id).is_some())
+        .and_then(|id| forge_core::app_connect::decode_id(&id));
+    let renewing = renew.is_some();
     let client = ctx.connect().await?;
     let checked =
         super::check_group(ctx, &client, &forge.group, args.limits.strict_group()).await?;
@@ -544,7 +693,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         forge,
         proposal,
         connection_id,
-        renewing,
+        renew,
         &ui,
     )
     .await?;
@@ -557,12 +706,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         expires_at_ms: grant.expires_at_ms,
         group: forge.group.clone(),
     };
-    let wif = grant.wif(ctx.network());
-    super::verify_key(&client, &grant.identity_id, grant.key_id, &wif, ctx, &spec).await?;
-    let identity = client
-        .fetch_identity(&grant.identity_id)
-        .await
-        .context("fetching the identity that answered")?;
+    let identity = verify_grant(&client, ctx, &grant, &spec, renewing).await?;
     let names = client
         .dpns_names_of(&grant.identity_id)
         .await
@@ -574,14 +718,16 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let changed = changed_limits(&grant, proposal, proposed_expiry_ms);
     confirm_identity(ctx, &shown_as, &grant, changed.as_deref(), renewing)?;
 
-    let current = current_key(ctx, &grant.identity_id);
-    let left_live = match &current {
-        Some(c) => replace_current(ctx, c, &grant)?,
-        None => None,
-    };
-    let encryption = current.as_ref().map_or_else(Vec::new, |c| {
-        super::encryption_to_store(ctx, &args.storage, &identity, &[c])
-    });
+    let main_slot = store::main_slot_sources(&network, &grant.identity_id)?;
+    let held = held_keys(ctx, main_slot, &grant.identity_id);
+    guard_replacement(ctx, &held, renewing)?;
+    let left_live = left_live(
+        &held,
+        &grant,
+        State::wallet_key(&state, &network, &grant.identity_id),
+    );
+    let opened: Vec<&BridgeIdentity> = held.iter().filter_map(|h| h.key.as_ref().ok()).collect();
+    let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &opened);
     let text = stored_text(&grant, ctx.network(), &network, &encryption)?;
     let stored = store::Storer::new(args.storage.insecure_plaintext).store(
         &network,
@@ -800,13 +946,13 @@ mod tests {
             after: Option<&Id>,
             limit: u32,
         ) -> forge_core::Result<Vec<Candidate>> {
-            assert!(hint.is_none(), "a first sign-in names no identity");
             Ok(self
                 .answers
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|(h, c)| h == hash && after.is_none_or(|a| c.owner_id > *a))
+                .filter(|(_, c)| hint.is_none_or(|h| c.owner_id == *h))
                 .map(|(_, c)| c.clone())
                 .take(limit as usize)
                 .collect())
@@ -862,6 +1008,15 @@ mod tests {
         again: bool,
         answer: &(dyn Fn(&World, &request::Request, usize) + Sync),
     ) -> (Result<WalletGrant>, usize) {
+        run_as(world, again, None, answer).await
+    }
+
+    async fn run_as(
+        world: &World,
+        again: bool,
+        renew: Option<Id>,
+        answer: &(dyn Fn(&World, &request::Request, usize) + Sync),
+    ) -> (Result<WalletGrant>, usize) {
         let ui = Script {
             world,
             start: tokio::time::Instant::now(),
@@ -875,7 +1030,7 @@ mod tests {
             &forge(),
             proposal(),
             [5; 16],
-            false,
+            renew,
             &ui,
         )
         .await;
@@ -1050,18 +1205,254 @@ mod tests {
     fn the_state_keeps_the_connection_id_and_the_wallet_keys() {
         let t = tempfile::tempdir().unwrap();
         let path = t.path().join("dash-forge/app-connect.toml");
-        let id = State::connection_id(&path, "testnet").unwrap();
-        assert_eq!(State::connection_id(&path, "testnet").unwrap(), id);
-        assert_ne!(State::connection_id(&path, "devnet-sakura").unwrap(), id);
+        let (id, known) = State::connection_id(&path, "testnet").unwrap();
+        assert!(!known);
+        assert_eq!(State::connection_id(&path, "testnet").unwrap(), (id, true));
+        assert_ne!(State::connection_id(&path, "devnet-sakura").unwrap().0, id);
         assert_eq!(State::wallet_key(&path, "testnet", "ALICE"), None);
         State::record_wallet_key(&path, "testnet", "ALICE", 7).unwrap();
         State::record_wallet_key(&path, "testnet", "ALICE", 9).unwrap();
         assert_eq!(State::wallet_key(&path, "testnet", "ALICE"), Some(9));
         assert_eq!(State::wallet_key(&path, "devnet-sakura", "ALICE"), None);
         // Recording a key keeps the connection id.
-        assert_eq!(State::connection_id(&path, "testnet").unwrap(), id);
+        assert_eq!(State::connection_id(&path, "testnet").unwrap().0, id);
         std::fs::write(&path, "connections = 3").unwrap();
         assert!(State::connection_id(&path, "testnet").is_err());
+    }
+
+    /// A damaged connection id is an error, not silently replaced: a new id would leave the
+    /// previous grant's key live.
+    #[test]
+    fn a_damaged_connection_id_is_an_error() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("app-connect.toml");
+        std::fs::write(&path, "[connections]\ntestnet = \"abc\"\n").unwrap();
+        let err = State::connection_id(&path, "testnet").unwrap_err();
+        let u = user_error(&err);
+        assert_eq!(u.code, codes::INVALID_CONFIG);
+        assert!(
+            u.cause.as_deref().unwrap().contains("not 32 hex digits"),
+            "{u:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[connections]\ntestnet = \"abc\"\n"
+        );
+    }
+
+    /// A renewal names the identity, so only its answer counts: someone else answering the
+    /// same code does not make it ambiguous.
+    #[tokio::test(start_paused = true)]
+    async fn a_renewal_names_the_identity() {
+        let world = World::new();
+        world.register("alice", wallet_key("alice"));
+        world.register("mallory", wallet_key("mallory"));
+        let (grant, _) = run_as(&world, false, Some(seed("alice")), &|w, r, _| {
+            w.answer(r, "mallory");
+            w.answer(r, "alice");
+        })
+        .await;
+        assert_eq!(grant.unwrap().identity_id, encode_base58(&seed("alice")));
+        let req = world.shown.lock().unwrap()[0].clone();
+        assert_eq!(req.identity_hint, Some(seed("alice")));
+        assert_eq!(req.connection_id, Some([5; 16]));
+        assert_eq!(req.mode, None);
+    }
+
+    #[test]
+    fn a_granted_key_that_fails_on_chain_is_refused_at_once() {
+        let called = std::cell::Cell::new(false);
+        let check = || {
+            called.set(true);
+            Ok(())
+        };
+        assert!(matches!(on_chain(None, check, false), OnChain::NotYet));
+        assert!(!called.get());
+        let OnChain::Refused(u) = on_chain(Some(true), || Ok(()), false) else {
+            panic!("a disabled key is refused")
+        };
+        assert_eq!(u.code, codes::REJECTED);
+        assert!(
+            u.cause.as_deref().unwrap().contains("already disabled"),
+            "{u:?}"
+        );
+        assert!(
+            u.note.as_deref().unwrap().starts_with("nothing was stored"),
+            "{u:?}"
+        );
+        assert!(
+            u.note.as_deref().unwrap().contains("disconnect Dash Forge"),
+            "{u:?}"
+        );
+        let mismatch = || {
+            Err(forge_core::Error::Platform(
+                "key 7 on X: its budget or expiry differs from what was requested".into(),
+            ))
+        };
+        let OnChain::Refused(u) = on_chain(Some(false), mismatch, true) else {
+            panic!("a key that is not what was granted is refused")
+        };
+        assert!(
+            u.cause
+                .as_deref()
+                .unwrap()
+                .contains("budget or expiry differs"),
+            "{u:?}"
+        );
+        assert!(u.note.as_deref().unwrap().contains(RENEW), "{u:?}");
+        assert!(matches!(
+            on_chain(Some(false), || Ok(()), false),
+            OnChain::Granted
+        ));
+    }
+
+    #[test]
+    fn preflight_refuses_what_would_fail_after_the_answer() {
+        for (json, tty) in [(true, true), (false, false)] {
+            let err = preflight(&Ctx::scripted(false, json, tty, None), true).unwrap_err();
+            assert_eq!(user_error(&err).code, codes::CONFIRMATION_REQUIRED);
+        }
+        let err = preflight(&Ctx::scripted(true, true, false, None), false).unwrap_err();
+        let u = user_error(&err);
+        assert_eq!(u.code, codes::USAGE);
+        assert!(
+            u.fix.iter().any(|f| f.contains("DASH_FORGE_PASSPHRASE")),
+            "{u:?}"
+        );
+        assert!(
+            u.fix.iter().any(|f| f.contains("--insecure-plaintext")),
+            "{u:?}"
+        );
+        assert!(preflight(&Ctx::scripted(true, true, false, None), true).is_ok());
+        assert!(preflight(&Ctx::scripted(false, false, true, None), true).is_ok());
+    }
+
+    /// Under --yes, an expired code ends the run: yes to every new code would never stop.
+    #[test]
+    fn yes_does_not_show_new_codes_forever() {
+        let ctx = Ctx::scripted(true, false, true, None);
+        assert!(!Terminal {
+            ctx: &ctx,
+            tty: false
+        }
+        .again()
+        .unwrap());
+    }
+
+    /// A full identity (master key included), as `dg auth login --full-key` stores it.
+    fn full_identity(identity_id: &str) -> String {
+        json!({
+            "network": "testnet",
+            "identityId": identity_id,
+            "identityKeys": [{
+                "id": 0,
+                "name": "Master",
+                "keyType": "ECDSA_SECP256K1",
+                "purpose": "AUTHENTICATION",
+                "securityLevel": "MASTER",
+                "privateKeyWif": "FAKE-wif-master-DO-NOT-USE",
+                "privateKeyHex": "",
+                "publicKeyHex": "",
+                "derivationPath": ""
+            }],
+            "mnemonic": "",
+            "assetLockKey": { "wif": "", "publicKeyHex": "", "derivationPath": "" }
+        })
+        .to_string()
+    }
+
+    /// Review finding 1, first case: the default identity is alice, bob answers, and bob's
+    /// stored key is a full identity. It is judged from bob's slot, and --yes keeps it.
+    #[tokio::test(start_paused = true)]
+    async fn another_identitys_stored_master_key_is_kept_under_yes() {
+        let grant = alice_grant().await;
+        let alice_key = grant.to_dfk1(&Network::Testnet, "testnet");
+        let bob = encode_base58(&seed("bob"));
+        let t = tempfile::tempdir().unwrap();
+        let bob_file = t.path().join(format!("testnet-{bob}.key"));
+        std::fs::write(&bob_file, full_identity(&bob)).unwrap();
+        let ctx = Ctx::scripted(true, false, false, Some(alice_key.expose().into()));
+        assert_eq!(
+            ctx.identity_id_hint().as_deref(),
+            Some(grant.identity_id.as_str())
+        );
+
+        let held = held_keys(&ctx, vec![bob_file.to_string_lossy().into_owned()], &bob);
+        assert_eq!(held.len(), 1, "alice's default is not bob's");
+        assert!(held[0].key.as_ref().unwrap().master_key().is_some());
+        let err = guard_replacement(&ctx, &held, false).unwrap_err();
+        let u = user_error(&err);
+        assert_eq!(u.code, codes::CONFIRMATION_REQUIRED);
+        assert!(u.cause.as_deref().unwrap().contains("master key"), "{u:?}");
+        assert!(
+            u.note.as_deref().unwrap().starts_with("nothing was stored"),
+            "{u:?}"
+        );
+        assert!(std::fs::read_to_string(&bob_file)
+            .unwrap()
+            .contains("MASTER"));
+
+        // Alice answering is judged by alice's key, the default: limited, so it is replaced.
+        let held = held_keys(&ctx, vec![], &grant.identity_id);
+        assert_eq!(held.len(), 1);
+        assert!(guard_replacement(&ctx, &held, false).is_ok());
+    }
+
+    /// Review finding 1, second case: the stored key does not open (a sealed file with no
+    /// passphrase under --yes, or a damaged one). It may be the master key, so --yes keeps it.
+    #[test]
+    fn a_stored_key_that_does_not_open_is_kept_under_yes() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("testnet-X.key");
+        std::fs::write(&file, "not a key").unwrap();
+        let ctx = Ctx::scripted(true, false, false, None);
+        let held = held_keys(&ctx, vec![file.to_string_lossy().into_owned()], "X");
+        assert!(held[0].key.is_err());
+        let sealed_without_passphrase = HeldKey {
+            source: t
+                .path()
+                .join("testnet-Y.key")
+                .to_string_lossy()
+                .into_owned(),
+            key: Err("no passphrase for the sealed file".into()),
+        };
+        for held in [held, vec![sealed_without_passphrase]] {
+            let err = guard_replacement(&ctx, &held, false).unwrap_err();
+            let u = user_error(&err);
+            assert_eq!(u.code, codes::CONFIRMATION_REQUIRED);
+            assert!(
+                u.cause.as_deref().unwrap().contains("did not open"),
+                "{u:?}"
+            );
+            assert!(
+                u.fix.iter().any(|f| f.contains("DASH_FORGE_PASSPHRASE")),
+                "{u:?}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "not a key");
+    }
+
+    /// A limited key dg registered is replaced without asking, and named as left live; the key
+    /// a wallet granted before is not (the wallet disables it).
+    #[tokio::test(start_paused = true)]
+    async fn a_replaced_limited_key_is_named_as_left_live() {
+        let grant = alice_grant().await;
+        let wif = grant.wif(&Network::Testnet);
+        let old = forge_core::keystore::dfk1("testnet", &grant.identity_id, 3, wif.expose());
+        let held = vec![HeldKey {
+            source: "keychain:dash-forge/testnet/ALICE".into(),
+            key: Ok(BridgeIdentity::from_dfk1(old.expose()).unwrap()),
+        }];
+        let ctx = Ctx::scripted(true, false, false, None);
+        assert!(guard_replacement(&ctx, &held, false).is_ok());
+        let line = left_live(&held, &grant, None).unwrap();
+        assert!(
+            line.starts_with("key #3 this computer held stays live"),
+            "{line}"
+        );
+        assert!(line.contains("dg auth keys disable 3"), "{line}");
+        assert_eq!(left_live(&held, &grant, Some(3)), None);
+        assert_eq!(left_live(&[], &grant, None), None);
     }
 
     #[test]
