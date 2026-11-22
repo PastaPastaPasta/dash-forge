@@ -80,7 +80,7 @@ export function WriteProgressSteps(): JSX.Element {
     <div data-testid="write-progress" role="status" className="rounded-md border border-anvil-200 px-3 py-2.5 text-dense dark:border-anvil-750">
       <ol className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {STEPS.map((s, i) => (
-          <li key={s.phase} className={cn('flex items-center gap-1.5', i > at ? 'text-anvil-400 dark:text-anvil-500' : 'text-anvil-800 dark:text-anvil-100')}>
+          <li key={s.phase} className={cn('flex items-center gap-1.5', i > at ? 'text-anvil-500 dark:text-anvil-400' : 'text-anvil-800 dark:text-anvil-100')}>
             {i < at ? (
               <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
             ) : i === at ? (
