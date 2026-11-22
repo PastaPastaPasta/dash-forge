@@ -21,7 +21,7 @@ This guide covers:
 
 You need:
 
-- `dg`, `git-remote-dash` and `forge-import`. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Once a release is published, the [install script](../INSTALL.md#install-script-linux-and-macos) can fetch all three, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
+- `dg`, `git-remote-dash` and `forge-import`. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Or the [install script](../INSTALL.md#install-script-linux-and-macos) fetches all three from the latest release, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
 - A funded identity, exported as `DASH_FORGE_KEY` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)).
 - A GitLab access token with the **`read_api`** scope, in `GITLAB_TOKEN`. For a private project, give it **`read_repository`** too. A project access token scoped to the one project is enough (Settings > Access tokens).
   - Without a token, the importer reads what GitLab shows anonymously: the project, its issues and merge requests, releases and the code. On gitlab.com, anonymous reads of comments, discussions and labels are refused (`401`), so a run without a token imports items without their threads and says so.
