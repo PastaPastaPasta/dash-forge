@@ -11,7 +11,7 @@ Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)** (or **New โ
 - **Automatic sync**, for people with write access on GitHub. Sign in here and create or reuse a Forge repository. Set up the GitHub Action now, or leave it for later. Its storage, runner key and workflow steps are optional.
 - **From the command line**, for anyone who may copy the source. The wizard fills in commands for dg on your computer, with a repo name and spending cap you can change. You need dg, git-remote-dash, the GitHub CLI signed in, and a funded identity. The page signs nothing.
 
-The [setup wizard guide](mirror-a-github-repo.md#the-setup-wizard) walks through both ways. Automatic setup resumes from this identity's saved browser answers; command-line settings resume from the page address. No key is saved. Until a Dash Forge release is published, the Action builds its tools on the runner, so the first run takes several extra minutes.
+The [setup wizard guide](mirror-a-github-repo.md#the-setup-wizard) walks through both ways. Automatic setup resumes from this identity's saved browser answers; command-line settings resume from the page address. No key is saved. The wizard's workflow builds the Action's tools on the runner from the commit the site runs, which can be ahead of the latest release, so the first run takes several extra minutes.
 
 The rest of this guide covers the command-line path: private repositories, GitLab, a one-off import with no Action, and cutting over.
 
@@ -84,8 +84,8 @@ dg auth new
 Install the importer ([quick start ยง1](quick-start.md#1-install) installs `dg` and `git-remote-dash` from a source clone), and sign in to GitHub so it can read issues, PRs and releases:
 
 ```sh
-# From the source clone of the quick start. Once a release is published, the install script
-# can fetch it instead (DASH_FORGE_BINARIES="dg git-remote-dash forge-import", see INSTALL.md).
+# From the source clone of the quick start. Or the install script fetches it from the latest
+# release (DASH_FORGE_BINARIES="dg git-remote-dash forge-import", see INSTALL.md).
 cargo install --locked --path crates/forge-import
 gh auth login
 ```

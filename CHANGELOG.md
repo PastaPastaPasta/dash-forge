@@ -8,11 +8,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
-### Fixed
-
-- **`dg verify-app` passes on forge.dashhq.org while Cloudflare injects its analytics beacon.** Cloudflare's Web Analytics automatic setup stays on there and adds a second beacon tag before `</body>` of every page, so every page differed (E504) and the nightly check failed. `dg verify-app` now removes exactly that tag, in Cloudflare's own form and only beside the build's beacon for the same site token, before hashing a page, and counts those pages (`cfBeaconRemoved` in `--json`). Any other difference still fails. The second tag counts no visit twice: the browser runs the beacon once, and the page CSP refuses any other beacon version ([docs/hosting.md](docs/hosting.md) §6).
-
-## [0.2.0] - TODO(owner): the tagging date
+## [0.2.0] - 2026-11-22
 
 Dash Forge moves to **testnet**: its four contracts are registered there, and testnet is now the supported network for `dg`, `git-remote-dash`, the web app and the Actions. Devnet sakura, which v0.1.0 targeted, is down, and nothing on it was carried over. See the [release notes](docs/releases/v0.2.0.md) for networks, upgrading and known limitations.
 
@@ -73,6 +69,7 @@ Members-only content in public repositories, Environments and the secret scan. P
 - **`dg repo clone` and `dg init` record `dash.network` in a testnet clone** ([#619](https://github.com/PastaPastaPasta/dash-forge/pull/619)). Testnet is the built-in default, so a testnet clone used to count as pinned with nothing recorded, and a later `dg auth` default (a devnet or mainnet) would move its plain `git push` to that network. A clone now also records the DAPI addresses set in dg's config. Clones made by earlier builds: run `git config dash.network testnet` in each.
 - **`dg pr merge` no longer reports `"merged": false` for a merge that landed** ([#619](https://github.com/PastaPastaPasta/dash-forge/pull/619)). When the PR read straight after a confirmed merge came from a lagging node, dg said the merge was only recorded; it now reads again for up to about 15 seconds first.
 - **The Star button's accessible name is its visible text** (`Star 3`, `Starred 3`); the price moved to its description ([#620](https://github.com/PastaPastaPasta/dash-forge/pull/620)).
+- **`dg verify-app` passes on forge.dashhq.org while Cloudflare injects its analytics beacon.** Cloudflare's Web Analytics automatic setup stays on there and adds a second beacon tag before `</body>` of every page, so every page differed (E504) and the nightly check failed. `dg verify-app` now removes exactly that tag, in Cloudflare's own form and only beside the build's beacon for the same site token, before hashing a page, and counts those pages (`cfBeaconRemoved` in `--json`). Any other difference still fails. The second tag counts no visit twice: the browser runs the beacon once, and the page CSP refuses any other beacon version ([docs/hosting.md](docs/hosting.md) §6).
 
 ### Security
 

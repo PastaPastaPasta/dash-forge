@@ -53,7 +53,7 @@ The service polls each followed public repository every `FORGE_NOTIFY_POLL_SECS`
 
 ## Run it
 
-Build the image from the repository root (or pull a release image once one is published):
+Build the image from the repository root (releases publish no forge-notify image):
 
 ```sh
 docker build -f services/forge-notify/Dockerfile \

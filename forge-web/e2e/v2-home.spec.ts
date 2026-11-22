@@ -209,11 +209,14 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     // The network goes into the repository's git config before the push (L-03), and the
     // from-scratch line clones on the build's network before its `cd` (L-21).
     const lines = await empty.locator('code').allInnerTexts()
+    // Numbered: sign dg in, then push an existing repository or start from scratch (UX wave 4).
     expect(lines).toEqual([
+      `dg auth login --mnemonic ${DG_NETWORK}`,
       `git remote add origin dash://${MAINTAINER}/forge-v2-empty`,
       SET_NETWORK,
       'git push -u origin main',
       `dg repo clone ${MAINTAINER}/forge-v2-empty ${DG_NETWORK} && cd forge-v2-empty`,
+      "echo '# forge-v2-empty' > README.md && git add README.md && git commit -m 'First commit' && git push -u origin HEAD:main",
     ])
     await expect(empty.getByTestId('empty-repo-network')).toContainText(NETWORK_KEY)
     await expect(empty.getByText(/Storage: packs go to/)).toBeVisible()
