@@ -18,7 +18,7 @@ You keep your identity, your repositories and your history. Only the keys that s
 **Disabled: every signing key (AUTHENTICATION key) of your identity except the one you are using now and the master key.** That is each browser, computer and CI runner key you registered, and also the keys other apps use to sign as you:
 
 - **Forge limited keys**: the keys with a budget and an expiry that a browser or `dg` signs with;
-- **wallet sign-ins**: the key a Dash wallet gave Forge or another app when you scanned a sign-in, whether it has no contract limits or is tied to one contract and has no budget. Wallet keys have no budget and may never expire, which makes them the most worth disabling;
+- **wallet sign-ins**: the key a Dash wallet gave Forge or another app when you scanned a sign-in. A current wallet's key has the budget and expiry you approved; a key from the older sign-in code, or from another app, may have no budget and never expire, which makes it the most worth disabling;
 - **CI runner keys**: the keys that can only report check runs;
 - **other apps' keys**: any other signing key on the identity, including ones this page can't name.
 

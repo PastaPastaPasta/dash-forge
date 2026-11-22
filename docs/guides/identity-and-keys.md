@@ -84,7 +84,7 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 | `git-remote-dash` | The same | `DASH_FORGE_KEY`, else `~/.config/dash-forge/identities/<owner>.identity.json` if that file exists, else the default `dg auth` recorded |
 | `forge-import` | The same | `--identity <source>` > `DASH_FORGE_KEY` |
 | Mirror Action | A CI secret: an inline runner key, or a CI-only identity file | the `DASH_FORGE_KEY` secret ([mirror guide](mirror-a-github-repo.md#the-ci-secret)) |
-| Web app | A **limited key** (or a wallet-granted key with no limits, see below), encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
+| Web app | A **limited key** (or a key your wallet granted, with the budget and expiry you approved there; the older code's keys have no limits, see below), encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
 
 A key *source* (`--identity`, `DASH_FORGE_KEY`, the recorded default) is any of:
 
@@ -280,7 +280,7 @@ What to expect:
 - **Scan only a code shown on forge.dashhq.org.** The request names Forge and nothing about the site that shows it, so a lookalike site can show a code that looks the same, and your wallet cannot tell them apart. If you approve one, that site gets a key that signs Forge writes as you, within the limits you approved. Forge never asks you to scan a code it didn't show you on its own site. If you scanned a code you didn't trust, use **Settings → Devices & keys → Disable all other keys** (your identity file or recovery phrase signs once). [If Forge tells you to revoke keys](revoke-keys.md) has the steps.
 - **No encryption key.** App Connect v2 gives Forge a signing key only. To read private repositories and members-only content, import your encryption key under **Settings → Members-only and private content**.
 - **Renewing.** When the key's budget or time runs low, Forge offers **Renew in your wallet**: the wallet grants a new key and disables the old one in the same update.
-- **Check the identity yourself.** The answer does not prove who sent it: anyone who saw the QR code could answer. Forge refuses if two identities answer, and shows the one that did: compare the username and identity id with the wallet's approval screen. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 10 minutes; keep the QR code private.
+- **Check the identity yourself.** The answer does not prove who sent it: anyone who saw the QR code could answer. Forge refuses if two identities answer. When one does, Forge shows which: compare the username and identity id with the wallet's approval screen. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 10 minutes; keep the QR code private.
 - **A freshly restored wallet may not answer until it has synced.** If the wallet says its connection records can't be read, let it finish syncing, then open or scan the code again.
 
 #### The older code (DashConnect)
