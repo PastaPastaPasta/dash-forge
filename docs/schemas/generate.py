@@ -174,6 +174,12 @@ cmd('auth login', 'Signed in: the identity and the key stored for it.', {
     'status': E('logged_in'), 'identityId': S, 'network': S, 'keyId': nl(I), 'fullKey': B, 'encryptionKeyIds': A(I),
     'budgetCredits': nl(I), 'expiresAt': nl(I), 'storage': S, 'storedAt': S, 'source': S,
     'balanceCredits': nl(I), 'balanceDash': nl(F), 'cost': NCOST, **GROUP,
+    'keyOrigin': D('`wallet` when a DashPay wallet granted the key (`--wallet`).', E('wallet')),
+    'names': SA, 'budgetRemainingCredits': I,
+    'proposedBudgetCredits': D('With `--wallet`: the budget dg proposed (the wallet may grant another).', I),
+    'renew': D('With `--wallet`: the command that renews the key.', S),
+    'previousKeyLeftLive': D('With `--wallet`: the limited key this computer held before, which stays live on '
+                             'Platform, and how to disable it; else null.', nl(S)),
 }, ['status', 'identityId', 'network'])
 cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', {
     'network': S, 'authenticated': B, 'identityId': S, 'names': SA, 'keyId': nl(I), 'keyDisabled': nl(B),
@@ -183,6 +189,8 @@ cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', 
     'masterKeyStored': nl(B),
     'keyUnopened': D('Why the stored key could not be opened here (it is sealed and no passphrase is available), '
                      'or null.', nl(S)),
+    'keyOrigin': D('`wallet` when a DashPay wallet granted the key (`dg auth login --wallet`), else null.', nl(E('wallet'))),
+    'renew': D('The command that renews a wallet-granted key, else null.', nl(S)),
 }, ['network', 'authenticated'])
 cmd('auth balance', 'An identity\'s proved balance.', {
     'identityId': S, 'network': S, 'balanceCredits': I, 'balanceDash': F,

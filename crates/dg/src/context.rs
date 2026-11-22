@@ -73,7 +73,7 @@ fn warn_if_retired(network: &Network) {
 }
 
 /// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
-fn prompt_blocker(yes: bool, json: bool, stdin_tty: bool) -> Option<&'static str> {
+pub(crate) fn prompt_blocker(yes: bool, json: bool, stdin_tty: bool) -> Option<&'static str> {
     if yes {
         None
     } else if json {
@@ -534,7 +534,7 @@ impl Ctx {
         }
     }
 
-    fn ask(&self, prompt: &str, default_yes: bool) -> Result<bool> {
+    pub(crate) fn ask(&self, prompt: &str, default_yes: bool) -> Result<bool> {
         if self.yes {
             return Ok(true);
         }

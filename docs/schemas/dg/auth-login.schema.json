@@ -89,6 +89,37 @@
       "items": {
         "type": "string"
       }
+    },
+    "keyOrigin": {
+      "type": "string",
+      "enum": [
+        "wallet"
+      ],
+      "description": "`wallet` when a DashPay wallet granted the key (`--wallet`)."
+    },
+    "names": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "budgetRemainingCredits": {
+      "type": "integer"
+    },
+    "proposedBudgetCredits": {
+      "type": "integer",
+      "description": "With `--wallet`: the budget dg proposed (the wallet may grant another)."
+    },
+    "renew": {
+      "type": "string",
+      "description": "With `--wallet`: the command that renews the key."
+    },
+    "previousKeyLeftLive": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "With `--wallet`: the limited key this computer held before, which stays live on Platform, and how to disable it; else null."
     }
   },
   "required": [

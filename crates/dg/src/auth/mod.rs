@@ -8,7 +8,8 @@
 //! - `new` — recovery words → deposit QR → asset lock → identity with its canonical keys and a
 //!   limited key in one IdentityCreate ([`new`]).
 //! - `login` — import an identity file or the recovery words once, register a limited key,
-//!   store only that key (with the identity's encryption key beside it, QW2-004).
+//!   store only that key (with the identity's encryption key beside it, QW2-004); or, with
+//!   `--wallet`, store the limited key a DashPay wallet grants over App Connect ([`wallet`]).
 //! - `status`, `balance`, `keys list|add|disable`, `name register`, `export`, `logout`.
 
 pub mod group;
@@ -16,6 +17,7 @@ mod keys;
 mod new;
 mod rekey;
 pub mod store;
+mod wallet;
 
 use std::path::PathBuf;
 
@@ -48,10 +50,12 @@ pub enum AuthCommand {
     /// You get a recovery phrase and a deposit address. Once it is funded, dg creates the
     /// identity with a limited key for this computer, stored in the OS keychain.
     New(new::NewArgs),
-    /// Sign in with an identity file or recovery phrase.
+    /// Sign in with an identity file, a recovery phrase, or your DashPay wallet (--wallet).
     ///
     /// Registers a limited key for this computer. The master key is used once and not stored,
-    /// unless --full-key.
+    /// unless --full-key. With --wallet, scan the code dg prints with DashPay (More → Tools →
+    /// Connections → Scan QR): the wallet adds the limited key, and the master key never leaves
+    /// it.
     Login(LoginArgs),
     /// Show the identity, its key, budget left, expiry, balance and where the key is stored.
     Status,
@@ -138,6 +142,11 @@ pub struct LoginArgs {
     /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
+    /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dash-key:` link,
+    /// the wallet adds a limited key (proposed: 0.25 DASH for 180 days, or --budget/--expires;
+    /// the wallet may change them) and dg stores it. Testnet needs DashPay's testnet build.
+    #[arg(long, conflicts_with_all = ["file", "mnemonic", "full_key", "replace"])]
+    pub wallet: bool,
     /// Keep the full identity (master key included) instead of registering a limited key.
     #[arg(long)]
     pub full_key: bool,
@@ -885,6 +894,9 @@ async fn login_source(
 /// that key and the identity's encryption keys (or, with `--full-key`, the whole identity).
 #[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
+    if args.wallet {
+        return wallet::login(ctx, args).await;
+    }
     let client = ctx.connect().await?;
     let master = login_source(ctx, &client, args).await?;
     let network = ctx.network_label();
@@ -1177,6 +1189,7 @@ pub(crate) async fn key_report(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn status(ctx: &Ctx) -> Result<()> {
     let config = Config::load()?;
     let network = ctx.network_label();
@@ -1221,6 +1234,16 @@ async fn status(ctx: &Ctx) -> Result<()> {
     };
     let master = bridge.as_ref().map(|b| b.master_key().is_some());
     let runner_key = report.as_ref().is_some_and(|r| r.doc_type.is_some());
+    let from_wallet = report
+        .as_ref()
+        .and_then(|r| r.key_id.or(r.disabled_id))
+        .or_else(|| {
+            bridge
+                .as_ref()
+                .and_then(|b| b.doc_op_key().ok())
+                .map(|k| k.id)
+        })
+        .is_some_and(|id| wallet::is_wallet_key(&network, &identity_id, id));
     ctx.emit(
         json!({
             "network": network,
@@ -1246,6 +1269,8 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "defaultIdentityId": config.default_identity_id,
             "masterKeyStored": master,
             "keyUnopened": unopened,
+            "keyOrigin": from_wallet.then_some("wallet"),
+            "renew": from_wallet.then_some(wallet::RENEW),
         }),
         || {
             println!("Network:  {network}");
@@ -1257,6 +1282,9 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 "Key:      {}",
                 key_line(report.as_ref(), unopened.as_deref(), reached)
             );
+            if from_wallet {
+                println!("          from your wallet (App Connect); renew: {}", wallet::RENEW);
+            }
             let key_id = report.as_ref().and_then(|r| r.key_id);
             if let Some(line) = private_line(access.as_ref(), runner_key, key_id) {
                 println!("Private:  {line}");

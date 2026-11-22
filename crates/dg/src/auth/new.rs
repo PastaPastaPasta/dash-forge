@@ -221,12 +221,17 @@ fn say(ctx: &Ctx, msg: impl AsRef<str>) {
 
 /// The deposit address as a terminal QR code (half-block characters).
 fn qr(address: &str, duffs: u64) -> String {
-    use qrcode::render::unicode::Dense1x2;
-    let uri = format!(
+    qr_text(&format!(
         "dash:{address}?amount={}",
         dash_amount(duffs_to_dash(duffs))
-    );
-    qrcode::QrCode::new(uri.as_bytes()).map_or_else(
+    ))
+}
+
+/// `data` as a terminal QR code (half-block characters, light on dark), or nothing when it is
+/// too long for one.
+pub(crate) fn qr_text(data: &str) -> String {
+    use qrcode::render::unicode::Dense1x2;
+    qrcode::QrCode::new(data.as_bytes()).map_or_else(
         |_| String::new(),
         |code| {
             code.render::<Dense1x2>()

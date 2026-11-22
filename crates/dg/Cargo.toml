@@ -49,6 +49,12 @@ socket2 = "0.6.5"
 rpassword = "7"
 
 [dev-dependencies]
+# The wallet sign-in tests seal a wallet's answer (`app_connect::crypto::seal_with`) and fake the
+# App Connect ports.
+forge-core = { path = "../forge-core", features = ["cli-logging", "vectors"] }
+async-trait = "0.1"
+secp256k1.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 # tests/no_secrets_on_pipes.rs greps dg's piped output for every BIP-39 English word (the
 # version dash-sdk already pulls in).
 bip39 = "2"
