@@ -8,7 +8,7 @@
  */
 
 import Link from 'next/link'
-import { BookOpen, Compass, Coins, ExternalLink, KeyRound, Terminal, UserRound } from 'lucide-react'
+import { BookOpen, Compass, Coins, KeyRound, Terminal, UserRound } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { PushCostText, PushStorageHint } from '@/components/ui/push-cost-text'
@@ -37,10 +37,9 @@ function Section({ icon, title, children }: { icon: ReactNode; title: string; ch
 
 function Guide({ href, children }: { href: string; children: ReactNode }): JSX.Element {
   return (
-    <a href={href} target="_blank" rel="noreferrer noopener" className="hit-area inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400">
+    <Link href={href} className="hit-area text-forge-700 underline dark:text-forge-400">
       {children}
-      <ExternalLink className="h-3 w-3" aria-hidden />
-    </a>
+    </Link>
   )
 }
 

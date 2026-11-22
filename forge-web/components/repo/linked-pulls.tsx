@@ -87,7 +87,7 @@ export function LinkedPulls({ addr, number, backlinks }: { addr: RepoAddress | u
   return (
     <div data-testid="linked-pulls">
       {data.pulls.length === 0 ? (
-        <p className="text-anvil-500 dark:text-anvil-400">No pull request closes this yet. &ldquo;Fixes #{number}&rdquo; in a PR&apos;s description links it here.</p>
+        <p className="text-anvil-500 dark:text-anvil-400">No pull request closes this yet. A PR whose description says &ldquo;Fixes #{number}&rdquo; shows up here.</p>
       ) : (
         <ul className="space-y-1.5">
           {data.pulls.map((p) => {

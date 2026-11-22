@@ -745,18 +745,23 @@ export async function reposWithTopic(sdk: EvoSDK, topic: string, opts: { network
   return { repos: dropHidden(repos), more, missing: ids.length - repos.length }
 }
 
+/** A repo's newest known activity: its newest push in the window, else its creation. */
+export function lastActivity(r: Pick<DiscoveredRepo, 'createdAt' | 'pushedAt'>): number {
+  return Math.max(r.createdAt, r.pushedAt ?? 0)
+}
+
 /**
- * "Recently updated": the repos among `lists` with a push in the window, newest push first,
- * each repo once (the copy with the newest push). Pure; the pushes came with the lists' reads.
+ * "Recently active": the repos among `lists`, newest activity first ({@link lastActivity}: a push
+ * in the window, else creation), each repo once (the copy with the newest push). Pure; the pushes
+ * came with the lists' reads.
  */
-export function recentlyUpdated(lists: readonly (readonly DiscoveredRepo[])[], limit = 12): DiscoveredRepo[] {
+export function recentlyActive(lists: readonly (readonly DiscoveredRepo[])[], limit = 12): DiscoveredRepo[] {
   const byId = new Map<string, DiscoveredRepo>()
   for (const r of lists.flat()) {
-    if (typeof r.pushedAt !== 'number') continue
     const held = byId.get(r.key)
-    if (held === undefined || (held.pushedAt ?? 0) < r.pushedAt) byId.set(r.key, r)
+    if (held === undefined || lastActivity(held) < lastActivity(r)) byId.set(r.key, r)
   }
-  return [...byId.values()].sort((a, b) => (b.pushedAt ?? 0) - (a.pushedAt ?? 0)).slice(0, limit)
+  return [...byId.values()].sort((a, b) => lastActivity(b) - lastActivity(a)).slice(0, limit)
 }
 
 /**

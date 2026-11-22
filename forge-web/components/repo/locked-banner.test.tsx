@@ -240,7 +240,8 @@ describe('LockToggle (the rail button of both pages)', () => {
     // Triage locks and unlocks too (QW4-032): the dialog names every role that can.
     expect(lockConfirm(true, 'PR #5', 'pull').description).toMatch(/not a member of this repo. Any of its maintainers, writers and triage members can unlock it./)
     expect(lockConfirm(false, 'issue #3', 'issue')).toEqual({ title: 'Unlock conversation on issue #3', description: 'Records an unlock: everyone can comment again.', label: 'Sign & unlock' })
-    expect(lockStateText(true)).toBe('Locked to members')
+    expect(lockStateText(true)).toBe('Locked: only members can comment')
+    expect(lockStateText(false)).toBe('Open for comments')
   })
 })
 

@@ -30,6 +30,7 @@ use anyhow::{Context as _, Result};
 use serde_json::{json, Value};
 
 use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts, StepOutcome};
+use forge_core::platform::Network;
 use forge_core::repo::BACKEND_URIS_V2;
 use forge_core::resolve::repo_slug;
 use forge_core::storage::policy::git_config_scoped;
@@ -504,12 +505,13 @@ async fn choose_storage(ctx: &Ctx, opts: &CreateOptions, size: Option<u64>) -> R
     if !ctx.interactive() {
         return Err(no_storage(size));
     }
-    // The picker: the user's profiles, setting one up now, or Platform with its price.
-    let platform = format!("platform — on-chain, {}", platform_price(size));
-    let mut options: Vec<&str> = external.iter().map(String::as_str).collect();
-    let add_now = options.len();
-    options.push("set up new storage now (dg storage add)");
-    options.push(&platform);
+    // The picker: Platform first and the default (no setup, the web's default too), the
+    // user's profiles, or setting one up now.
+    let platform = format!(
+        "platform — on-chain, no setup (recommended to start), {}",
+        platform_price(size)
+    );
+    let options = storage_options(&platform, &external);
     let mut p = crate::prompt::TtyPrompter;
     let pick = crate::prompt::Prompter::choose(
         &mut p,
@@ -517,9 +519,10 @@ async fn choose_storage(ctx: &Ctx, opts: &CreateOptions, size: Option<u64>) -> R
         &options,
         0,
     )?;
-    let spec = match pick.cmp(&add_now) {
-        std::cmp::Ordering::Less => external[pick].clone(),
-        std::cmp::Ordering::Equal => {
+    let spec = match pick {
+        0 => forge_core::storage::PLATFORM_PROFILE.to_string(),
+        i if i <= external.len() => external[i - 1].clone(),
+        _ => {
             let added = crate::storage_wizard::run(&mut p).await?;
             // Storage that just failed its checks would fail the push after the create.
             if added.broken
@@ -547,9 +550,17 @@ async fn choose_storage(ctx: &Ctx, opts: &CreateOptions, size: Option<u64>) -> R
             profiles = StorageProfiles::load()?;
             added.name
         }
-        std::cmp::Ordering::Greater => forge_core::storage::PLATFORM_PROFILE.to_string(),
     };
     resolve(&profiles, &spec, replicas.as_deref(), None, Source::Prompt)
+}
+
+/// The storage picker's choices, in order: Platform (the default: nothing to set up), the
+/// user's own profiles, then setting up new storage (S3, R2, IPFS, …) now.
+fn storage_options<'a>(platform: &'a str, external: &'a [String]) -> Vec<&'a str> {
+    let mut options = vec![platform];
+    options.extend(external.iter().map(String::as_str));
+    options.push("set up new storage now: S3, R2, IPFS… (dg storage add)");
+    options
 }
 
 /// E206.
@@ -689,6 +700,18 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         ctx.helper_checked(|| true);
     }
     let members = members_plan(ctx, &client, opts).await?;
+    if existing.is_none() {
+        // The create is paid for before the push: an identity that cannot pay for both is
+        // stopped here, before an empty repository is left behind (F11).
+        let branch = local
+            .as_ref()
+            .filter(|l| l.has_commits)
+            .and_then(|l| Some((l, l.branch.as_deref()?)));
+        let needed = create_estimate(opts.private, members)
+            + branch.map_or(0, |(l, b)| push_estimate(&storage.policy, &l.root, b));
+        let balance = client.get_balance(&owner).await.ok();
+        check_funds(needed, balance, matches!(ctx.network(), Network::Testnet))?;
+    }
     Ok(Plan {
         slug,
         owner,
@@ -699,6 +722,63 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         existing,
         members,
     })
+}
+
+/// What the create is quoted at: a private repository's documents, or a public one's, with
+/// members-only content when the create turns it on.
+fn create_estimate(private: bool, members: MembersPlan) -> u64 {
+    if private {
+        PRIVATE_CREATE_ESTIMATE_CREDITS
+    } else if members == MembersPlan::On {
+        REPO_CREATE_ESTIMATE_CREDITS + enable_estimate(1)
+    } else {
+        REPO_CREATE_ESTIMATE_CREDITS
+    }
+}
+
+/// The first push's share of the funds check: the chunks of the pack a push of `branch` uploads
+/// (measured, not the whole repository's size) when Platform stores the packs. Manifests and
+/// refs on external storage are small, and the helper's own check weighs them.
+fn push_estimate(policy: &ResolvedPolicy, root: &Path, branch: &str) -> u64 {
+    if !policy.platform {
+        return 0;
+    }
+    crate::git::ObjectCount::pack_of(root, &format!("refs/heads/{branch}"))
+        .map_or(0, |p| forge_core::cost::push_fees::chunks(p.bytes))
+}
+
+/// E401 before anything is written: `needed` (the create, and the first push when the plan
+/// has one) is more than the identity's `balance`. A balance that could not be read never
+/// blocks (the create and the push check again).
+// A refusal happens at most once per command; boxing it buys nothing.
+#[allow(clippy::result_large_err)]
+fn check_funds(needed: u64, balance: Option<u64>, testnet: bool) -> Result<(), UserError> {
+    let Some(have) = balance.filter(|b| needed > *b) else {
+        return Ok(());
+    };
+    let u = UserError::new(
+        codes::INSUFFICIENT_CREDITS,
+        "repository not created: not enough credits",
+    )
+    .cause(format!(
+        "creating and pushing it is estimated at {} DASH{}; the identity has {} DASH{}",
+        dash(needed),
+        forge_core::fiat::note_credits(needed),
+        dash(have),
+        forge_core::fiat::balance_note_credits(have)
+    ))
+    .fix(format!(
+        "top up the identity from any Dash wallet at {} (`dg auth balance` shows the balance)",
+        forge_core::user_error::TOP_UP_URL
+    ));
+    let u = if testnet {
+        u.fix("on testnet: open the web app (https://forge.dashhq.org), click your balance (Top up credits), enter your 12 words, and pay the address it shows from the faucet at https://faucet.thepasta.org")
+    } else {
+        u
+    };
+    Err(u
+        .fix("or store packs on your own storage, which costs far less on Platform: `dg storage add`, then `dg init --storage <profile>`")
+        .note("checked before anything was paid for; nothing was written"))
 }
 
 /// Whether this create turns members-only content on: by default for a public repository whose
@@ -859,13 +939,10 @@ fn confirm_plan(
         let who = format!("{}/{} on {}", plan.owner, plan.slug, ctx.network_label());
         if let Some(visibility) = plan.existing {
             // A re-run: say so, not "Creating … ~0.002 DASH" (QW2-083).
-            let create_quote = if visibility == forge_core::rules::v2::Visibility::Private {
-                PRIVATE_CREATE_ESTIMATE_CREDITS
-            } else if plan.members == MembersPlan::On {
-                REPO_CREATE_ESTIMATE_CREDITS + enable_estimate(1)
-            } else {
-                REPO_CREATE_ESTIMATE_CREDITS
-            };
+            let create_quote = create_estimate(
+                visibility == forge_core::rules::v2::Visibility::Private,
+                plan.members,
+            );
             println!("Already published: {who}");
             println!(
                 "  nothing to create (finishing a create an earlier run left undone is at most {})",
@@ -1466,6 +1543,75 @@ const REPORT_FILE_ENV: &str = "DASH_FORGE_REPORT_FILE";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F10: Platform (nothing to set up) is the picker's first choice and its default; the
+    /// user's profiles and setting up new storage stay selectable after it.
+    #[test]
+    fn the_storage_picker_defaults_to_platform() {
+        let external = vec!["r2-main".to_string(), "kubo".to_string()];
+        let options = storage_options("platform — on-chain", &external);
+        assert_eq!(options[0], "platform — on-chain");
+        assert_eq!(&options[1..3], ["r2-main", "kubo"]);
+        assert!(options[3].contains("dg storage add"), "{}", options[3]);
+        assert_eq!(storage_options("p", &[]).len(), 2);
+    }
+
+    /// F11: an identity that cannot pay for the create and the first push is stopped before
+    /// the create, with the top-up (and on testnet the faucet); an unread balance never blocks.
+    #[test]
+    fn init_refuses_an_underfunded_identity_before_the_create() {
+        let needed = 4_330_000_000;
+        let e = check_funds(needed, Some(1_790_000_000), true).unwrap_err();
+        assert_eq!(e.code, codes::INSUFFICIENT_CREDITS);
+        let text = format!("{e:?}");
+        assert!(text.contains("faucet.thepasta.org"), "{text}");
+        assert!(text.contains("nothing was written"), "{text}");
+        let mainnet = format!("{:?}", check_funds(needed, Some(1), false).unwrap_err());
+        assert!(!mainnet.contains("faucet"), "{mainnet}");
+        assert!(check_funds(needed, Some(needed), true).is_ok());
+        assert!(check_funds(needed, None, true).is_ok());
+    }
+
+    /// The first push is weighed by the Platform chunks of the branch's own pack, and only
+    /// when Platform stores the packs.
+    #[test]
+    fn the_push_share_of_the_funds_check_follows_the_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .current_dir(root)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false"
+                ])
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "x".repeat(4096)).unwrap();
+        run(&["add", "a.txt"]);
+        run(&["commit", "-q", "-m", "a"]);
+        let profiles = StorageProfiles::default();
+        let platform = StoragePolicy::from_git_values(Some("platform"), None, None)
+            .unwrap()
+            .resolve(&profiles)
+            .unwrap();
+        let pack = crate::git::ObjectCount::pack_of(root, "refs/heads/main").unwrap();
+        assert_eq!(
+            push_estimate(&platform, root, "main"),
+            forge_core::cost::push_fees::chunks(pack.bytes)
+        );
+        assert_eq!(push_estimate(&platform, root, "missing"), 0);
+    }
 
     /// QW-033: `dg init --allow-private-uri` keeps the allowance for the repository only when
     /// its storage needs it, so a later plain `git push` is not refused with E501.

@@ -8,6 +8,10 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dg verify-app` passes on forge.dashhq.org while Cloudflare injects its analytics beacon.** Cloudflare's Web Analytics automatic setup stays on there and adds a second beacon tag before `</body>` of every page, so every page differed (E504) and the nightly check failed. `dg verify-app` now removes exactly that tag, in Cloudflare's own form and only beside the build's beacon for the same site token, before hashing a page, and counts those pages (`cfBeaconRemoved` in `--json`). Any other difference still fails. The second tag counts no visit twice: the browser runs the beacon once, and the page CSP refuses any other beacon version ([docs/hosting.md](docs/hosting.md) §6).
+
 ## [0.2.0] - TODO(owner): the tagging date
 
 Dash Forge moves to **testnet**: its four contracts are registered there, and testnet is now the supported network for `dg`, `git-remote-dash`, the web app and the Actions. Devnet sakura, which v0.1.0 targeted, is down, and nothing on it was carried over. See the [release notes](docs/releases/v0.2.0.md) for networks, upgrading and known limitations.

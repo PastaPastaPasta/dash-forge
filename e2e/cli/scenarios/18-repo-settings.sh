@@ -36,7 +36,11 @@ dg_write() { local id="$1" out="$2"; shift 2; dg_as "$id" --yes --json "$@" >"${
 fail_with() { cat "$1.err" "$1.json" >&2 2>/dev/null; is_flake "$1.err" && skip_scenario "$2 flaked"; bad "$2 failed"; finish_scenario; }
 # A dg refusal: exit 6 and the code in the JSON error.
 refused_with() { # refused_with <code> <out> -> 0 when the command was refused with <code>
-  grep -q "\"code\": *\"$1\"" "$2.json" 2>/dev/null || grep -q "\[$1\]" "$2.err" 2>/dev/null
+  grep -q "\"code\": *\"$1\"" "$2.json" 2>/dev/null || grep -q "\[$1\]" "$2.err" 2>/dev/null && return 0
+  # What it answered instead: the .json is not in the run's artifact.
+  echo "expected $1 from ${2##*/}; it answered:" >&2
+  cat "$2.json" "$2.err" >&2 2>/dev/null || true
+  return 1
 }
 main_tip() { # the remote's refs/heads/main, read as OWNER
   git_dash_retry "$ID_OWNER" "$LOG-ls" ls-remote "$REMOTE" refs/heads/main >/dev/null 2>&1
@@ -164,13 +168,31 @@ git_dash_retry "$ID_COLLAB" "$LOG-f2push" -C "$SRC" push "$REMOTE" "HEAD:refs/he
 ( cd "$SRC" && dg_write "$ID_COLLAB" "$LOG-pr2" pr create "$REPO" --base "$FEATURE" --head "$FEATURE2" --head-repo "$REPO" --title "policy e2e ${RUN_ID}" ) \
   || fail_with "$LOG-pr2" "pr create (policy)"
 N2="$(jq_py "$LOG-pr2.json" 'd["number"]')"
-dg_write "$ID_COLLAB" "$LOG-pmerge" pr merge "$REPO" "$N2"
-check "writer's merge with 0 of 2 approvals is refused (E804)" refused_with E804 "$LOG-pmerge"
+# COLLAB's merge reads the PR and the policy from whichever node it reaches, and both were
+# written seconds ago: wait until COLLAB reads PR #N2 under the 2-approval policy.
+seen=1
+for _ in $(seq 1 10); do
+  dg_read_retry "$ID_COLLAB" "$LOG-cview.json" "$LOG-cview.err" --json pr view "$REPO" "$N2" \
+    && [[ "$(jq_py "$LOG-cview.json" '(d.get("policy") or {}).get("requiredApprovals")')" == 2 ]] \
+    && { seen=0; break; }
+  sleep 3
+done
+check "COLLAB reads the PR under the 2-approval policy" test "$seen" -eq 0
+# A refusal writes nothing, so another answer (a lagging read, a DAPI error) is shown and retried.
+refused=1
+for attempt in 1 2 3; do
+  dg_write "$ID_COLLAB" "$LOG-pmerge" pr merge "$REPO" "$N2" && { bad "the writer's merge landed with 0 of 2 approvals"; break; }
+  refused_with E804 "$LOG-pmerge" && { refused=0; break; }
+  sleep $((attempt * 10))
+done
+check "writer's merge with 0 of 2 approvals is refused (E804)" test "$refused" -eq 0
 check "the refusal says Platform does not enforce it" grep -q 'Forge apps enforce the branch policy, not Platform' "$LOG-pmerge.json"
 dg_write "$ID_COLLAB" "$LOG-pover" pr merge "$REPO" "$N2" --override-policy
 check "a writer cannot override the policy (E601)" refused_with E601 "$LOG-pover"
 dg_write "$ID_OWNER" "$LOG-omerge2" pr merge "$REPO" "$N2" --override-policy || fail_with "$LOG-omerge2" "maintainer override merge"
 check "the maintainer's override merge lands" merge_landed "$LOG-omerge2" "$N2"
+# A retried writer's merge that recorded the merge and then failed would leave nothing to merge.
+check "no writer's attempt merged the PR first" test "$(jq_py "$LOG-omerge2.json" 'd.get("status")')" != already_merged
 
 step "archive: the helper refuses a member's push (E606); unarchive clears it"
 dg_write "$ID_OWNER" "$LOG-arch" repo archive "$REPO" || fail_with "$LOG-arch" "archive"

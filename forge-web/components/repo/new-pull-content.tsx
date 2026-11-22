@@ -52,13 +52,13 @@ import { ComparisonDiff } from '@/components/repo/pull-diff'
 import { TemplatePicker, usePullTemplates } from '@/components/repo/issue-templates'
 import { applyTemplate } from '@/lib/view/issue-templates'
 import { namedTemplate, type PullTemplate } from '@/lib/view/pull-templates'
-import { MarkdownView } from '@/components/markdown-view'
+import { MarkdownEditor, submitShortcut } from '@/components/repo/markdown-editor'
 import { Button } from '@/components/ui/button'
-import { Field, Input, Textarea } from '@/components/ui/input'
+import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { PushBranchHint } from '@/components/repo/push-branch-hint'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
-import { cn, shortId } from '@/lib/utils'
+import { shortId } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
 
 /**
@@ -103,7 +103,6 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const [title, setTitle] = useState(saved?.title ?? '')
   const [titleTouched, setTitleTouched] = useState((saved?.title ?? '') !== '')
   const [body, setBody] = useState(saved?.body ?? '')
-  const [preview, setPreview] = useState(false)
   // `?base=master&head=develop` as GitHub writes them, or full ref names and `repo:branch` keys (L-30).
   // A link's own base and head win over a kept draft's: a Contribute link or a Base repository
   // switch names the head to propose (QW3-012).
@@ -527,6 +526,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               setTitle(e.target.value)
               setTitleTouched(true)
             }}
+            onKeyDown={(e) => submitShortcut(e, submit)}
             placeholder="What does this change?"
           />
         </Field>
@@ -535,28 +535,10 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           <TemplatePicker templates={pullTemplates.templates} selected={pullTemplate} onPick={pickTemplate} blank="No template" label="Pull request template" />
         ) : null}
         <div>
-          <div className="mb-1.5 flex items-center justify-between">
-            <label htmlFor="pr-body" className="text-dense font-medium text-anvil-700 dark:text-anvil-200">
-              Description
-            </label>
-            <button
-              type="button"
-              aria-pressed={preview}
-              onClick={() => setPreview((p) => !p)}
-              className={cn(
-                'rounded-md border border-anvil-200 px-2 py-0.5 text-[12px] font-medium coarse:min-h-11 coarse:px-3 dark:border-anvil-750',
-                preview ? 'bg-anvil-200 text-anvil-900 dark:bg-anvil-750 dark:text-anvil-50' : 'text-anvil-600 dark:text-anvil-400',
-              )}
-            >
-              Preview
-            </button>
-          </div>
-          <Textarea id="pr-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Markdown supported." className={cn('min-h-[140px]', preview && 'hidden')} />
-          {preview ? (
-            <div className="min-h-[140px] rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" aria-label="Description preview">
-              {body.trim() ? <MarkdownView source={body} /> : <p className="italic text-anvil-600 dark:text-anvil-400">Nothing to preview.</p>}
-            </div>
-          ) : null}
+          <p className="mb-1.5 text-dense font-medium text-anvil-700 dark:text-anvil-200" aria-hidden>
+            Description
+          </p>
+          <MarkdownEditor id="pr-body" label="Description" value={body} onChange={setBody} placeholder="Markdown supported." onSubmit={submit} submitLabel={asDraft ? 'create the draft' : 'create the pull request'} cost={cost} />
           <BodyCounter repo={home.repo} text={body} field="description" long={longBody} />
           <SealedLimit repo={home.repo} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} long={longBody} />
         </div>

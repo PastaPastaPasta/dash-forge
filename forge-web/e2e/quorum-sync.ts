@@ -37,20 +37,22 @@ import { test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 
 import { decodeCurrentQuorumsInfo, grpcWebMessage, parseQuorumService, protoFields, QUORUMS_INFO_REQUEST } from '../lib/view/quorum-check'
-import { deploymentFilePath } from './network'
+import { deploymentFilePath, E2E_DEVNET, E2E_NETWORK } from './network'
 
-/** Core blocks between two quorums of the platform quorum type on bonsia (its DKG interval). */
+/** Core blocks between two quorums of the platform quorum type (its DKG interval, on devnets and testnet alike). */
 const QUORUM_INTERVAL = 24
 /** Blocks between a quorum's base height and DAPI listing it (its DKG commitment mined; measured). */
 const DKG_MINED_AFTER = 11
+/** A core block's spacing: about 10 s on a devnet, about 2.5 minutes on testnet. */
+const BLOCK_SECONDS = E2E_NETWORK === 'testnet' ? 150 : 10
 /**
- * Fewer blocks than this (about 10 s each) before the next quorum appears, and the test waits for
- * it to settle: most guarded tests run well within it ({@link quorumGuardLong} for those that do
- * not).
+ * Less time than this before the next quorum appears, and the test waits for it to settle: most
+ * guarded tests run well within it ({@link quorumGuardLong} for those that do not). Counted in
+ * blocks, at least one: on testnet a block is longer than either margin.
  */
-const MARGIN_BLOCKS = 4
+const MARGIN_BLOCKS = Math.max(1, Math.ceil(40 / BLOCK_SECONDS))
 /** {@link quorumGuardLong}'s margin, for tests that run a minute or more (still well inside the ~19 clean blocks after a rotation settles). */
-const LONG_MARGIN_BLOCKS = 10
+const LONG_MARGIN_BLOCKS = Math.max(1, Math.ceil(100 / BLOCK_SECONDS))
 /**
  * The longest one test waits: past bonsia's lag plus the margin (one quorum interval, about 4
  * minutes), and past sakura's measured 4.5-minute wait for a block signed by a listed quorum.
@@ -69,8 +71,15 @@ interface Deployment {
   readonly dapiAddresses: readonly string[]
 }
 
-/** The target network's record (`devnet-<name>.json`, or testnet's: `e2e/network.ts`). */
-const deployment = (): Deployment => JSON.parse(readFileSync(deploymentFilePath(), 'utf8')) as Deployment
+/**
+ * The target network's record (`devnet-<name>.json`, or testnet's: `e2e/network.ts`), with the
+ * quorum service the app reads when the record names none (`defaultQuorumEndpoint`): testnet's
+ * record names none, and without it the guard held nothing there.
+ */
+const deployment = (): Deployment => {
+  const dep = JSON.parse(readFileSync(deploymentFilePath(), 'utf8')) as Deployment
+  return { ...dep, quorumBaseUrl: dep.quorumBaseUrl || `https://quorums.${E2E_DEVNET || E2E_NETWORK}.networks.dash.org` }
+}
 
 /** One grpc-web call to a DAPI node: the response's message. */
 async function dapiCall(address: string, method: string, body: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {

@@ -20,6 +20,9 @@ import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import { SEALED_PARAMS } from '@/lib/view/private-nav'
 import { cn } from '@/lib/utils'
 
+const FOOTER_LINK =
+  'rounded px-1.5 py-1 text-[12px] font-medium text-forge-700 hover:bg-anvil-100 hover:underline coarse:min-h-11 coarse:inline-flex coarse:items-center dark:text-forge-400 dark:hover:bg-anvil-800'
+
 /** One entry of the switcher's open list, flattened across both groups for keyboard navigation. */
 interface RefEntry {
   readonly name: string
@@ -111,6 +114,10 @@ export function RefSwitcher({
     setOpen(!open)
   }
   const close = (): void => setOpen(false)
+  const dismiss = (): void => {
+    close()
+    triggerRef.current?.focus()
+  }
 
   // Scroll the keyboard-highlighted row into view as it moves past the popover's visible edge.
   // Inlines the id (rather than calling optionId, which is recreated every render) so the
@@ -124,8 +131,7 @@ export function RefSwitcher({
     switch (e.key) {
       case 'Escape':
         e.preventDefault()
-        close()
-        triggerRef.current?.focus()
+        dismiss()
         break
       case 'ArrowDown':
         e.preventDefault()
@@ -163,11 +169,11 @@ export function RefSwitcher({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`Switch branches or tags, currently ${current.name}`}
-        className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 bg-white px-2.5 py-1 text-dense coarse:min-h-11 text-anvil-700 transition-colors hover:border-anvil-300 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:border-anvil-600"
+        className="mr-1 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-anvil-300 bg-anvil-50 px-3 text-dense font-medium text-anvil-900 shadow-sm transition-colors hover:border-anvil-400 hover:bg-anvil-100 coarse:h-11 dark:border-anvil-700 dark:bg-anvil-850 dark:text-anvil-50 dark:hover:border-anvil-500 dark:hover:bg-anvil-800"
       >
-        <CurrentIcon className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+        <CurrentIcon className="h-3.5 w-3.5 text-anvil-600 dark:text-anvil-300" aria-hidden />
         <span className="max-w-[180px] truncate font-mono">{current.name}</span>
-        <ChevronDown className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+        <ChevronDown className="h-3.5 w-3.5 text-anvil-600 dark:text-anvil-300" aria-hidden />
       </button>
 
       {open ? (
@@ -228,6 +234,22 @@ export function RefSwitcher({
             {flat.length === 0 ? (
               <p className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">No branch or tag matches &ldquo;{query}&rdquo;.</p>
             ) : null}
+            <div
+              className="flex items-center justify-between gap-2 border-t border-anvil-100 px-1.5 py-1 dark:border-anvil-850"
+              data-testid="ref-switcher-footer"
+              onKeyDown={(e) => {
+                if (e.key !== 'Escape') return
+                e.preventDefault()
+                dismiss()
+              }}
+            >
+              <Link href={repoHref('/repo/branches', addr)} onClick={close} className={FOOTER_LINK}>
+                View all branches
+              </Link>
+              <Link href={repoHref('/repo/tags', addr)} onClick={close} className={FOOTER_LINK}>
+                View all tags
+              </Link>
+            </div>
           </div>
         </>
       ) : null}

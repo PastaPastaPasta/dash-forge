@@ -78,6 +78,21 @@ describe('board page', () => {
     expect(el.querySelector('[data-testid="view-dirty"]')).toBeNull()
   })
 
+  it('shows one view switcher when the saved views already cover every layout (F16)', async () => {
+    await render('')
+    expect(el.querySelector('[role="radiogroup"][aria-label="Layout"]')).toBeNull()
+    await render('layout=table')
+    expect(el.querySelector('[role="radiogroup"][aria-label="Layout"]')).not.toBeNull()
+  })
+
+  it('marks the filter example as a placeholder and prices the writes a drag signs at once (F16, F17)', async () => {
+    await render('')
+    const filter = el.querySelector<HTMLInputElement>('[data-testid="board-filter"]') as HTMLInputElement
+    expect(filter.value).toBe('')
+    expect(filter.placeholder).toBe('e.g. status:"In progress" assignee:@me priority:P0')
+    expect(el.querySelector('[data-testid="board-write-cost"]')?.textContent).toMatch(/Moving or adding a card writes to Dash Platform at once: up to ~[\d.]+ DASH/)
+  })
+
   it('filters by the query in the URL, @me as the signed-in identity', async () => {
     await render('q=label%3Abug')
     expect(shown()).toEqual([1])

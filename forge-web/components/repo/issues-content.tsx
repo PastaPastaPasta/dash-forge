@@ -62,11 +62,12 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { EmptyState, ErrorState, ListLoading } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorComposeHint, MirrorNote } from '@/components/repo/mirror-note'
 import { useRepoLinks } from '@/components/repo/target-href'
-import { AssigneeAvatars, MarkdownEditor } from '@/components/repo/issue-bits'
+import { AssigneeAvatars } from '@/components/repo/issue-bits'
+import { MarkdownEditor, submitShortcut } from '@/components/repo/markdown-editor'
 import {
   AuthorLoginNote,
   CommentCount,
@@ -111,6 +112,7 @@ import { formBody, initialFormValues, missingAnswers, type FormValue } from '@/l
 import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
 import { newIssueDraftKey, useDraftState } from '@/lib/view/draft-text'
 import { membersChoiceOffered, quotesMembersText } from '@/lib/view/audience'
+import { PinnedBadge } from '@/components/repo/pinned-badge'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -202,8 +204,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
   // A public thread's count includes its members-only comments, so the row says how many (DESIGN §4.1).
   const membersOnlyComments = useMembersOnlyComments(sdk, ready, home.repo, data?.rows)
-  const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
+  // A pinned issue shows once, in the pinned cards over the list, not again as a row.
+  const pinnedIds = useMemo(() => new Set((data?.pinned ?? []).map((p) => p.id)), [data])
+  const rows = (data?.rows ?? []).filter((r) => (showHidden || !hiddenIds.has(r.id)) && !pinnedIds.has(r.id))
   const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
+  const allPinned = rows.length === 0 && hiddenOnPage === 0 && (data?.rows ?? []).some((r) => pinnedIds.has(r.id))
   // Bulk close and label (members who may close and label; nothing read until they act).
   const bulkAllowed = useBulkAllowed(home)
   const bulkRows = useMemo(() => rows.map((r) => ({ id: r.id, number: r.number, title: r.title, author: r.author, open: r.state.open, merged: false, labels: r.state.labels })), [rows])
@@ -263,12 +268,19 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <ul aria-label="Pinned issues" className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="pinned-issues">
           {data.pinned.map((issue) => (
             <li key={issue.id} className="rounded-lg border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="pinned-issue" data-number={issue.number}>
-              <p className="flex items-center gap-1 text-[11px] text-anvil-500 dark:text-anvil-400">
-                <Pin className="h-3 w-3" aria-hidden /> Pinned · <span className="font-mono">#{issue.number}</span> · {issue.state.open ? 'open' : 'closed'}
+              <p className="flex items-center gap-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">
+                <PinnedBadge /> <span className="font-mono">#{issue.number}</span> · {issue.state.open ? 'Open' : 'Closed'}
               </p>
               <Link href={repoHref('/repo/issue', addr, { number: String(issue.number) })} className="hit-area line-clamp-2 text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400">
                 {issue.title || '(untitled)'}
               </Link>
+              {issue.state.labels.length > 0 ? (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {issue.state.labels.map((l) => (
+                    <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
+                  ))}
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -331,7 +343,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own issues, assignments and mentions.</p>
         ) : ((loading || awaitingTrust) && !data) || (empty && data?.searchedOf?.auto) ? (
-          <LoadingBlock label={readingLabel('issues', progress ?? data?.searchedOf?.searched ?? null, totals)} />
+          <ListLoading label={readingLabel('issues', progress ?? data?.searchedOf?.searched ?? null, totals)} onRetry={reload} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (
@@ -355,6 +367,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         ) : (
           <>
           <HiddenThreadsToggle count={hiddenOnPage} shown={showHidden} onToggle={() => setShowHidden((s) => !s)} noun="issue" />
+          {allPinned ? <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400" data-testid="issues-only-pinned">The issues here are pinned, shown above.</p> : null}
           <ul aria-label="Issues" aria-busy={loading}>
             {rows.map((issue) => (
               <li key={issue.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="issue-row" data-number={issue.number}>
@@ -554,6 +567,11 @@ function ComposeIssueDialog({
     quoteGate.check(audience.audience === 'public' ? `${title}\n${issueBody}` : null, membersTexts, () => void send())
   }
 
+  // Cmd/Ctrl+Enter: what Submit does, refused where the button is disabled.
+  const submitFromKeys = (): void => {
+    if (title.trim() !== '' && audience.blocked === null) submit()
+  }
+
   const send = async (): Promise<void> => {
     if (pending || !sdk || !signer) return
     setPending(true)
@@ -638,7 +656,7 @@ function ComposeIssueDialog({
           </>
         ) : null}
         <Field label="Title" htmlFor="issue-title">
-          <Input id="issue-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Something is broken…" autoFocus maxLength={256} />
+          <Input id="issue-title" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => submitShortcut(e, submitFromKeys)} placeholder="Something is broken…" autoFocus maxLength={256} />
         </Field>
         {form !== null ? (
           <IssueFormFields form={form} values={answers} onChange={answer} idBase="issue-form" />
@@ -650,6 +668,9 @@ function ComposeIssueDialog({
             onChange={setBody}
             placeholder="What happened, and how to reproduce it."
             links={links}
+            onSubmit={submitFromKeys}
+            submitLabel="submit the issue"
+            cost={cost}
           />
         )}
         <SealedLimit repo={repo} kind="issue" text={title.trim() + issueBody} long={longBody} />

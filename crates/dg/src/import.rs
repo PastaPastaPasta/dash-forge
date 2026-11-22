@@ -120,6 +120,8 @@ pub(crate) fn outcome(summary: &Summary) -> Result<(serde_json::Value, Option<Us
                 .cause(summary.error.clone().unwrap_or_default())
                 .fix("re-run with a higher --max-spend (without one, a re-run prices what is left and caps itself at that); what was written is not written again"),
         ),
+        // A phrased error (the key check's, say) keeps its code and fixes.
+        Status::Error if summary.user_error.is_some() => summary.user_error.clone(),
         Status::Error => {
             let e = anyhow::anyhow!(summary
                 .error

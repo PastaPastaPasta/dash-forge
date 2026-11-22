@@ -13,7 +13,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bell, BookOpen, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { Bell, BookOpen, ChevronDown, Compass, GitFork, GraduationCap, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
@@ -160,9 +160,9 @@ export function AppHeader(): JSX.Element {
           >
             <Compass className="h-4 w-4" aria-hidden /> Explore
           </Link>
-          {/* What Forge is and how identities and credits work (QW-013), as GitHub links Docs. */}
+          {/* The in-app docs hub (the user guides), as GitHub links Docs. */}
           <Link
-            href="/start/"
+            href="/docs/"
             className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 coarse:h-11 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
           >
             <BookOpen className="h-4 w-4" aria-hidden /> Docs
@@ -466,8 +466,9 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
           {ACTIVE_NETWORK.v2 !== null ? item('/mirror/', 'Mirror a GitHub repo', GitFork) : null}
           {signedIn ? item('/notifications/', 'Notifications', Bell) : null}
           {signedIn ? item('/settings/', 'Settings & spend', Settings) : null}
-          {/* What Forge is, and the guides (QW-013). */}
-          {item('/start/', 'Getting started & docs', BookOpen)}
+          {/* What Forge is (QW-013), and the guides. */}
+          {item('/start/', 'Getting started', GraduationCap)}
+          {item('/docs/', 'Docs', BookOpen)}
         </nav>
       ) : null}
     </div>

@@ -6,6 +6,7 @@
  * bundled deployment files (`lib/networks.ts`); the history behind it is in docs/networks.md.
  */
 
+import Link from 'next/link'
 import { ExternalLink } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { faucetHost, faucetUrls } from '@/lib/faucets'
@@ -34,6 +35,14 @@ function External({ href, children }: { href: string; children: string }): JSX.E
     <a href={href} target="_blank" rel="noreferrer noopener" className="hit-area inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400">
       {children} <ExternalLink className="h-3 w-3" aria-hidden />
     </a>
+  )
+}
+
+function DocLink({ href, children }: { href: string; children: string }): JSX.Element {
+  return (
+    <Link href={href} className="hit-area text-forge-700 underline dark:text-forge-400">
+      {children}
+    </Link>
   )
 }
 
@@ -118,10 +127,10 @@ export default function NetworksPage(): JSX.Element {
         <p className="text-dense text-anvil-600 dark:text-anvil-400">
           {ACTIVE_NETWORK.network !== 'mainnet' ? (
             <>
-              Used Dash Forge on a devnet before? <External href={DOCS.devnetMove}>What the move kept and how to push again</External>.{' '}
+              Used Dash Forge on a devnet before? <DocLink href={DOCS.devnetMove}>What the move kept and how to push again</DocLink>.{' '}
             </>
           ) : null}
-          The full history is in <External href={DOCS.networks}>the networks record</External>.
+          The full history is in <DocLink href={DOCS.networks}>the networks record</DocLink>.
         </p>
       </div>
     </AppShell>

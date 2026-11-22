@@ -3,27 +3,19 @@
 /**
  * What a code page shows while the repo's browse index resolves (QW3-001): the bytes read so far
  * when the index is read whole (a private repo's, or one whose rows do not add up), and after
- * {@link SLOW_AFTER_MS} a plain note that the network is slow, rather than a bare spinner that
+ * ten seconds a plain note that the network is slow, rather than a bare spinner that
  * could as well be stuck.
  */
 
-import { useEffect, useState, useSyncExternalStore } from 'react'
-import { Spinner } from '@/components/ui/states'
+import { useSyncExternalStore } from 'react'
+import { Spinner, useSlow } from '@/components/ui/states'
 import { ProgressBar } from '@/components/ui/platform-status'
 import { formatBytes } from '@/lib/view/format'
 import { indexProgress, subscribeIndexProgress } from '@/lib/view/index-progress'
 
-/** When the slow-network note appears. */
-export const SLOW_AFTER_MS = 10_000
-
 export function BrowseLoading({ repoKey, label }: { repoKey: string; label: string }): JSX.Element {
   const progress = useSyncExternalStore(subscribeIndexProgress, () => indexProgress(repoKey), () => undefined)
-  const [slow, setSlow] = useState(false)
-  useEffect(() => {
-    setSlow(false)
-    const t = setTimeout(() => setSlow(true), SLOW_AFTER_MS)
-    return () => clearTimeout(t)
-  }, [repoKey])
+  const slow = useSlow(repoKey)
   return (
     <div className="flex min-h-[40vh] items-center justify-center px-4" data-testid="browse-loading">
       <div className="w-full max-w-sm space-y-2 text-center">

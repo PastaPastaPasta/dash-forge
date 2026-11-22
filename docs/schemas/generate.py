@@ -637,6 +637,8 @@ cmd('verify-mirror', 'A plain-git mirror checked against Platform.', {
 cmd('verify-app', 'A deployed copy of the web app checked against a published build.', {
     'url': S, 'manifest': ANY, 'source': ANY, 'commit': ANY, 'network': ANY, 'variant': ANY, 'servedManifestAgrees': ANY,
     'files': ANY, 'matched': ANY, 'differ': ANY, 'missing': ANY, 'ok': B,
+    'cfBeaconRemoved': D('Of `matched`, the pages that matched once the Cloudflare Web Analytics beacon Cloudflare injects '
+                         'was removed (docs/hosting.md section 6).', I),
 }, ['url', 'ok'])
 cmd('collab add', 'A member added, or their role changed.', {
     'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,

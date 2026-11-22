@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts};
-use forge_core::keystore::BridgeIdentity;
+use forge_core::keystore::{BridgeIdentity, Secret};
 use forge_core::members::MemberReader;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::resolve::{find_named, repo_slug, resolve_id};
@@ -36,22 +36,32 @@ pub struct Signer {
     pub bridge: BridgeIdentity,
     /// The identity on chain.
     pub identity: LoadedIdentity,
+    /// The key source's contents, unlocked once here (a sealed file's passphrase is asked
+    /// now): handed to `git-remote-dash` ([`forge_core::key_handoff`]) so its pushes never ask
+    /// again, or fail with no terminal to ask on.
+    pub unlocked: Secret,
 }
 
 impl Signer {
     /// Load `source` (an identity file or an inline `dfk1:` key) and fetch the identity.
     pub async fn load(client: &PlatformClient, source: &Path) -> Result<Self> {
-        let bridge = BridgeIdentity::load_from_file(source).with_context(|| {
+        let context = || {
             format!(
                 "loading the signing identity from {}",
                 forge_core::keystore::describe_key_source(source)
             )
-        })?;
+        };
+        let unlocked = BridgeIdentity::unlock_source(source).with_context(context)?;
+        let bridge = BridgeIdentity::from_source_text(unlocked.expose()).with_context(context)?;
         let identity = client
             .fetch_identity(&bridge.identity_id)
             .await
             .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
-        Ok(Self { bridge, identity })
+        Ok(Self {
+            bridge,
+            identity,
+            unlocked,
+        })
     }
 
     /// [`Self::load`] when a key source was given; `None` only for a dry run without one.
@@ -298,6 +308,7 @@ pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<(
         // Only a write phase has a ledger; a dry run's counts are already in `summary`.
         summary.counts = ledger.counts;
         summary.spent_credits = ledger.budget.spent();
+        summary.balance_start_credits = ledger.budget.balance_start();
         summary.warnings.extend(ledger.warnings);
         summary.incomplete |= ledger.incomplete;
     }
@@ -305,6 +316,10 @@ pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<(
         summary.balance_credits = client.get_balance(&signer.id()).await.ok();
         summary.key = signer.key_info(client).await;
     }
+    summary.measured_credits = summary
+        .balance_start_credits
+        .zip(summary.balance_credits)
+        .map(|(start, end)| start.saturating_sub(end));
     summary.warnings = summary
         .warnings
         .iter()
@@ -312,6 +327,10 @@ pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<(
         .collect();
     match result {
         Err(e) => {
+            summary.user_error = e
+                .chain()
+                .find_map(|l| l.downcast_ref::<forge_core::user_error::UserError>())
+                .cloned();
             summary.status = if e.downcast_ref::<CapExceeded>().is_some() {
                 Status::CapExceeded
             } else {

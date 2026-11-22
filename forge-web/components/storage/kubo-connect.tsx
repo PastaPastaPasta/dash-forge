@@ -1,5 +1,7 @@
 'use client'
 
+import Link from 'next/link'
+import { DOCS } from '@/lib/docs-links'
 import { Suspense, useCallback, useEffect, useState } from 'react'
 import { takeKuboPair } from '@/lib/prehydration'
 import { usePathname, useSearchParams } from '@/hooks/use-route'
@@ -82,7 +84,7 @@ export function KuboConnectView({ storage, fragmentOnly = false, showUnlock = tr
         <h3 className="font-medium">Run one command</h3>
         {browser?.command ? <>
           <CopyBlock text={browser.command} label="Copy the node setup command" />
-          <p>It installs IPFS (kubo 0.43.1) for your user, starts it at login, and opens this page to connect. Needs dg: <a className="underline" href="https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/INSTALL.md">install dg</a></p>
+          <p>It installs IPFS (kubo 0.43.1) for your user, starts it at login, and opens this page to connect. Needs dg: <Link className="underline" href={DOCS.install}>install dg</Link></p>
           <p className="text-[12px]">The node only accepts this site, and only for adding, pinning and unpinning.</p>
         </> : <p>Open Forge from its own address to connect a node.</p>}
         <h3 className="font-medium">Connect with a code</h3>

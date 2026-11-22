@@ -29,7 +29,7 @@ vi.mock('./discovery', async (orig) => {
 })
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { RECENT_PER_OWNER, capPerOwner, isCurated, landingRecent, listShowcaseRepos, recentFeed, type ShowcaseEntry } from './showcase'
+import { RECENT_PER_OWNER, capPerOwner, dropTestFixtures, isCurated, isTestFixture, landingRecent, listShowcaseRepos, recentFeed, type ShowcaseEntry } from './showcase'
 
 // A network's entries, as SHOWCASE lists them (bonsia's mirrors and demo repo).
 const entries: readonly ShowcaseEntry[] = [
@@ -133,6 +133,37 @@ describe('landingRecent: curated first, then the per-owner cap', () => {
   })
 })
 
+describe('test fixtures stay off the showcase lists (F15)', () => {
+  const repo = (slug: string, createdAt = 0, pushedAt: number | null = 1) =>
+    ({ key: slug, ownerId: slug, name: slug, slug, description: 'A tool', createdAt, visibility: 'public', pushedAt }) as const
+
+  it('knows the nightly fixtures by name', () => {
+    for (const name of ['e2e', 'e2e-cli', 'e2e-settings-4419343-7695', 'e2e-cli-fork-e2e-cli', 'E2E_demo', 'e2e.x']) expect(isTestFixture({ slug: name }), name).toBe(true)
+    for (const name of ['forge-v2-demo', 'e2ee-chat', 'my-e2e-tests', 'dash']) expect(isTestFixture({ slug: name }), name).toBe(false)
+  })
+
+  it('drops them from the landing feed, even with "Show all"', () => {
+    const feed = [repo('e2e-cli'), repo('dash'), repo('e2e-cli-fork-e2e-cli')]
+    expect(dropTestFixtures(feed).map((r) => r.slug)).toEqual(['dash'])
+    for (const showAll of [false, true]) {
+      const r = landingRecent(feed, { pushesKnown: true, showAll })
+      expect(r.shown.map((x) => x.slug)).toEqual(['dash'])
+      expect(r.notCurated).toBe(0)
+    }
+  })
+
+  it('keeps an owner’s most active repos under the cap, not their newest', () => {
+    const own = (slug: string, createdAt: number, pushedAt: number | null) => ({ ...repo(slug, createdAt, pushedAt), ownerId: 'same' })
+    const feed = [own('newest', 31, null), own('newer', 21, null), own('old-but-busy', 1, 100)]
+    expect(landingRecent(feed, { pushesKnown: false, showAll: false }).shown.map((x) => x.slug)).toEqual(['old-but-busy', 'newest'])
+  })
+
+  it('orders the landing feed by newest activity: a push, else creation', () => {
+    const feed = [repo('new-unpushed', 50, null), repo('old-pushed', 10, 90), repo('old', 5, 20)]
+    expect(landingRecent(feed, { pushesKnown: false, showAll: false }).shown.map((x) => x.slug)).toEqual(['old-pushed', 'new-unpushed', 'old'])
+  })
+})
+
 describe('recentFeed: read on while a flood leaves the feed short', () => {
   const row = (key: string, ownerId: string) => ({ key, ownerId, name: key, slug: key, description: 'A tool', createdAt: 0, visibility: 'public', pushedAt: 1 })
 
@@ -164,6 +195,29 @@ describe('recentFeed: read on while a flood leaves the feed short', () => {
     feedPages = [{ repos: flood(1), next: null }]
     await recentFeed({} as EvoSDK, { network: 'devnet' })
     expect(feedReads).toHaveLength(1)
+  })
+
+  it('reads past pages of nothing but test fixtures, up to ten', async () => {
+    const fixtures = (n: number) => Array.from({ length: 24 }, (_, i) => row(`e2e-${n}-${i}`, `t${n}-${i}`))
+    feedPages = [
+      ...[1, 2, 3, 4].map((n) => ({ repos: fixtures(n), next: { at: 10 - n, seen: [] } })),
+      { repos: Array.from({ length: 14 }, (_, i) => row(`r${i}`, `o${i}`)), next: { at: 1, seen: [] } },
+    ]
+    const r = await recentFeed({} as EvoSDK, { network: 'devnet' })
+    expect(feedReads).toHaveLength(5)
+    expect(landingRecent(r.repos, { pushesKnown: true, showAll: false }).shown.map((x) => x.slug)).toContain('r0')
+    feedReads.length = 0
+    feedPages = Array.from({ length: 12 }, (_, n) => ({ repos: fixtures(n), next: { at: 20 - n, seen: [] } }))
+    const capped = await recentFeed({} as EvoSDK, { network: 'devnet' })
+    expect(feedReads).toHaveLength(10)
+    expect(capped.more).toBe(true)
+  })
+
+  it('counts a page with one real repo among the fixtures', async () => {
+    const mixed = (n: number) => [...Array.from({ length: 23 }, (_, i) => row(`e2e-${n}-${i}`, `t${n}-${i}`)), row(`r${n}`, `o${n}`)]
+    feedPages = [1, 2, 3, 4].map((n) => ({ repos: mixed(n), next: { at: 10 - n, seen: [] } }))
+    await recentFeed({} as EvoSDK, { network: 'devnet' })
+    expect(feedReads).toHaveLength(3)
   })
 
   it('says older repos follow when every row read was hidden, so the page is not called empty', async () => {

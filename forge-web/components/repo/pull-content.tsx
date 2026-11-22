@@ -24,6 +24,7 @@ import { aliasedReader } from '@/lib/view/blind-reader'
 import { membersLane } from '@/lib/repo'
 import { blindBook } from '@/lib/repo/members-blinds'
 import { hexToBytes } from '@/lib/private'
+import { SignedOutComposer, useSignedOut } from '@/components/repo/signed-out-composer'
 import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
@@ -42,7 +43,7 @@ import {
   GitPullRequest,
   GitPullRequestClosed,
   GitPullRequestDraft,
-  HardDrive,
+  GitBranch,
   Link2,
   ListChecks,
   Lock,
@@ -188,7 +189,8 @@ import { PullSourceCheckout } from '@/components/repo/pull-source-checkout'
 import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
-import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { EditedMarker, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { MarkdownEditor } from '@/components/repo/markdown-editor'
 import { AgentsSection, useRequestsOutsideAccess } from '@/components/repo/agents-section'
 import type { AgentRequest } from '@/lib/rules/agent-request'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
@@ -371,7 +373,7 @@ export function PullContent({
   }, [reload, draftGate])
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label={draftGate.plan() ? 'Opening your draft pull request' : 'Loading pull request'} />
+  if (loading && !data) return <LoadingBlock label={draftGate.plan() ? 'Opening your draft pull request' : 'Loading pull request'} onRetry={reload} />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
   if (isMembersOnlyTarget(data)) {
     const posted = (id: string): void => {
@@ -404,6 +406,7 @@ function PullPage({
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer, locked, lockedIdentity } = useAuth()
+  const signedOut = useSignedOut()
   // A locked session is still that member (QW2-033): permissions, the merge box and the review
   // controls are read for the identity Unlock would open, and each write opens Unlock (the
   // guard), as the header's "Session locked — Unlock" says. Signed out, there is none.
@@ -1111,7 +1114,7 @@ function PullPage({
       guard.check(commentCost, 'collab', 'comment')
       return
     }
-    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
+    if (posting || comment.trim() === '' || commentTooLong || audience.blocked !== null || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     if (quoting && !confirmed) {
       quoteCheck(comment, membersTexts, () => void postComment(true))
@@ -1607,6 +1610,13 @@ function PullPage({
   }
 
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
+  const editBlocked = editing === null || editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null
+  const saveEdit = (): void => {
+    if (editing === null || editBlocked) return
+    const edit = { kind: 'edit-pull' as const, title: editing.title.trim(), body: editing.body }
+    // A public PR's edit is public text: it asks first when it repeats members-only text.
+    quoteCheck(publicTextOf(`${edit.title}\n${edit.body}`, pull.audience), membersTexts, () => setPending(edit), { before: `${pull.title}\n${pull.body}` })
+  }
 
   return (
     <AuthorRolesProvider owner={repo.ownerId} members={thread.members} authors={tab === 'conversation' ? threadAuthorIds(pull.author, thread.timeline) : []}>
@@ -1623,12 +1633,8 @@ function PullPage({
               <Button
                 variant="primary"
                 size="sm"
-                disabled={editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null}
-                onClick={() => {
-                  const edit = { kind: 'edit-pull' as const, title: editing.title.trim(), body: editing.body }
-                  // A public PR's edit is public text: it asks first when it repeats members-only text.
-                  quoteCheck(publicTextOf(`${edit.title}\n${edit.body}`, pull.audience), membersTexts, () => setPending(edit), { before: `${pull.title}\n${pull.body}` })
-                }}
+                disabled={editBlocked}
+                onClick={saveEdit}
               >
                 Save
               </Button>
@@ -1864,7 +1870,7 @@ function PullPage({
               {/* Description */}
               <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(pull.audience) && MEMBERS_CARD)}>
                 <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(pull.audience) && MEMBERS_CARD_HEADER)}>
-                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
+                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="commented" />
                   <AudienceMark audience={pull.audience} letter={pull.letter} writtenWhilePrivate={pull.writtenWhilePrivate} />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                   <MadePublicBy marks={pull} />
@@ -1878,7 +1884,7 @@ function PullPage({
                   ) : null}
                   {editing ? (
                     <>
-                      <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
+                      <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} onSubmit={saveEdit} submitLabel="save" onCancel={() => setEditing(null)} changed={editing.title.trim() !== pull.title || editing.body !== pull.body} />
                       <BodyCounter repo={repo} text={editing.body} field="description" long={editLong} />
                     </>
                   ) : pull.body ? (
@@ -2225,6 +2231,10 @@ function PullPage({
 
               {/* Composer */}
               <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="pr-composer">
+                {signedOut && !thread.locked && !archived ? (
+                  <SignedOutComposer cost={commentCost} />
+                ) : (
+                <>
                 {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
                 <LockedBanner locked={thread.locked && !archived} viewer={lockViewer} target="pull">
                   <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
@@ -2232,7 +2242,7 @@ function PullPage({
                     <PrivateComposeNote reason={composeBlock} />
                   ) : (
                     <>
-                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} submitLabel="comment" cost={commentCost} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
                       <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} members={audience.audience === 'members' ? 'comment' : undefined} />
                       <AudienceWarnings warnings={warnings} />
@@ -2336,6 +2346,8 @@ function PullPage({
                     {commentError}
                   </div>
                 ) : null}
+                </>
+                )}
               </div>
               {suggest.bar}
             </>
@@ -2380,6 +2392,7 @@ function PullPage({
             <ComparisonView
               state={comparison}
               noHead="This PR does not record a head commit."
+              showTitle={false}
               action={
                 identity !== null && open && !writeBlocked ? (
                   <ReviewDrawer
@@ -2514,7 +2527,7 @@ function PullPage({
             ) : null}
             <SidebarSection title="Linked issues" icon={Link2}>
               {linked.length === 0 ? (
-                <p className="text-anvil-500 dark:text-anvil-400">None. &ldquo;Fixes #12&rdquo; in the description links one.</p>
+                <p className="text-anvil-500 dark:text-anvil-400">None yet. An issue named as &ldquo;Fixes #12&rdquo; in the description shows up here.</p>
               ) : (
                 <ul className="space-y-1" data-testid="linked-issues">
                   {linked.map((n) => (
@@ -2548,29 +2561,34 @@ function PullPage({
                 Convert to draft
               </button>
             ) : null}
-            <SidebarSection title="Where it lives" icon={HardDrive}>
-              <p className="text-anvil-500 dark:text-anvil-400">
+            <SidebarSection title="Source branch" icon={GitBranch}>
+              <p className="flex flex-wrap items-center gap-1.5 text-anvil-700 dark:text-anvil-200" data-testid="pr-source-branch">
+                {pull.sourceRefName ? (
+                  <span className="break-all font-mono">{shortBranch(pull.sourceRefName)}</span>
+                ) : (
+                  <span className="text-anvil-500 dark:text-anvil-400">Branch name not recorded</span>
+                )}
+                {sync?.kind === 'deleted' ? (
+                  <span className="rounded-full border border-anvil-300 px-1.5 py-px text-[11px] font-medium text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="source-branch-deleted">
+                    Deleted
+                  </span>
+                ) : null}
+              </p>
+              <p className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="pr-source-where">
                 {!crossRepo ? (
-                  <>Objects live in this repo</>
+                  <>In this repo</>
                 ) : sourceRef && sourceAddr ? (
                   <>
-                    Objects live in{' '}
+                    From the fork{' '}
                     <Link href={repoHref('/repo', sourceAddr)} className="break-all text-forge-700 underline underline-offset-2 dark:text-forge-400" data-testid="pr-source-repo">
                       {forkOwnerLabel}/{sourceRef.name}
                     </Link>
                   </>
                 ) : (
                   <>
-                    Objects live in repo <span className="break-all font-mono">{pull.sourceId}</span>
+                    From repo <span className="break-all font-mono">{pull.sourceId}</span>
                   </>
                 )}
-                {pull.sourceRefName ? (
-                  <>
-                    {' '}
-                    on <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
-                    {sync?.kind === 'deleted' ? <span data-testid="source-branch-deleted"> (deleted)</span> : null}
-                  </>
-                ) : null}
               </p>
               <PullSourceCheckout
                 deleted={sync?.kind === 'deleted'}
@@ -2959,15 +2977,16 @@ function commentSlots({
     </>
   )
   if (editing?.id === c.id) {
+    const saveBlocked = editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)
     return {
       header: tags,
       body: (
         <div className="space-y-2 px-4 py-3">
-          <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
+          <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus onSubmit={() => { if (!saveBlocked) onSave(c.id, editing.body) }} submitLabel="save" onCancel={() => onEdit(null)} changed={editing.body !== c.body} />
           <BodyCounter repo={repo} text={editing.body} field="comment" long={editLong} />
           <PublicEditHint marks={c} />
           <div className="flex gap-2">
-            <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)} onClick={() => onSave(c.id, editing.body)}>
+            <Button variant="primary" size="sm" disabled={saveBlocked} onClick={() => onSave(c.id, editing.body)}>
               Save
             </Button>
             <Button variant="ghost" size="sm" onClick={() => onEdit(null)}>
@@ -3060,7 +3079,7 @@ function BranchRules({
           <span>
             <span className="font-mono">{short}</span> is protected. Only maintainers can merge into it.
           </span>
-          <EnforcedBy by="platform" />
+          <EnforcedBy by="both" />
         </p>
       ) : null}
       {policy === 'unknown' || status === 'unknown' ? (
@@ -3171,11 +3190,11 @@ function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeO
   // Files both sides changed: the check sees that, not whether the merge's version holds the PR's change.
   const combined = content.combined.length > 0 ? `, except ${plural(content.combined.length, 'file')} changed on both sides and not checked for this PR's change` : ''
   const words: Record<MergeContent['verdict'], string> = {
-    contains: 'contains this PR',
-    squash: `squash of this PR${combined}`,
-    rebase: `rebase of this PR${combined}`,
-    missing: "does not contain this PR's commits",
-    unknown: "couldn't check: its commits could not be read",
+    contains: 'includes this PR',
+    squash: `is a squash of this PR${combined}`,
+    rebase: `is a rebase of this PR${combined}`,
+    missing: "doesn't contain this PR's commits",
+    unknown: "couldn't be checked: its commits could not be read",
   }
   const missing = content.verdict === 'missing'
   const partly = content.combined.length > 0
@@ -3194,7 +3213,7 @@ function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeO
       }
     >
       {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' || partly ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
-      merge <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
+      commit <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
     </span>
   )
 }

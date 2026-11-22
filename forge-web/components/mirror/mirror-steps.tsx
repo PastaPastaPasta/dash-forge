@@ -154,7 +154,7 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
       {error && !(way === 'cli' && hidden !== null) ? <Hint tone="danger">{error}</Hint> : null}
       {way === 'cli' && hidden === 'not-found' ? <Hint tone="danger">GitHub doesn&apos;t show this repo publicly. Check its owner and name.</Hint> : null}
       {way === 'cli' && hidden !== null ? (
-        <Hint>This page can&apos;t check private GitHub repositories. <a href={DOCS.mirrorPrivate} className="underline">The guide shows how to copy one into a private Forge repo.</a></Hint>
+        <Hint>This page can&apos;t check private GitHub repositories. <Link href={DOCS.mirrorPrivate} className="underline">The guide shows how to copy one into a private Forge repo.</Link></Hint>
       ) : null}
       {found ? (
         <div className="space-y-3 rounded-md border border-verify/30 bg-verify/5 p-3" data-testid="mirror-github-found">
@@ -1001,7 +1001,7 @@ export function CliStep({ github, settings, onSettings, ownerId }: {
         <>
           <section className="space-y-2" aria-label="Install and sign in">
             <Heading className="text-dense font-medium">a. Once: install and sign in</Heading>
-            <p className="text-dense">You need dg and git-remote-dash (<a href={DOCS.quickStart} className="underline">install</a>), and the GitHub CLI, signed in.</p>
+            <p className="text-dense">You need dg and git-remote-dash (<Link href={DOCS.quickStart} className="underline">install</Link>), and the GitHub CLI, signed in.</p>
             {ownerId ? <Hint>Sign dg in as {shortIdentity(ownerId)} to fill this repo.</Hint> : null}
             <CopyRow text={commands.login} label="Copy the dg sign-in command" />
             <Hint>New to Dash? <code>{commands.newIdentity}</code> makes an identity.</Hint>
@@ -1010,13 +1010,13 @@ export function CliStep({ github, settings, onSettings, ownerId }: {
           <section className="space-y-2" aria-label="Copy the repo">
             <Heading className="text-dense font-medium">b. Copy it</Heading>
             <CopyRow text={commands.copy} label="Copy the import command" />
-            <Hint>Your git data goes to Dash Platform unless you <a href={DOCS.storage} className="underline">set your own storage for dg first</a>.</Hint>
+            <Hint>Your git data goes to Dash Platform unless you <Link href={DOCS.storage} className="underline">set your own storage for dg first</Link>.</Hint>
             <CopyRow text={commands.storage} label="Copy the storage command" />
             <Hint>{ownerId ? <>dg import writes into {settings.name} and replaces its branches and tags to match GitHub.</> : <>If you already have a repo with this name, dg import writes into it and replaces its branches and tags.</>}</Hint>
           </section>
           <section className="space-y-2" aria-label="Bring it up to date">
             <Heading className="text-dense font-medium">c. Bring it up to date</Heading>
-            <p className="text-dense">Run the same command again. It copies only what changed, and costs nothing when nothing changed. To run it on a schedule, see <a href={DOCS.mirrorKeepInSync} className="underline">Keep it in sync</a>.</p>
+            <p className="text-dense">Run the same command again. It copies only what changed, and costs nothing when nothing changed. To run it on a schedule, see <Link href={DOCS.mirrorKeepInSync} className="underline">Keep it in sync</Link>.</p>
           </section>
           <p className="text-dense">dg prints the repo&apos;s address when it&apos;s done. Copies with the GitHub name also appear at <Link href={alias} className="break-all text-forge-700 underline dark:text-forge-400">{alias}</Link>.</p>
         </>

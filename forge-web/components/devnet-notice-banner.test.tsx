@@ -65,8 +65,8 @@ describe('DevnetNoticeBanner', () => {
       'bonsia is moving to a new devnet soon. Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
     )
     const link = b.querySelector('a')!
-    expect(link.getAttribute('href')).toBe(DEVNET_MOVE_DOC)
-    expect(DEVNET_MOVE_DOC).toMatch(/docs\/guides\/devnet-move\.md$/)
+    expect(link.getAttribute('href')).toBe(DEVNET_MOVE_DOC.replace(/\/$/, ''))
+    expect(DEVNET_MOVE_DOC).toBe('/docs/devnet-move/')
   })
 
   it('upcoming: the dismiss button is a labelled, focusable button that hides it and remembers that', () => {
@@ -94,7 +94,7 @@ describe('DevnetNoticeBanner', () => {
     expect(b.textContent).toContain('Dash Forge moved to testnet (Platform v5); bonsia was retired.')
     expect(b.textContent).toContain('Writing is paused')
     expect(dismissButton()).toBeNull()
-    expect(b.querySelector('a')!.getAttribute('href')).toBe(DEVNET_MOVE_DOC)
+    expect(b.querySelector('a')!.getAttribute('href')).toBe(DEVNET_MOVE_DOC.replace(/\/$/, ''))
   })
 
   it('moving: is in the server-rendered HTML (it cannot be dismissed, so nothing waits for storage)', () => {

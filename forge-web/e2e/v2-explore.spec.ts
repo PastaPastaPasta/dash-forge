@@ -38,14 +38,15 @@ test('x1. explore lists recent repos, trending, most starred and most forked, an
   await expect(trending.getByRole('heading', { name: /Trending (this week|today)/ })).toBeVisible()
   // Its time-range read lands in a fresh tab, though it can be the page's first query: the SDK
   // learns the protocol version (14 or more for `timeRange`) before the page queries.
-  await expect(trending.getByTestId('ranked-row').first().or(trending.getByText(/^No repo has \d+ new stars/))).toBeVisible({ timeout: 60_000 })
+  // Test fixtures (`e2e-…`) are left out of the rankings; a list of only them says so.
+  await expect(trending.getByTestId('ranked-row').first().or(trending.getByText(/^(No repo has \d+ new stars|Only repos made by Forge's automated tests)/))).toBeVisible({ timeout: 60_000 })
   await expect(trending.getByText('That read did not land')).toHaveCount(0)
   await expect(page.getByTestId('explore-most-starred').getByRole('heading', { name: 'Most starred' })).toBeVisible()
   // Most forked (ranked repo.forkOf, fresh core): the repos that are not forks form the index's
   // null group, which is never shown as a row.
   const forked = page.getByTestId('explore-most-forked')
   await expect(forked.getByRole('heading', { name: 'Most forked' })).toBeVisible()
-  await expect(forked.getByTestId('ranked-row').first().or(forked.getByText('No repo on this network has been forked yet.'))).toBeVisible({ timeout: 60_000 })
+  await expect(forked.getByTestId('ranked-row').first().or(forked.getByText(/^(No repo on this network has been forked yet\.|Only repos made by Forge's automated tests)/))).toBeVisible({ timeout: 60_000 })
   expect(await forked.getByTestId('ranked-row').evaluateAll((els) => els.filter((el) => !el.getAttribute('data-repo-id')).length)).toBe(0)
   const released = page.getByTestId('explore-recently-released')
   await expect(released).toContainText('no cross-repo index')

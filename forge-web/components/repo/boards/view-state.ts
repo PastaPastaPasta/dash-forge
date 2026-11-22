@@ -75,6 +75,15 @@ export function savedViews(spec: BoardSpec): readonly SavedView[] {
   return spec.views.length > 0 ? spec.views : [DEFAULT_VIEW]
 }
 
+/**
+ * Whether the saved views already offer every layout as a tab (the default Board / Table / Roadmap
+ * trio): the layout picker would repeat them (F16), so it shows only for a view's unsaved layout.
+ */
+export function viewsCoverLayouts(spec: BoardSpec): boolean {
+  const views = savedViews(spec)
+  return LAYOUTS.every((l) => views.some((v) => v.layout === l))
+}
+
 /** Whether `key` may group the board layout's columns: Status, or a single-select or iteration field (§2.7). */
 export function boardGroupOk(spec: BoardSpec, key: string): boolean {
   return groupKeyOk(spec.fields, key, true)

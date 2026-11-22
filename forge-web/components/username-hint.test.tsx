@@ -33,7 +33,7 @@ describe('UsernameHint', () => {
     act(() => root.render(<UsernameHint show />))
     expect(host.textContent).toContain('No username yet')
     const link = host.querySelector('a')
-    expect(link?.getAttribute('href')).toMatch(/identity-and-keys\.md#what-an-identity-is$/)
+    expect(link?.getAttribute('href')).toMatch(/^\/docs\/identity-and-keys\/?#what-an-identity-is$/)
     expect(host.querySelector('[data-testid="username-dialog"]')).toBeNull()
     act(() => host.querySelector<HTMLButtonElement>('[data-testid="username-choose"]')!.click())
     expect(host.querySelector('[data-testid="username-dialog"]')).not.toBeNull()

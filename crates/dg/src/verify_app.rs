@@ -15,7 +15,9 @@
 //!
 //! Then every file the trusted manifest lists is fetched from the site and hashed. Any file that
 //! is missing or differs fails the check. It proves what this run was served, not what another
-//! visitor gets.
+//! visitor gets. One rewrite is let through: the Cloudflare Web Analytics beacon Cloudflare
+//! injects before `</body>`, in its exact form and only beside the build's own beacon for the same
+//! site ([`without_cf_injected_beacon`]).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -200,6 +202,91 @@ async fn attestations(
     Ok(listing.attestations)
 }
 
+/// A file as served: its SHA-256, and, for a page that ends with Cloudflare's injected beacon,
+/// the SHA-256 without it ([`without_cf_injected_beacon`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Served {
+    pub sha256: String,
+    pub without_cf_beacon: Option<String>,
+}
+
+impl Served {
+    fn hash(path: &str, bytes: &[u8]) -> Self {
+        Self {
+            sha256: sha256_hex(bytes),
+            without_cf_beacon: std::path::Path::new(path)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("html"))
+                .then(|| without_cf_injected_beacon(bytes))
+                .flatten()
+                .map(|b| sha256_hex(&b)),
+        }
+    }
+}
+
+/// `page` without the beacon that Cloudflare Web Analytics' automatic setup injects (docs/hosting.md
+/// section 6), or `None` when it does not end with exactly that. Cloudflare adds this before
+/// `</body>`:
+///
+/// ```text
+/// <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v<hex>" integrity="sha512-<base64>" data-cf-beacon='{"version":"…","token":"<token>","r":1,"spa":2}' crossorigin="anonymous"></script>\n
+/// ```
+///
+/// It is removed only when the config holds those keys and no others, with no character reference
+/// (a browser decodes `&quot;` in the attribute before the beacon reads it, so one could hide
+/// another key), and the rest of the page already carries the build's own beacon for the same site
+/// token (`forge-web/lib/cf-beacon.ts`). The injected copy then changes nothing the page does: the
+/// browser runs a module URL once, the beacon runs once per page and reads the first
+/// `data-cf-beacon` (the build's), and the page CSP, part of the hashed bytes, allows only the
+/// build's beacon URL, so it refuses any other version. That is why any other `v<hex>` and its
+/// integrity pass here, while the build's own URL must come with the build's pinned digest: a CSP that allowed more of Cloudflare's host would make this removal wider. Any
+/// other script, position, token or setting is not removed.
+pub fn without_cf_injected_beacon(page: &[u8]) -> Option<Vec<u8>> {
+    const HEAD: &[u8] =
+        b"<script type=\"module\" src=\"https://static.cloudflareinsights.com/beacon.min.js/v";
+    const TAIL: &[u8] = b"' crossorigin=\"anonymous\"></script>\n";
+    let rfind = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).rposition(|w| w == needle);
+    let end = rfind(page, b"</body>")?;
+    let start = rfind(&page[..end], HEAD)?;
+    let attrs = page[start + HEAD.len()..end].strip_suffix(TAIL)?;
+    let attrs = std::str::from_utf8(attrs).ok()?;
+    let (version, rest) = attrs.split_once('"')?;
+    let rest = rest.strip_prefix(" integrity=\"sha512-")?;
+    let (integrity, rest) = rest.split_once('"')?;
+    let config = rest.strip_prefix(" data-cf-beacon='")?;
+    let base64 = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=');
+    if version.is_empty()
+        || !version.bytes().all(|b| b.is_ascii_hexdigit())
+        || integrity.is_empty()
+        || !integrity.chars().all(base64)
+        || config.contains(['\'', '<', '>', '&'])
+    {
+        return None;
+    }
+    let config: serde_json::Map<String, serde_json::Value> = serde_json::from_str(config).ok()?;
+    let token = config.get("token")?.as_str()?;
+    let known = config.iter().all(|(k, v)| match k.as_str() {
+        "token" => true,
+        "version" => v.is_string(),
+        "r" | "spa" => v.is_number(),
+        _ => false,
+    });
+    if !known {
+        return None;
+    }
+    let mut without = page[..start].to_vec();
+    without.extend_from_slice(&page[end..]);
+    let own = format!(" data-cf-beacon=\"{{&quot;token&quot;:&quot;{token}&quot;}}\"");
+    rfind(&without, own.as_bytes())?;
+    // The build's own beacon URL, which the CSP allows, only with the build's pinned digest.
+    let src = format!(" src=\"https://static.cloudflareinsights.com/beacon.min.js/v{version}\"");
+    if rfind(&without, src.as_bytes()).is_some() {
+        let pinned = format!("{src} integrity=\"sha512-{integrity}\"");
+        rfind(&without, pinned.as_bytes())?;
+    }
+    Some(without)
+}
+
 /// The outcome of comparing what a site served with a trusted manifest.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Comparison {
@@ -208,6 +295,8 @@ pub struct Comparison {
     pub differ: Vec<String>,
     /// Not served (404).
     pub missing: Vec<String>,
+    /// Of `matched`, the pages that matched once Cloudflare's injected beacon was removed.
+    pub cf_beacon: usize,
 }
 
 impl Comparison {
@@ -240,13 +329,20 @@ impl Comparison {
 /// Compare each file of `trusted` with what `served` says came back for it (`None`: not found).
 pub fn compare(
     trusted: &Manifest,
-    served: impl IntoIterator<Item = (String, Option<String>)>,
+    served: impl IntoIterator<Item = (String, Option<Served>)>,
 ) -> Comparison {
-    let served: BTreeMap<String, Option<String>> = served.into_iter().collect();
+    let served: BTreeMap<String, Option<Served>> = served.into_iter().collect();
     let mut out = Comparison::default();
     for (path, want) in &trusted.files {
         match served.get(path) {
-            Some(Some(got)) if got.eq_ignore_ascii_case(want) => out.matched += 1,
+            Some(Some(got)) if got.sha256.eq_ignore_ascii_case(want) => out.matched += 1,
+            Some(Some(Served {
+                without_cf_beacon: Some(got),
+                ..
+            })) if got.eq_ignore_ascii_case(want) => {
+                out.matched += 1;
+                out.cf_beacon += 1;
+            }
             Some(Some(_)) => out.differ.push(path.clone()),
             _ => out.missing.push(path.clone()),
         }
@@ -329,16 +425,18 @@ fn attested_line(signer: &ExpectedSigner) -> String {
 
 const UNPUBLISHED_FIX: &str = "do not unlock a private repository there; use a release's IPFS build (docs/guides/verify-the-app.md)";
 
-/// Fetch every file `trusted` lists from `root` and hash it (`None`: not found). Any other
+/// Fetch every file `trusted` lists from `root` and hash it ([`Served`]; `None`: not found). Any other
 /// failure fails the whole check: nothing is compared on a partial read.
 async fn fetch_all(
     client: &reqwest::Client,
     root: &reqwest::Url,
     trusted: &Manifest,
-) -> Result<Vec<(String, Option<String>)>> {
+) -> Result<Vec<(String, Option<Served>)>> {
     let jobs = trusted.files.keys().cloned().map(|path| async move {
         let got = match file_url(root, &path) {
-            Ok(url) => get(client, url).await.map(|b| b.map(|b| sha256_hex(&b))),
+            Ok(url) => get(client, url)
+                .await
+                .map(|b| b.map(|b| Served::hash(&path, &b))),
             Err(e) => Err(e),
         };
         (path, got)
@@ -422,6 +520,7 @@ pub async fn run(ctx: &Ctx, args: &VerifyAppArgs) -> Result<()> {
         "servedManifestAgrees": manifest_agrees,
         "files": trusted.files.len(),
         "matched": result.matched,
+        "cfBeaconRemoved": result.cf_beacon,
         "differ": result.differ,
         "missing": result.missing,
         "ok": result.ok(),
@@ -443,6 +542,12 @@ pub async fn run(ctx: &Ctx, args: &VerifyAppArgs) -> Result<()> {
             result.matched,
             trusted.files.len()
         );
+        if result.cf_beacon > 0 {
+            println!(
+                "           {} with Cloudflare's injected analytics beacon removed (docs/hosting.md section 6)",
+                result.cf_beacon
+            );
+        }
         for p in &result.differ {
             println!("  differs: {p}");
         }
@@ -483,13 +588,19 @@ mod tests {
     #[test]
     fn every_listed_file_must_be_served_with_its_bytes() {
         let m = manifest(&[("index.html", "aa"), ("a.js", "bb"), ("b.js", "cc")]);
+        let served = |h: &str| {
+            Some(Served {
+                sha256: h.into(),
+                without_cf_beacon: None,
+            })
+        };
         let r = compare(
             &m,
             [
-                ("index.html".into(), Some("AA".into())),
-                ("a.js".into(), Some("00".into())),
+                ("index.html".into(), served("AA")),
+                ("a.js".into(), served("00")),
                 ("b.js".into(), None),
-                ("extra.js".into(), Some("dd".into())),
+                ("extra.js".into(), served("dd")),
             ],
         );
         assert_eq!(r.matched, 1);
@@ -536,5 +647,126 @@ mod tests {
         assert!(Manifest::parse(br#"{"format":1,"files":{"a":"b"}}"#).is_ok());
         assert!(Manifest::parse(br#"{"format":2,"files":{}}"#).is_err());
         assert!(Manifest::parse(b"nope").is_err());
+    }
+
+    /// The build's own beacon, as forge-web renders it (lib/cf-beacon.ts).
+    const OWN: &str = r#"<script type="module" defer="" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" crossorigin="anonymous" data-cf-beacon="{&quot;token&quot;:&quot;87b4d7fbbb4f476895825bf0e361acb6&quot;}"></script>"#;
+    /// What Cloudflare's automatic setup injected on forge.dashhq.org (2026-11-20), byte for byte.
+    const INJECTED: &str = "<script type=\"module\" src=\"https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092\" integrity=\"sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==\" data-cf-beacon='{\"version\":\"2024.11.0\",\"token\":\"87b4d7fbbb4f476895825bf0e361acb6\",\"r\":1,\"spa\":2}' crossorigin=\"anonymous\"></script>\n";
+
+    fn page(own: &str, before_body: &str) -> String {
+        format!("<!DOCTYPE html><html><head></head><body><main>app</main>{own}<script>self.__next_f.push([1,\"x\"])</script>{before_body}</body></html>")
+    }
+
+    #[test]
+    fn cloudflares_injected_beacon_is_removed_beside_the_builds_own() {
+        let built = page(OWN, "");
+        assert_eq!(
+            without_cf_injected_beacon(page(OWN, INJECTED).as_bytes()).as_deref(),
+            Some(built.as_bytes())
+        );
+        // Another beacon version (Cloudflare moves on; the page CSP refuses it) is the same tag.
+        let newer = INJECTED.replace(
+            "/vce701823e78c4301a35b7e07294d87301792088814092",
+            "/v8b253dfe",
+        );
+        assert_eq!(
+            without_cf_injected_beacon(page(OWN, &newer).as_bytes()).as_deref(),
+            Some(built.as_bytes())
+        );
+        assert_eq!(without_cf_injected_beacon(built.as_bytes()), None);
+    }
+
+    #[test]
+    fn anything_but_the_exact_injection_is_left_in_place() {
+        let refused = |own: &str, before_body: &str| {
+            assert_eq!(
+                without_cf_injected_beacon(page(own, before_body).as_bytes()),
+                None,
+                "{before_body}"
+            );
+        };
+        // A build without a beacon, or with another site's.
+        refused("", INJECTED);
+        refused(&OWN.replace("87b4d7fb", "00000000"), INJECTED);
+        // Another site's token, or a setting that sends the reports elsewhere.
+        refused(OWN, &INJECTED.replace("87b4d7fb", "00000000"));
+        refused(
+            OWN,
+            &INJECTED.replace(r#""r":1"#, r#""forward":{"url":"https://evil.example/"}"#),
+        );
+        refused(
+            OWN,
+            &INJECTED.replace(r#""spa":2"#, r#""send":{"to":"https://evil.example/"}"#),
+        );
+        // Another script, host or attribute.
+        refused(
+            OWN,
+            &INJECTED.replace("static.cloudflareinsights.com", "evil.example"),
+        );
+        refused(OWN, &INJECTED.replace("beacon.min.js/v", "beacon.min.js/x"));
+        refused(
+            OWN,
+            &INJECTED.replace("></script>", " onload=\"alert(1)\"></script>"),
+        );
+        refused(
+            OWN,
+            &INJECTED.replace("sha512-UKNk", "sha512-\" onload=\"x"),
+        );
+        // The build's own URL (which the CSP allows) with the digest of other bytes.
+        refused(OWN, &INJECTED.replace("sha512-UKNk", "sha512-AAAA"));
+        refused(OWN, &format!("{INJECTED}<script>alert(1)</script>"));
+        refused(OWN, &INJECTED.replace('\n', ""));
+        refused(OWN, &INJECTED.replace("'{", "'{\"x\":'<script>',"));
+        // A key hidden in a character reference, which the browser decodes before the beacon
+        // parses the config: {"version":"","send":{"to":"https://evil.example/"},"x":"",…}.
+        refused(
+            OWN,
+            &INJECTED.replace(
+                r#""version":"2024.11.0""#,
+                r#""version":"&quot;,&quot;send&quot;:{&quot;to&quot;:&quot;https://evil.example/&quot;},&quot;x&quot;:&quot;""#,
+            ),
+        );
+        // Not before the last </body>.
+        for page in [
+            format!("<html><body>{OWN}</body>{INJECTED}</html>"),
+            format!("<html><body>{OWN}{INJECTED}</body></body></html>"),
+        ] {
+            assert_eq!(without_cf_injected_beacon(page.as_bytes()), None, "{page}");
+        }
+    }
+
+    #[test]
+    fn a_page_matches_once_the_injection_is_removed_and_tampering_still_differs() {
+        let built = page(OWN, "");
+        let tampered = page(OWN, "<script src=\"https://evil.example/x.js\"></script>");
+        let m = manifest(&[
+            ("index.html", &sha256_hex(built.as_bytes())),
+            ("a/index.html", &sha256_hex(built.as_bytes())),
+            ("b/index.html", &sha256_hex(built.as_bytes())),
+            ("page.txt", &sha256_hex(built.as_bytes())),
+        ]);
+        let served = |path: &str, body: String| {
+            (path.to_string(), Some(Served::hash(path, body.as_bytes())))
+        };
+        let r = compare(
+            &m,
+            [
+                served("index.html", built.clone()),
+                served("a/index.html", page(OWN, INJECTED)),
+                served(
+                    "b/index.html",
+                    format!(
+                        "{}{INJECTED}</body></html>",
+                        tampered.strip_suffix("</body></html>").unwrap()
+                    ),
+                ),
+                // Only pages: other files are compared as served.
+                served("page.txt", page(OWN, INJECTED)),
+            ],
+        );
+        assert_eq!(r.matched, 2);
+        assert_eq!(r.cf_beacon, 1);
+        assert_eq!(r.differ, ["b/index.html", "page.txt"]);
     }
 }

@@ -11,6 +11,7 @@
  * "is your username" step is still seen.
  */
 
+import Link from 'next/link'
 import { useState } from 'react'
 import { AtSign } from 'lucide-react'
 
@@ -34,9 +35,9 @@ export function UsernameHint({ show, className }: { show: boolean; className?: s
             <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="username-choose">
               <AtSign className="h-3.5 w-3.5" aria-hidden /> Choose a username
             </Button>
-            <a href={`${DOCS.identity}#what-an-identity-is`} target="_blank" rel="noreferrer noopener" className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400">
+            <Link prefetch={false} href={`${DOCS.identity}#what-an-identity-is`} target="_blank" rel="noreferrer noopener" className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400">
               How usernames work →
-            </a>
+            </Link>
           </p>
         </div>
       ) : null}

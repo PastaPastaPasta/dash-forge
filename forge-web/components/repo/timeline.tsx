@@ -773,7 +773,7 @@ export function Timeline({
                 {/* Which commit was reviewed: a verdict on an older head is not a verdict on
                     the current one, and only the oid says which. */}
                 {review.commitOid ? (
-                  <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
+                  <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on commit <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
                 <AudienceMark audience={review.audience} letter={review.letter} what="review" writtenWhilePrivate={review.writtenWhilePrivate} />
                 <MadePublicBy marks={review} />
@@ -847,7 +847,7 @@ export function Timeline({
                   </>
                 ) : t.kind === PR_MERGE && t.oid ? (
                   <>
-                    {words(transitionPhrase(t.kind))} at{' '}
+                    {words(transitionPhrase(t.kind))} as commit{' '}
                     <span className="whitespace-nowrap">
                       <Oid value={t.oid} chars={9} />
                       {source === null ? ` · ${timeAgo(t.createdAt)}` : null}

@@ -9,7 +9,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { endIndexProgress, indexProgress, noteIndexProgress } from '@/lib/view/index-progress'
-import { BrowseLoading, SLOW_AFTER_MS } from './browse-loading'
+import { BrowseLoading } from './browse-loading'
+import { SLOW_AFTER_MS } from '@/components/ui/states'
 
 let root: Root
 let el: HTMLDivElement

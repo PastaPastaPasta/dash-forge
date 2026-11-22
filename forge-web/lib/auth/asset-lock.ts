@@ -590,8 +590,9 @@ const SECOND_OPINION_MS = 5_000
  * its mempool. The total stands once (about) every block to the tip is in and the feed has been
  * quiet for {@link SETTLE_MS} ({@link SETTLE_EMPTY_MS} for zero); null if the feed ends first.
  */
-async function heldOn(dapi: DapiCore, node: string, address: string, height: number, blocks: number, signal: AbortSignal): Promise<number | null> {
+async function heldOn(dapi: DapiCore, node: string, address: string, height: number, blocks: number, signal: AbortSignal, spends: readonly Uint8Array[]): Promise<number | null> {
   const tracker = new DepositTracker(address)
+  for (const raw of spends) tracker.ingest(raw)
   const feed = dapi.watch(addressFilter(address), height, { node, signal })
   let seen = 0
   let quietSince = Date.now()
@@ -615,9 +616,11 @@ async function heldOn(dapi: DapiCore, node: string, address: string, height: num
 /**
  * What `address` holds (duffs), confirmed or in the mempool, from DAPI feeds from `from`: the
  * larger of what two nodes say (one can lag or hide a payment). Throws when no node answers
- * within `timeoutMs`.
+ * within `timeoutMs`. `spends`: transactions known to spend from the address (a creation's own
+ * asset lock), counted whether or not a feed delivers them: a mempool replay need not send a
+ * child after its parent, and a node may not have the lock yet.
  */
-export async function depositHeld(ep: CoreEndpoints, address: string, from: WatchStart, timeoutMs = 60_000): Promise<number> {
+export async function depositHeld(ep: CoreEndpoints, address: string, from: WatchStart, spends: readonly Uint8Array[] = [], timeoutMs = 60_000): Promise<number> {
   const dapi = dapiOf(ep)
   const run = new AbortController()
   const timer = setTimeout(() => run.abort(), timeoutMs)
@@ -633,7 +636,7 @@ export async function depositHeld(ep: CoreEndpoints, address: string, from: Watc
     })
     const lanes = [0, 1].map(async (start) => {
       for (let i = start; i < order.length && !run.signal.aborted; i += 2) {
-        const held = await heldOn(dapi, order[i] as string, address, height, blocks, run.signal).catch(() => null)
+        const held = await heldOn(dapi, order[i] as string, address, height, blocks, run.signal, spends).catch(() => null)
         if (held !== null) {
           answers.push(held)
           answered()

@@ -1023,13 +1023,21 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 crate::fmt::balance_note(credits_to_dash(balance), ctx.network())
             );
             if key_id.is_some() {
-                println!(
-                    "  the identity file is no longer needed here; keep it (or the words) offline"
-                );
+                println!("  {}", master_key_note(args.mnemonic));
             }
         },
     );
     Ok(())
+}
+
+/// After a limited key is registered: the master key it came from is not kept here, so say
+/// what to keep offline (the words a `--mnemonic` login typed, or the identity file).
+fn master_key_note(mnemonic: bool) -> &'static str {
+    if mnemonic {
+        "the master key is not stored here; keep your recovery words offline"
+    } else {
+        "the identity file is no longer needed here; keep it (or the words) offline"
+    }
 }
 
 /// Say what registering a limited key will allow and cost (human mode).
@@ -1722,6 +1730,14 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
 mod tests {
     use super::*;
     use forge_core::network::NetworkSettings;
+
+    /// F19: a `--mnemonic` login used no file, so it does not mention one.
+    #[test]
+    fn a_mnemonic_login_does_not_mention_an_identity_file() {
+        assert!(!master_key_note(true).contains("file"));
+        assert!(master_key_note(true).contains("recovery words"));
+        assert!(master_key_note(false).contains("identity file"));
+    }
 
     /// The default export folder is created owner-only (0700), however the config directory
     /// itself came to exist; a folder named with `-o` keeps the creator's default mode.

@@ -8,7 +8,8 @@
  * no code, issue or other content is loaded.
  */
 
-import { EyeOff, ExternalLink } from 'lucide-react'
+import Link from 'next/link'
+import { EyeOff } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
 import { EmptyState } from '@/components/ui/states'
 import { DOCS } from '@/lib/docs-links'
@@ -31,9 +32,9 @@ export function HiddenNotice({ what, repoId, heading = 'h1' }: { what: 'repo' | 
         action={
           <div className="flex flex-col items-center gap-3">
             {what === 'repo' && repoId ? <CopyRow text={cloneByIdCommand(repoId)} label="Copy the clone command" className="mb-0 text-left" /> : null}
-            <a href={DOCS.hostedCuration} target="_blank" rel="noreferrer noopener" className={LINK}>
-              Why a site hides something <ExternalLink className="h-3 w-3" aria-hidden />
-            </a>
+            <Link href={DOCS.hostedCuration} className={LINK}>
+              Why a site hides something
+            </Link>
           </div>
         }
       />

@@ -33,6 +33,8 @@ on:
     branches: [master]
     paths:
       - 'forge-web/**'
+      # Bundled into the web app: the /docs hub renders docs/ at build time (forge-web/lib/docs).
+      - 'docs/**'
       # Bundled into the web app: lib/deployments.ts imports the per-network contract ids.
       - 'forge-contracts/deployments/**'
       # Bundled into the web app: lib/view/curation.ts imports the hosted curation list, so an
@@ -262,9 +264,10 @@ jobs:
           fi
       # forge.dashhq.org sits behind Cloudflare. The page carries its own Web Analytics beacon
       # (forge-web/lib/cf-beacon.ts); while the zone's automatic setup is on, Cloudflare injects a
-      # second one, which changes every page's bytes so `dg verify-app` fails. That is a zone
-      # setting this repository cannot change, so this only reports it (docs/hosting.md §6).
-      - name: Check the live page for an injected third-party script
+      # second one. `dg verify-app` removes that tag only in Cloudflare's exact form and beside the
+      # build's beacon for the same site token. The beacon runs once per page, and the CSP blocks
+      # every other beacon URL (docs/hosting.md §6), so this only reports the count.
+      - name: Count the live page's analytics beacons
         continue-on-error: true
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
@@ -278,7 +281,11 @@ jobs:
           # Script tags only: the RSC payload holds a JSON copy of the build's own tag.
           served=$(printf '%s' "$html" | grep -o -i '<script[^>]*static\.cloudflareinsights\.com' | wc -l)
           if [ "$served" -gt "$BUILT_BEACONS" ]; then
-            echo "::warning title=Cloudflare Web Analytics beacon injected::$PAGE_URL serves $served Cloudflare Web Analytics beacons; the build has $BUILT_BEACONS. Cloudflare injects the rest, so dg verify-app fails. Set the site's automatic setup off: docs/hosting.md section 6."
+            if [ "$BUILT_BEACONS" -gt 0 ]; then
+              echo "::notice title=Cloudflare Web Analytics beacon injected::$PAGE_URL serves $served Cloudflare Web Analytics beacons; the build has $BUILT_BEACONS. dg verify-app removes the injected one only in Cloudflare's exact form with the build's site token; it is the check (docs/hosting.md section 6)."
+            else
+              echo "::warning title=Cloudflare Web Analytics beacon injected::$PAGE_URL serves $served Cloudflare Web Analytics beacons and the build has none, so dg verify-app fails. Set the site to JS snippet installation, or build with PAGES_CF_BEACON_TOKEN: docs/hosting.md section 6."
+            fi
           else
             echo "No injected analytics beacon on $PAGE_URL ($served, as built)"
           fi

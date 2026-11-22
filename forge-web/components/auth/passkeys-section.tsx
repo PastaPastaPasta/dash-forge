@@ -15,6 +15,7 @@
  * browser. A resumed tab asks for an unlock (`UnlockNeededError`), then carries on.
  */
 
+import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { Fingerprint, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -127,9 +128,9 @@ function PasskeysPanel(): JSX.Element {
       </p>
       <p className="text-anvil-700 dark:text-anvil-200" data-testid="passkeys-shared">
         Every device shares the same key and budget, so disabling the key signs them all out. Renewing it replaces the key for every device too.{' '}
-        <a href={`${DOCS.identity}#passkeys`} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
+        <Link prefetch={false} href={`${DOCS.identity}#passkeys-for-other-devices`} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
           How passkeys work →
-        </a>
+        </Link>
       </p>
       {leftOut > 0 ? (
         <p className="text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="passkeys-left-out">

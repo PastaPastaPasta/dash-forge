@@ -2751,7 +2751,7 @@ export function rawKeyProblem<K extends RawKeyView>(keys: readonly K[], controls
   const k = keys.find(controls)
   if (k === undefined) return "That private key isn't one of this identity's keys. Check that the key and the identity ID belong together."
   if (k.purposeNumber === 0 && k.securityLevelNumber === SECURITY_LEVEL.MASTER) {
-    return 'That is this identity\'s master key. Forge never signs with it: use "Import an identity file or recovery phrase" instead, which uses the master key once to give this browser a limited key. The pasted key was not kept.'
+    return 'That is this identity\'s master key. Forge never signs with it: use "Use my recovery phrase or identity file" instead, which uses the master key once to give this browser a limited key. The pasted key was not kept.'
   }
   if (k.disabledAt !== undefined && k.disabledAt !== null) return 'That key is disabled on this identity, so it can no longer sign.'
   if (k.expiresAt !== undefined && Number(k.expiresAt) <= now) return `That key expired on ${new Date(Number(k.expiresAt)).toLocaleDateString()}, so it can no longer sign.`

@@ -40,7 +40,7 @@ const WARM_BUDGET = 8
 const DEMO_COLD_HOME = 12
 /**
  * The read fixture's issues list, cold (`issues/client.tsx` passes `rail={false}`: no About card,
- * so none of the home's rail sums). 9 reads: measured 8, plus the key cross-check the app shell added. Request by request:
+ * so none of the home's rail sums). 11 reads. Request by request:
  *   - the contract fetch, the owner's DPNS name, and the repo chrome composite (3);
  *   - the transition counts by kind (1); the issue and PR totals are the chrome composite's own,
  *     seeded for the next count read (`seedTargetCounts`), so they cost nothing here;
@@ -50,16 +50,21 @@ const DEMO_COLD_HOME = 12
  *   - the mirror-source probe, one `author`-index read per trusted author (the fixture's owner
  *     and its one maintainer, 2);
  *   - the page rows' state sums (1);
+ *   - the milestone filter's milestones (`useMilestones`, 1), and the repo's maintainer bans that
+ *     collapse a banned author's rows (`useHiddenThreads` → `readStandingBans`, 1): the fixture
+ *     has no bans, so no membership read follows;
  *   - the quorum-key cross-check's second source, DAPI's `getCurrentQuorumsInfo` (1). The app
  *     shell runs it on every connected page, rail or not, so a key mismatch heads every page
- *     (QW-004); it runs once per session, so a warm page never repeats it.
+ *     (QW-004); it runs once per session, so a warm page never repeats it. Mid quorum rotation,
+ *     when the quorum service lists a quorum DAPI has dropped, it reads both lists again 2 s later
+ *     (`ROTATION_RETRIES_MS`): a re-read the resend slack covers, like an SDK resend.
  * The header's open-count tabs, the list's total and the index each used to read the three
  * counts themselves (12-13 here); they now share one read (`sharedRepoCounts`). A return of that
  * duplication fails pb-1 by mechanism, not by count: the totals are then read with count requests
  * of their own, which pb-1 allows none of. The counts do not depend on how much the rest of the
  * devnet grows.
  */
-const DEMO_COLD_ISSUES = 9 + DAPI_RESEND_SLACK
+const DEMO_COLD_ISSUES = 11 + DAPI_RESEND_SLACK
 /** A profile page, cold (pb-5): measured 9 on sakura, P1-7's profile document included. */
 const PROFILE_COLD = 10 + DAPI_RESEND_SLACK
 /**

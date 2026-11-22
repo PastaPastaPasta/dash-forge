@@ -27,7 +27,11 @@ function hostToCheck(): { host: string; ipfs: boolean } {
   return { host: SITE_HOST, ipfs: false }
 }
 
-export function ScanOnlyHere({ host: given }: { host?: string }): JSX.Element {
+/**
+ * `capped`: the request proposes a spending limit and an expiry (App Connect v2, shown above the
+ * QR), so the note must not also say the key has none (F3, 2026-11 new-user pass).
+ */
+export function ScanOnlyHere({ host: given, capped = false }: { host?: string; capped?: boolean }): JSX.Element {
   const closeLogin = useUiStore((s) => s.closeLogin)
   const here = hostToCheck()
   const host = given ?? here.host
@@ -45,9 +49,10 @@ export function ScanOnlyHere({ host: given }: { host?: string }): JSX.Element {
           check the address bar first
           {here.ipfs && given === undefined ? ', and check this copy’s CID against the release (see “Verify the app” in the guides)' : ''}.
         </li>
-        <li>
-          An approval gives a key that can sign as you on Forge (an Android wallet’s key works on any Platform app), with no spending
-          limit or expiry unless your wallet sets one; today’s wallets don’t.
+        <li data-testid="scan-warning-limits">
+          {capped
+            ? 'An approval gives a key that can sign as you on Forge, within the limits above unless your wallet changes them. Forge refuses a key without them.'
+            : 'An approval gives a key that can sign as you on Forge (an Android wallet’s key works on any Platform app), with no spending limit or expiry unless your wallet sets one; today’s wallets don’t.'}
         </li>
         <li>It also gives the encryption key that opens your private and members-only content.</li>
         <li>
@@ -56,9 +61,9 @@ export function ScanOnlyHere({ host: given }: { host?: string }): JSX.Element {
             Settings → Devices &amp; keys → Disable all other keys
           </Link>{' '}
           (needs your recovery phrase or identity file), then replace your encryption key.{' '}
-          <a href={DOCS.revokeKeys} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
+          <Link prefetch={false} href={DOCS.revokeKeys} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
             How
-          </a>
+          </Link>
         </li>
       </ul>
     </div>

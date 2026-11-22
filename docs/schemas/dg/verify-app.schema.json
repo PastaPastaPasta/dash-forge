@@ -23,6 +23,10 @@
     "missing": {},
     "ok": {
       "type": "boolean"
+    },
+    "cfBeaconRemoved": {
+      "type": "integer",
+      "description": "Of `matched`, the pages that matched once the Cloudflare Web Analytics beacon Cloudflare injects was removed (docs/hosting.md section 6)."
     }
   },
   "required": [

@@ -81,9 +81,9 @@ export function LockedBanner({
   )
 }
 
-/** The rail's lock state line (GitHub: "Locked to members" under the conversation heading). */
+/** The rail's lock state line, under the conversation heading. */
 export function lockStateText(locked: boolean): string {
-  return locked ? 'Locked to members' : 'Open to everyone'
+  return locked ? 'Locked: only members can comment' : 'Open for comments'
 }
 
 /** The Lock / Unlock conversation button a member who may lock (`canLock`) gets in the rail; `onToggle(lock)` asks to confirm. */

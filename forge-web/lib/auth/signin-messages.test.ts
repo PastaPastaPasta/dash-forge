@@ -92,7 +92,7 @@ describe('rawKeyProblem', () => {
   it('the master key: says so, and points at Import instead of a generic refusal', () => {
     const text = rawKeyProblem([key({}), key({ securityLevelNumber: SECURITY_LEVEL.MASTER, mine: true })], mine)
     expect(text).toMatch(/master key/)
-    expect(text).toMatch(/Import an identity file or recovery phrase/)
+    expect(text).toMatch(/Use my recovery phrase or identity file/)
   })
 
   it('a disabled, an expired, a non-authentication and a MEDIUM key', () => {

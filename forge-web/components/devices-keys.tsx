@@ -6,6 +6,7 @@
  * browser's storage is kept (TS-17).
  */
 
+import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, HardDrive, KeyRound, LifeBuoy, Pencil, ShieldOff } from 'lucide-react'
 import { KeyBudgetText } from '@/components/funds-summary'
@@ -316,9 +317,9 @@ function DisableOthersDialog({ rows, labels, onClose, onDone }: { rows: KeyRow[]
         </ul>
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="disable-others-encryption-note">
           If a wallet sign-in or the web app may have copied keys, your encryption key may have been copied too. See{' '}
-          <a href={`${DOCS.identity}#replacing-it-after-a-lost-device`} target="_blank" rel="noreferrer noopener" className="underline">
+          <Link prefetch={false} href={`${DOCS.identity}#replacing-it-after-a-lost-device`} target="_blank" rel="noreferrer noopener" className="underline">
             replacing the encryption key
-          </a>
+          </Link>
           .
         </p>
         {updates > 1 ? (
@@ -382,14 +383,14 @@ function LostDevice(): JSX.Element {
         </li>
         <li>On your other devices, sign in again or add the new encryption key from your recovery phrase (Settings → Members-only and private content).</li>
       </ol>
-      <a
+      <Link prefetch={false}
         href={`${DOCS.identity}#replacing-it-after-a-lost-device`}
         target="_blank"
         rel="noreferrer noopener"
         className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400"
       >
         What replacing the encryption key does →
-      </a>
+      </Link>
     </section>
   )
 }

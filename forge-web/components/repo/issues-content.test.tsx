@@ -140,6 +140,22 @@ describe('IssuesContent pinned issues (QW3-003)', () => {
     expect(el.querySelector('[data-testid="pins-unread"]')).toBeNull()
     expect(el.querySelectorAll('[data-testid="pinned-issue"]')).toHaveLength(1)
   })
+
+  it('shows a pinned issue once, as a Pinned card, not again as a row', async () => {
+    answer = { ...answer, pinsUnread: false, pinned: [issue(5612)] }
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    expect(el.querySelector('[data-testid="pinned-issue"] [data-testid="pinned-badge"]')?.textContent).toContain('Pinned')
+    expect([...el.querySelectorAll('[data-testid="issue-row"]')].map((r) => r.getAttribute('data-number'))).toEqual(['5600'])
+  })
+
+  it('says so when every row on the page is pinned', async () => {
+    answer = { ...answer, rows: [issue(5612)], pinsUnread: false, pinned: [issue(5612)] }
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    expect(el.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(0)
+    expect(el.querySelector('[data-testid="issues-only-pinned"]')).not.toBeNull()
+  })
 })
 
 describe('IssuesContent label definitions', () => {

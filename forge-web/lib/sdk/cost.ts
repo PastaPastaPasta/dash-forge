@@ -429,6 +429,10 @@ const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
  * the default branch also writes its history index: own storage 0.0052 (first) and 0.0041;
  * packs on Platform 0.0040 (a tag), 0.0052 (a branch), 0.0102 and 0.0088 (the default branch,
  * whose index is a chunk too). These ranges follow bonsia.
+ *
+ * Testnet, 2026-11-19 new-user pass (F20): a 377-byte first push with packs on Platform charged
+ * 0.0079 and a branch push 0.0040, inside the range. The helper's pre-push estimate for the same
+ * push was 0.0136: it is an upper bound, which is why the copy says each push shows its own.
  */
 export const PUSH_COST_DASH = {
   byo: { min: 0.004, max: 0.0055 },

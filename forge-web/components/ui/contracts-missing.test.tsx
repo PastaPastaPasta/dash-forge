@@ -65,7 +65,7 @@ describe('ContractsMissingState', () => {
       expect(body).toContain('/mirror wizard')
       expect(body).not.toMatch(/reset/i)
       const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'))
-      expect(hrefs).toContain('https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/devnet-move.md')
+      expect(hrefs).toContain('/docs/devnet-move')
     }
   })
 
@@ -73,7 +73,7 @@ describe('ContractsMissingState', () => {
     const { title, body } = render(SAKURA)
     expect(title).toBe("Dash Forge isn't deployed on devnet sakura right now")
     expect(body).toContain('Devnet sakura is a test network, and it was probably reset')
-    expect(el.querySelector('a[href$="devnet-move.md"]')).toBeNull()
+    expect(el.querySelector('a[href*="devnet-move"]')).toBeNull()
   })
 
   it('on another devnet: names it, says devnets are reset and it is being redeployed', () => {

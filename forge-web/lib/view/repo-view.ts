@@ -38,6 +38,7 @@ import { isHiddenRepo } from './curation'
 import { seedFromDomains } from './dpns'
 import { isPublicRef } from './refs'
 import { noteRepoGateways } from './storage-status'
+import type { HomeStage } from './home-progress'
 import type { PrivateSession } from '../repo/private-session'
 import type { LetterReading } from '../repo/private-content'
 import { membersOnlyRefsExist, readMembersRefs } from '../repo/members-branches'
@@ -208,33 +209,41 @@ export async function loadPrivateHome(sdk: EvoSDK, home: RepoHome, session: Priv
 
 /**
  * Resolve + compose a repo home view-model from its route address (`owner`, `name`, and an
- * optional `?repo=` pin). Returns null if nothing resolves. `onResolved` is told the repo as
+ * optional `?repo=` pin). Returns null if nothing resolves. `found` is told the repo as
  * soon as its document is read, before the refs: a code page starts its browse index then, so
- * the two run side by side instead of one after the other (L-15).
+ * the two run side by side instead of one after the other (L-15). `onStage` is told each step
+ * as it starts, for the loading view.
  */
 export async function loadRepoHome(
   sdk: EvoSDK,
   params: RepoAddressParams & { readonly network: Network },
-  onResolved?: (repo: RepoRef) => void,
-  { refs = 'all' }: { readonly refs?: RepoHomeRefs } = {},
+  found?: (repo: RepoRef) => void,
+  { refs = 'all', onStage }: { readonly refs?: RepoHomeRefs; readonly onStage?: (stage: HomeStage) => void } = {},
 ): Promise<RepoHome | null> {
+  const onResolved = (repo: RepoRef): void => {
+    onStage?.('refs')
+    found?.(repo)
+  }
   // A repo addressed by `(owner, name)`: one composite resolves it and reads its chrome.
   const forge = NETWORKS[params.network].v2
   const name = params.repoId ? null : normalizeRepoName(params.name)
   if (forge !== null && name !== null) {
+    onStage?.('owner')
     const ownerId = await resolveOwner(sdk, params.owner)
     if (ownerId === null) return null
+    onStage?.('repo')
     const chrome = await readRepoChrome(sdk, forge, ownerId, name, params.network)
     if (chrome === null) return null
     if (isHiddenRepo(chrome.repo.repoId, chrome.repo.ownerId)) return hiddenHome(chrome.repo, chrome.doc)
     seedFromDomains(params.network, [ownerId], chrome.ownerDomains)
     if (chrome.read !== null) {
-      onResolved?.(chrome.repo)
+      onResolved(chrome.repo)
       const listed = refs === 'default' && !chrome.read.whole ? await listHome(chrome, chrome.read) : null
       return listed ?? homeFromTimelines(chrome, await chrome.read.all())
     }
     return composeHome(sdk, chrome.repo, chrome.doc, onResolved, chrome.starCount)
   }
+  onStage?.('repo')
   const resolved = await resolveAnyRepo(sdk, params)
   if (resolved === null) return null
   if (isHiddenRepo(resolved.repo.repoId, resolved.repo.ownerId)) return hiddenHome(resolved.repo, resolved.doc)

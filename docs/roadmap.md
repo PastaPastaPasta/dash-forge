@@ -134,7 +134,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 - [x] `dg auth`: OS keychain, 0600 fallback files; `dg auth new` guides the user through funding their own identity (QR asset lock; the faucet on test networks). DPNS username registration.
 - [x] DPNS everywhere: `dash://alice/project`, web `/alice/project`, collaborator grants by name, profile names.
 - [x] Web onboarding: create an identity in the browser from the user's own funds (QR asset lock), an encrypted key vault (passphrase/passkey), and limited keys (Phase 2).
-- [x] **Forge Mirror Action**: a GitHub Action that pushes every GitHub push into Forge using the repo's own bucket and a runner identity with a limited key. Issue/PR sync is incremental. *Pinned to a release tag, its default `install: 'true'` downloads that release's binaries (until a release is published, build `dg` yourself).*
+- [x] **Forge Mirror Action**: a GitHub Action that pushes every GitHub push into Forge using the repo's own bucket and a runner identity with a limited key. Issue/PR sync is incremental. *Pinned to a release tag, its default `install: 'true'` downloads that release's binaries.*
 - [ ] `dg import` → forge-import, plus a continuous mirror mode. *Partial: `dg import` is done. Continuous mirroring runs only through the Mirror Action or the GitLab CI template's schedule; there is no built-in loop and no `--since`.*
 - [x] User docs: quick start, "bring your bucket" guides (R2, B2, S3, MinIO, kubo), migrating from GitHub, how to verify the forge isn't lying to you, key backup and recovery.
 

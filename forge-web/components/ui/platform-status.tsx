@@ -3,8 +3,8 @@
 /**
  * The Platform connection's loading and unreachable states (D-025, D-058).
  *
- *   - {@link ConnectingBlock}: while the SDK's WebAssembly downloads (seconds on a fast link,
- *     minutes on a slow one) a progress bar with bytes, then "Connecting".
+ *   - {@link DownloadProgressBar}: while the SDK's WebAssembly downloads (seconds on a fast link,
+ *     minutes on a slow one) a progress bar with bytes (the repo loading view shows it).
  *   - {@link UnreachableBanner}: the connect failed. Plain words, the next automatic retry,
  *     a "Try again" that really reconnects, and the underlying error behind a disclosure.
  *     With `cached`, it heads cached content rather than replacing the page.
@@ -13,7 +13,6 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 
-import { Spinner } from '@/components/ui/states'
 import { Button } from '@/components/ui/button'
 import type { SdkStatus } from '@/lib/sdk'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -22,15 +21,6 @@ import { connectFailureCopy } from '@/lib/view/platform-failure'
 
 function mb(bytes: number): string {
   return `${(bytes / 1_000_000).toFixed(1)} MB`
-}
-
-/** The download/connect indicator for a view waiting on the SDK. */
-export function ConnectingBlock({ status }: { status: SdkStatus }): JSX.Element {
-  return (
-    <div className="flex min-h-[40vh] items-center justify-center">
-      {status.phase === 'downloading' ? <DownloadProgressBar status={status} /> : <Spinner label="Connecting to Platform" />}
-    </div>
-  )
 }
 
 /** A thin determinate bar (`pct` null: a sliver, the size not known yet). */

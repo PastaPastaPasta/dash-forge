@@ -150,7 +150,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     const openFilter = page.getByRole('tab', { name: /^\d+ Open$/ })
-    await expectLanded(page, page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split'))
+    await expectLanded(page, page.getByRole('list', { name: 'Pinned issues' }).getByText('README should explain the event split'))
     const listOpen = Number((await openFilter.innerText()).match(/(\d+)/)?.[1])
     const listClosed = Number((await page.getByRole('tab', { name: /^\d+ Closed$/ }).innerText()).match(/(\d+)/)?.[1])
     expect(listClosed, 'the fixture has closed issues').toBeGreaterThan(0)
@@ -164,18 +164,23 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     expect(await tabCount(/^Pull requests/)).toBe(await rows.count())
   })
 
-  test('b-4. clone box: dash:// + commands, install sheet, and a hash-checked zip', async ({ page }) => {
+  test('b-4. clone box: tabbed dash:// + commands, install sheet, and a hash-checked zip', async ({ page }) => {
     await openHome(page)
     const box = page.getByTestId('clone-box')
+    await expect(box.getByRole('tab', { name: /Dash remote/, selected: true })).toBeVisible()
     await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     // L-03 / L-21: pasted on a machine where nothing chose a network, a bare `git clone` goes to
     // testnet. Both commands name the build's devnet, which the clone keeps in its git config.
     await expect(
       box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true }),
     ).toBeVisible()
+    await box.getByRole('tab', { name: 'dg CLI' }).click()
     await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} ${DG_NETWORK}`, { exact: true })).toBeVisible()
+    await expect(box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true })).toBeHidden()
+    await expectNoSeriousA11y(page, 'b-clone-dg-tab')
+    await box.getByRole('tab', { name: /Dash remote/ }).click()
 
-    await box.getByRole('button', { name: 'install' }).click()
+    await box.getByRole('button', { name: 'Install' }).click()
     const sheet = page.getByRole('dialog', { name: /Install git-remote-dash/ })
     await expect(sheet.getByText(/install\.sh \| sh/)).toBeVisible()
     await shot(page, 'b-clone-install')
@@ -216,12 +221,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     // from the cost module (re-measured on bonsia, QW-080), never a literal.
     await expect(empty.getByText(/0\.0003 DASH/)).toHaveCount(0)
     await expect(empty.getByText(`a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH`)).toBeVisible()
-    // The rate comes from the cost module (the chunk fees `dg` and the docs quote), never a literal.
-    await expect(empty.getByText(`~${PUSH_COST_DASH.perMib} DASH/MiB`)).toBeVisible()
     await expect(empty.getByRole('link', { name: 'Install →' })).toBeVisible()
-    // With no storage configured, the amber note links to the storage settings.
-    const note = empty.getByRole('note')
-    if (await note.count()) await expect(note.getByRole('link', { name: 'Configure storage →' })).toHaveAttribute('href', /\/settings\/storage/)
+    // The "No storage configured" note (and its per-MiB rate) is for whoever pushes here, not a signed-out visitor.
+    await expect(empty.getByText(`~${PUSH_COST_DASH.perMib} DASH/MiB`)).toHaveCount(0)
+    await expect(empty.getByRole('link', { name: 'Configure storage →' })).toHaveCount(0)
     await shot(page, 'b-empty-repo')
     await expectNoSeriousA11y(page, 'b-empty-repo')
   })
@@ -257,7 +260,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expectNoSeriousA11y(page, 'b-releases')
   })
 
-  test('b-8. 390px phone: rail under the content, Verification first, dash:// and zip only', async ({ page }) => {
+  test('b-8. 390px phone: rail under the content, Verification first, clone commands scroll in place', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await openHome(page)
     const card = page.getByTestId('verification-card')
@@ -266,7 +269,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     expect(cardBox && listBox && cardBox.y > listBox.y).toBe(true)
     const box = page.getByTestId('clone-box')
     await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
-    await expect(box.getByText(`git clone dash://${OWNER}/${NAME}`)).toBeHidden()
+    // A long command scrolls inside its box: it never wraps mid-id or widens the page.
+    const command = box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true })
+    await expect(command).toBeVisible()
+    expect(await command.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap')
     await expect(box.getByTestId('zip-download')).toBeVisible()
     // The page never scrolls sideways.
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
