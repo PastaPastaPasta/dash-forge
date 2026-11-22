@@ -3882,8 +3882,8 @@ fn minimal_uint(n: u64) -> Value {
 }
 
 /// Select the identity's on-chain AUTHENTICATION key that (a) the signer can sign with
-/// and (b) is a usable ECDSA_SECP256K1 authentication key at HIGH or CRITICAL — the
-/// levels document create/delete accept (spike S0.7).
+/// and (b) is a usable ECDSA_SECP256K1 or ECDSA_HASH160 (what wallets grant) authentication
+/// key at HIGH or CRITICAL — the levels document create/delete accept (spike S0.7).
 fn select_matching_key(identity: &Identity, signer: &SingleKeySigner) -> Result<IdentityPublicKey> {
     use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
     let now_ms = std::time::SystemTime::now()
@@ -3914,7 +3914,10 @@ fn select_matching_key(identity: &Identity, signer: &SingleKeySigner) -> Result<
             continue;
         }
         if public_key.purpose() == Purpose::AUTHENTICATION
-            && public_key.key_type() == KeyType::ECDSA_SECP256K1
+            && matches!(
+                public_key.key_type(),
+                KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
+            )
             && matches!(
                 public_key.security_level(),
                 SecurityLevel::HIGH | SecurityLevel::CRITICAL
@@ -6670,5 +6673,93 @@ mod tests {
         .await;
         assert!(matches!(out, Err(Error::Nonce)), "{out:?}");
         assert_eq!((log.prepared, log.refreshed), (n, n));
+    }
+
+    fn identity_with(
+        keys: Vec<dash_sdk::dpp::identity::IdentityPublicKey>,
+    ) -> dash_sdk::dpp::identity::Identity {
+        use dash_sdk::dpp::identity::v0::IdentityV0;
+        dash_sdk::dpp::identity::Identity::V0(IdentityV0 {
+            id: [7u8; 32].into(),
+            public_keys: keys.into_iter().map(|k| {
+                use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+                (k.id(), k)
+            }).collect(),
+            balance: 0,
+            revision: 0,
+        })
+    }
+
+    fn auth_key(
+        id: u32,
+        key_type: dash_sdk::dpp::identity::KeyType,
+        data: Vec<u8>,
+        disabled_at: Option<u64>,
+    ) -> dash_sdk::dpp::identity::IdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        dash_sdk::dpp::identity::IdentityPublicKey::V1(IdentityPublicKeyV1 {
+            id,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type,
+            read_only: false,
+            data: data.into(),
+            disabled_at,
+            total_budget: Some(5_000_000_000),
+            expires_at: None,
+        })
+    }
+
+    #[test]
+    fn a_wallet_granted_hash160_key_signs() {
+        use dash_sdk::dpp::dashcore::hashes::{hash160, Hash};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::identity::KeyType;
+        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+        let secret =
+            dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let public = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&secp, &secret)
+            .serialize();
+        let wif = dash_sdk::dpp::dashcore::PrivateKey::new(
+            secret,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        )
+        .to_wif();
+        let signer = simple_signer::single_key_signer::SingleKeySigner::new(&wif).unwrap();
+        let h = hash160::Hash::hash(&public).to_byte_array().to_vec();
+
+        let picked = super::select_matching_key(
+            &identity_with(vec![auth_key(6, KeyType::ECDSA_HASH160, h.clone(), None)]),
+            &signer,
+        )
+        .expect("a HASH160 key the signer controls is usable");
+        assert_eq!(picked.id(), 6);
+        assert_eq!(picked.key_type(), KeyType::ECDSA_HASH160);
+
+        let full = super::select_matching_key(
+            &identity_with(vec![auth_key(
+                2,
+                KeyType::ECDSA_SECP256K1,
+                public.to_vec(),
+                None,
+            )]),
+            &signer,
+        )
+        .expect("a SECP256K1 key still is");
+        assert_eq!(full.id(), 2);
+
+        let disabled = super::select_matching_key(
+            &identity_with(vec![auth_key(6, KeyType::ECDSA_HASH160, h, Some(1))]),
+            &signer,
+        );
+        assert!(disabled.unwrap_err().to_string().contains("disabled"));
+
+        let other = super::select_matching_key(
+            &identity_with(vec![auth_key(6, KeyType::ECDSA_HASH160, vec![0; 20], None)]),
+            &signer,
+        );
+        assert!(other.is_err());
     }
 }
