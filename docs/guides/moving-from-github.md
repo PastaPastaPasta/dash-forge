@@ -40,7 +40,7 @@ Replace every `<…>` placeholder with your own value. Forge runs on **testnet**
 | Releases | Tag, title and notes. Each asset is recorded by its GitHub URL and SHA-256; the file is not copied | `forge-import` |
 | Labels | Label definitions, and each item's labels | `forge-import` |
 | Collaborators | Writers and maintainers, by Dash identity | `dg collab add` ([§7](#7-invite-collaborators)) |
-| Branch protection, required reviews | Protected branches (enforced by Platform) and a branch policy (enforced by Forge apps) | `dg repo protect`, `dg repo policy` |
+| Branch protection, required reviews | Protected branches (enforced by Dash Platform and Forge apps) and a branch policy (enforced by Forge apps) | `dg repo protect`, `dg repo policy` |
 | Webhooks | GitHub-shaped webhooks, delivered by a relay you run | `dg webhook add` ([§8](#8-ci)) |
 
 Imported items are written by **your** identity and name their GitHub author ([how](mirror-a-github-repo.md#1-first-import)). Some things are not imported: see [Not mirrored](mirror-a-github-repo.md#1-first-import) and [§10](#10-github-features-with-no-forge-equivalent).

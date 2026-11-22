@@ -320,7 +320,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
           ) : data.repos.length === 0 ? (
             <EmptyState icon={GitBranch} title="No repos yet" body="This identity has not created any repos on this network." />
           ) : (
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 lg:auto-rows-fr lg:grid-cols-2">
               {data.repos.map((r) => (
                 <RepoCard key={r.key} repo={r} showOwner={false} />
               ))}
@@ -331,7 +331,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
         {!data.hiddenRepos && data.memberOf.length > 0 ? (
           <div>
             <h2 className="mb-3 text-prose">Member of</h2>
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 lg:auto-rows-fr lg:grid-cols-2">
               {data.memberOf.map((r) => (
                 <RepoCard key={r.key} repo={r} />
               ))}

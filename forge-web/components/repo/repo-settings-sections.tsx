@@ -479,7 +479,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
         </h3>
         <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300">
           <span>Only maintainers can update a protected branch or tag.</span>
-          <EnforcedBy by="platform" />
+          <EnforcedBy by="both" />
         </p>
         {maintainer ? <DefaultProtectionSuggestion home={home} cfg={cfg} /> : null}
         <ul aria-label="Protected patterns" className="mt-3 divide-y divide-anvil-100 overflow-hidden rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
