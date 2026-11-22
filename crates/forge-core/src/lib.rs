@@ -22,6 +22,8 @@
 //! - [`cost`] — fee constants and the storage-cost estimator.
 //! - [`cost_audit`] — `dg cost audit`: an identity's estimated Forge spend, from proved
 //!   counts of what it created (there is no spend ledger on forge-v2).
+//! - [`app_connect`] — App Connect v2, the app side: ask a Dash wallet for a limited key
+//!   (request codec, response crypto, verifier, poller) and read its answer from Platform.
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
 //! - [`keyring`] — a private repository's keys on Platform: load and resolve the epochs,
 //!   open sealed documents, and write wraps, anchors, rotations and repairs.
@@ -34,9 +36,11 @@
 //!   validator other crates' tests call.
 //!
 //! The async rs-sdk integration is confined to [`platform`] (style guide §B: the SDK
-//! is touched in exactly one module); every other module is synchronous and SDK-free
-//! (`test_support` validates with rs-dpp directly, and never ships).
+//! is touched in exactly one module); every other module is SDK-free, and synchronous except
+//! [`app_connect`]'s poll over its own read ports (`test_support` validates with rs-dpp
+//! directly, and never ships).
 
+pub mod app_connect;
 pub mod backends;
 pub mod bot_keys;
 pub mod browser_key;

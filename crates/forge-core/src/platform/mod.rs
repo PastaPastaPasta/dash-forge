@@ -161,6 +161,7 @@ const DAPI_RETRIES: usize = 6;
 
 pub use crate::network::{Network, NetworkTarget};
 
+mod app_connect;
 pub mod identity_keys;
 mod quorum;
 pub mod wrap;

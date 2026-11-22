@@ -1276,6 +1276,15 @@ pub fn is_wif(wif: &str) -> bool {
     PrivateKey::from_wif(wif.trim()).is_ok()
 }
 
+/// The WIF of a 32-byte private key on `network` (an App Connect grant's key). Panics on bytes
+/// that are not a secp256k1 private key: callers hold keys already checked as one.
+pub fn wif_from_bytes(secret: &[u8; 32], network: &Network) -> Secret {
+    wif(
+        &SecretKey::from_slice(secret).expect("a checked secp256k1 private key"),
+        network,
+    )
+}
+
 /// The public key (hex) a WIF controls, for display and matching.
 pub fn public_key_hex(wif: &str, network: &Network) -> Result<String> {
     let secret = secret_from_wif(wif, network)?;
