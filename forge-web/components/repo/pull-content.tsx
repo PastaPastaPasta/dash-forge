@@ -3213,7 +3213,7 @@ function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeO
       }
     >
       {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' || partly ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
-      {content.verdict === 'squash' || content.verdict === 'rebase' ? 'commit' : 'merge commit'} <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
+      commit <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
     </span>
   )
 }
