@@ -1181,12 +1181,12 @@ impl LoadedIdentity {
             .private_key_wif
             .expose()
             .to_string();
-        let public = public_key_hex(&wif, network).ok()?;
+        let controls = controlled_by(&wif, network)?;
         let mut matching: Vec<_> = self
             .0
             .public_keys()
             .values()
-            .filter(|k| hex::encode(k.data().as_slice()) == public)
+            .filter(|k| controls(k))
             .map(|k| (IdentityPublicKeyGettersV0::id(k), k.is_disabled()))
             .collect();
         // A live copy of the same public key wins over a disabled one.
@@ -1196,11 +1196,11 @@ impl LoadedIdentity {
 
     /// The id of the live key `wif` controls, if this identity has one.
     pub fn key_id_for(&self, wif: &str, network: &Network) -> Option<u32> {
-        let public = public_key_hex(wif, network).ok()?;
+        let controls = controlled_by(wif, network)?;
         self.0
             .public_keys()
             .values()
-            .find(|k| !k.is_disabled() && hex::encode(k.data().as_slice()) == public)
+            .find(|k| !k.is_disabled() && controls(k))
             .map(IdentityPublicKeyGettersV0::id)
     }
 
@@ -1291,6 +1291,17 @@ pub fn public_key_hex(wif: &str, network: &Network) -> Result<String> {
     Ok(hex::encode(public_of(&secret).to_bytes()))
 }
 
+/// Whether `wif` controls a key: its public key, or for an ECDSA_HASH160 key (what wallets
+/// grant) the hash160 of it.
+fn controlled_by(wif: &str, network: &Network) -> Option<impl Fn(&IdentityPublicKey) -> bool> {
+    let public = public_of(&secret_from_wif(wif, network).ok()?).to_bytes();
+    let hash = dash_sdk::dpp::dashcore::hashes::hash160::Hash::hash(&public).to_byte_array();
+    Some(move |k: &IdentityPublicKey| match k.key_type() {
+        KeyType::ECDSA_HASH160 => k.data().as_slice() == hash.as_slice(),
+        _ => k.data().as_slice() == public.as_slice(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1300,6 +1311,58 @@ mod tests {
 
     fn testnet() -> Network {
         Network::Testnet
+    }
+
+    #[test]
+    fn a_wallet_granted_hash160_key_is_found_by_its_private_key() {
+        use dash_sdk::dpp::identity::v0::IdentityV0;
+        let net = testnet();
+        let wif = wif_from_bytes(&[0x11; 32], &net);
+        let wif = wif.expose();
+        let public = hex::decode(public_key_hex(wif, &net).unwrap()).unwrap();
+        let hash = dash_sdk::dpp::dashcore::hashes::hash160::Hash::hash(&public)
+            .to_byte_array()
+            .to_vec();
+        let key = |id, key_type, data: &Vec<u8>, disabled_at| {
+            IdentityPublicKey::V1(IdentityPublicKeyV1 {
+                id,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type,
+                read_only: false,
+                data: data.clone().into(),
+                disabled_at,
+                total_budget: Some(5_000_000),
+                expires_at: Some(1),
+            })
+        };
+        let identity = |keys: Vec<IdentityPublicKey>| {
+            LoadedIdentity(Identity::V0(IdentityV0 {
+                id: [7u8; 32].into(),
+                public_keys: keys
+                    .into_iter()
+                    .map(|k| (IdentityPublicKeyGettersV0::id(&k), k))
+                    .collect(),
+                balance: 0,
+                revision: 0,
+            }))
+        };
+
+        let wallet = identity(vec![
+            key(1, KeyType::BIP13_SCRIPT_HASH, &hash, None),
+            key(6, KeyType::ECDSA_HASH160, &hash, None),
+        ]);
+        assert_eq!(wallet.key_id_for(wif, &net), Some(6));
+
+        let disabled = identity(vec![key(6, KeyType::ECDSA_HASH160, &hash, Some(1))]);
+        assert_eq!(disabled.key_id_for(wif, &net), None);
+
+        let full = identity(vec![key(2, KeyType::ECDSA_SECP256K1, &public, None)]);
+        assert_eq!(full.key_id_for(wif, &net), Some(2));
+
+        let script_only = identity(vec![key(1, KeyType::BIP13_SCRIPT_HASH, &hash, None)]);
+        assert_eq!(script_only.key_id_for(wif, &net), None);
     }
 
     #[test]
