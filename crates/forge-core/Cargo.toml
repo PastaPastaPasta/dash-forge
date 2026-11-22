@@ -42,6 +42,10 @@ hkdf = "0.12"
 subtle = "2.6"
 zeroize = { version = "1.8", features = ["derive"] }
 getrandom = "0.2"
+# App Connect v2 (`forge_core::app_connect`): base58 request bodies and ids, and the hash160 a
+# wallet's answers are stored under. Both already in the tree through the SDK (no new crates).
+bs58 = "0.5"
+ripemd = "0.1"
 
 # storage backends (HTTP/S3/IPFS adapters). reqwest on rustls (no system OpenSSL);
 # multipart for the kubo `/api/v0/add` upload. async-trait keeps `PackBackend`
