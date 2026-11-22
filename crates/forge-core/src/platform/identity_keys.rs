@@ -710,6 +710,7 @@ mod tests {
             key_type: "ECDSA_SECP256K1".into(),
             public_key: hex::decode(public).unwrap(),
             disabled: false,
+            expires_at: None,
             bound_to: None,
             bounds: None,
         }
@@ -740,6 +741,7 @@ mod tests {
             key_type: "ECDSA_SECP256K1".into(),
             public_key: hex::decode(PUB_4).unwrap(),
             disabled: false,
+            expires_at: None,
             bound_to: None,
             bounds: None,
         };

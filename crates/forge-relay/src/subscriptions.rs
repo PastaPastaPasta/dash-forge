@@ -437,6 +437,7 @@ mod tests {
             key_type: "ECDSA_SECP256K1".into(),
             public_key: private.public_key().to_vec(),
             disabled: false,
+            expires_at: None,
             bound_to: None,
             bounds: None,
         }

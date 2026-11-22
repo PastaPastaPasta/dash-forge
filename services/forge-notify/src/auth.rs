@@ -15,7 +15,7 @@
 //!
 //! The service accepts it when `service` is its operator name, `time` is within
 //! [`MAX_SKEW_SECS`] of its clock, the nonce is new, and key `key` of `identity`, read from
-//! Platform with proofs, is enabled, `AUTHENTICATION`, `HIGH` or `CRITICAL`, `ECDSA_SECP256K1`
+//! Platform with proofs, is enabled, unexpired, `AUTHENTICATION`, `HIGH` or `CRITICAL`, `ECDSA_SECP256K1`
 //! (or `ECDSA_HASH160` with a `public_key` that hashes to it), unbound or bound to Forge (a Forge
 //! contract or the Forge contract group, never another app's), and verifies the signature. The
 //! domain line means the signed bytes can never be a state transition; the operator name means a
@@ -244,14 +244,14 @@ pub fn valid_identity(id: &str) -> bool {
     forge_core::platform::decode_identifier(id).is_ok()
 }
 
-/// Check the envelope's shape, time, service and signature. The nonce is checked (and
-/// recorded) by the caller, against the store.
+/// Check the envelope's shape, time, service and signature against the service's clock
+/// `now_ms` (Unix ms). The nonce is checked (and recorded) by the caller, against the store.
 pub async fn verify(
     env: &SignedEnvelope,
     operator: &str,
     keys: &dyn KeySource,
     forge: &ForgeIds,
-    now_secs: u64,
+    now_ms: u64,
 ) -> Result<SignedRequest> {
     if env.request.len() > MAX_REQUEST_BYTES {
         return Err(NotifyError::BadRequest("the request is too long".into()));
@@ -288,7 +288,7 @@ pub async fn verify(
             "nonce must be 16 to 64 base64url characters".into(),
         ));
     }
-    if req.time.abs_diff(now_secs) > MAX_SKEW_SECS {
+    if req.time.abs_diff(now_ms / 1000) > MAX_SKEW_SECS {
         return Err(NotifyError::Unauthorized(
             "the request's time is more than 5 minutes off; check this device's clock".into(),
         ));
@@ -311,6 +311,12 @@ pub async fn verify(
             "key {} cannot sign service requests (it must be an enabled ECDSA_SECP256K1 or \
              ECDSA_HASH160 AUTHENTICATION key of HIGH or CRITICAL level, unbound or bound to \
              Forge)",
+            req.key
+        )));
+    }
+    if key.expires_at.is_some_and(|at| at <= now_ms) {
+        return Err(NotifyError::Unauthorized(format!(
+            "key {} has expired and cannot sign service requests",
             req.key
         )));
     }
@@ -348,6 +354,7 @@ pub mod tests {
                 .serialize()
                 .to_vec(),
             disabled: false,
+            expires_at: None,
             bound_to: None,
             bounds: None,
         }
@@ -384,7 +391,7 @@ pub mod tests {
             signature,
             public_key,
         };
-        verify(&env, operator, keys, &ForgeIds::test_forge(), now).await
+        verify(&env, operator, keys, &ForgeIds::test_forge(), now * 1000).await
     }
 
     fn public_b64(s: &secp256k1::SecretKey) -> String {
@@ -482,6 +489,41 @@ pub mod tests {
             .await,
             Err(NotifyError::Unauthorized(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn an_expired_key_is_refused_for_either_key_type() {
+        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let op = "notify.example.org";
+        let req = request(1_000_000, op);
+        let now_ms = 1_000_100_000;
+        for key in [key_info(2, &s), hash160_key_info(2, &s)] {
+            for (expires_at, accepted) in [
+                (None, true),
+                (Some(now_ms + 1), true),
+                (Some(now_ms), false),
+                (Some(now_ms - 1), false),
+            ] {
+                let mut k = key.clone();
+                k.expires_at = expires_at;
+                let keys = StaticKeys(IDENTITY.into(), vec![k]);
+                let env = SignedEnvelope {
+                    request: req.clone(),
+                    signature: sign(&req, &s),
+                    public_key: Some(public_b64(&s)),
+                };
+                let r = verify(&env, op, &keys, &ForgeIds::test_forge(), now_ms).await;
+                assert_eq!(
+                    r.is_ok(),
+                    accepted,
+                    "{} key expiring at {expires_at:?}: {r:?}",
+                    key.key_type
+                );
+                if !accepted {
+                    assert!(matches!(r, Err(NotifyError::Unauthorized(_))));
+                }
+            }
+        }
     }
 
     #[test]

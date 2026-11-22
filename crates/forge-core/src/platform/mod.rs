@@ -399,6 +399,7 @@ impl LoadedIdentity {
     /// The identity's public keys as SDK-free [`IdentityKeyInfo`]s, ordered by key id.
     pub fn public_keys(&self) -> Vec<IdentityKeyInfo> {
         use dash_sdk::dpp::identity::contract_bounds::ContractBounds;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
         self.0
             .public_keys()
             .values()
@@ -417,6 +418,7 @@ impl LoadedIdentity {
                 .to_string(),
                 public_key: k.data().to_vec(),
                 disabled: k.is_disabled(),
+                expires_at: k.expires_at(),
                 bound_to: k.contract_bounds().map(|b| match b {
                     ContractBounds::SingleContract { id }
                     | ContractBounds::SingleContractDocumentType { id, .. } => {
@@ -494,6 +496,8 @@ pub struct IdentityKeyInfo {
     pub public_key: Vec<u8>,
     /// Whether the key is disabled.
     pub disabled: bool,
+    /// When the key stops signing (block time, ms), for a protocol-14 key with an expiry.
+    pub expires_at: Option<u64>,
     /// The contract (base58) the key is bound to, `contract-group` for a group bound key,
     /// `None` for an unbound key. [`IdentityKeyInfo::bounds`] has the group's id and the
     /// document type.

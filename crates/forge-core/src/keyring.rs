@@ -4658,6 +4658,7 @@ mod tests {
             key_type: "ECDSA_SECP256K1".into(),
             public_key: hex::decode(&e.public_key_hex).unwrap(),
             disabled: false,
+            expires_at: None,
             bound_to: None,
             bounds: None,
         };
@@ -4691,6 +4692,7 @@ mod tests {
             key_type: "ECDSA_SECP256K1".into(),
             public_key: vec![2; 33],
             disabled,
+            expires_at: None,
             bound_to: None,
             bounds: None,
         };

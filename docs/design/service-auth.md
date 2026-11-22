@@ -55,6 +55,7 @@ The service accepts the request when **all** of these hold:
 2. `time` is within 300 seconds of its clock.
 3. Key `key` of `identity`, **read from Platform with proofs**, is:
    - enabled (not disabled);
+   - unexpired: a key with an expiry (`expiresAt`, ms; every key a wallet grants through App Connect has one) is refused once its expiry is at or before the service's clock, as Platform refuses it;
    - purpose `AUTHENTICATION`;
    - security level `HIGH` or `CRITICAL` (never `MASTER`);
    - type `ECDSA_SECP256K1`, or `ECDSA_HASH160` with a `public_key` whose hash160 (RIPEMD-160 of SHA-256) is the key's data;
@@ -62,7 +63,7 @@ The service accepts the request when **all** of these hold:
 4. That key's public key (its data, or `public_key` for an `ECDSA_HASH160` key) verifies the signature over `digest`.
 5. The nonce has not been used before.
 
-The service caches an identity's keys for 60 seconds. Disabling a key on Platform therefore stops it from signing service requests within about a minute.
+The service caches an identity's keys for 60 seconds. Disabling a key on Platform therefore stops it from signing service requests within about a minute. Expiry is checked against the service's clock on every request, so an expired key stops at once.
 
 ## Why this is safe to sign with a browser's Forge key
 
