@@ -120,7 +120,7 @@ export function ConfirmDialog({
     frozenRef.current = null
   }, [open])
 
-  const isBlocked = blocked !== undefined && blocked !== null
+  const isBlocked = blocked !== undefined && blocked !== null && blocked !== false
 
   const check =
     identity !== null && cost !== null && !isRefund
