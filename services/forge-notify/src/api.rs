@@ -209,10 +209,6 @@ async fn info(State(app): State<Arc<App>>) -> Json<Value> {
     }))
 }
 
-fn now_secs() -> u64 {
-    now_ms() / 1000
-}
-
 fn payload<T: for<'de> Deserialize<'de>>(req: &SignedRequest) -> Result<T> {
     serde_json::from_value(req.payload.clone())
         .map_err(|e| NotifyError::BadRequest(format!("payload: {e}")))
@@ -227,7 +223,7 @@ async fn signed(
         &app.settings.operator,
         app.keys.as_ref(),
         &app.settings.forge,
-        now_secs(),
+        now_ms(),
     )
     .await?;
     let expires = (req.time + auth::MAX_SKEW_SECS * 2) * 1000;

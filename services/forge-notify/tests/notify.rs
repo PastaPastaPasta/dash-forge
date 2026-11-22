@@ -159,6 +159,7 @@ fn world() -> World {
             .serialize()
             .to_vec(),
         disabled: false,
+        expires_at: None,
         bound_to: Some("contract-group".into()),
         bounds: Some(KeyBounds::ContractGroup { id: "G".into() }),
     };
