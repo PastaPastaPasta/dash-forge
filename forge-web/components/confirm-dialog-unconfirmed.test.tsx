@@ -184,6 +184,8 @@ describe('an unconfirmed write', () => {
     ))
     const fieldset = document.querySelector('fieldset')!
     expect(fieldset.childNodes.length).toBe(0)
-    expect(fieldset.className).toContain('[&:empty+*]:!mt-0')
+    expect(fieldset.matches(':empty')).toBe(true)
+    expect(fieldset.className).toContain('empty:hidden')
+    expect(document.querySelector('[role="status"]')!.className).toContain('empty:absolute')
   })
 })
