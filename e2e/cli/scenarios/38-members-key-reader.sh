@@ -59,7 +59,7 @@ step "COLLAB accepts; OWNER adds COLLAB as a reader (membership + key wrap)"
 if ! collab_accept "$ID_COLLAB" "$REPO" "$LOG-add" \
    || ! dg_as "$ID_OWNER" -y --json collab add --wait 60 "$REPO" "$IDID_COLLAB" --role reader >"$LOG-add.json" 2>"$LOG-add.err"; then
   cat "$LOG-add.err" "$LOG-add.json" >&2
-  is_flake "$LOG-add.err" && skip_scenario "add failed on a flake"
+  { is_flake "$LOG-add.accept.err" || is_flake "$LOG-add.err"; } && skip_scenario "add failed on a flake"
   bad "collab add --role reader failed"; finish_scenario
 fi
 [[ "$(json_field "$LOG-add.json" 'd["keyShared"]')" == True ]] && ok "reader added; key shared" || bad "reader added without the key: $(cat "$LOG-add.json")"

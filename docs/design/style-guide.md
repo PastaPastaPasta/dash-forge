@@ -125,7 +125,7 @@ Forge sounds like a senior maintainer explaining it to a colleague: plain, exact
 4. **Active voice, second person, present tense.** "You weren't charged", not "Nothing was charged".
 5. **Say each fact once per screen.** One banner, not a note under every card.
 6. **Numbers.** Round prices to one or two significant figures with "about" ("about 0.005 DASH"). Exact figures belong in the confirm dialog and `dg cost`. Never print a tilde with eight decimals.
-7. **Enforcement** gets the `EnforcedBy` chip (`components/ui/enforced-by.tsx`), not prose. Its two labels are "Enforced by Dash Platform" and "Forge apps enforce this", and it links to [Who enforces what](../guides/collaborating.md#who-enforces-what).
+7. **Enforcement** gets the `EnforcedBy` chip (`components/ui/enforced-by.tsx`), not prose. Its labels are "Enforced by Dash Platform", "Forge apps enforce this" and, for a rule split between the two (protected branches), "Enforced by Dash Platform and Forge apps", and it links to [Who enforces what](../guides/collaborating.md#who-enforces-what).
 8. **Errors have three beats:** what happened, whether you were charged, what to do next. A Platform error code goes last ("Error code 10422."), only when no sentence explains the refusal. In `dg` it goes on the `detail:` line.
 9. **Empty states** say what will appear and how to make it appear. Titles are five words or fewer, with no period.
 10. **Case.** Sentence case for headings, buttons and menu items, with no periods. Help text and errors take periods.
@@ -182,7 +182,7 @@ A string no user reads (a developer error, a log line) opts out with a `copy-lin
 | **branches and tags** | refs (in the UI) | `dg` output and the docs keep "ref" for git users. |
 | **devnet sakura** in prose (`networkName()`); badge "Devnet · sakura" | devnet-sakura (the network key) | |
 | **Dash Forge** in titles and at first mention, then **Forge** | | |
-| **Enforced by Dash Platform** / **Forge apps enforce this** | consensus, client rule, Forge clients | The `EnforcedBy` chip |
+| **Enforced by Dash Platform** / **Forge apps enforce this** / **Enforced by Dash Platform and Forge apps** | consensus, client rule, Forge clients | The `EnforcedBy` chip |
 | **archived** | read-only mark | |
 | **hidden** (moderation) | | |
 
