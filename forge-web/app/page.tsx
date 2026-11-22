@@ -26,7 +26,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { deriveConnectionTrust, type DiscoveredRepo } from '@/lib/view'
-import { RECENT_PER_OWNER, landingRecent, listShowcaseRepos, recentFeed, showcaseFor } from '@/lib/view/showcase'
+import { RECENT_PER_OWNER, dropTestFixtures, landingRecent, listShowcaseRepos, recentFeed, showcaseFor } from '@/lib/view/showcase'
 import { creditsToDash, typicalIssueCredits } from '@/lib/sdk'
 import { PushCostShort } from '@/components/ui/push-cost-text'
 import { TestCreditsBadge, isTestNetwork } from '@/components/ui/test-credits'
@@ -67,7 +67,9 @@ export default function LandingPage(): JSX.Element {
   const recent = listed?.shown ?? null
   const hidden = listed?.notCurated ?? 0
   const capped = listed?.capped ?? 0
-  const feedNotFeatured = settledFeed === null ? null : settledFeed.filter((r) => !shown.has(r.key))
+  // The rows the feed can show at all: the test fixtures never are (landingRecent).
+  const realRows = feed.data === null ? null : dropTestFixtures(feed.data)
+  const feedNotFeatured = settledFeed === null ? null : dropTestFixtures(settledFeed).filter((r) => !shown.has(r.key))
   const faucet = faucetUrl()
   const testNetwork = isTestNetwork()
 
@@ -206,7 +208,7 @@ export default function LandingPage(): JSX.Element {
         ) : null}
         {!deployed ? null : feed.error ? (
           <ErrorState message={feed.error} onRetry={feed.reload} />
-        ) : feed.data && feed.data.length === 0 && feedPage.data?.more ? (
+        ) : realRows && realRows.length === 0 && feedPage.data?.more ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="landing-recent-hidden">
             None of the newest repos are shown on this site.{' '}
             <Link href="/explore/" className="hit-area text-forge-700 underline dark:text-forge-300">
@@ -214,7 +216,7 @@ export default function LandingPage(): JSX.Element {
             </Link>{' '}
             lists older ones.
           </p>
-        ) : feed.data && feed.data.length === 0 ? (
+        ) : realRows && realRows.length === 0 ? (
           <ForgeIntro title="The forge is quiet: be the first project here" testId="landing-intro" />
         ) : feedNotFeatured && feedNotFeatured.length === 0 ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">The newest repos are the featured ones above.</p>
