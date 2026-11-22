@@ -22,6 +22,7 @@ import { PasskeyOffer } from '@/components/passkey-offer'
 import { ClockSkewBanner } from '@/components/clock-skew-banner'
 import { LoginModal } from '@/components/login-modal'
 import { PlatformBusy } from '@/components/platform-busy'
+import { WriteInFlight } from '@/components/write-progress'
 import { StorageUpdated } from '@/components/storage-updated'
 import { TopUpSheet } from '@/components/top-up-sheet'
 import { Toaster } from '@/components/ui/toaster'
@@ -76,6 +77,7 @@ export function AppShell({
       <TopUpSheet />
       <Toaster />
       <PlatformBusy />
+      <WriteInFlight />
       <StorageUpdated />
       <KeyboardShortcuts />
     </div>

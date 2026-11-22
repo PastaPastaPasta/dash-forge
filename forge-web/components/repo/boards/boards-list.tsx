@@ -193,7 +193,7 @@ function NewBoardDialog({
       cost={priceBoardWrites(1, 0, { type: 'board', sealed, bytes: boardTextBytes({ name: trimmed, spec }) })}
       confirmLabel="Sign & create"
       successNote="Board created"
-      blocked={problem !== null && trimmed !== '' ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : trimmed === '' ? <span /> : undefined}
+      blocked={problem !== null && trimmed !== '' ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : trimmed === '' ? true : undefined}
       onConfirm={async (intent) => {
         const out = await create({ name: trimmed, spec, intent })
         router.push(boardHref(addr, out.key))

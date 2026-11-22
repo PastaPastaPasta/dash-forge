@@ -38,6 +38,7 @@ import { writesPausedReason } from '../devnet-notice'
 import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, type CostPreview } from './cost'
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite, refreshStaleContract, retryOnStaleContract, staleContractCause } from './query'
 import { currentSpendAction } from './spend-scope'
+import { setWritePhase, trackWrite } from './write-progress'
 
 export type { CostPreview } from './cost'
 
@@ -484,7 +485,7 @@ export class ConsensusRefusal extends Error {
 export class UnconfirmedWriteError extends Error {
   constructor(
     readonly documentId: string,
-    message = "Sent, not yet visible on Platform — we'll keep checking. Reload in a moment before trying again.",
+    message = "Sent, not yet visible on Platform. It may still be added: wait a moment, then try again from here (that finishes this same change; it is never applied twice).",
   ) {
     super(message)
     this.name = 'UnconfirmedWriteError'
@@ -714,6 +715,7 @@ export const WAIT_SETTINGS: WaitSettings = { retries: 0, timeoutMs: WAIT_REQUEST
  * the nonce and a read under the new version.
  */
 async function awaitOutcome(sdk: EvoSDK, st: StateTransition, contractId: string, indexOnly: boolean): Promise<'landed' | 'unknown'> {
+  setWritePhase('confirming')
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
@@ -797,6 +799,7 @@ async function settleUnanswered(
   absent: () => Promise<boolean>,
   confirmTimeoutMs: number,
 ): Promise<'landed' | 'lost' | 'unknown'> {
+  setWritePhase('rechecking')
   for (let round = 0; round < SETTLE_ROUNDS; round++) {
     if (await nonceSpent(sdk, owner.identityId, owner.contractId, owner.nonce)) {
       if (await landed(Math.min(LANDED_CHECK_MS, confirmTimeoutMs))) return 'landed'
@@ -1232,7 +1235,7 @@ function serializedWrite<T>(sdk: EvoSDK, auth: WriteAuth, write: () => Promise<{
     return Promise.reject(e)
   }
   return serialized(auth.identityId, async () => {
-    const r = await wrote(sdk, write())
+    const r = await trackWrite(() => wrote(sdk, write()))
     if (r.spend) reportSpend(sdk, auth, r.spend)
     return r.result
   })
@@ -1436,6 +1439,7 @@ async function createDocumentUnlocked(
           throw refusal.atBroadcast()
         }
       }
+      setWritePhase('rechecking')
       seen = await landed(documentId, confirmTimeoutMs)
     }
     const { nonce } = cached
@@ -1466,6 +1470,7 @@ async function createDocumentUnlocked(
       } catch (e) {
         if (isAlreadyExistsError(e)) {
           markNonceUsed(ownerId, contractId, signed.nonce)
+          setWritePhase('rechecking')
           return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
         }
         if (attempt === 0 && isNonceUsedError(e)) {
@@ -1497,6 +1502,7 @@ async function createDocumentUnlocked(
         // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
         // same bytes instead of signing a second document.
         markNonceUsed(ownerId, contractId, signed.nonce)
+        setWritePhase('rechecking')
         const seen = await landed(signed.documentId, confirmTimeoutMs)
         if (!seen && isLocalGateRefusal(e)) throw new BusyWriteError(signed.documentId)
         return done(signed.documentId, seen)
@@ -1797,6 +1803,7 @@ async function deleteDocumentUnlocked(
     // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
     // decides. Still there: an unclassified error stands, and "already exists" (which a
     // transition dropped after a same-nonce race also answers) is unconfirmed.
+    setWritePhase('rechecking')
     if (!(await pollUntil(gone, confirmTimeoutMs))) {
       if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
       throw e
@@ -2005,6 +2012,7 @@ async function replaceDocumentUnlocked(
       if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
       throw refusal
     }
+    setWritePhase('rechecking')
     if (!(await pollUntil(landed, confirmTimeoutMs))) {
       if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
       throw e
