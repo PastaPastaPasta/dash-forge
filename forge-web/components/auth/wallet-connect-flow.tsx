@@ -746,7 +746,7 @@ export function WalletConnectFlow({
           {mobile ? 'Open it in the wallet again.' : 'Scan this second code with the wallet.'}
         </p>
       ) : null}
-      {step?.kind === 'request' || isRegister ? <ScanOnlyHere capped={v2 !== undefined && (v2.budget !== null || v2.expiresAt !== null)} /> : null}
+      {step?.kind === 'request' || isRegister ? <ScanOnlyHere capped={v2 !== undefined && (v2.budget !== null || v2.expiresAt !== null)} withEncryption={v2 === undefined} /> : null}
       {uri ? (
         mobile ? (
           <>

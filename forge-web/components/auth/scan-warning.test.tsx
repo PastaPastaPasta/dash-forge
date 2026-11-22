@@ -69,6 +69,14 @@ describe('ScanOnlyHere', () => {
     expect(limits).not.toContain('today’s wallets don’t')
   })
 
+  it('under an App Connect v2 request, does not promise the encryption key it does not ask for', () => {
+    act(() => root.render(<ScanOnlyHere capped withEncryption={false} />))
+    expect(host.textContent).not.toContain('encryption key')
+    act(() => root.render(<ScanOnlyHere />))
+    expect(host.textContent).toContain('It also gives the encryption key')
+    expect(host.textContent).toContain('then replace your encryption key')
+  })
+
   it('shows the host it is given (a self-hosted build)', () => {
     act(() => root.render(<ScanOnlyHere host="forge.example.org" />))
     expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toBe('forge.example.org')
