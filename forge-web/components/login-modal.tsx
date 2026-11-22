@@ -25,7 +25,7 @@
  * deployed".
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, ArrowLeft, ChevronDown, Compass, CopyPlus, Fingerprint, HelpCircle, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
@@ -57,7 +57,8 @@ import { BROWSER_KEY_DEFAULTS, lifetimeLabel, limitsFor, masterMaterialFromFile,
 import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
-import { walletLoginAvailable, walletSignInReady } from '@/lib/auth/app-connect'
+import { walletLoginAvailable } from '@/lib/auth/app-connect'
+import { signInMethods, walletLeads, type SignInGroup, type SignInMethod } from '@/lib/auth/sign-in-methods'
 import { appConnectV2Available } from '@/lib/auth/app-connect-v2'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { lockedIdentityOf } from '@/lib/auth/last-identity'
@@ -333,101 +334,126 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
   const network = ACTIVE_NETWORK.network
+  const methods = signInMethods({ network, walletAvailable, walletV2, creating: creating !== null })
   // The wallet leads only where a wallet a newcomer can install answers; elsewhere it is last,
   // saying why, so the first thing a newcomer tries is not a dead end (F3).
-  const walletFirst = walletSignInReady(network, walletV2)
+  const walletFirst = walletLeads({ network, walletV2 })
   const recommended = { label: 'Recommended', tone: 'recommended' } as const
-  const createLeads = !walletFirst && creating === null
-  const walletTile = walletAvailable ? (
-    <Tile
-      testId="tile-wallet"
-      icon={Wallet}
-      title="Use my Dash wallet"
-      body={
-        walletFirst
-          ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
-          : network === 'testnet'
-            ? "Released Dash Wallet apps can't finish sign-in on testnet yet: they're waiting on support for testnet's current Platform version (issue #591). Use another option for now."
-            : network === 'devnet'
-              ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
-              : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
-      }
-      muted={!walletFirst}
-      badge={walletFirst ? (creating === null ? recommended : null) : { label: 'Not available yet', tone: 'waiting' }}
-      onClick={() => onPick('wallet')}
-      // The wallet broadcasts a key-adding update for Forge: paused with every other write.
-      pausedReason={pausedReason}
-    />
-  ) : null
+  const tile = ({ id, recommended: isRecommended }: SignInMethod): ReactNode => {
+    switch (id) {
+      case 'resume-create':
+        return creating === null ? null : (
+          <Tile
+            key={id}
+            testId="tile-create-resume"
+            icon={RotateCw}
+            title="Finish creating your identity"
+            body={
+              creating.funded
+                ? 'Started in this browser, and its deposit has arrived: type your 12 words to finish registering it. Do not send another deposit.'
+                : `Started in this browser: fund deposit address ${creating.address.slice(0, 10)}… and type your 12 words to continue.`
+            }
+            onClick={() => onPick('create')}
+            highlight
+            pausedReason={pausedReason}
+          />
+        )
+      case 'wallet':
+        return (
+          <Tile
+            key={id}
+            testId="tile-wallet"
+            icon={Wallet}
+            title="Use my Dash wallet"
+            body={
+              walletFirst
+                ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
+                : network === 'testnet'
+                  ? "Released Dash Wallet apps can't finish sign-in on testnet yet: they're waiting on support for testnet's current Platform version (issue #591). Use another option for now."
+                  : network === 'devnet'
+                    ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
+                    : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
+            }
+            muted={!walletFirst}
+            badge={walletFirst ? (isRecommended ? recommended : null) : { label: 'Not available yet', tone: 'waiting' }}
+            onClick={() => onPick('wallet')}
+            // The wallet broadcasts a key-adding update for Forge: paused with every other write.
+            pausedReason={pausedReason}
+          />
+        )
+      case 'create':
+        return (
+          <Fragment key={id}>
+            <Tile
+              testId="tile-create"
+              icon={Plus}
+              title="Create a new identity"
+              body={
+                isTestNetwork(network)
+                  ? `Write down 12 words, lock this browser with a passkey or passphrase, then fund it with free test DASH${faucetUrls().length > 0 ? ' from the faucet' : ''}. Takes a few minutes.`
+                  : 'Write down 12 words, lock this browser with a passkey or passphrase, then fund it from any Dash wallet.'
+              }
+              badge={isRecommended ? recommended : null}
+              highlight={isRecommended}
+              onClick={() => onPick('create')}
+              pausedReason={pausedReason}
+            />
+            <p data-testid="tile-create-cost" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+              <TestCreditsBadge />
+              <span>
+                About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.
+              </span>
+            </p>
+          </Fragment>
+        )
+      case 'passkey':
+        // A passkey added on another device: reads only, so it is offered even while writes are paused.
+        return <PasskeySignIn key={id} onDone={onDone} onUnlock={() => onPick('unlock')} />
+      case 'import':
+        return (
+          <Tile
+            key={id}
+            testId="tile-import"
+            icon={Upload}
+            title="Use my recovery phrase or identity file"
+            body="Forge uses your 12 words (or file) once, to give this browser its own key, then forgets them."
+            onClick={() => onPick('import')}
+            pausedReason={pausedReason}
+          />
+        )
+      case 'dg':
+        return (
+          <Tile
+            key={id}
+            testId="tile-dg"
+            icon={SquareTerminal}
+            title="Use dg on your computer"
+            body="Already signed in to the dg command line? Run one command there. Your recovery phrase stays out of the browser."
+            onClick={() => onPick('dg')}
+            pausedReason={pausedReason}
+          />
+        )
+      case 'raw-key':
+        return <Tile key={id} testId="tile-advanced" icon={KeyRound} title="Paste a private key" body="Developer path. The key is held in this tab only and is lost on reload." onClick={() => onPick('advanced')} />
+    }
+  }
+  const group = (g: SignInGroup): ReactNode[] => methods.filter((m) => m.group === g).map(tile)
+  const advancedTiles = group('advanced')
   return (
     <div className="space-y-2">
-      {creating !== null ? (
-        <Tile
-          testId="tile-create-resume"
-          icon={RotateCw}
-          title="Finish creating your identity"
-          body={
-            creating.funded
-              ? 'Started in this browser, and its deposit has arrived: type your 12 words to finish registering it. Do not send another deposit.'
-              : `Started in this browser: fund deposit address ${creating.address.slice(0, 10)}… and type your 12 words to continue.`
-          }
-          onClick={() => onPick('create')}
-          highlight
-          pausedReason={pausedReason}
-        />
-      ) : null}
-      {walletFirst ? walletTile : null}
+      {group('lead')}
       <GroupLabel>New to Dash?</GroupLabel>
-      <Tile
-        testId="tile-create"
-        icon={Plus}
-        title="Create a new identity"
-        body={
-          isTestNetwork(network)
-            ? `Write down 12 words, lock this browser with a passkey or passphrase, then fund it with free test DASH${faucetUrls().length > 0 ? ' from the faucet' : ''}. Takes a few minutes.`
-            : 'Write down 12 words, lock this browser with a passkey or passphrase, then fund it from any Dash wallet.'
-        }
-        badge={createLeads ? recommended : null}
-        highlight={createLeads}
-        onClick={() => onPick('create')}
-        pausedReason={pausedReason}
-      />
-      <p data-testid="tile-create-cost" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-        <TestCreditsBadge />
-        <span>
-          About {creditsAsDash(typicalIssueCredits())} DASH per issue<FiatNote dash={creditsToDash(typicalIssueCredits())} />, <PushCostText />.
-        </span>
-      </p>
+      {group('new')}
       <GroupLabel>Already have a Dash identity?</GroupLabel>
-      {/* A passkey added on another device: reads only, so it is offered even while writes are paused. */}
-      <PasskeySignIn onDone={onDone} onUnlock={() => onPick('unlock')} />
-      <Tile
-        testId="tile-import"
-        icon={Upload}
-        title="Use my recovery phrase or identity file"
-        body="Forge uses your 12 words (or file) once, to give this browser its own key, then forgets them."
-        onClick={() => onPick('import')}
-        pausedReason={pausedReason}
-      />
-      <Tile
-        testId="tile-dg"
-        icon={SquareTerminal}
-        title="Use dg on your computer"
-        body="Already signed in to the dg command line? Run one command there. Your recovery phrase stays out of the browser."
-        onClick={() => onPick('dg')}
-        pausedReason={pausedReason}
-      />
-      {walletFirst ? null : walletTile}
-      <div className="pt-2">
-        <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
-          Advanced
-        </button>
-        {advanced ? (
-          <div className="mt-2">
-            <Tile testId="tile-advanced" icon={KeyRound} title="Paste a private key" body="Developer path. The key is held in this tab only and is lost on reload." onClick={() => onPick('advanced')} />
-          </div>
-        ) : null}
-      </div>
+      {group('existing')}
+      {advancedTiles.length > 0 ? (
+        <div className="pt-2">
+          <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
+            Advanced
+          </button>
+          {advanced ? <div className="mt-2">{advancedTiles}</div> : null}
+        </div>
+      ) : null}
       <SignInHelp onLeave={closeLogin} />
     </div>
   )
