@@ -174,4 +174,16 @@ describe('an unconfirmed write', () => {
     await flush()
     expect(field().matches(':disabled')).toBe(true)
   })
+
+  it('an empty fieldset (no fields, or fields that render nothing) leaves no gap above what follows', () => {
+    const Nothing = (): null => null
+    act(() => root.render(
+      <ConfirmDialog open onClose={() => undefined} title="Remove" cost={null} confirmLabel="Remove" onConfirm={async () => undefined}>
+        {[null, <Nothing key="n" />]}
+      </ConfirmDialog>,
+    ))
+    const fieldset = document.querySelector('fieldset')!
+    expect(fieldset.childNodes.length).toBe(0)
+    expect(fieldset.className).toContain('[&:empty+*]:!mt-0')
+  })
 })

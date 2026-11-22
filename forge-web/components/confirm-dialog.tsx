@@ -199,11 +199,9 @@ export function ConfirmDialog({
       }
     >
       <div className="space-y-3">
-        {children !== undefined && children !== null ? (
-          <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 space-y-3 border-0 p-0">
-            {children}
-          </fieldset>
-        ) : null}
+        <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 space-y-3 border-0 p-0 [&:empty+*]:!mt-0">
+          {children}
+        </fieldset>
         {costPending ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
