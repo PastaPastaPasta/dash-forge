@@ -88,7 +88,8 @@ So **App Connect v2 from the two DashPay mobile wallets is the one real, release
 | forge-web key management | renew = **Renew in your wallet**; revoke = the wallet's disconnect (it disables the old key in the same update) | master-key renew/top-up/disable under "Use your recovery phrase instead" | — |
 | dg CLI | `dg auth login` with no arguments prints an App Connect QR (and the `dashpay://` link) in the terminal, polls Platform, stores the granted key like today's limited key | `dg auth login <file>` / `--mnemonic` | — |
 | git-remote-dash | unchanged: it uses whatever dg stored; its "no key" error says `dg auth login` (wallet) | `DASH_FORGE_KEY` | — |
-| Action / GitLab / runner / import | unchanged secrets (`dfk1:`); docs say to get one from `dg auth login` (wallet) then `dg auth export` | identity files | — |
+| Action / GitLab / import | unchanged secrets (`dfk1:`); docs say to get one from `dg auth login` (wallet) then `dg auth export` | identity files | — |
+| forge-runner | unchanged: its checkRun-bound runner key is registered with the master key (`dg ci runner new`, Settings → mirror steps), which a wallet grant cannot do; it stays on the recovery-phrase path until wallets can sign master operations | — | — |
 | gateway, relay, notify | unchanged (no user sign-in; notify already accepts any Forge-bound HIGH key, wallet-granted included) | — | — |
 
 ### Migration for people who already signed in
