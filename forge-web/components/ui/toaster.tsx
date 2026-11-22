@@ -2,7 +2,7 @@
 
 import { creditsToDash } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
-import { CheckCircle2, AlertTriangle, X } from 'lucide-react'
+import { CheckCircle2, AlertTriangle, Loader2, X } from 'lucide-react'
 import { useToasts } from '@/hooks/use-toasts'
 import { creditsAsDash } from '@/lib/view/format'
 import { cn } from '@/lib/utils'
@@ -23,6 +23,8 @@ export function Toaster(): JSX.Element {
         >
           {t.tone === 'error' || t.tone === 'warn' ? (
             <AlertTriangle className={cn('mt-0.5 h-4 w-4 shrink-0', t.tone === 'error' ? 'text-danger-700 dark:text-danger-400' : 'text-caution-700 dark:text-caution-400')} aria-hidden />
+          ) : t.pending ? (
+            <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
           ) : (
             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden />
           )}
