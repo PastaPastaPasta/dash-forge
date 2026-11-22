@@ -77,11 +77,28 @@ export interface NotifyAccount {
   readonly following?: { readonly repos: number; readonly private: number }
 }
 
+/** `KeyType` of a key whose on-chain data is the hash160 of its public key (a wallet's grant). */
+export const KEY_TYPE_ECDSA_HASH160 = 2
+
 /** The key a request is signed with. */
 export interface ServiceKey {
   readonly identityId: string
   readonly keyId: number
   readonly wif: string
+  /** The key's `KeyType` on the identity, when known. */
+  readonly keyType?: number
+}
+
+/** What `POST /v1/request` takes. */
+export interface SignedEnvelope {
+  readonly request: string
+  readonly signature: string
+  /**
+   * The compressed public key, base64: sent only for an `ECDSA_HASH160` key, whose on-chain
+   * data the service cannot verify a signature with. Services from before this field refuse
+   * unknown fields, so a key that works without it never sends it.
+   */
+  readonly public_key?: string
 }
 
 /** A refusal from the service, with its message. */
@@ -147,7 +164,19 @@ export async function fetchInfo(base: string): Promise<NotifyInfo> {
   return (await readJson(await fetch(`${base}/v1/info`, { cache: 'no-store' }))) as NotifyInfo
 }
 
-/** Sign and send one request. The private key bytes are zeroed after signing. */
+/** Sign `request` with `key`. The private key bytes are zeroed after signing. */
+export function signEnvelope(request: string, key: Pick<ServiceKey, 'wif' | 'keyType'>): SignedEnvelope {
+  const { privateKey } = decodeWif(key.wif)
+  try {
+    const signature = signRequest(request, privateKey)
+    if (key.keyType !== KEY_TYPE_ECDSA_HASH160) return { request, signature }
+    return { request, signature, public_key: bytesToBase64(secp.getPublicKey(privateKey, true)) }
+  } finally {
+    privateKey.fill(0)
+  }
+}
+
+/** Sign and send one request. */
 export async function call<T>(base: string, info: Pick<NotifyInfo, 'operator'>, key: ServiceKey, action: NotifyAction, payload: unknown = {}): Promise<T> {
   const request = buildRequest({
     service: info.operator,
@@ -158,17 +187,10 @@ export async function call<T>(base: string, info: Pick<NotifyInfo, 'operator'>, 
     time: Math.floor(Date.now() / 1000),
     payload,
   })
-  const { privateKey } = decodeWif(key.wif)
-  let signature: string
-  try {
-    signature = signRequest(request, privateKey)
-  } finally {
-    privateKey.fill(0)
-  }
   const res = await fetch(`${base}/v1/request`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ request, signature }),
+    body: JSON.stringify(signEnvelope(request, key)),
     cache: 'no-store',
   })
   return (await readJson(res)) as T

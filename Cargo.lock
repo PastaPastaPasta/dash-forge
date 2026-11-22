@@ -2459,6 +2459,7 @@ dependencies = [
  "lettre",
  "rand 0.8.8",
  "reqwest",
+ "ripemd",
  "rusqlite",
  "secp256k1",
  "serde",

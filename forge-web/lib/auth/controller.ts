@@ -203,6 +203,8 @@ export interface AuthSession {
   readonly keyLimits?: KeyLimits | null
   /** The signing key's id on the identity. */
   readonly keyId?: number
+  /** The signing key's `KeyType` (0 `ECDSA_SECP256K1`, 2 `ECDSA_HASH160`: a wallet's grant). */
+  readonly keyType?: number
   /** `vault`: a stored limited key; `session`: a tab-only key (advanced raw key). */
   readonly storage: 'vault' | 'session'
   /**
@@ -376,6 +378,7 @@ function parseHint(v: unknown, secret: VaultSecret, network: Network): { session
   if (typeof s !== 'object' || s === null || s.identityId !== secret.identityId || s.network !== network || s.storage !== 'vault' || s.keyId !== secret.keyId) return null
   if (typeof s.balance !== 'string' || !/^\d+$/.test(s.balance)) return null
   if (s.origin !== undefined && !isKeyOrigin(s.origin)) return null
+  if (s.keyType !== undefined && typeof s.keyType !== 'number') return null
   const main = h?.scopes?.main ?? null
   const extra = h?.scopes?.extra
   if ((main !== null && !isScope(main)) || !Array.isArray(extra)) return null
@@ -642,12 +645,17 @@ export class AuthController {
    * key still signs no write outside Forge. Throws a {@link WriteAuthError} when signed out or
    * locked.
    */
-  serviceKey(): { readonly identityId: string; readonly keyId: number; readonly wif: string } {
+  serviceKey(): { readonly identityId: string; readonly keyId: number; readonly wif: string; readonly keyType?: number } {
     const session = this.state.session
     if (!session) throw new WriteAuthError('this browser is signed out — sign in to sign')
     const secret = unlockedSecret(this.network, session.identityId)
     if (!secret) throw new WriteAuthError('this browser is locked — unlock it to sign')
-    return { identityId: session.identityId, keyId: secret.keyId, wif: secret.wif }
+    // A pasted key's secret has no id of its own (-1): name it by the key found on chain.
+    const keyId = secret.keyId >= 0 ? secret.keyId : (session.keyId ?? secret.keyId)
+    // The session's key type, only while the session is still on this key (a renewal stores
+    // the new key before the session reopens on it).
+    const keyType = session.keyId === keyId ? session.keyType : undefined
+    return { identityId: session.identityId, keyId, wif: secret.wif, ...(keyType !== undefined ? { keyType } : {}) }
   }
 
   /** Times the named steps of the running sign-in (`lib/step-timing.ts`, L-20); one clock per run. */
@@ -702,6 +710,7 @@ export class AuthController {
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
       if (!match) throw keyFailure(identity, secret.keyId)
+      const keyType = identity.publicKeys.find((k) => k.keyId === match.keyId)?.keyTypeNumber
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
       let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded' | 'origin'> = {}
       if (storage === 'vault') {
@@ -722,6 +731,7 @@ export class AuthController {
         network: this.network,
         keyLimits,
         keyId: match.keyId,
+        ...(keyType !== undefined ? { keyType } : {}),
         storage,
         ...extra,
         ...(heldOnly.length ? { heldOnly } : {}),

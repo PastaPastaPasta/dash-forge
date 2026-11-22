@@ -1,7 +1,9 @@
 //! Signed requests: prove control of a Forge identity with no account and no password
 //! (`docs/design/service-auth.md`).
 //!
-//! The client sends `{"request": "<JSON text>", "signature": "<base64>"}`. The signature is a
+//! The client sends `{"request": "<JSON text>", "signature": "<base64>"}`, plus
+//! `"public_key": "<base64>"` (the 33-byte compressed key) when the signing key is
+//! `ECDSA_HASH160`, whose on-chain data is only the key's hash160. The signature is a
 //! 64-byte compact ECDSA secp256k1 signature (r ‖ s, RFC 6979) over
 //! `SHA-256(SHA-256("DashForgeService/v1\n" ‖ request))`, by one of the identity's keys.
 //! The request text is signed exactly as sent, so nothing is canonicalised. It carries:
@@ -13,10 +15,11 @@
 //!
 //! The service accepts it when `service` is its operator name, `time` is within
 //! [`MAX_SKEW_SECS`] of its clock, the nonce is new, and key `key` of `identity`, read from
-//! Platform with proofs, is enabled, `AUTHENTICATION`, `HIGH` or `CRITICAL`, `ECDSA_SECP256K1`,
-//! unbound or bound to Forge (a Forge contract or the Forge contract group, never another
-//! app's), and verifies the signature. The domain line means the signed bytes can never be a state
-//! transition; the operator name means a request for one operator is refused by another.
+//! Platform with proofs, is enabled, `AUTHENTICATION`, `HIGH` or `CRITICAL`, `ECDSA_SECP256K1`
+//! (or `ECDSA_HASH160` with a `public_key` that hashes to it), unbound or bound to Forge (a Forge
+//! contract or the Forge contract group, never another app's), and verifies the signature. The
+//! domain line means the signed bytes can never be a state transition; the operator name means a
+//! request for one operator is refused by another.
 //!
 //! This is an off-chain convention of Dash Forge's services, not a Platform protocol feature.
 
@@ -26,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use ripemd::Ripemd160;
 use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
 use serde::Deserialize;
 use serde_json::Value;
@@ -66,6 +70,11 @@ pub struct SignedEnvelope {
     pub request: String,
     /// The signature, base64 (64 bytes).
     pub signature: String,
+    /// The signing key's compressed public key, base64 (33 bytes). Required for an
+    /// `ECDSA_HASH160` key; for an `ECDSA_SECP256K1` key it may be sent and must then equal the
+    /// key's data.
+    #[serde(default)]
+    pub public_key: Option<String>,
 }
 
 /// A request, parsed after its signature checked out.
@@ -181,8 +190,53 @@ pub fn usable_signing_key(k: &IdentityKeyInfo, forge: &ForgeIds) -> bool {
     !k.disabled
         && k.purpose == "AUTHENTICATION"
         && matches!(k.security_level.as_str(), "HIGH" | "CRITICAL")
-        && k.key_type == "ECDSA_SECP256K1"
+        && matches!(k.key_type.as_str(), "ECDSA_SECP256K1" | "ECDSA_HASH160")
         && forge.allows_key_bounds(k.bounds.as_ref())
+}
+
+/// `RIPEMD-160(SHA-256(data))`: an `ECDSA_HASH160` key's on-chain data.
+pub fn hash160(data: &[u8]) -> [u8; 20] {
+    Ripemd160::digest(Sha256::digest(data)).into()
+}
+
+/// The envelope's `public_key`, when sent: a 33-byte compressed secp256k1 public key.
+fn sent_public_key(sent: Option<&str>) -> Result<Option<PublicKey>> {
+    let Some(b64) = sent else {
+        return Ok(None);
+    };
+    let bytes = STANDARD
+        .decode(b64.trim())
+        .map_err(|_| NotifyError::BadRequest("public_key is not base64".into()))?;
+    PublicKey::from_slice(&bytes)
+        .ok()
+        .filter(|_| bytes.len() == 33)
+        .map(Some)
+        .ok_or_else(|| {
+            NotifyError::BadRequest("public_key is not a 33-byte compressed public key".into())
+        })
+}
+
+/// The public key that must verify a request signed by usable key `key`: its data for an
+/// `ECDSA_SECP256K1` key, or the envelope's `public_key` when it hashes to an `ECDSA_HASH160`
+/// key's data. A `public_key` sent for an `ECDSA_SECP256K1` key must equal its data.
+fn signing_public_key(key: &IdentityKeyInfo, sent: Option<PublicKey>) -> Result<PublicKey> {
+    let matches = |public: &PublicKey| match key.key_type.as_str() {
+        "ECDSA_HASH160" => hash160(&public.serialize()).as_slice() == key.public_key.as_slice(),
+        _ => public.serialize().as_slice() == key.public_key.as_slice(),
+    };
+    match sent {
+        Some(public) if matches(&public) => Ok(public),
+        Some(_) => Err(NotifyError::Unauthorized(format!(
+            "public_key is not the public key of key {}",
+            key.id
+        ))),
+        None if key.key_type == "ECDSA_HASH160" => Err(NotifyError::Unauthorized(format!(
+            "key {} is an ECDSA_HASH160 key: send its public key as public_key",
+            key.id
+        ))),
+        None => PublicKey::from_slice(&key.public_key)
+            .map_err(|_| NotifyError::Unauthorized("the key's data is not a public key".into())),
+    }
 }
 
 /// A plausible identity id: base58 of 32 bytes.
@@ -244,6 +298,7 @@ pub async fn verify(
         .map_err(|_| NotifyError::BadRequest("signature is not base64".into()))?;
     let sig = Signature::from_compact(&sig_bytes)
         .map_err(|_| NotifyError::BadRequest("signature is not a 64-byte signature".into()))?;
+    let sent_public = sent_public_key(env.public_key.as_deref())?;
     let Some(all) = keys.keys(&req.identity).await? else {
         return Err(NotifyError::Unauthorized("no such identity".into()));
     };
@@ -253,13 +308,13 @@ pub async fn verify(
         .ok_or_else(|| NotifyError::Unauthorized(format!("the identity has no key {}", req.key)))?;
     if !usable_signing_key(key, forge) {
         return Err(NotifyError::Unauthorized(format!(
-            "key {} cannot sign service requests (it must be an enabled ECDSA_SECP256K1 \
-             AUTHENTICATION key of HIGH or CRITICAL level, unbound or bound to Forge)",
+            "key {} cannot sign service requests (it must be an enabled ECDSA_SECP256K1 or \
+             ECDSA_HASH160 AUTHENTICATION key of HIGH or CRITICAL level, unbound or bound to \
+             Forge)",
             req.key
         )));
     }
-    let public = PublicKey::from_slice(&key.public_key)
-        .map_err(|_| NotifyError::Unauthorized("the key's data is not a public key".into()))?;
+    let public = signing_public_key(key, sent_public)?;
     let mut sig = sig;
     sig.normalize_s();
     Secp256k1::verification_only()
@@ -313,11 +368,143 @@ pub mod tests {
         keys: &StaticKeys,
         now: u64,
     ) -> Result<SignedRequest> {
+        check_with(request, signature, None, operator, keys, now).await
+    }
+
+    async fn check_with(
+        request: &str,
+        signature: String,
+        public_key: Option<String>,
+        operator: &str,
+        keys: &StaticKeys,
+        now: u64,
+    ) -> Result<SignedRequest> {
         let env = SignedEnvelope {
             request: request.to_string(),
             signature,
+            public_key,
         };
         verify(&env, operator, keys, &ForgeIds::test_forge(), now).await
+    }
+
+    fn public_b64(s: &secp256k1::SecretKey) -> String {
+        STANDARD.encode(PublicKey::from_secret_key(&Secp256k1::new(), s).serialize())
+    }
+
+    /// An `ECDSA_HASH160` AUTHENTICATION/HIGH key `id` for secret `s` (what a wallet grants).
+    fn hash160_key_info(id: u32, s: &secp256k1::SecretKey) -> IdentityKeyInfo {
+        let mut k = key_info(id, s);
+        k.key_type = "ECDSA_HASH160".into();
+        k.public_key = hash160(&k.public_key).to_vec();
+        k
+    }
+
+    #[tokio::test]
+    async fn a_hash160_key_verifies_only_with_its_public_key() {
+        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let other = secp256k1::SecretKey::from_slice(&[0x22; 32]).unwrap();
+        let keys = StaticKeys(IDENTITY.into(), vec![hash160_key_info(2, &s)]);
+        let op = "notify.example.org";
+        let req = request(1_000_000, op);
+        let run = |sig: String, public: Option<String>| {
+            let (req, keys) = (&req, &keys);
+            async move { check_with(req, sig, public, op, keys, 1_000_100).await }
+        };
+        let ok = run(sign(&req, &s), Some(public_b64(&s))).await.unwrap();
+        assert_eq!(ok.key, 2);
+
+        let unauthorized =
+            |r: Result<SignedRequest>| matches!(r, Err(NotifyError::Unauthorized(_)));
+        // No public key: the hash alone verifies nothing.
+        assert!(unauthorized(run(sign(&req, &s), None).await));
+        // A public key that does not hash to the key's data, with a signature it verifies.
+        assert!(unauthorized(
+            run(sign(&req, &other), Some(public_b64(&other))).await
+        ));
+        // The right public key, but a signature by another key.
+        assert!(unauthorized(
+            run(sign(&req, &other), Some(public_b64(&s))).await
+        ));
+        // Not a compressed public key.
+        let uncompressed = STANDARD
+            .encode(PublicKey::from_secret_key(&Secp256k1::new(), &s).serialize_uncompressed());
+        assert!(matches!(
+            run(sign(&req, &s), Some(uncompressed)).await,
+            Err(NotifyError::BadRequest(_))
+        ));
+        assert!(matches!(
+            run(sign(&req, &s), Some("not base64!".into())).await,
+            Err(NotifyError::BadRequest(_))
+        ));
+
+        let mut master = hash160_key_info(2, &s);
+        master.security_level = "MASTER".into();
+        let keys = StaticKeys(IDENTITY.into(), vec![master]);
+        assert!(unauthorized(
+            check_with(
+                &req,
+                sign(&req, &s),
+                Some(public_b64(&s)),
+                op,
+                &keys,
+                1_000_100
+            )
+            .await
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_secp256k1_key_takes_only_its_own_public_key() {
+        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let other = secp256k1::SecretKey::from_slice(&[0x22; 32]).unwrap();
+        let keys = StaticKeys(IDENTITY.into(), vec![key_info(2, &s)]);
+        let op = "notify.example.org";
+        let req = request(1_000_000, op);
+        check_with(
+            &req,
+            sign(&req, &s),
+            Some(public_b64(&s)),
+            op,
+            &keys,
+            1_000_100,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            check_with(
+                &req,
+                sign(&req, &s),
+                Some(public_b64(&other)),
+                op,
+                &keys,
+                1_000_100
+            )
+            .await,
+            Err(NotifyError::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn hash160_is_ripemd160_of_sha256() {
+        assert_eq!(
+            hex::encode(hash160(b"")),
+            "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb"
+        );
+    }
+
+    #[test]
+    fn an_envelope_without_public_key_still_parses_and_unknown_fields_do_not() {
+        let env: SignedEnvelope =
+            serde_json::from_str(r#"{"request":"{}","signature":"AA=="}"#).unwrap();
+        assert!(env.public_key.is_none());
+        let env: SignedEnvelope =
+            serde_json::from_str(r#"{"request":"{}","signature":"AA==","public_key":"Ag=="}"#)
+                .unwrap();
+        assert_eq!(env.public_key.as_deref(), Some("Ag=="));
+        assert!(serde_json::from_str::<SignedEnvelope>(
+            r#"{"request":"{}","signature":"AA==","publicKey":"Ag=="}"#
+        )
+        .is_err());
     }
 
     #[tokio::test]

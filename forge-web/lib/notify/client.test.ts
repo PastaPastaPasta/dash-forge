@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import * as secp from '@noble/secp256k1'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { buildRequest, normalizeUrl, requestDigest, signRequest, vapidKeyBytes } from './client'
+import { encodeWif } from '../auth/wif'
+import { base64ToBytes, bytesToBase64 } from '../sdk/query'
+import { KEY_TYPE_ECDSA_HASH160, buildRequest, normalizeUrl, requestDigest, signEnvelope, signRequest, vapidKeyBytes } from './client'
 
 // The shared vector (`docs/design/service-auth.md`; the service's `auth::tests::the_shared_test_vector`):
 // RFC 6979 makes the signature deterministic, so both sides must produce these exact bytes.
@@ -28,6 +31,26 @@ describe('notify signed requests', () => {
   it('matches the service on the shared vector', () => {
     expect(bytesToHex(requestDigest(REQUEST))).toBe(DIGEST)
     expect(signRequest(REQUEST, new Uint8Array(32).fill(0x11))).toBe(SIGNATURE)
+  })
+})
+
+describe('notify envelopes', () => {
+  const secret = new Uint8Array(32).fill(0x11)
+  const wif = encodeWif(secret, 'testnet')
+
+  it('sends only request and signature for a key whose data is its public key', () => {
+    for (const keyType of [undefined, 0]) {
+      const env = signEnvelope(REQUEST, { wif, keyType })
+      expect(env).toEqual({ request: REQUEST, signature: SIGNATURE })
+      expect(Object.keys(JSON.parse(JSON.stringify(env)))).toEqual(['request', 'signature'])
+    }
+  })
+
+  it('adds the compressed public key for an ECDSA_HASH160 key, and it verifies the signature', () => {
+    const env = signEnvelope(REQUEST, { wif, keyType: KEY_TYPE_ECDSA_HASH160 })
+    const pub = secp.getPublicKey(secret, true)
+    expect(env).toEqual({ request: REQUEST, signature: SIGNATURE, public_key: bytesToBase64(pub) })
+    expect(secp.verify(base64ToBytes(env.signature), requestDigest(REQUEST), base64ToBytes(env.public_key!), { prehash: false, format: 'compact' })).toBe(true)
   })
 })
 

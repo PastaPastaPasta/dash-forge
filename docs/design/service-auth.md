@@ -10,13 +10,15 @@ Implementations:
 
 ## The envelope
 
-The client POSTs JSON with exactly two fields:
+The client POSTs JSON with two fields, and a third when the signing key is `ECDSA_HASH160`:
 
 ```json
-{"request": "<the request JSON, as text>", "signature": "<base64>"}
+{"request": "<the request JSON, as text>", "signature": "<base64>", "public_key": "<base64>"}
 ```
 
 `request` is signed **exactly as sent**. The service parses it only after the signature checks out, so neither side canonicalises anything.
+
+`public_key` is the signing key's 33-byte compressed public key, base64 with standard padding. An `ECDSA_HASH160` key (what a Dash wallet grants through App Connect) stores only the hash160 of its public key on Platform, so the service cannot verify a signature without it. For an `ECDSA_SECP256K1` key it is optional, and when sent it must equal the key's data. Other fields are refused, so services from before `public_key` existed refuse it. Clients send it only for an `ECDSA_HASH160` key, so every key such a service accepts keeps working with it.
 
 ## The request
 
@@ -55,9 +57,9 @@ The service accepts the request when **all** of these hold:
    - enabled (not disabled);
    - purpose `AUTHENTICATION`;
    - security level `HIGH` or `CRITICAL` (never `MASTER`);
-   - type `ECDSA_SECP256K1`;
+   - type `ECDSA_SECP256K1`, or `ECDSA_HASH160` with a `public_key` whose hash160 (RIPEMD-160 of SHA-256) is the key's data;
    - unbound, or bound to Forge: one of the network's Forge contracts (any document type of it, or a superseded one still in the group) or the Forge contract group. A key bound to another app's contract or group is refused: that app holds the key, and it must not be able to read or change the identity's email or delete its data.
-4. That key's public key verifies the signature over `digest`.
+4. That key's public key (its data, or `public_key` for an `ECDSA_HASH160` key) verifies the signature over `digest`.
 5. The nonce has not been used before.
 
 The service caches an identity's keys for 60 seconds. Disabling a key on Platform therefore stops it from signing service requests within about a minute.
