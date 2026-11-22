@@ -76,7 +76,7 @@ For the Action, you need GitHub write access and a signed-in Dash identity as ab
 
 For command-line imports, you need:
 
-- `dg` and `git-remote-dash` for `dg import`. The standalone `forge-import` is optional. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Once a release is published, the [install script](../INSTALL.md#install-script-linux-and-macos) can fetch all three, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
+- `dg` and `git-remote-dash` for `dg import`. The standalone `forge-import` is optional. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Or the [install script](../INSTALL.md#install-script-linux-and-macos) fetches all three from the latest release, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
 - A funded identity, signed in with `dg auth new` or `dg auth login` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)). `dg import` uses that stored key. The standalone `forge-import` does not read `dg`'s default: give it `--identity <source>` or `DASH_FORGE_KEY`, for example `DASH_FORGE_KEY=keychain:dash-forge/testnet/<identity id>` for the key `dg auth` keeps in the keychain ([key sources](identity-and-keys.md#where-keys-live-today)).
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
@@ -274,8 +274,8 @@ jobs:
     timeout-minutes: 60
     permissions: { contents: read, issues: read, pull-requests: read }
     steps:
-      # No release is published yet: pin a commit you have reviewed and build from it.
-      # (Once a release exists, `action@v<version>` installs its checksum-verified binaries.)
+      # A commit you have reviewed, built from source. Or pin a release (`action@v0.2.0`)
+      # and drop `install`: it installs that release's checksum-verified binaries.
       - uses: PastaPastaPasta/dash-forge/action@<40-character commit>
         with:
           install: 'source'
@@ -303,7 +303,7 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 
 Before you copy it:
 
-- **Pinned to a release tag (once a release is published),** the Action installs that release's `dg`, `git-remote-dash` and `forge-import` with [`install.sh`](../../install.sh): it checks each archive against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. The Action's `version` input defaults to the release it was cut with, so `@v<version>` installs that version. No release is published yet, so pin a commit with `install: 'source'` for now.
+- **Pinned to a release tag,** the Action installs that release's `dg`, `git-remote-dash` and `forge-import` with [`install.sh`](../../install.sh): it checks each archive against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. The Action's `version` input defaults to the release it was cut with, so `@v<version>` installs that version.
 - **Build from source (works today).** Pin a commit you have reviewed (all 40 characters) and set `install: 'source'`: the Action compiles the tools from the commit in `uses:` (Rust is preinstalled on `ubuntu-latest`; the Action installs a pinned, checksummed protoc). The first build takes several minutes, and the Action caches the compiled dependencies for later runs (that cache is trusted like any other cache of your repository; `build-cache: 'false'` turns it off). This is what [the setup wizard](#the-setup-wizard) writes, because the site runs `master`, which can be ahead of the latest release. [`.github/workflows/mirror-action.yml`](../../.github/workflows/mirror-action.yml) is this repository's own live test of the Action. To build the tools in your own steps instead, put them on `PATH` and set `install: 'false'`.
 - **Do not use `@master`.** The binaries run with your key, so following whatever `master` holds would hand the key to any future change there, and `master`'s scripts run with the latest release's binaries, which can be older than they expect.
 - **Forge runs on testnet** ([Networks](../networks.md)). The Action's default network is the one the hosted site uses. Mainnet has no Forge deployment yet, so `network: mainnet` fails until one is registered.
