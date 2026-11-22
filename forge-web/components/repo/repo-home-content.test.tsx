@@ -97,3 +97,22 @@ describe('the empty repo’s storage warning', () => {
     expect(host.textContent).toContain('No storage configured')
   })
 })
+
+describe('the empty repo’s first-push steps', () => {
+  it('numbers install, sign in and push, with a first commit for a repo started from scratch', () => {
+    identity = OWNER
+    render(home([]))
+    const steps = [...host.querySelectorAll('section[aria-label="Empty repository"] ol > li h3')].map((h) => h.textContent)
+    expect(steps).toEqual(['Install the Dash git tools', 'Sign in on this computer', 'Push your code'])
+    const lines = [...host.querySelectorAll('section[aria-label="Empty repository"] code')].map((c) => c.textContent)
+    expect(lines[0]).toMatch(/^dg auth login --mnemonic /)
+    expect(lines.at(-1)).toMatch(/> README\.md && git add README\.md && git commit -m 'First commit' && git push -u origin HEAD:main$/)
+    expect(host.textContent).toContain('Three steps to your first push.')
+  })
+
+  it('tells a visitor nothing is pushed yet instead of addressing them as the pusher', () => {
+    render(home([]))
+    expect(host.textContent).toContain('Nothing has been pushed yet.')
+    expect(host.textContent).not.toContain('Three steps to your first push.')
+  })
+})
