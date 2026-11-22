@@ -126,6 +126,27 @@
         "null"
       ],
       "description": "Why the stored key could not be opened here (it is sealed and no passphrase is available), or null."
+    },
+    "keyOrigin": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "wallet"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`wallet` when a DashPay wallet granted the key (`dg auth login --wallet`), else null."
+    },
+    "renew": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The command that renews a wallet-granted key, else null."
     }
   },
   "required": [

@@ -216,12 +216,29 @@ From the terminal:
 ```sh
 dg auth new [--amount 0.05] [--name alice]      # 12 words → deposit QR → identity + a limited key in the keychain
 dg auth login <file> | --mnemonic               # import once; registers a limited key and stores it with the encryption key
+dg auth login --wallet                          # or: scan a QR code with DashPay; the wallet adds the limited key
 dg auth status                                  # identity, name, key, budget left, expiry, balance, where it is stored
 dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1   # a key for CI
 dg auth name register <label>                   # a DPNS username
 ```
 
 `dg auth new` shows the 12 words once and asks you to type three of them back. It then shows the deposit address as a QR code and as text. Fund it from any Dash wallet (the faucet on devnets), and `dg` does the rest: the asset lock, its proof (InstantSend where the network offers one, else a chain lock), and one IdentityCreate that registers the standard keys plus this computer's limited key. The limited key is stored in the keychain *before* the identity exists, so an interruption never leaves a key nobody holds. An interrupted run resumes with `dg auth new --resume` (type the words again); the deposit address stays the same. The words are shown only in a terminal, and never with `--json` or in CI. Without a terminal, `--backup-file <new file>` is required: the words and keys go only to that passphrase-sealed file (0600, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`) and only its path is printed. `--skip-backup-check` skips the three-word check in a terminal and needs `--backup-file`; it never prints or writes the words anywhere else.
+
+### Signing in from the terminal with DashPay
+
+`dg auth login --wallet` signs in with the DashPay wallet on your phone (App Connect), so neither the recovery phrase nor the master key touches this computer:
+
+1. `dg` prints a QR code and the same request as a `dash-key:` link (copy it to the phone if the camera can't read the terminal). In DashPay, open **More → Tools → Connections → Scan QR**, or open the link on the phone.
+2. The wallet shows "Dash Forge" and the key it is asked for: one limited key (bound to the `dash-forge` contract group) with `dg`'s proposed limits, 0.25 DASH for 180 days, or `--budget` / `--expires` (a wallet grants at most 5 DASH and 365 days). You can keep them or pick another limit in the wallet. Approving adds the key to your identity.
+3. `dg` reads the answer from Platform (no Forge server is involved, so this works over SSH), checks the key on chain, and shows the identity, its username if it has one, and the budget and expiry the wallet granted. **Check that it is the identity your wallet showed** and confirm. The key is then stored like any limited key: the keychain, else a passphrase-sealed file (`--insecure-plaintext` as for `dg auth login`).
+
+The code is valid for 10 minutes; in a terminal `dg` offers a new one when it expires (not with `--yes`), otherwise run the command again. **Scan only a code `dg` printed on this computer**: anyone who answers it signs in this terminal as their own identity, which is why `dg` asks you to confirm the identity, and refuses outright when two identities answer. `--yes` accepts the identity without asking (for scripts; the code still has to be scanned).
+
+`dg` checks before it shows a code that it can store the key (a keychain, a terminal to type the key file's passphrase in, `DASH_FORGE_PASSPHRASE`, or `--insecure-plaintext`). Once the wallet has answered, and before anything is written, `dg` looks at what this computer stores for the identity that answered (not just the default identity). If that is the identity's master key (`--full-key`), or a key `dg` cannot open (a sealed file without its passphrase, for example), it asks before the wallet's key replaces it, and refuses with `--yes`. A limited key `dg` registered earlier stays live on Platform; `dg` names it so you can disable it.
+
+`dg auth status` shows such a key as "from your wallet (App Connect)" with its budget and expiry. To renew it, run `dg auth login --wallet` again: the request names the identity, and the wallet disables the previous key it gave this computer in the same update (dg sends the same connection id, kept in `app-connect.toml` beside `config.toml`; a damaged file or id is reported, not replaced). Signing in again as the same identity keeps the encryption key the old key had beside it, when `dg` can open the stored copy (not a sealed file you replace without its passphrase); a wallet sign-in does not bring one of its own, so private repositories otherwise need `dg auth login <file>` or `--mnemonic` once. To disable the key, disconnect Dash Forge in the wallet (Connections), or `dg auth keys disable <id>` with your master key.
+
+Wallets: DashPay for Android 11.9.2 or later. On testnet, where Forge runs today, use DashPay's testnet build: the `-testnet.apk` on the [latest dash-wallet release](https://github.com/dashpay/dash-wallet/releases/latest), installed beside the store app. Dash Wallet for iOS speaks the same protocol, but no testnet build of it is available to download.
 
 ### A browser key from dg
 

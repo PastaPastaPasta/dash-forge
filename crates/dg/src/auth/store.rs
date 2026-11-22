@@ -250,19 +250,46 @@ fn passphrase_reason(why: &str) -> String {
 /// the user's own, or a plaintext one: those are left alone). The keychain entry is written to
 /// the keychain again, the sealed file to a sealed file.
 pub fn main_slot_storer(network: &str, identity_id: &str, source: &str) -> Result<Option<Storer>> {
-    let keychain_source = format!(
-        "{}{}/{}",
-        keystore::KEYCHAIN_PREFIX,
-        keychain::SERVICE,
-        account(network, identity_id, Slot::Main)
-    );
-    if source == keychain_source {
+    if source == main_keychain_source(network, identity_id) {
         return Ok(Some(Storer::new(false)));
     }
     let main = slot_file(network, identity_id, Slot::Main)?;
     let sealed_here = std::path::Path::new(source) == main
         && std::fs::read_to_string(&main).is_ok_and(|raw| sealed::is_sealed(&raw));
     Ok(sealed_here.then(|| Storer::sealed_only(false)))
+}
+
+fn main_keychain_source(network: &str, identity_id: &str) -> String {
+    format!(
+        "{}{}/{}",
+        keystore::KEYCHAIN_PREFIX,
+        keychain::SERVICE,
+        account(network, identity_id, Slot::Main)
+    )
+}
+
+/// The key sources this computer keeps in `identity_id`'s main slot on `network`, which a new
+/// key stored there replaces: dg's keychain entry (where the keychain is used, when there is
+/// one or it cannot be read) and the key file (when it exists).
+pub fn main_slot_sources(network: &str, identity_id: &str) -> Result<Vec<String>> {
+    let mut sources = Vec::new();
+    if keychain::available() {
+        let acct = account(network, identity_id, Slot::Main);
+        if !matches!(keychain::get(keychain::SERVICE, &acct), Ok(None)) {
+            sources.push(main_keychain_source(network, identity_id));
+        }
+    }
+    let file = slot_file(network, identity_id, Slot::Main)?;
+    if file.exists() {
+        sources.push(file.to_string_lossy().into_owned());
+    }
+    Ok(sources)
+}
+
+/// Whether a limited key can be stored here without failing: in the keychain, unencrypted
+/// (`insecure_plaintext`), or sealed under a passphrase that can be had ([`Storer::store`]).
+pub fn can_store(insecure_plaintext: bool) -> bool {
+    keychain::available() || insecure_plaintext || sealed::passphrase_available()
 }
 
 /// Store a limited key in the main slot (one-off).

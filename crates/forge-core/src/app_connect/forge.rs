@@ -32,8 +32,8 @@ pub const MIN_PROTOCOL: u32 = 14;
 /// How long the poll keeps reading after the first answer, for a competing one.
 pub const SETTLE_MS: u64 = 3_000;
 
-/// A fresh random connection id. The caller keeps it per machine and identity: a wallet that
-/// sees it again disables the key of its previous grant.
+/// A fresh random connection id. The caller keeps it per machine and network: a wallet that
+/// sees it again for the same identity disables the key of its previous grant.
 pub fn new_connection_id() -> crate::Result<[u8; 16]> {
     let mut id = [0u8; 16];
     getrandom::getrandom(&mut id)
@@ -161,9 +161,7 @@ pub struct WalletGrant {
     pub identity_id: String,
     /// The key's id on that identity.
     pub key_id: u32,
-    /// Its key type ([`super::key_type`]). The released wallets register `ECDSA_HASH160`, which
-    /// [`crate::platform::WriteEngine`] does not select yet: it signs with `ECDSA_SECP256K1`
-    /// keys only, so the `dg` command that stores this key must widen that first.
+    /// Its key type ([`super::key_type`]): the released wallets register `ECDSA_HASH160`.
     pub key_type: u8,
     /// Its lifetime budget, in credits (the wallet may have clamped what Forge proposed).
     pub total_budget: u64,

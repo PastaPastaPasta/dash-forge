@@ -8,7 +8,8 @@
 //! - `new` — recovery words → deposit QR → asset lock → identity with its canonical keys and a
 //!   limited key in one IdentityCreate ([`new`]).
 //! - `login` — import an identity file or the recovery words once, register a limited key,
-//!   store only that key (with the identity's encryption key beside it, QW2-004).
+//!   store only that key (with the identity's encryption key beside it, QW2-004); or, with
+//!   `--wallet`, store the limited key a DashPay wallet grants over App Connect ([`wallet`]).
 //! - `status`, `balance`, `keys list|add|disable`, `name register`, `export`, `logout`.
 
 pub mod group;
@@ -16,6 +17,7 @@ mod keys;
 mod new;
 mod rekey;
 pub mod store;
+mod wallet;
 
 use std::path::PathBuf;
 
@@ -48,10 +50,12 @@ pub enum AuthCommand {
     /// You get a recovery phrase and a deposit address. Once it is funded, dg creates the
     /// identity with a limited key for this computer, stored in the OS keychain.
     New(new::NewArgs),
-    /// Sign in with an identity file or recovery phrase.
+    /// Sign in with an identity file, a recovery phrase, or your DashPay wallet (--wallet).
     ///
     /// Registers a limited key for this computer. The master key is used once and not stored,
-    /// unless --full-key.
+    /// unless --full-key. With --wallet, scan the code dg prints with DashPay (More → Tools →
+    /// Connections → Scan QR): the wallet adds the limited key, and the master key never leaves
+    /// it.
     Login(LoginArgs),
     /// Show the identity, its key, budget left, expiry, balance and where the key is stored.
     Status,
@@ -138,6 +142,11 @@ pub struct LoginArgs {
     /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
+    /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dash-key:` link,
+    /// the wallet adds a limited key (proposed: 0.25 DASH for 180 days, or --budget/--expires;
+    /// the wallet may change them) and dg stores it. Testnet needs DashPay's testnet build.
+    #[arg(long, conflicts_with_all = ["file", "mnemonic", "full_key", "replace"])]
+    pub wallet: bool,
     /// Keep the full identity (master key included) instead of registering a limited key.
     #[arg(long)]
     pub full_key: bool,
@@ -224,17 +233,18 @@ pub fn parse_days(s: &str) -> Result<u64> {
     let n: u64 = num.parse().map_err(|_| {
         crate::errors::usage(format!("--expires {s:?} is not like 180d, 12w, 6m or 1y"))
     })?;
-    let days = match unit {
-        "d" | "day" | "days" => n,
-        "w" | "wk" | "weeks" => n * 7,
-        "m" | "mo" | "months" => n * 30,
-        "y" | "yr" | "years" => n * 365,
+    let per = match unit {
+        "d" | "day" | "days" => 1,
+        "w" | "wk" | "weeks" => 7,
+        "m" | "mo" | "months" => 30,
+        "y" | "yr" | "years" => 365,
         _ => {
             return Err(crate::errors::usage(format!(
                 "--expires {s:?} is not like 180d, 12w, 6m or 1y"
             )))
         }
     };
+    let days = n.saturating_mul(per);
     if days == 0 || days > 3650 {
         return Err(crate::errors::usage(
             "--expires must be between 1 day and 10 years",
@@ -885,6 +895,9 @@ async fn login_source(
 /// that key and the identity's encryption keys (or, with `--full-key`, the whole identity).
 #[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
+    if args.wallet {
+        return wallet::login(ctx, args).await;
+    }
     let client = ctx.connect().await?;
     let master = login_source(ctx, &client, args).await?;
     let network = ctx.network_label();
@@ -1177,6 +1190,7 @@ pub(crate) async fn key_report(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn status(ctx: &Ctx) -> Result<()> {
     let config = Config::load()?;
     let network = ctx.network_label();
@@ -1221,6 +1235,16 @@ async fn status(ctx: &Ctx) -> Result<()> {
     };
     let master = bridge.as_ref().map(|b| b.master_key().is_some());
     let runner_key = report.as_ref().is_some_and(|r| r.doc_type.is_some());
+    let from_wallet = report
+        .as_ref()
+        .and_then(|r| r.key_id.or(r.disabled_id))
+        .or_else(|| {
+            bridge
+                .as_ref()
+                .and_then(|b| b.doc_op_key().ok())
+                .map(|k| k.id)
+        })
+        .is_some_and(|id| wallet::is_wallet_key(&network, &identity_id, id));
     ctx.emit(
         json!({
             "network": network,
@@ -1246,6 +1270,8 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "defaultIdentityId": config.default_identity_id,
             "masterKeyStored": master,
             "keyUnopened": unopened,
+            "keyOrigin": from_wallet.then_some("wallet"),
+            "renew": from_wallet.then_some(wallet::RENEW),
         }),
         || {
             println!("Network:  {network}");
@@ -1255,8 +1281,13 @@ async fn status(ctx: &Ctx) -> Result<()> {
             }
             println!(
                 "Key:      {}",
-                key_line(report.as_ref(), unopened.as_deref(), reached)
+                key_line(report.as_ref(), unopened.as_deref(), reached, from_wallet)
             );
+            if from_wallet && report.as_ref().is_some_and(|r| r.key_id.is_none()) {
+                println!("          from your wallet (App Connect)");
+            } else if from_wallet {
+                println!("          from your wallet (App Connect); renew: {}", wallet::RENEW);
+            }
             let key_id = report.as_ref().and_then(|r| r.key_id);
             if let Some(line) = private_line(access.as_ref(), runner_key, key_id) {
                 println!("Private:  {line}");
@@ -1303,9 +1334,14 @@ pub(crate) fn key_line(
     report: Option<&KeyReport>,
     unopened: Option<&str>,
     reached: bool,
+    from_wallet: bool,
 ) -> String {
     match (report, unopened) {
         (Some(r), _) if r.key_id.is_none() => match r.disabled_id {
+            Some(id) if from_wallet => format!(
+                "#{id} DISABLED: it can no longer sign; `{}` gets a new key from your wallet",
+                wallet::RENEW
+            ),
             Some(id) => format!(
                 "#{id} DISABLED: it can no longer sign; `dg auth login <identity file>` registers a new key"
             ),
@@ -1947,7 +1983,7 @@ mod tests {
             remaining: Some(49_000_000_000),
             expires_at: None,
         };
-        let line = key_line(Some(&report(false, Some("checkRun"))), None, true);
+        let line = key_line(Some(&report(false, Some("checkRun"))), None, true, false);
         assert!(
             line.starts_with(
                 "#6 bound to checkRun documents only (a CI runner key) — 0.49 of 0.5 DASH left"
@@ -1955,7 +1991,7 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("unlimited"), "{line}");
-        assert!(key_line(Some(&report(true, None)), None, true).starts_with("#6 limited — "));
+        assert!(key_line(Some(&report(true, None)), None, true, false).starts_with("#6 limited — "));
         // doctor fails a key that signs nothing any more
         let mut r = report(true, None);
         assert_eq!(r.spent_or_expired(1_000), None);
@@ -1964,7 +2000,7 @@ mod tests {
         r.remaining = Some(0);
         assert_eq!(r.spent_or_expired(0), Some("its budget is spent"));
         assert_eq!(
-            key_line(Some(&report(false, None)), None, true),
+            key_line(Some(&report(false, None)), None, true, false),
             "#6 unlimited (not a Forge limited key)"
         );
         // QW3-070: a runner key with a budget is spend-capped in --json too.
@@ -1973,17 +2009,20 @@ mod tests {
         let mut gone = report(true, None);
         gone.key_id = None;
         gone.disabled_id = Some(7);
-        let line = key_line(Some(&gone), None, true);
+        let line = key_line(Some(&gone), None, true, false);
         assert!(
             line.starts_with("#7 DISABLED: it can no longer sign"),
             "{line}"
         );
+        let line = key_line(Some(&gone), None, true, true);
+        assert!(line.contains("`dg auth login --wallet`"), "{line}");
+        assert!(!line.contains("identity file"), "{line}");
         // QW4-049: a disabled limited key is still reported as the capped key it was: its
         // budget is read from the disabled key (`limited` is for live keys only).
         gone.limited = false;
         assert!(gone.is_capped());
         gone.disabled_id = None;
-        let line = key_line(Some(&gone), None, true);
+        let line = key_line(Some(&gone), None, true, false);
         assert!(line.starts_with("not a key of this identity"), "{line}");
     }
 
@@ -2022,6 +2061,9 @@ mod tests {
         assert!(parse_days("0d").is_err());
         assert!(parse_days("soon").is_err());
         assert!(parse_days("99y").is_err());
+        // 2^63 + 1 months wraps to 30 days in u64 multiplication.
+        assert!(parse_days("9223372036854775809m").is_err());
+        assert!(parse_days("18446744073709551615y").is_err());
     }
 
     #[test]

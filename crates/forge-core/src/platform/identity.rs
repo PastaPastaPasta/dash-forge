@@ -17,7 +17,7 @@ use std::str::FromStr;
 
 use dash_sdk::dpp::address_funds::AddressWitness;
 use dash_sdk::dpp::dashcore::consensus::encode::{deserialize, serialize};
-use dash_sdk::dpp::dashcore::hashes::Hash as _;
+use dash_sdk::dpp::dashcore::hashes::{hash160, Hash as _};
 use dash_sdk::dpp::dashcore::script::{Builder, PushBytesBuf};
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -1081,6 +1081,15 @@ impl LoadedIdentity {
         })
     }
 
+    /// Whether key `key_id` is disabled, or `None` when the identity has no such key (a node
+    /// that does not show a new key yet).
+    pub fn key_disabled(&self, key_id: u32) -> Option<bool> {
+        self.0
+            .public_keys()
+            .get(&key_id)
+            .map(IdentityPublicKeyGettersV0::is_disabled)
+    }
+
     /// The contract group key `key_id` is bound to (base58), if it is group-bound.
     pub fn key_group(&self, key_id: u32) -> Option<String> {
         match self.0.public_keys().get(&key_id)?.contract_bounds()? {
@@ -1181,12 +1190,12 @@ impl LoadedIdentity {
             .private_key_wif
             .expose()
             .to_string();
-        let public = public_key_hex(&wif, network).ok()?;
+        let public = public_key_bytes(&wif, network)?;
         let mut matching: Vec<_> = self
             .0
             .public_keys()
             .values()
-            .filter(|k| hex::encode(k.data().as_slice()) == public)
+            .filter(|k| holds_public(k, &public))
             .map(|k| (IdentityPublicKeyGettersV0::id(k), k.is_disabled()))
             .collect();
         // A live copy of the same public key wins over a disabled one.
@@ -1194,13 +1203,14 @@ impl LoadedIdentity {
         matching.first().copied()
     }
 
-    /// The id of the live key `wif` controls, if this identity has one.
+    /// The id of the live key `wif` controls, if this identity has one: an `ECDSA_SECP256K1`
+    /// key with its public key, or an `ECDSA_HASH160` key (what wallets grant) with its hash.
     pub fn key_id_for(&self, wif: &str, network: &Network) -> Option<u32> {
-        let public = public_key_hex(wif, network).ok()?;
+        let public = public_key_bytes(wif, network)?;
         self.0
             .public_keys()
             .values()
-            .find(|k| !k.is_disabled() && hex::encode(k.data().as_slice()) == public)
+            .find(|k| !k.is_disabled() && holds_public(k, &public))
             .map(IdentityPublicKeyGettersV0::id)
     }
 
@@ -1223,6 +1233,22 @@ impl LoadedIdentity {
             (!bound).then_some("not bound to the dash-forge contract group"),
             "the stored private key",
         )
+    }
+}
+
+/// The compressed public key `wif` controls.
+fn public_key_bytes(wif: &str, network: &Network) -> Option<Vec<u8>> {
+    Some(public_of(&secret_from_wif(wif, network).ok()?).to_bytes())
+}
+
+/// Whether on-chain key `k` is the compressed public key `public`: the key itself
+/// (`ECDSA_SECP256K1`) or its hash160 (`ECDSA_HASH160`). Other key types never match.
+fn holds_public(k: &IdentityPublicKey, public: &[u8]) -> bool {
+    let data = k.data().as_slice();
+    match k.key_type() {
+        KeyType::ECDSA_SECP256K1 => data == public,
+        KeyType::ECDSA_HASH160 => data == hash160::Hash::hash(public).as_byte_array(),
+        _ => false,
     }
 }
 
@@ -1300,6 +1326,81 @@ mod tests {
 
     fn testnet() -> Network {
         Network::Testnet
+    }
+
+    /// A wallet grants an `ECDSA_HASH160` key: the WIF that controls it finds it, live or
+    /// disabled, and passes the limited-key check, as a full `ECDSA_SECP256K1` key does.
+    #[test]
+    fn a_wif_finds_its_hash160_key() {
+        use dash_sdk::dpp::identity::v0::IdentityV0;
+        let secret = SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let w = wif(&secret, &testnet());
+        let public = public_of(&secret).to_bytes();
+        let group = Identifier::from([9u8; 32]);
+        let key = |id, key_type, data: Vec<u8>, disabled_at| {
+            IdentityPublicKey::V1(IdentityPublicKeyV1 {
+                id,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: Some(ContractBounds::ContractGroup { id: group }),
+                key_type,
+                read_only: false,
+                data: data.into(),
+                disabled_at,
+                total_budget: Some(5_000_000_000),
+                expires_at: Some(1_000),
+            })
+        };
+        let identity = |keys: Vec<IdentityPublicKey>| {
+            LoadedIdentity(Identity::V0(IdentityV0 {
+                id: [7u8; 32].into(),
+                public_keys: keys
+                    .into_iter()
+                    .map(|k| (IdentityPublicKeyGettersV0::id(&k), k))
+                    .collect(),
+                balance: 0,
+                revision: 0,
+            }))
+        };
+        let h = hash160::Hash::hash(&public).to_byte_array().to_vec();
+        let wallet = identity(vec![
+            key(1, KeyType::ECDSA_SECP256K1, vec![2; 33], None),
+            key(6, KeyType::ECDSA_HASH160, h.clone(), None),
+        ]);
+        assert_eq!(wallet.key_id_for(w.expose(), &testnet()), Some(6));
+        let spec = LimitedKeySpec {
+            budget_credits: 5_000_000_000,
+            expires_at_ms: 1_000,
+            group: group.to_string(Encoding::Base58),
+        };
+        wallet
+            .check_limited_key(6, w.expose(), &testnet(), &spec)
+            .unwrap();
+        let full = identity(vec![key(2, KeyType::ECDSA_SECP256K1, public.clone(), None)]);
+        assert_eq!(full.key_id_for(w.expose(), &testnet()), Some(2));
+
+        let disabled = identity(vec![key(6, KeyType::ECDSA_HASH160, h.clone(), Some(1))]);
+        assert_eq!(disabled.key_id_for(w.expose(), &testnet()), None);
+        let bridge = BridgeIdentity::from_dfk1(
+            crate::keystore::dfk1(
+                "testnet",
+                &Identifier::from([7u8; 32]).to_string(Encoding::Base58),
+                6,
+                w.expose(),
+            )
+            .expose(),
+        )
+        .unwrap();
+        assert_eq!(
+            disabled.signing_key_standing(&bridge, &testnet()),
+            Some((6, true))
+        );
+        // A 20-byte key of another type never matches, nor another key's hash.
+        let other = identity(vec![
+            key(3, KeyType::BIP13_SCRIPT_HASH, h, None),
+            key(4, KeyType::ECDSA_HASH160, vec![0; 20], None),
+        ]);
+        assert_eq!(other.key_id_for(w.expose(), &testnet()), None);
     }
 
     #[test]
