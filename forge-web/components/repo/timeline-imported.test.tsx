@@ -55,9 +55,9 @@ describe('imported state changes (QW4-006)', () => {
     expect(row?.querySelector('a[href="https://github.com/dashpay/dips/issues/155"]')?.textContent).toBe('github.com')
   })
 
-  it('says a merge happened at its commit on the source', () => {
+  it('says a merge happened as its commit on the source', () => {
     act(() => root.render(<Timeline items={[transition('t2', 13, MIRROR, { oid: OID })]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} />))
-    expect(rows()[0]?.textContent).toMatch(/^Merged at a4d46dd2d.* on github\.com/)
+    expect(rows()[0]?.textContent).toMatch(/^Merged as commit a4d46dd2d.* on github\.com/)
   })
 
   it('names a duplicate\'s canonical, and keeps the grey icon', () => {
