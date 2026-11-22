@@ -40,12 +40,15 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
+# hash160 (RIPEMD-160 of SHA-256) of a public key: an ECDSA_HASH160 key's on-chain data.
+ripemd = "0.1"
 rand = "0.8"
 base64 = "0.22"
 hex = "0.4"
 subtle = "2"
 zeroize = "1"
-# Signed requests: an identity's ECDSA_SECP256K1 AUTHENTICATION key, read with proofs.
+# Signed requests: an identity's ECDSA_SECP256K1 or ECDSA_HASH160 AUTHENTICATION key, read with
+# proofs.
 secp256k1.workspace = true
 # Web Push (RFC 8030/8291) with VAPID (RFC 8292).
 web-push-native = { version = "0.5", features = ["vapid"] }
