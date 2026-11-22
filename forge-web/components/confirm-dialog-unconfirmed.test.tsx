@@ -139,4 +139,39 @@ describe('an unconfirmed write', () => {
     expect(onConfirm).toHaveBeenCalledTimes(4)
     expect(document.body.textContent).toContain('Still not visible.')
   })
+
+  it('after an ordinary error, a retry runs what the dialog shows now (an edited field)', async () => {
+    const asked: string[] = []
+    const make = (name: string) => vi.fn(async () => {
+      asked.push(name)
+      if (name === 'Roadmap') throw new Error('refused')
+    })
+    const render = (name: string): void =>
+      act(() => root.render(<ConfirmDialog open onClose={() => undefined} title={`New board ${name}`} cost={null} confirmLabel="Create" onConfirm={make(name)} />))
+    render('Roadmap')
+    act(() => button('Create')!.click())
+    await flush()
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('refused')
+    render('Roadmap 2')
+    expect(document.body.textContent).toContain('New board Roadmap 2')
+    act(() => button('Create')!.click())
+    await flush()
+    expect(asked).toEqual(['Roadmap', 'Roadmap 2'])
+  })
+
+  it('disables its fields while a write is sent but not yet seen', async () => {
+    const onConfirm = vi.fn(async () => {
+      throw new UnconfirmedWriteError('DOC')
+    })
+    act(() => root.render(
+      <ConfirmDialog open onClose={() => undefined} title="New board" cost={null} confirmLabel="Create" onConfirm={onConfirm}>
+        <input aria-label="Name" />
+      </ConfirmDialog>,
+    ))
+    const field = (): HTMLInputElement => document.querySelector('input[aria-label="Name"]')!
+    expect(field().matches(':disabled')).toBe(false)
+    act(() => button('Create')!.click())
+    await flush()
+    expect(field().matches(':disabled')).toBe(true)
+  })
 })

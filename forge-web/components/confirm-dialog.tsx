@@ -13,13 +13,14 @@
  * signing twice) and changes the next time the dialog opens. "Confirmed" is shown only for a
  * write Platform has shown; an unconfirmed one says so and keeps the dialog open.
  *
- * While the write runs the dialog shows its steps (`WriteProgressSteps`). From the first click
- * until it closes, the dialog keeps the action it was confirmed with: its title, description,
- * button words and `onConfirm`, so a page that re-renders under it (an issue now closed:
- * "Reopen issue") neither relabels the action in flight nor turns a retry into the opposite
- * write. A write sent but not yet seen is not an error: the dialog says so calmly, offers
- * "Check again" (the same action and intent: it finishes the write it sent) and checks again by
- * itself a few times.
+ * While the write runs the dialog shows its steps (`WriteProgressSteps`). While a write runs
+ * or is sent but not yet seen, the dialog keeps the action it was confirmed with: its title,
+ * description, button words and `onConfirm`, and its fields are disabled, so a page that
+ * re-renders under it (an issue now closed: "Reopen issue") neither relabels the action in
+ * flight nor turns a check into the opposite write. After an ordinary error the action is let
+ * go, so a retry runs what the dialog shows now (edited fields included). A write sent but not
+ * yet seen is not an error: the dialog says so calmly, offers "Check again" (the same action and
+ * intent: it finishes the change it sent) and checks again by itself a few times.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -103,7 +104,7 @@ export function ConfirmDialog({
   /** Sent, not seen yet: the message, and the automatic checks still to come. */
   const [unconfirmed, setUnconfirmed] = useState<{ message: string; left: number } | null>(null)
   const [done, setDone] = useState(false)
-  /** The action as it was confirmed, kept until the dialog closes. */
+  /** The action as it was confirmed, kept while it runs or is unconfirmed. */
   const [frozen, setFrozen] = useState<Confirmed | null>(null)
   const frozenRef = useRef<Confirmed | null>(null)
   const runRef = useRef<() => Promise<void>>()
@@ -153,6 +154,8 @@ export function ConfirmDialog({
         setUnconfirmed((u) => ({ message, left: u === null ? RECHECKS : Math.max(0, u.left - 1) }))
       } else {
         setUnconfirmed(null)
+        frozenRef.current = null
+        setFrozen(null)
         setError(message)
       }
     } finally {
@@ -196,14 +199,32 @@ export function ConfirmDialog({
       }
     >
       <div className="space-y-3">
-        {children}
+        <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 border-0 p-0">
+          {children}
+        </fieldset>
         {costPending ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>
         )}
 
-        {pending ? <WriteProgressSteps /> : null}
+        <div role="status" aria-live="polite" className="empty:hidden">
+          {pending ? <WriteProgressSteps /> : null}
+          {unconfirmed !== null && !pending && !done ? (
+            <div data-testid="write-unconfirmed" className="flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-750 dark:bg-anvil-850 dark:text-anvil-200">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+              <div className="min-w-0 space-y-1">
+                <p className="break-words">{unconfirmed.message}</p>
+                <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                  {autoRecheck
+                    ? `Checking again by itself in ${RECHECK_MS / 1000} seconds. Checking finishes this same change; it is never applied twice.`
+                    : 'Still not visible. Check again in a minute: checking finishes this same change; it is never applied twice.'}{' '}
+                  If you close this, reload later and look for the change before doing it again.
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         {!check.ok && unconfirmed === null && !done ? (
           <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
@@ -216,21 +237,6 @@ export function ConfirmDialog({
         {blocked ?? null}
 
         {done ? <p className="text-dense text-verify-700 dark:text-verify-400">{successNote ?? 'Confirmed on Platform'}</p> : null}
-
-        {unconfirmed !== null && !pending && !done ? (
-          <div data-testid="write-unconfirmed" role="status" className="flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-750 dark:bg-anvil-850 dark:text-anvil-200">
-            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            <div className="min-w-0 space-y-1">
-              <p className="break-words">{unconfirmed.message}</p>
-              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-                {autoRecheck
-                  ? `Checking again by itself in ${RECHECK_MS / 1000} seconds. Checking from here never sends it twice.`
-                  : 'Still not visible. Check again in a minute: checking from here never sends it twice.'}{' '}
-                If you close this, reload later and look for the change before doing it again.
-              </p>
-            </div>
-          </div>
-        ) : null}
 
         {error ? (
           <div role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">

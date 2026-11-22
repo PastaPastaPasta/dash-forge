@@ -77,7 +77,7 @@ export function WriteProgressSteps(): JSX.Element {
   const phase: WritePhase = progress?.phase ?? 'sending'
   const at = phase === 'sending' ? 0 : 1
   return (
-    <div data-testid="write-progress" role="status" className="rounded-md border border-anvil-200 px-3 py-2.5 text-dense dark:border-anvil-750">
+    <div data-testid="write-progress" className="rounded-md border border-anvil-200 px-3 py-2.5 text-dense dark:border-anvil-750">
       <ol className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {STEPS.map((s, i) => (
           <li key={s.phase} className={cn('flex items-center gap-1.5', i > at ? 'text-anvil-500 dark:text-anvil-400' : 'text-anvil-800 dark:text-anvil-100')}>
@@ -96,7 +96,7 @@ export function WriteProgressSteps(): JSX.Element {
       <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">{NOW[phase]}</p>
       {elapsed >= SLOW_MS ? (
         <p data-testid="write-slow" className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-          Dash Platform is slower than usual. Keep this tab open: the write keeps going, and it is never sent twice.
+          Dash Platform is slower than usual. Keep this tab open: the write keeps going, and the change is never applied twice.
         </p>
       ) : null}
     </div>
@@ -104,22 +104,30 @@ export function WriteProgressSteps(): JSX.Element {
 }
 
 /** The floating pill for a write running outside a confirm dialog. */
-export function WriteInFlight(): JSX.Element | null {
+export function WriteInFlight(): JSX.Element {
   const { progress, elapsed } = useWriteProgress()
   const inDialog = useSyncExternalStore(subscribeDialogs, dialogShowing, () => false)
   // A held request says so in its own pill (PlatformBusy), in the same corner.
   const budget = useSyncExternalStore(dapiBudget.subscribe, dapiBudget.status, () => IDLE)
   const held = budget.cause === 'rate-limit' && budget.waitingUntil !== null
   const quorum = useSyncExternalStore(subscribeSdk, quorumHeld, () => false)
-  if (progress === null || inDialog || held || quorum || elapsed < PILL_DELAY_MS) return null
+  const visible = progress !== null && !inDialog && !held && !quorum && elapsed >= PILL_DELAY_MS
+  // The live region stays mounted, so the pill appearing in it is announced.
+  return (
+    <div role="status" aria-live="polite">
+      {visible ? <Pill phase={progress.phase} elapsed={elapsed} /> : null}
+    </div>
+  )
+}
+
+function Pill({ phase, elapsed }: { phase: WritePhase; elapsed: number }): JSX.Element {
   return (
     <div
-      role="status"
       data-testid="write-in-flight"
       className="pointer-events-none fixed bottom-4 left-4 z-[60] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-anvil-200 bg-white px-3 py-1.5 text-dense text-anvil-700 shadow-lg dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200"
     >
       <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-forge-600 dark:text-forge-400" aria-hidden />
-      <span className="truncate">{elapsed >= SLOW_MS ? 'Platform is slow; still waiting…' : NOW[progress.phase]}</span>
+      <span className="truncate">{elapsed >= SLOW_MS ? 'Platform is slow; still waiting…' : NOW[phase]}</span>
       <span aria-hidden className="font-mono tabular-nums text-anvil-500 dark:text-anvil-400">{seconds(elapsed)}</span>
     </div>
   )

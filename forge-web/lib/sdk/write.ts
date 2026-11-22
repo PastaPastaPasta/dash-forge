@@ -485,7 +485,7 @@ export class ConsensusRefusal extends Error {
 export class UnconfirmedWriteError extends Error {
   constructor(
     readonly documentId: string,
-    message = "Sent, not yet visible on Platform. It may still be added: wait a moment, then try again from here (that checks this same write, not a second one).",
+    message = "Sent, not yet visible on Platform. It may still be added: wait a moment, then try again from here (that finishes this same change; it is never applied twice).",
   ) {
     super(message)
     this.name = 'UnconfirmedWriteError'
@@ -1780,7 +1780,6 @@ async function deleteDocumentUnlocked(
   const signer = new IdentitySigner()
   signer.addKeyFromWif(wif)
   const document = params.document ?? { id: documentId, ownerId, dataContractId: contractId, documentTypeName: documentType }
-  setWritePhase('confirming')
   try {
     await (sdk as unknown as { documents: DocumentsDeleteFacadeLike }).documents.delete({
       document,
@@ -1992,7 +1991,6 @@ async function replaceDocumentUnlocked(
     const doc = await read().catch(() => null)
     return doc !== null && (doc.revision ?? 0n) >= next && holds(doc)
   }
-  setWritePhase('confirming')
   try {
     await (sdk as unknown as { documents: DocumentsReplaceFacadeLike }).documents.replace({
       document,
