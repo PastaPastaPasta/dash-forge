@@ -868,7 +868,7 @@ fn not_default(
         ),
     )
     .fix(format!(
-        "use it now with `--identity {source}` (or DASH_FORGE_KEY={source})"
+        "if config.toml still reads, use it now with `--identity {source}` (or DASH_FORGE_KEY={source}); every command reads config.toml first"
     ))
     .fix(format!(
         "once config.toml reads, set `default_identity = \"{source}\"` and `default_identity_id = \"{identity_id}\"` in it"
