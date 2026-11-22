@@ -12,8 +12,8 @@
  *      not stored; dg; and Use my Dash wallet — App Connect v2 where the chain supports it (one
  *      approval covers all of Forge, with a budget and an expiry), else the DashConnect key
  *      exchange (shown only when a response contract exists here). The wallet leads (and is the
- *      one recommended) only where a released wallet can answer (`walletSignInReady`); on testnet
- *      it is last, badged as waiting on wallet support (#591). The older exchange approves one
+ *      one recommended) where a released wallet can answer (`walletSignInReady`: App Connect v2
+ *      on mainnet or testnet); elsewhere it is last, badged "Not available yet". The older exchange approves one
  *      Forge contract per scan, so a finished sign-in walks through the rest in one guided
  *      sequence ("Step 2 of 3"), each step skippable (FEAT-04, lib/auth/guided-grants.ts);
  *   Advanced: paste a raw key (developer path; this tab only; red warning).
@@ -367,9 +367,11 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
             title="Use my Dash wallet"
             body={
               walletFirst
-                ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
+                ? network === 'testnet'
+                  ? "DashPay on your phone (its testnet build): scan a QR code (or tap a link on the phone) and approve once for all of Forge. Your recovery phrase stays on the phone."
+                  : 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
                 : network === 'testnet'
-                  ? "Released Dash Wallet apps can't finish sign-in on testnet yet: they're waiting on support for testnet's current Platform version (issue #591). Use another option for now."
+                  ? "Released Dash wallets answer only App Connect, which can't be offered here right now. Use another option for now."
                   : network === 'devnet'
                     ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
                     : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
@@ -435,6 +437,10 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
         )
       case 'raw-key':
         return <Tile key={id} testId="tile-advanced" icon={KeyRound} title="Paste a private key" body="Developer path. The key is held in this tab only and is lost on reload." onClick={() => onPick('advanced')} />
+      default: {
+        const unknown: never = id
+        return unknown
+      }
     }
   }
   const group = (g: SignInGroup): ReactNode[] => methods.filter((m) => m.group === g).map(tile)

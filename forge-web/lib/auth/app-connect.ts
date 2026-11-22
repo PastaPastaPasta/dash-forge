@@ -457,26 +457,23 @@ export async function awaitRegisteredKey(
 }
 
 /**
- * Whether Dash Wallet's Connections feature (DashConnect) answers requests on this network, per
- * the wallets' sources (docs/design/wallet-login.md, "Compatibility matrix"): testnet only.
- * Android refuses every other network (`PlatformDashConnectRepository.checkTestnet`,
- * `Constants.IS_TESTNET_BUILD`). iOS turns the feature off on mainnet (`ConnectionsViewModel`,
- * `WalletEnvironment.isTestNetwork`) and offers devnets only in internal builds
- * (`WalletEnvironment.isDevnetAvailable`), with the login contract typed in by hand. Where this is
- * false, the wallet tile is not the first option.
+ * Whether a released wallet answers the older code (v1, DashConnect) on this network: testnet
+ * only, and only Dash Wallet for iOS 9.1.4 (DashPay for Android refuses v1 from 11.9.2 on, and
+ * iOS `develop` does too; docs/design/wallet-primary.md).
  */
 export function walletSignInSupported(network: Network): boolean {
   return network === 'testnet'
 }
 
 /**
- * Whether a wallet a newcomer can install today finishes sign-in here, which decides whether the
- * sheet leads with the wallet tile. Not on testnet: released Dash Wallet builds pin Platform
- * protocol 13 while testnet runs 14, so Platform rejects their answer (#591). Not on a devnet:
- * only internal iOS builds answer there. Mainnet leads with it once App Connect v2 is on offer.
+ * Whether a released wallet finishes sign-in here, which decides whether the sheet leads with the
+ * wallet tile: wherever App Connect v2 is on offer on mainnet or testnet. DashPay for Android
+ * 11.9.2 and Dash Wallet for iOS 9.1.4 answer v2 at protocol 14 (checked on testnet with the
+ * released Android testnet build; docs/design/wallet-primary.md). Not on a devnet: released
+ * wallets carry no devnet's settings.
  */
 export function walletSignInReady(network: Network, v2Offered: boolean): boolean {
-  return network === 'mainnet' && v2Offered
+  return (network === 'mainnet' || network === 'testnet') && v2Offered
 }
 
 /** Whether any response source exists here (hide the wallet tile otherwise). */
