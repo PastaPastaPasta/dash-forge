@@ -55,9 +55,10 @@ pub async fn list_candidates(
     page_size: u32,
     max_candidates: usize,
 ) -> Result<CandidatePage> {
+    let page_size = page_size.max(1);
     let mut candidates = Vec::new();
     let mut start_after: Option<Id> = None;
-    loop {
+    let truncated = 'read: loop {
         let page = port
             .list_candidates(request_hash, hint, start_after.as_ref(), page_size)
             .await?;
@@ -66,30 +67,25 @@ pub async fn list_candidates(
             // Defend against a port that ignores the cursor or the hint: anything not strictly
             // after the cursor would loop, anything else is not ours to see.
             if start_after.is_some_and(|after| candidate.owner_id <= after) {
-                return Ok(CandidatePage {
-                    candidates,
-                    truncated: false,
-                });
+                break 'read false;
             }
             start_after = Some(candidate.owner_id);
             if hint.is_some_and(|h| *h != candidate.owner_id) {
                 continue;
             }
             if candidates.len() == max_candidates {
-                return Ok(CandidatePage {
-                    candidates,
-                    truncated: true,
-                });
+                break 'read true;
             }
             candidates.push(candidate);
         }
         if !full {
-            return Ok(CandidatePage {
-                candidates,
-                truncated: false,
-            });
+            break false;
         }
-    }
+    };
+    Ok(CandidatePage {
+        candidates,
+        truncated,
+    })
 }
 
 /// The delay before the next poll: every 2 s for the first minute, then every 4 s, and `None`

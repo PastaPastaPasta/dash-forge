@@ -15,13 +15,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
-use secp256k1::SecretKey;
-
 use super::poll::{self, ResponsePort};
 use super::request::{self, AuthBinding, BindingKind, Request};
 use super::verify::{self, Grant, IdentityPort, RejectReason, VerifyContext};
 use super::SecretBytes;
-use super::{decode_id, encode_base58, level, public_of, purpose, random_secret, Id, KeyBounds};
+use super::{
+    decode_id, encode_base58, level, public_key_of, purpose, random_secret, Id, KeyBounds,
+};
 use crate::keystore::{self, Secret};
 use crate::network::{ForgeIds, Network};
 
@@ -90,20 +90,15 @@ pub fn forge_request(
 }
 
 /// A sign-in request in flight. Its ephemeral private key stays in memory and is wiped on drop.
+/// Read-only, so the request polled for is always the one the link carries.
 #[derive(Debug)]
 pub struct LoginRequest {
-    /// The request.
-    pub request: Request,
-    /// The `dash-key:` link to show as a QR code and as text.
-    pub uri: String,
-    /// `hash160(appEphemeralPub)`: what the answers are stored under.
-    pub request_hash: [u8; 20],
-    /// `CREATED_AT`, this machine's clock (ms).
-    pub created_at_ms: u64,
-    /// When the poll stops: the protocol's 10 minutes after `created_at_ms`.
-    pub expires_at_ms: u64,
-    /// Chain time at `created_at_ms`: the verifier's clock is this plus the time elapsed here.
-    pub chain_time_at_creation_ms: u64,
+    request: Request,
+    uri: String,
+    request_hash: [u8; 20],
+    created_at_ms: u64,
+    expires_at_ms: u64,
+    chain_time_at_creation_ms: u64,
     secret: SecretBytes,
 }
 
@@ -119,8 +114,9 @@ impl LoginRequest {
         p: &LoginParams,
         secret: SecretBytes,
     ) -> crate::Result<Self> {
-        let key = ephemeral(&secret);
-        let request = forge_request(forge, public_of(&key).serialize(), p)?;
+        let app_pub = public_key_of(secret.expose())
+            .ok_or_else(|| crate::Error::Config("not a secp256k1 private key".into()))?;
+        let request = forge_request(forge, app_pub, p)?;
         let uri = request::build_uri(&request, network)
             .map_err(|e| crate::Error::Config(e.to_string()))?;
         Ok(Self {
@@ -133,10 +129,27 @@ impl LoginRequest {
             secret,
         })
     }
-}
 
-fn ephemeral(secret: &SecretBytes) -> SecretKey {
-    SecretKey::from_slice(secret.expose()).expect("drawn as a valid secp256k1 key")
+    /// The request.
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
+
+    /// The `dash-key:` link to show as a QR code and as text.
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    /// `hash160(appEphemeralPub)`: what the answers are stored under.
+    pub fn request_hash(&self) -> &[u8; 20] {
+        &self.request_hash
+    }
+
+    /// When the poll gives up: the protocol's 10 minutes after `CREATED_AT` (this machine's
+    /// clock, ms).
+    pub fn expires_at_ms(&self) -> u64 {
+        self.expires_at_ms
+    }
 }
 
 /// The key a wallet granted Forge, checked by the verifier and by Forge's rules: a live
@@ -148,7 +161,9 @@ pub struct WalletGrant {
     pub identity_id: String,
     /// The key's id on that identity.
     pub key_id: u32,
-    /// Its key type ([`super::key_type`]); the released wallets register `ECDSA_HASH160`.
+    /// Its key type ([`super::key_type`]). The released wallets register `ECDSA_HASH160`, which
+    /// [`crate::platform::WriteEngine`] does not select yet: it signs with `ECDSA_SECP256K1`
+    /// keys only, so the `dg` command that stores this key must widen that first.
     pub key_type: u8,
     /// Its lifetime budget, in credits (the wallet may have clamped what Forge proposed).
     pub total_budget: u64,
@@ -177,7 +192,8 @@ impl WalletGrant {
 }
 
 /// Forge's own rules over a verified grant: exactly one key, for the group binding, at
-/// AUTHENTICATION / HIGH, bound to the dash-forge group, with a budget left and an expiry.
+/// AUTHENTICATION / HIGH, bound to the dash-forge group, with a budget left and an expiry, and
+/// a private key that is one.
 pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, RejectReason> {
     let mut auth = grant.auth_keys.into_iter();
     let (Some(main), None, true) = (auth.next(), auth.next(), grant.encryption_keys.is_empty())
@@ -186,6 +202,9 @@ pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, Reject
     };
     if main.role != verify::KeyRole::ContractGroup {
         return Err(RejectReason::Framing);
+    }
+    if public_key_of(main.private_key.expose()).is_none() {
+        return Err(RejectReason::InvalidKey);
     }
     let key = &main.key;
     if key.purpose != purpose::AUTHENTICATION || key.security_level != level::HIGH {
@@ -244,9 +263,11 @@ pub enum LoginError {
         "so many answers reached this sign-in request that Forge can't check them all; start again and keep the QR code private"
     )]
     TooManyAnswers,
-    /// Nobody answered within the protocol's 10 minutes.
-    #[error("the sign-in request expired before a wallet answered it; start again")]
-    Expired,
+    /// Nobody answered within the protocol's 10 minutes. Carries the last failed read of
+    /// Platform, when the last round's read failed (a node down, or no App Connect contract).
+    #[error("the sign-in request expired before a wallet answered it; start again{}",
+        .0.as_ref().map(|e| format!(" (the last read of Platform failed: {e})")).unwrap_or_default())]
+    Expired(Option<String>),
     /// The sole answer is one Forge will not use.
     #[error("{} Forge didn't use it. Start again; if it happens again, sign in another way.", refusal_message(*.0))]
     Refused(RejectReason),
@@ -288,6 +309,40 @@ impl Default for PollOptions<'static> {
     }
 }
 
+/// An answer's outcome: its grant or why Forge will not use it, or `None` to check it again.
+type Outcome = Option<Result<WalletGrant, RejectReason>>;
+
+/// One answer to `req`, or `None` when it is not one (another request's, or tampered): it did
+/// not open with this request's key.
+async fn check_answer<P: IdentityPort>(
+    port: &P,
+    req: &LoginRequest,
+    forge: &ForgeIds,
+    candidate: &verify::Candidate,
+    chain_now_ms: u64,
+) -> Option<Outcome> {
+    let ctx = VerifyContext {
+        request: &req.request,
+        identity: port,
+        now_ms: chain_now_ms,
+        expiry_margin_ms: verify::EXPIRY_MARGIN_MS,
+    };
+    match verify::verify_candidate(&ctx, &req.secret, candidate).await {
+        Ok(Err(r))
+            if matches!(
+                r.reason,
+                RejectReason::Decrypt | RejectReason::Framing | RejectReason::HintMismatch
+            ) =>
+        {
+            None
+        }
+        Ok(Ok(grant)) => Some(Some(forge_grant(grant, forge))),
+        Ok(Err(r)) if !r.retryable() => Some(Some(Err(r.reason))),
+        // A lagging read, or a read that failed past the decryption: check it again.
+        Ok(Err(_)) | Err(_) => Some(None),
+    }
+}
+
 /// Poll the App Connect contract until an identity's answer to `req` is verified, then keep
 /// polling for the settle window for a competing answer before returning it; only rounds that
 /// read every answer count towards that window. Every answer that opens with this request's
@@ -308,20 +363,20 @@ pub async fn await_forge_grant<P: IdentityPort + ResponsePort>(
     let now = opts.now_ms;
     let hint = req.request.identity_hint;
     let settle_ms = if hint.is_some() { 0 } else { opts.settle_ms };
-    let secret = ephemeral(&req.secret);
     // Per answering identity: its outcome, or `None` to check again.
-    let mut answered: BTreeMap<Id, Option<Result<WalletGrant, RejectReason>>> = BTreeMap::new();
+    let mut answered: BTreeMap<Id, Outcome> = BTreeMap::new();
     // Every identity whose answer opened with this request's key.
     let mut responders: BTreeSet<Id> = BTreeSet::new();
     // Answers already found not to be answers to this request, by exact contents.
     let mut not_answers: HashSet<(Id, [u8; 32])> = HashSet::new();
     let mut clean_since: Option<u64> = None;
     let mut first_at: Option<u64> = None;
+    let mut last_read_error: Option<String>;
 
     loop {
         // A failed read is never "no answers": the round does not count towards the settle
         // window.
-        let page = poll::list_candidates(
+        let page = match poll::list_candidates(
             port,
             &req.request_hash,
             hint.as_ref(),
@@ -329,7 +384,16 @@ pub async fn await_forge_grant<P: IdentityPort + ResponsePort>(
             poll::MAX_CANDIDATES,
         )
         .await
-        .ok();
+        {
+            Ok(page) => {
+                last_read_error = None;
+                Some(page)
+            }
+            Err(e) => {
+                last_read_error = Some(e.to_string());
+                None
+            }
+        };
         if page.as_ref().is_some_and(|p| p.truncated) {
             return Err(LoginError::TooManyAnswers);
         }
@@ -342,28 +406,13 @@ pub async fn await_forge_grant<P: IdentityPort + ResponsePort>(
             if not_answers.contains(&contents) {
                 continue;
             }
-            let ctx = VerifyContext {
-                request: &req.request,
-                identity: port,
-                now_ms: req
-                    .chain_time_at_creation_ms
-                    .saturating_add(now().saturating_sub(req.created_at_ms)),
-                expiry_margin_ms: verify::EXPIRY_MARGIN_MS,
-            };
-            let answer = match verify::verify_candidate(&ctx, &secret, &candidate).await {
-                Ok(Err(r))
-                    if matches!(
-                        r.reason,
-                        RejectReason::Decrypt | RejectReason::Framing | RejectReason::HintMismatch
-                    ) =>
-                {
-                    not_answers.insert(contents);
-                    continue;
-                }
-                Ok(Ok(grant)) => Some(forge_grant(grant, forge)),
-                Ok(Err(r)) if !r.retryable() => Some(Err(r.reason)),
-                // A lagging read, or a read that failed past the decryption: check it again.
-                Ok(Err(_)) | Err(_) => None,
+            let chain_now_ms = req
+                .chain_time_at_creation_ms
+                .saturating_add(now().saturating_sub(req.created_at_ms));
+            let Some(answer) = check_answer(port, &req, forge, &candidate, chain_now_ms).await
+            else {
+                not_answers.insert(contents);
+                continue;
             };
             // It opened: this identity saw the QR code and answered, whatever its key is.
             responders.insert(candidate.owner_id);
@@ -406,7 +455,7 @@ pub async fn await_forge_grant<P: IdentityPort + ResponsePort>(
             .interval_ms
             .or_else(|| poll::poll_delay_ms(t.saturating_sub(req.created_at_ms)));
         let Some(delay) = delay.filter(|_| t < req.expires_at_ms) else {
-            return Err(LoginError::Expired);
+            return Err(LoginError::Expired(last_read_error));
         };
         tokio::time::sleep(Duration::from_millis(delay)).await;
     }
@@ -415,7 +464,7 @@ pub async fn await_forge_grant<P: IdentityPort + ResponsePort>(
 #[cfg(test)]
 mod tests {
     use super::super::crypto;
-    use super::super::test_vectors::seed;
+    use super::super::test_vectors::{secret, seed, VECTOR_CREATED_AT as T0};
     use super::super::verify::tests::FakeChain;
     use super::super::verify::Candidate;
     use super::super::{hash160, key_type, ChainKey};
@@ -423,7 +472,6 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    const T0: u64 = 1_791_676_800_000;
     const CHAIN_T0: u64 = T0 - 5_000;
     const DAY: u64 = 24 * 60 * 60 * 1000;
 
@@ -444,10 +492,6 @@ mod tests {
             now_ms: T0,
             identity_hint: hint,
         }
-    }
-
-    fn login_hinted() -> LoginRequest {
-        login(Some(seed("alice")))
     }
 
     fn login(hint: Option<Id>) -> LoginRequest {
@@ -481,7 +525,8 @@ mod tests {
     /// The fake chain and the answers published so far.
     struct World {
         chain: Mutex<FakeChain>,
-        answers: Mutex<Vec<Candidate>>,
+        /// Each answer with the request hash it is stored under.
+        answers: Mutex<Vec<([u8; 20], Candidate)>>,
         fail_reads: Mutex<u32>,
     }
 
@@ -500,24 +545,30 @@ mod tests {
             chain.budgets.insert(4, 4_000_000_000);
         }
 
-        /// `owner` answers `req` with its key, sealed to `sealed_for`.
-        fn answer(&self, req: &LoginRequest, owner: &str, sealed_for: &str) {
-            let wallet = SecretKey::from_slice(&seed(&format!("{owner} wallet eph"))).unwrap();
+        /// `owner` answers `request` with its key, sealed to `sealed_for`.
+        fn answer(&self, request: &Request, owner: &str, sealed_for: &str) {
+            self.answer_with(request, owner, sealed_for, &[seed(&format!("{owner} key"))]);
+        }
+
+        fn answer_with(&self, request: &Request, owner: &str, sealed_for: &str, keys: &[[u8; 32]]) {
             let (pub_key, payload) = crypto::seal_with(
-                &req.request.app_ephemeral_pub_key,
+                &request.app_ephemeral_pub_key,
                 &seed(sealed_for),
-                &[seed(&format!("{owner} key"))],
-                &wallet,
+                keys,
+                &secret(&format!("{owner} wallet eph")),
                 [1; 12],
             )
             .unwrap();
             let mut answers = self.answers.lock().unwrap();
-            answers.push(Candidate {
-                owner_id: seed(owner),
-                wallet_ephemeral_pub_key: pub_key.to_vec(),
-                encrypted_payload: payload,
-            });
-            answers.sort_by_key(|c| c.owner_id);
+            answers.push((
+                request::request_hash(request),
+                Candidate {
+                    owner_id: seed(owner),
+                    wallet_ephemeral_pub_key: pub_key.to_vec(),
+                    encrypted_payload: payload,
+                },
+            ));
+            answers.sort_by_key(|(_, c)| c.owner_id);
         }
     }
 
@@ -527,10 +578,7 @@ mod tests {
             Ok(self.chain.lock().unwrap().identities.get(id).cloned())
         }
         async fn remaining_budgets(&self, _: &Id, k: &[u32]) -> crate::Result<BTreeMap<u32, u64>> {
-            let chain = self.chain.lock().unwrap();
-            Ok(k.iter()
-                .filter_map(|id| chain.budgets.get(id).map(|b| (*id, *b)))
-                .collect())
+            Ok(self.chain.lock().unwrap().remaining(k))
         }
         async fn contract_keys(&self, _: &Id, _: &Id, _: u8) -> crate::Result<Vec<ChainKey>> {
             panic!("Forge asks for no encryption key")
@@ -546,7 +594,6 @@ mod tests {
             after: Option<&Id>,
             limit: u32,
         ) -> crate::Result<Vec<Candidate>> {
-            assert_eq!(hash.len(), 20);
             {
                 let mut fail = self.fail_reads.lock().unwrap();
                 if *fail > 0 {
@@ -559,6 +606,8 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
+                .filter(|(h, _)| h == hash)
+                .map(|(_, c)| c)
                 .filter(|c| hint.is_none_or(|h| *h == c.owner_id))
                 .filter(|c| after.is_none_or(|a| c.owner_id > *a))
                 .take(limit as usize)
@@ -581,7 +630,7 @@ mod tests {
     #[test]
     fn forge_request_is_one_group_bound_high_key_with_the_proposed_limits() {
         let req = login(None);
-        let r = &req.request;
+        let r = req.request();
         assert_eq!(r.label, "Dash Forge");
         assert_eq!(r.app_id, seed("forge core"));
         assert_eq!(r.auth_bindings.len(), 1);
@@ -594,10 +643,10 @@ mod tests {
         assert!(r.enc_bindings.is_empty());
         assert_eq!(r.mode, None);
         assert_eq!(r.created_at_ms, T0);
-        assert_eq!(req.expires_at_ms, T0 + 600_000);
-        assert!(req.uri.starts_with("dash-key:"));
-        assert!(req.uri.ends_with("?n=t&v=2"));
-        assert_eq!(req.request_hash, hash160(&r.app_ephemeral_pub_key));
+        assert_eq!(req.expires_at_ms(), T0 + 600_000);
+        assert!(req.uri().starts_with("dash-key:"));
+        assert!(req.uri().ends_with("?n=t&v=2"));
+        assert_eq!(*req.request_hash(), hash160(&r.app_ephemeral_pub_key));
         assert_eq!(request::decode(&request::encode(r).unwrap()).unwrap(), *r);
         assert!(!format!("{req:?}").contains(&hex::encode(seed("forge app ephemeral"))));
     }
@@ -612,20 +661,20 @@ mod tests {
         let v = ts_vectors();
         assert_eq!(v["inputs"]["forgeCore"], forge().core);
         assert_eq!(v["inputs"]["forgeGroup"], forge().group);
-        let login = login(None);
-        let bytes = request::encode(&login.request).unwrap();
+        let first = login(None);
+        let bytes = request::encode(first.request()).unwrap();
         assert_eq!(hex::encode(bytes), v["login"]["bytes"].as_str().unwrap());
-        assert_eq!(login.uri, v["login"]["uri"].as_str().unwrap());
+        assert_eq!(first.uri(), v["login"]["uri"].as_str().unwrap());
         assert_eq!(
-            hex::encode(login.request_hash),
+            hex::encode(first.request_hash()),
             v["login"]["requestHash"].as_str().unwrap()
         );
 
-        let renewal = login_hinted();
-        let bytes = request::encode(&renewal.request).unwrap();
+        let renewal = login(Some(seed("alice")));
+        let bytes = request::encode(renewal.request()).unwrap();
         assert_eq!(hex::encode(bytes), v["renewal"]["bytes"].as_str().unwrap());
         assert_eq!(
-            request::build_uri(&renewal.request, &Network::Mainnet).unwrap(),
+            request::build_uri(renewal.request(), &Network::Mainnet).unwrap(),
             v["renewal"]["uri"].as_str().unwrap()
         );
     }
@@ -636,15 +685,15 @@ mod tests {
         let world = World::new();
         world.register("alice", wallet_key("alice"));
         let req = login(None);
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         {
             let answers = world.answers.lock().unwrap();
             assert_eq!(
-                hex::encode(&answers[0].wallet_ephemeral_pub_key),
+                hex::encode(&answers[0].1.wallet_ephemeral_pub_key),
                 v["answer"]["walletEphemeralPubKey"].as_str().unwrap()
             );
             assert_eq!(
-                hex::encode(&answers[0].encrypted_payload),
+                hex::encode(&answers[0].1.encrypted_payload),
                 v["answer"]["encryptedPayload"].as_str().unwrap()
             );
         }
@@ -657,8 +706,8 @@ mod tests {
     #[test]
     fn a_renewal_carries_the_hint_and_no_mode() {
         let req = login(Some(seed("alice")));
-        assert_eq!(req.request.identity_hint, Some(seed("alice")));
-        assert_eq!(req.request.mode, None);
+        assert_eq!(req.request().identity_hint, Some(seed("alice")));
+        assert_eq!(req.request().mode, None);
     }
 
     #[test]
@@ -674,7 +723,7 @@ mod tests {
         let world = World::new();
         world.register("alice", wallet_key("alice"));
         let req = login(None);
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         let started = tokio::time::Instant::now();
         let grant = run(&world, req).await.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(SETTLE_MS));
@@ -707,7 +756,7 @@ mod tests {
             .identities
             .insert(seed("alice"), vec![]);
         let req = login(None);
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         let poll = run(&world, req);
         tokio::pin!(poll);
         tokio::select! {
@@ -723,19 +772,14 @@ mod tests {
         let world = World::new();
         world.register("alice", wallet_key("alice"));
         let req = login(None);
-        let hash = req.request_hash;
-        let answer = {
-            let r = login(None);
-            assert_eq!(r.request_hash, hash);
-            r
-        };
+        let request = req.request().clone();
         let poll = run(&world, req);
         tokio::pin!(poll);
         tokio::select! {
             r = &mut poll => panic!("nobody answered yet: {r:?}"),
             () = tokio::time::sleep(Duration::from_secs(90)) => {}
         }
-        world.answer(&answer, "alice", "alice");
+        world.answer(&request, "alice", "alice");
         assert!(poll.await.is_ok());
     }
 
@@ -745,8 +789,8 @@ mod tests {
         world.register("alice", wallet_key("alice"));
         world.register("mallory", wallet_key("mallory"));
         let req = login(None);
-        world.answer(&req, "alice", "alice");
-        world.answer(&req, "mallory", "mallory");
+        world.answer(req.request(), "alice", "alice");
+        world.answer(req.request(), "mallory", "mallory");
         let err = run(&world, req).await.unwrap_err();
         let LoginError::Ambiguous(ids) = &err else {
             panic!("{err:?}")
@@ -762,8 +806,8 @@ mod tests {
         master.security_level = level::MASTER;
         world.register("mallory", master);
         let req = login(None);
-        world.answer(&req, "alice", "alice");
-        world.answer(&req, "mallory", "mallory");
+        world.answer(req.request(), "alice", "alice");
+        world.answer(req.request(), "mallory", "mallory");
         assert!(matches!(
             run(&world, req).await,
             Err(LoginError::Ambiguous(_))
@@ -775,9 +819,9 @@ mod tests {
         let world = World::new();
         world.register("alice", wallet_key("alice"));
         let req = login(None);
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         // Copied under another identity: the AAD does not match, so it is not an answer.
-        world.answer(&req, "mallory", "alice");
+        world.answer(req.request(), "mallory", "alice");
         assert_eq!(
             run(&world, req).await.unwrap().identity_id,
             encode_base58(&seed("alice"))
@@ -791,7 +835,7 @@ mod tests {
         unlimited.expires_at_ms = Some(CHAIN_T0 + 10 * 60_000);
         world.register("alice", unlimited);
         let req = login(None);
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         let err = run(&world, req).await.unwrap_err();
         assert_eq!(err, LoginError::Refused(RejectReason::KeyExpired));
         assert!(err.to_string().contains("expires within the hour"));
@@ -802,7 +846,7 @@ mod tests {
         let world = World::new();
         world.register("alice", wallet_key("alice"));
         let req = login(Some(seed("alice")));
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         let started = tokio::time::Instant::now();
         assert!(run(&world, req).await.is_ok());
         assert_eq!(started.elapsed(), Duration::ZERO);
@@ -812,7 +856,7 @@ mod tests {
         disabled.disabled = true;
         world.register("alice", disabled);
         let req = login(Some(seed("alice")));
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         assert_eq!(
             run(&world, req).await,
             Err(LoginError::Refused(RejectReason::KeyDisabled))
@@ -824,14 +868,49 @@ mod tests {
         let world = World::new();
         let req = login(None);
         for i in 0..=poll::MAX_CANDIDATES {
-            world.answer(&req, &format!("spam {i}"), &format!("spam {i}"));
+            world.answer(req.request(), &format!("spam {i}"), &format!("spam {i}"));
         }
         assert_eq!(run(&world, req).await, Err(LoginError::TooManyAnswers));
 
         let world = World::new();
         let started = tokio::time::Instant::now();
-        assert_eq!(run(&world, login(None)).await, Err(LoginError::Expired));
+        assert_eq!(
+            run(&world, login(None)).await,
+            Err(LoginError::Expired(None))
+        );
         assert!(started.elapsed() >= Duration::from_millis(request::MAX_REQUEST_AGE_MS));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_says_when_platform_could_not_be_read() {
+        let world = World::new();
+        *world.fail_reads.lock().unwrap() = u32::MAX;
+        let err = run(&world, login(None)).await.unwrap_err();
+        assert!(
+            matches!(&err, LoginError::Expired(Some(e)) if e.contains("node down")),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("the last read of Platform failed"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_with_extra_keys_still_counts_as_an_identity_answering() {
+        let world = World::new();
+        world.register("alice", wallet_key("alice"));
+        world.register("bob", wallet_key("bob"));
+        let req = login(None);
+        world.answer(req.request(), "alice", "alice");
+        // It opens with this request's key, so bob answered, even with a key nobody asked for.
+        world.answer_with(
+            req.request(),
+            "bob",
+            "bob",
+            &[seed("bob key"), seed("bob extra")],
+        );
+        assert!(matches!(
+            run(&world, req).await,
+            Err(LoginError::Ambiguous(_))
+        ));
     }
 
     #[tokio::test(start_paused = true)]
@@ -839,13 +918,16 @@ mod tests {
         let world = World::new();
         world.register("alice", wallet_key("alice"));
         let req = login(None);
-        world.answer(&req, "alice", "alice");
+        world.answer(req.request(), "alice", "alice");
         *world.fail_reads.lock().unwrap() = 3;
         let started = tokio::time::Instant::now();
         assert!(run(&world, req).await.is_ok());
         // Three failed rounds (2 s apart), then the settle window from the first clean read.
         assert!(started.elapsed() >= Duration::from_millis(3 * 2_000 + SETTLE_MS));
     }
+
+    /// A Forge-rule case: its name, a change to the wallet key, the budget left, the refusal.
+    type RuleCase = (&'static str, fn(&mut ChainKey), Option<u64>, RejectReason);
 
     #[test]
     fn forge_rules_refuse_what_the_verifier_alone_would_accept() {
@@ -861,29 +943,46 @@ mod tests {
             encryption_keys: vec![],
         };
         assert!(forge_grant(granted(wallet_key("alice"), Some(1)), &forge()).is_ok());
-        let mut critical = wallet_key("alice");
-        critical.security_level = level::CRITICAL;
+        let cases: [RuleCase; 5] = [
+            (
+                "CRITICAL",
+                |k| k.security_level = level::CRITICAL,
+                Some(1),
+                RejectReason::KeyLevel,
+            ),
+            (
+                "another group",
+                |k| {
+                    k.bounds = Some(KeyBounds::ContractGroup {
+                        group_id: seed("other group"),
+                    });
+                },
+                Some(1),
+                RejectReason::KeyUnmatched,
+            ),
+            (
+                "no expiry",
+                |k| k.expires_at_ms = None,
+                Some(1),
+                RejectReason::KeyLimits,
+            ),
+            ("spent", |_| {}, Some(0), RejectReason::BudgetExhausted),
+            ("budget unread", |_| {}, None, RejectReason::BudgetUnknown),
+        ];
+        for (name, change, remaining, reason) in cases {
+            let mut key = wallet_key("alice");
+            change(&mut key);
+            assert_eq!(
+                forge_grant(granted(key, remaining), &forge()),
+                Err(reason),
+                "{name}"
+            );
+        }
+        let mut not_a_key = granted(wallet_key("alice"), Some(1));
+        not_a_key.auth_keys[0].private_key = SecretBytes::new([0; 32]);
         assert_eq!(
-            forge_grant(granted(critical, Some(1)), &forge()),
-            Err(RejectReason::KeyLevel)
-        );
-        let mut other = wallet_key("alice");
-        other.bounds = Some(KeyBounds::ContractGroup {
-            group_id: seed("other group"),
-        });
-        assert_eq!(
-            forge_grant(granted(other, Some(1)), &forge()),
-            Err(RejectReason::KeyUnmatched)
-        );
-        let mut no_expiry = wallet_key("alice");
-        no_expiry.expires_at_ms = None;
-        assert_eq!(
-            forge_grant(granted(no_expiry, Some(1)), &forge()),
-            Err(RejectReason::KeyLimits)
-        );
-        assert_eq!(
-            forge_grant(granted(wallet_key("alice"), Some(0)), &forge()),
-            Err(RejectReason::BudgetExhausted)
+            forge_grant(not_a_key, &forge()),
+            Err(RejectReason::InvalidKey)
         );
         let mut two = granted(wallet_key("alice"), Some(1));
         two.auth_keys.push(two.auth_keys[0].clone());

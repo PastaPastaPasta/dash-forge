@@ -16,7 +16,7 @@ use secp256k1::{PublicKey, SecretKey};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use super::{hash160, public_of, Id, SecretBytes};
+use super::{hash160, public_of, with_secret_key, Id, SecretBytes};
 
 /// The HKDF `info` of the session key.
 pub const HKDF_INFO: &[u8] = b"app-connect:v2";
@@ -76,7 +76,7 @@ pub fn session_key(secret: &SecretKey, public: &PublicKey) -> Zeroizing<[u8; 32]
 
 /// App side: checks the framing and the tag, and returns the slots in payload order.
 pub fn open(
-    app_ephemeral_secret: &SecretKey,
+    app_ephemeral_secret: &SecretBytes,
     owner_id: &Id,
     wallet_ephemeral_pub_key: &[u8],
     encrypted_payload: &[u8],
@@ -84,8 +84,10 @@ pub fn open(
     let slots = slot_count(encrypted_payload.len()).ok_or(PayloadError::Framing)?;
     let wallet =
         PublicKey::from_slice(wallet_ephemeral_pub_key).map_err(|_| PayloadError::Decrypt)?;
-    let app_pub = public_of(app_ephemeral_secret).serialize();
-    let key = session_key(app_ephemeral_secret, &wallet);
+    let (app_pub, key) = with_secret_key(app_ephemeral_secret.expose(), |secret| {
+        (public_of(secret).serialize(), session_key(secret, &wallet))
+    })
+    .ok_or(PayloadError::Decrypt)?;
     let (nonce, sealed) = encrypted_payload.split_at(NONCE_BYTES);
     let plain = Zeroizing::new(
         Aes256Gcm::new_from_slice(key.as_ref())
@@ -144,19 +146,14 @@ pub fn seal_with(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_vectors::{hex, nonce, seed, vectors, yappr_request};
+    use super::super::test_vectors::{
+        hex, hex_list, nonce, secret, seed, slot_seeds as slots, vectors, yappr_request,
+    };
     use super::*;
 
-    fn secret(label: &str) -> SecretKey {
-        SecretKey::from_slice(&seed(label)).unwrap()
-    }
-
-    fn slots() -> [[u8; 32]; 3] {
-        [
-            seed("slot group key"),
-            seed("slot dashpay profile key"),
-            seed("slot encryption key"),
-        ]
+    /// The app's ephemeral key as the app side holds it.
+    fn app(label: &str) -> SecretBytes {
+        SecretBytes::new(seed(label))
     }
 
     #[test]
@@ -188,28 +185,16 @@ mod tests {
             .iter()
             .map(|s| super::super::public_key_of(s).unwrap().to_vec())
             .collect();
-        let expected: Vec<Vec<u8>> = r["slotPublicKeys"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(hex)
-            .collect();
-        assert_eq!(pubs, expected);
+        assert_eq!(pubs, hex_list(&r["slotPublicKeys"]));
         let hashes: Vec<Vec<u8>> = pubs.iter().map(|p| hash160(p).to_vec()).collect();
-        let expected: Vec<Vec<u8>> = r["slotPublicKeyHashes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(hex)
-            .collect();
-        assert_eq!(hashes, expected);
+        assert_eq!(hashes, hex_list(&r["slotPublicKeyHashes"]));
     }
 
     #[test]
     fn opens_the_vector_payload_on_the_app_side() {
         let v = vectors();
         let opened = open(
-            &secret("app ephemeral"),
+            &app("app ephemeral"),
             &seed("owner"),
             &hex(&v["response"]["walletEphemeralPubKey"]),
             &hex(&v["response"]["encryptedPayload"]),
@@ -236,14 +221,14 @@ mod tests {
         let (wallet, payload) = sealed(&seed("owner"));
         assert_eq!(payload.len(), 28 + 64);
         assert_eq!(
-            open(&secret("app ephemeral"), &seed("owner"), &wallet, &payload)
+            open(&app("app ephemeral"), &seed("owner"), &wallet, &payload)
                 .unwrap()
                 .len(),
             2
         );
         assert_eq!(
             open(
-                &secret("app ephemeral"),
+                &app("app ephemeral"),
                 &seed("someone else"),
                 &wallet,
                 &payload
@@ -251,12 +236,7 @@ mod tests {
             Err(PayloadError::Decrypt)
         );
         assert_eq!(
-            open(
-                &secret("another request"),
-                &seed("owner"),
-                &wallet,
-                &payload
-            ),
+            open(&app("another request"), &seed("owner"), &wallet, &payload),
             Err(PayloadError::Decrypt)
         );
     }
@@ -268,7 +248,7 @@ mod tests {
             let mut p = payload.clone();
             p[i] ^= 1;
             assert_eq!(
-                open(&secret("app ephemeral"), &seed("owner"), &wallet, &p),
+                open(&app("app ephemeral"), &seed("owner"), &wallet, &p),
                 Err(PayloadError::Decrypt)
             );
         }
@@ -276,7 +256,7 @@ mod tests {
         not_a_point[0] = 2;
         assert_eq!(
             open(
-                &secret("app ephemeral"),
+                &app("app ephemeral"),
                 &seed("owner"),
                 &not_a_point,
                 &payload
@@ -292,7 +272,7 @@ mod tests {
             assert_eq!(slot_count(len), None, "length {len}");
             assert_eq!(
                 open(
-                    &secret("app ephemeral"),
+                    &app("app ephemeral"),
                     &seed("owner"),
                     &wallet,
                     &vec![0; len]

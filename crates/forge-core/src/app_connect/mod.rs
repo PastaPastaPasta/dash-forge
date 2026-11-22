@@ -161,10 +161,18 @@ fn public_of(secret: &secp256k1::SecretKey) -> secp256k1::PublicKey {
     secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::signing_only(), secret)
 }
 
+/// `f` over `secret` as a secp256k1 key, wiped afterwards (`SecretKey` does not wipe itself);
+/// `None` when the bytes are not a private key.
+fn with_secret_key<T>(secret: &[u8; 32], f: impl FnOnce(&secp256k1::SecretKey) -> T) -> Option<T> {
+    let mut key = secp256k1::SecretKey::from_slice(secret).ok()?;
+    let out = f(&key);
+    key.non_secure_erase();
+    Some(out)
+}
+
 /// The compressed public key of a 32-byte private key, or `None` when it is not one.
 fn public_key_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
-    let secret = secp256k1::SecretKey::from_slice(secret).ok()?;
-    Some(public_of(&secret).serialize())
+    with_secret_key(secret, |key| public_of(key).serialize())
 }
 
 /// A fresh random secp256k1 private key from the OS RNG.
@@ -200,6 +208,24 @@ pub(crate) mod test_vectors {
 
     pub fn hex(v: &Value) -> Vec<u8> {
         hex::decode(v.as_str().unwrap()).unwrap()
+    }
+
+    pub fn hex_list(v: &Value) -> Vec<Vec<u8>> {
+        v.as_array().unwrap().iter().map(hex).collect()
+    }
+
+    /// The three granted keys of the vectors: group, DashPay profile, encryption.
+    pub fn slot_seeds() -> [[u8; 32]; 3] {
+        [
+            "slot group key",
+            "slot dashpay profile key",
+            "slot encryption key",
+        ]
+        .map(seed)
+    }
+
+    pub fn secret(label: &str) -> secp256k1::SecretKey {
+        secp256k1::SecretKey::from_slice(&seed(label)).unwrap()
     }
 
     /// `sha256("dash app-connect v2 vector/" + label)`.
@@ -297,20 +323,9 @@ pub(crate) mod test_vectors {
         }
         assert_eq!(inputs["createdAt"], VECTOR_CREATED_AT);
         assert_eq!(inputs["expiresAt"], VECTOR_CREATED_AT + NINETY_DAYS_MS);
-        let slots: Vec<Vec<u8>> = inputs["slotPrivateKeys"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(hex)
-            .collect();
         assert_eq!(
-            slots,
-            [
-                "slot group key",
-                "slot dashpay profile key",
-                "slot encryption key"
-            ]
-            .map(|l| seed(l).to_vec())
+            hex_list(&inputs["slotPrivateKeys"]),
+            slot_seeds().map(|s| s.to_vec())
         );
     }
 }

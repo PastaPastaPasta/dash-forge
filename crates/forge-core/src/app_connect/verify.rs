@@ -13,12 +13,9 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use secp256k1::SecretKey;
 
 use super::request::{AuthBinding, BindingKind, Request};
-use super::{
-    crypto, hash160, key_type, level, public_key_of, purpose, ChainKey, Id, KeyBounds, SecretBytes,
-};
+use super::{crypto, hash160, key_type, level, public_key_of, purpose, ChainKey, Id, SecretBytes};
 use crate::Result;
 
 /// A granted key must stay valid this long past `now` to be accepted.
@@ -65,8 +62,12 @@ pub struct Candidate {
 pub enum RejectReason {
     /// The request named an identity and the candidate is someone else.
     HintMismatch,
-    /// The payload's length, or more slots than bindings.
+    /// The payload's length is not `28 + 32n` with `1 <= n <= 17`.
     Framing,
+    /// The payload opened but holds more keys than the request has bindings. `verify.ts` calls
+    /// this `framing` too; it is separate here so a poll counts the identity as having answered
+    /// (it opened with this request's key) instead of skipping it as not an answer.
+    ExtraKeys,
     /// Wrong request, wrong owner (a copied response) or tampered ciphertext.
     Decrypt,
     /// A slot is not a private key.
@@ -103,6 +104,15 @@ pub enum RejectReason {
     DuplicateBinding,
     /// The first binding is not granted.
     PrimaryMissing,
+}
+
+impl From<crypto::PayloadError> for RejectReason {
+    fn from(e: crypto::PayloadError) -> Self {
+        match e {
+            crypto::PayloadError::Framing => Self::Framing,
+            crypto::PayloadError::Decrypt => Self::Decrypt,
+        }
+    }
 }
 
 impl RejectReason {
@@ -218,7 +228,7 @@ pub struct VerifyContext<'a> {
 /// Verify one candidate against the request it answers. `Err` is a failed chain read only.
 pub async fn verify_candidate(
     ctx: &VerifyContext<'_>,
-    app_ephemeral_secret: &SecretKey,
+    app_ephemeral_secret: &SecretBytes,
     candidate: &Candidate,
 ) -> Result<Verification> {
     if ctx
@@ -235,12 +245,7 @@ pub async fn verify_candidate(
         &candidate.encrypted_payload,
     ) {
         Ok(slots) => slots,
-        Err(crypto::PayloadError::Framing) => {
-            return Ok(Err(Rejection::new(RejectReason::Framing)))
-        }
-        Err(crypto::PayloadError::Decrypt) => {
-            return Ok(Err(Rejection::new(RejectReason::Decrypt)))
-        }
+        Err(e) => return Ok(Err(Rejection::new(e.into()))),
     };
     verify_keys(ctx, &candidate.owner_id, slots).await
 }
@@ -255,7 +260,7 @@ pub async fn verify_keys(
 ) -> Result<Verification> {
     let request = ctx.request;
     if slots.len() > request.auth_bindings.len() + request.enc_bindings.len() {
-        return Ok(Err(Rejection::new(RejectReason::Framing)));
+        return Ok(Err(Rejection::new(RejectReason::ExtraKeys)));
     }
     let Some(keys) = ctx.identity.identity_keys(owner_id).await? else {
         return Ok(Err(Rejection::new(RejectReason::IdentityNotFound)));
@@ -402,13 +407,11 @@ fn match_binding(
         return Ok((KeyRole::of(binding.kind), index));
     }
 
-    let Some(index) = request.enc_bindings.iter().position(|b| {
-        b.purpose == key.purpose
-            && *bounds
-                == KeyBounds::SingleContract {
-                    contract_id: b.contract_id,
-                }
-    }) else {
+    let Some(index) = request
+        .enc_bindings
+        .iter()
+        .position(|b| b.purpose == key.purpose && b.bounds() == *bounds)
+    else {
         return reject(RejectReason::KeyUnmatched);
     };
     if key.security_level != level::MEDIUM {
@@ -467,8 +470,9 @@ fn check_key_limits(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::super::test_vectors::{
-        dashpay, seed, yappr_request, NINETY_DAYS_MS, VECTOR_CREATED_AT,
+        dashpay, secret, seed, slot_seeds, yappr_request, NINETY_DAYS_MS, VECTOR_CREATED_AT,
     };
+    use super::super::KeyBounds;
     use super::*;
     use std::collections::HashMap;
 
@@ -550,6 +554,16 @@ pub(crate) mod tests {
         pub current_encryption_keys: Vec<ChainKey>,
     }
 
+    impl FakeChain {
+        /// The budgets Platform reports for `key_ids`.
+        pub fn remaining(&self, key_ids: &[u32]) -> BTreeMap<u32, u64> {
+            key_ids
+                .iter()
+                .filter_map(|k| self.budgets.get(k).map(|b| (*k, *b)))
+                .collect()
+        }
+    }
+
     #[async_trait]
     impl IdentityPort for FakeChain {
         async fn identity_keys(&self, id: &Id) -> Result<Option<Vec<ChainKey>>> {
@@ -557,10 +571,7 @@ pub(crate) mod tests {
         }
 
         async fn remaining_budgets(&self, _: &Id, key_ids: &[u32]) -> Result<BTreeMap<u32, u64>> {
-            Ok(key_ids
-                .iter()
-                .filter_map(|k| self.budgets.get(k).map(|b| (*k, *b)))
-                .collect())
+            Ok(self.remaining(key_ids))
         }
 
         async fn contract_keys(&self, id: &Id, contract: &Id, p: u8) -> Result<Vec<ChainKey>> {
@@ -604,11 +615,7 @@ pub(crate) mod tests {
             );
             Self {
                 request: yappr_request(),
-                slots: vec![
-                    seed("slot group key"),
-                    seed("slot dashpay profile key"),
-                    seed("slot encryption key"),
-                ],
+                slots: slot_seeds().to_vec(),
                 sealed_for: seed("owner"),
                 published_as: seed("owner"),
                 chain,
@@ -617,18 +624,12 @@ pub(crate) mod tests {
         }
     }
 
-    fn secret(label: &str) -> SecretKey {
-        SecretKey::from_slice(&seed(label)).unwrap()
-    }
-
     async fn verify(s: Scenario) -> Verification {
         let (wallet, payload) = crypto::seal_with(
             &s.request.app_ephemeral_pub_key,
             &s.sealed_for,
             &s.slots,
-            &super::super::random_secret()
-                .map(|b| SecretKey::from_slice(b.expose()).unwrap())
-                .unwrap(),
+            &secret("wallet ephemeral"),
             [3; 12],
         )
         .unwrap();
@@ -643,7 +644,7 @@ pub(crate) mod tests {
             wallet_ephemeral_pub_key: wallet.to_vec(),
             encrypted_payload: payload,
         };
-        verify_candidate(&ctx, &secret("app ephemeral"), &candidate)
+        verify_candidate(&ctx, &SecretBytes::new(seed("app ephemeral")), &candidate)
             .await
             .unwrap()
     }
@@ -767,7 +768,7 @@ pub(crate) mod tests {
         let p = profile_key;
         let e = encryption_key;
         let stranger = seed("stranger");
-        let mut cases: Vec<(&str, Scenario, RejectReason)> = vec![
+        let cases: Vec<(&str, Scenario, RejectReason)> = vec![
             (
                 "a response copied under another identity",
                 {
@@ -1011,15 +1012,10 @@ pub(crate) mod tests {
             (
                 "more slots than bindings",
                 Scenario {
-                    slots: vec![
-                        seed("slot group key"),
-                        seed("slot dashpay profile key"),
-                        seed("slot encryption key"),
-                        seed("extra"),
-                    ],
+                    slots: [slot_seeds().as_slice(), &[seed("extra")]].concat(),
                     ..Scenario::default()
                 },
-                R::Framing,
+                R::ExtraKeys,
             ),
             (
                 "a slot that is not a private key",
@@ -1029,25 +1025,25 @@ pub(crate) mod tests {
                 },
                 R::InvalidKey,
             ),
+            (
+                "two keys for one binding",
+                {
+                    let mut s = Scenario::with_keys(vec![
+                        group_key(),
+                        with(
+                            |k| {
+                                k.id = 8;
+                                k.data = hash160(&pub_of("second group key")).to_vec();
+                            },
+                            g,
+                        ),
+                    ]);
+                    s.slots = vec![seed("slot group key"), seed("second group key")];
+                    s
+                },
+                R::DuplicateBinding,
+            ),
         ];
-        cases.push((
-            "two keys for one binding",
-            {
-                let mut s = Scenario::with_keys(vec![
-                    group_key(),
-                    with(
-                        |k| {
-                            k.id = 8;
-                            k.data = hash160(&pub_of("second group key")).to_vec();
-                        },
-                        g,
-                    ),
-                ]);
-                s.slots = vec![seed("slot group key"), seed("second group key")];
-                s
-            },
-            R::DuplicateBinding,
-        ));
         for (name, scenario, reason) in cases {
             let r = rejected(verify(scenario).await);
             assert_eq!(r.reason, reason, "{name}");
@@ -1083,13 +1079,7 @@ pub(crate) mod tests {
     }
 
     fn kept() -> Vec<SecretBytes> {
-        [
-            "slot group key",
-            "slot dashpay profile key",
-            "slot encryption key",
-        ]
-        .map(|l| SecretBytes::new(seed(l)))
-        .to_vec()
+        slot_seeds().map(SecretBytes::new).to_vec()
     }
 
     async fn verify_kept(chain: &FakeChain, owner: Id, margin: u64) -> Verification {

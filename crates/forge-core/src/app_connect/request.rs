@@ -11,7 +11,7 @@
 //! ENC_BINDING repeat, so every request has exactly one encoding. The `cb` callback parameter
 //! is left out: a terminal has no page for the wallet to return to.
 
-use super::{encode_base58, hash160, level, purpose, Id};
+use super::{encode_base58, hash160, level, purpose, Id, KeyBounds};
 use crate::network::Network;
 
 /// The request version this module speaks.
@@ -106,8 +106,7 @@ pub struct AuthBinding {
 
 impl AuthBinding {
     /// The key bounds this binding asks for.
-    pub fn bounds(&self) -> super::KeyBounds {
-        use super::KeyBounds;
+    pub fn bounds(&self) -> KeyBounds {
         match self.kind {
             BindingKind::SingleContract => KeyBounds::SingleContract {
                 contract_id: self.id,
@@ -128,6 +127,15 @@ pub struct EncBinding {
     pub contract_id: Id,
     /// ENCRYPTION or DECRYPTION.
     pub purpose: u8,
+}
+
+impl EncBinding {
+    /// The key bounds this binding asks for: `singleContract` on its contract.
+    pub fn bounds(&self) -> KeyBounds {
+        KeyBounds::SingleContract {
+            contract_id: self.contract_id,
+        }
+    }
 }
 
 /// The MODE TLV; absent means login.
@@ -604,7 +612,7 @@ pub fn check_request_age(created_at_ms: u64, now_ms: u64) -> Option<RequestAge> 
 #[cfg(test)]
 mod tests {
     use super::super::test_vectors::{
-        dashpay, hex, renew_request, seed, vectors, yappr_request, VECTOR_CREATED_AT,
+        dashpay, hex, renew_request, vectors, yappr_request, VECTOR_CREATED_AT,
     };
     use super::*;
 
@@ -926,10 +934,5 @@ mod tests {
             check_request_age(t, t - 2 * 60_000 - 1),
             Some(RequestAge::Future)
         );
-    }
-
-    #[test]
-    fn the_hint_and_ids_are_raw_bytes() {
-        assert_eq!(renew_request().identity_hint, Some(seed("owner")));
     }
 }
