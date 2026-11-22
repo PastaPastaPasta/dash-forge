@@ -72,7 +72,7 @@ vi.mock('@/lib/auth/app-connect', async (orig) => {
     walletSignInReady: (n: Parameters<typeof real.walletSignInReady>[0], v2: boolean) => walletReady ?? real.walletSignInReady(n, v2),
   }
 })
-/** Whether a released wallet answers here (mainnet with v2); null keeps the real rule (testnet: no, #591). */
+/** Whether a released wallet answers here; null keeps the real rule (mainnet or testnet, with v2). */
 let walletReady: boolean | null = null
 /** What the finished creation's deposit address still holds (duffs), or an Error when unreadable. */
 let leftover: number | Error | Promise<number> = 0
@@ -500,20 +500,22 @@ describe('App Connect v2 in the sheet', () => {
     expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
     expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/approve once for all of Forge/)
-    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
-    expect(q('[data-testid="tile-create-badge"]')).toBeNull()
+    // The sheet under test is a testnet build: the badge stays on creating (mainnet: sign-in-methods.test.ts).
+    expect(q('[data-testid="tile-wallet-badge"]')).toBeNull()
+    expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
   })
 
-  it('F3: on testnet, v2 on offer still leaves the wallet last, badged, and recommends creating an identity', async () => {
+  it('on testnet with v2 on offer, the wallet leads and names its testnet build; creating stays recommended for newcomers', async () => {
     auth.vaults = []
     platformUp = true
     v2Available = true
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
-    expect(tileOrder().slice(0, 4)).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
-    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBe('true')
-    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Not available yet')
-    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/#591/)
+    expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
+    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
+    expect(q('[data-testid="tile-wallet-badge"]')).toBeNull()
+    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/its testnet build/)
+    expect(q('[data-testid="tile-wallet"]')!.textContent).not.toMatch(/#591/)
     expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-cost"]')!.textContent).toMatch(/Testnet · free test credits/)
   })

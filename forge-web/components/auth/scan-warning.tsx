@@ -30,8 +30,10 @@ function hostToCheck(): { host: string; ipfs: boolean } {
 /**
  * `capped`: the request proposes a spending limit and an expiry (App Connect v2, shown above the
  * QR), so the note must not also say the key has none (F3, 2026-11 new-user pass).
+ * `withEncryption`: the approval also hands over the encryption key (the older code does; an App
+ * Connect v2 request asks for no encryption key).
  */
-export function ScanOnlyHere({ host: given, capped = false }: { host?: string; capped?: boolean }): JSX.Element {
+export function ScanOnlyHere({ host: given, capped = false, withEncryption = true }: { host?: string; capped?: boolean; withEncryption?: boolean }): JSX.Element {
   const closeLogin = useUiStore((s) => s.closeLogin)
   const here = hostToCheck()
   const host = given ?? here.host
@@ -54,13 +56,13 @@ export function ScanOnlyHere({ host: given, capped = false }: { host?: string; c
             ? 'An approval gives a key that can sign as you on Forge, within the limits above unless your wallet changes them. Forge refuses a key without them.'
             : 'An approval gives a key that can sign as you on Forge (an Android wallet’s key works on any Platform app), with no spending limit or expiry unless your wallet sets one; today’s wallets don’t.'}
         </li>
-        <li>It also gives the encryption key that opens your private and members-only content.</li>
+        {withEncryption ? <li>It also gives the encryption key that opens your private and members-only content.</li> : null}
         <li>
           If you scanned a code you didn’t trust:{' '}
           <Link href="/settings/keys/" onClick={closeLogin} className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-keys">
             Settings → Devices &amp; keys → Disable all other keys
           </Link>{' '}
-          (needs your recovery phrase or identity file), then replace your encryption key.{' '}
+          (needs your recovery phrase or identity file){withEncryption ? ', then replace your encryption key' : ''}.{' '}
           <Link prefetch={false} href={DOCS.revokeKeys} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
             How
           </Link>

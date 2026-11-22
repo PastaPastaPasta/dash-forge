@@ -38,7 +38,7 @@ import { approveV2, disableGrants, newV2Wallet } from './wallet-responder-v2'
  * Every key the scripted wallet adds is disabled at the end.
  */
 
-test.skip(E2E_NETWORK === 'testnet', 'testnet has no forge-v2 deployment, so no App Connect v2 request')
+test.skip(E2E_NETWORK === 'testnet', 'devnet spec (n=d requests, the scripted wallet); testnet v2 sign-in was checked with the released DashPay testnet build (docs/design/wallet-primary.md)')
 
 /** A v2 request's URI: `n=d` on a devnet, `v=2`. */
 const V2_URI = /^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=2$/
