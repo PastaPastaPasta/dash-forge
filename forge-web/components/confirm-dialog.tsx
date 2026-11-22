@@ -199,16 +199,18 @@ export function ConfirmDialog({
       }
     >
       <div className="space-y-3">
-        <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 border-0 p-0">
-          {children}
-        </fieldset>
+        {children !== undefined && children !== null ? (
+          <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 space-y-3 border-0 p-0">
+            {children}
+          </fieldset>
+        ) : null}
         {costPending ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>
         )}
 
-        <div role="status" aria-live="polite" className="empty:hidden">
+        <div role="status" aria-live="polite" className="empty:!mt-0">
           {pending ? <WriteProgressSteps /> : null}
           {unconfirmed !== null && !pending && !done ? (
             <div data-testid="write-unconfirmed" className="flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-750 dark:bg-anvil-850 dark:text-anvil-200">
