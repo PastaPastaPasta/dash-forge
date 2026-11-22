@@ -92,7 +92,7 @@ dg auth new
 - **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
 - **With the Dash bridge**: <https://bridge.thepasta.org>, on testnet, then **Download Key Backup**.
 
-To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). No released wallet can answer yet, and today's development builds need a fix first; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
+To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with DashPay and approve once for all of Forge). On testnet that needs DashPay Wallet for Android's testnet build, 11.9.2 or later; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 
 ---
 

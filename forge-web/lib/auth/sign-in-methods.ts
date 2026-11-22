@@ -30,7 +30,7 @@ export interface SignInContext {
   readonly creating: boolean
 }
 
-/** Whether the wallet tile leads (and is recommended) rather than sitting last, muted. */
+/** Whether the wallet tile leads rather than sitting last, muted (recommended too, except on testnet). */
 export function walletLeads(ctx: Pick<SignInContext, 'network' | 'walletV2'>): boolean {
   return walletSignInReady(ctx.network, ctx.walletV2)
 }

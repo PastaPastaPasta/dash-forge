@@ -11,9 +11,10 @@
  *      master key signs one IdentityUpdate that registers a limited key for this browser, and is
  *      not stored; dg; and Use my Dash wallet — App Connect v2 where the chain supports it (one
  *      approval covers all of Forge, with a budget and an expiry), else the DashConnect key
- *      exchange (shown only when a response contract exists here). The wallet leads (and is the
- *      one recommended) where a released wallet can answer (`walletSignInReady`: App Connect v2
- *      on mainnet or testnet); elsewhere it is last, badged "Not available yet". The older exchange approves one
+ *      exchange (shown only when a response contract exists here). The wallet leads where a
+ *      released wallet can answer (`walletSignInReady`: App Connect v2 on mainnet or testnet), and
+ *      is the one recommended except on testnet, where creating stays recommended for newcomers
+ *      (`lib/auth/sign-in-methods.ts`); elsewhere it is last, badged "Not available yet". The older exchange approves one
  *      Forge contract per scan, so a finished sign-in walks through the rest in one guided
  *      sequence ("Step 2 of 3"), each step skippable (FEAT-04, lib/auth/guided-grants.ts);
  *   Advanced: paste a raw key (developer path; this tab only; red warning).
