@@ -672,7 +672,7 @@ fn keys_check(
             "sign in again: `dg auth login <file>` or `dg auth login --mnemonic`",
         );
     };
-    let line = crate::auth::key_line(Some(report), None, true);
+    let line = crate::auth::key_line(Some(report), None, true, false);
     if let Some(why) = report.spent_or_expired(now_ms) {
         let fix = if report.doc_type.is_some() {
             "`dg ci runner new` registers a fresh runner key".to_string()

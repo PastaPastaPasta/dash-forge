@@ -86,6 +86,23 @@ impl State {
         }
     }
 
+    /// The lock held while the state in `path` is read, changed and saved, so two sign-ins at
+    /// once do not drop each other's entries.
+    fn lock(path: &Path) -> Result<std::fs::File> {
+        let lock = path.with_extension("lock");
+        if let Some(dir) = lock.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        let file = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock)
+            .and_then(|f| f.lock().map(|()| f))
+            .with_context(|| format!("locking {}", lock.display()))?;
+        Ok(file)
+    }
+
     fn save(&self, path: &Path) -> Result<()> {
         let raw = toml::to_string_pretty(self).context("serializing the App Connect state")?;
         forge_core::keystore::write_private_file(path, raw.as_bytes())
@@ -96,6 +113,7 @@ impl State {
     /// before. A recorded id that is not 32 hex digits is an error, like a file that does not
     /// parse.
     fn connection_id(path: &Path, network: &str) -> Result<([u8; 16], bool)> {
+        let _lock = Self::lock(path)?;
         let mut state = Self::load(path)?;
         if let Some(text) = state.connections.get(network) {
             return hex::decode(text)
@@ -118,6 +136,7 @@ impl State {
     }
 
     fn record_wallet_key(path: &Path, network: &str, identity_id: &str, key_id: u32) -> Result<()> {
+        let _lock = Self::lock(path)?;
         let mut state = Self::load(path)?;
         state
             .wallet_keys
@@ -409,6 +428,28 @@ async fn verify_grant(
 struct Terminal<'a> {
     ctx: &'a Ctx,
     tty: bool,
+    /// A progress line is on the terminal without its newline.
+    mid_line: std::sync::atomic::AtomicBool,
+}
+
+impl Terminal<'_> {
+    fn new(ctx: &Ctx) -> Terminal<'_> {
+        Terminal {
+            ctx,
+            tty: std::io::stderr().is_terminal(),
+            mid_line: false.into(),
+        }
+    }
+
+    /// End the progress line, if one is open.
+    fn end_line(&self) {
+        if self
+            .mid_line
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!();
+        }
+    }
 }
 
 /// `m:ss`.
@@ -457,15 +498,15 @@ impl LoginUi for Terminal<'_> {
         if self.tty {
             eprint!("\r\x1b[2K{line}");
             let _ = std::io::stderr().flush();
+            self.mid_line
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         } else if status != PollStatus::Waiting {
             eprintln!("{line}");
         }
     }
 
     fn again(&self) -> Result<bool> {
-        if self.tty {
-            eprintln!();
-        }
+        self.end_line();
         // Not under --yes: it would answer yes to every new code, forever.
         Ok(self.ctx.interactive() && self.ctx.ask("The code expired. Show a new one?", true)?)
     }
@@ -619,15 +660,20 @@ fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> 
 }
 
 /// The limited keys `held` signed with that stay live on Platform once the wallet's key
-/// replaces them, said so: not the granted key, nor the key a wallet granted before
-/// (`wallet_key`, which the wallet disables).
-fn left_live(held: &[HeldKey], grant: &WalletGrant, wallet_key: Option<u32>) -> Option<String> {
+/// replaces them, said so: only keys `live` on chain, and not the granted key, nor the key a
+/// wallet granted before (`wallet_key`, which the wallet disables).
+fn left_live(
+    held: &[HeldKey],
+    grant: &WalletGrant,
+    wallet_key: Option<u32>,
+    live: impl Fn(u32) -> bool,
+) -> Option<String> {
     let ids: std::collections::BTreeSet<u32> = held
         .iter()
         .filter_map(|h| h.key.as_ref().ok())
         .filter(|b| b.identity_id == grant.identity_id && b.master_key().is_none())
         .filter_map(|b| b.doc_op_key().ok().map(|k| k.id))
-        .filter(|&id| id != grant.key_id && Some(id) != wallet_key)
+        .filter(|&id| id != grant.key_id && Some(id) != wallet_key && live(id))
         .collect();
     let lines: Vec<String> = ids
         .iter()
@@ -681,10 +727,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         super::check_group(ctx, &client, &forge.group, args.limits.strict_group()).await?;
     checked.print_notice(ctx, "");
 
-    let ui = Terminal {
-        ctx,
-        tty: std::io::stderr().is_terminal(),
-    };
+    let ui = Terminal::new(ctx);
     // The expiry the request proposes, as dg's clock sees it (the request uses chain time).
     let proposed_expiry_ms = ui.now_ms() + proposal.lifetime_ms;
     let grant = request_grant(
@@ -696,10 +739,9 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         renew,
         &ui,
     )
-    .await?;
-    if ui.tty {
-        eprintln!();
-    }
+    .await;
+    ui.end_line();
+    let grant = grant?;
 
     let spec = LimitedKeySpec {
         budget_credits: grant.total_budget,
@@ -725,22 +767,21 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         &held,
         &grant,
         State::wallet_key(&state, &network, &grant.identity_id),
+        |id| identity.key_disabled(id) == Some(false),
     );
     let opened: Vec<&BridgeIdentity> = held.iter().filter_map(|h| h.key.as_ref().ok()).collect();
     let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &opened);
     let text = stored_text(&grant, ctx.network(), &network, &encryption)?;
-    let stored = store::Storer::new(args.storage.insecure_plaintext).store(
-        &network,
-        &grant.identity_id,
-        &text,
-        store::Slot::Main,
-    )?;
-    store::set_default(ctx, &grant.identity_id, &stored.source())?;
+    let stored = store::Storer::new(args.storage.insecure_plaintext)
+        .store(&network, &grant.identity_id, &text, store::Slot::Main)
+        .map_err(|e| not_stored(&e, grant.key_id, renewing))?;
     if let Err(e) = State::record_wallet_key(&state, &network, &grant.identity_id, grant.key_id) {
         if !ctx.json {
             eprintln!("note: signed in, but `dg auth status` will not know the key came from your wallet ({e:#})");
         }
     }
+    store::set_default(ctx, &grant.identity_id, &stored.source())
+        .map_err(|e| not_default(&e, &grant.identity_id, grant.key_id, &stored))?;
 
     let kept_ids: Vec<u32> = encryption.iter().map(|k| k.id).collect();
     let balance = identity.balance();
@@ -789,6 +830,50 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// `e` as a [`UserError`] of its own code, cause and fixes, or an unexpected one.
+fn rewrap(e: &anyhow::Error, message: String) -> UserError {
+    match e.downcast_ref::<UserError>() {
+        Some(inner) => inner.fix.iter().fold(
+            UserError::new(inner.code, message)
+                .cause(inner.cause.clone().unwrap_or_else(|| inner.message.clone())),
+            |u, f| u.fix(f.clone()),
+        ),
+        None => UserError::new(codes::UNEXPECTED, message).cause(format!("{e:#}")),
+    }
+}
+
+/// The key the wallet added to the identity (`key_id`) could not be stored here (`e`).
+fn not_stored(e: &anyhow::Error, key_id: u32, renewing: bool) -> anyhow::Error {
+    rewrap(e, format!("key #{key_id} your wallet added could not be stored here"))
+        .fix(format!("then run `{RENEW}` again"))
+        .note(nothing_stored(renewing, &format!("key #{key_id} stays on the identity until you disconnect Dash Forge in your wallet (More → Tools → Connections)")))
+        .into()
+}
+
+/// The wallet's key was stored as `stored`, but config.toml did not take it as the default (`e`).
+fn not_default(
+    e: &anyhow::Error,
+    identity_id: &str,
+    key_id: u32,
+    stored: &store::Stored,
+) -> anyhow::Error {
+    let source = stored.source();
+    rewrap(
+        e,
+        format!(
+            "key #{key_id} from your wallet was stored in {}, but not made the default",
+            stored.describe()
+        ),
+    )
+    .fix(format!(
+        "use it now with `--identity {source}` (or DASH_FORGE_KEY={source})"
+    ))
+    .fix(format!(
+        "once config.toml reads, set `default_identity = \"{source}\"` and `default_identity_id = \"{identity_id}\"` in it"
+    ))
+    .into()
 }
 
 /// The granted key's `dfk1:` text, with `encryption` keys beside it when there are any.
@@ -1331,12 +1416,7 @@ mod tests {
     #[test]
     fn yes_does_not_show_new_codes_forever() {
         let ctx = Ctx::scripted(true, false, true, None);
-        assert!(!Terminal {
-            ctx: &ctx,
-            tty: false
-        }
-        .again()
-        .unwrap());
+        assert!(!Terminal::new(&ctx).again().unwrap());
     }
 
     /// A full identity (master key included), as `dg auth login --full-key` stores it.
@@ -1445,14 +1525,37 @@ mod tests {
         }];
         let ctx = Ctx::scripted(true, false, false, None);
         assert!(guard_replacement(&ctx, &held, false).is_ok());
-        let line = left_live(&held, &grant, None).unwrap();
+        let any = |_| true;
+        let line = left_live(&held, &grant, None, any).unwrap();
         assert!(
             line.starts_with("key #3 this computer held stays live"),
             "{line}"
         );
         assert!(line.contains("dg auth keys disable 3"), "{line}");
-        assert_eq!(left_live(&held, &grant, Some(3)), None);
-        assert_eq!(left_live(&[], &grant, None), None);
+        assert_eq!(left_live(&held, &grant, Some(3), any), None);
+        assert_eq!(left_live(&[], &grant, None, any), None);
+        // A key already disabled on chain, or not on the identity, is not named.
+        assert_eq!(left_live(&held, &grant, None, |id| id != 3), None);
+    }
+
+    /// Storing fails after the wallet added its key: the key is named as on the identity.
+    #[test]
+    fn a_key_that_could_not_be_stored_is_named_as_on_chain() {
+        let inner: anyhow::Error = UserError::new(codes::USAGE, "the key could not be stored")
+            .cause("no passphrase")
+            .fix("set DASH_FORGE_PASSPHRASE")
+            .note("nothing was registered on Platform")
+            .into();
+        let err = not_stored(&inner, 7, true);
+        let u = user_error(&err);
+        assert_eq!(u.code, codes::USAGE);
+        assert!(u.message.contains("key #7 your wallet added"), "{u:?}");
+        assert_eq!(u.cause.as_deref(), Some("no passphrase"));
+        assert_eq!(u.fix[0], "set DASH_FORGE_PASSPHRASE");
+        let note = u.note.as_deref().unwrap();
+        assert!(!note.contains("registered on Platform"), "{note}");
+        assert!(note.contains("key #7 stays on the identity"), "{note}");
+        assert!(note.contains(RENEW), "{note}");
     }
 
     #[test]

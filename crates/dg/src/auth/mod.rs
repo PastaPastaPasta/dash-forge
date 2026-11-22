@@ -233,17 +233,18 @@ pub fn parse_days(s: &str) -> Result<u64> {
     let n: u64 = num.parse().map_err(|_| {
         crate::errors::usage(format!("--expires {s:?} is not like 180d, 12w, 6m or 1y"))
     })?;
-    let days = match unit {
-        "d" | "day" | "days" => n,
-        "w" | "wk" | "weeks" => n * 7,
-        "m" | "mo" | "months" => n * 30,
-        "y" | "yr" | "years" => n * 365,
+    let per = match unit {
+        "d" | "day" | "days" => 1,
+        "w" | "wk" | "weeks" => 7,
+        "m" | "mo" | "months" => 30,
+        "y" | "yr" | "years" => 365,
         _ => {
             return Err(crate::errors::usage(format!(
                 "--expires {s:?} is not like 180d, 12w, 6m or 1y"
             )))
         }
     };
+    let days = n.saturating_mul(per);
     if days == 0 || days > 3650 {
         return Err(crate::errors::usage(
             "--expires must be between 1 day and 10 years",
@@ -1280,9 +1281,11 @@ async fn status(ctx: &Ctx) -> Result<()> {
             }
             println!(
                 "Key:      {}",
-                key_line(report.as_ref(), unopened.as_deref(), reached)
+                key_line(report.as_ref(), unopened.as_deref(), reached, from_wallet)
             );
-            if from_wallet {
+            if from_wallet && report.as_ref().is_some_and(|r| r.key_id.is_none()) {
+                println!("          from your wallet (App Connect)");
+            } else if from_wallet {
                 println!("          from your wallet (App Connect); renew: {}", wallet::RENEW);
             }
             let key_id = report.as_ref().and_then(|r| r.key_id);
@@ -1331,9 +1334,14 @@ pub(crate) fn key_line(
     report: Option<&KeyReport>,
     unopened: Option<&str>,
     reached: bool,
+    from_wallet: bool,
 ) -> String {
     match (report, unopened) {
         (Some(r), _) if r.key_id.is_none() => match r.disabled_id {
+            Some(id) if from_wallet => format!(
+                "#{id} DISABLED: it can no longer sign; `{}` gets a new key from your wallet",
+                wallet::RENEW
+            ),
             Some(id) => format!(
                 "#{id} DISABLED: it can no longer sign; `dg auth login <identity file>` registers a new key"
             ),
@@ -1975,7 +1983,7 @@ mod tests {
             remaining: Some(49_000_000_000),
             expires_at: None,
         };
-        let line = key_line(Some(&report(false, Some("checkRun"))), None, true);
+        let line = key_line(Some(&report(false, Some("checkRun"))), None, true, false);
         assert!(
             line.starts_with(
                 "#6 bound to checkRun documents only (a CI runner key) — 0.49 of 0.5 DASH left"
@@ -1983,7 +1991,7 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("unlimited"), "{line}");
-        assert!(key_line(Some(&report(true, None)), None, true).starts_with("#6 limited — "));
+        assert!(key_line(Some(&report(true, None)), None, true, false).starts_with("#6 limited — "));
         // doctor fails a key that signs nothing any more
         let mut r = report(true, None);
         assert_eq!(r.spent_or_expired(1_000), None);
@@ -1992,7 +2000,7 @@ mod tests {
         r.remaining = Some(0);
         assert_eq!(r.spent_or_expired(0), Some("its budget is spent"));
         assert_eq!(
-            key_line(Some(&report(false, None)), None, true),
+            key_line(Some(&report(false, None)), None, true, false),
             "#6 unlimited (not a Forge limited key)"
         );
         // QW3-070: a runner key with a budget is spend-capped in --json too.
@@ -2001,17 +2009,20 @@ mod tests {
         let mut gone = report(true, None);
         gone.key_id = None;
         gone.disabled_id = Some(7);
-        let line = key_line(Some(&gone), None, true);
+        let line = key_line(Some(&gone), None, true, false);
         assert!(
             line.starts_with("#7 DISABLED: it can no longer sign"),
             "{line}"
         );
+        let line = key_line(Some(&gone), None, true, true);
+        assert!(line.contains("`dg auth login --wallet`"), "{line}");
+        assert!(!line.contains("identity file"), "{line}");
         // QW4-049: a disabled limited key is still reported as the capped key it was: its
         // budget is read from the disabled key (`limited` is for live keys only).
         gone.limited = false;
         assert!(gone.is_capped());
         gone.disabled_id = None;
-        let line = key_line(Some(&gone), None, true);
+        let line = key_line(Some(&gone), None, true, false);
         assert!(line.starts_with("not a key of this identity"), "{line}");
     }
 
@@ -2050,6 +2061,9 @@ mod tests {
         assert!(parse_days("0d").is_err());
         assert!(parse_days("soon").is_err());
         assert!(parse_days("99y").is_err());
+        // 2^63 + 1 months wraps to 30 days in u64 multiplication.
+        assert!(parse_days("9223372036854775809m").is_err());
+        assert!(parse_days("18446744073709551615y").is_err());
     }
 
     #[test]
