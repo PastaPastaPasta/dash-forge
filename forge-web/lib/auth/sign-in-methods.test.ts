@@ -7,8 +7,8 @@ const order = (ctx: Partial<SignInContext>): string[] =>
   )
 
 describe('signInMethods', () => {
-  it('testnet with App Connect v2: the wallet leads and is recommended', () => {
-    expect(order({ walletV2: true })).toEqual(['lead:wallet*', 'new:create', 'existing:passkey', 'existing:import', 'existing:dg', 'advanced:raw-key'])
+  it('testnet with App Connect v2: the wallet leads, and creating stays the newcomer\'s recommendation', () => {
+    expect(order({ walletV2: true })).toEqual(['lead:wallet', 'new:create*', 'existing:passkey', 'existing:import', 'existing:dg', 'advanced:raw-key'])
   })
 
   it('without v2, or on a devnet: create is recommended, the wallet sits last among existing identities', () => {

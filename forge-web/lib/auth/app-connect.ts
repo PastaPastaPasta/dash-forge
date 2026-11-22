@@ -468,9 +468,9 @@ export function walletSignInSupported(network: Network): boolean {
 /**
  * Whether a released wallet finishes sign-in here, which decides whether the sheet leads with the
  * wallet tile: wherever App Connect v2 is on offer on mainnet or testnet. DashPay for Android
- * 11.9.2 and Dash Wallet for iOS 9.1.4 answer v2 at protocol 14 (checked on testnet with the
- * released Android testnet build; docs/design/wallet-primary.md). Not on a devnet: released
- * wallets carry no devnet's settings.
+ * 11.9.2 answers v2 at protocol 14 (checked on testnet with its released testnet build;
+ * docs/design/wallet-primary.md); Dash Wallet for iOS 9.1.4 does per its release, with no
+ * verified route to testnet. Not on a devnet: released wallets carry no devnet's settings.
  */
 export function walletSignInReady(network: Network, v2Offered: boolean): boolean {
   return (network === 'mainnet' || network === 'testnet') && v2Offered

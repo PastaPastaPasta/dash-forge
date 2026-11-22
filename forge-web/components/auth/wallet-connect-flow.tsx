@@ -17,8 +17,8 @@
  * The QR step opens with {@link ScanOnlyHere}: the request does not say who shows it, so the
  * user is told to scan only a code on this site's own address (SECU-08).
  *
- * Released wallets answer App Connect v2 on mainnet and testnet (DashPay for Android 11.9.2, Dash
- * Wallet for iOS 9.1.4); only iOS 9.1.4 still answers the older code, on testnet
+ * Released wallets answer App Connect v2 (DashPay for Android 11.9.2, Dash Wallet for iOS 9.1.4;
+ * on testnet, Android's testnet build is the one verified). The older code is testnet-only
  * (`walletSignInSupported`). Elsewhere the sheet says so.
  *
  * App Connect v2 (`lib/auth/app-connect-v2.ts`) comes first where the network and the chain allow
@@ -819,25 +819,26 @@ const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/release
 
 /**
  * Which wallets can answer here (docs/design/wallet-primary.md, checked 2026-11-22): App Connect
- * v2 in DashPay for Android 11.9.2 and Dash Wallet for iOS 9.1.4, on mainnet and testnet; on
- * testnet, Android needs the wallet's testnet build (an APK on the GitHub release). The older
- * code: only iOS 9.1.4, on testnet.
+ * v2 in DashPay for Android 11.9.2 and Dash Wallet for iOS 9.1.4. On testnet only Android's
+ * testnet build (an APK on the GitHub release) is verified, so only it is named there.
  */
 export function WalletSupportNote({ protocol = 'v1' }: { protocol?: 'v1' | 'v2' } = {}): JSX.Element {
   const { network, key } = ACTIVE_NETWORK
   if (protocol === 'v2') {
     return (
       <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Works with DashPay for Android 11.9.2 or later and Dash Wallet for iOS 9.1.4 or later (More → Tools → Connections), which speak App Connect v2.
         {network === 'testnet' ? (
           <>
-            {' '}On testnet, use DashPay&apos;s testnet build: for Android, the <code>-testnet.apk</code> on the{' '}
-            <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="underline">
-              DashPay Wallet releases
+            Works with DashPay for Android 11.9.2 or later, which speaks App Connect v2. On testnet, use its testnet build (More → Tools → Connections): the{' '}
+            <code>-testnet.apk</code> on the{' '}
+            <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
+              DashPay Wallet releases (opens in a new tab)
             </a>
             .
           </>
-        ) : null}
+        ) : (
+          'Works with DashPay for Android 11.9.2 or later and Dash Wallet for iOS 9.1.4 or later (More → Tools → Connections), which speak App Connect v2.'
+        )}
       </p>
     )
   }
@@ -853,8 +854,8 @@ export function WalletSupportNote({ protocol = 'v1' }: { protocol?: 'v1' | 'v2' 
   }
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      Only Dash Wallet for iOS 9.1.4 answers this older code, on testnet (More → Tools → Connections → Scan QR), and each Forge contract needs its own
-      approval. DashPay for Android 11.9.2 and later answer only the newer code.
+      DashPay for Android 11.9.2 and later refuse this older code and answer only the newer one. A wallet that still answers it (More → Tools →
+      Connections → Scan QR) approves each Forge contract separately.
     </p>
   )
 }

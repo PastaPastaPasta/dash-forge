@@ -38,12 +38,15 @@ export function walletLeads(ctx: Pick<SignInContext, 'network' | 'walletV2'>): b
 /** The sheet's methods, in order. */
 export function signInMethods(ctx: SignInContext): readonly SignInMethod[] {
   const leads = walletLeads(ctx)
+  // On testnet the wallet leads for people who have DashPay's testnet build (a sideloaded APK),
+  // but a newcomer is still pointed at creating an identity (wallet-primary.md, decision 3).
+  const walletRecommended = leads && ctx.network !== 'testnet'
   const m = (id: SignInMethodId, group: SignInGroup, recommended = false): SignInMethod => ({ id, group, recommended })
-  const wallet = (group: SignInGroup): SignInMethod[] => (ctx.walletAvailable ? [m('wallet', group, leads && !ctx.creating)] : [])
+  const wallet = (group: SignInGroup): SignInMethod[] => (ctx.walletAvailable ? [m('wallet', group, walletRecommended && !ctx.creating)] : [])
   return [
     ...(ctx.creating ? [m('resume-create', 'lead')] : []),
     ...(leads ? wallet('lead') : []),
-    m('create', 'new', !leads && !ctx.creating),
+    m('create', 'new', !walletRecommended && !ctx.creating),
     m('passkey', 'existing'),
     m('import', 'existing'),
     m('dg', 'existing'),

@@ -371,7 +371,7 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
                   ? "DashPay on your phone (its testnet build): scan a QR code (or tap a link on the phone) and approve once for all of Forge. Your recovery phrase stays on the phone."
                   : 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
                 : network === 'testnet'
-                  ? "Released Dash wallets answer only App Connect, which can't be offered here right now. Use another option for now."
+                  ? "DashPay for Android answers only App Connect v2, which can't be offered here right now. Use another option for now."
                   : network === 'devnet'
                     ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
                     : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`

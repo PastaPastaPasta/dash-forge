@@ -500,11 +500,12 @@ describe('App Connect v2 in the sheet', () => {
     expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
     expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/approve once for all of Forge/)
-    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
-    expect(q('[data-testid="tile-create-badge"]')).toBeNull()
+    // The sheet under test is a testnet build: the badge stays on creating (mainnet: sign-in-methods.test.ts).
+    expect(q('[data-testid="tile-wallet-badge"]')).toBeNull()
+    expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
   })
 
-  it('on testnet with v2 on offer, the wallet leads and names its testnet build; creating stays for newcomers', async () => {
+  it('on testnet with v2 on offer, the wallet leads and names its testnet build; creating stays recommended for newcomers', async () => {
     auth.vaults = []
     platformUp = true
     v2Available = true
@@ -512,10 +513,10 @@ describe('App Connect v2 in the sheet', () => {
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
     expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
-    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-wallet-badge"]')).toBeNull()
     expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/its testnet build/)
     expect(q('[data-testid="tile-wallet"]')!.textContent).not.toMatch(/#591/)
-    expect(q('[data-testid="tile-create-badge"]')).toBeNull()
+    expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-cost"]')!.textContent).toMatch(/Testnet · free test credits/)
   })
 
