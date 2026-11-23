@@ -5023,8 +5023,6 @@ pub(crate) mod tests {
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
     }
 
-    /// A repository on `main` (one commit) with a PR head one commit ahead of it that adds
-    /// `pr.txt`; returns the repository and the head oid.
     #[test]
     fn diff_workdir_uses_the_repository_it_is_in_or_a_scratch_one() {
         let (repo, _) = checkout_fixture();
@@ -5042,6 +5040,8 @@ pub(crate) mod tests {
         assert!(git::git_ok(&dir, &["rev-parse", "--git-dir"]));
     }
 
+    /// A repository on `main` (one commit) with a PR head one commit ahead of it that adds
+    /// `pr.txt`; returns the repository and the head oid.
     fn checkout_fixture() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();

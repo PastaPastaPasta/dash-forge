@@ -135,9 +135,9 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 **Git repository not usable.** `dg init` or `dg repo create --push` needs the local git repository, and could not use it: the current directory is not inside a git work tree, or the remote it would add (`origin` by default) already points somewhere else. Nothing was written to Platform when this is reported before the create; after a create, the repository exists and only the local setup is missing.
 
-`dg pr checkout` reports it too when the local branch `pr/<n>` has commits the PR head does not (the PR was force-pushed, or you committed on the branch). Moving the branch would drop them, so nothing is changed.
+`dg pr checkout` reports it when run outside a git repository (it needs one to put the `pr/<n>` branch in), and when the local branch `pr/<n>` has commits the PR head does not (the PR was force-pushed, or you committed on the branch). Moving the branch would drop them, so nothing is changed.
 
-**What to do:** run `git init` first (or `cd` into the repository), or pass `--remote <name>` to add the Forge remote under another name and leave the existing one alone. For `dg pr checkout`, rename the branch to keep its commits (`git branch -m pr/<n> pr/<n>-old`) or delete it (`git branch -D pr/<n>`), then run it again.
+**What to do:** run `git init` first (or `cd` into the repository), or pass `--remote <name>` to add the Forge remote under another name and leave the existing one alone. For `dg pr checkout` outside a repository, clone it first (`dg repo clone <owner>/<name>`) and run it inside the clone; when the branch has other commits, rename it to keep its commits (`git branch -m pr/<n> pr/<n>-old`) or delete it (`git branch -D pr/<n>`), then run it again.
 
 ## E207
 
