@@ -17,6 +17,10 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 - **`dg auth login --wallet`**: sign in from the terminal with the DashPay wallet on your phone (App Connect). `dg` prints a QR code and a `dash-key:` link, the wallet adds a limited key (proposed: 0.25 DASH for 180 days; the wallet may change it), and `dg` reads the answer from Platform, shows the identity to confirm and stores the key like any limited key. `dg auth status` shows such a key as "from your wallet (App Connect)". Testnet needs DashPay's testnet build. See [Signing in from the terminal with DashPay](docs/guides/identity-and-keys.md#signing-in-from-the-terminal-with-dashpay).
 
+### Fixed
+
+- **`dg pr diff` works outside a clone**, as `gh pr diff` does: it fetches into a scratch repository and removes it afterwards. It used to fail with E101 ("report it") because git found no repository. Inside a clone it still fetches there, so the objects stay for next time. `dg pr checkout` outside a repository now says it needs one ([E206](docs/errors.md#e206)) instead of E101.
+
 ## [0.2.0] - 2026-11-22
 
 Dash Forge moves to **testnet**: its four contracts are registered there, and testnet is now the supported network for `dg`, `git-remote-dash`, the web app and the Actions. Devnet sakura, which v0.1.0 targeted, is down, and nothing on it was carried over. See the [release notes](docs/releases/v0.2.0.md) for networks, upgrading and known limitations.
