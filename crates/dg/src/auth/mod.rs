@@ -1321,7 +1321,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "masterKeyStored": master,
             "keyUnopened": unopened,
             "keyOrigin": key_origin.map(origin::KeyOrigin::as_str),
-            "renew": (key_origin == Some(origin::KeyOrigin::Wallet)).then_some(wallet::RENEW),
+            "renew": (from_wallet || key_origin == Some(origin::KeyOrigin::Wallet)).then_some(wallet::RENEW),
         }),
         || {
             println!("Network:  {network}");
@@ -1363,8 +1363,9 @@ async fn status(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// Where the status's key came from (nothing for a pasted key): a wallet grant, an inline `dfk1`, the origin dg recorded
-/// when it stored the key ([`origin`]), else where it is kept (`kind`, [`store::describe_source`]).
+/// Where the status's key came from (nothing for a pasted key): a wallet grant, an inline `dfk1`,
+/// the origin dg recorded when it stored the key ([`origin`]), else where it is kept (`kind`,
+/// [`store::describe_source`]).
 fn key_origin(
     from_wallet: bool,
     kind: &str,
