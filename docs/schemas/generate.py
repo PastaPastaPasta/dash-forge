@@ -191,7 +191,7 @@ cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', 
     'keyUnopened': D('Why the stored key could not be opened here (it is sealed and no passphrase is available), '
                      'or null.', nl(S)),
     'keyOrigin': D('Where the key came from: `wallet` (a DashPay wallet granted it), `phrase` or `file` (dg '
-                   'registered it with the recovery phrase or an identity file), `dfk1` (an inline DASH_FORGE_KEY), '
+                   'registered it, or stored the identity, from the recovery phrase or an identity file), `dfk1` (an inline DASH_FORGE_KEY), '
                    '`keychain` (in the OS keychain, origin not recorded); null for a pasted key, a key file an '
                    'earlier dg stored without recording its origin, or no key.',
                    nl(E('wallet', 'phrase', 'file', 'dfk1', 'keychain'))),

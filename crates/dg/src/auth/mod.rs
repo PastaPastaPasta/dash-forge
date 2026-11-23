@@ -1363,14 +1363,16 @@ async fn status(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// Where the status's key came from: a wallet grant, an inline `dfk1`, the origin dg recorded
+/// Where the status's key came from (nothing for a pasted key): a wallet grant, an inline `dfk1`, the origin dg recorded
 /// when it stored the key ([`origin`]), else where it is kept (`kind`, [`store::describe_source`]).
 fn key_origin(
     from_wallet: bool,
     kind: &str,
     recorded: Option<origin::KeyOrigin>,
 ) -> Option<origin::KeyOrigin> {
-    if from_wallet {
+    if kind == "pasted" {
+        None
+    } else if from_wallet {
         Some(origin::KeyOrigin::Wallet)
     } else if kind == "inline" {
         Some(origin::KeyOrigin::Dfk1)
@@ -2271,6 +2273,7 @@ mod tests {
         );
         assert_eq!(key_origin(false, "sealed-file", None), None);
         assert_eq!(key_origin(false, "pasted", None), None);
+        assert_eq!(key_origin(false, "pasted", Some(O::Phrase)), None);
         let wallet = renew_line(Some(&r(Some(9), true)), true, Some(O::Wallet)).unwrap();
         assert!(
             wallet.starts_with("Renew in your wallet: `dg auth login`"),
