@@ -11,7 +11,7 @@
 
 import Link from 'next/link'
 import { useMemo, useState, type ReactNode } from 'react'
-import { GitCommit, Tag } from 'lucide-react'
+import { GitCommit, ListChecks, Tag } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import { membersLane, readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
@@ -185,6 +185,16 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
     [ready, repoKey(repo), oid, network, blinds.join(',')],
     { enabled: ready && sdk !== null && oid !== '' },
   )
+  if (checks.error === null && checks.data?.runs.length === 0) {
+    return (
+      <section aria-label="Checks" data-testid="commit-checks" className="flex items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
+        <ListChecks className="h-4 w-4 shrink-0" aria-hidden />
+        <span data-testid="commit-checks-none">
+          No checks reported for <Oid value={oid} chars={7} copyable={false} />
+        </span>
+      </section>
+    )
+  }
   return (
     <section aria-label="Checks" data-testid="commit-checks">
       <h2 className="mb-2 text-dense font-semibold text-anvil-700 dark:text-anvil-200">Checks</h2>
