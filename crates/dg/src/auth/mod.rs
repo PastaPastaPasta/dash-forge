@@ -1062,7 +1062,10 @@ fn signs_in_with_wallet(ctx: &Ctx, args: &LoginArgs) -> Result<bool> {
         || args.mnemonic
         || args.full_key
         || args.replace.is_some()
-        || ctx.cli_identity.is_some()
+        || ctx
+            .cli_identity
+            .as_deref()
+            .is_some_and(keystore::is_file_source)
     {
         return Ok(false);
     }
@@ -1076,9 +1079,9 @@ fn signs_in_with_wallet(ctx: &Ctx, args: &LoginArgs) -> Result<bool> {
         } else {
             "stdin is not a terminal: no QR code is shown without --wallet"
         })
-        .fix("sign in from your identity: `dg auth login <identity file>` or `dg auth login --mnemonic`")
+        .fix("sign in from your identity file: `dg auth login <identity file>` (`--mnemonic` asks for the words on a terminal, so it needs one too)")
         .fix("wait for your wallet anyway: `dg auth login --wallet --yes`")
-        .fix("in CI, set DASH_FORGE_KEY to a dfk1 key (`dg auth export --format dfk1`): no login needed")
+        .fix("in CI, set DASH_FORGE_KEY to a dfk1 key (`dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1`): no login needed")
         .note("nothing was shown or stored")
         .into());
     }
@@ -2194,6 +2197,14 @@ mod tests {
         let mut with_identity = Ctx::scripted(false, false, true, None);
         with_identity.cli_identity = Some(PathBuf::from("id.json"));
         assert!(!signs_in_with_wallet(&with_identity, &args(&[])).unwrap());
+        // `--identity keychain:…` / `dfk1:…` is no identity to sign in from: the wallet, as bare.
+        for source in ["keychain:dash-forge/testnet/Id1", "dfk1:testnet:Id1:6:w"] {
+            with_identity.cli_identity = Some(PathBuf::from(source));
+            assert!(
+                signs_in_with_wallet(&with_identity, &args(&[])).unwrap(),
+                "{source}"
+            );
+        }
         for (yes, json, stdin_tty) in [
             (false, false, false),
             (true, false, false),
