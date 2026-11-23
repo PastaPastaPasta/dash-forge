@@ -166,6 +166,11 @@ export async function treeAtPath(
   return readTree(reader, treeOid)
 }
 
+/** Whether a read failed because the path names nothing on that commit (no retry helps). */
+export function isMissingPathError(message: string | null | undefined): boolean {
+  return message != null && /\b(path|file) not found: /.test(message)
+}
+
 /** Find a directory entry (blob) by its leaf name within a tree, returning its oid. */
 export function findEntry(entries: readonly TreeEntry[], name: string): TreeEntry | undefined {
   return entries.find((e) => e.name === name)

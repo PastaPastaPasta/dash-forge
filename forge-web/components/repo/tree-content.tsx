@@ -8,7 +8,7 @@
 import { useCallback, useMemo } from 'react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { readTree, selectedTip, selectRef, treeAtPath, type TreeEntry } from '@/lib/view'
+import { isMissingPathError, readTree, selectedTip, selectRef, treeAtPath, type TreeEntry } from '@/lib/view'
 import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
 import { repoKey, type RepoRef } from '@/lib/repo'
 import { useAsync } from '@/hooks/use-async'
@@ -96,7 +96,7 @@ function DirBody({
   const rootTree = useCallback(() => rootTreeOf(reader, tip), [reader, tip])
   if (loading) return <LoadingBlock label="Reading tree" />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
-  if (error?.includes('path not found')) {
+  if (isMissingPathError(error)) {
     return <EmptyState icon={FolderOpen} title="Directory not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse from the repo root.`} />
   }
   if (error) return <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
