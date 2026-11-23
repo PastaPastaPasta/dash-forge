@@ -65,9 +65,9 @@ export function KeysPanel(): JSX.Element {
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
       {identity ? <PendingRenewal identityId={identity} /> : null}
-      {from !== null ? (
+      {from !== null && (storage === 'session' || !keyLimits) ? (
         <p data-testid="key-origin">
-          <span className="text-anvil-500 dark:text-anvil-400">From </span>
+          <span className="text-anvil-500 dark:text-anvil-400">From: </span>
           {from}
         </p>
       ) : null}
@@ -77,6 +77,12 @@ export function KeysPanel(): JSX.Element {
         </p>
       ) : keyLimits ? (
         <dl className="grid grid-cols-2 gap-2">
+          {from !== null ? (
+            <>
+              <dt className="text-anvil-500 dark:text-anvil-400">From</dt>
+              <dd data-testid="key-origin">{from}</dd>
+            </>
+          ) : null}
           {keyId !== null ? (
             <>
               <dt className="text-anvil-500 dark:text-anvil-400">Key</dt>
