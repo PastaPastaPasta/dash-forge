@@ -544,7 +544,7 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 **What to do:** pass `--yes` once you have checked what the command will do. The `cause:` line quotes the prompt, with its DASH estimate when the command prints one; `dg cost estimate` and `dg cost prices` give the rest.
 
-A bare `dg auth login` without a terminal stops with E802 too: it would wait for a wallet to scan a code. Give it what to sign in with: an identity file, `--mnemonic`, or `--wallet --yes` when a script really wants the wallet; CI uses a `dfk1:` key in `DASH_FORGE_KEY` instead.
+A bare `dg auth login` without a terminal stops with E802 too: it would wait for a wallet to scan a code. Give it an identity file, or `--wallet --yes` when a script really wants the wallet. `--mnemonic` asks for the words on the terminal, so it needs one too (and never works with `--json`). CI uses a `dfk1:` key in `DASH_FORGE_KEY` instead.
 
 ## E803
 

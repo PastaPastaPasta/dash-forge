@@ -1069,7 +1069,7 @@ fn signs_in_with_wallet(ctx: &Ctx, args: &LoginArgs) -> Result<bool> {
         } else {
             "stdin is not a terminal: no QR code is shown without --wallet"
         })
-        .fix("sign in from your identity: `dg auth login <identity file>` or `dg auth login --mnemonic`")
+        .fix("sign in from your identity file: `dg auth login <identity file>` (`--mnemonic` asks for the words on a terminal, so it needs one too)")
         .fix("wait for your wallet anyway: `dg auth login --wallet --yes`")
         .fix("in CI, set DASH_FORGE_KEY to a dfk1 key (`dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1`): no login needed")
         .note("nothing was shown or stored")

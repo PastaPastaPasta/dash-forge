@@ -25,7 +25,7 @@ mkdir -p "$(dirname "$FORGE_STATE")"
 key=${DASH_FORGE_KEY:-}
 key=${key#"${key%%[![:space:]]*}"}
 key=${key%"${key##*[![:space:]]}"}
-[ -n "$key" ] || die "DASH_FORGE_KEY is empty. Add the runner key as a repository secret named DASH_FORGE_KEY and pass it with 'env: DASH_FORGE_KEY: \${{ secrets.DASH_FORGE_KEY }}'. No key yet? Sign in on your computer with 'dg auth login' (your DashPay wallet approves a limited key), then 'dg auth export --new-key --format dfk1 --reveal-secrets -o - | gh secret set DASH_FORGE_KEY' gives CI a key and budget of its own (it needs your recovery phrase once). Exporting this computer's key instead (without --new-key) shares its budget, and renewing it in your wallet disables CI's copy."
+[ -n "$key" ] || die "DASH_FORGE_KEY is empty. Add the runner key as a repository secret named DASH_FORGE_KEY and pass it with 'env: DASH_FORGE_KEY: \${{ secrets.DASH_FORGE_KEY }}'. No key yet? Sign in on your computer with 'dg auth login' (your DashPay wallet approves a limited key), then 'dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1' writes a key with a budget of its own for CI (it needs your recovery phrase once): 'gh secret set DASH_FORGE_KEY < runner.dfk1', then delete runner.dfk1. Exporting this computer's key instead ('dg auth export --format dfk1 --reveal-secrets -o - | gh secret set DASH_FORGE_KEY') shares its budget, and renewing it in your wallet disables CI's copy."
 case "$key" in
     dfk1:*)
         IFS=: read -r _ _ _ _ wif <<<"$key"
