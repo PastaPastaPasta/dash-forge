@@ -60,7 +60,7 @@ export function KeysPanel(): JSX.Element {
   // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
   // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
   const inWallet = storage === 'vault' && renewableInWallet(origin)
-  const from = keyOriginLabel(storage, origin, unlimitedKey)
+  const from = keyOriginLabel(storage, origin, unlimitedKey && !keyLimits)
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">

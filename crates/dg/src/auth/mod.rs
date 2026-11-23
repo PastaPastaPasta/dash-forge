@@ -1290,7 +1290,11 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 .map(|k| k.id)
         });
     let from_wallet = shown_key.is_some_and(|id| wallet::is_wallet_key(&network, &identity_id, id));
-    let key_origin = key_origin(&network, &identity_id, shown_key, from_wallet, kind);
+    let key_origin = key_origin(
+        from_wallet,
+        kind,
+        origin::recorded(&network, &identity_id, shown_key),
+    );
     ctx.emit(
         json!({
             "network": network,
@@ -1331,8 +1335,10 @@ async fn status(ctx: &Ctx) -> Result<()> {
             );
             if let Some(o) = key_origin {
                 println!("Origin:   {}", o.describe());
+            } else if matches!(kind, "sealed-file" | "plaintext-file") {
+                println!("Origin:   not recorded (a key file an earlier dg stored)");
             }
-            if let Some(line) = renew_line(report.as_ref(), from_wallet) {
+            if let Some(line) = renew_line(report.as_ref(), from_wallet, key_origin) {
                 println!("          {line}");
             }
             let key_id = report.as_ref().and_then(|r| r.key_id);
@@ -1357,28 +1363,34 @@ async fn status(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// Where the status's key came from: a wallet grant, the origin dg recorded when it stored
-/// `key_id` ([`origin`]), else where it is kept (`kind`, [`store::describe_source`]).
+/// Where the status's key came from: a wallet grant, an inline `dfk1`, the origin dg recorded
+/// when it stored the key ([`origin`]), else where it is kept (`kind`, [`store::describe_source`]).
 fn key_origin(
-    network: &str,
-    identity_id: &str,
-    key_id: Option<u32>,
     from_wallet: bool,
     kind: &str,
+    recorded: Option<origin::KeyOrigin>,
 ) -> Option<origin::KeyOrigin> {
     if from_wallet {
-        return Some(origin::KeyOrigin::Wallet);
+        Some(origin::KeyOrigin::Wallet)
+    } else if kind == "inline" {
+        Some(origin::KeyOrigin::Dfk1)
+    } else {
+        recorded.or_else(|| origin::KeyOrigin::from_storage(kind))
     }
-    key_id
-        .and_then(|id| origin::recorded(network, identity_id, id))
-        .or_else(|| origin::KeyOrigin::from_storage(kind))
 }
 
 /// How to renew the status's key: in the wallet for a key it granted (and live); a Forge
 /// limited key from the master key can move to the wallet the same way.
-fn renew_line(report: Option<&KeyReport>, from_wallet: bool) -> Option<String> {
+fn renew_line(
+    report: Option<&KeyReport>,
+    from_wallet: bool,
+    key_origin: Option<origin::KeyOrigin>,
+) -> Option<String> {
     let r = report?;
     r.key_id?;
+    if key_origin == Some(origin::KeyOrigin::Dfk1) {
+        return None;
+    }
     if from_wallet {
         Some(format!(
             "Renew in your wallet: `{}` (disconnect Dash Forge in the wallet to disable the key)",
@@ -2233,6 +2245,7 @@ mod tests {
     /// wallet; a Forge limited key from the master key is offered the wallet too.
     #[test]
     fn the_status_names_the_key_origin_and_renews_wallet_keys_in_the_wallet() {
+        use origin::KeyOrigin as O;
         let r = |key_id: Option<u32>, limited| KeyReport {
             key_id,
             disabled_id: key_id.is_none().then_some(9),
@@ -2243,35 +2256,38 @@ mod tests {
             expires_at: Some(1),
         };
         assert_eq!(
-            key_origin("testnet", "NoSuchIdentity", Some(9), true, "keychain"),
-            Some(origin::KeyOrigin::Wallet)
+            key_origin(true, "keychain", Some(O::Phrase)),
+            Some(O::Wallet)
+        );
+        assert_eq!(key_origin(false, "inline", Some(O::Phrase)), Some(O::Dfk1));
+        assert_eq!(key_origin(false, "keychain", None), Some(O::Keychain));
+        assert_eq!(
+            key_origin(false, "keychain", Some(O::Phrase)),
+            Some(O::Phrase)
         );
         assert_eq!(
-            key_origin("testnet", "NoSuchIdentity", Some(9), false, "inline"),
-            Some(origin::KeyOrigin::Dfk1)
+            key_origin(false, "sealed-file", Some(O::File)),
+            Some(O::File)
         );
-        assert_eq!(
-            key_origin("testnet", "NoSuchIdentity", None, false, "keychain"),
-            Some(origin::KeyOrigin::Keychain)
-        );
-        assert_eq!(
-            key_origin("testnet", "NoSuchIdentity", Some(9), false, "sealed-file"),
-            Some(origin::KeyOrigin::File)
-        );
-        assert_eq!(
-            key_origin("testnet", "NoSuchIdentity", Some(9), false, "pasted"),
-            None
-        );
-        let wallet = renew_line(Some(&r(Some(9), true)), true).unwrap();
+        assert_eq!(key_origin(false, "sealed-file", None), None);
+        assert_eq!(key_origin(false, "pasted", None), None);
+        let wallet = renew_line(Some(&r(Some(9), true)), true, Some(O::Wallet)).unwrap();
         assert!(
             wallet.starts_with("Renew in your wallet: `dg auth login`"),
             "{wallet}"
         );
-        let limited = renew_line(Some(&r(Some(9), true)), false).unwrap();
+        let limited = renew_line(Some(&r(Some(9), true)), false, Some(O::Phrase)).unwrap();
         assert!(limited.contains("from your DashPay wallet"), "{limited}");
         assert!(limited.contains("dg auth keys add"), "{limited}");
-        assert_eq!(renew_line(Some(&r(Some(9), false)), false), None);
-        assert_eq!(renew_line(Some(&r(None, true)), true), None);
-        assert_eq!(renew_line(None, true), None);
+        assert_eq!(renew_line(Some(&r(Some(9), false)), false, None), None);
+        assert_eq!(
+            renew_line(Some(&r(Some(9), true)), false, Some(O::Dfk1)),
+            None
+        );
+        assert_eq!(
+            renew_line(Some(&r(None, true)), true, Some(O::Wallet)),
+            None
+        );
+        assert_eq!(renew_line(None, true, Some(O::Wallet)), None);
     }
 }
