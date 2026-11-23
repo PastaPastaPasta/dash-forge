@@ -66,7 +66,7 @@ export function KeysPanel(): JSX.Element {
     <div className="space-y-4 text-dense" data-testid="keys-panel">
       {identity ? <PendingRenewal identityId={identity} /> : null}
       {from !== null ? (
-        <p data-testid="key-origin" data-origin={origin ?? (storage === 'session' ? 'pasted' : unlimitedKey ? 'wallet-v1' : 'master')}>
+        <p data-testid="key-origin">
           <span className="text-anvil-500 dark:text-anvil-400">From </span>
           {from}
         </p>

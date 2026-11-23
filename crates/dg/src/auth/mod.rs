@@ -1375,9 +1375,7 @@ fn key_origin(
 /// limited key from the master key can move to the wallet the same way.
 fn renew_line(report: Option<&KeyReport>, from_wallet: bool) -> Option<String> {
     let r = report?;
-    if r.key_id.is_none() {
-        return None;
-    }
+    r.key_id?;
     if from_wallet {
         Some(format!(
             "Renew in your wallet: `{}` (disconnect Dash Forge in the wallet to disable the key)",

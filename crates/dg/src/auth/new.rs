@@ -927,6 +927,7 @@ async fn register(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     let network = ctx.network_label();
     // Before any network read or passphrase prompt: a fresh creation that has nowhere safe to

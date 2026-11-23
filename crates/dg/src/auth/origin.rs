@@ -97,25 +97,14 @@ fn record_at(
     key_id: u32,
     origin: KeyOrigin,
 ) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    let lock = std::fs::File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path.with_extension("lock"))
-        .and_then(|f| f.lock().map(|()| f))
-        .with_context(|| format!("locking {}", path.display()))?;
+    let _lock = super::wallet::lock_state(path)?;
     let mut origins = load(path);
     origins
         .keys
         .insert(name(network, identity_id), Recorded { key_id, origin });
     let raw = toml::to_string_pretty(&origins).context("serializing the key origins")?;
-    let written = forge_core::keystore::write_private_file(path, raw.as_bytes())
-        .with_context(|| format!("writing {}", path.display()));
-    drop(lock);
-    written
+    forge_core::keystore::write_private_file(path, raw.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 fn recorded_at(path: &Path, network: &str, identity_id: &str, key_id: u32) -> Option<KeyOrigin> {
