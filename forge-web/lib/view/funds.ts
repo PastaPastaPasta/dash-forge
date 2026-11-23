@@ -106,11 +106,13 @@ export function renewableInWallet(origin: string | null | undefined): boolean {
 
 /**
  * Whether "Renew" offers the wallet first: for a key a wallet may have granted, and on testnet for
- * any browser key (wallet-primary, `docs/design/wallet-primary.md`). For a key the wallet did not
- * grant to this browser, it adds a new key and the current one stays live until it is disabled.
+ * any limited browser key (wallet-primary, `docs/design/wallet-primary.md`). For a key the wallet
+ * did not grant to this browser, it adds a new key and the current one stays live until it is
+ * disabled. A wallet's older unlimited key is replaced with the master key instead, which
+ * disables it.
  */
-export function renewsInWallet(origin: string | null | undefined, network: string): boolean {
-  return renewableInWallet(origin) || network === 'testnet'
+export function renewsInWallet(origin: string | null | undefined, network: string, unlimited = false): boolean {
+  return renewableInWallet(origin) || (network === 'testnet' && !unlimited)
 }
 
 /**
@@ -134,9 +136,9 @@ export function keyOriginLabel(storage: 'vault' | 'session' | null, origin: stri
  * How "Renew" goes for a session: in the wallet for a key it granted, either way for a passkey's
  * and, on testnet, for any other browser key ({@link renewsInWallet}).
  */
-export function renewFix(origin: string | null | undefined, network = ''): 'renew-key' | 'renew-in-wallet' | 'renew-either' {
+export function renewFix(origin: string | null | undefined, network = '', unlimited = false): 'renew-key' | 'renew-in-wallet' | 'renew-either' {
   if (origin === 'app-connect') return 'renew-in-wallet'
-  return renewsInWallet(origin, network) ? 'renew-either' : 'renew-key'
+  return renewsInWallet(origin, network, unlimited) ? 'renew-either' : 'renew-key'
 }
 
 /**
@@ -149,6 +151,7 @@ export function fundsNotice(
   state: FundsState,
   origin?: string | null,
   network = '',
+  unlimited = false,
 ): { readonly key: string; readonly message: string; readonly threshold?: { before: string; dash: number; after: string }; readonly fix: FundsFix } | null {
   if (state.level === 'comfortable') return null
   const reason = state.reason ?? 'balance'
@@ -168,7 +171,7 @@ export function fundsNotice(
   if (reason === 'key-budget') {
     return {
       key,
-      fix: renewFix(origin, network),
+      fix: renewFix(origin, network, unlimited),
       message: empty
         ? "This browser's key has spent its budget: writes are off until you renew it. Reading still works."
         : "This browser's key has less than 20 % of its budget left. Renew it (or top up its budget in Settings).",
@@ -176,7 +179,7 @@ export function fundsNotice(
   }
   return {
     key,
-    fix: renewFix(origin, network),
+    fix: renewFix(origin, network, unlimited),
     message: empty
       ? "This browser's key has expired: writes are off until you renew it. Reading still works."
       : "This browser's key expires within 7 days. Renew it to keep writing.",

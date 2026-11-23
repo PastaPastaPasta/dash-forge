@@ -33,10 +33,10 @@ function readDismissed(identity: string): readonly string[] {
 }
 
 export function LowFundsBanner(): JSX.Element | null {
-  const { identity, funds, origin } = useAuth()
+  const { identity, funds, origin, unlimitedKey } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
-  const notice = funds ? fundsNotice(funds, origin, ACTIVE_NETWORK.network) : null
+  const notice = funds ? fundsNotice(funds, origin, ACTIVE_NETWORK.network, unlimitedKey) : null
   // Read after mount (sessionStorage is browser-only), per identity; until then nothing shows,
   // so neither a flash nor another identity's dismissals.
   const [dismissed, setDismissed] = useState<{ identity: string; keys: readonly string[] } | null>(null)

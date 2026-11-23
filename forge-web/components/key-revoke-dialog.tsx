@@ -15,8 +15,9 @@
  * the dialog vanished and nothing was revoked.
  *
  * On testnet, a key the wallet granted (origin `app-connect`) is revoked in the wallet first: its
- * disconnect disables the key with no master key (`docs/design/wallet-primary.md`); the master-key
- * revoke stays below as the other way.
+ * disconnect disables the key with no master key (DashPay for Android; iOS only forgets it locally,
+ * `docs/guides/identity-and-keys.md`). Not while this browser holds keys a renewal left live:
+ * only the master-key revoke disables those.
  */
 
 import { useEffect, useState } from 'react'
@@ -38,7 +39,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 
 export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; onClose: () => void }): JSX.Element {
   const { identity, keyId, heldOnly, revokeStored, isLoading, unlockScope, origin } = useAuth()
-  const walletFirst = origin === 'app-connect' && ACTIVE_NETWORK.network === 'testnet'
+  const walletFirst = origin === 'app-connect' && ACTIVE_NETWORK.network === 'testnet' && (heldOnly ?? []).length === 0
   const master = useMasterKeyInput(identity, { id: 'revoke', fileLabel: 'Identity file to revoke with' })
   const [submitError, setError] = useState<string | null>(null)
   const error = master.error ?? submitError

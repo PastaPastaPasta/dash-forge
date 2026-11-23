@@ -74,7 +74,7 @@ export function TopUpSheet(): JSX.Element | null {
   const reason = useUiStore((s) => s.topUp)
   const close = useUiStore((s) => s.closeTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
-  const { identity, storage, keyLimits, balance, funds, origin } = useAuth()
+  const { identity, storage, keyLimits, balance, funds, origin, unlimitedKey } = useAuth()
   const [other, setOther] = useState(false)
   const [topUpKey, setTopUpKey] = useState(false)
   if (identity === null) return null
@@ -86,7 +86,7 @@ export function TopUpSheet(): JSX.Element | null {
   const canTopUpKey = reason.blocker === 'key-budget' && storage === 'vault' && keyLimits?.total != null
   // A key a wallet granted through App Connect is renewed in that wallet; the identity file or
   // recovery phrase still works (the master key can renew any Forge browser key).
-  const inWallet = renewsInWallet(origin, ACTIVE_NETWORK.network) && storage === 'vault'
+  const inWallet = renewsInWallet(origin, ACTIVE_NETWORK.network, unlimitedKey) && storage === 'vault'
   // A key a passkey restored: the wallet may have made it, or the master key did. Said so.
   const fromPasskey = origin === 'passkey' && storage === 'vault'
   const renewVia = (view: 'import' | 'wallet-renew'): void => {

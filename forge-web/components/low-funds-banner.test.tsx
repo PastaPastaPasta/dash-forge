@@ -9,6 +9,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useUiStore } from '@/hooks/use-ui-store'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const session = vi.hoisted(() => ({ origin: null as 'app-connect' | 'passkey' | null, reason: 'key-expiry' as 'key-expiry' | 'key-budget' | 'balance', level: 'low' as 'low' | 'empty' }))
@@ -85,6 +86,7 @@ describe('the low-funds banner', () => {
   })
 
   it('on testnet, a key this browser registered renews in the wallet first, the identity file beside it', async () => {
+    expect(ACTIVE_NETWORK.network).toBe('testnet')
     await show()
     expect(main().textContent).toBe('Renew in your wallet')
     const withFile = host.querySelector<HTMLButtonElement>('[data-testid="low-funds-renew-with-file"]')!

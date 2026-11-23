@@ -13,6 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useUiStore } from '@/hooks/use-ui-store'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { FIAT_RATES_KEY, FIAT_SETTINGS_KEY } from '@/lib/fiat/store'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
@@ -168,6 +169,7 @@ describe('the top-up sheet for a key a wallet granted (App Connect)', () => {
   })
 
   it('on testnet, a key this browser registered itself renews in the wallet first, and stays live until disabled', () => {
+    expect(ACTIVE_NETWORK.network).toBe('testnet')
     act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
     expect(byText('Renew in your wallet')).not.toBeNull()
     expect(byText('Renew with identity file')).not.toBeNull()

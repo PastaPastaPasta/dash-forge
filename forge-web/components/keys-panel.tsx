@@ -60,7 +60,7 @@ export function KeysPanel(): JSX.Element {
   const pasted = storage === 'session'
   // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
   // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
-  const inWallet = storage === 'vault' && renewsInWallet(origin, ACTIVE_NETWORK.network)
+  const inWallet = storage === 'vault' && renewsInWallet(origin, ACTIVE_NETWORK.network, unlimitedKey)
   const walletDisablesIt = origin === 'app-connect'
   const from = keyOriginLabel(storage, origin, unlimitedKey && !keyLimits)
 
@@ -118,8 +118,8 @@ export function KeysPanel(): JSX.Element {
       )}
       {heldOnly.length > 0 ? (
         <p className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="held-only-keys" data-key-ids={heldOnly.join(',')}>
-          Also held, never used to sign: key{heldOnly.length > 1 ? 's' : ''} {heldOnly.map((k) => `#${k}`).join(', ')}, from a key renewal you gave up.
-          Your next renewal or &quot;Revoke on Platform&quot; disables {heldOnly.length > 1 ? 'them' : 'it'}.
+          Also held, never used to sign: key{heldOnly.length > 1 ? 's' : ''} {heldOnly.map((k) => `#${k}`).join(', ')}, left live by an earlier renewal.
+          Renewing with your identity file or recovery phrase, or &quot;Revoke on Platform&quot;, disables {heldOnly.length > 1 ? 'them' : 'it'}.
         </p>
       ) : null}
       {storage === 'vault' && unlimitedKey ? (

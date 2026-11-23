@@ -89,6 +89,11 @@ describe('fundsNotice (the low-balance banner, ux-dx-spec §4)', () => {
     expect(renewFix(null, 'testnet')).toBe('renew-either')
     expect(renewFix(null, 'mainnet')).toBe('renew-key')
     expect(renewFix(null, 'devnet')).toBe('renew-key')
+    // A wallet's older unlimited key is replaced with the master key, which disables it.
+    expect(renewsInWallet(null, 'testnet', true)).toBe(false)
+    expect(renewsInWallet('passkey', 'testnet', true)).toBe(true)
+    expect(renewFix(null, 'testnet', true)).toBe('renew-key')
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW), null, 'testnet', true)).toMatchObject({ fix: 'renew-key' })
     expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW), null, 'testnet')).toMatchObject({ key: 'low:key-expiry', fix: 'renew-either' })
     expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW), 'dg', 'mainnet')).toMatchObject({ key: 'empty:key-budget', fix: 'renew-key' })
     expect(fundsNotice(fundsState(BigInt(LOW_BALANCE_CREDITS - 1), null, NOW), null, 'testnet')).toMatchObject({ fix: 'top-up' })
