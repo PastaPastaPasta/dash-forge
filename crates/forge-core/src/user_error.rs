@@ -1004,7 +1004,7 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         return Some(
             UserError::new(codes::KEY_BUDGET_SPENT, ctx.headline("this key's budget is used up"))
                 .cause(one_line(msg))
-                .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`")
+                .fix("get a fresh limited key: `dg auth login` (your DashPay wallet approves a new key), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once)")
                 .note("the identity's balance is untouched; only this key can no longer sign"),
         );
     }
@@ -1012,7 +1012,7 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         return Some(
             UserError::new(codes::KEY_EXPIRED, ctx.headline("this key has expired"))
                 .cause(one_line(msg))
-                .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`"),
+                .fix("get a fresh limited key: `dg auth login` (your DashPay wallet approves a new key), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once)"),
         );
     }
     // A contract-bound key used outside its bounds: ContractBoundedKeyOutOfBoundsError (20014),
@@ -1039,7 +1039,7 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         return Some(
             UserError::new(codes::KEY_EXPIRED, ctx.headline("this key was disabled"))
                 .cause(one_line(msg))
-                .fix("sign in again with a live key: `dg auth login <identity file>` registers a new one; `dg auth keys list` shows which are live"),
+                .fix("sign in again with a live key: `dg auth login` (your DashPay wallet approves a new key), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once); `dg auth keys list` shows which are live"),
         );
     }
     // 40210 IdentityInsufficientBalance / 30000 BalanceIsNotEnough.
@@ -1915,7 +1915,7 @@ fn identity_unreadable_with(msg: &str, env_key: bool) -> UserError {
         "could not load your identity file",
     )
     .cause(msg)
-    .fix("`dg auth login <file>` (or `--mnemonic`) stores a key again")
+    .fix("`dg auth login` stores a key again (from your wallet; `dg auth login <file>` or `--mnemonic` from your identity)")
     .fix("pass `--identity <file>` / set DASH_FORGE_KEY for one command (the helper reads DASH_FORGE_KEY)")
 }
 

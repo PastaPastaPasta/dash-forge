@@ -25,7 +25,7 @@ mkdir -p "$(dirname "$FORGE_STATE")"
 key=${DASH_FORGE_KEY:-}
 key=${key#"${key%%[![:space:]]*}"}
 key=${key%"${key##*[![:space:]]}"}
-[ -n "$key" ] || die "DASH_FORGE_KEY is empty. Add the runner key as a repository secret named DASH_FORGE_KEY and pass it with 'env: DASH_FORGE_KEY: \${{ secrets.DASH_FORGE_KEY }}'."
+[ -n "$key" ] || die "DASH_FORGE_KEY is empty. Add the runner key as a repository secret named DASH_FORGE_KEY and pass it with 'env: DASH_FORGE_KEY: \${{ secrets.DASH_FORGE_KEY }}'. No key yet? Sign in on your computer with 'dg auth login' (your DashPay wallet approves a limited key), then 'dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1' writes a key with a budget of its own for CI (it needs your recovery phrase once): 'gh secret set DASH_FORGE_KEY < runner.dfk1', then delete runner.dfk1. Exporting this computer's key instead ('dg auth export --format dfk1 --reveal-secrets -o - | gh secret set DASH_FORGE_KEY') shares its budget, and renewing it in your wallet disables CI's copy."
 case "$key" in
     dfk1:*)
         IFS=: read -r _ _ _ _ wif <<<"$key"
@@ -38,7 +38,7 @@ case "$key" in
         # trigger (an issue, a comment, a pull request) could spend the whole balance, run
         # after run. Only an explicit opt-in takes one.
         [ "${INPUT_ALLOW_UNLIMITED_KEY:-false}" = true ] ||
-            die "DASH_FORGE_KEY is an identity file, whose keys have no spending budget: every run could spend up to cost-cap, and runs repeat, until the identity's balance is gone. Use a limited runner key instead (dg auth export --new-key --budget 0.5 --format dfk1; Platform caps what it can ever spend), or set 'allow-unlimited-key: true' on this step to accept the risk."
+            die "DASH_FORGE_KEY is an identity file, whose keys have no spending budget: every run could spend up to cost-cap, and runs repeat, until the identity's balance is gone. Use a limited runner key instead (dg auth export --new-key --budget 0.5 --format dfk1 --reveal-secrets -o runner.dfk1; Platform caps what it can ever spend), or set 'allow-unlimited-key: true' on this step to accept the risk."
         jq -e 'type == "object"' >/dev/null 2>&1 <<<"$key" ||
             die "DASH_FORGE_KEY starts with '{' but is not valid JSON. Paste the whole identity file into the secret."
         # Mask every secret-looking string in the file, wherever it is nested.

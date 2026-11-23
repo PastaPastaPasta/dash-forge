@@ -399,7 +399,7 @@ impl Ctx {
         self.identity_path.as_ref().ok_or_else(|| {
             UserError::new(codes::NO_IDENTITY, "no identity configured")
                 .cause("this command signs with an identity, and none was given or set as the default")
-                .fix("`dg auth new` creates an identity; `dg auth login <file>` (or `--mnemonic`) signs in with one")
+                .fix("`dg auth login` signs in with your DashPay wallet; `dg auth login <file>` (or `--mnemonic`) signs in from your identity; `dg auth new` creates one")
                 .fix("pass --identity <file>, or set DASH_FORGE_KEY=<file>")
                 .into()
         })

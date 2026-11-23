@@ -8,6 +8,10 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Changed
+
+- **A bare `dg auth login` signs in with your DashPay wallet** (as `--wallet` does): it prints the QR code and the `dash-key:` link. `dg auth login <file>`, `--mnemonic`, `--full-key` and `--replace` sign in from the identity's master key as before. Without a terminal (stdin is not one, or `--json`) a bare `dg auth login` used to be a usage error (exit 2); it is now [E802](docs/errors.md#e802) (exit 8), and it shows and stores nothing: scripts pass a file or `--mnemonic`, or `--wallet --yes`. The no-key messages of `dg`, `git-remote-dash` and the Action, the docs and the web app's empty-repository steps name `dg auth login` first.
+
 ### Added
 
 - **`dg auth login --wallet`**: sign in from the terminal with the DashPay wallet on your phone (App Connect). `dg` prints a QR code and a `dash-key:` link, the wallet adds a limited key (proposed: 0.25 DASH for 180 days; the wallet may change it), and `dg` reads the answer from Platform, shows the identity to confirm and stores the key like any limited key. `dg auth status` shows such a key as "from your wallet (App Connect)". Testnet needs DashPay's testnet build. See [Signing in from the terminal with DashPay](docs/guides/identity-and-keys.md#signing-in-from-the-terminal-with-dashpay).
