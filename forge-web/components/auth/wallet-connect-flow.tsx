@@ -542,8 +542,8 @@ export function WalletConnectFlow({
           {origin === 'app-connect'
             ? 'Your wallet gave this browser its key. A new request goes to the same wallet: when you approve, it adds a new key and disables the current one.'
             : origin === 'passkey'
-              ? 'A passkey brought this key here. If a wallet made it, approve a new request in that wallet: it adds a new key, and this one stays live until you disable it in Devices & keys.'
-              : "Your wallet didn't make this browser's key, so approving adds a new key beside it: the current one stays live until you disable it in Devices & keys."}
+              ? 'A passkey brought this key here. If a wallet made it, approve a new request there: it adds a key, and this one stays live until Revoke on Platform or a renewal with your identity file disables it.'
+              : "Your wallet didn't make this browser's key, so approving adds a new key beside it: the current one stays live until Revoke on Platform or a renewal with your identity file disables it."}
         </p>
         <p className="text-dense" data-testid="approval-terms">
           <ApprovalTerms budget={defaults.budgetCredits} expiresAt={defaults.expiresAt} />

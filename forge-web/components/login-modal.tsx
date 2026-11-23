@@ -306,7 +306,7 @@ function describeView(view: View, limitedKeys: boolean, notWalletGrant: boolean)
     // A key a passkey or the master key brought here is not this browser's own wallet grant: the
     // wallet adds a new one and leaves it.
     return notWalletGrant
-      ? 'Your wallet adds a new key for this browser. The current key stays live until you disable it in Devices & keys. Your recovery phrase and master key stay on the phone.'
+      ? 'Your wallet adds a new key for this browser. The current key stays live until Revoke on Platform or a renewal with your identity file disables it. Your recovery phrase and master key stay on the phone.'
       : 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
   }
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`

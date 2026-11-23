@@ -199,7 +199,7 @@ export function KeysPanel(): JSX.Element {
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
               {canTopUp ? 'Top-up keeps this key and adds budget (or a later expiry). ' : ''}
               {inWallet && !walletDisablesIt
-                ? 'Renewing in your wallet adds a new key and needs no master key; this one stays live until you disable it in Devices & keys. Renewing with the identity file replaces it and disables this one.'
+                ? 'Renewing in your wallet adds a key without the master key; this one stays live until Revoke on Platform or a renewal with your identity file disables it. Renewing with the identity file replaces it and disables this one.'
                 : `Renew replaces it with a new key and disables this one.${inWallet ? ' Renewing in your wallet needs no master key.' : ''}`}
               {inWallet
                 ? ' Top-up and the identity file use your master key once and do not store it.'

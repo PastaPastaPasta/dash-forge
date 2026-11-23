@@ -111,10 +111,10 @@ export function TopUpSheet(): JSX.Element | null {
             {inWallet ? (
               <p>
                 {fromPasskey
-                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew it there. It adds a new key, and this one stays live until you disable it in Devices & keys."
+                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew there: it adds a key; this one stays live until Revoke on Platform or a renewal with your identity file disables it."
                   : origin === 'app-connect'
                     ? 'Your wallet gave this browser its key, so renew it there: the wallet adds a new key and disables this one.'
-                    : 'Renew it in your DashPay wallet: it adds a new key, and this one stays live until you disable it in Devices & keys.'}
+                    : 'Renew it in your DashPay wallet: it adds a new key, and this one stays live until Revoke on Platform or a renewal with your identity file disables it.'}
                 {canTopUpKey ? ' You can also add budget to this key with your identity file or recovery phrase.' : ' Your identity file or recovery phrase works too.'}
               </p>
             ) : canTopUpKey ? (
