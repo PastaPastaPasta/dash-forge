@@ -4539,6 +4539,17 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         ..
     } = locate(ctx, repo, number).await?;
     let cwd = std::env::current_dir()?;
+    if !git::git_ok(&cwd, &["rev-parse", "--git-dir"]) {
+        return Err(UserError::new(
+            codes::GIT_REPO,
+            format!("dg pr checkout {repo} {number} needs a git repository to put the branch in"),
+        )
+        .fix(format!(
+            "clone it first, then run this inside the clone: dg repo clone {repo}"
+        ))
+        .note("nothing was fetched")
+        .into());
+    }
     let fetched = fetch_head(ctx, &cwd, &source, &head, private)?;
     if !git::has_object(&cwd, &head) {
         return Err(crate::errors::not_found(
@@ -4739,7 +4750,7 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         ..
     } = locate(ctx, repo, number).await?;
     git::require_branch_ref(&base_ref)?;
-    let cwd = std::env::current_dir()?;
+    let (cwd, _scratch) = diff_workdir(std::env::current_dir()?)?;
     fetch_head(ctx, &cwd, &source, &head, private)?;
     // The base as the target repo has it now, fetched fresh.
     let base_local = format!("refs/remotes/dash-pr/base-{number}");
@@ -4761,6 +4772,16 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         || println!("{text}"),
     );
     Ok(())
+}
+
+/// Where `dg pr diff` fetches and diffs: the git repository at `cwd`, which keeps the objects
+/// for next time, or a scratch one when `cwd` is not in a repository (as `gh pr diff` runs anywhere).
+fn diff_workdir(cwd: PathBuf) -> Result<(PathBuf, Option<tempfile::TempDir>)> {
+    if git::git_ok(&cwd, &["rev-parse", "--git-dir"]) {
+        return Ok((cwd, None));
+    }
+    let scratch = scratch_repo()?;
+    Ok((scratch.path().to_path_buf(), Some(scratch)))
 }
 
 /// The role of `r`'s reviewer when `r` is a member's approve or request changes that does not
@@ -5000,6 +5021,23 @@ pub(crate) mod tests {
             .expect("git");
         assert!(out.status.success(), "git {args:?}: {out:?}");
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    #[test]
+    fn diff_workdir_uses_the_repository_it_is_in_or_a_scratch_one() {
+        let (repo, _) = checkout_fixture();
+        let (dir, scratch) = diff_workdir(repo.path().to_path_buf()).unwrap();
+        assert_eq!(dir, repo.path());
+        assert!(scratch.is_none());
+
+        let outside = tempfile::tempdir().unwrap();
+        if git::git_ok(outside.path(), &["rev-parse", "--git-dir"]) {
+            return;
+        }
+        let (dir, scratch) = diff_workdir(outside.path().to_path_buf()).unwrap();
+        assert_ne!(dir, outside.path());
+        assert_eq!(dir, scratch.as_ref().unwrap().path());
+        assert!(git::git_ok(&dir, &["rev-parse", "--git-dir"]));
     }
 
     /// A repository on `main` (one commit) with a PR head one commit ahead of it that adds
