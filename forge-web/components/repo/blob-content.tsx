@@ -24,6 +24,7 @@ import {
   findEntry,
   formatBytes,
   highlightBlob,
+  isMissingPathError,
   lineHash,
   parseLineHash,
   readBlob,
@@ -238,7 +239,7 @@ function BlobBody({
 
   if (loading || isDir) return <LoadingBlock label={isDir ? 'Opening the directory' : 'Reconstructing blob'} />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
-  if (error?.includes('file not found')) {
+  if (isMissingPathError(error)) {
     return <EmptyState icon={FileText} title="File not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse the tree.`} />
   }
   if (error) return <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />

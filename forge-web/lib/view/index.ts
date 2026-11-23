@@ -152,6 +152,7 @@ export { namesFromDomains, prefetchDpnsNames, resolveDpnsId, resolveDpnsName, re
 export {
   commitRootTree,
   findEntry,
+  isMissingPathError,
   pickReadme,
   readBlob,
   readCommit,
