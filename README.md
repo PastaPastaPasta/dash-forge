@@ -23,7 +23,7 @@
    ```sh
    dg auth new
    ```
-   It shows 12 words to write down and a deposit QR code; fund it from the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org). It then registers the identity and keeps a **limited key** (0.25 DASH budget, 180 days, Forge only) in your OS keychain, which `dg` and `git push` both use. Already have an identity? `dg auth login` instead: it prints a QR code that DashPay Wallet approves (on testnet, DashPay's testnet build), so the recovery phrase never touches this computer. A bridge key backup or the 12 words work too: `dg auth login <file>` or `dg auth login --mnemonic`.
+   It shows 12 words to write down and a deposit QR code; fund it from the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org). It then registers the identity and keeps a **limited key** (0.25 DASH budget, 180 days, Forge only) in your OS keychain, which `dg` and `git push` both use. Already have an identity? `dg auth login` instead: it prints a QR code that DashPay Wallet approves (on testnet, DashPay's testnet build), so the recovery phrase never touches this computer (the v0.2.0 binaries don't have this yet: build from source for it). A bridge key backup or the 12 words work too: `dg auth login <file>` or `dg auth login --mnemonic`.
 3. **Publish** any git repository:
    ```sh
    dg storage add                          # optional: your own bucket or IPFS node, tested as you go

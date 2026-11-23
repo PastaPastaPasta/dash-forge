@@ -10,7 +10,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Changed
 
-- **A bare `dg auth login` signs in with your DashPay wallet** (as `--wallet` does): it prints the QR code and the `dash-key:` link. `dg auth login <file>`, `--mnemonic`, `--full-key` and `--replace` sign in from the identity's master key as before. Without a terminal (stdin is not one, or `--json`) a bare `dg auth login` used to be a usage error (exit 2); it is now [E802](docs/errors.md#e802) (exit 8), and it shows and stores nothing: scripts pass a file or `--mnemonic`, or `--wallet --yes`. The no-key messages of `dg`, `git-remote-dash` and the Action, the docs and the web app's empty-repository steps name `dg auth login` first.
+- **A bare `dg auth login` signs in with your DashPay wallet** (as `--wallet` does): it prints the QR code and the `dash-key:` link. `dg auth login <file>`, `--mnemonic`, `--full-key` and `--replace` sign in from the identity's master key as before. Without a terminal (stdin is not one, or `--json`) a bare `dg auth login` used to be a usage error (exit 2); it is now [E802](docs/errors.md#e802) (exit 8), and it shows and stores nothing: scripts pass an identity file, or `--wallet --yes`, or set a dfk1 key in `DASH_FORGE_KEY`. The no-key messages of `dg`, `git-remote-dash` and the Action, the docs and the web app's empty-repository steps name `dg auth login` first.
 
 ### Added
 

@@ -927,6 +927,7 @@ async fn register(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     let network = ctx.network_label();
     // Before any network read or passphrase prompt: a fresh creation that has nowhere safe to
@@ -971,6 +972,13 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     )
     .await?;
     store::set_default(ctx, &identity_id, &stored.source())?;
+    super::origin::record(
+        ctx,
+        &network,
+        &identity_id,
+        key_id,
+        super::origin::KeyOrigin::Phrase,
+    );
     clear_journal(&network);
     if let Some(path) = &args.backup.backup_file {
         write_backup(path, &keys, &identity_id, backup_pass.as_ref(), false)?;

@@ -648,6 +648,18 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     .await?;
     let kept: Vec<u32> = encryption.iter().map(|k| k.id).collect();
     super::store::set_default(ctx, &master.identity_id, &stored.source())?;
+    let network = ctx.network_label();
+    let from = if args.master.is_some() {
+        super::origin::KeyOrigin::File
+    } else if current.master_key().is_some() {
+        identity
+            .signing_key_id(&current, ctx.network())
+            .and_then(|id| super::origin::recorded(&network, &master.identity_id, Some(id)))
+            .unwrap_or(super::origin::KeyOrigin::File)
+    } else {
+        super::origin::KeyOrigin::Phrase
+    };
+    super::origin::record(ctx, &network, &master.identity_id, id, from);
     ctx.emit(
         super::group::with_group_fields(
             json!({

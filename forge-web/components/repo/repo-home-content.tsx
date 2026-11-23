@@ -375,7 +375,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         <EmptyRepoStep n={2} title="Sign in on this computer">
           <CopyRow text={cmd.authLogin} label="Copy the sign-in command" />
           <p className={note} data-testid="empty-repo-sign-in">
-            It shows a QR code: scan it with DashPay Wallet{ACTIVE_NETWORK.network === 'testnet' ? ' (its testnet build)' : ''} (More →
+            It shows a QR code: scan it with DashPay Wallet{ACTIVE_NETWORK.network === 'testnet' ? "'s testnet build" : ''} (More →
             Tools → Connections) and approve. No wallet? Use your 12
             words with <span className="font-mono">{cmd.authLoginWords}</span> (an identity file works too). No identity
             yet? Run <span className="font-mono">{cmd.authNew}</span>.

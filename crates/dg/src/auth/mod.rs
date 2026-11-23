@@ -15,6 +15,7 @@
 pub mod group;
 mod keys;
 mod new;
+pub(crate) mod origin;
 mod rekey;
 pub mod store;
 mod wallet;
@@ -979,6 +980,14 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         (stored, Some(id), Some((spec, checked)))
     };
     store::set_default(ctx, &master.identity_id, &stored.source())?;
+    let from = if args.mnemonic {
+        origin::KeyOrigin::Phrase
+    } else {
+        origin::KeyOrigin::File
+    };
+    if let Some(id) = key_id.or_else(|| master.doc_op_key().ok().map(|k| k.id)) {
+        origin::record(ctx, &network, &master.identity_id, id, from);
+    }
     // After the key's registration was charged (QW4-058: it printed the balance read before),
     // and what it paid, as every paid write reports it.
     let before = on_chain.balance();
@@ -996,6 +1005,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "identityId": master.identity_id,
                 "network": network,
                 "keyId": key_id,
+                "keyOrigin": from.as_str(),
                 "fullKey": full_key,
                 "encryptionKeyIds": kept_ids,
                 "budgetCredits": spec.as_ref().map(|(s, _)| s.budget_credits),
@@ -1231,7 +1241,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
     let network = ctx.network_label();
     let Some(source) = ctx.identity_path.clone() else {
         ctx.emit(
-            json!({ "network": network, "authenticated": false }),
+            json!({ "network": network, "authenticated": false, "keyOrigin": null, "renew": null }),
             || {
                 println!("Network:  {network}");
                 println!(
@@ -1270,7 +1280,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
     };
     let master = bridge.as_ref().map(|b| b.master_key().is_some());
     let runner_key = report.as_ref().is_some_and(|r| r.doc_type.is_some());
-    let from_wallet = report
+    let shown_key = report
         .as_ref()
         .and_then(|r| r.key_id.or(r.disabled_id))
         .or_else(|| {
@@ -1278,8 +1288,13 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 .as_ref()
                 .and_then(|b| b.doc_op_key().ok())
                 .map(|k| k.id)
-        })
-        .is_some_and(|id| wallet::is_wallet_key(&network, &identity_id, id));
+        });
+    let from_wallet = shown_key.is_some_and(|id| wallet::is_wallet_key(&network, &identity_id, id));
+    let key_origin = key_origin(
+        from_wallet,
+        kind,
+        origin::recorded(&network, &identity_id, shown_key),
+    );
     ctx.emit(
         json!({
             "network": network,
@@ -1305,8 +1320,8 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "defaultIdentityId": config.default_identity_id,
             "masterKeyStored": master,
             "keyUnopened": unopened,
-            "keyOrigin": from_wallet.then_some("wallet"),
-            "renew": from_wallet.then_some(wallet::RENEW),
+            "keyOrigin": key_origin.map(origin::KeyOrigin::as_str),
+            "renew": (from_wallet || key_origin == Some(origin::KeyOrigin::Wallet)).then_some(wallet::RENEW),
         }),
         || {
             println!("Network:  {network}");
@@ -1318,10 +1333,13 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 "Key:      {}",
                 key_line(report.as_ref(), unopened.as_deref(), reached, from_wallet)
             );
-            if from_wallet && report.as_ref().is_some_and(|r| r.key_id.is_none()) {
-                println!("          from your wallet (App Connect)");
-            } else if from_wallet {
-                println!("          from your wallet (App Connect); renew: {}", wallet::RENEW);
+            if let Some(o) = key_origin {
+                println!("Origin:   {}", o.describe());
+            } else if matches!(kind, "sealed-file" | "plaintext-file") {
+                println!("Origin:   not recorded (a key file an earlier dg stored)");
+            }
+            if let Some(line) = renew_line(report.as_ref(), from_wallet, key_origin) {
+                println!("          {line}");
             }
             let key_id = report.as_ref().and_then(|r| r.key_id);
             if let Some(line) = private_line(access.as_ref(), runner_key, key_id) {
@@ -1343,6 +1361,52 @@ async fn status(ctx: &Ctx) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// Where the status's key came from (nothing for a pasted key): a wallet grant, an inline `dfk1`,
+/// the origin dg recorded when it stored the key ([`origin`]), else where it is kept (`kind`,
+/// [`store::describe_source`]).
+fn key_origin(
+    from_wallet: bool,
+    kind: &str,
+    recorded: Option<origin::KeyOrigin>,
+) -> Option<origin::KeyOrigin> {
+    if kind == "pasted" {
+        None
+    } else if from_wallet {
+        Some(origin::KeyOrigin::Wallet)
+    } else if kind == "inline" {
+        Some(origin::KeyOrigin::Dfk1)
+    } else {
+        recorded.or_else(|| origin::KeyOrigin::from_storage(kind))
+    }
+}
+
+/// How to renew the status's key: in the wallet for a key it granted (and live); a Forge
+/// limited key from the master key can move to the wallet the same way.
+fn renew_line(
+    report: Option<&KeyReport>,
+    from_wallet: bool,
+    key_origin: Option<origin::KeyOrigin>,
+) -> Option<String> {
+    let r = report?;
+    r.key_id?;
+    if key_origin == Some(origin::KeyOrigin::Dfk1) {
+        return None;
+    }
+    if from_wallet {
+        Some(format!(
+            "Renew in your wallet: `{}` (disconnect Dash Forge in the wallet to disable the key)",
+            wallet::RENEW
+        ))
+    } else if r.limited {
+        Some(format!(
+            "renew: `{}` gets a key from your DashPay wallet instead; `dg auth keys add` registers one with your master key",
+            wallet::RENEW
+        ))
+    } else {
+        None
+    }
 }
 
 /// What `dg auth status` reads from Platform: the balance, the key's limits, the DPNS names
@@ -2178,5 +2242,56 @@ mod tests {
             &args(&["id.json"])
         )
         .unwrap());
+    }
+
+    /// Plan item 10: the status names where its key came from, and renews a wallet key in the
+    /// wallet; a Forge limited key from the master key is offered the wallet too.
+    #[test]
+    fn the_status_names_the_key_origin_and_renews_wallet_keys_in_the_wallet() {
+        use origin::KeyOrigin as O;
+        let r = |key_id: Option<u32>, limited| KeyReport {
+            key_id,
+            disabled_id: key_id.is_none().then_some(9),
+            limited,
+            doc_type: None,
+            total: Some(25_000_000_000),
+            remaining: Some(24_000_000_000),
+            expires_at: Some(1),
+        };
+        assert_eq!(
+            key_origin(true, "keychain", Some(O::Phrase)),
+            Some(O::Wallet)
+        );
+        assert_eq!(key_origin(false, "inline", Some(O::Phrase)), Some(O::Dfk1));
+        assert_eq!(key_origin(false, "keychain", None), Some(O::Keychain));
+        assert_eq!(
+            key_origin(false, "keychain", Some(O::Phrase)),
+            Some(O::Phrase)
+        );
+        assert_eq!(
+            key_origin(false, "sealed-file", Some(O::File)),
+            Some(O::File)
+        );
+        assert_eq!(key_origin(false, "sealed-file", None), None);
+        assert_eq!(key_origin(false, "pasted", None), None);
+        assert_eq!(key_origin(false, "pasted", Some(O::Phrase)), None);
+        let wallet = renew_line(Some(&r(Some(9), true)), true, Some(O::Wallet)).unwrap();
+        assert!(
+            wallet.starts_with("Renew in your wallet: `dg auth login`"),
+            "{wallet}"
+        );
+        let limited = renew_line(Some(&r(Some(9), true)), false, Some(O::Phrase)).unwrap();
+        assert!(limited.contains("from your DashPay wallet"), "{limited}");
+        assert!(limited.contains("dg auth keys add"), "{limited}");
+        assert_eq!(renew_line(Some(&r(Some(9), false)), false, None), None);
+        assert_eq!(
+            renew_line(Some(&r(Some(9), true)), false, Some(O::Dfk1)),
+            None
+        );
+        assert_eq!(
+            renew_line(Some(&r(None, true)), true, Some(O::Wallet)),
+            None
+        );
+        assert_eq!(renew_line(None, true, Some(O::Wallet)), None);
     }
 }

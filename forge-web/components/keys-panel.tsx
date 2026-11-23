@@ -20,7 +20,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
-import { keyBudgetWords, renewableInWallet } from '@/lib/view/funds'
+import { keyBudgetWords, keyOriginLabel, renewableInWallet } from '@/lib/view/funds'
 import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
@@ -60,16 +60,29 @@ export function KeysPanel(): JSX.Element {
   // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
   // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
   const inWallet = storage === 'vault' && renewableInWallet(origin)
+  const from = keyOriginLabel(storage, origin, unlimitedKey && !keyLimits)
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
       {identity ? <PendingRenewal identityId={identity} /> : null}
+      {from !== null && (storage === 'session' || !keyLimits) ? (
+        <p data-testid="key-origin">
+          <span className="text-anvil-500 dark:text-anvil-400">From: </span>
+          {from}
+        </p>
+      ) : null}
       {storage === 'session' ? (
         <p className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-danger-700 dark:text-danger-400">
           This tab signs with a pasted key that has no Forge limits. It is forgotten on reload.
         </p>
       ) : keyLimits ? (
         <dl className="grid grid-cols-2 gap-2">
+          {from !== null ? (
+            <>
+              <dt className="text-anvil-500 dark:text-anvil-400">From</dt>
+              <dd data-testid="key-origin">{from}</dd>
+            </>
+          ) : null}
           {keyId !== null ? (
             <>
               <dt className="text-anvil-500 dark:text-anvil-400">Key</dt>

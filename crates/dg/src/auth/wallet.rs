@@ -75,6 +75,23 @@ fn state_path() -> Result<PathBuf> {
     Ok(crate::config::config_dir()?.join("app-connect.toml"))
 }
 
+/// The lock held while the state file `path` is read, changed and saved, so two dg runs at
+/// once do not drop each other's entries (also `key-origins.toml`, [`super::origin`]).
+pub(super) fn lock_state(path: &Path) -> Result<std::fs::File> {
+    let lock = path.with_extension("lock");
+    if let Some(dir) = lock.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .and_then(|f| f.lock().map(|()| f))
+        .with_context(|| format!("locking {}", lock.display()))?;
+    Ok(file)
+}
+
 impl State {
     /// The state in `path`, or an empty one when there is none. A file that does not parse is
     /// an error: a fresh connection id would leave the previous grant's key live.
@@ -84,23 +101,6 @@ impl State {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(unreadable(path, &e.to_string())),
         }
-    }
-
-    /// The lock held while the state in `path` is read, changed and saved, so two sign-ins at
-    /// once do not drop each other's entries.
-    fn lock(path: &Path) -> Result<std::fs::File> {
-        let lock = path.with_extension("lock");
-        if let Some(dir) = lock.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        }
-        let file = std::fs::File::options()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock)
-            .and_then(|f| f.lock().map(|()| f))
-            .with_context(|| format!("locking {}", lock.display()))?;
-        Ok(file)
     }
 
     fn save(&self, path: &Path) -> Result<()> {
@@ -113,7 +113,7 @@ impl State {
     /// before. A recorded id that is not 32 hex digits is an error, like a file that does not
     /// parse.
     fn connection_id(path: &Path, network: &str) -> Result<([u8; 16], bool)> {
-        let _lock = Self::lock(path)?;
+        let _lock = lock_state(path)?;
         let mut state = Self::load(path)?;
         if let Some(text) = state.connections.get(network) {
             return hex::decode(text)
@@ -136,7 +136,7 @@ impl State {
     }
 
     fn record_wallet_key(path: &Path, network: &str, identity_id: &str, key_id: u32) -> Result<()> {
-        let _lock = Self::lock(path)?;
+        let _lock = lock_state(path)?;
         let mut state = Self::load(path)?;
         state
             .wallet_keys
@@ -780,6 +780,13 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             eprintln!("note: signed in, but `dg auth status` will not know the key came from your wallet ({e:#})");
         }
     }
+    super::origin::record(
+        ctx,
+        &network,
+        &grant.identity_id,
+        grant.key_id,
+        super::origin::KeyOrigin::Wallet,
+    );
     store::set_default(ctx, &grant.identity_id, &stored.source())
         .map_err(|e| not_default(&e, &grant.identity_id, grant.key_id, &stored))?;
 
