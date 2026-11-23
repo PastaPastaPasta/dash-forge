@@ -48,8 +48,7 @@ export function LowFundsBanner(): JSX.Element | null {
   const empty = funds.level === 'empty'
   const topUp = notice.fix === 'top-up'
   // A key a wallet granted is renewed in that wallet; the identity file stays the other way. A key
-  // a passkey restored may be either's, and on testnet the wallet comes first for any key: both
-  // are offered.
+  // a passkey restored may be either's: both are offered.
   const either = notice.fix === 'renew-either'
   const inWallet = notice.fix === 'renew-in-wallet' || either
   const dismiss = (): void => {

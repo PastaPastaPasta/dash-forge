@@ -84,9 +84,8 @@ export function TopUpSheet(): JSX.Element | null {
   const keyProblem = reason.blocker !== 'balance'
   // A stored Forge browser key with a budget can take more budget in place.
   const canTopUpKey = reason.blocker === 'key-budget' && storage === 'vault' && keyLimits?.total != null
-  // A key a wallet granted through App Connect is renewed in that wallet, and on testnet the wallet
-  // comes first for any key; the identity file or recovery phrase still works (the master key can
-  // renew any Forge browser key).
+  // A key a wallet granted through App Connect is renewed in that wallet; the identity file or
+  // recovery phrase still works (the master key can renew any Forge browser key).
   const inWallet = renewsInWallet(origin, ACTIVE_NETWORK.network) && storage === 'vault'
   // A key a passkey restored: the wallet may have made it, or the master key did. Said so.
   const fromPasskey = origin === 'passkey' && storage === 'vault'

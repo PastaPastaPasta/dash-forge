@@ -59,10 +59,8 @@ export function KeysPanel(): JSX.Element {
   // offer is a limited key from the identity file or phrase instead, and signing out forgets it.
   const pasted = storage === 'session'
   // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
-  // may be a wallet's too, and on testnet the wallet comes first for any limited key, so the
-  // wallet renewal is offered beside the identity file's. Only the wallet's own grant is disabled
-  // by its renewal; any other key stays live until it is disabled.
-  const inWallet = storage === 'vault' && !unlimitedKey && renewsInWallet(origin, ACTIVE_NETWORK.network)
+  // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
+  const inWallet = storage === 'vault' && renewsInWallet(origin, ACTIVE_NETWORK.network)
   const walletDisablesIt = origin === 'app-connect'
   const from = keyOriginLabel(storage, origin, unlimitedKey && !keyLimits)
 

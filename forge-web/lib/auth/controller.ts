@@ -395,7 +395,7 @@ function parseHint(v: unknown, secret: VaultSecret, network: Network): { session
  * sign, so the next renewal or revoke disables it.
  */
 export function walletLeavesLive(previousOrigin: string | null | undefined, network: Network): boolean {
-  return previousOrigin === 'passkey' || (network === 'testnet' && previousOrigin !== 'app-connect')
+  return renewsInWallet(previousOrigin, network) && previousOrigin !== 'app-connect'
 }
 
 export class AuthController {
@@ -1298,12 +1298,10 @@ export class AuthController {
     // unlock a key that no longer opens anything.
     const fresh = new Set([main.keyId, ...rest.map((k) => k.keyId)])
     const disabled = appConnect ? await this.disabledKeyIds(identityId) : new Set<number>()
-    // A key a passkey brought here (or, on testnet, any key the wallet did not grant this browser)
-    // is not this browser's wallet grant, so the wallet does not disable it with the renewal (it
-    // only replaces this browser's own connection): it stays live, held here never to sign, so
-    // the next renewal or revoke disables it and no passkey keeps it.
-    const replacedForeignKey =
-      appConnect && previousKeyId !== null && walletLeavesLive(await storedOrigin(this.network, identityId, previousKeyId).catch(() => null), this.network) ? previousKeyId : null
+    // The wallet leaves a key it did not grant this browser live ({@link walletLeavesLive}): it is
+    // held never to sign, so the next renewal or revoke disables it and no passkey keeps it.
+    const previousOrigin = appConnect && previousKeyId !== null ? await storedOrigin(this.network, identityId, previousKeyId).catch(() => null) : 'app-connect'
+    const replacedForeignKey = walletLeavesLive(previousOrigin, this.network) ? previousKeyId : null
     const held: ExtraKey[] = this.heldKeys(identityId).map((h) => ('contractId' in h ? h : { contractId: forge.core, keyId: h.keyId, wif: h.wif }))
     const kept = [...held, ...(given ? [given] : [])]
       .filter((h, i, all) => !fresh.has(h.keyId) && !disabled.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
