@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { affordability, fundsNotice, fundsState, issueCoverage, LOW_BALANCE_CREDITS, nextFundsChange, renewableInWallet, renewFix } from './funds'
+import { affordability, fundsNotice, fundsState, issueCoverage, keyOriginLabel, LOW_BALANCE_CREDITS, nextFundsChange, renewableInWallet, renewFix } from './funds'
 import { previewCreate } from '../sdk/cost'
 import { balanceSettled, estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 
@@ -80,6 +80,18 @@ describe('fundsNotice (the low-balance banner, ux-dx-spec §4)', () => {
     expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW), 'passkey')).toMatchObject({ key: 'empty:key-budget', fix: 'renew-either' })
     expect(fundsNotice(fundsState(BigInt(LOW_BALANCE_CREDITS - 1), null, NOW), 'passkey')).toMatchObject({ fix: 'top-up' })
     expect(['app-connect', 'passkey', 'dg', null, undefined].map(renewableInWallet)).toEqual([true, true, false, false, false])
+  })
+})
+
+describe('keyOriginLabel names where this browser’s key came from (plan item 10)', () => {
+  it('names each origin, a pasted key, a wallet’s older code and a key registered here', () => {
+    expect(keyOriginLabel(null, null, false)).toBeNull()
+    expect(keyOriginLabel('session', null, true)).toBe('A pasted key (this tab only)')
+    expect(keyOriginLabel('vault', 'app-connect', false)).toBe('Your DashPay wallet (App Connect)')
+    expect(keyOriginLabel('vault', 'dg', false)).toBe('Handed over by dg on your computer')
+    expect(keyOriginLabel('vault', 'passkey', false)).toBe('Restored from a passkey')
+    expect(keyOriginLabel('vault', null, true)).toBe("A wallet's older code (DashConnect)")
+    expect(keyOriginLabel('vault', undefined, false)).toBe('Registered here with your recovery phrase or identity file')
   })
 })
 

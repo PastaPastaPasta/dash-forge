@@ -174,7 +174,8 @@ cmd('auth login', 'Signed in: the identity and the key stored for it.', {
     'status': E('logged_in'), 'identityId': S, 'network': S, 'keyId': nl(I), 'fullKey': B, 'encryptionKeyIds': A(I),
     'budgetCredits': nl(I), 'expiresAt': nl(I), 'storage': S, 'storedAt': S, 'source': S,
     'balanceCredits': nl(I), 'balanceDash': nl(F), 'cost': NCOST, **GROUP,
-    'keyOrigin': D('`wallet` when a DashPay wallet granted the key (`--wallet`).', E('wallet')),
+    'keyOrigin': D('Where the key came from: `wallet` (a DashPay wallet granted it), `phrase` (registered with the '
+                   'recovery phrase) or `file` (an identity file).', E('wallet', 'phrase', 'file')),
     'names': SA, 'budgetRemainingCredits': I,
     'proposedBudgetCredits': D('With `--wallet`: the budget dg proposed (the wallet may grant another).', I),
     'renew': D('With `--wallet`: the command that renews the key.', S),
@@ -189,7 +190,10 @@ cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', 
     'masterKeyStored': nl(B),
     'keyUnopened': D('Why the stored key could not be opened here (it is sealed and no passphrase is available), '
                      'or null.', nl(S)),
-    'keyOrigin': D('`wallet` when a DashPay wallet granted the key (`dg auth login --wallet`), else null.', nl(E('wallet'))),
+    'keyOrigin': D('Where the key came from: `wallet` (a DashPay wallet granted it), `phrase` or `file` (dg '
+                   'registered it with the recovery phrase or an identity file), `dfk1` (an inline DASH_FORGE_KEY), '
+                   '`keychain` (in the OS keychain, origin not recorded); null for a pasted key or no key.',
+                   nl(E('wallet', 'phrase', 'file', 'dfk1', 'keychain'))),
     'renew': D('The command that renews a wallet-granted key, else null.', nl(S)),
 }, ['network', 'authenticated'])
 cmd('auth balance', 'An identity\'s proved balance.', {

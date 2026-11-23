@@ -93,9 +93,11 @@
     "keyOrigin": {
       "type": "string",
       "enum": [
-        "wallet"
+        "wallet",
+        "phrase",
+        "file"
       ],
-      "description": "`wallet` when a DashPay wallet granted the key (`--wallet`)."
+      "description": "Where the key came from: `wallet` (a DashPay wallet granted it), `phrase` (registered with the recovery phrase) or `file` (an identity file)."
     },
     "names": {
       "type": "array",
