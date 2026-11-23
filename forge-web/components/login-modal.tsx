@@ -162,7 +162,7 @@ export function LoginModal(): JSX.Element {
   const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' || view === 'wallet-renew' || view === 'welcome' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
-  const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys, origin === 'passkey')
+  const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys, origin !== 'app-connect')
   const title = titleFor(view, grantTitle, intent?.action)
 
   return (
@@ -298,13 +298,14 @@ function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number
 }
 
 /** The sheet's description line for a view. */
-function describeView(view: View, limitedKeys: boolean, fromPasskey = false): ReactNode {
+function describeView(view: View, limitedKeys: boolean, notWalletGrant = false): ReactNode {
   if (view === 'welcome') return 'Your identity is registered and this browser is signed in. Pick a first step, or close this and look around.'
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet gives this browser a key for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (view === 'wallet-renew') {
-    // A key a passkey brought here is not this browser's own wallet grant: the wallet adds a new one and leaves it.
-    return fromPasskey
+    // A key a passkey or the master key brought here is not this browser's own wallet grant: the
+    // wallet adds a new one and leaves it.
+    return notWalletGrant
       ? 'Your wallet adds a new key for this browser. The current key stays live until you disable it in Devices & keys. Your recovery phrase and master key stay on the phone.'
       : 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
   }

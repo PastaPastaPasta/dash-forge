@@ -10,6 +10,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Changed
 
+- **On testnet, the web app renews every browser key in your DashPay wallet first** (Settings, the low-funds banner, the top-up sheet), with the identity file or recovery phrase beside it. For a key the wallet didn't grant to this browser, the wallet adds a new key and the old one stays live, held here only so the next renewal or revoke disables it. Revoking a key the wallet granted leads with disconnecting Dash Forge in the wallet; the recovery-phrase revoke stays below it. Mainnet is unchanged.
 - **A bare `dg auth login` signs in with your DashPay wallet** (as `--wallet` does): it prints the QR code and the `dash-key:` link. `dg auth login <file>`, `--mnemonic`, `--full-key` and `--replace` sign in from the identity's master key as before. Without a terminal (stdin is not one, or `--json`) a bare `dg auth login` used to be a usage error (exit 2); it is now [E802](docs/errors.md#e802) (exit 8), and it shows and stores nothing: scripts pass an identity file, or `--wallet --yes`, or set a dfk1 key in `DASH_FORGE_KEY`. The no-key messages of `dg`, `git-remote-dash` and the Action, the docs and the web app's empty-repository steps name `dg auth login` first.
 
 ### Added

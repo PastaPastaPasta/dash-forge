@@ -84,11 +84,14 @@ describe('the low-funds banner', () => {
     expect(main().textContent).toBe('Renew in your wallet')
   })
 
-  it('keeps "Renew key" and the identity file for a key this browser registered', async () => {
+  it('on testnet, a key this browser registered renews in the wallet first, the identity file beside it', async () => {
     await show()
-    expect(main().textContent).toBe('Renew key')
-    act(() => main().click())
+    expect(main().textContent).toBe('Renew in your wallet')
+    const withFile = host.querySelector<HTMLButtonElement>('[data-testid="low-funds-renew-with-file"]')!
+    act(() => withFile.click())
     expect(useUiStore.getState().loginView).toBe('import')
+    act(() => main().click())
+    expect(useUiStore.getState().loginView).toBe('wallet-renew')
   })
 
   it('a low balance is still a top-up, whatever the key came from', async () => {

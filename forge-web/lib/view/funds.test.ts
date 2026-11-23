@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { affordability, fundsNotice, fundsState, issueCoverage, keyOriginLabel, LOW_BALANCE_CREDITS, nextFundsChange, renewableInWallet, renewFix } from './funds'
+import { affordability, fundsNotice, fundsState, issueCoverage, keyOriginLabel, LOW_BALANCE_CREDITS, nextFundsChange, renewableInWallet, renewFix, renewsInWallet } from './funds'
 import { previewCreate } from '../sdk/cost'
 import { balanceSettled, estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 
@@ -80,6 +80,18 @@ describe('fundsNotice (the low-balance banner, ux-dx-spec §4)', () => {
     expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW), 'passkey')).toMatchObject({ key: 'empty:key-budget', fix: 'renew-either' })
     expect(fundsNotice(fundsState(BigInt(LOW_BALANCE_CREDITS - 1), null, NOW), 'passkey')).toMatchObject({ fix: 'top-up' })
     expect(['app-connect', 'passkey', 'dg', null, undefined].map(renewableInWallet)).toEqual([true, true, false, false, false])
+  })
+  it('on testnet, renews any browser key in the wallet first, the identity file beside it; nowhere else', () => {
+    expect(['app-connect', 'passkey', 'dg', null, undefined].map((o) => renewsInWallet(o, 'testnet'))).toEqual([true, true, true, true, true])
+    expect(['app-connect', 'passkey', 'dg', null].map((o) => renewsInWallet(o, 'mainnet'))).toEqual([true, true, false, false])
+    expect(renewFix('app-connect', 'testnet')).toBe('renew-in-wallet')
+    expect(renewFix('dg', 'testnet')).toBe('renew-either')
+    expect(renewFix(null, 'testnet')).toBe('renew-either')
+    expect(renewFix(null, 'mainnet')).toBe('renew-key')
+    expect(renewFix(null, 'devnet')).toBe('renew-key')
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW), null, 'testnet')).toMatchObject({ key: 'low:key-expiry', fix: 'renew-either' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW), 'dg', 'mainnet')).toMatchObject({ key: 'empty:key-budget', fix: 'renew-key' })
+    expect(fundsNotice(fundsState(BigInt(LOW_BALANCE_CREDITS - 1), null, NOW), null, 'testnet')).toMatchObject({ fix: 'top-up' })
   })
 })
 

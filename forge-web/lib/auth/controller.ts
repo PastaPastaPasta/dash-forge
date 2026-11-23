@@ -43,7 +43,7 @@ import { clearWalletRenewal, connectionId, markWalletRenewal, walletRenewalInFli
 import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, NAME_REGISTER_CREDITS, NAME_REGISTER_FLOOR_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
-import { renewableInWallet, type KeyLimits } from '../view/funds'
+import { renewableInWallet, renewsInWallet, type KeyLimits } from '../view/funds'
 import { controlsKey, normalizeToWif } from './wif'
 import { base58Encode, decodeIdentifier } from './base58'
 import { retryUntil, retryWhileMissing } from '../view/retry'
@@ -386,6 +386,16 @@ function parseHint(v: unknown, secret: VaultSecret, network: Network): { session
   // An expired key opens no session: wait for the on-chain check (it signs out).
   if (s.keyLimits?.expiresAt != null && s.keyLimits.expiresAt <= Date.now()) return null
   return { session: s, scopes: { main, extra: new Map(pairs) } }
+}
+
+/**
+ * Whether a wallet grant leaves this browser's previous key live (it disables only the key of its
+ * own earlier grant, origin `app-connect`): a key a passkey brought here, and on testnet, where the
+ * wallet renews any browser key ({@link renewsInWallet}), any other. Such a key is held never to
+ * sign, so the next renewal or revoke disables it.
+ */
+export function walletLeavesLive(previousOrigin: string | null | undefined, network: Network): boolean {
+  return previousOrigin === 'passkey' || (network === 'testnet' && previousOrigin !== 'app-connect')
 }
 
 export class AuthController {
@@ -1288,15 +1298,16 @@ export class AuthController {
     // unlock a key that no longer opens anything.
     const fresh = new Set([main.keyId, ...rest.map((k) => k.keyId)])
     const disabled = appConnect ? await this.disabledKeyIds(identityId) : new Set<number>()
-    // A key a passkey brought here is not this browser's wallet grant, so the wallet does not
-    // disable it with the renewal (it only replaces this browser's own connection): it stays live
-    // for the device that made it, held here never to sign, so the next renewal or revoke disables
-    // it and no passkey keeps it.
-    const replacedPasskeyKey = appConnect && previousKeyId !== null && (await storedOrigin(this.network, identityId, previousKeyId).catch(() => null)) === 'passkey' ? previousKeyId : null
+    // A key a passkey brought here (or, on testnet, any key the wallet did not grant this browser)
+    // is not this browser's wallet grant, so the wallet does not disable it with the renewal (it
+    // only replaces this browser's own connection): it stays live, held here never to sign, so
+    // the next renewal or revoke disables it and no passkey keeps it.
+    const replacedForeignKey =
+      appConnect && previousKeyId !== null && walletLeavesLive(await storedOrigin(this.network, identityId, previousKeyId).catch(() => null), this.network) ? previousKeyId : null
     const held: ExtraKey[] = this.heldKeys(identityId).map((h) => ('contractId' in h ? h : { contractId: forge.core, keyId: h.keyId, wif: h.wif }))
     const kept = [...held, ...(given ? [given] : [])]
       .filter((h, i, all) => !fresh.has(h.keyId) && !disabled.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
-      .map((h) => (h.keyId === replacedPasskeyKey ? { ...h, holdOnly: true as const } : h))
+      .map((h) => (h.keyId === replacedForeignKey ? { ...h, holdOnly: true as const } : h))
     const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
     const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
     let stored: StoreOutcome
@@ -1378,7 +1389,7 @@ export class AuthController {
    */
   async walletRenewalRequest(options: { readonly callbackUrl?: (requestHash: Uint8Array) => string | null } = {}): Promise<WalletRenewalRequest> {
     const session = this.state.session
-    if (!session || session.storage !== 'vault' || !renewableInWallet(session.origin) || session.keyId === undefined) {
+    if (!session || session.storage !== 'vault' || !renewsInWallet(session.origin, this.network) || session.keyId === undefined) {
       throw new Error('Only a key your wallet granted can be renewed in your wallet. Renew it with your identity file or recovery phrase instead.')
     }
     const { identityId, keyId } = session

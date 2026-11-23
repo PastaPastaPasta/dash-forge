@@ -167,10 +167,11 @@ describe('the top-up sheet for a key a wallet granted (App Connect)', () => {
     expect(byText('Renew with identity file')).not.toBeNull()
   })
 
-  it('a key this browser registered itself is renewed as before', () => {
+  it('on testnet, a key this browser registered itself renews in the wallet first, and stays live until disabled', () => {
     act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
-    expect(byText('Renew key')).not.toBeNull()
-    expect(byText('Renew in your wallet')).toBeNull()
+    expect(byText('Renew in your wallet')).not.toBeNull()
+    expect(byText('Renew with identity file')).not.toBeNull()
+    expect(document.querySelector('[data-testid="top-up-sheet"]')!.textContent).toMatch(/this one stays live until you disable it in Devices & keys/)
   })
 })
 

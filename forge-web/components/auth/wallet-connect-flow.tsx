@@ -30,9 +30,9 @@
  * identity hint the confirm step stays ("A wallet answered for this identity").
  *
  * `mode="renew"` renews the signed-in session's key in the wallet that granted it (origin
- * `app-connect`): the protection for the new key is chosen BEFORE the code shows (the wallet
- * disables the old key when it approves), the request names the identity, and the new key is
- * stored without a confirm step.
+ * `app-connect`; on testnet any browser key, which the wallet then leaves live): the protection
+ * for the new key is chosen BEFORE the code shows (the wallet disables the old key when it
+ * approves), the request names the identity, and the new key is stored without a confirm step.
  *
  * `mode="grant"` asks the signed-in identity's wallet for a key on another contract (a shipped
  * wallet grants one contract per approval) and adds it to the session: no confirmation step,
@@ -539,9 +539,11 @@ export function WalletConnectFlow({
     return (
       <div className="space-y-3" data-testid="wallet-renew-prepare">
         <p className="text-dense">
-          {origin === 'passkey'
-            ? 'A passkey brought this key here. If a wallet made it, approve a new request in that wallet: it adds a new key, and this one stays live until you disable it in Devices & keys.'
-            : 'Your wallet gave this browser its key. A new request goes to the same wallet: when you approve, it adds a new key and disables the current one.'}
+          {origin === 'app-connect'
+            ? 'Your wallet gave this browser its key. A new request goes to the same wallet: when you approve, it adds a new key and disables the current one.'
+            : origin === 'passkey'
+              ? 'A passkey brought this key here. If a wallet made it, approve a new request in that wallet: it adds a new key, and this one stays live until you disable it in Devices & keys.'
+              : "Your wallet didn't make this browser's key, so approving adds a new key beside it: the current one stays live until you disable it in Devices & keys."}
         </p>
         <p className="text-dense" data-testid="approval-terms">
           <ApprovalTerms budget={defaults.budgetCredits} expiresAt={defaults.expiresAt} />
@@ -622,7 +624,7 @@ export function WalletConnectFlow({
   if (step?.kind === 'renew-store') {
     return (
       <div className="space-y-3" data-testid="wallet-renew-store">
-        <p className="text-dense">{origin === 'passkey' ? 'Your wallet gave this browser a new key. Forge has not stored the new key yet.' : 'Your wallet gave this browser a new key and disabled the old one. Forge has not stored the new key yet.'}</p>
+        <p className="text-dense">{origin === 'app-connect' ? 'Your wallet gave this browser a new key and disabled the old one. Forge has not stored the new key yet.' : 'Your wallet gave this browser a new key. Forge has not stored the new key yet.'}</p>
         {pendingRenewalUi}
         {unlockFirst ? <UnlockMore title="Unlock this tab to store the new key" testId="wallet-unlock" then={unlockFirst} /> : null}
         <ErrorBox error={error} />
