@@ -42,6 +42,10 @@ test('g17-1. a merged PR says what happened, with short branch names (L-37, D-10
   await expect(header).not.toContainText(/\b1 commits\b/)
   await expect(header).toContainText(/opened (just now|\d+(m|h|d|mo|y) ago)/)
   await expect(page.locator('main')).not.toContainText(/\b0m ago\b/)
+  // Past its gates: no live approvals or checks cards, only Branch rules at merge.
+  await expect(page.getByTestId('rules-at-merge')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Approvals' })).toHaveCount(0)
+  await expect(page.getByTestId('checks-row')).toHaveCount(0)
   await shot(page, 'g17-01-merged-pr')
 
   // The list names the base branch the same way.
