@@ -20,7 +20,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
-import { keyBudgetWords, keyOriginLabel, renewableInWallet } from '@/lib/view/funds'
+import { keyBudgetWords, keyOriginLabel, renewsInWallet } from '@/lib/view/funds'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
@@ -59,7 +60,8 @@ export function KeysPanel(): JSX.Element {
   const pasted = storage === 'session'
   // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
   // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
-  const inWallet = storage === 'vault' && renewableInWallet(origin)
+  const inWallet = storage === 'vault' && renewsInWallet(origin, ACTIVE_NETWORK.network, unlimitedKey)
+  const walletDisablesIt = origin === 'app-connect'
   const from = keyOriginLabel(storage, origin, unlimitedKey && !keyLimits)
 
   return (
@@ -116,8 +118,8 @@ export function KeysPanel(): JSX.Element {
       )}
       {heldOnly.length > 0 ? (
         <p className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="held-only-keys" data-key-ids={heldOnly.join(',')}>
-          Also held, never used to sign: key{heldOnly.length > 1 ? 's' : ''} {heldOnly.map((k) => `#${k}`).join(', ')}, from a key renewal you gave up.
-          Your next renewal or &quot;Revoke on Platform&quot; disables {heldOnly.length > 1 ? 'them' : 'it'}.
+          Also held, never used to sign: key{heldOnly.length > 1 ? 's' : ''} {heldOnly.map((k) => `#${k}`).join(', ')}, left live by an earlier renewal.
+          Renewing with your identity file or recovery phrase, or &quot;Revoke on Platform&quot;, disables {heldOnly.length > 1 ? 'them' : 'it'}.
         </p>
       ) : null}
       {storage === 'vault' && unlimitedKey ? (
@@ -195,9 +197,12 @@ export function KeysPanel(): JSX.Element {
         <>
           {unlimitedKey ? null : (
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              {canTopUp ? 'Top-up keeps this key and adds budget (or a later expiry). ' : ''}Renew replaces it with a new key and disables this one.
+              {canTopUp ? 'Top-up keeps this key and adds budget (or a later expiry). ' : ''}
+              {inWallet && !walletDisablesIt
+                ? 'Renewing in your wallet adds a key without the master key; this one stays live until Revoke on Platform or a renewal with your identity file disables it. Renewing with the identity file replaces it and disables this one.'
+                : `Renew replaces it with a new key and disables this one.${inWallet ? ' Renewing in your wallet needs no master key.' : ''}`}
               {inWallet
-                ? ' Renewing in your wallet needs no master key. Top-up and the identity file use your master key once and do not store it.'
+                ? ' Top-up and the identity file use your master key once and do not store it.'
                 : `${canTopUp ? ' Both use' : ' It uses'} your master key once and ${canTopUp ? 'do' : 'does'} not store it.`}
             </p>
           )}

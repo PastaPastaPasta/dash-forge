@@ -24,7 +24,8 @@ import { IdentityTopUpFlow } from '@/components/identity-top-up-flow'
 import { KeyBudgetText, KeyFundsLine } from '@/components/funds-summary'
 import { faucetUrls } from '@/lib/faucets'
 import { typicalIssueCredits } from '@/lib/sdk'
-import { issueCoverageParts, renewableInWallet, type KeyLimits } from '@/lib/view/funds'
+import { issueCoverageParts, renewsInWallet, type KeyLimits } from '@/lib/view/funds'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -73,7 +74,7 @@ export function TopUpSheet(): JSX.Element | null {
   const reason = useUiStore((s) => s.topUp)
   const close = useUiStore((s) => s.closeTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
-  const { identity, storage, keyLimits, balance, funds, origin } = useAuth()
+  const { identity, storage, keyLimits, balance, funds, origin, unlimitedKey } = useAuth()
   const [other, setOther] = useState(false)
   const [topUpKey, setTopUpKey] = useState(false)
   if (identity === null) return null
@@ -85,7 +86,7 @@ export function TopUpSheet(): JSX.Element | null {
   const canTopUpKey = reason.blocker === 'key-budget' && storage === 'vault' && keyLimits?.total != null
   // A key a wallet granted through App Connect is renewed in that wallet; the identity file or
   // recovery phrase still works (the master key can renew any Forge browser key).
-  const inWallet = renewableInWallet(origin) && storage === 'vault'
+  const inWallet = renewsInWallet(origin, ACTIVE_NETWORK.network, unlimitedKey) && storage === 'vault'
   // A key a passkey restored: the wallet may have made it, or the master key did. Said so.
   const fromPasskey = origin === 'passkey' && storage === 'vault'
   const renewVia = (view: 'import' | 'wallet-renew'): void => {
@@ -110,8 +111,10 @@ export function TopUpSheet(): JSX.Element | null {
             {inWallet ? (
               <p>
                 {fromPasskey
-                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew it there. It adds a new key, and this one stays live until you disable it in Devices & keys."
-                  : 'Your wallet gave this browser its key, so renew it there: the wallet adds a new key and disables this one.'}
+                  ? "A passkey brought this key here, so Forge can't tell who made it. If a wallet did, renew there: it adds a key; this one stays live until Revoke on Platform or a renewal with your identity file disables it."
+                  : origin === 'app-connect'
+                    ? 'Your wallet gave this browser its key, so renew it there: the wallet adds a new key and disables this one.'
+                    : 'Renew it in your DashPay wallet: it adds a new key, and this one stays live until Revoke on Platform or a renewal with your identity file disables it.'}
                 {canTopUpKey ? ' You can also add budget to this key with your identity file or recovery phrase.' : ' Your identity file or recovery phrase works too.'}
               </p>
             ) : canTopUpKey ? (

@@ -13,6 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useUiStore } from '@/hooks/use-ui-store'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { FIAT_RATES_KEY, FIAT_SETTINGS_KEY } from '@/lib/fiat/store'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
@@ -167,10 +168,12 @@ describe('the top-up sheet for a key a wallet granted (App Connect)', () => {
     expect(byText('Renew with identity file')).not.toBeNull()
   })
 
-  it('a key this browser registered itself is renewed as before', () => {
+  it('on testnet, a key this browser registered itself renews in the wallet first, and stays live until disabled', () => {
+    expect(ACTIVE_NETWORK.network).toBe('testnet')
     act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
-    expect(byText('Renew key')).not.toBeNull()
-    expect(byText('Renew in your wallet')).toBeNull()
+    expect(byText('Renew in your wallet')).not.toBeNull()
+    expect(byText('Renew with identity file')).not.toBeNull()
+    expect(document.querySelector('[data-testid="top-up-sheet"]')!.textContent).toMatch(/this one stays live until Revoke on Platform or a renewal with your identity file disables it/)
   })
 })
 

@@ -27,6 +27,8 @@ const auth = {
   /** Why passkeys are hidden (null: offered), and the identity's passkeys as the controller lists them. */
   passkeyProblem: 'Checking whether passkeys work on this page.' as string | null,
   passkeys: [] as { id: string; keyId: number; encryptionKey: boolean }[],
+  origin: null as string | null,
+  heldOnly: [] as number[],
   // One function for every render, as the context's is.
   listPlatformPasskeys: async () => auth.passkeys,
   revokeStored: vi.fn(async (_id: string, _input: unknown): Promise<void> => undefined),
@@ -43,7 +45,8 @@ vi.mock('@/contexts/auth-context', () => ({
     unlockScope: auth.scope,
     revokeStored: auth.revokeStored,
     storage: 'vault',
-    heldOnly: [] as number[],
+    origin: auth.origin,
+    heldOnly: auth.heldOnly,
     platformPasskeyProblem: auth.passkeyProblem,
     listPlatformPasskeys: auth.listPlatformPasskeys,
     vaults: [{ identityId: ID, keyId: 6, createdAt: 0, methods: ['passphrase'] }],
@@ -164,6 +167,26 @@ describe('KeyRevokeDialog', () => {
     const note = host.querySelector('[data-testid="revoke-forget-deletes"]')!.textContent ?? ''
     expect(note).toMatch(/spend history \(Settings → Spend\)/)
     expect(note).toMatch(/notifications/)
+  })
+
+  it('on testnet, a key the wallet granted is disconnected in the wallet first; the recovery phrase stays below', () => {
+    expect(ACTIVE_NETWORK.network).toBe('testnet')
+    auth.scope = 'full'
+    auth.origin = 'app-connect'
+    render()
+    expect(host.querySelector('[data-testid="revoke-in-wallet"]')!.textContent).toMatch(/More → Tools → Connections and disconnect Dash Forge/)
+    expect(host.querySelector('[data-testid="revoke-with-phrase-heading"]')!.textContent).toBe('Or use your recovery phrase instead')
+    expect(host.querySelector('[data-testid="key-revoke-dialog"]')).not.toBeNull()
+    // Keys a renewal left live are disabled only by the master key: no wallet-first then.
+    auth.heldOnly = [4]
+    render()
+    expect(host.querySelector('[data-testid="revoke-in-wallet"]')).toBeNull()
+    auth.heldOnly = []
+    auth.origin = 'dg'
+    render()
+    expect(host.querySelector('[data-testid="revoke-in-wallet"]')).toBeNull()
+    expect(host.querySelector('[data-testid="key-revoke-dialog"]')).not.toBeNull()
+    auth.origin = null
   })
 
   it('QW3-030: prices the update before it is signed', () => {

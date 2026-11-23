@@ -13,6 +13,11 @@
  * holds: such a tab unlocks first, inline (QW3-006). The unlock sits outside the revoke's form:
  * nested inside it, its Unlock button submitted the page itself (a reload to `/settings/?`), so
  * the dialog vanished and nothing was revoked.
+ *
+ * On testnet, a key the wallet granted (origin `app-connect`) is revoked in the wallet first: its
+ * disconnect disables the key with no master key (DashPay for Android; iOS only forgets it locally,
+ * `docs/guides/identity-and-keys.md`). Not while this browser holds keys a renewal left live:
+ * only the master-key revoke disables those.
  */
 
 import { useEffect, useState } from 'react'
@@ -30,9 +35,11 @@ import { UnlockNeededError } from '@/lib/auth/controller'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 
 export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; onClose: () => void }): JSX.Element {
-  const { identity, keyId, heldOnly, revokeStored, isLoading, unlockScope } = useAuth()
+  const { identity, keyId, heldOnly, revokeStored, isLoading, unlockScope, origin } = useAuth()
+  const walletFirst = origin === 'app-connect' && ACTIVE_NETWORK.network === 'testnet' && (heldOnly ?? []).length === 0
   const master = useMasterKeyInput(identity, { id: 'revoke', fileLabel: 'Identity file to revoke with' })
   const [submitError, setError] = useState<string | null>(null)
   const error = master.error ?? submitError
@@ -74,6 +81,20 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
   return (
     <Dialog open onClose={onClose} title={unlimited ? 'Disable key on Platform' : 'Revoke this key on Platform'} description={`Disables ${noun} everywhere, then forgets it here.`}>
       <div className="space-y-4 text-dense">
+        {walletFirst ? (
+          <>
+            <div className="space-y-1 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="revoke-in-wallet">
+              <p className="font-medium">Disconnect Dash Forge in your wallet</p>
+              <p className="text-anvil-600 dark:text-anvil-300">
+                Your wallet gave this browser its key. In DashPay for Android, open More → Tools → Connections and disconnect Dash Forge: that disables
+                the key on Platform, with no recovery phrase. Then use Sign out &amp; forget key here.
+              </p>
+            </div>
+            <p className="font-medium" data-testid="revoke-with-phrase-heading">
+              Or use your recovery phrase instead
+            </p>
+          </>
+        ) : null}
         <p className="text-anvil-600 dark:text-anvil-300">
           Your master key disables {noun}
           {keyId !== null ? ` (key #${keyId})` : ''} on Platform, so no copy of it can sign anything. This browser then forgets it until you sign

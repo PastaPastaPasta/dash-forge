@@ -15,6 +15,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { FiatNote } from '@/components/ui/fiat-note'
 import { fundsNotice } from '@/lib/view/funds'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 function storageKey(identity: string): string {
@@ -32,10 +33,10 @@ function readDismissed(identity: string): readonly string[] {
 }
 
 export function LowFundsBanner(): JSX.Element | null {
-  const { identity, funds, origin } = useAuth()
+  const { identity, funds, origin, unlimitedKey } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
-  const notice = funds ? fundsNotice(funds, origin) : null
+  const notice = funds ? fundsNotice(funds, origin, ACTIVE_NETWORK.network, unlimitedKey) : null
   // Read after mount (sessionStorage is browser-only), per identity; until then nothing shows,
   // so neither a flash nor another identity's dismissals.
   const [dismissed, setDismissed] = useState<{ identity: string; keys: readonly string[] } | null>(null)

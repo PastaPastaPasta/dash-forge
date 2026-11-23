@@ -15,7 +15,7 @@ import { NETWORKS } from '../constants'
 import { forgeContractIds } from '../deployments'
 import { idbGet, resetMemoryStores } from '../idb'
 import { KeyUnusableError } from '../sdk/write'
-import { AuthController } from './controller'
+import { AuthController, walletLeavesLive } from './controller'
 import { walletRenewalInFlight } from './connection-id'
 import type { WalletKey } from './key-registration'
 import { LOCKED_AT_KEY } from './session-resume'
@@ -321,4 +321,16 @@ describe('an App Connect v2 session', () => {
     await expect(c.recheckSession()).rejects.toThrow()
     expect(locked()).toBe(true)
   }, 30_000)
+})
+
+describe('walletLeavesLive', () => {
+  it('keeps live only what the wallet did not grant this browser: a passkey key anywhere, any other key on testnet', () => {
+    expect(walletLeavesLive('app-connect', 'testnet')).toBe(false)
+    expect(walletLeavesLive('passkey', 'devnet')).toBe(true)
+    expect(walletLeavesLive('passkey', 'mainnet')).toBe(true)
+    expect(walletLeavesLive('dg', 'testnet')).toBe(true)
+    expect(walletLeavesLive(null, 'testnet')).toBe(true)
+    expect(walletLeavesLive(null, 'mainnet')).toBe(false)
+    expect(walletLeavesLive('dg', 'devnet')).toBe(false)
+  })
 })
