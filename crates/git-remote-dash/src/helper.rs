@@ -6965,7 +6965,7 @@ async fn require_private_key(
 fn no_identity(why: impl Into<String>) -> anyhow::Error {
     UserError::new(codes::NO_IDENTITY, "no identity configured")
         .cause(why)
-        .fix("`dg auth login <file>` (or `dg auth new`) records a default key that git uses too")
+        .fix("`dg auth login` (your DashPay wallet) records a default key that git uses too; `dg auth login <file>`, `--mnemonic` or `dg auth new` do the same without a wallet")
         .fix("export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…> in the shell you run git in")
         .into()
 }

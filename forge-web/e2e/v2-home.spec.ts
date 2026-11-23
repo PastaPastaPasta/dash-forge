@@ -211,7 +211,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     const lines = await empty.locator('code').allInnerTexts()
     // Numbered: sign dg in, then push an existing repository or start from scratch (UX wave 4).
     expect(lines).toEqual([
-      `dg auth login --mnemonic ${DG_NETWORK}`,
+      `dg auth login ${DG_NETWORK}`,
       `git remote add origin dash://${MAINTAINER}/forge-v2-empty`,
       SET_NETWORK,
       'git push -u origin main',

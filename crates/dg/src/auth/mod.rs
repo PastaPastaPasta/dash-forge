@@ -133,11 +133,12 @@ pub struct StorageArgs {
     pub signing_only: bool,
 }
 
-/// `dg auth login` arguments.
+/// `dg auth login` arguments. With nothing to sign in from (no file, --mnemonic, --full-key or
+/// --replace), it signs in with a DashPay wallet, as `--wallet` does.
 #[derive(Debug, clap::Args)]
 pub struct LoginArgs {
     /// The identity file (bridge export, `dg auth export`, or mint-identity output). Also
-    /// accepted via --identity.
+    /// accepted via --identity. Without one (or --mnemonic), dg signs in with your wallet.
     pub file: Option<PathBuf>,
     /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
@@ -145,6 +146,7 @@ pub struct LoginArgs {
     /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dash-key:` link,
     /// the wallet adds a limited key (proposed: 0.25 DASH for 180 days, or --budget/--expires;
     /// the wallet may change them) and dg stores it. Testnet needs DashPay's testnet build.
+    /// The default in a terminal; without one (or with --json) it must be asked for.
     #[arg(long, conflicts_with_all = ["file", "mnemonic", "full_key", "replace"])]
     pub wallet: bool,
     /// Keep the full identity (master key included) instead of registering a limited key.
@@ -851,11 +853,9 @@ async fn login_source(
             })?
         }
         (None, true) => identity_from_words(ctx, client, &read_mnemonic()?).await?,
-        (None, false) => {
-            return Err(crate::errors::usage(
-                "`dg auth login` needs an identity file (`dg auth login <file>`) or --mnemonic",
-            ))
-        }
+        (None, false) => return Err(crate::errors::usage(
+            "--full-key and --replace need an identity file (`dg auth login <file>`) or --mnemonic",
+        )),
     };
     let network = ctx.network_label();
     if !master.network.is_empty()
@@ -895,7 +895,7 @@ async fn login_source(
 /// that key and the identity's encryption keys (or, with `--full-key`, the whole identity).
 #[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
-    if args.wallet {
+    if args.wallet || signs_in_with_wallet(ctx, args)? {
         return wallet::login(ctx, args).await;
     }
     let client = ctx.connect().await?;
@@ -1041,6 +1041,38 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// Whether a `dg auth login` without --wallet signs in with the wallet: it does when it was given
+/// nothing to sign in from (no file, `--identity`, --mnemonic, --full-key or --replace). Without
+/// a terminal (stdin is not one, or --json) that stops with E802 instead of waiting 10 minutes
+/// for a phone: a script asks for the wallet with `--wallet`, or passes what to sign in from.
+fn signs_in_with_wallet(ctx: &Ctx, args: &LoginArgs) -> Result<bool> {
+    if args.file.is_some()
+        || args.mnemonic
+        || args.full_key
+        || args.replace.is_some()
+        || ctx.cli_identity.is_some()
+    {
+        return Ok(false);
+    }
+    if ctx.json || !ctx.stdin_tty {
+        return Err(UserError::new(
+            codes::CONFIRMATION_REQUIRED,
+            "`dg auth login` signs in with your wallet, which needs a terminal",
+        )
+        .cause(if ctx.json {
+            "--json mode: no QR code is shown without --wallet"
+        } else {
+            "stdin is not a terminal: no QR code is shown without --wallet"
+        })
+        .fix("sign in from your identity: `dg auth login <identity file>` or `dg auth login --mnemonic`")
+        .fix("wait for your wallet anyway: `dg auth login --wallet --yes`")
+        .fix("in CI, set DASH_FORGE_KEY to a `dfk1:` key (`dg auth export --format dfk1`): no login needed")
+        .note("nothing was shown or stored")
+        .into());
+    }
+    Ok(true)
 }
 
 /// After a limited key is registered: the master key it came from is not kept here, so say
@@ -1200,7 +1232,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
             || {
                 println!("Network:  {network}");
                 println!(
-                    "Identity: none — `dg auth new` creates one, `dg auth login <file>` signs in"
+                    "Identity: none — `dg auth login` signs in with your wallet, `dg auth new` creates one"
                 );
             },
         );
@@ -1343,7 +1375,7 @@ pub(crate) fn key_line(
                 wallet::RENEW
             ),
             Some(id) => format!(
-                "#{id} DISABLED: it can no longer sign; `dg auth login <identity file>` registers a new key"
+                "#{id} DISABLED: it can no longer sign; `dg auth login` gets a new key from your wallet (or `dg auth login <identity file>` registers one)"
             ),
             None => "not a key of this identity: it can sign nothing for it (`dg auth keys list` shows the identity's keys)".into(),
         },
@@ -2015,7 +2047,10 @@ mod tests {
             "{line}"
         );
         let line = key_line(Some(&gone), None, true, true);
-        assert!(line.contains("`dg auth login --wallet`"), "{line}");
+        assert!(
+            line.contains("`dg auth login` gets a new key from your wallet"),
+            "{line}"
+        );
         assert!(!line.contains("identity file"), "{line}");
         // QW4-049: a disabled limited key is still reported as the capped key it was: its
         // budget is read from the disabled key (`limited` is for live keys only).
@@ -2072,5 +2107,65 @@ mod tests {
         assert!(dash_to_credits(0.0).is_err());
         assert!(dash_to_credits(f64::NAN).is_err());
         assert!(dash_to_credits(-1.0).is_err());
+    }
+
+    /// Plan item 9: a bare `dg auth login` is the wallet's in a terminal; anything to sign in
+    /// from keeps the master-key path; without a terminal it stops at once (E802) rather than
+    /// wait for a phone, and nothing in it suggests a key was stored.
+    #[test]
+    fn a_bare_login_is_the_wallet_in_a_terminal_and_refuses_without_one() {
+        use clap::Parser as _;
+        let args = |extra: &[&str]| {
+            let mut argv = vec!["dg", "auth", "login"];
+            argv.extend_from_slice(extra);
+            let cli = crate::Cli::try_parse_from(argv).unwrap();
+            let crate::Command::Auth(AuthCommand::Login(a)) = cli.command else {
+                panic!("not auth login")
+            };
+            a
+        };
+        let tty = Ctx::scripted(false, false, true, None);
+        assert!(signs_in_with_wallet(&tty, &args(&[])).unwrap());
+        assert!(signs_in_with_wallet(
+            &Ctx::scripted(true, false, true, None),
+            &args(&["--budget", "1"])
+        )
+        .unwrap());
+        for other in [
+            &["id.json"][..],
+            &["--mnemonic"],
+            &["--full-key"],
+            &["--replace", "3"],
+        ] {
+            assert!(
+                !signs_in_with_wallet(&tty, &args(other)).unwrap(),
+                "{other:?}"
+            );
+        }
+        let mut with_identity = Ctx::scripted(false, false, true, None);
+        with_identity.cli_identity = Some(PathBuf::from("id.json"));
+        assert!(!signs_in_with_wallet(&with_identity, &args(&[])).unwrap());
+        for (yes, json, stdin_tty) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, true),
+            (false, true, true),
+        ] {
+            let err = signs_in_with_wallet(&Ctx::scripted(yes, json, stdin_tty, None), &args(&[]))
+                .unwrap_err();
+            let u = forge_core::user_error::classify(
+                err.chain(),
+                &forge_core::user_error::ErrorContext::default(),
+            );
+            assert_eq!(u.code, codes::CONFIRMATION_REQUIRED, "{u:?}");
+            assert!(u.fix.iter().any(|f| f.contains("--wallet --yes")), "{u:?}");
+            assert!(u.fix.iter().any(|f| f.contains("--mnemonic")), "{u:?}");
+        }
+        // A script that does not want the wallet still gets the file path's checks.
+        assert!(!signs_in_with_wallet(
+            &Ctx::scripted(true, true, false, None),
+            &args(&["id.json"])
+        )
+        .unwrap());
     }
 }

@@ -50,7 +50,7 @@ const SCAN_HOW: &str =
 /// Testnet needs DashPay's testnet build.
 const TESTNET_WALLET: &str = "on testnet, use DashPay's testnet build: the `-testnet.apk` on https://github.com/dashpay/dash-wallet/releases/latest (installs beside the store app)";
 /// The fix a JSON field and `dg auth status` name for a wallet key.
-pub(crate) const RENEW: &str = "dg auth login --wallet";
+pub(crate) const RENEW: &str = "dg auth login";
 
 // ---------------------------------------------------------------------------------------
 // The state file

@@ -24,7 +24,8 @@ describe('repoCommands', () => {
     expect(cmd.dgClone).toBe(`dg repo clone ${OWNER}/my-project --network devnet --devnet-name moutai`)
     expect(cmd.remoteAdd).toBe(`git remote add origin dash://${OWNER}/my-project`)
     expect(cmd.setNetwork).toBe('git config dash.network devnet && git config dash.devnetName moutai')
-    expect(cmd.authLogin).toBe('dg auth login --mnemonic --network devnet --devnet-name moutai')
+    expect(cmd.authLogin).toBe('dg auth login --network devnet --devnet-name moutai')
+    expect(cmd.authLoginWords).toBe('dg auth login --mnemonic --network devnet --devnet-name moutai')
     expect(cmd.authNew).toBe('dg auth new --network devnet --devnet-name moutai')
   })
 

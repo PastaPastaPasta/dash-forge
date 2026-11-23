@@ -21,7 +21,7 @@ The push stops before it stores or pays for anything in almost every case below,
 ## The push needs credits (E401, E402)
 
 - **[E401](../errors.md#e401) not enough credits.** `dg auth balance` shows your balance. Top the identity up from a Dash wallet through the bridge. On a test network the faucet linked from [Costs](costs.md#credits) is free. A push checks its estimate against your balance before it uploads anything.
-- **[E402](../errors.md#e402) this key's budget is used up.** Your balance is untouched; the limited key you sign with has spent its budget. Register a fresh one: `dg auth login <identity file>` or `dg auth login --mnemonic`, with a larger `--budget` if you need one.
+- **[E402](../errors.md#e402) this key's budget is used up.** Your balance is untouched; the limited key you sign with has spent its budget. Get a fresh one: `dg auth login` (your DashPay wallet approves it), or `dg auth login <identity file>` / `--mnemonic`, with a larger `--budget` if you need one.
 
 ## The cost guard stopped it (E801)
 

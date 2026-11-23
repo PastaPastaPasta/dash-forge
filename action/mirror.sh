@@ -25,7 +25,7 @@ mkdir -p "$(dirname "$FORGE_STATE")"
 key=${DASH_FORGE_KEY:-}
 key=${key#"${key%%[![:space:]]*}"}
 key=${key%"${key##*[![:space:]]}"}
-[ -n "$key" ] || die "DASH_FORGE_KEY is empty. Add the runner key as a repository secret named DASH_FORGE_KEY and pass it with 'env: DASH_FORGE_KEY: \${{ secrets.DASH_FORGE_KEY }}'."
+[ -n "$key" ] || die "DASH_FORGE_KEY is empty. Add the runner key as a repository secret named DASH_FORGE_KEY and pass it with 'env: DASH_FORGE_KEY: \${{ secrets.DASH_FORGE_KEY }}'. No key yet? Sign in on your computer with 'dg auth login' (your DashPay wallet approves a limited key), then 'dg auth export --format dfk1 --reveal-secrets -o - | gh secret set DASH_FORGE_KEY'; 'dg auth export --new-key' instead gives CI a key and budget of its own (it needs your recovery phrase once)."
 case "$key" in
     dfk1:*)
         IFS=: read -r _ _ _ _ wif <<<"$key"

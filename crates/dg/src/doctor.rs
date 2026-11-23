@@ -521,7 +521,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
         out.push(Check::warn(
             "identity",
             "none configured (reads work; writes need one)",
-            "`dg auth new` creates one; `dg auth login <file>` (or `--mnemonic`) signs in",
+            "`dg auth login` signs in with your DashPay wallet (or `<file>` / `--mnemonic`); `dg auth new` creates one",
         ));
         return out;
     };
@@ -560,7 +560,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
                     forge_core::keystore::describe_key_source(&path),
                     e
                 ),
-                "sign in again: `dg auth login <file>` or `dg auth login --mnemonic`",
+                "sign in again: `dg auth login` (your wallet), or `dg auth login <file>` / `--mnemonic`",
             ));
             return out;
         }
@@ -669,7 +669,7 @@ fn keys_check(
         return Check::fail(
             "keys",
             what,
-            "sign in again: `dg auth login <file>` or `dg auth login --mnemonic`",
+            "sign in again: `dg auth login` (your wallet), or `dg auth login <file>` / `--mnemonic`",
         );
     };
     let line = crate::auth::key_line(Some(report), None, true, false);

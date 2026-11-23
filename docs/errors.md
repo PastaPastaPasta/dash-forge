@@ -149,7 +149,7 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 **No identity configured.** The command needs to sign (a push, a `dg` write) or to open a private repository, and no identity or key was found. Reading a public repository never needs one: `git clone dash://<owner>/<repo>` works anonymously, and so do `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` and `dg release list` / `download`.
 
-**What to do:** `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
+**What to do:** `dg auth login` signs in with an existing identity from your DashPay wallet (scan the QR code it prints); `dg auth login <file>` or `dg auth login --mnemonic` signs in from the identity file or the 12 words instead, and `dg auth new` creates an identity. Each stores a limited key for this computer. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 
 A private repository needs more than a signing key: its content is encrypted to each member's `ENCRYPTION` key. `dg auth login <file>`, `dg auth login --mnemonic` and `dg auth new` store it beside the limited signing key (never the master key), unless `--signing-only`; a key stored by an older `dg` lacks it (that would be [E306](#e306) next): sign in again with `--replace <key id>`.
 
@@ -543,6 +543,8 @@ A devnet name that does not exist is reported here too, because a lookup failure
 **Confirmation required.** A cost-bearing or destructive `dg` command needs confirmation, and it cannot prompt: `--json` mode, or stdin is not a terminal.
 
 **What to do:** pass `--yes` once you have checked what the command will do. The `cause:` line quotes the prompt, with its DASH estimate when the command prints one; `dg cost estimate` and `dg cost prices` give the rest.
+
+A bare `dg auth login` without a terminal stops with E802 too: it would wait for a wallet to scan a code. Give it what to sign in with: an identity file, `--mnemonic`, or `--wallet --yes` when a script really wants the wallet; CI uses a `dfk1:` key in `DASH_FORGE_KEY` instead.
 
 ## E803
 

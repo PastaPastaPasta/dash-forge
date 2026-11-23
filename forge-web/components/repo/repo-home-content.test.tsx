@@ -105,7 +105,11 @@ describe('the empty repo’s first-push steps', () => {
     const steps = [...host.querySelectorAll('section[aria-label="Empty repository"] ol > li h3')].map((h) => h.textContent)
     expect(steps).toEqual(['Install the Dash git tools', 'Sign in on this computer', 'Push your code'])
     const lines = [...host.querySelectorAll('section[aria-label="Empty repository"] code')].map((c) => c.textContent)
-    expect(lines[0]).toMatch(/^dg auth login --mnemonic /)
+    // Plan item 9: the wallet is the sign-in; the 12 words are named beside it.
+    expect(lines[0]).toMatch(/^dg auth login --network /)
+    const signIn = host.querySelector('[data-testid="empty-repo-sign-in"]')?.textContent ?? ''
+    expect(signIn).toContain('scan it with DashPay Wallet')
+    expect(signIn).toMatch(/dg auth login --mnemonic --network /)
     expect(lines.at(-1)).toMatch(/> README\.md && git add README\.md && git commit -m 'First commit' && git push -u origin HEAD:main$/)
     expect(host.textContent).toContain('Three steps to your first push.')
   })
