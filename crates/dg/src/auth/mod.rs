@@ -1321,7 +1321,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "masterKeyStored": master,
             "keyUnopened": unopened,
             "keyOrigin": key_origin.map(origin::KeyOrigin::as_str),
-            "renew": from_wallet.then_some(wallet::RENEW),
+            "renew": (key_origin == Some(origin::KeyOrigin::Wallet)).then_some(wallet::RENEW),
         }),
         || {
             println!("Network:  {network}");

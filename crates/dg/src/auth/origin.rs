@@ -1,10 +1,10 @@
 //! Where this computer's key came from, for `dg auth status`: a wallet grant, the recovery
 //! phrase, an identity file, a `dfk1` key, or the OS keychain (a key an older dg stored there).
 //!
-//! `key-origins.toml` beside `config.toml` records how dg registered a key (`dg auth new`,
-//! `dg auth login <file> | --mnemonic`). Nothing secret: per `<network>/<identity>`, the key id
-//! and its origin. A wallet grant is recorded in `app-connect.toml` ([`super::wallet`]). A key
-//! with no record is named by where it is kept.
+//! `key-origins.toml` beside `config.toml` records how dg got the key it stored last (`dg auth
+//! new`, `dg auth login`, `dg auth keys add`). Nothing secret: per `<network>/<identity>`, the
+//! key id and its origin. A wallet grant is also recorded in `app-connect.toml`
+//! ([`super::wallet`]). A key with no record is named by where it is kept.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
