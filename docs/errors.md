@@ -190,7 +190,7 @@ Two cases have their own message:
 
 **This key expired or was disabled.** The limited key signing for you is past its expiry or has been disabled. Limited keys are disposable: nothing is lost.
 
-**What to do:** register a fresh one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. `dg auth keys list` shows which keys are live.
+**What to do:** get a fresh one: `dg auth login` (your DashPay wallet approves it), or register one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. `dg auth keys list` shows which keys are live.
 
 ## E306
 
@@ -285,7 +285,7 @@ Nothing was signed in either case.
 
 **This key's budget is used up.** The limited key signing for you has spent its whole budget (the identity's balance is untouched). Budgets bound what a leaked key could spend.
 
-**What to do:** register a fresh limited key (uses the master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`, with a larger `--budget` if you need one. `dg auth keys add --budget <DASH>` adds one to a signed-in identity.
+**What to do:** get a fresh limited key: `dg auth login` (your DashPay wallet approves it), or `dg auth login <identity file>` / `dg auth login --mnemonic` (uses the master key once), with a larger `--budget` if you need one. `dg auth keys add --budget <DASH>` adds one to a signed-in identity.
 
 **Before a push uploads.** When the signing key has a budget, `git push` reads what is left and compares it with the estimate (an upper bound) before it stores anything, so a push the key cannot afford stops here before it stores anything. The estimate is an upper bound, so a budget only just above the real cost can still be refused: register a key with a bigger budget (`dg auth keys add --budget <DASH>`).
 
