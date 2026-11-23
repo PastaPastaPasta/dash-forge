@@ -70,6 +70,14 @@ describe('a commit whose code a browser cannot reach (QW4-031)', () => {
     expect(host.querySelector('[data-testid="checks-tab"]')?.textContent).toBe(`1 run(s) on ${OID}`)
   })
 
+  it('says in one line that a commit has no checks, instead of the checks panel', async () => {
+    readCheckRuns.mockResolvedValueOnce({ runs: [] })
+    await act(async () => root.render(<CommitContent home={home} addr={addr} oid={OID} />))
+    await act(async () => undefined)
+    expect(host.querySelector('[data-testid="commit-checks-none"]')?.textContent).toBe(`No checks reported for ${OID.slice(0, 7)}`)
+    expect(host.querySelector('[data-testid="checks-tab"]')).toBeNull()
+  })
+
   it('reads no check runs for an abbreviated id (they are recorded under the full one)', async () => {
     await act(async () => root.render(<CommitContent home={home} addr={addr} oid={OID.slice(0, 9)} />))
     await act(async () => undefined)
