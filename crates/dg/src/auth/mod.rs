@@ -1241,7 +1241,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
     let network = ctx.network_label();
     let Some(source) = ctx.identity_path.clone() else {
         ctx.emit(
-            json!({ "network": network, "authenticated": false }),
+            json!({ "network": network, "authenticated": false, "keyOrigin": null, "renew": null }),
             || {
                 println!("Network:  {network}");
                 println!(

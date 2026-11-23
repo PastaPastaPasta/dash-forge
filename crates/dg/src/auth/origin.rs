@@ -193,6 +193,11 @@ mod tests {
             recorded_at(&p, "testnet", "Id1", Some(7)),
             Some(KeyOrigin::File)
         );
+        record_at(&p, "testnet", "Id1", 8, KeyOrigin::Wallet).unwrap();
+        assert_eq!(
+            recorded_at(&p, "testnet", "Id1", None),
+            Some(KeyOrigin::Wallet)
+        );
         std::fs::write(&p, "not toml [").unwrap();
         assert_eq!(recorded_at(&p, "testnet", "Id1", Some(7)), None);
     }

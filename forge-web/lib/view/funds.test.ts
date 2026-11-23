@@ -92,6 +92,7 @@ describe('keyOriginLabel names where this browser’s key came from (plan item 1
     expect(keyOriginLabel('vault', 'passkey', false)).toBe('Restored from a passkey')
     expect(keyOriginLabel('vault', null, true)).toBe("A wallet's older code (DashConnect)")
     expect(keyOriginLabel('vault', undefined, false)).toBe('Registered here with your recovery phrase or identity file')
+    expect(keyOriginLabel('vault', 'hardware', true)).toBe('Stored in this browser')
   })
 })
 

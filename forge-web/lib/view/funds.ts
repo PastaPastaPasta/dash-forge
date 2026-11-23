@@ -108,7 +108,7 @@ export function renewableInWallet(origin: string | null | undefined): boolean {
  * Where this browser's key came from (Settings → This browser's key, plan item 10): a wallet's App
  * Connect grant, `dg`'s handoff, a passkey restore, a pasted key, a wallet's older code (an
  * unlimited key with no recorded origin), else registered here from the recovery phrase or
- * identity file. Null when no key is in use.
+ * identity file. An origin this build does not know is named neutrally. Null when no key is in use.
  */
 export function keyOriginLabel(storage: 'vault' | 'session' | null, origin: string | null | undefined, unlimited: boolean): string | null {
   if (storage === null) return null
@@ -116,6 +116,7 @@ export function keyOriginLabel(storage: 'vault' | 'session' | null, origin: stri
   if (origin === 'app-connect') return 'Your DashPay wallet (App Connect)'
   if (origin === 'dg') return 'Handed over by dg on your computer'
   if (origin === 'passkey') return 'Restored from a passkey'
+  if (origin) return 'Stored in this browser'
   if (unlimited) return "A wallet's older code (DashConnect)"
   return 'Registered here with your recovery phrase or identity file'
 }

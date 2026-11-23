@@ -780,6 +780,13 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             eprintln!("note: signed in, but `dg auth status` will not know the key came from your wallet ({e:#})");
         }
     }
+    super::origin::record(
+        ctx,
+        &network,
+        &grant.identity_id,
+        grant.key_id,
+        super::origin::KeyOrigin::Wallet,
+    );
     store::set_default(ctx, &grant.identity_id, &stored.source())
         .map_err(|e| not_default(&e, &grant.identity_id, grant.key_id, &stored))?;
 
