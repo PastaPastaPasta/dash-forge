@@ -2088,15 +2088,19 @@ function PullPage({
                 </section>
               ) : (
                 <>
-                  {!open ? null : thread.approvals !== null ? (
-                    <Approvals approvals={thread.approvals} proved={thread.verdicts} headOid={pull.headOid} />
-                  ) : thread.verdicts !== null ? (
-                    // The members could not be read (no fold): the proved count alone, said to be an upper bound.
-                    <section aria-label="Approvals" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
-                      <VerdictLine approvals={null} proved={thread.verdicts} headOid={pull.headOid} />
-                    </section>
+                  {open ? (
+                    <>
+                      {thread.approvals !== null ? (
+                        <Approvals approvals={thread.approvals} proved={thread.verdicts} headOid={pull.headOid} />
+                      ) : thread.verdicts !== null ? (
+                        // The members could not be read (no fold): the proved count alone, said to be an upper bound.
+                        <section aria-label="Approvals" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
+                          <VerdictLine approvals={null} proved={thread.verdicts} headOid={pull.headOid} />
+                        </section>
+                      ) : null}
+                      <ChecksRow summary={checkSummary} headOid={gitHead} onOpen={() => setTab('checks')} />
+                    </>
                   ) : null}
-                  {open ? <ChecksRow summary={checkSummary} headOid={gitHead} onOpen={() => setTab('checks')} /> : null}
                   {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && !membersSource && (suggest.write.can || isAuthor) ? (
                     <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
                       <RefreshCw className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
