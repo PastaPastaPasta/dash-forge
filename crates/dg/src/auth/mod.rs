@@ -1068,7 +1068,7 @@ fn signs_in_with_wallet(ctx: &Ctx, args: &LoginArgs) -> Result<bool> {
         })
         .fix("sign in from your identity: `dg auth login <identity file>` or `dg auth login --mnemonic`")
         .fix("wait for your wallet anyway: `dg auth login --wallet --yes`")
-        .fix("in CI, set DASH_FORGE_KEY to a `dfk1:` key (`dg auth export --format dfk1`): no login needed")
+        .fix("in CI, set DASH_FORGE_KEY to a dfk1 key (`dg auth export --format dfk1`): no login needed")
         .note("nothing was shown or stored")
         .into());
     }
