@@ -29,6 +29,8 @@
 //! needs none. A grant without consent is refused here before signing ([`awaiting_consent`]).
 //! Every member document carries `vis`, proved against the repository's visibility.
 
+use std::collections::BTreeMap;
+
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
@@ -356,7 +358,7 @@ pub fn oracle(members: &[Member]) -> RoleOracle {
 
 /// `repo`'s document scope and the contract `doc_type` lives in (RC1: `maintainer`, `writer`
 /// and `consent` in forge-core, `runner` in forge-community).
-async fn scoped(
+pub(crate) async fn scoped(
     client: &PlatformClient,
     repo: &RepoRef,
     doc_type: &str,
@@ -532,6 +534,38 @@ pub fn awaiting_consent(repo: &RepoRef, member: &str) -> Error {
     .into()
 }
 
+/// A new `maintainer` or `writer` document's properties: `member` given `role` in `repo`,
+/// naming their consent (`None` for the owner enrolling itself).
+pub(crate) fn member_doc_props(
+    core: &LoadedContract,
+    scope: &crate::scope::DocScope,
+    repo: &RepoRef,
+    member: &str,
+    role: Role,
+    consent_by: Option<FieldValue>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let member_id = FieldValue::identifier(platform::decode_identifier(member)?);
+    let mut props = scope.props([("memberId", member_id)]);
+    crate::layout::stamp_vis(&mut props, repo.visibility);
+    if let Some(c) = consent_by {
+        props.insert("consentBy".to_string(), c);
+    }
+    if role == Role::Bot && !admits_bots(core) {
+        return Err(no_bot_role(repo, member));
+    }
+    if let Some(code) = role.writer_role_code() {
+        if core.has_property(doc_type(role), WRITER_ROLE) {
+            props.insert(WRITER_ROLE.to_string(), FieldValue::integer(code));
+        } else if role != Role::Writer {
+            return Err(Error::Config(format!(
+                "this network's forge-core has no member roles: {member} can be added as a \
+                 writer or maintainer only"
+            )));
+        }
+    }
+    Ok(props)
+}
+
 /// Read access to forge-v2 membership: needs only a client.
 pub struct MemberReader<'a> {
     client: &'a PlatformClient,
@@ -679,24 +713,7 @@ impl<'a> MemberService<'a> {
             return Err(awaiting_consent(repo, member));
         };
         let (scope, core) = scoped(self.client, repo, doc_type(role)).await?;
-        let mut props = scope.props([("memberId", member_id)]);
-        crate::layout::stamp_vis(&mut props, repo.visibility);
-        if let Some(c) = consent_by {
-            props.insert("consentBy".to_string(), c);
-        }
-        if role == Role::Bot && !admits_bots(&core) {
-            return Err(no_bot_role(repo, member));
-        }
-        if let Some(code) = role.writer_role_code() {
-            if core.has_property(doc_type(role), WRITER_ROLE) {
-                props.insert(WRITER_ROLE.to_string(), FieldValue::integer(code));
-            } else if role != Role::Writer {
-                return Err(Error::Config(format!(
-                    "this network's forge-core has no member roles: {member} can be added as a \
-                     writer or maintainer only"
-                )));
-            }
-        }
+        let props = member_doc_props(&core, &scope, repo, member, role, consent_by)?;
         // A role change: the old `writer` document goes first (the `(repoId, memberId)` index
         // is unique, and the document is immutable).
         let changed_from = existing.as_ref().map(|old| old.role);

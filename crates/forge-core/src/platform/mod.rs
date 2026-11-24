@@ -168,6 +168,7 @@ pub mod wrap;
 
 pub mod core_chain;
 pub mod identity;
+pub mod org;
 
 /// The `dashcore` network the SDK and its context provider use for `network`.
 pub(crate) fn to_dashcore(network: &Network) -> DashcoreNetwork {
@@ -2364,26 +2365,7 @@ impl<'a> WriteEngine<'a> {
         )
         .map_err(|e| Error::Platform(format!("deriving the document id: {e}")))?;
 
-        let document = Document::V0(DocumentV0 {
-            id: document_id,
-            owner_id: self.owner_id,
-            properties,
-            revision: Some(INITIAL_REVISION),
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            creator_id: None,
-            moderated_at: None,
-            moderated_by: None,
-            // Assigned by Drive on create; not part of the client-built document.
-            contract_version: None,
-        });
+        let document = client_document(document_id, self.owner_id, properties, None);
 
         let state_transition = BatchTransition::new_document_creation_transition_from_document(
             document,
@@ -2443,29 +2425,15 @@ impl<'a> WriteEngine<'a> {
         let contract = &contract.0;
         let doc_id = parse_id(document_id, "document id")?;
 
-        let document = Document::V0(DocumentV0 {
-            id: doc_id,
-            owner_id: self.owner_id,
-            properties: values
+        let document = client_document(
+            doc_id,
+            self.owner_id,
+            values
                 .into_iter()
                 .map(|(k, v)| (k, v.into_value()))
                 .collect(),
-            revision: Some(INITIAL_REVISION),
             created_at,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            creator_id: None,
-            moderated_at: None,
-            moderated_by: None,
-            // Assigned by Drive on create; not part of the client-built document.
-            contract_version: None,
-        });
+        );
 
         let doc_type_ref = contract
             .document_type_for_name(document_type)
@@ -2515,153 +2483,9 @@ impl<'a> WriteEngine<'a> {
     /// one needs the protocol-14 indexOnly delete, which carries the document's values: build
     /// it with [`Self::prepare_delete_with_values`].
     pub async fn execute(&self, prepared: &PreparedWrite) -> Result<BroadcastOutcome> {
-        // Deserialize the SAME signed bytes we captured at prepare time. Every broadcast
-        // in the loop below re-sends these exact bytes (identical nonce, entropy and
-        // signature), so a retry can only ever make the write land once.
-        let state_transition =
-            StateTransition::deserialize_from_bytes_untrusted(&prepared.signed.bytes)
-                .map_err(|e| Error::Platform(format!("deserializing signed transition: {e}")))?;
-        let sdk = self.client.sdk();
-        let document_type = prepared.document_type.as_str();
-        // One rate-limit wait budget for the whole write, across its re-broadcasts.
-        let waits = std::sync::atomic::AtomicU32::new(0);
-        let (st, waits) = (&state_transition, &waits);
-        drive_write(
-            move |elsewhere| async move {
-                // A rate-limit refusal is waited out here (the same signed bytes go again after
-                // `ratelimit-reset`), rather than spending one of the loop's re-broadcasts on
-                // a 2 s backoff the gateway will refuse again (D-902).
-                loop {
-                    crate::budget::acquire().await;
-                    // `Some(n)`: a node the rotation would not pick, one that does not hold
-                    // these bytes cached (see `drive_write`).
-                    let sent = match elsewhere {
-                        Some(n) => self.broadcast_elsewhere(st, n).await,
-                        None => st.broadcast(sdk, None).await,
-                    };
-                    let Err(e) = sent else {
-                        return Ok(());
-                    };
-                    let used = waits.load(std::sync::atomic::Ordering::Relaxed);
-                    match rate_limit_reset(&e) {
-                        Some(reset) if used < crate::budget::MAX_RATE_LIMIT_WAITS => {
-                            waits.store(used + 1, std::sync::atomic::Ordering::Relaxed);
-                            crate::budget::wait_out_rate_limit("broadcast", reset).await;
-                        }
-                        _ => return Err(classify_write_error(&e, document_type)),
-                    }
-                }
-            },
-            // The affected-state wait, not the strict one. rs-sdk 4.2's strict wait fails any
-            // outcome whose proof only authenticates the resulting state, and that is every
-            // document of an `indexOnly` type (protocol 14; forge-v2's `star` / `follow`): the
-            // entry carries no id, entropy or nonce to bind one transition to it. This accepts
-            // execution-proved outcomes too, so nothing weakens for the other types, and for a
-            // sign-once write "the proven state holds it" is exactly the success condition — a
-            // duplicate of the same signed bytes is rejected on its nonce, not proved again.
-            // Still needed on v5.0.0-beta.1: platform#5136 made the SDK's own document put and
-            // delete wait this way for an indexOnly type, but this engine broadcasts and waits
-            // itself, and the strict `wait_for_response` still refuses such an outcome.
-            || async {
-                match st
-                    .wait_for_affected_state::<StateTransitionProofResult>(
-                        sdk,
-                        Some(wait_settings()),
-                    )
-                    .await
-                {
-                    Ok(_proof) => Ok(()),
-                    // The proof holds a document written under a newer version of its contract
-                    // than this process loaded (an in-place update since): the transition is in
-                    // a block. Hold the new version from here on, and let the spent nonce
-                    // settle it (`NonceConsumed`: the caller's proved read decides).
-                    Err(e) if is_stale_contract(&e.to_string()) => {
-                        Box::pin(self.client.refresh_contract_of(st)).await;
-                        Err(WriteFailure::Retryable(e.to_string()))
-                    }
-                    Err(e) => Err(classify_write_error(&e, document_type)),
-                }
-            },
-            || self.nonce_spent(st, prepared.signed.nonce),
-            RETRY_BACKOFF_BASE,
-            &quorum::QUORUM_WAITS,
-            document_type,
-        )
-        .await
-    }
-
-    /// Send `transition` to the `n`th node away from the SDK's rotation ([`drive_write`]): one
-    /// live DAPI address ([`pick_elsewhere`]), asked once, never banned for its answer. Falls
-    /// back to the rotation when no live address is known.
-    // The error is the SDK's own (large) type, classified by the caller on the next line.
-    #[allow(clippy::result_large_err)]
-    async fn broadcast_elsewhere(
-        &self,
-        transition: &StateTransition,
-        n: usize,
-    ) -> std::result::Result<(), dash_sdk::Error> {
-        use dash_sdk::dapi_client::{DapiClient, DapiRequest};
-        use dash_sdk::platform::transition::broadcast_request::BroadcastRequestForStateTransition;
-        let sdk = self.client.sdk();
-        let request = transition.broadcast_request_for_state_transition()?;
-        let live = sdk.address_list().get_live_addresses();
-        let Some(address) = pick_elsewhere(live, &request.state_transition, n) else {
-            return transition.broadcast(sdk, None).await;
-        };
-        tracing::debug!(node = %address, n, "sending the write to another node");
-        let client = DapiClient::new(
-            std::iter::once(address).collect(),
-            RequestSettings {
-                connect_timeout: Some(DAPI_CONNECT_TIMEOUT),
-                retries: Some(0),
-                ban_failed_address: Some(false),
-                ..RequestSettings::default()
-            },
-        );
-        request
-            .execute(&client, RequestSettings::default())
+        self.client
+            .broadcast_signed(&prepared.document_type, &prepared.signed)
             .await
-            .map(|_| ())
-            .map_err(|e| dash_sdk::Error::from(e.inner))
-    }
-
-    /// Whether Platform's proved identity-contract nonce says `nonce` can no longer be used
-    /// by `transition` (Drive's own `validate_identity_nonce_update`): something — ours or
-    /// another write — took it. `false` when it is still free, when the transition is not a
-    /// document batch, or when the read fails (the loop then re-broadcasts as before).
-    async fn nonce_spent(&self, transition: &StateTransition, nonce: u64) -> bool {
-        use dash_sdk::dpp::state_transition::batch_transition::accessors::DocumentsBatchTransitionAccessorsV0;
-        use drive_proof_verifier::types::IdentityContractNonceFetcher;
-
-        let StateTransition::Batch(batch) = transition else {
-            return false;
-        };
-        let (Some(owner), Some(first)) = (transition.owner_id(), batch.first_transition()) else {
-            return false;
-        };
-        let contract = first.data_contract_id();
-        let sdk = self.client.sdk();
-        match retry_transient_read("fetch identity-contract nonce", || {
-            IdentityContractNonceFetcher::fetch(sdk, (owner, contract))
-        })
-        .await
-        {
-            Ok(current) => {
-                let current = current.map_or(0, |f| f.0);
-                let spent = nonce_is_spent(current, nonce, owner);
-                tracing::debug!(
-                    nonce,
-                    current = current & NONCE_MASK,
-                    spent,
-                    "checked whether the write's nonce is still free"
-                );
-                spent
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "could not read the identity-contract nonce");
-                false
-            }
-        }
     }
 
     /// Convenience: prepare + execute a document create, returning the base58 id.
@@ -3132,6 +2956,194 @@ impl<'a> WriteEngine<'a> {
             .await?;
         self.execute(&prepared).await
     }
+}
+
+/// Broadcasting signed document writes: what [`WriteEngine::execute`] does, for any signed
+/// transition (an organization's threshold-signed one included).
+impl PlatformClient {
+    /// Broadcast `signed` and wait for its confirmation proof, re-broadcasting the **identical**
+    /// bytes on a retryable failure (see [`WriteEngine::execute`]).
+    pub async fn broadcast_signed(
+        &self,
+        document_type: &str,
+        signed: &SignedTransition,
+    ) -> Result<BroadcastOutcome> {
+        // Deserialize the SAME signed bytes we captured at prepare time. Every broadcast
+        // in the loop below re-sends these exact bytes (identical nonce, entropy and
+        // signature), so a retry can only ever make the write land once.
+        let state_transition = StateTransition::deserialize_from_bytes_untrusted(&signed.bytes)
+            .map_err(|e| Error::Platform(format!("deserializing signed transition: {e}")))?;
+        let sdk = self.sdk();
+        // One rate-limit wait budget for the whole write, across its re-broadcasts.
+        let waits = std::sync::atomic::AtomicU32::new(0);
+        let (st, waits) = (&state_transition, &waits);
+        drive_write(
+            move |elsewhere| async move {
+                // A rate-limit refusal is waited out here (the same signed bytes go again after
+                // `ratelimit-reset`), rather than spending one of the loop's re-broadcasts on
+                // a 2 s backoff the gateway will refuse again (D-902).
+                loop {
+                    crate::budget::acquire().await;
+                    // `Some(n)`: a node the rotation would not pick, one that does not hold
+                    // these bytes cached (see `drive_write`).
+                    let sent = match elsewhere {
+                        Some(n) => self.broadcast_elsewhere(st, n).await,
+                        None => st.broadcast(sdk, None).await,
+                    };
+                    let Err(e) = sent else {
+                        return Ok(());
+                    };
+                    let used = waits.load(std::sync::atomic::Ordering::Relaxed);
+                    match rate_limit_reset(&e) {
+                        Some(reset) if used < crate::budget::MAX_RATE_LIMIT_WAITS => {
+                            waits.store(used + 1, std::sync::atomic::Ordering::Relaxed);
+                            crate::budget::wait_out_rate_limit("broadcast", reset).await;
+                        }
+                        _ => return Err(classify_write_error(&e, document_type)),
+                    }
+                }
+            },
+            // The affected-state wait, not the strict one. rs-sdk 4.2's strict wait fails any
+            // outcome whose proof only authenticates the resulting state, and that is every
+            // document of an `indexOnly` type (protocol 14; forge-v2's `star` / `follow`): the
+            // entry carries no id, entropy or nonce to bind one transition to it. This accepts
+            // execution-proved outcomes too, so nothing weakens for the other types, and for a
+            // sign-once write "the proven state holds it" is exactly the success condition — a
+            // duplicate of the same signed bytes is rejected on its nonce, not proved again.
+            // Still needed on v5.0.0-beta.1: platform#5136 made the SDK's own document put and
+            // delete wait this way for an indexOnly type, but this engine broadcasts and waits
+            // itself, and the strict `wait_for_response` still refuses such an outcome.
+            || async {
+                match st
+                    .wait_for_affected_state::<StateTransitionProofResult>(
+                        sdk,
+                        Some(wait_settings()),
+                    )
+                    .await
+                {
+                    Ok(_proof) => Ok(()),
+                    // The proof holds a document written under a newer version of its contract
+                    // than this process loaded (an in-place update since): the transition is in
+                    // a block. Hold the new version from here on, and let the spent nonce
+                    // settle it (`NonceConsumed`: the caller's proved read decides).
+                    Err(e) if is_stale_contract(&e.to_string()) => {
+                        Box::pin(self.refresh_contract_of(st)).await;
+                        Err(WriteFailure::Retryable(e.to_string()))
+                    }
+                    Err(e) => Err(classify_write_error(&e, document_type)),
+                }
+            },
+            || self.nonce_spent(st, signed.nonce),
+            RETRY_BACKOFF_BASE,
+            &quorum::QUORUM_WAITS,
+            document_type,
+        )
+        .await
+    }
+
+    /// Send `transition` to the `n`th node away from the SDK's rotation ([`drive_write`]): one
+    /// live DAPI address ([`pick_elsewhere`]), asked once, never banned for its answer. Falls
+    /// back to the rotation when no live address is known.
+    // The error is the SDK's own (large) type, classified by the caller on the next line.
+    #[allow(clippy::result_large_err)]
+    async fn broadcast_elsewhere(
+        &self,
+        transition: &StateTransition,
+        n: usize,
+    ) -> std::result::Result<(), dash_sdk::Error> {
+        use dash_sdk::dapi_client::{DapiClient, DapiRequest};
+        use dash_sdk::platform::transition::broadcast_request::BroadcastRequestForStateTransition;
+        let sdk = self.sdk();
+        let request = transition.broadcast_request_for_state_transition()?;
+        let live = sdk.address_list().get_live_addresses();
+        let Some(address) = pick_elsewhere(live, &request.state_transition, n) else {
+            return transition.broadcast(sdk, None).await;
+        };
+        tracing::debug!(node = %address, n, "sending the write to another node");
+        let client = DapiClient::new(
+            std::iter::once(address).collect(),
+            RequestSettings {
+                connect_timeout: Some(DAPI_CONNECT_TIMEOUT),
+                retries: Some(0),
+                ban_failed_address: Some(false),
+                ..RequestSettings::default()
+            },
+        );
+        request
+            .execute(&client, RequestSettings::default())
+            .await
+            .map(|_| ())
+            .map_err(|e| dash_sdk::Error::from(e.inner))
+    }
+
+    /// Whether Platform's proved identity-contract nonce says `nonce` can no longer be used
+    /// by `transition` (Drive's own `validate_identity_nonce_update`): something — ours or
+    /// another write — took it. `false` when it is still free, when the transition is not a
+    /// document batch, or when the read fails (the loop then re-broadcasts as before).
+    async fn nonce_spent(&self, transition: &StateTransition, nonce: u64) -> bool {
+        use dash_sdk::dpp::state_transition::batch_transition::accessors::DocumentsBatchTransitionAccessorsV0;
+        use drive_proof_verifier::types::IdentityContractNonceFetcher;
+
+        let StateTransition::Batch(batch) = transition else {
+            return false;
+        };
+        let (Some(owner), Some(first)) = (transition.owner_id(), batch.first_transition()) else {
+            return false;
+        };
+        let contract = first.data_contract_id();
+        let sdk = self.sdk();
+        match retry_transient_read("fetch identity-contract nonce", || {
+            IdentityContractNonceFetcher::fetch(sdk, (owner, contract))
+        })
+        .await
+        {
+            Ok(current) => {
+                let current = current.map_or(0, |f| f.0);
+                let spent = nonce_is_spent(current, nonce, owner);
+                tracing::debug!(
+                    nonce,
+                    current = current & NONCE_MASK,
+                    spent,
+                    "checked whether the write's nonce is still free"
+                );
+                spent
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the identity-contract nonce");
+                false
+            }
+        }
+    }
+}
+
+/// A document as a client builds it for a create or delete: revision 1, no Drive-assigned
+/// timestamps.
+pub(crate) fn client_document(
+    id: Identifier,
+    owner_id: Identifier,
+    properties: BTreeMap<String, Value>,
+    created_at: Option<u64>,
+) -> Document {
+    Document::V0(DocumentV0 {
+        id,
+        owner_id,
+        properties,
+        revision: Some(INITIAL_REVISION),
+        created_at,
+        updated_at: None,
+        transferred_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        transferred_at_block_height: None,
+        created_at_core_block_height: None,
+        updated_at_core_block_height: None,
+        transferred_at_core_block_height: None,
+        creator_id: None,
+        moderated_at: None,
+        moderated_by: None,
+        // Assigned by Drive on create; not part of the client-built document.
+        contract_version: None,
+    })
 }
 
 /// Refuse a replace built from `expected` when the stored document is at `stored` (another
@@ -4236,7 +4248,7 @@ fn wait_settings() -> dash_sdk::platform::transition::put_settings::PutSettings 
 /// * Anything else is final.
 ///
 /// **Sending elsewhere** (`broadcast(Some(n))`: the `n`th node picked away from the rotation,
-/// [`WriteEngine::broadcast_elsewhere`]). A Tenderdash node keeps a transition's hash in its
+/// [`PlatformClient::broadcast_elsewhere`]). A Tenderdash node keeps a transition's hash in its
 /// mempool cache after the transition stops moving toward a block — dropped on recheck, removed
 /// by a proposer, or stranded in that node's mempool when its gossip was lost — and refuses the
 /// same bytes from then on with "tx already exists in cache" before Drive is asked

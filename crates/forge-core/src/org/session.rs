@@ -1,0 +1,623 @@
+//! A connected organization: its group's log read from the relay, and the request flows
+//! (§4, §9): create, sign, decline and finish.
+
+use std::collections::BTreeMap;
+
+use serde_json::{json, Value};
+
+use crate::error::{Error, Result};
+use crate::network::ForgeIds;
+use crate::platform::org::{
+    attach_signature, decode_unsigned, holds_group_key, DecodedWrite, UnsignedWrite,
+};
+use crate::platform::{BroadcastOutcome, LoadedIdentity, PlatformClient};
+
+use super::derive::{MemberKeys, Seed};
+use super::envelope::{now_iso, seal};
+use super::request::{self, ChainView, Note, Request, RequestStatus};
+use super::review::{self, Expect, Names, Reviewed};
+use super::state::{reduce, Ceremony, ProposalStatus, RoomState};
+use super::{member, signing_ceremonies, signing_slot, MemberRecord, OrgError, OrgRecord, Relay};
+
+const CONFIRM_ATTEMPTS: usize = 8;
+const CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+fn refused(what: &str, problems: &[String]) -> Error {
+    Error::Config(format!("Forge won't {what}: {}", problems.join("; ")))
+}
+
+/// The organization a member's group controls, as a local record (§9 "Which identity a group
+/// controls"): the newest completed ceremony this member is in whose HIGH group key is an enabled
+/// key of an identity on this network.
+pub async fn connect(
+    client: &PlatformClient,
+    relay_url: &str,
+    room: &str,
+    keys: &MemberKeys,
+) -> Result<(OrgRecord, LoadedIdentity)> {
+    let relay = Relay::new(relay_url)?;
+    let messages = relay.messages(room).await?;
+    let state = reduce(&messages, Some(room));
+    let network = client.network().key();
+    let candidates = signing_ceremonies(&state);
+    if candidates.is_empty() {
+        return Err(Error::Config(
+            "this group has no finished key ceremony yet: finish it in multisig.dashhq.org first"
+                .into(),
+        ));
+    }
+    let mine: Vec<&Ceremony> = candidates
+        .into_iter()
+        .filter(|c| c.config.index_of(&keys.auth_pub).is_some())
+        .collect();
+    if mine.is_empty() {
+        return Err(OrgError::NotAMember.into());
+    }
+    for c in mine {
+        if c.config.network != network {
+            continue;
+        }
+        let (slot, slot_keys) = signing_slot(c).expect("a signing ceremony");
+        let key =
+            hex::decode(&slot_keys.group_public_key).map_err(|e| Error::Config(e.to_string()))?;
+        let Some(identity) = client.identity_by_public_key(&key).await? else {
+            continue;
+        };
+        if !holds_group_key(&identity, slot.key_id, &slot_keys.group_public_key) {
+            continue;
+        }
+        let record = OrgRecord {
+            network: network.clone(),
+            org_id: identity.id(),
+            room: room.to_string(),
+            relay: relay.url().to_string(),
+            auth_pub: keys.auth_pub.clone(),
+            label: c.config.label.clone(),
+            threshold: c.config.threshold,
+            members: c
+                .config
+                .participants
+                .iter()
+                .map(|p| MemberRecord {
+                    index: p.index,
+                    name: p.name.clone(),
+                    auth_pub: p.auth_pub.clone(),
+                })
+                .collect(),
+        };
+        return Ok((record, identity));
+    }
+    Err(Error::Config(format!(
+        "no identity on {network} holds this group's key yet: create the organization's identity in multisig.dashhq.org first"
+    )))
+}
+
+/// A connected organization with its group's current log.
+pub struct Org {
+    pub record: OrgRecord,
+    pub state: RoomState,
+    messages: Vec<Value>,
+    relay: Relay,
+    pub cid: String,
+    pub slot: String,
+    pub key_id: u32,
+}
+
+impl Org {
+    /// Read the group's log; sign with the newest finished ceremony this member is in.
+    pub async fn load(record: OrgRecord) -> Result<Self> {
+        let relay = Relay::new(&record.relay)?;
+        let messages = relay.messages(&record.room).await?;
+        let mut org = Self {
+            record,
+            state: RoomState::default(),
+            messages,
+            relay,
+            cid: String::new(),
+            slot: String::new(),
+            key_id: 0,
+        };
+        org.rebuild();
+        let auth = org.record.auth_pub.clone();
+        let picked = signing_ceremonies(&org.state)
+            .into_iter()
+            .find(|c| c.config.index_of(&auth).is_some())
+            .and_then(|c| signing_slot(c).map(|(k, _)| (c.cid.clone(), k.slot.clone(), k.key_id)));
+        let Some((cid, slot, key_id)) = picked else {
+            return Err(Error::Config(format!(
+                "the group of {} has no finished key ceremony you are in",
+                org.record.label
+            )));
+        };
+        (org.cid, org.slot, org.key_id) = (cid, slot, key_id);
+        Ok(org)
+    }
+
+    fn rebuild(&mut self) {
+        self.state = reduce(&self.messages, Some(&self.record.room));
+    }
+
+    pub async fn refresh(&mut self) -> Result<()> {
+        self.messages = self.relay.messages(&self.record.room).await?;
+        self.rebuild();
+        Ok(())
+    }
+
+    async fn post(&mut self, envelope: Value) -> Result<()> {
+        self.relay.post(&self.record.room, &envelope).await?;
+        self.messages.push(envelope);
+        self.rebuild();
+        Ok(())
+    }
+
+    /// The organization's identity, and the ceremony whose key it holds (picked again: a group
+    /// that re-ran its ceremony signs with the one on Platform).
+    pub async fn bind(&mut self, client: &PlatformClient) -> Result<LoadedIdentity> {
+        let identity = client.fetch_identity(&self.record.org_id).await?;
+        let auth = self.record.auth_pub.clone();
+        let picked = signing_ceremonies(&self.state).into_iter().find_map(|c| {
+            let (k, s) = signing_slot(c)?;
+            (c.config.index_of(&auth).is_some()
+                && holds_group_key(&identity, k.key_id, &s.group_public_key))
+            .then(|| (c.cid.clone(), k.slot.clone(), k.key_id))
+        });
+        let (cid, slot, key_id) = picked.ok_or_else(|| {
+            Error::Config(format!(
+                "{} no longer holds a key from a ceremony you are in",
+                self.record.label
+            ))
+        })?;
+        (self.cid, self.slot, self.key_id) = (cid, slot, key_id);
+        Ok(identity)
+    }
+
+    pub fn expect<'a>(&'a self, network: &'a str, forge: &'a ForgeIds) -> Expect<'a> {
+        Expect {
+            network,
+            org_id: &self.record.org_id,
+            key_id: self.key_id,
+            cid: &self.cid,
+            slot: &self.slot,
+            forge,
+        }
+    }
+
+    pub fn threshold(&self) -> usize {
+        self.state
+            .ceremonies
+            .get(&self.cid)
+            .map_or(self.record.threshold, |c| c.config.threshold)
+    }
+
+    pub fn requests(&self) -> Vec<Request> {
+        request::requests(&self.state)
+    }
+
+    pub fn find(&self, id: &str) -> Result<Request> {
+        let all = self.requests();
+        request::find(&all, id).cloned().ok_or_else(|| {
+            Error::Config(format!(
+                "{} has no request {id}: `dg org requests` lists them",
+                self.record.label
+            ))
+        })
+    }
+
+    /// Whether every proposal of `req` writes as this organization (checked offline).
+    pub fn writes_as_org(&self, req: &Request) -> bool {
+        req.proposals.iter().all(|id| {
+            self.state.proposals.get(id).is_some_and(|p| {
+                hex::decode(p.unsigned_hex())
+                    .ok()
+                    .and_then(|b| decode_unsigned(&b).ok())
+                    .is_some_and(|d| d.owner_id == self.record.org_id)
+            })
+        })
+    }
+
+    /// Requests waiting for this member's signature (no Platform read).
+    pub fn waiting(&self) -> Vec<Request> {
+        self.requests()
+            .into_iter()
+            .filter(|r| {
+                request::waits_for(&self.state, r, &self.record.auth_pub) && self.writes_as_org(r)
+            })
+            .collect()
+    }
+
+    /// The highest nonce per contract that a request still collecting or ready holds.
+    pub fn open_nonces(&self) -> BTreeMap<String, u64> {
+        let mut out: BTreeMap<String, u64> = BTreeMap::new();
+        for r in self.requests() {
+            if !matches!(
+                request::status(&self.state, &r, None),
+                RequestStatus::Collecting | RequestStatus::Ready
+            ) {
+                continue;
+            }
+            for d in r.proposals.iter().filter_map(|id| self.decoded(id)) {
+                if d.owner_id == self.record.org_id {
+                    let e = out.entry(d.contract_id.clone()).or_default();
+                    *e = (*e).max(d.nonce);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn decoded(&self, proposal_id: &str) -> Option<DecodedWrite> {
+        let p = self.state.proposals.get(proposal_id)?;
+        decode_unsigned(&hex::decode(p.unsigned_hex()).ok()?).ok()
+    }
+
+    /// Review every proposal of `req` (§9), against Platform's current nonces.
+    pub async fn review(
+        &self,
+        client: &PlatformClient,
+        forge: &ForgeIds,
+        req: &Request,
+    ) -> Result<Vec<Reviewed>> {
+        let network = client.network().key();
+        let expect = self.expect(&network, forge);
+        let mut nonces: BTreeMap<String, u64> = BTreeMap::new();
+        let mut out = Vec::new();
+        for id in &req.proposals {
+            let p = &self.state.proposals[id];
+            let mut r = review::review_offline(&expect, p);
+            if let Some(d) = r.decoded.as_ref().filter(|_| r.problems.is_empty()) {
+                let current = if let Some(n) = nonces.get(&d.contract_id) {
+                    *n
+                } else {
+                    let n = client
+                        .proved_contract_nonce(&self.record.org_id, &d.contract_id)
+                        .await?;
+                    nonces.insert(d.contract_id.clone(), n);
+                    n
+                };
+                if p.status != ProposalStatus::Executed
+                    && d.nonce <= current
+                    && !landed(client, d).await.unwrap_or(false)
+                {
+                    r.problems.extend(review::nonce_problem(d, current));
+                }
+            }
+            out.push(r);
+        }
+        Ok(out)
+    }
+
+    /// What Platform says about the request's proposals (§9 `done` and `expired`).
+    pub async fn chain_view(&self, client: &PlatformClient, req: &Request) -> Result<ChainView> {
+        let mut view = ChainView::default();
+        for id in &req.proposals {
+            let Some(d) = self.decoded(id) else { continue };
+            if self.state.proposals[id].status == ProposalStatus::Executed
+                || d.owner_id != self.record.org_id
+            {
+                continue;
+            }
+            let current = client
+                .proved_contract_nonce(&self.record.org_id, &d.contract_id)
+                .await?;
+            if d.nonce <= current {
+                view.spent.insert(id.clone());
+                if landed(client, &d).await? {
+                    view.landed.insert(id.clone());
+                }
+            }
+        }
+        Ok(view)
+    }
+
+    /// Names for describing `req`: repositories (those it creates included) and members.
+    pub async fn names(&self, client: &PlatformClient, req: &Request) -> Names {
+        let mut names = Names::default();
+        let decoded: Vec<DecodedWrite> = req
+            .proposals
+            .iter()
+            .filter_map(|id| self.decoded(id))
+            .collect();
+        for d in &decoded {
+            if d.document_type == "repo" {
+                if let Some(n) = d.properties.get("name").and_then(|v| v.as_str()) {
+                    names
+                        .repos
+                        .insert(d.document_id.clone(), format!("{}/{n}", self.record.label));
+                }
+            }
+        }
+        for d in &decoded {
+            let stored = review::stored_target(client, d).await.ok().flatten();
+            let (repos, people) = review::referenced_ids(stored.as_ref().unwrap_or(d));
+            for id in repos {
+                if names.repos.contains_key(&id) {
+                    continue;
+                }
+                if let Ok(r) = crate::resolve::resolve_id(client, &id).await {
+                    let owner = if r.owner_id() == self.record.org_id {
+                        self.record.label.clone()
+                    } else {
+                        first_name(client, r.owner_id()).await
+                    };
+                    names.repos.insert(id, format!("{owner}/{}", r.name()));
+                }
+            }
+            for id in people {
+                if let std::collections::btree_map::Entry::Vacant(e) = names.identities.entry(id) {
+                    let n = first_name(client, e.key()).await;
+                    e.insert(n);
+                }
+            }
+        }
+        names
+    }
+
+    /// Describe each proposal of `req` in words.
+    pub async fn describe(&self, client: &PlatformClient, req: &Request) -> Vec<String> {
+        let names = self.names(client, req).await;
+        let mut out = Vec::new();
+        for id in &req.proposals {
+            match self.decoded(id) {
+                Some(d) => {
+                    let stored = review::stored_target(client, &d).await.ok().flatten();
+                    out.push(review::describe(&d, stored.as_ref(), &names));
+                }
+                None => out.push("Unrecognized write".into()),
+            }
+        }
+        out
+    }
+
+    /// Post `writes` as one request, then sign it with this member's share (§9 "Creating a
+    /// request"). Returns the request.
+    pub async fn propose(
+        &mut self,
+        client: &PlatformClient,
+        seed: &Seed,
+        keys: &MemberKeys,
+        title: &str,
+        writes: Vec<UnsignedWrite>,
+    ) -> Result<Request> {
+        member::recover_shares(seed, keys, &self.state, &self.cid)?;
+        let group = request::new_group_id();
+        let of = writes.len();
+        let title = request::fit_title(title);
+        let network = client.network().key();
+        for (seq, w) in writes.into_iter().enumerate() {
+            let mut intent = w.intent;
+            intent["signer"]["cid"] = json!(self.cid);
+            intent["signer"]["slot"] = json!(self.slot);
+            let note = Note {
+                group: group.clone(),
+                seq,
+                of,
+                title: title.clone(),
+            };
+            let body = json!({
+                "network": network,
+                "unsigned": hex::encode(&w.unsigned),
+                "signable": hex::encode(&w.signable),
+                "requirements": [{ "cid": self.cid, "slot": self.slot }],
+                "intent": intent,
+                "derived": { "documentId": w.document_id },
+                "note": note.to_json(),
+            });
+            let envelope = seal(keys, &self.record.room, "proposal", body, &now_iso())?;
+            self.post(envelope).await?;
+        }
+        let req = self.find(&group)?;
+        self.approve_all(seed, keys, &req).await?;
+        self.find(&group)
+    }
+
+    async fn approve_all(
+        &mut self,
+        seed: &Seed,
+        keys: &MemberKeys,
+        req: &Request,
+    ) -> Result<usize> {
+        let mut posted = 0;
+        for id in &req.proposals {
+            if self.state.proposals[id]
+                .approvals
+                .contains_key(&keys.auth_pub)
+            {
+                continue;
+            }
+            let envelope = member::approve(seed, keys, &self.state, id, &now_iso())?;
+            self.post(envelope).await?;
+            posted += 1;
+        }
+        Ok(posted)
+    }
+
+    /// Sign `req` after reviewing it; finish it when this signature completes it.
+    pub async fn sign(
+        &mut self,
+        client: &PlatformClient,
+        forge: &ForgeIds,
+        seed: &Seed,
+        keys: &MemberKeys,
+        req: &Request,
+    ) -> Result<Signed> {
+        self.bind(client).await?;
+        let problems: Vec<String> = self
+            .review(client, forge, req)
+            .await?
+            .into_iter()
+            .flat_map(|r| r.problems)
+            .collect();
+        if !problems.is_empty() {
+            return Err(refused("sign this request", &problems));
+        }
+        member::recover_shares(seed, keys, &self.state, &self.cid)?;
+        let posted = self.approve_all(seed, keys, req).await?;
+        let req = self.find(&req.id)?;
+        let finished = if request::status(&self.state, &req, None) == RequestStatus::Ready {
+            Some(self.finish(client, forge, keys, &req).await?)
+        } else {
+            None
+        };
+        Ok(Signed { posted, finished })
+    }
+
+    /// Decline every proposal of `req` this member has not declined.
+    pub async fn decline(
+        &mut self,
+        keys: &MemberKeys,
+        req: &Request,
+        reason: &str,
+    ) -> Result<usize> {
+        let mut posted = 0;
+        for id in &req.proposals {
+            if self.state.proposals[id]
+                .rejections
+                .contains_key(&keys.auth_pub)
+            {
+                continue;
+            }
+            let envelope = member::reject(keys, &self.record.room, id, reason, &now_iso())?;
+            self.post(envelope).await?;
+            posted += 1;
+        }
+        Ok(posted)
+    }
+
+    /// Combine, broadcast and confirm each ready proposal of `req` in order (§9 "Finishing").
+    pub async fn finish(
+        &mut self,
+        client: &PlatformClient,
+        forge: &ForgeIds,
+        keys: &MemberKeys,
+        req: &Request,
+    ) -> Result<Finished> {
+        self.bind(client).await?;
+        let network = client.network().key();
+        let mut broadcast = 0;
+        for id in &req.proposals {
+            let p = &self.state.proposals[id];
+            if p.status == ProposalStatus::Executed {
+                continue;
+            }
+            let reviewed = review::review_offline(&self.expect(&network, forge), p);
+            if !reviewed.ok() {
+                return Err(refused("broadcast this request", &reviewed.problems));
+            }
+            let d = reviewed.decoded.expect("reviewed");
+            if landed(client, &d).await? {
+                self.report(keys, id, json!({ "ok": true, "confirmed": true }))
+                    .await?;
+                continue;
+            }
+            if p.status != ProposalStatus::Ready {
+                return Ok(Finished {
+                    broadcast,
+                    done: false,
+                });
+            }
+            let current = client
+                .proved_contract_nonce(&self.record.org_id, &d.contract_id)
+                .await?;
+            if let Some(problem) = review::nonce_problem(&d, current) {
+                return Err(refused("broadcast this request", &[problem]));
+            }
+            let combined = member::combine(&self.state, id)?;
+            let sig = combined
+                .values()
+                .next()
+                .ok_or(OrgError::NotReady)?
+                .signature;
+            let signed =
+                attach_signature(&hex::decode(p.unsigned_hex()).unwrap_or_default(), &sig)?;
+            let outcome = client.broadcast_signed(&d.document_type, &signed).await;
+            let ok = match outcome {
+                Ok(BroadcastOutcome::Applied | BroadcastOutcome::AlreadyExists) => Ok(()),
+                Ok(BroadcastOutcome::NonceConsumed) => {
+                    if landed(client, &d).await? {
+                        Ok(())
+                    } else {
+                        Err(Error::Config(
+                            "another write by the organization used this request's nonce".into(),
+                        ))
+                    }
+                }
+                Err(e) => Err(e),
+            };
+            if let Err(e) = ok {
+                self.report(keys, id, json!({ "ok": false, "error": e.to_string() }))
+                    .await?;
+                return Err(e);
+            }
+            let confirmed = confirm(client, &d).await;
+            self.report(keys, id, json!({ "ok": true, "confirmed": confirmed }))
+                .await?;
+            broadcast += 1;
+        }
+        Ok(Finished {
+            broadcast,
+            done: true,
+        })
+    }
+
+    async fn report(&mut self, keys: &MemberKeys, proposal_id: &str, result: Value) -> Result<()> {
+        let envelope =
+            member::record_broadcast(keys, &self.record.room, proposal_id, result, &now_iso())?;
+        self.post(envelope).await
+    }
+}
+
+/// What signing did.
+#[derive(Debug, Clone, Copy)]
+pub struct Signed {
+    pub posted: usize,
+    pub finished: Option<Finished>,
+}
+
+/// What finishing did: proposals broadcast now, and whether the whole request is on Platform.
+#[derive(Debug, Clone, Copy)]
+pub struct Finished {
+    pub broadcast: usize,
+    pub done: bool,
+}
+
+async fn first_name(client: &PlatformClient, id: &str) -> String {
+    client
+        .dpns_names_of(id)
+        .await
+        .ok()
+        .and_then(|n| n.into_iter().next())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Whether the write `d` is visible on Platform: a create's or replace's document exists (at its
+/// revision), a delete's is gone and its nonce is spent.
+async fn landed(client: &PlatformClient, d: &DecodedWrite) -> Result<bool> {
+    let contract = client.fetch_contract(&d.contract_id).await?;
+    let doc = client
+        .fetch_document(&contract, &d.document_type, &d.document_id)
+        .await?;
+    Ok(match d.action.as_str() {
+        "create" => doc.is_some(),
+        "replace" => doc.is_some_and(|x| x.revision >= d.revision),
+        "delete" => {
+            doc.is_none()
+                && client
+                    .proved_contract_nonce(&d.owner_id, &d.contract_id)
+                    .await?
+                    >= d.nonce
+        }
+        _ => false,
+    })
+}
+
+async fn confirm(client: &PlatformClient, d: &DecodedWrite) -> bool {
+    for attempt in 1..=CONFIRM_ATTEMPTS {
+        if landed(client, d).await.unwrap_or(false) {
+            return true;
+        }
+        if attempt < CONFIRM_ATTEMPTS {
+            tokio::time::sleep(CONFIRM_DELAY).await;
+        }
+    }
+    false
+}

@@ -264,7 +264,7 @@ impl Step {
 }
 
 /// The `repo` document's properties.
-fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
+pub(crate) fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut p = BTreeMap::new();
     p.insert("name".into(), FieldValue::text(&opts.name));
     match opts.visibility {
@@ -290,6 +290,18 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     if let Some(parent) = opts.fork_of {
         p.insert("forkOf".into(), FieldValue::identifier(parent));
     }
+    p
+}
+
+/// The owner's own `maintainer` document: the owner enrols itself, so no `consentBy` (RC1
+/// `member_consent`).
+pub(crate) fn owner_maintainer_props(
+    scope: &crate::scope::DocScope,
+    owner: [u8; 32],
+    visibility: Visibility,
+) -> BTreeMap<String, FieldValue> {
+    let mut p = scope.props([("memberId", FieldValue::identifier(owner))]);
+    layout::stamp_vis(&mut p, visibility);
     p
 }
 
@@ -453,12 +465,7 @@ pub async fn create_repo(
                 .await?
                 .map(|m| m.document_id))
         },
-        || {
-            // The owner enrols itself: no `consentBy` (RC1 `member_consent`).
-            let mut p = scope.props([("memberId", FieldValue::identifier(owner_bytes))]);
-            layout::stamp_vis(&mut p, opts.visibility);
-            p
-        },
+        || owner_maintainer_props(&scope, owner_bytes, opts.visibility),
     )
     .await?;
     steps.push((Step::Maintainer.doc_type(), outcome));
@@ -634,7 +641,7 @@ fn protect_problem(opts: &CreateRepoOpts) -> Option<Error> {
 }
 
 /// `opts` with the name normalized to its slug, or why it cannot be created.
-fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
+pub(crate) fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
     crate::repo::check_default_branch(&opts.default_branch)?;
     // RC1 `repo_shape`: a fork is public (`forkIsPublic`).
     if opts.fork_of.is_some() && opts.visibility != Visibility::Public {
