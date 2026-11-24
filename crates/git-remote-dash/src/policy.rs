@@ -19,6 +19,7 @@
 use std::io::{BufRead as _, Write as _};
 
 use anyhow::{anyhow, bail, Result};
+use forge_core::network::Network;
 use forge_core::repo::credits_to_dash;
 use forge_core::storage::policy::{
     parse_cost_warn_threshold, parse_git_bool, pick_scoped, DEFAULT_COST_WARN_THRESHOLD_DASH,
@@ -474,7 +475,7 @@ pub fn check_affordable(
     est_credits: u64,
     balance: Option<u64>,
     budget_left: Option<u64>,
-    testnet: bool,
+    network: &Network,
     note: &str,
 ) -> std::result::Result<(), UserError> {
     if let Some(have) = balance.filter(|b| est_credits > *b) {
@@ -491,10 +492,10 @@ pub fn check_affordable(
         ))
         .fix(format!(
             "top up the identity from any Dash wallet at {} (`dg auth balance` shows the balance)",
-            forge_core::user_error::TOP_UP_URL
+            network.top_up_url()
         ));
-        let u = if testnet {
-            u.fix("on testnet: open the web app (https://forge.dashhq.org), click your balance (Top up credits), enter your 12 words, and pay the address it shows from the faucet at https://faucet.thepasta.org")
+        let u = if *network == Network::Testnet {
+            u.fix(format!("on testnet: open the web app ({}), click your balance (Top up credits), enter your 12 words, and pay the address it shows from the faucet at https://faucet.thepasta.org", network.web_origin()))
         } else {
             u
         };
@@ -796,37 +797,95 @@ mod tests {
         let dash1 = forge_core::cost::CREDITS_PER_DASH;
         let est = dash1 / 2;
         // Affordable on both counts, or nothing readable / no budget: proceed.
-        assert!(
-            check_affordable(est, Some(dash1), Some(dash1), false, NOTE_NOTHING_STORED).is_ok()
-        );
-        assert!(check_affordable(est, Some(est), Some(est), false, NOTE_NOTHING_STORED).is_ok());
-        assert!(check_affordable(est, None, None, false, NOTE_NOTHING_STORED).is_ok());
-        assert!(check_affordable(est, Some(dash1), None, true, NOTE_NOTHING_STORED).is_ok());
+        assert!(check_affordable(
+            est,
+            Some(dash1),
+            Some(dash1),
+            &Network::Mainnet,
+            NOTE_NOTHING_STORED
+        )
+        .is_ok());
+        assert!(check_affordable(
+            est,
+            Some(est),
+            Some(est),
+            &Network::Mainnet,
+            NOTE_NOTHING_STORED
+        )
+        .is_ok());
+        assert!(check_affordable(est, None, None, &Network::Mainnet, NOTE_NOTHING_STORED).is_ok());
+        assert!(check_affordable(
+            est,
+            Some(dash1),
+            None,
+            &Network::Testnet,
+            NOTE_NOTHING_STORED
+        )
+        .is_ok());
         // The balance is short: E401, with the top-up (and the faucet on testnet).
-        let u = check_affordable(est, Some(est - 1), Some(dash1), true, NOTE_NOTHING_STORED)
-            .unwrap_err();
+        let u = check_affordable(
+            est,
+            Some(est - 1),
+            Some(dash1),
+            &Network::Testnet,
+            NOTE_NOTHING_STORED,
+        )
+        .unwrap_err();
         assert!(u.render("dash: ", false).contains("upper bound"));
         assert_eq!((u.code, u.exit_code()), ("E401", 4));
         let text = u.render("dash: ", false);
         assert!(text.contains("estimated at 0.5000 DASH"), "{text}");
         assert!(text.contains("faucet.thepasta.org"), "{text}");
+        assert!(
+            text.contains("bridge.thepasta.org/?network=testnet"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(https://testnet-forge.dashhq.org)"),
+            "{text}"
+        );
         assert!(text.contains(NOTE_NOTHING_STORED), "{text}");
-        let mainnet = check_affordable(est, Some(0), None, false, NOTE_NOTHING_STORED).unwrap_err();
-        assert!(!mainnet.render("dash: ", false).contains("faucet"));
-        // The key's budget is short: E402, naming `dg auth keys add --budget`.
-        let u = check_affordable(est, Some(dash1), Some(est - 1), false, NOTE_NOTHING_STORED)
+        let mainnet = check_affordable(est, Some(0), None, &Network::Mainnet, NOTE_NOTHING_STORED)
             .unwrap_err();
+        let mainnet = mainnet.render("dash: ", false);
+        assert!(!mainnet.contains("faucet"), "{mainnet}");
+        assert!(
+            mainnet.contains("bridge.thepasta.org/?network=mainnet"),
+            "{mainnet}"
+        );
+        // The key's budget is short: E402, naming `dg auth keys add --budget`.
+        let u = check_affordable(
+            est,
+            Some(dash1),
+            Some(est - 1),
+            &Network::Mainnet,
+            NOTE_NOTHING_STORED,
+        )
+        .unwrap_err();
         assert_eq!(u.code, "E402");
         let text = u.render("dash: ", false);
         assert!(text.contains("dg auth keys add --budget 1"), "{text}");
         // Both short: the balance is the more basic problem.
-        let u = check_affordable(est, Some(0), Some(0), false, NOTE_NOTHING_STORED).unwrap_err();
+        let u = check_affordable(
+            est,
+            Some(0),
+            Some(0),
+            &Network::Mainnet,
+            NOTE_NOTHING_STORED,
+        )
+        .unwrap_err();
         assert_eq!(u.code, "E401");
         // A spent budget (Some(0)) refuses any paid push.
         assert_eq!(
-            check_affordable(1, Some(dash1), Some(0), false, NOTE_NOTHING_STORED)
-                .unwrap_err()
-                .code,
+            check_affordable(
+                1,
+                Some(dash1),
+                Some(0),
+                &Network::Mainnet,
+                NOTE_NOTHING_STORED
+            )
+            .unwrap_err()
+            .code,
             "E402"
         );
     }

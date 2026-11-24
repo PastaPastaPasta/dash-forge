@@ -85,6 +85,7 @@ fn main() {
             repo: goal.repo.as_deref(),
             retry_is_idempotent: goal.idempotent,
             via_git: true,
+            network: None,
         };
         let u = user_error::classify(err.chain(), &ctx);
         u.eprint("dash: ");
@@ -200,6 +201,7 @@ fn run(goal: &mut Goal) -> Result<()> {
     let in_clone = git::LocalRepo::is_clone_of(remote_name.as_deref(), url_arg);
     let rt = runtime()?;
     let mut helper = Helper::new(dash_url, remote_name, in_clone)?;
+    forge_core::user_error::set_network(helper.network());
     forge_core::fiat::initialize(helper.network(), None, forge_core::fiat::Mode::Ready);
     let stdin = io::stdin();
     let stdout = io::stdout();

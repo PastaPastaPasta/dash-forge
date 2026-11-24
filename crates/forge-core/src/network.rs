@@ -35,6 +35,13 @@ pub const ENV_QUORUM_URL: &str = "DASH_FORGE_QUORUM_URL";
 /// The DAPI port assumed when an address omits one (the Platform HTTPS gateway).
 pub const DEFAULT_DAPI_PORT: u16 = 1443;
 
+/// The web app's origin on mainnet, and on a devnet (which has no web app of its own).
+pub const MAINNET_WEB_ORIGIN: &str = "https://forge.dashhq.org";
+/// The web app's origin on testnet.
+pub const TESTNET_WEB_ORIGIN: &str = "https://testnet-forge.dashhq.org";
+/// The bridge that tops up an identity's credits from any Dash wallet.
+pub const TOP_UP_BRIDGE: &str = "https://bridge.thepasta.org";
+
 /// The network a client is bound to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -83,6 +90,26 @@ impl Network {
         match self {
             Network::Devnet { name, .. } => Some(name),
             _ => None,
+        }
+    }
+
+    /// The origin of the web app that reads this network (repo links, the CORS origin a
+    /// storage bucket must allow). A devnet has no web app of its own: it gets mainnet's.
+    pub fn web_origin(&self) -> &'static str {
+        match self {
+            Network::Testnet => TESTNET_WEB_ORIGIN,
+            Network::Mainnet | Network::Devnet { .. } => MAINNET_WEB_ORIGIN,
+        }
+    }
+
+    /// Where to top up an identity's credits on this network: the bridge, opened on the
+    /// network (`?network=`). A devnet gets the bare bridge, which has no devnet mode.
+    pub fn top_up_url(&self) -> String {
+        match self {
+            Network::Testnet | Network::Mainnet => {
+                format!("{TOP_UP_BRIDGE}/?network={}", self.kind())
+            }
+            Network::Devnet { .. } => TOP_UP_BRIDGE.to_string(),
         }
     }
 
@@ -989,6 +1016,26 @@ impl NetworkSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_origin_and_top_up_follow_the_network() {
+        let devnet = Network::from_key("devnet-moutai");
+        assert_eq!(Network::Mainnet.web_origin(), "https://forge.dashhq.org");
+        assert_eq!(
+            Network::Testnet.web_origin(),
+            "https://testnet-forge.dashhq.org"
+        );
+        assert_eq!(devnet.web_origin(), "https://forge.dashhq.org");
+        assert_eq!(
+            Network::Mainnet.top_up_url(),
+            "https://bridge.thepasta.org/?network=mainnet"
+        );
+        assert_eq!(
+            Network::Testnet.top_up_url(),
+            "https://bridge.thepasta.org/?network=testnet"
+        );
+        assert_eq!(devnet.top_up_url(), "https://bridge.thepasta.org");
+    }
 
     /// moutai's forge-v2 ids as read straight from the file on disk: proves the embedded copy
     /// is the committed file, without restating the ids here.

@@ -275,7 +275,13 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
                 .spawn()?,
         )
     };
-    let verified = Box::pin(verify(&node, &tokens, !ctx.json)).await;
+    let verified = Box::pin(verify(
+        &node,
+        &tokens,
+        !ctx.json,
+        ctx.network().web_origin(),
+    ))
+    .await;
     if let Some(child) = temporary.as_mut() {
         let stopped = serve::stop(&node).await;
         if stopped.is_ok()
@@ -385,7 +391,12 @@ async fn check_public_ports(node: &Node) -> Result<()> {
     Ok(())
 }
 
-async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, String)> {
+async fn verify(
+    node: &Node,
+    tokens: &Tokens,
+    live: bool,
+    origin: &'static str,
+) -> Result<(String, String)> {
     let http = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -418,6 +429,7 @@ async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, Str
         &profile(node, None)?,
         live,
         Some(&format!("Bearer {}", tokens.forge)),
+        origin,
     )
     .await;
     if !report.ok() {

@@ -514,8 +514,9 @@ pub struct Added {
     pub broken: bool,
 }
 
-/// Run the prompts, store a pasted secret, save the profile and test it.
-pub async fn run(p: &mut dyn Prompter) -> Result<Added> {
+/// Run the prompts, store a pasted secret, save the profile and test it (the CORS checks from
+/// the web app at `origin`).
+pub async fn run(p: &mut dyn Prompter, origin: &'static str) -> Result<Added> {
     let path = StorageProfiles::default_path()?;
     let existing: Vec<String> = StorageProfiles::load_from(&path)?
         .profiles
@@ -536,7 +537,7 @@ pub async fn run(p: &mut dyn Prompter) -> Result<Added> {
     let (profile, path, _) = crate::storage::save_profile(&name, &args)?;
 
     println!("Testing {name} …");
-    let report = crate::storage::run_checks(&profile, true).await;
+    let report = crate::storage::run_checks(&profile, true, origin).await;
     for fix in &report.fixes {
         println!("  → {}", fix.replace('\n', "\n    "));
         println!("    then run `dg storage test {name}`");
