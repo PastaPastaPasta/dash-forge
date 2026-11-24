@@ -1,7 +1,7 @@
 //! `dg auth login --wallet`: sign in with a DashPay wallet over App Connect v2
 //! (`docs/design/wallet-primary.md` item 8).
 //!
-//! dg prints Forge's request as a QR code and a `dash-key:` link, the wallet adds one limited
+//! dg prints Forge's request as a QR code and a `dashpay://connect` link, the wallet adds one limited
 //! key to the user's identity (AUTHENTICATION / HIGH, bound to the dash-forge contract group,
 //! with a budget and an expiry) and publishes it encrypted to the request's one-time key, and
 //! dg reads the answer from Platform ([`forge_core::app_connect`]). No Forge server is involved,
@@ -746,7 +746,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let spec = LimitedKeySpec {
         budget_credits: grant.total_budget,
         expires_at_ms: grant.expires_at_ms,
-        group: forge.group.clone(),
+        bounds: forge_core::platform::identity::LimitedBounds::Group(forge.group.clone()),
     };
     let identity = verify_grant(&client, ctx, &grant, &spec, renewing).await?;
     let names = client
@@ -1075,7 +1075,7 @@ mod tests {
         }
         fn show(&self, req: &LoginRequest) {
             let mut n = self.shown.lock().unwrap();
-            assert!(req.uri().starts_with("dash-key:") && req.uri().ends_with("&v=2"));
+            assert!(req.uri().starts_with("dashpay://connect?v=2&n="));
             self.world.shown.lock().unwrap().push(req.request().clone());
             (self.answer)(self.world, req.request(), *n);
             *n += 1;
@@ -1634,9 +1634,9 @@ mod tests {
 
     #[test]
     fn the_code_screen_has_the_qr_the_link_and_the_warning() {
-        let text = request_text("dash-key:abc?n=t&v=2", "testnet");
+        let text = request_text("dashpay://connect?v=2&n=t&r=abc", "testnet");
         assert!(text.contains('█') || text.contains('▀') || text.contains('▄'));
-        assert!(text.contains("  dash-key:abc?n=t&v=2\n"));
+        assert!(text.contains("  dashpay://connect?v=2&n=t&r=abc\n"));
         assert!(text.contains("Scan only a code dg printed on this computer"));
         assert!(text.contains("More → Tools → Connections → Scan QR"));
         assert_eq!(clock(600_000), "10:00");

@@ -221,7 +221,8 @@ cmd('auth name register', 'A DPNS name registered for the identity.', {
     'status': E('registered'), 'name': S, 'identityId': S, 'cost': COST,
 }, ['status', 'name', 'identityId'])
 cmd('auth export', 'The identity file written.', {
-    'status': E('exported'), 'path': S, 'identityId': S, 'keyId': nl(I), 'encrypted': B, 'format': S, 'network': S, **GROUP,
+    'status': E('exported'), 'path': S, 'identityId': S, 'keyId': nl(I), 'encrypted': B, 'format': S, 'network': S,
+    'scope': E('group', 'core'), 'group': S, 'boundContract': S, **GROUP,
 }, ['status', 'path', 'identityId'])
 cmd('auth logout', 'Signed out on this computer.', {
     'status': E('logged_out'), 'identityId': S, 'removed': ANY, 'disabledKeyId': nl(I),

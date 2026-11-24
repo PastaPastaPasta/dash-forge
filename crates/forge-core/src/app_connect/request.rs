@@ -3,7 +3,7 @@
 //! ```text
 //! body = 0x02 ‖ appEphPub(33) ‖ appId(32) ‖ labelLen(1) ‖ label ‖ TLV*
 //! TLV  = type(1) ‖ len(1) ‖ value
-//! uri  = dash-key:<base58(body)>?n=<m|t|d>&v=2
+//! uri  = dashpay://connect?v=2&n=<m|t|d>&r=<base64url(body)>
 //! ```
 //!
 //! Even TLV types must be understood (a decoder refuses unknown ones); odd types are optional
@@ -11,7 +11,7 @@
 //! ENC_BINDING repeat, so every request has exactly one encoding. The `cb` callback parameter
 //! is left out: a terminal has no page for the wallet to return to.
 
-use super::{encode_base58, hash160, level, purpose, Id, KeyBounds};
+use super::{hash160, level, purpose, Id, KeyBounds};
 use crate::network::Network;
 
 /// The request version this module speaks.
@@ -580,12 +580,15 @@ pub fn network_id(network: &Network) -> char {
     }
 }
 
-/// The `dash-key:<base58(body)>?n=<m|t|d>&v=2` link a wallet scans (no `cb`).
+/// The `dashpay://connect?v=2&n=<m|t|d>&r=<base64url(body)>` link a wallet scans (no `cb`):
+/// the App Connect DIP carrier (dashpay/dips#181), which wallets require on mainnet. The
+/// web app builds the same (`buildAppConnectUri` in `request.ts`).
 pub fn build_uri(request: &Request, network: &Network) -> Result<String, RequestError> {
+    use base64::Engine as _;
     Ok(format!(
-        "dash-key:{}?n={}&v={REQUEST_VERSION}",
-        encode_base58(&encode(request)?),
-        network_id(network)
+        "dashpay://connect?v={REQUEST_VERSION}&n={}&r={}",
+        network_id(network),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(encode(request)?)
     ))
 }
 
@@ -658,21 +661,31 @@ mod tests {
 
     #[test]
     fn builds_the_vector_uris() {
+        use base64::Engine as _;
         let v = vectors();
-        // The renewal's URI carries no callback, so it is reproduced exactly.
+        // The renewal's request, in the DIP carrier instead of the vector's transitional
+        // `dash-key:` one: the same body, base64url.
         assert_eq!(
             build_uri(&renew_request(), &Network::Testnet).unwrap(),
-            v["renewRequest"]["uri"].as_str().unwrap()
+            format!(
+                "dashpay://connect?v=2&n=t&r={}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(hex(&v["renewRequest"]["bytes"]))
+            )
         );
-        // The login's URI adds `&cb=…` (a web app's), which this side never builds.
+        // DashWalletTests/DashConnect/DashConnectUriTests.swift (dashwallet-ios v9.1.4): the
+        // DIP's request vector, which adds `&cb=…` (a web app's), never built here.
         let devnet = Network::Devnet {
             name: "x".into(),
             dapi_addresses: vec![],
             quorum_base_url: None,
         };
+        let wallet = "dashpay://connect?v=2&n=d&r=AgPoPLkn6F-WrlCpXKO-Icx6N1UTmpQbFdmbAa9P7PDScPiDPHotWKuBbCSukV_iqpRnZYi0Z7oenyskwaPff9t4BVlhcHByAjICAbBZDlkmnGiFrPcdJ9386FGH4syXNsQulYEnzTW-bTjoAAAAC6Q7dAAAAAGi9760AAI6AQKiobSsb-8i6ioaaOgSNkSzV4dfa0EsGBCSgcFG57JxvAAAAAA7msoAAAABove-tAAHcHJvZmlsZQMQppsbT2ZmgUU97Dc0ZnpasgQh-IM8ei1Yq4FsJK6RX-KqlGdliLRnuh6fKyTBo99_23gBBggAAAGhKEJcAA&cb=https%3A%2F%2Fyap.pr%2Fconnect%3Fr%3Dd77dc0da9df83a47755a15c42c5d9db9d7a7fd62";
         let ours = build_uri(&yappr_request(), &devnet).unwrap();
-        let theirs = v["request"]["uri"].as_str().unwrap();
-        assert_eq!(theirs.split_once("&cb=").unwrap().0, ours);
+        assert_eq!(wallet.split_once("&cb=").unwrap().0, ours);
+        assert!(build_uri(&yappr_request(), &Network::Mainnet)
+            .unwrap()
+            .starts_with("dashpay://connect?v=2&n=m&r="));
     }
 
     #[test]

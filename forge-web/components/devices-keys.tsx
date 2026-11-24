@@ -6,6 +6,7 @@
  * browser's storage is kept (TS-17).
  */
 
+import { PhraseAdvanced, phraseIsAdvanced } from '@/components/auth/phrase-advanced'
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, HardDrive, KeyRound, LifeBuoy, Pencil, ShieldOff } from 'lucide-react'
@@ -39,6 +40,10 @@ export function DevicesKeys(): JSX.Element {
   const [labels, setLabels] = useState<Record<number, string>>({})
   const [disabling, setDisabling] = useState<KeyRow | null>(null)
   const [disablingOthers, setDisablingOthers] = useState(false)
+  // Mainnet: disabling a key needs the master key, so the buttons show only once asked for.
+  // Opened at once when the page was reached to disable a key (the new-key alert, a scan warning).
+  const [arrivedToDisable] = useState(() => typeof window !== 'undefined' && window.location.hash === '#disable')
+  const [masterActions, setMasterActions] = useState(!phraseIsAdvanced() || arrivedToDisable)
   const load = useCallback(() => {
     setError(null)
     controller.identityKeys().then(setRows, (e: unknown) => setError(errorMessage(e)))
@@ -65,25 +70,34 @@ export function DevicesKeys(): JSX.Element {
               label={labels[r.keyId] ?? ''}
               fresh={isNew(r.keyId)}
               onLabel={(text) => setLabels(writeKeyLabel(ACTIVE_NETWORK.network, identity, r.keyId, text))}
-              onDisable={() => setDisabling(r)}
+              onDisable={masterActions ? () => setDisabling(r) : null}
             />
           ))}
         </ul>
       ) : null}
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Labels stay in this browser. Platform doesn&apos;t record when a key was last used: a budget that went down was used, and this browser&apos;s last
-        write is below.
-      </p>
-      {others.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="disable-others">
-          <Button size="sm" variant="danger" onClick={() => setDisablingOthers(true)} data-testid="keys-disable-others">
-            <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable all other keys
-          </Button>
-          <span className="text-[12px] text-anvil-600 dark:text-anvil-300">
-            Disables {others.length === 1 ? 'the 1 signing key' : `the ${others.length} signing keys`} other than this browser&apos;s, wallet sign-ins and other apps&apos; keys included. Use it if Forge tells you to revoke keys.
-          </span>
-        </div>
+      {phraseIsAdvanced() ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="keys-wallet-hint">
+          To disconnect a wallet sign-in, use Connections in DashPay or Dash Wallet. Any other key needs your recovery phrase or identity file to disable.
+        </p>
       ) : null}
+      <PhraseAdvanced
+        label="Disable keys (needs your recovery phrase or identity file)"
+        testId="keys-master-actions"
+        onToggle={setMasterActions}
+        defaultOpen={arrivedToDisable || newKeys.length > 0}
+      >
+        {others.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="disable-others">
+            <Button size="sm" variant="danger" onClick={() => setDisablingOthers(true)} data-testid="keys-disable-others">
+              <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable all other keys
+            </Button>
+            <span className="text-[12px] text-anvil-600 dark:text-anvil-300">
+              Disables {others.length === 1 ? 'the 1 signing key' : `the ${others.length} signing keys`} other than this browser&apos;s, wallet sign-ins and other apps&apos; keys included.
+            </span>
+          </div>
+        ) : null}
+        {phraseIsAdvanced() ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Each key above now has a Disable button.</p> : null}
+      </PhraseAdvanced>
       <PasskeysSection />
       <LostDevice />
       <ThisBrowser identity={identity} />
@@ -124,7 +138,8 @@ function KeyRowItem({
   label: string
   fresh: boolean
   onLabel: (text: string) => void
-  onDisable: () => void
+  /** Null while disabling is not on offer (mainnet, until asked for). */
+  onDisable: (() => void) | null
 }): JSX.Element {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(label)
@@ -181,7 +196,7 @@ function KeyRowItem({
           {row.expiresAt !== null ? `${expired ? 'expired' : 'expires'} ${formatDate(row.expiresAt)}` : 'never expires'}
         </p>
       ) : null}
-      {!disabled ? (
+      {!disabled && onDisable !== null ? (
         refusal === null ? (
           <Button size="sm" variant="outline" onClick={onDisable} data-testid="key-disable">
             <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable
@@ -361,7 +376,7 @@ function LostDevice(): JSX.Element {
         <LifeBuoy className="h-4 w-4" aria-hidden /> Lost a device?
       </h2>
       <ol className="list-decimal space-y-1.5 pl-5 text-anvil-700 dark:text-anvil-200">
-        <li>Disable its key above. It can no longer write as you.</li>
+        <li>{phraseIsAdvanced() ? 'Disable its key above, under “Disable keys”.' : 'Disable its key above.'} It can no longer write as you.</li>
         <li>
           If it could open your private repos, it also held your encryption key. Replace that key in a terminal, with your recovery phrase:{' '}
           <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 font-mono text-anvil-800 dark:bg-anvil-800 dark:text-anvil-100">
@@ -427,7 +442,7 @@ function ThisBrowser({ identity }: { identity: string }): JSX.Element {
           <Button size="sm" variant="outline" onClick={() => void requestPersistence().then(setPersistence)} data-testid="storage-persist">
             Ask the browser to keep it
           </Button>
-          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">If it is cleared, sign in again with dg, your identity file or your recovery phrase.</span>
+          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{phraseIsAdvanced() ? 'If it is cleared, sign in again with your wallet.' : 'If it is cleared, sign in again with dg, your identity file or your recovery phrase.'}</span>
         </div>
       ) : null}
     </section>

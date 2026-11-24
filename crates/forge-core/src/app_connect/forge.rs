@@ -135,7 +135,7 @@ impl LoginRequest {
         &self.request
     }
 
-    /// The `dash-key:` link to show as a QR code and as text.
+    /// The `dashpay://connect` link to show as a QR code and as text.
     pub fn uri(&self) -> &str {
         &self.uri
     }
@@ -642,8 +642,7 @@ mod tests {
         assert_eq!(r.mode, None);
         assert_eq!(r.created_at_ms, T0);
         assert_eq!(req.expires_at_ms(), T0 + 600_000);
-        assert!(req.uri().starts_with("dash-key:"));
-        assert!(req.uri().ends_with("?n=t&v=2"));
+        assert!(req.uri().starts_with("dashpay://connect?v=2&n=t&r="));
         assert_eq!(*req.request_hash(), hash160(&r.app_ephemeral_pub_key));
         assert_eq!(request::decode(&request::encode(r).unwrap()).unwrap(), *r);
         assert!(!format!("{req:?}").contains(&hex::encode(seed("forge app ephemeral"))));

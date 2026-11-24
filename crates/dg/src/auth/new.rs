@@ -42,8 +42,8 @@ use forge_core::user_error::{codes, UserError};
 
 use super::group::GroupCheck;
 use super::{
-    check_group, dash_amount, expiry_text, key_spec, read_mnemonic, register_and_store, store,
-    KeyLimitArgs, StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
+    dash_amount, expiry_text, key_spec, read_mnemonic, register_and_store, store, KeyLimitArgs,
+    StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
 };
 use crate::context::Ctx;
 use crate::fmt::credits_to_dash;
@@ -845,7 +845,7 @@ async fn register(
         let stored_source = forge_core::keystore::keychain_source(&network, identity_id);
         if let Ok(b) = BridgeIdentity::load_from_file(&stored_source) {
             if identity.signing_key_id(&b, ctx.network()) == Some(FIRST_LIMITED_KEY_ID)
-                && identity.is_limited_key(FIRST_LIMITED_KEY_ID)
+                && identity.is_limited_key(FIRST_LIMITED_KEY_ID, super::forge_core_id(ctx))
             {
                 return Ok((
                     FIRST_LIMITED_KEY_ID,
@@ -857,7 +857,7 @@ async fn register(
             }
         }
         let replace = identity
-            .is_limited_key(FIRST_LIMITED_KEY_ID)
+            .is_limited_key(FIRST_LIMITED_KEY_ID, super::forge_core_id(ctx))
             .then_some(FIRST_LIMITED_KEY_ID);
         let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &[&master]);
         let (id, stored) = register_and_store(
@@ -949,7 +949,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
         }
     }
     let client = ctx.connect().await?;
-    let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+    let checked = super::check_key_group(ctx, &client, &spec, &args.limits).await?;
     checked.print_notice(ctx, "");
 
     let backup_pass = backup_passphrase(args)?;

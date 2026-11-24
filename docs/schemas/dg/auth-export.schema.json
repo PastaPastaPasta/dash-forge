@@ -35,6 +35,19 @@
     "network": {
       "type": "string"
     },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "group",
+        "core"
+      ]
+    },
+    "group": {
+      "type": "string"
+    },
+    "boundContract": {
+      "type": "string"
+    },
     "unknownGroupMembers": {
       "type": "array",
       "items": {
