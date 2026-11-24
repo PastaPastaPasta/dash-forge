@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::address_funds::AddressWitness;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::{Document, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -109,8 +110,13 @@ impl<'a> OrgWriter<'a> {
             .await
     }
 
-    fn build(&self, contract: &LoadedContract) -> (Arc<DataContract>, &'static PlatformVersion) {
-        (self.client.current(contract), self.client.sdk().version())
+    fn build(&self, contract: &LoadedContract) -> Build<'_> {
+        Build {
+            dc: self.client.current(contract),
+            owner: self.owner,
+            key: &self.key,
+            version: self.client.sdk().version(),
+        }
     }
 
     /// An unsigned create of a `document_type` document with `properties`, at `nonce`.
@@ -123,14 +129,9 @@ impl<'a> OrgWriter<'a> {
     ) -> Result<UnsignedWrite> {
         let mut entropy = [0u8; 32];
         getrandom::getrandom(&mut entropy).map_err(|e| Error::Platform(e.to_string()))?;
-        let (dc, version) = self.build(contract);
-        let b = Build {
-            dc: &dc,
-            owner: self.owner,
-            key: &self.key,
-            version,
-        };
-        b.create(document_type, properties, nonce, entropy).await
+        self.build(contract)
+            .create(document_type, properties, nonce, entropy)
+            .await
     }
 
     /// An unsigned delete of the stored `document_type` document `document_id`, at `nonce`.
@@ -141,14 +142,9 @@ impl<'a> OrgWriter<'a> {
         document_id: &str,
         nonce: u64,
     ) -> Result<UnsignedWrite> {
-        let (dc, version) = self.build(contract);
-        let b = Build {
-            dc: &dc,
-            owner: self.owner,
-            key: &self.key,
-            version,
-        };
-        b.delete(document_type, document_id, nonce).await
+        self.build(contract)
+            .delete(document_type, document_id, nonce)
+            .await
     }
 
     /// An unsigned replace of the stored `document_type` document `document_id`, which is at
@@ -162,33 +158,33 @@ impl<'a> OrgWriter<'a> {
         properties: BTreeMap<String, FieldValue>,
         nonce: u64,
     ) -> Result<UnsignedWrite> {
-        let (dc, version) = self.build(contract);
-        let b = Build {
-            dc: &dc,
-            owner: self.owner,
-            key: &self.key,
-            version,
-        };
-        b.replace(
-            document_type,
-            document_id,
-            stored_revision,
-            properties,
-            nonce,
-        )
-        .await
+        self.build(contract)
+            .replace(
+                document_type,
+                document_id,
+                stored_revision,
+                properties,
+                nonce,
+            )
+            .await
     }
 }
 
 /// Building one unsigned write: no network involved.
 struct Build<'a> {
-    dc: &'a DataContract,
+    dc: Arc<DataContract>,
     owner: Identifier,
     key: &'a IdentityPublicKey,
     version: &'a PlatformVersion,
 }
 
 impl Build<'_> {
+    fn doc_type(&self, name: &str) -> Result<DocumentTypeRef<'_>> {
+        self.dc
+            .document_type_for_name(name)
+            .map_err(|e| Error::Config(format!("unknown document type '{name}': {e}")))
+    }
+
     async fn create(
         &self,
         document_type: &str,
@@ -196,10 +192,7 @@ impl Build<'_> {
         nonce: u64,
         entropy: [u8; 32],
     ) -> Result<UnsignedWrite> {
-        let doc_type = self
-            .dc
-            .document_type_for_name(document_type)
-            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
+        let doc_type = self.doc_type(document_type)?;
         let id = Document::generate_document_id(
             &self.dc.id(),
             &self.owner,
@@ -239,10 +232,7 @@ impl Build<'_> {
         document_id: &str,
         nonce: u64,
     ) -> Result<UnsignedWrite> {
-        let doc_type = self
-            .dc
-            .document_type_for_name(document_type)
-            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
+        let doc_type = self.doc_type(document_type)?;
         let id = parse_id(document_id, "document id")?;
         let document = client_document(id, self.owner, BTreeMap::new(), None);
         let st = BatchTransition::new_document_deletion_transition_from_document(
@@ -274,10 +264,7 @@ impl Build<'_> {
         properties: BTreeMap<String, FieldValue>,
         nonce: u64,
     ) -> Result<UnsignedWrite> {
-        let doc_type = self
-            .dc
-            .document_type_for_name(document_type)
-            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
+        let doc_type = self.doc_type(document_type)?;
         let id = parse_id(document_id, "document id")?;
         let next = stored_revision
             .checked_add(1)
@@ -604,7 +591,7 @@ mod tests {
         let core = rc1::loaded(ForgeContract::Core);
         let key = key();
         Build {
-            dc: &core.0,
+            dc: core.0.clone(),
             owner: Identifier::from(owner),
             key: &key,
             version: version(),
@@ -749,7 +736,7 @@ mod tests {
         let key = key();
         let id = encode_identifier([6u8; 32]);
         let w = Build {
-            dc: &core.0,
+            dc: core.0.clone(),
             owner: Identifier::from(ORG),
             key: &key,
             version: version(),

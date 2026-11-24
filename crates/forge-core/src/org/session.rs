@@ -23,7 +23,10 @@ const CONFIRM_ATTEMPTS: usize = 8;
 const CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
 fn refused(what: &str, problems: &[String]) -> Error {
-    Error::Config(format!("Forge won't {what}: {}", problems.join("; ")))
+    Error::Config(format!(
+        "Forge won't {what}: {}",
+        super::one_line(&problems.join("; "))
+    ))
 }
 
 /// The organization a member's group controls, as a local record (§9 "Which identity a group
@@ -53,14 +56,10 @@ pub async fn connect(
     if mine.is_empty() {
         return Err(OrgError::NotAMember.into());
     }
-    if let Some(other) = mine
-        .iter()
-        .map(|c| c.config.network.as_str())
-        .find(|n| *n != network)
-        .filter(|_| mine.iter().all(|c| c.config.network != network))
-    {
+    if mine.iter().all(|c| c.config.network != network) {
         return Err(Error::Config(format!(
-            "this group's organization is on {other}, not {network}"
+            "this group's organization is on {}, not {network}",
+            mine[0].config.network
         )));
     }
     for c in mine {
@@ -192,6 +191,11 @@ impl Org {
         }
     }
 
+    /// `(collected, threshold)` for `req`.
+    pub fn progress(&self, req: &Request) -> (usize, usize) {
+        (request::collected(&self.state, req).0, self.threshold())
+    }
+
     pub fn threshold(&self) -> usize {
         self.state
             .ceremonies
@@ -216,12 +220,8 @@ impl Org {
     /// Whether every proposal of `req` writes as this organization (checked offline).
     pub fn writes_as_org(&self, req: &Request) -> bool {
         req.proposals.iter().all(|id| {
-            self.state.proposals.get(id).is_some_and(|p| {
-                hex::decode(p.unsigned_hex())
-                    .ok()
-                    .and_then(|b| decode_unsigned(&b).ok())
-                    .is_some_and(|d| d.owner_id == self.record.org_id)
-            })
+            self.decoded(id)
+                .is_some_and(|d| d.owner_id == self.record.org_id)
         })
     }
 
@@ -239,10 +239,7 @@ impl Org {
     pub fn open_nonces(&self) -> BTreeMap<String, u64> {
         let mut out: BTreeMap<String, u64> = BTreeMap::new();
         for r in self.requests() {
-            if !matches!(
-                request::status(&self.state, &r, None),
-                RequestStatus::Collecting | RequestStatus::Ready
-            ) {
+            if !request::status(&self.state, &r, None).is_open() {
                 continue;
             }
             for d in r.proposals.iter().filter_map(|id| self.decoded(id)) {
@@ -529,6 +526,11 @@ impl Org {
                 .proved_contract_nonce(&self.record.org_id, &d.contract_id)
                 .await?;
             if let Some(problem) = review::nonce_problem(&d, current) {
+                if landed(client, &d).await? {
+                    self.report(keys, id, json!({ "ok": true, "confirmed": true }))
+                        .await?;
+                    continue;
+                }
                 return Err(refused("broadcast this request", &[problem]));
             }
             let combined = member::combine(&self.state, id)?;
@@ -590,7 +592,7 @@ pub struct Finished {
     pub done: bool,
 }
 
-async fn first_name(client: &PlatformClient, id: &str) -> String {
+pub async fn first_name(client: &PlatformClient, id: &str) -> String {
     client
         .dpns_names_of(id)
         .await

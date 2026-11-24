@@ -275,7 +275,7 @@ async fn connect(ctx: &Ctx, group: &str, relay: Option<&str>, phrase: &PhraseArg
         || {
             println!(
                 "Connected {} ({} of {}): {}",
-                record.label,
+                line(&record.label),
                 record.threshold,
                 record.members.len(),
                 record.org_id
@@ -291,7 +291,7 @@ async fn connect(ctx: &Ctx, group: &str, relay: Option<&str>, phrase: &PhraseArg
                     }
                 })
                 .collect();
-            println!("Members: {}", names.join(", "));
+            println!("Members: {}", line(&names.join(", ")));
             println!("`dg org requests` shows what waits for your signature.");
         },
     );
@@ -309,7 +309,7 @@ fn list(ctx: &Ctx) {
             for r in &orgs {
                 println!(
                     "{}  {} of {}  {}",
-                    r.label,
+                    line(&r.label),
                     r.threshold,
                     r.members.len(),
                     r.org_id
@@ -333,12 +333,12 @@ struct Row {
 impl Row {
     async fn of(org: &Org, client: Option<&PlatformClient>, req: Request) -> Self {
         let mut status = request::status(&org.state, &req, None);
-        if let (Some(client), RequestStatus::Collecting | RequestStatus::Ready) = (client, status) {
+        if let (Some(client), true) = (client, status.is_open()) {
             if let Ok(view) = org.chain_view(client, &req).await {
                 status = request::status(&org.state, &req, Some(&view));
             }
         }
-        let (collected, _) = request::collected(&org.state, &req);
+        let (collected, threshold) = org.progress(&req);
         let me = &org.record.auth_pub;
         Self {
             signed: request::approved_by(&org.state, &req, me),
@@ -346,7 +346,7 @@ impl Row {
             org: org.record.clone(),
             status,
             collected,
-            threshold: org.threshold(),
+            threshold,
             request: req,
         }
     }
@@ -375,10 +375,7 @@ impl Row {
     }
 
     fn open(&self) -> bool {
-        matches!(
-            self.status,
-            RequestStatus::Collecting | RequestStatus::Ready
-        )
+        self.status.is_open()
     }
 
     fn waits_for_you(&self) -> bool {
@@ -429,13 +426,18 @@ async fn requests(ctx: &Ctx, which: Option<&str>) -> Result<()> {
                 if r.org.org_id != last_org {
                     println!(
                         "{} ({} of {})",
-                        r.org.label,
+                        line(&r.org.label),
                         r.org.threshold,
                         r.org.members.len()
                     );
                     last_org.clone_from(&r.org.org_id);
                 }
-                println!("  {}  {}  {}", r.request.id, r.title(), r.state_text());
+                println!(
+                    "  {}  {}  {}",
+                    r.request.id,
+                    line(r.title()),
+                    r.state_text()
+                );
             }
             if let Some(r) = open.iter().find(|r| r.waits_for_you()) {
                 println!(
@@ -482,8 +484,9 @@ async fn find_request(ctx: &Ctx, id: &str) -> Result<(Org, Request)> {
 }
 
 async fn show(ctx: &Ctx, id: &str) -> Result<()> {
-    let (org, req) = find_request(ctx, id).await?;
+    let (mut org, req) = find_request(ctx, id).await?;
     let client = ctx.connect().await?;
+    org.bind(&client).await?;
     let forge = ctx.target.require_v2()?.clone();
     let row = Row::of(&org, Some(&client), req.clone()).await;
     let described = org.describe(&client, &req).await;
@@ -494,9 +497,15 @@ async fn show(ctx: &Ctx, id: &str) -> Result<()> {
     let mut declined: Vec<(String, String)> = Vec::new();
     for pid in &req.proposals {
         let p = &org.state.proposals[pid];
-        for a in p.approvers() {
-            if !signers.contains(&name(a)) {
-                signers.push(name(a));
+        for idx in p.requirements.iter().flat_map(|r| r.shares.keys()) {
+            let who = org
+                .record
+                .members
+                .iter()
+                .find(|m| m.index == *idx)
+                .map_or_else(|| format!("member {idx}"), |m| m.name.clone());
+            if !signers.contains(&who) {
+                signers.push(who);
             }
         }
         for (a, r) in &p.rejections {
@@ -522,28 +531,28 @@ async fn show(ctx: &Ctx, id: &str) -> Result<()> {
     value["problems"] = json!(problems);
     value["next"] = json!(next);
     ctx.emit(value, || {
-        println!("{}", row.title());
+        println!("{}", line(row.title()));
         println!(
             "{} · request {} · {}",
-            org.record.label,
+            line(&org.record.label),
             req.id,
             row.state_text()
         );
         for (i, d) in described.iter().enumerate() {
-            println!("  {}. {d}", i + 1);
+            println!("  {}. {}", i + 1, line(d));
         }
         if !signers.is_empty() {
-            println!("Signed by: {}", signers.join(", "));
+            println!("Signed by: {}", line(&signers.join(", ")));
         }
         for (by, reason) in &declined {
             if reason.is_empty() {
-                println!("Declined by: {by}");
+                println!("Declined by: {}", line(by));
             } else {
-                println!("Declined by: {by} ({reason})");
+                println!("Declined by: {} ({})", line(by), line(reason));
             }
         }
         if !problems.is_empty() && row.open() {
-            println!("Forge won't sign it: {}", problems.join("; "));
+            println!("Forge won't sign it: {}", line(&problems.join("; ")));
         }
         if let Some(n) = &next {
             println!("Next: {n}");
@@ -559,8 +568,7 @@ async fn sign(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
     let forge = ctx.target.require_v2()?.clone();
     let signed = org.sign(&client, &forge, &seed, &keys, &req).await?;
     let req = org.find(&req.id)?;
-    let (collected, _) = request::collected(&org.state, &req);
-    let threshold = org.threshold();
+    let (collected, threshold) = org.progress(&req);
     let done = signed.finished.is_some_and(|f| f.done);
     let status = if done {
         "done"
@@ -612,8 +620,7 @@ async fn finish(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
     let forge = ctx.target.require_v2()?.clone();
     let finished = org.finish(&client, &forge, &keys, &req).await?;
     let req = org.find(&req.id)?;
-    let (collected, _) = request::collected(&org.state, &req);
-    let threshold = org.threshold();
+    let (collected, threshold) = org.progress(&req);
     ctx.emit(
         json!({
             "status": if finished.done { "done" } else { "collecting" },
@@ -638,8 +645,12 @@ fn title_of(req: &Request) -> String {
     if req.title.is_empty() {
         format!("request {}", req.id)
     } else {
-        req.title.clone()
+        line(&req.title)
     }
+}
+
+fn line(text: &str) -> String {
+    core_org::one_line(text)
 }
 
 // --- owner actions on an organization's repository -------------------------------------------
@@ -658,8 +669,7 @@ async fn post_request(
     let req = org
         .propose(client, seed, keys, &planned.title, planned.writes)
         .await?;
-    let (collected, _) = request::collected(&org.state, &req);
-    let threshold = org.threshold();
+    let (collected, threshold) = org.progress(&req);
     let sign_line = format!("dg org sign {}", req.id);
     let mut value = json!({
         "status": "requested",
@@ -675,7 +685,7 @@ async fn post_request(
         v.extend(e.clone());
     }
     ctx.emit(value, || {
-        println!("Request {}: {}", req.id, req.title);
+        println!("Request {}: {}", req.id, line(&req.title));
         println!("{collected} of {threshold} collected. Send this to your co-signers:");
         println!("  {sign_line}");
     });
@@ -731,6 +741,11 @@ pub async fn request_repo_create(
     if args.push {
         return Err(crate::errors::usage(
             "--push can't be used with --owner: the repository exists once enough members sign the request",
+        ));
+    }
+    if o.storage.is_some() || o.replicas.is_some() || o.remote.is_some() {
+        return Err(crate::errors::usage(
+            "--storage, --replicas and --remote can't be used with --owner yet",
         ));
     }
     if o.private {
@@ -800,12 +815,7 @@ pub async fn route_member_change(
         return Ok(None);
     };
     let member = crate::common::resolve_identity(&client, member, "member").await?;
-    let member_name = client
-        .dpns_names_of(&member)
-        .await
-        .ok()
-        .and_then(|n| n.into_iter().next())
-        .unwrap_or_else(|| member.clone());
+    let member_name = forge_core::org::session::first_name(&client, &member).await;
     let label = format!("{}/{}", record.label, handle.name());
     let (mut org, identity, seed, keys) = open_owner(ctx, &client, record, phrase).await?;
     let writer = forge_core::platform::org::OrgWriter::new(&client, &identity, org.key_id)?;
@@ -864,7 +874,8 @@ pub async fn waiting_count(ctx: &Ctx) -> Option<usize> {
     }
     let mut n = 0;
     for record in orgs {
-        if let Ok(org) = Org::load(record).await {
+        let load = tokio::time::timeout(std::time::Duration::from_secs(8), Org::load(record));
+        if let Ok(Ok(org)) = load.await {
             n += org.waiting().len();
         }
     }

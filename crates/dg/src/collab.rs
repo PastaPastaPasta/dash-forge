@@ -56,11 +56,11 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
                 phrase,
             ))
             .await?
-            .is_none()
+            .is_some()
             {
-                Box::pin(add(ctx, repo, member, *role, *wait)).await?;
+                return Ok(());
             }
-            Ok(())
+            Box::pin(add(ctx, repo, member, *role, *wait)).await
         }
         CollabCommand::Accept { repo, withdraw } => accept(ctx, repo, *withdraw).await,
         CollabCommand::Remove {
@@ -79,11 +79,11 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
                 phrase,
             ))
             .await?
-            .is_none()
+            .is_some()
             {
-                Box::pin(remove(ctx, repo, member, *role, *no_resave)).await?;
+                return Ok(());
             }
-            Ok(())
+            Box::pin(remove(ctx, repo, member, *role, *no_resave)).await
         }
         CollabCommand::List { repo } => list(ctx, repo).await,
     }

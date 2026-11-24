@@ -55,6 +55,21 @@ impl From<OrgError> for crate::Error {
     }
 }
 
+/// `text` as one printable line: control characters (C0, DEL, C1) and line breaks become
+/// spaces. For text the relay or a proposal's bytes carry (titles, names, reasons, document
+/// types) before it reaches a terminal.
+pub fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// Whether organizations are available on `network`: everywhere but mainnet, for now.
 pub fn enabled(network: &Network) -> bool {
     !matches!(network, Network::Mainnet)
@@ -99,6 +114,16 @@ impl OrgRecord {
 }
 
 /// The group id an invite link or a bare group id names.
+#[cfg(test)]
+#[test]
+fn one_line_drops_escapes_and_breaks() {
+    assert_eq!(
+        one_line("Add topic\u{1b}[8m rust\nGive x"),
+        "Add topic [8m rust Give x"
+    );
+    assert_eq!(one_line("a\u{9b}b\tc"), "a b c");
+}
+
 pub fn parse_group_id(text: &str) -> Option<String> {
     let t = text.trim();
     for marker in ["#room=", "&room=", "?room="] {

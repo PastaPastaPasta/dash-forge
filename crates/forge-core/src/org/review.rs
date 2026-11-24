@@ -113,7 +113,8 @@ pub fn decoded_problems(expect: &Expect<'_>, d: &DecodedWrite, signable: &[u8]) 
     if !ALLOWED.contains(&(d.document_type.as_str(), d.action.as_str())) {
         problems.push(format!(
             "Forge does not sign this kind of write ({} {})",
-            d.action, d.document_type
+            super::one_line(&d.action),
+            super::one_line(&d.document_type)
         ));
     } else if expect.forge.contract_id_of(&d.document_type) != Some(d.contract_id.as_str()) {
         problems.push("it writes to a contract that is not this network's Forge".into());

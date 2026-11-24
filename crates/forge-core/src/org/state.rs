@@ -139,6 +139,23 @@ pub struct Proposal {
 }
 
 impl Proposal {
+    #[cfg(test)]
+    pub(crate) fn bare(id: &str, from: &str, note: &str) -> Self {
+        Self {
+            id: id.into(),
+            from: from.into(),
+            at: String::new(),
+            body: serde_json::json!({ "note": note }),
+            approvals: BTreeMap::new(),
+            approval_order: Vec::new(),
+            rejections: BTreeMap::new(),
+            broadcasts: Vec::new(),
+            status: ProposalStatus::Collecting,
+            requirements: Vec::new(),
+            error: None,
+        }
+    }
+
     pub fn network(&self) -> &str {
         self.body["network"].as_str().unwrap_or_default()
     }

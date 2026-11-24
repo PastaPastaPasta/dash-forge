@@ -157,6 +157,10 @@ pub enum RequestStatus {
 }
 
 impl RequestStatus {
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Collecting | Self::Ready)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Collecting => "collecting",
@@ -265,4 +269,64 @@ pub fn waits_for(state: &RoomState, req: &Request, auth_pub: &str) -> bool {
                 })
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const G: &str = "0123456789abcdef";
+
+    fn state(parts: &[(&str, &str, usize, usize)]) -> RoomState {
+        let mut st = RoomState::default();
+        for (i, (from, group, seq, of)) in parts.iter().enumerate() {
+            let note = Note {
+                group: (*group).into(),
+                seq: *seq,
+                of: *of,
+                title: "t".into(),
+            }
+            .to_json();
+            let id = format!("p{i}");
+            st.proposals
+                .insert(id.clone(), Proposal::bare(&id, from, &note));
+        }
+        st
+    }
+
+    fn problem(parts: &[(&str, &str, usize, usize)]) -> bool {
+        let reqs = requests(&state(parts));
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(
+            status(&state(parts), &reqs[0], None) == RequestStatus::Invalid,
+            reqs[0].problem.is_some()
+        );
+        reqs[0].problem.is_some()
+    }
+
+    #[test]
+    fn a_whole_request_is_one_member_with_seqs_zero_to_of() {
+        assert!(!problem(&[("a", G, 0, 2), ("a", G, 1, 2)]));
+        assert!(problem(&[("a", G, 0, 2), ("b", G, 1, 2)]));
+        assert!(problem(&[("a", G, 0, 2)]));
+        assert!(problem(&[("a", G, 0, 2), ("a", G, 0, 2)]));
+        assert!(problem(&[("a", G, 0, 3), ("a", G, 1, 3), ("a", G, 1, 3)]));
+        assert!(problem(&[("a", G, 0, 2), ("a", G, 1, 3)]));
+    }
+
+    #[test]
+    fn a_note_out_of_range_is_not_a_forge_note() {
+        assert!(
+            Note::parse(r#"{"forge":1,"group":"0123456789abcdef","seq":2,"of":2,"title":""}"#)
+                .is_none()
+        );
+        assert!(
+            Note::parse(r#"{"forge":1,"group":"0123456789ABCDEF","seq":0,"of":1,"title":""}"#)
+                .is_none()
+        );
+        assert!(
+            Note::parse(r#"{"forge":2,"group":"0123456789abcdef","seq":0,"of":1,"title":""}"#)
+                .is_none()
+        );
+    }
 }
