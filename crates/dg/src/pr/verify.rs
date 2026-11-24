@@ -114,7 +114,7 @@ pub(crate) fn merge_facts(dir: &Path, head: &str, merge_oid: &str, tip_before: &
 }
 
 /// The PR head when it was merged, when it is merged.
-fn merged_head(view: &PatchView) -> Option<String> {
+pub(crate) fn merged_head(view: &PatchView) -> Option<String> {
     Some(head_at(
         &view.review,
         &view.patch.head_oid,
