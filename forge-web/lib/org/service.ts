@@ -219,13 +219,17 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
   const ctx = { orgId: record.orgId, keyId: identity.keyId, forge: opts.forge, currentNonce }
   const facts = new Map<string, ProposalFacts>()
   for (const r of requests) {
+    const used = new Set<string>()
     for (const p of r.proposals) {
       const d = decoded.get(p.id) ?? null
+      const slot = d ? `${d.contractId}:${d.nonce}` : null
+      const reused = slot !== null && used.has(slot)
+      if (slot !== null) used.add(slot)
       const current = d ? currentNonce(d.contractId) : undefined
       const onChain = p.status !== 'executed' && d !== null && current !== undefined && isNonceSpent(current, d.nonce) ? await writtenOnChain(sdk, d) : false
       const unproven = p.status === 'executed' && d !== null && current !== undefined && !isNonceSpent(current, d.nonce)
       const settled = onChain || (p.status === 'executed' && !unproven)
-      const problems = settled ? [] : d === null ? ['the transition does not decode'] : reviewDecoded(d, p.body, ctx)
+      const problems = settled ? [] : d === null ? ['the transition does not decode'] : [...reviewDecoded(d, p.body, ctx), ...(reused ? ['it uses the same nonce as another part of this request'] : [])]
       facts.set(p.id, { reviewProblems: problems, nonce: d?.nonce ?? null, contractId: d?.contractId ?? null, onChain, unproven })
     }
   }

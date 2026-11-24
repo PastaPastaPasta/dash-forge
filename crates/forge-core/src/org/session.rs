@@ -355,10 +355,17 @@ impl Org {
         let network = client.network().key();
         let expect = self.expect(&network, forge);
         let mut nonces: BTreeMap<String, NonceState> = BTreeMap::new();
+        let mut used: BTreeSet<(String, u64)> = BTreeSet::new();
         let mut out = Vec::new();
         for id in &req.proposals {
             let p = &self.state.proposals[id];
             let mut r = review::review_offline(&expect, p);
+            if let Some(d) = &r.decoded {
+                if !used.insert((d.contract_id.clone(), d.nonce)) {
+                    r.problems
+                        .push("it uses the same nonce as another part of this request".into());
+                }
+            }
             if let Some(d) = r.decoded.as_ref().filter(|_| r.problems.is_empty()) {
                 let current = if let Some(n) = nonces.get(&d.contract_id) {
                     *n
@@ -642,6 +649,17 @@ impl Org {
         network: &str,
         req: &Request,
     ) -> Result<bool> {
+        let mut used: BTreeSet<(String, u64)> = BTreeSet::new();
+        for id in &req.proposals {
+            if let Some(d) = self.decoded(id) {
+                if !used.insert((d.contract_id, d.nonce)) {
+                    return Err(refused(
+                        "broadcast this request",
+                        &["two of its parts use the same nonce".into()],
+                    ));
+                }
+            }
+        }
         for id in &req.proposals {
             let p = &self.state.proposals[id];
             if p.status == ProposalStatus::Executed && !self.executed_unproven(client, id).await? {

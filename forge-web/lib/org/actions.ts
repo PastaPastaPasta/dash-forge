@@ -60,16 +60,16 @@ async function refuseKeyedMemberChange(sdk: EvoSDK, repo: RepoRef): Promise<void
 }
 
 export async function grantRequest(sdk: EvoSDK, repo: RepoRef, memberId: string, role: Role): Promise<CreateRequestInput | null> {
-  await refuseKeyedMemberChange(sdk, repo)
   const plan = await planMemberGrant(sdk, repo, memberId, role)
   if (plan.heldId !== null) return null
+  await refuseKeyedMemberChange(sdk, repo)
   return { title: `Give ${ROLE_LABEL[role]} access to ${repo.name}`, specs: [{ action: 'create', contractId: repo.forge.core, documentType: plan.documentType, data: plan.data }] }
 }
 
 export async function revokeRequest(sdk: EvoSDK, repo: RepoRef, memberId: string, role: Role): Promise<CreateRequestInput | null> {
-  await refuseKeyedMemberChange(sdk, repo)
   const plan = await planMemberRevoke(sdk, repo, memberId, role)
   if (plan === null) return null
+  await refuseKeyedMemberChange(sdk, repo)
   return { title: `Remove ${ROLE_LABEL[role]} access to ${repo.name}`, specs: [{ action: 'delete', contractId: repo.forge.core, documentType: plan.documentType, documentId: plan.documentId }] }
 }
 
