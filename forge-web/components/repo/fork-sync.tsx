@@ -31,7 +31,9 @@ import { ARCHIVED_REASON, formatBytes, plural, type RepoHome } from '@/lib/view'
 import { historyWalker } from '@/lib/view/pull-diff'
 import { syncAncestry, SYNC_COUNT_CAP } from '@/lib/view/fork-sync'
 import { shortId } from '@/lib/utils'
-import { CopyFailed, forkCopier, forkCopyProfile } from '@/lib/storage/pin-copies'
+import { CopyFailed, forkCopier, forkCopyProfile, pricedManifests, storageHolding } from '@/lib/storage/pin-copies'
+import type { StorageProfile } from '@/lib/storage/profiles'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { redactSecrets } from '@/lib/redact'
 import { useAsync } from '@/hooks/use-async'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
@@ -56,9 +58,12 @@ function commitsText(n: number | null): string {
   return n === null ? `more than ${SYNC_COUNT_CAP.toLocaleString('en-US')} commits` : plural(n, 'commit')
 }
 
-/** The pre-sign cost of a sync writing `plan`: its manifests into a repo that has some, and one ref update. */
-export function syncCost(plan: SyncManifests): Cost {
-  return sumPreviews([...plan.manifests.map((m) => previewCreate('packManifest', { uris: m.uris }, EXISTING)), previewCreate('refUpdate', {}, EXISTING)])
+/**
+ * The pre-sign cost of a sync writing `plan`: its manifests into a repo that has some (naming the
+ * copies on `copyTo` when it copies), and one ref update.
+ */
+export function syncCost(plan: SyncManifests, copyTo: StorageProfile | null = null): Cost {
+  return sumPreviews([...pricedManifests(plan, copyTo).map((m) => previewCreate('packManifest', { uris: m.uris }, EXISTING)), previewCreate('refUpdate', {}, EXISTING)])
 }
 
 /**
@@ -286,25 +291,29 @@ function UpdateBranch({
   reload?: () => void
 }): JSX.Element {
   const { sdk, ready } = useSdk()
-  const { signer } = useAuth()
+  const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const storage = useStorageConfig()
-  const target = forkCopyProfile(storage.config)
   const [byReference, setByReference] = useState(false)
-  const copyTo = byReference ? null : target
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   // One intent per sync: a retry after an unconfirmed write finishes it, never signs twice.
   const [intent] = useState(newIntent)
   const plan = useAsync(() => readSyncManifests(sdk!, home.repo, parent), [ready, repoKey(home.repo), repoKey(parent)], { enabled: ready && sdk !== null })
-  const cost = plan.data === null ? null : syncCost(plan.data)
+  // Where this fork's earlier packs were copied, else the default policy's first readable target.
+  const target = storageHolding(plan.data?.fork ?? [], identity ?? '', storage.usable) ?? forkCopyProfile(storage.usable)
+  const copyTo = byReference ? null : target
+  const copyable = (plan.data?.manifests ?? []).filter((m) => !plan.data?.onPlatform.has(m.packHash))
+  // Stored settings this tab cannot open: never fall back to by-reference without being asked.
+  const blocked = target === null && !byReference && copyable.length > 0 && !storage.loading && (storage.sealed || (storage.usable === null && storage.error !== null))
+  const cost = plan.data === null ? null : syncCost(plan.data, copyTo)
   const newPacks = plural(plan.data?.manifests.length ?? 0, `new pack of ${parent.name}`, `new packs of ${parent.name}`)
   const unreferenceable = plan.data?.unreferenceable.length ?? 0
   const off = block ?? guard.disabledReason ?? (unreferenceable > 0 ? `${plural(unreferenceable, 'pack')} of ${parent.name} have no copy a fork can name: push the branch from a full clone instead.` : null)
 
   const update = async (): Promise<void> => {
-    if (pending || done || plan.data === null || cost === null || off !== null || !sdk || !signer || !guard.check(cost, 'core', 'sync this fork')) return
+    if (pending || done || blocked || plan.data === null || cost === null || off !== null || !sdk || !signer || !guard.check(cost, 'core', 'sync this fork')) return
     setPending(true)
     setError(null)
     try {
@@ -353,12 +362,30 @@ function UpdateBranch({
           </label>
         </details>
       ) : null}
+      {blocked ? (
+        <div className="space-y-2" data-testid="fork-sync-storage-locked">
+          {storage.sealed ? (
+            <UnlockMore title="Unlock this tab to copy the new files to your storage" />
+          ) : (
+            <p className="text-dense">
+              Couldn&apos;t open your storage settings.{' '}
+              <Button variant="outline" size="sm" onClick={storage.reload}>
+                Try again
+              </Button>
+            </p>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setByReference(true)} data-testid="fork-sync-skip-copy">
+            Update without copying
+          </Button>
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="primary" size="sm" onClick={update} loading={pending || storage.loading} disabled={off !== null || cost === null || done} title={off ?? undefined} data-testid="fork-sync-update">
           {done ? 'Updated' : 'Update branch'}
         </Button>
         {off !== null ? <span className="text-[12px] text-caution-700 dark:text-caution-400">{off}</span> : null}
       </div>
+      )}
       {error ? (
         <div role="alert" className="break-words rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
           {error}

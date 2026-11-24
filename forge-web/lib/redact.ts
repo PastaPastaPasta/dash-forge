@@ -24,3 +24,12 @@ export function redactSecrets(s: string): string {
       isSecretKey(key) && !value.startsWith('<') && value !== REDACTED ? `${pre}${key}=${REDACTED}` : all,
     )
 }
+
+/**
+ * `s` with each of `values` (a storage profile's actual secrets) replaced, and the token of an
+ * `Authorization` value (`Basic <token>`) too. Values under 4 characters are left alone.
+ */
+export function redactValues(s: string, values: readonly (string | undefined)[]): string {
+  const all = values.flatMap((v) => (v === undefined ? [] : [v, v.replace(/^\S+\s+/, '')])).filter((v) => v.length >= 4)
+  return [...new Set(all)].sort((a, b) => b.length - a.length).reduce((out, v) => out.split(v).join(REDACTED), s)
+}

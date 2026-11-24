@@ -48,7 +48,7 @@ function PublicPinButton({ repo }: { repo: RepoRef }): JSX.Element {
   const pin = usePublicPin(repo)
   const [open, setOpen] = useState(false)
   return <>
-    <Button size="sm" onClick={() => setOpen(true)} data-testid="pin-button"><Pin className="h-3.5 w-3.5" aria-hidden /> {pinLabel(pin.status.data)}</Button>
+    <Button size="sm" onClick={() => { pin.refresh(); setOpen(true) }} data-testid="pin-button"><Pin className="h-3.5 w-3.5" aria-hidden /> {pinLabel(pin.status.data)}</Button>
     {open ? <PublicPinDialog repo={repo} pin={pin} onClose={() => setOpen(false)} /> : null}
   </>
 }
@@ -62,7 +62,8 @@ function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnTyp
   const busy = pin.running !== null
   const close = (): void => { if (pin.running !== 'unpin') { pin.cancel(); onClose() } }
   const noStorage = !pin.storage.needsUnlock && !pin.storage.loading && pin.profiles.length === 0
-  const pinned = hasPin && missing === 0
+  const pinned = hasPin && missing === 0 && tooLarge === 0
+  const nothingToCopy = s !== null && missing === 0 && (s.packs.length === 0 || tooLarge > 0)
   const current = pin.rows.findLast((r) => r.state === 'copying')
   const follow = `dg repo pin ${repo.ownerId}/${repo.name} --follow`
 
@@ -70,11 +71,11 @@ function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnTyp
   if (pin.running === 'pin') primary = <Button onClick={pin.cancel}>Cancel</Button>
   else if (noStorage) primary = <Link href="/settings/storage/" className={buttonClass({ variant: 'primary', size: 'md' })}>Set up storage</Link>
   else if (cost) primary = <Button variant="primary" loading={busy} onClick={() => void pin.start(cost)}>{pinLabel(s)}</Button>
-  else if (pinned) primary = <Button variant="primary" onClick={close}>Done</Button>
+  else if (pinned || nothingToCopy) primary = <Button variant="primary" onClick={close}>Done</Button>
 
   return <Dialog open onClose={close} title={`Pin ${repo.name}`} description="Keep a copy of this repository's files on your own storage, so it stays available." footer={<>
     {hasPin && !busy ? <Button variant="ghost" onClick={() => void pin.unpin()} data-testid="pin-unpin">Unpin</Button> : null}
-    {pinned && !busy ? null : <Button variant="ghost" onClick={close} disabled={pin.running === 'unpin'}>Close</Button>}
+    {(pinned || nothingToCopy) && !busy ? null : <Button variant="ghost" onClick={close} disabled={pin.running === 'unpin'}>Close</Button>}
     {primary}
   </>}>
     <div className="space-y-3 text-dense">
@@ -84,7 +85,7 @@ function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnTyp
         : s === null ? <p>{pin.status.error ?? 'Reading this repository’s files…'}</p>
         : s.packs.length === 0 ? <p>This repository has no files to pin yet.</p>
         : missing === 0 && tooLarge > 0 ? <>
-          <p data-testid="pin-state">{pinned ? `Pinned: ${plural(s.mine.length, 'file')} ${s.mine.length === 1 ? 'has' : 'have'} a copy on your storage. ` : ''}{plural(tooLarge, 'file')} over 512 MiB {tooLarge === 1 ? 'is' : 'are'} too large for the browser; pin {tooLarge === 1 ? 'it' : 'them'} with:</p>
+          <p data-testid="pin-state">{hasPin ? `${plural(s.mine.length, 'file')} ${s.mine.length === 1 ? 'has' : 'have'} a copy on your storage. ` : ''}{plural(tooLarge, 'file')} over 512 MiB {tooLarge === 1 ? 'is' : 'are'} too large for the browser; pin {tooLarge === 1 ? 'it' : 'them'} with:</p>
           <CopyBlock text={follow} label="Copy the pin command" />
         </>
         : pinned ? <p data-testid="pin-state">Pinned: every file has a copy on your storage.</p>
@@ -95,6 +96,7 @@ function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnTyp
         </>}
       {pin.running === 'pin' ? <p role="status">{current ? `Copying ${current.index} of ${current.total}…` : 'Starting…'}</p> : null}
       {pin.running === 'unpin' ? <p role="status">Removing your records…</p> : null}
+      {pin.notice ? <p role="status" data-testid="pin-notice">{pin.notice}</p> : null}
       {pin.error ? <p role="alert" className="text-danger-700 dark:text-danger-400">{pin.error}</p> : null}
       {pin.summary ? <p role="status">{plural(pin.summary.recorded, 'file')} pinned{pin.summary.failed ? `; ${pin.summary.failed} could not be copied (see details)` : ''}.</p> : null}
       <details className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">

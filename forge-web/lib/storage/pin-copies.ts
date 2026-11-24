@@ -9,11 +9,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { PACK_KIND } from '../constants'
 import { isPublicHttpsUrl, isTemporaryHost } from '../net'
-import { redactSecrets } from '../redact'
+import { redactSecrets, redactValues } from '../redact'
 import type { RepoRef } from '../repo/contract'
-import type { CopyPack } from '../repo/fork'
+import { copyGroups, withOwnCopy, type CopyPack, type SyncManifests } from '../repo/fork'
+import { invalidateMembers } from '../repo/members'
 import { packsOfKind, readBrowseManifests, readRepoPackManifests, type PackManifest } from '../repo/packs'
-import { DOC_PACK_MIRROR, mirrorsBy, mirrorUrisProblem, recordMirror, type OwnMirror } from '../repo/pack-mirrors'
+import type { PackManifestInput } from '../repo/push'
+import { DOC_PACK_MIRROR, forgetMirrorsBy, mirrorsBy, mirrorUrisProblem, recordMirror, type OwnMirror } from '../repo/pack-mirrors'
 import { EXISTING, previewCreate, sumPreviews, type CostPreview, type WriteAuth } from '../sdk'
 import { loadArtifactBytesProgress } from '../view/browse-source'
 import { gatewayUrl } from './ipfs'
@@ -44,9 +46,10 @@ interface RepoPack {
   readonly source: PackManifest
 }
 
-/** An error's text in one line, with any credential it carries scrubbed. */
-function why(e: unknown): string {
-  return redactSecrets(errText(e).split(/\s+/).join(' ').trim())
+/** An error's text in one line, with any credential it carries (and `profile`'s secrets) scrubbed. */
+function why(e: unknown, profile?: StorageProfile): string {
+  const line = redactSecrets(errText(e).split(/\s+/).join(' ').trim())
+  return profile === undefined ? line : redactValues(line, Object.values(profile.secrets))
 }
 
 /**
@@ -93,22 +96,40 @@ export function forkCopyProfile(config: { readonly profiles: readonly StoragePro
 }
 
 /**
- * Every pack a current maintainer or writer lists (deduplicated by hash, superseded ones
- * included), in pack-list order. Parity: forge-core `own_copy::pin_groups`.
+ * The profile whose public address (an S3 public URL, an IPFS public gateway) the first URI of
+ * one of `owner`'s `manifests` is at: where a fork's earlier packs were copied, so a sync copies
+ * the new ones there too. Parity: dg `repo_pin::storage_holding`.
+ */
+export function storageHolding(
+  manifests: readonly Pick<PackManifest, 'uploader' | 'uris'>[],
+  owner: string,
+  config: { readonly profiles: readonly StorageProfile[] } | null,
+): StorageProfile | null {
+  if (config === null) return null
+  const firsts = manifests.filter((m) => m.uploader === owner).flatMap((m) => m.uris.slice(0, 1))
+  return (
+    copyableProfiles(config.profiles).find((p) => {
+      const base = publishedAddress(p)
+      if (base === '') return false
+      const prefix = `${base.replace(/\/+$/, '')}/`
+      return firsts.some((u) => u.startsWith(prefix))
+    }) ?? null
+  )
+}
+
+/**
+ * Every pack of a pinnable kind that a current maintainer or writer lists, deduplicated by hash
+ * (superseded ones included), oldest first, its copies of those kinds in reader order. Parity:
+ * forge-core `own_copy::pin_groups`.
  */
 export function repoPacks(manifests: readonly PackManifest[]): RepoPack[] {
-  const seen = new Set<string>()
-  const out: RepoPack[] = []
-  const byMember = (p: PackManifest): boolean => (p.copies ?? [p]).some((c) => c.ownerRole === 'maintainer' || c.ownerRole === 'writer')
-  for (const kind of PIN_KINDS) {
-    for (const p of packsOfKind(manifests, kind)) {
-      const hash = p.packHash.toLowerCase()
-      if (seen.has(hash) || !byMember(p)) continue
-      seen.add(hash)
-      out.push({ packHash: hash, sizeBytes: p.sizeBytes, source: p })
-    }
-  }
-  return out
+  const member = (c: PackManifest): boolean => c.ownerRole === 'maintainer' || c.ownerRole === 'writer'
+  return copyGroups(manifests, (m) => PIN_KINDS.includes(m.kind))
+    .filter((copies) => copies.some(member))
+    .map((copies) => {
+      const rep = copies[0] as PackManifest
+      return { packHash: rep.packHash.toLowerCase(), sizeBytes: rep.sizeBytes, source: { ...rep, copies } }
+    })
 }
 
 /**
@@ -140,24 +161,46 @@ export function pinStatus(packs: readonly RepoPack[], mine: readonly OwnMirror[]
   return { packs, mine, missing: open.filter((p) => p.sizeBytes <= COPY_MAX_BYTES), tooLarge: open.filter((p) => p.sizeBytes > COPY_MAX_BYTES) }
 }
 
-/** "Pin", "Pinned", or "Update pin (N new)". */
+/** "Pin", "Pinned", or "Update pin (N new)", counting every pack without a record (any size). */
 export function pinLabel(status: PinStatus | null): string {
   if (status === null || status.mine.length === 0) return 'Pin'
-  return status.missing.length === 0 ? 'Pinned' : `Update pin (${status.missing.length} new)`
+  const open = status.missing.length + status.tooLarge.length
+  return open === 0 ? 'Pinned' : `Update pin (${open} new)`
 }
 
-export async function readPinStatus(sdk: EvoSDK, repo: RepoRef, me: string): Promise<PinStatus> {
-  const [manifests, mine] = await Promise.all([readBrowseManifests(sdk, repo), mirrorsBy(sdk, repo, me)])
+/**
+ * The pin's status. `fresh`: read the repo's manifests, roles and the signer's records from
+ * Platform rather than this session's caches (a CLI pin or unpin since, a new push).
+ */
+export async function readPinStatus(sdk: EvoSDK, repo: RepoRef, me: string, opts: { readonly fresh?: boolean } = {}): Promise<PinStatus> {
+  if (opts.fresh) {
+    invalidateMembers(repo)
+    forgetMirrorsBy(me)
+  }
+  const [manifests, mine] = await Promise.all([opts.fresh ? readRepoPackManifests(sdk, repo) : readBrowseManifests(sdk, repo), mirrorsBy(sdk, repo, me)])
   return pinStatus(repoPacks(manifests), mine)
 }
 
+const SAMPLE_CID = `bafkrei${'a'.repeat(52)}`
+
 /** An address of the length `profile` records, for the price. */
 function sampleAddress(profile: StorageProfile): string {
-  const cid = `bafkrei${'a'.repeat(52)}`
+  return sampleOwnUris(profile)[0] as string
+}
+
+/** Addresses of the length a copy on `profile` lists in a fork's manifest, for the price. */
+export function sampleOwnUris(profile: StorageProfile): string[] {
   const s = profile.settings
-  if (s.kind === 's3') return publicObjectUrl(s, artifactKey(s, 'a'.repeat(64)))
-  if (s.kind !== 'platform' && s.publicGateway !== '') return gatewayUrl(s.publicGateway, cid)
-  return `ipfs://${cid}`
+  if (s.kind === 's3') return [publicObjectUrl(s, artifactKey(s, 'a'.repeat(64)))]
+  if (s.kind !== 'platform' && s.publicGateway !== '') return [gatewayUrl(s.publicGateway, SAMPLE_CID), `ipfs://${SAMPLE_CID}`]
+  return [`ipfs://${SAMPLE_CID}`]
+}
+
+/** The manifests a fork or sync writes when it copies to `profile` (null: by reference), for the price. */
+export function pricedManifests(plan: Pick<SyncManifests, 'manifests' | 'onPlatform'>, profile: StorageProfile | null): PackManifestInput[] {
+  if (profile === null) return [...plan.manifests]
+  const own = sampleOwnUris(profile)
+  return plan.manifests.map((m) => (plan.onPlatform.has(m.packHash) ? m : withOwnCopy(m, own)))
 }
 
 /** One `packMirror` per pack; the first builds the repo's subtree when the signer has none yet. */
@@ -175,42 +218,61 @@ async function copyPack(sdk: EvoSDK, repo: RepoRef, pack: RepoPack, profile: Sto
   const bytes = await loadArtifactBytesProgress(sdk, repo, pack.source, undefined, signal, true)
   if (signal?.aborted) throw new Error('Cancelled')
   try {
-    const stored = await storeFile(bytes, { policy: { targets: [profile.name], replicas: 1, platformFallback: false }, profiles: [profile], sha256Hex: pack.packHash })
+    const stored = await storeFile(bytes, { policy: { targets: [profile.name], replicas: 1, platformFallback: false }, profiles: [profile], sha256Hex: pack.packHash, ...(signal ? { signal } : {}) })
     return [...stored.uris]
   } catch (e) {
-    throw new StoreFailed(`${profile.name}: ${why(e)}`)
+    if (signal?.aborted) throw new Error('Cancelled')
+    throw new StoreFailed(`${profile.name}: ${why(e, profile)}`)
   }
 }
 
-/** Whether `url` serves the pack: a whole anonymous read that hashes to `packHash`. */
-export async function servesPack(url: string, packHash: string, signal?: AbortSignal): Promise<boolean> {
+/**
+ * Whether `url` serves the pack: a whole anonymous read, at most `sizeBytes` long (or
+ * {@link COPY_MAX_BYTES} when unknown), that hashes to `packHash`.
+ */
+export async function servesPack(url: string, packHash: string, sizeBytes: number, signal?: AbortSignal): Promise<boolean> {
   try {
     const r = await timedFetch(url, { credentials: 'omit', cache: 'no-store' }, signal ? { signal } : {})
     if (!r.resp.ok) {
       r.discard()
       return false
     }
-    return (await sha256Hex(await r.bytes())) === packHash.toLowerCase()
+    return (await sha256Hex(await r.bytes(sizeBytes > 0 ? sizeBytes : COPY_MAX_BYTES))) === packHash.toLowerCase()
   } catch {
     return false
   }
 }
 
 /**
- * A pin's copy of `pack` on `profile` and the address its record names. An IPFS public gateway
- * URL is recorded only once it serves the pack; otherwise the `ipfs://` CID is. Parity:
- * forge-core `OwnCopy::recordable`.
+ * The address a pin records for a copy stored at `stored` ({@link mirrorAddress}), with an
+ * https one read back whole first: when it does not serve the pack, the `ipfs://` CID is recorded
+ * instead, and with no CID the pack fails (nothing is recorded). Parity: forge-core
+ * `OwnCopy::recordable`.
+ */
+export async function recordableAddress(stored: readonly string[], pack: Pick<RepoPack, 'packHash' | 'sizeBytes'>, signal?: AbortSignal): Promise<string[]> {
+  const pick = mirrorAddress(stored)
+  const url = pick[0] as string
+  if (!url.startsWith('https://')) return pick
+  const serves = await servesPack(url, pack.packHash, pack.sizeBytes, signal)
+  if (signal?.aborted) throw new Error('Cancelled')
+  if (serves) return pick
+  const cid = stored.find((u) => u.startsWith('ipfs://'))
+  if (cid !== undefined) return mirrorAddress([cid])
+  throw new Error(`${new URL(url).host} did not serve the copy whole to an anonymous read, so it was not recorded`)
+}
+
+/**
+ * A pin's copy of `pack` on `profile` and the address its record names ({@link recordableAddress}).
+ * An IPFS public gateway is not checked during the upload: a gateway still fetching the file
+ * leaves the `ipfs://` CID to record.
  */
 async function pinCopy(sdk: EvoSDK, repo: RepoRef, pack: RepoPack, profile: StorageProfile, signal?: AbortSignal): Promise<string[]> {
   const s = profile.settings
-  if ((s.kind !== 'ipfs-kubo' && s.kind !== 'ipfs-pinning-service') || s.publicGateway === '') return mirrorAddress(await copyPack(sdk, repo, pack, profile, signal))
+  if ((s.kind !== 'ipfs-kubo' && s.kind !== 'ipfs-pinning-service') || s.publicGateway === '') return recordableAddress(await copyPack(sdk, repo, pack, profile, signal), pack, signal)
+  const gateway = s.publicGateway
   const stored = await copyPack(sdk, repo, pack, { ...profile, settings: { ...s, publicGateway: '' } }, signal)
   const cid = stored.find((u) => u.startsWith('ipfs://'))
-  if (cid === undefined) return mirrorAddress(stored)
-  const url = gatewayUrl(s.publicGateway, cid.slice('ipfs://'.length))
-  const serves = await servesPack(url, pack.packHash, signal)
-  if (signal?.aborted) throw new Error('Cancelled')
-  return mirrorAddress(serves ? [url, cid] : [cid])
+  return recordableAddress(cid === undefined ? stored : [gatewayUrl(gateway, cid.slice('ipfs://'.length)), ...stored], pack, signal)
 }
 
 export type CopyState = 'copying' | 'done' | 'failed'
@@ -250,16 +312,22 @@ export async function pinPacks(
       opts.onProgress?.({ index: i + 1, total: packs.length, packHash: pack.packHash, sizeBytes: pack.sizeBytes, state, ...(why ? { why } : {}) })
     if (opts.signal?.aborted) break
     report('copying')
+    const cancelled = (): boolean => {
+      if (!opts.signal?.aborted) return false
+      report('failed', 'Cancelled; press Pin to resume.')
+      return true
+    }
     let uris: string[]
     try {
       uris = await pinCopy(sdk, repo, pack, profile, opts.signal)
     } catch (e) {
-      report('failed', opts.signal?.aborted ? 'Cancelled; press Pin to resume.' : why(e))
-      if (opts.signal?.aborted) break
+      if (cancelled()) break
+      report('failed', why(e, profile))
       if (e instanceof StoreFailed) throw e
       failed++
       continue
     }
+    if (cancelled()) break
     try {
       await recordMirror(sdk, auth, repo, pack.packHash, uris, opts.intent ? `${opts.intent}:${pack.packHash}` : undefined)
     } catch (e) {
@@ -322,7 +390,7 @@ export function forkCopier(
       try {
         src = await sourceOf(hash)
       } catch (e) {
-        fail(why(e))
+        fail(why(e, profile))
       }
     }
     if (src === undefined) return fail(`not in ${parent.name}'s pack list`)
@@ -332,7 +400,7 @@ export function forkCopier(
     try {
       stored = await copyPack(sdk, parent, { packHash: hash, sizeBytes: src.sizeBytes, source: src }, profile)
     } catch (e) {
-      fail(e instanceof StoreFailed ? e.message : why(e))
+      fail(e instanceof StoreFailed ? e.message : why(e, profile))
     }
     const own = shareable(stored)
     if (own.length === 0) fail(`${profile.name} stored it at no address others can read`)

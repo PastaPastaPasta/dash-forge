@@ -29,7 +29,7 @@ function publicPin(over: Record<string, unknown> = {}, status: unknown = { packs
   state.pub = {
     storage: { needsUnlock: false, loading: false, error: null }, status: { data: status, error: null },
     profiles: [R2], profile: R2, setChosen: vi.fn(), running: null, error: null, summary: null, rows: [],
-    start: vi.fn(), unpin: vi.fn(), cancel: vi.fn(), ...over,
+    start: vi.fn(), unpin: vi.fn(), cancel: vi.fn(), refresh: vi.fn(), notice: null, ...over,
   }
 }
 let host: HTMLDivElement; let root: Root
@@ -55,6 +55,20 @@ describe('Pin on a public repo', () => {
     expect(header().textContent?.trim()).toBe('Update pin (1 new)')
     publicPin({}, { packs: [pack(1)], mine: [mine(1)], missing: [], tooLarge: [] }); await render()
     expect(header().textContent?.trim()).toBe('Pinned')
+    publicPin({}, { packs: [pack(1), pack(2, 600 * 1048576)], mine: [mine(1)], missing: [], tooLarge: [pack(2, 600 * 1048576)] }); await render()
+    expect(header().textContent?.trim()).toBe('Update pin (1 new)')
+  })
+
+  it('reads your records and the repo again when the dialog opens', async () => {
+    await render(); await open()
+    expect(state.pub['refresh']).toHaveBeenCalledOnce()
+  })
+
+  it('says plainly when the repo changed since the price was shown', async () => {
+    publicPin({ notice: 'This repository changed since the price was shown. Check the new total and press Pin again.' })
+    await render(); await open()
+    expect(host.querySelector('[data-testid="pin-notice"]')?.getAttribute('role')).toBe('status')
+    expect(buttons('Pin')).toHaveLength(2)
   })
 
   it('shows the plan and price, then pins on one click', async () => {
@@ -93,7 +107,9 @@ describe('Pin on a public repo', () => {
   it('names the command in the main text when every file left is too large for the browser', async () => {
     publicPin({}, { packs: [pack(1), pack(2, 600 * 1048576)], mine: [mine(1)], missing: [], tooLarge: [pack(2, 600 * 1048576)] })
     await render(); await open()
-    expect(host.querySelector('[data-testid="pin-state"]')?.textContent).toBe('Pinned: 1 file has a copy on your storage. 1 file over 512 MiB is too large for the browser; pin it with:')
+    expect(host.querySelector('[data-testid="pin-state"]')?.textContent).toBe('1 file has a copy on your storage. 1 file over 512 MiB is too large for the browser; pin it with:')
+    expect(buttons('Done')).toHaveLength(1)
+    expect(buttons('Close')).toHaveLength(0)
     expect(host.querySelector('[role="dialog"]')?.querySelector(':scope details')?.contains(host.querySelector('[data-testid="pin-state"]'))).toBeFalsy()
     expect(host.textContent).toContain('dg repo pin owner/repo --follow')
   })

@@ -22,15 +22,27 @@ export function usePublicPin(repo: RepoRef) {
   const guard = useWriteGuard()
   const storage = useStorageConfig()
   const profiles = copyableProfiles(storage.config?.profiles ?? [])
-  const status = useAsync(() => readPinStatus(sdk!, repo, identity!), [ready, network, repo.repoId, identity ?? ''], {
-    enabled: ready && sdk !== null && identity !== null && repo.visibility === 'public',
-  })
+  const fresh = useRef(false)
+  const status = useAsync(
+    () => {
+      const opts = { fresh: fresh.current }
+      fresh.current = false
+      return readPinStatus(sdk!, repo, identity!, opts)
+    },
+    [ready, network, repo.repoId, identity ?? ''],
+    { enabled: ready && sdk !== null && identity !== null && repo.visibility === 'public' },
+  )
+  const refresh = (): void => {
+    fresh.current = true
+    status.reload()
+  }
   const [chosen, setChosen] = useState('')
   const profile = profiles.find((p) => p.name === chosen) ?? profiles[0] ?? null
   const [rows, setRows] = useState<Record<number, CopyRow>>({})
   const [running, setRunning] = useState<'pin' | 'unpin' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [summary, setSummary] = useState<CopySummary | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const controller = useRef<AbortController | null>(null)
   const [intent] = useState(newIntent)
   useEffect(() => () => controller.current?.abort(), [])
@@ -38,18 +50,26 @@ export function usePublicPin(repo: RepoRef) {
   const contract = writeContractKind(repo.forge, DOC_PACK_MIRROR)
   const done = (): void => {
     if (identity !== null) forgetMirrorsBy(identity)
-    status.reload()
+    refresh()
   }
 
   const start = async (cost: CostPreview): Promise<void> => {
     const s = status.data
-    if (running || !sdk || !signer || !profile || s === null || s.missing.length === 0 || !guard.check(cost, contract, 'pin this repo')) return
+    if (running || !sdk || !signer || !identity || !profile || s === null || s.missing.length === 0 || !guard.check(cost, contract, 'pin this repo')) return
     const run = new AbortController()
     controller.current = run
-    setRunning('pin'); setError(null); setRows({}); setSummary(null)
+    setRunning('pin'); setError(null); setRows({}); setSummary(null); setNotice(null)
     try {
+      // The price was shown from an earlier read: sign only when nothing it did not cover is new.
+      const now = await readPinStatus(sdk, repo, identity, { fresh: true })
+      const priced = new Set(s.missing.map((p) => p.packHash))
+      if (now.missing.some((p) => !priced.has(p.packHash)) || (now.mine.length === 0 && s.mine.length > 0)) {
+        setNotice('This repository changed since the price was shown. Check the new total and press Pin again.')
+        return
+      }
+      if (now.missing.length === 0 || run.signal.aborted) return
       const result = await spendAction({ running: `Pinning ${repo.name}…`, done: `Recorded your copies of ${repo.name}`, failed: `Pin of ${repo.name} stopped part-way` }, async (tag) => {
-        const r = await pinPacks(sdk, tag(signer), repo, profile, s.missing, { signal: run.signal, intent: `pin:${repo.repoId}:${intent}`, onProgress: (row) => setRows((prev) => ({ ...prev, [row.index]: row })) })
+        const r = await pinPacks(sdk, tag(signer), repo, profile, now.missing, { signal: run.signal, intent: `pin:${repo.repoId}:${intent}`, onProgress: (row) => setRows((prev) => ({ ...prev, [row.index]: row })) })
         if (r.recorded === 0 && r.failed > 0) throw new Error('No file could be copied: see the details.')
         return r
       })
@@ -66,7 +86,7 @@ export function usePublicPin(repo: RepoRef) {
   const unpin = async (): Promise<void> => {
     const s = status.data
     if (running || !sdk || !signer || s === null || s.mine.length === 0 || !guard.check(0, contract, 'unpin this repo')) return
-    setRunning('unpin'); setError(null); setRows({}); setSummary(null)
+    setRunning('unpin'); setError(null); setRows({}); setSummary(null); setNotice(null)
     try {
       await spendAction({ running: `Unpinning ${repo.name}…`, done: `Unpinned ${repo.name}`, failed: `Unpin of ${repo.name} stopped part-way` }, async (tag) => {
         for (const m of s.mine) await deleteMirror(sdk, tag(signer), repo, m.id)
@@ -80,7 +100,7 @@ export function usePublicPin(repo: RepoRef) {
   }
 
   return {
-    storage, status, profiles, profile, setChosen, running, error, summary,
+    storage, status, profiles, profile, setChosen, running, error, summary, notice, refresh,
     rows: Object.values(rows).sort((a, b) => a.index - b.index),
     start, unpin, cancel: () => controller.current?.abort(),
   }

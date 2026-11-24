@@ -16,6 +16,12 @@ const io = vi.hoisted(() => ({
   recordFail: null as Error | null,
   bytes: new Map<string, Uint8Array>(),
   parent: [] as PackManifest[],
+  browse: [] as PackManifest[],
+  last: null as Uint8Array | null,
+  servePublic: true,
+  signals: [] as boolean[],
+  onStore: null as null | (() => void),
+  mirrorsRead: 0,
 }))
 vi.mock('../view/browse-source', () => ({
   loadArtifactBytesProgress: async (_sdk: unknown, _repo: unknown, m: PackManifest) => {
@@ -26,8 +32,11 @@ vi.mock('../view/browse-source', () => ({
 }))
 vi.mock('./upload', async (orig) => ({
   ...(await orig<typeof import('./upload')>()),
-  storeFile: async (bytes: Uint8Array, opts: { policy: { targets: readonly string[] }; profiles: readonly StorageProfile[] }) => {
+  storeFile: async (bytes: Uint8Array, opts: { policy: { targets: readonly string[] }; profiles: readonly StorageProfile[]; signal?: AbortSignal }) => {
+    io.signals.push(opts.signal !== undefined)
+    io.onStore?.()
     if (io.storeFail) throw io.storeFail
+    io.last = bytes
     const s = opts.profiles[0]?.settings
     io.stored.push({ bytes: bytes.length, targets: opts.policy.targets, ...(s && 'publicGateway' in s ? { publicGateway: s.publicGateway } : {}) })
     return { uris: io.storeUris }
@@ -37,7 +46,15 @@ vi.mock('./util', async (orig) => ({
   ...(await orig<typeof import('./util')>()),
   timedFetch: async (url: string) => {
     io.fetched.push(url)
-    return { resp: { ok: io.gateway !== null }, bytes: async () => io.gateway ?? new Uint8Array(), discard: () => undefined }
+    const body = io.gateway ?? (io.servePublic ? io.last : null)
+    return {
+      resp: { ok: body !== null },
+      bytes: async (max = Infinity) => {
+        if (body !== null && body.length > max) throw new Error('the answer is too long')
+        return body ?? new Uint8Array()
+      },
+      discard: () => undefined,
+    }
   },
 }))
 vi.mock('../repo/pack-mirrors', async (orig) => ({
@@ -46,13 +63,22 @@ vi.mock('../repo/pack-mirrors', async (orig) => ({
     if (io.recordFail) throw io.recordFail
     io.recorded.push({ packHash, uris, ...(intent ? { intent } : {}) })
   },
+  mirrorsBy: async () => {
+    io.mirrorsRead++
+    return []
+  },
+  forgetMirrorsBy: vi.fn(),
 }))
 vi.mock('../repo/packs', async (orig) => ({
   ...(await orig<typeof import('../repo/packs')>()),
   readRepoPackManifests: async () => io.parent,
+  readBrowseManifests: async () => io.browse,
 }))
+vi.mock('../repo/members', async (orig) => ({ ...(await orig<typeof import('../repo/members')>()), invalidateMembers: vi.fn() }))
 
-const { COPY_MAX_BYTES, CopyFailed, copyableProfiles, forkCopier, forkCopyProfile, mirrorAddress, pinCost, pinLabel, pinPacks, pinStatus, readableByOthers, repoPacks, shareable } = await import('./pin-copies')
+const { COPY_MAX_BYTES, CopyFailed, copyableProfiles, forkCopier, forkCopyProfile, mirrorAddress, pinCost, pinLabel, pinPacks, pinStatus, pricedManifests, readPinStatus, readableByOthers, repoPacks, shareable, storageHolding } = await import('./pin-copies')
+const mirrors = await import('../repo/pack-mirrors')
+const members = await import('../repo/members')
 
 const REPO = { forge: { core: 'CORE', collab: 'C', community: 'M' }, repoId: 'R', ownerId: 'O', name: 'proj', visibility: 'public' } as unknown as RepoRef
 const s3 = (name: string, publicUrl = 'https://cdn.example'): StorageProfile => ({
@@ -84,6 +110,12 @@ beforeEach(() => {
   io.recordFail = null
   io.bytes = new Map(served)
   io.parent = []
+  io.browse = []
+  io.last = null
+  io.servePublic = true
+  io.signals = []
+  io.onStore = null
+  io.mirrorsRead = 0
 })
 
 describe('which storage a copy can use', () => {
@@ -154,10 +186,40 @@ describe('pinned state', () => {
     expect(pinLabel(pinStatus(packs, [mine(a.packHash), mine(b.packHash.toUpperCase())]))).toBe('Pinned')
   })
 
-  it('leaves packs too large for a browser out of the count', () => {
+  it('copies only what a browser can, and still counts a pack too large for it as new', () => {
     const status = pinStatus(repoPacks([a, big]), [])
     expect(status.missing.map((p) => p.packHash)).toEqual([a.packHash])
     expect(status.tooLarge.map((p) => p.packHash)).toEqual([big.packHash])
+    const mine = { id: 'm', repoId: 'R', packHash: a.packHash, kind: 1, uris: ['https://x.example/p'] }
+    expect(pinLabel(pinStatus(repoPacks([a, big]), [mine]))).toBe('Update pin (1 new)')
+  })
+
+  it('takes only pinnable kinds before grouping: an asset copy neither adds nor hides a pack', () => {
+    const asset = packOf(new Uint8Array([11]), 9, { kind: 4 })
+    const strangerPack: PackManifest = { ...asset, kind: 0, documentId: 's', uploader: 'S', ownerRole: null, createdAt: 10 }
+    expect(repoPacks([asset, strangerPack])).toEqual([])
+    const index = packOf(new Uint8Array([12]), 11, { kind: 2, uploader: 'S', ownerRole: null })
+    const memberIndex: PackManifest = { ...index, documentId: 'mi', uploader: 'O', ownerRole: 'maintainer', createdAt: 12 }
+    const assetOfIt: PackManifest = { ...index, kind: 4, documentId: 'ai', uploader: 'O', ownerRole: 'maintainer', createdAt: 1 }
+    const [only] = repoPacks([index, memberIndex, assetOfIt])
+    expect(only?.source.copies?.map((c) => c.documentId)).toEqual(['mi', index.documentId])
+    expect(only?.source.kind).toBe(2)
+  })
+
+  it('lists packs oldest first', () => {
+    const late = packOf(new Uint8Array([13]), 20)
+    const early = packOf(new Uint8Array([14]), 0, { kind: 5 })
+    expect(repoPacks([late, early]).map((p) => p.packHash)).toEqual([early.packHash, late.packHash])
+  })
+
+  it("reads manifests, roles and the signer's records afresh when asked", async () => {
+    io.parent = [a]
+    io.browse = []
+    expect((await readPinStatus({} as never, REPO, 'me')).packs).toEqual([])
+    const fresh = await readPinStatus({} as never, REPO, 'me', { fresh: true })
+    expect(fresh.packs.map((p) => p.packHash)).toEqual([a.packHash])
+    expect(mirrors.forgetMirrorsBy).toHaveBeenCalledWith('me')
+    expect(members.invalidateMembers).toHaveBeenCalledWith(REPO)
   })
 
   it('prices one record per pack', () => {
@@ -214,6 +276,55 @@ describe('pinning', () => {
     expect(io.recorded.map((r) => r.uris)).toEqual([['https://gw.example/ipfs/bafyq'], ['ipfs://bafyq']])
   })
 
+  it('cancelled during the upload, records nothing', async () => {
+    const run = new AbortController()
+    io.onStore = () => run.abort()
+    const rows: string[] = []
+    const done = await pinPacks({} as never, {} as never, REPO, s3('r2'), repoPacks([a, b]), { signal: run.signal, onProgress: (r) => rows.push(`${r.state}${r.why ? `: ${r.why}` : ''}`) })
+    expect(io.signals).toEqual([true])
+    expect(io.recorded).toEqual([])
+    expect(done.recorded).toBe(0)
+    expect(rows).toEqual(['copying', 'failed: Cancelled; press Pin to resume.'])
+  })
+
+  it('cancelled after the copy is made, signs nothing', async () => {
+    const run = new AbortController()
+    io.storeUris = ['ipfs://bafyq']
+    io.onStore = () => queueMicrotask(() => run.abort())
+    await pinPacks({} as never, {} as never, REPO, kubo('node'), repoPacks([a]), { signal: run.signal })
+    expect(io.stored).toHaveLength(1)
+    expect(io.recorded).toEqual([])
+  })
+
+  it('records an S3 public URL only after reading it back whole', async () => {
+    await pinPacks({} as never, {} as never, REPO, s3('r2'), repoPacks([a]))
+    expect(io.fetched).toEqual(['https://cdn.example/forge/x'])
+    expect(io.recorded).toHaveLength(1)
+  })
+
+  it('fails the pack, recording nothing, when the S3 public URL does not serve it', async () => {
+    const rows: string[] = []
+    io.servePublic = false
+    const done = await pinPacks({} as never, {} as never, REPO, s3('r2'), repoPacks([a, b]), { onProgress: (r) => rows.push(`${r.state}${r.why ? `: ${r.why}` : ''}`) })
+    expect(done).toEqual({ recorded: 0, failed: 2, sizeBytes: 0 })
+    expect(io.recorded).toEqual([])
+    expect(rows).toContain('failed: cdn.example did not serve the copy whole to an anonymous read, so it was not recorded')
+    io.servePublic = true
+    io.gateway = new Uint8Array([9, 9, 9])
+    expect((await pinPacks({} as never, {} as never, REPO, s3('r2'), repoPacks([a]))).recorded).toBe(0)
+    io.gateway = new Uint8Array([1, 2, 3, 4])
+    expect((await pinPacks({} as never, {} as never, REPO, s3('r2'), repoPacks([a]))).recorded).toBe(0)
+  })
+
+  it("scrubs the profile's own secrets from what it reports", async () => {
+    const profile = { ...s3('r2'), secrets: { accessKeyId: 'AKIAEXAMPLEKEY', secretAccessKey: 'wJalrXUtnFEMIsecret' } }
+    io.storeFail = new Error('refused: key AKIAEXAMPLEKEY secret wJalrXUtnFEMIsecret')
+    const rows: string[] = []
+    const err = await pinPacks({} as never, {} as never, REPO, profile, repoPacks([a]), { onProgress: (r) => rows.push(r.why ?? '') }).catch((e: Error) => e)
+    expect(`${String(err)} ${rows.join(' ')}`).not.toMatch(/AKIAEXAMPLEKEY|wJalrXUtnFEMIsecret/)
+    expect(String(err)).toContain('[redacted]')
+  })
+
   it('keeps credentials out of what it reports', async () => {
     io.storeFail = new Error('PUT https://key:hunter2@s3.example/x?X-Amz-Signature=abcdef failed')
     const rows: string[] = []
@@ -224,6 +335,34 @@ describe('pinning', () => {
 
   it('never pins a private repository to storage', async () => {
     await expect(pinPacks({} as never, {} as never, { ...REPO, visibility: 'private' } as RepoRef, s3('r2'), [])).rejects.toThrow(/public repository/)
+  })
+})
+
+describe("where a fork's copies go and what they cost", () => {
+  const plan = {
+    manifests: [
+      { packHash: 'aa'.repeat(32), kind: 0, sizeBytes: 1, objectCount: 1, chunkCount: 0, storage: 1, uris: ['https://parent.example/a'], supersedes: [] },
+      { packHash: 'bb'.repeat(32), kind: 0, sizeBytes: 1, objectCount: 1, chunkCount: 0, storage: 1, uris: ['platform://CORE/R/O/bb'], supersedes: [] },
+    ],
+    onPlatform: new Set(['bb'.repeat(32)]),
+  } as unknown as Parameters<typeof pricedManifests>[0]
+
+  it("prices the forker's own addresses into each copied manifest, not into Platform-held ones", () => {
+    expect(pricedManifests(plan, null)).toEqual(plan.manifests)
+    const priced = pricedManifests(plan, kubo('node', 'https://gw.example'))
+    expect(priced[0]?.uris).toEqual([expect.stringMatching(/^https:\/\/gw\.example\/ipfs\/bafkrei/), expect.stringMatching(/^ipfs:\/\/bafkrei/), 'https://parent.example/a'])
+    expect(priced[1]?.uris).toEqual(['platform://CORE/R/O/bb'])
+    expect(pricedManifests(plan, s3('r2'))[0]?.uris[0]).toMatch(/^https:\/\/cdn\.example\/forge\//)
+  })
+
+  it("syncs to the profile that holds the fork's earlier copies", () => {
+    const config = { profiles: [s3('first', 'https://first.example'), s3('held', 'https://held.example/'), kubo('node')] }
+    const mine = [{ uploader: 'me', uris: ['https://held.example/forge/aa', 'https://parent.example/a'] }]
+    expect(storageHolding(mine, 'me', config)?.name).toBe('held')
+    expect(storageHolding([{ uploader: 'other', uris: ['https://held.example/forge/aa'] }], 'me', config)).toBeNull()
+    expect(storageHolding([{ uploader: 'me', uris: ['https://parent.example/a', 'https://held.example/x'] }], 'me', config)).toBeNull()
+    expect(storageHolding([{ uploader: 'me', uris: ['https://held.example.evil/x'] }], 'me', config)).toBeNull()
+    expect(storageHolding(mine, 'me', null)).toBeNull()
   })
 })
 

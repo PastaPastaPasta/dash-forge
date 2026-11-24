@@ -39,6 +39,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { PACK_KIND } from '../constants'
+import { isRecordableUri } from '../net'
 import type { ForgeIds } from '../deployments'
 import { orderPackCopies, type Role } from '../rules/v2'
 import { bytesToBase64, queryAllDocuments, queryDocumentsWithProof, type WriteAuth } from '../sdk'
@@ -50,7 +51,6 @@ import { manifestUrisProblem, refNameHash, writePackManifest, writeRefUpdate, ty
 import { readRefs, resolveRefByHash, type ResolvedRef } from './refs'
 import { readRepoById, toRepoDoc, repoRefOf, type RepoDoc } from './resolveRepo'
 import { createRepo, normalizeRepoName } from './writes'
-import { fitManifestUris } from '../storage/upload'
 
 /** One copy of a parent pack, as the plan needs it (a `PackManifest` fits). */
 export type ForkCopy = Pick<
@@ -70,10 +70,20 @@ export function platformLocator(forge: ForgeIds, repoId: string, uploader: strin
  * up with the parent's. Parity: forge-core `fork::plan_manifests`.
  */
 export function planManifests<C extends ForkCopy>(parent: readonly C[], forkHas: ReadonlySet<string>): C[][] {
+  return copyGroups(parent, (m) => m.kind === PACK_KIND.GIT_PACK && !forkHas.has(m.packHash.toLowerCase()))
+}
+
+/**
+ * The copies in `manifests` that `keep` accepts, grouped by pack hash, each group in reader
+ * order (current maintainers, then writers, then anyone; each by `($createdAt, $id)`), groups
+ * ordered by their pack's first upload. Parity: forge-core `fork::plan_manifests`,
+ * `own_copy::pin_groups`.
+ */
+export function copyGroups<C extends ForkCopy>(manifests: readonly C[], keep: (m: C) => boolean): C[][] {
   const byHash = new Map<string, C[]>()
-  for (const m of parent) {
+  for (const m of manifests) {
     const hash = m.packHash.toLowerCase()
-    if (m.kind !== PACK_KIND.GIT_PACK || forkHas.has(hash)) continue
+    if (!keep(m)) continue
     const group = byHash.get(hash)
     if (group === undefined) byHash.set(hash, [m])
     else group.push(m)
@@ -135,21 +145,29 @@ export function forkManifest(forge: ForgeIds, parentRepoId: string, copies: read
  */
 export type CopyPack = (packHash: string, source?: PackManifest) => Promise<readonly string[]>
 
-/** Whether the parent holds `planned` on Platform: permanent, so a fork never copies it. */
-export function onPlatform(planned: Pick<PackManifestInput, 'uris'>): boolean {
-  return planned.uris.some((u) => u.startsWith('platform://'))
+/**
+ * Whether the parent holds this pack on Platform (some copy has `storage` 0): permanent, so a
+ * fork never copies it. Parity: forge-core `fork::fork_repo` (`on_platform`).
+ */
+export function heldOnPlatform(copies: readonly Pick<ForkCopy, 'storage'>[]): boolean {
+  return copies.some((m) => m.storage === 0)
 }
 
 /**
- * `manifest` naming the forker's own copy first, then the parent's addresses while they fit the
- * manifest's URI budget.
+ * `manifest` naming the forker's own addresses first, then the parent's, each once; when the
+ * list is over the manifest's URI budget the parent's private `s3://` locators go, then the
+ * tail. Parity: forge-core `own_copy::with_own_first`.
  */
 export function withOwnCopy(manifest: PackManifestInput, own: readonly string[]): PackManifestInput {
-  let uris = fitManifestUris(own)
-  for (const u of manifest.uris) {
-    if (!uris.includes(u) && manifestUrisProblem([...uris, u]) === null) uris = [...uris, u]
+  const bad = own.find((u) => !isRecordableUri(u))
+  if (bad !== undefined) throw new Error(`refusing to record ${bad} on Platform: only public https addresses can be read by others`)
+  const enc = new TextEncoder()
+  let uris: string[] = []
+  for (const u of [...own, ...manifest.uris]) {
+    if (!uris.includes(u) && enc.encode(u).length <= MANIFEST_URI_MAX_LEN) uris.push(u)
   }
-  return { ...manifest, uris }
+  if (manifestUrisProblem(uris) !== null) uris = uris.filter((u) => own.includes(u) || !u.startsWith('s3://'))
+  return { ...manifest, uris: uris.slice(0, MANIFEST_MAX_URIS) }
 }
 
 /** A ref and the tip it resolves to (a diverged ref at its provisional tip), or null. */
@@ -246,24 +264,31 @@ export function recordedPacks(fork: readonly Pick<PackManifest, 'kind' | 'packHa
 export interface SyncManifests {
   readonly manifests: readonly PackManifestInput[]
   readonly unreferenceable: readonly string[]
+  /** Packs (lowercase hashes) the parent holds on Platform ({@link heldOnPlatform}): never copied. */
+  readonly onPlatform: ReadonlySet<string>
 }
 
 /** {@link SyncManifests} from both repos' manifests. Parity: forge-core `fork::plan_sync_manifests`. */
 export function planSyncManifests(parent: RepoRef, parentManifests: readonly PackManifest[], forkManifests: readonly PackManifest[]): SyncManifests {
   const manifests: PackManifestInput[] = []
   const unreferenceable: string[] = []
+  const onPlatform = new Set<string>()
   for (const copies of planManifests(parentManifests, recordedPacks(forkManifests))) {
     const input = forkManifest(parent.forge, parent.repoId, copies)
-    if (input === null) unreferenceable.push((copies[0] as PackManifest).packHash)
-    else manifests.push(input)
+    if (input === null) {
+      unreferenceable.push((copies[0] as PackManifest).packHash)
+      continue
+    }
+    manifests.push(input)
+    if (heldOnPlatform(copies)) onPlatform.add(input.packHash)
   }
-  return { manifests, unreferenceable }
+  return { manifests, unreferenceable, onPlatform }
 }
 
-/** Read both repos' manifests and plan a sync's ({@link planSyncManifests}). */
-export async function readSyncManifests(sdk: EvoSDK, fork: RepoRef, parent: RepoRef): Promise<SyncManifests> {
+/** Read both repos' manifests and plan a sync's ({@link planSyncManifests}); `fork`: the fork's manifests. */
+export async function readSyncManifests(sdk: EvoSDK, fork: RepoRef, parent: RepoRef): Promise<SyncManifests & { readonly fork: readonly PackManifest[] }> {
   const [p, f] = await Promise.all([readRepoPackManifests(sdk, parent), readRepoPackManifests(sdk, fork)])
-  return planSyncManifests(parent, p, f)
+  return { ...planSyncManifests(parent, p, f), fork: f }
 }
 
 /**
@@ -286,7 +311,7 @@ export async function syncFork(
   }
   const manifests: PackManifestInput[] = []
   for (const planned of input.plan.manifests) {
-    manifests.push(input.copy && !onPlatform(planned) ? withOwnCopy(planned, await input.copy(planned.packHash)) : planned)
+    manifests.push(input.copy && !input.plan.onPlatform.has(planned.packHash) ? withOwnCopy(planned, await input.copy(planned.packHash)) : planned)
   }
   const total = manifests.length + 1
   let done = 0
@@ -438,7 +463,7 @@ export async function forkRepoV2(
       unreferenceable.push((copies[0] as PackManifest).packHash)
       continue
     }
-    const manifest = input.copy && !onPlatform(planned) ? withOwnCopy(planned, await input.copy(planned.packHash, { ...(copies[0] as PackManifest), copies })) : planned
+    const manifest = input.copy && !heldOnPlatform(copies) ? withOwnCopy(planned, await input.copy(planned.packHash, { ...(copies[0] as PackManifest), copies })) : planned
     await writePackManifest(sdk, auth, fork, manifest, `fork:${fork.repoId}:manifest:${manifest.packHash}`)
     written += 1
     onProgress?.({ step: 'manifests', state: 'start', done: written, total: plan.length })

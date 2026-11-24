@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { redactSecrets } from './redact'
+import { redactSecrets, redactValues } from './redact'
 
 describe('redactSecrets', () => {
   it('scrubs URL userinfo, credential key=value pairs, Authorization values and bearer tokens', () => {
@@ -15,5 +15,15 @@ describe('redactSecrets', () => {
 
   it('leaves prose and placeholders alone', () => {
     for (const s of ['a basic idea', 'monkey=banana', 'pass token=<token> here', 'HTTP 403 from cdn.example']) expect(redactSecrets(s)).toBe(s)
+  })
+})
+
+describe('redactValues', () => {
+  it("replaces a profile's actual secret values, and the token of an Authorization value", () => {
+    expect(redactValues('denied for wJalrXUtnFEMI and dXNlcjpwYXNz', ['wJalrXUtnFEMI', 'Basic dXNlcjpwYXNz', undefined])).toBe('denied for [redacted] and [redacted]')
+  })
+
+  it('leaves short values alone', () => {
+    expect(redactValues('a key k here', ['k', 'abc'])).toBe('a key k here')
   })
 })

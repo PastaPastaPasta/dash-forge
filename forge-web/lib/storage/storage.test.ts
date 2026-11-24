@@ -39,7 +39,9 @@ import {
   withRepoPolicy,
   withoutProfile,
 } from './store'
-import { ReplicationError, PlatformDeclinedError, fitManifestUris, orderUris, storeArtifact } from './upload'
+import { ReplicationError, PlatformDeclinedError, fitManifestUris, orderUris, storeArtifact, storeFile } from './upload'
+import { timedFetch } from './util'
+import { addVerified } from './ipfs'
 import { sha256Hex } from './sigv4'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from '../repo/contract'
@@ -561,5 +563,56 @@ describe('storeArtifact', () => {
     const confirm = vi.fn(async () => false)
     await expect(storeArtifact(SDK, AUTH, REPO, bytes, { policy: null, profiles: [], confirmPlatform: confirm })).rejects.toBeInstanceOf(PlatformDeclinedError)
     expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ bytes: bytes.length, estimateCredits: expect.any(Number) }))
+  })
+})
+
+describe('a cancelled upload', () => {
+  const bytes = new TextEncoder().encode('PACK a small pack')
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('stops an S3 copy and throws, so nothing is recorded after it', async () => {
+    const net = fakeNetwork()
+    vi.stubGlobal('fetch', vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError')
+      return net.fetchMock(u, init)
+    }))
+    const run = new AbortController()
+    run.abort()
+    await expect(storeFile(bytes, { policy: policyFor(['r2-main'], 'one'), profiles: [S3], signal: run.signal })).rejects.toThrow('Cancelled')
+    expect(net.puts).toEqual([])
+  })
+
+  it('stops an IPFS add mid-way', async () => {
+    const run = new AbortController()
+    vi.stubGlobal('fetch', vi.fn(async (_u: unknown, init?: RequestInit) => {
+      run.abort()
+      if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError')
+      return new Response('{}')
+    }))
+    await expect(storeFile(bytes, { policy: policyFor(['kubo'], 'one'), profiles: [KUBO], signal: run.signal })).rejects.toThrow('Cancelled')
+  })
+})
+
+describe('a bounded read', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('stops past the limit, from the length header or the body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(10))))
+    await expect((await timedFetch('https://x.example/a', {})).bytes(9)).rejects.toThrow(/longer than 9 bytes/)
+    expect((await (await timedFetch('https://x.example/a', {})).bytes(10)).length).toBe(10)
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(6)); c.enqueue(new Uint8Array(6)); c.close() } })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream)))
+    await expect((await timedFetch('https://x.example/b', {})).bytes(8)).rejects.toThrow(/longer than 8 bytes/)
+  })
+})
+
+describe('kubo errors', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("keeps an auth refusal's body out of the message", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"Message":"bad token Basic dXNlcjpzZWNyZXQ="}', { status: 401 })))
+    const err = await addVerified(KUBO.settings as never, { apiAuth: 'Basic dXNlcjpzZWNyZXQ=' }, new Uint8Array([1])).catch((e: Error) => e)
+    expect(String(err)).toContain('HTTP 401')
+    expect(String(err)).not.toContain('dXNlcjpzZWNyZXQ')
   })
 })

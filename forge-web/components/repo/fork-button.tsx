@@ -16,8 +16,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
-import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, onPlatform, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
-import { CopyFailed, forkCopier, forkCopyProfile, type CopyState } from '@/lib/storage/pin-copies'
+import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
+import { CopyFailed, forkCopier, forkCopyProfile, pricedManifests, type CopyState } from '@/lib/storage/pin-copies'
 import { redactSecrets } from '@/lib/redact'
 import { withoutMirrorMarker } from '@/lib/view/mirror-source'
 import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
@@ -100,9 +100,10 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const guard = useWriteGuard()
   const router = useRouter()
   const storage = useStorageConfig()
-  const target = forkCopyProfile(storage.config)
+  const target = forkCopyProfile(storage.usable)
   const [byReference, setByReference] = useState(false)
   const copyTo = byReference ? null : target
+  const unreadable = target === null && !storage.loading && (storage.sealed || (storage.usable === null && storage.error !== null))
   const [copies, setCopies] = useState<Record<string, { state: CopyState; why?: string }>>({})
 
   const [name, setName] = useState(parent.name)
@@ -157,7 +158,7 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const refs = useMemo(() => (plan.data?.refs ?? []).filter((r) => !defaultOnly || r.refName === defaultRef), [plan.data, defaultOnly, defaultRef])
   const cost = useMemo(() => {
     const p = plan.data
-    const manifests = p?.manifests ?? []
+    const manifests = p === null ? [] : pricedManifests(p, copyTo)
     // After the fork's repo document, the owner has written to forge-core, and the new repo has
     // no config, pack or ref yet: its first of each builds the repo's subtrees, and each ref name
     // is new to it (QW3-037: the plan priced every write as a steady one).
@@ -169,7 +170,7 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
       ...manifests.map((m, i) => previewCreate('packManifest', { uris: m.uris }, { ...after, repo: i === 0 })),
       ...refs.map((r, i) => previewCreate('refUpdate', { refName: r.refName }, { ...after, repo: i === 0, target: true })),
     ])
-  }, [plan.data, refs, normalized, parent.name, description, defaults.defaultBranch])
+  }, [plan.data, copyTo, refs, normalized, parent.name, description, defaults.defaultBranch])
 
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending || nameError !== null || descriptionError !== null || check?.kind === 'taken') return
@@ -220,7 +221,10 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   }
 
   const p = plan.data
-  const toCopy = copyTo ? (p?.manifests ?? []).filter((m) => !onPlatform(m)) : []
+  const copyable = (p?.manifests ?? []).filter((m) => !p?.onPlatform.has(m.packHash))
+  const toCopy = copyTo ? copyable : []
+  // Stored settings this tab cannot open: never fall back to by-reference without being asked.
+  const blocked = unreadable && !byReference && copyable.length > 0
   return (
     <Dialog
       open
@@ -232,9 +236,11 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           <Button variant="ghost" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={run} loading={pending || storage.loading} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
-            {check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork'}
-          </Button>
+          {blocked ? null : (
+            <Button variant="primary" onClick={run} loading={pending || storage.loading} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
+              {check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork'}
+            </Button>
+          )}
         </>
       }
     >
@@ -318,8 +324,29 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
               Don&apos;t copy to {target.name}: keep the files on {parent.name}&apos;s storage.
             </label>
           </details>
-        ) : storage.loading ? null : storage.needsUnlock ? (
-          <UnlockMore title="Unlock this tab to copy the files to your storage" />
+        ) : storage.loading ? null : blocked ? (
+          <div className="space-y-2" data-testid="fork-storage-locked">
+            {storage.sealed ? (
+              <UnlockMore title="Unlock this tab to copy the files to your storage" />
+            ) : (
+              <p className="text-dense">
+                Couldn&apos;t open your storage settings.{' '}
+                <Button variant="outline" size="sm" onClick={storage.reload}>
+                  Try again
+                </Button>
+              </p>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => setByReference(true)} data-testid="fork-skip-copy">
+              Fork without copying
+            </Button>
+          </div>
+        ) : unreadable && byReference ? (
+          <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="fork-storage">
+            Files stay on {parent.name}&apos;s storage.{' '}
+            <button type="button" className="underline" onClick={() => setByReference(false)} disabled={pending}>
+              Copy them to your storage
+            </button>
+          </p>
         ) : (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="fork-storage">
             Files stay on {parent.name}&apos;s storage.{' '}

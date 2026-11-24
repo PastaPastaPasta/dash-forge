@@ -22,9 +22,11 @@ A pin of a **public** repository:
 3. **Record.** For each pack, one `packMirror` document (`repoId`, `packHash`, `kind`,
    `uris`), written by the pinner. The contract allows one per
    `(repoId, packHash, $ownerId)` and only for a public repo. Which address is recorded:
-   - **S3/R2 with a public URL:** that `https://` URL (kind 1).
-   - **IPFS with a public gateway:** `https://<gateway>/ipfs/<cid>` (kind 1). Readers reach the
-     pinner's node directly instead of waiting on the DHT.
+   - **S3/R2 with a public URL:** that `https://` URL (kind 1), once an anonymous read of it
+     returns the whole pack. If it does not, nothing is recorded for that pack.
+   - **IPFS with a public gateway:** `https://<gateway>/ipfs/<cid>` (kind 1), once it serves the
+     whole pack; until then the `ipfs://<cid>`. Readers reach the pinner's node directly
+     instead of waiting on the DHT.
    - **IPFS without a public gateway:** `ipfs://<cid>` (kind 2). Readers' gateways find it on
      the IPFS network.
    - **S3 without a public URL, or Platform:** not offered. Nobody else can read a private
