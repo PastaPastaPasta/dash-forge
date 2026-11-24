@@ -42,7 +42,7 @@ export function UnlockMore({
   /** Offer the recovery route; off where it is already on screen (the sign-in sheet, a dialog). */
   forgot?: boolean
 }): JSX.Element {
-  const { identity, vaults, controller, isLoading, locked } = useAuth()
+  const { identity, vaults, controller, isLoading, locked, logout } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   // The passphrase lives only in the input's value property (an uncontrolled input): React
   // mirrors a controlled input's value into the `value` attribute, which puts it in the DOM.
@@ -130,7 +130,15 @@ export function UnlockMore({
       {forgot ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid={`${testId}-forgot`}>
           {methods.includes('passphrase') ? 'Forgot the passphrase' : methods.includes('passkey') ? 'Lost the passkey' : 'Key not working'}?{' '}
-          <button type="button" onClick={() => openLogin(ACTIVE_NETWORK.network === 'mainnet' ? 'wallet' : 'import')} className="hit-area text-forge-700 underline dark:text-forge-400">
+          <button
+            type="button"
+            onClick={() => {
+              // Mainnet: a fresh wallet sign-in, from a locked tab (storing it over this key would ask for the forgotten unlock).
+              if (ACTIVE_NETWORK.network === 'mainnet') {
+                logout()
+                openLogin('wallet')
+              } else openLogin('import')
+            }} className="hit-area text-forge-700 underline dark:text-forge-400">
             {ACTIVE_NETWORK.network === 'mainnet' ? 'Sign in again with your wallet' : 'Replace this key with your recovery phrase or identity file'}
           </button>
         </p>
@@ -144,7 +152,7 @@ export function UnlockMore({
  * wallet grants need a passkey or passphrase on it first (no new key, no fee).
  */
 function ProtectThisKey({ testId, then }: { testId: string; then?: () => void }): JSX.Element {
-  const { controller, isLoading } = useAuth()
+  const { protectKey, isLoading } = useAuth()
   const { fields, protection, problem } = useProtection({ allowDevice: false })
   const [error, setError] = useState<string | null>(null)
   const go = async (): Promise<void> => {
@@ -154,7 +162,7 @@ function ProtectThisKey({ testId, then }: { testId: string; then?: () => void })
     }
     setError(null)
     try {
-      await controller.protectKey(protection)
+      await protectKey(protection)
       then?.()
     } catch (e) {
       setError(errorMessage(e))

@@ -134,6 +134,8 @@ interface AuthContextValue {
   readonly unlimitedKey: boolean
   readonly unboundedKey: boolean
   unlock: (identityId: string, method: UnlockMethod) => Promise<void>
+  /** Add a passkey or passphrase to a key kept by this browser alone, then open the rest of the vault. */
+  protectKey: (protection: Protection) => Promise<void>
   /** Advanced: a pasted key, for this tab only. */
   loginWithRawKey: (identityId: string, privateKey: string) => Promise<void>
   refreshBalance: () => Promise<void>
@@ -280,6 +282,7 @@ export function AuthProvider({
       adoptHandoffKey: withReload(controller.adoptHandoffKey.bind(controller)),
       adoptWalletKeys: withReload(controller.adoptWalletKeys.bind(controller)),
       unlock: withReload(controller.unlock.bind(controller)),
+      protectKey: withReload(controller.protectKey.bind(controller)),
       loginWithRawKey: withReload(controller.loginWithRawKey.bind(controller)),
       refreshBalance: () => controller.refreshBalance(),
       recheckSession: async () => {

@@ -198,8 +198,9 @@ export function markDeviceOpened(): void {
 }
 
 /**
- * Whether a page load may open a key kept by this browser alone without asking: not after a lock
- * (Lock, sign-out, the 12-hour lock) until the next time it was opened on purpose.
+ * Whether a page load may open a key kept by this browser alone without asking: not after Lock,
+ * sign-out or a key found unusable, until it is next opened on purpose. The 12-hour lock of an
+ * open tab does not count: a browser-only key is meant to stay signed in here.
  */
 export function deviceResumeAllowed(): boolean {
   return readMarker(DEVICE_OPENED_KEY) > lockMarker()

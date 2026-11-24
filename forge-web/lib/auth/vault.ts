@@ -688,16 +688,25 @@ export async function protectVault(network: Network, identityId: string, protect
   const record = await idbGet<VaultRecord>('vault', at)
   const slot = record?.slots.find((x) => x.kind === 'device')
   if (record === undefined || slot?.kind !== 'device') throw new VaultLockedError('this key is already protected')
-  const dataKey = new Uint8Array(
+  // Nothing else is sealed under a browser-only record, so it moves to a fresh data key: the old
+  // one was as readable as the browser profile.
+  await assertDeviceOnlyFits(network, identityId, undefined)
+  const oldKey = new Uint8Array(
     await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(slot.iv), additionalData: buf(aad(network, identityId, 'device')) }, slot.wrapKey, buf(slot.wrapped)),
   )
+  const dataKey = random(32)
   try {
-    const slots = await wrapSlots(network, identityId, { ...(protection.passphrase ? { passphrase: protection.passphrase } : {}), ...(protection.passkey ? { passkey: protection.passkey } : {}) }, dataKey)
+    const body = await open(oldKey, record.iv, record.ciphertext, aad(network, identityId, 'body'))
+    const main = JSON.parse(new TextDecoder().decode(body)) as Omit<VaultSecret, 'extra'>
+    body.fill(0)
+    const chosen: Protection = { ...(protection.passphrase ? { passphrase: protection.passphrase } : {}), ...(protection.passkey ? { passkey: protection.passkey } : {}) }
+    const sealed = await sealRecord(network, { identityId: main.identityId, keyId: main.keyId, wif: main.wif }, chosen, dataKey)
     await idbUpdate<VaultRecord>('vault', at, (current) => {
       if (current?.keyId !== record.keyId) throw new VaultChangedError()
-      return [[at, { ...current, slots }]]
+      return [[at, { ...current, iv: sealed.iv, ciphertext: sealed.ciphertext, slots: sealed.slots }]]
     })
   } finally {
+    oldKey.fill(0)
     dataKey.fill(0)
   }
   const opened = await unlockWithProtection(network, identityId, protection)
@@ -1266,9 +1275,13 @@ export async function unlockWithPasskey(network: Network, identityId: string, no
   return unlockWith(network, identityId, 'passkey', note)
 }
 
-/** Unlock a key stored for this browser alone (no prompt). */
-export async function unlockWithDevice(network: Network, identityId: string): Promise<VaultSecret> {
-  return unlockWith(network, identityId, 'device')
+/**
+ * Unlock a key stored for this browser alone (no prompt). `autoSince`: a page load opening it by
+ * itself, refused when a lock happened anywhere since that marker; it does not count as opening
+ * it on purpose (a later page load still respects that lock).
+ */
+export async function unlockWithDevice(network: Network, identityId: string, autoSince?: number): Promise<VaultSecret> {
+  return unlockWith(network, identityId, 'device', undefined, autoSince)
 }
 
 /**
@@ -1278,9 +1291,9 @@ export async function unlockWithDevice(network: Network, identityId: string): Pr
  * replaces. The controller then asks Platform and finishes or keeps the staged key. Each
  * record is only ever opened with its own slots; neither stands in for the other.
  */
-async function unlockWith(network: Network, identityId: string, method: UnlockMethod, note?: PasskeyPromptNote): Promise<VaultSecret> {
+async function unlockWith(network: Network, identityId: string, method: UnlockMethod, note?: PasskeyPromptNote, autoSince?: number): Promise<VaultSecret> {
   assertDedicatedOrigin()
-  const lockMarkerAt = lockMarker()
+  const lockMarkerAt = autoSince ?? lockMarker()
   const main = await idbGet<VaultRecord>('vault', key(network, identityId))
   const staged = await idbGet<VaultRecord>('vault', stagedKey(network, identityId))
   const kind: UnlockKind = method === 'passkey' || method === 'device' ? method : 'passphrase'
@@ -1297,7 +1310,8 @@ async function unlockWith(network: Network, identityId: string, method: UnlockMe
     }
     const opened = await openRecord(network, record, method, record === main)
     if (opened !== null) {
-      if (method === 'device') markDeviceOpened()
+      if (autoSince !== undefined && lockMarker() !== autoSince) throw new VaultLockedError('locked while this page was loading')
+      if (method === 'device' && autoSince === undefined) markDeviceOpened()
       // An interactive unlock over a resumed session keeps its first unlock's 12-hour lock.
       const at = unlockedFor(network, identityId)?.at
       setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(opened.blobKeys === null ? { scope: 'signing' as const } : {}), ...(at !== undefined ? { at } : {}) })

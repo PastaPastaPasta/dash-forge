@@ -54,7 +54,7 @@ import { checkUsername } from '../view/username'
 import { deriveMasterKey, invalidMnemonicMessage, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS, withPlatformRead } from './connect'
-import { askToUnlockEveryVisit, deviceResumeAllowed, framed } from './session-resume'
+import { askToUnlockEveryVisit, deviceResumeAllowed, framed, lockMarker } from './session-resume'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
@@ -868,12 +868,13 @@ export class AuthController {
   private async resumeDeviceKey(): Promise<boolean> {
     // Never in a frame or on a shared origin, and never after a lock until opened on purpose.
     if (askToUnlockEveryVisit() || framed() || sharedOriginProblem() !== null || !deviceResumeAllowed()) return false
+    const since = lockMarker()
     const vaults = await withTimeout(listVaults(this.network), PLATFORM_READ_MS, 'Reading the stored keys').catch(() => [])
     // The identity this browser used last, never another one it happens to hold.
     const last = readLastIdentity(this.network)
     const device = vaults.find((v) => v.identityId === last && v.staged !== true && v.methods.length === 1 && v.methods[0] === 'device')
     if (device === undefined || this.state.session !== null) return false
-    return this.unlock(device.identityId, 'device').then(
+    return this.unlock(device.identityId, 'device', since).then(
       () => true,
       () => false,
     )
@@ -1504,7 +1505,8 @@ export class AuthController {
   }
 
   /** Unlock a stored vault and open its session. */
-  async unlock(identityId: string, method: UnlockMethod): Promise<AuthSession> {
+  /** `autoSince`: a page load opening a browser-only key by itself ({@link unlockWithDevice}). */
+  async unlock(identityId: string, method: UnlockMethod, autoSince?: number): Promise<AuthSession> {
     return this.run(async () => {
       // Connect first: a connect that times out then fails before the passphrase (Argon2id)
       // or passkey prompt, so "Try again" does not ask for them twice.
@@ -1516,7 +1518,7 @@ export class AuthController {
         method === 'passkey'
           ? await unlockWithPasskey(this.network, identityId, (why) => this.step(why))
           : method === 'device'
-            ? await unlockWithDevice(this.network, identityId)
+            ? await unlockWithDevice(this.network, identityId, autoSince)
             : await unlockWithPassphrase(this.network, identityId, method.passphrase)
       const { secret: finished, status } = await this.finishStagedRenewal(identityId, method)
       if (finished) return this.keyChanged(await this.open(finished, 'vault'))
