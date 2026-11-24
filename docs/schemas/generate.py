@@ -251,9 +251,20 @@ cmd('repo clone', 'Where the repository was cloned.', {
 cmd('repo fork', 'A fork of a repository.', {
     'status': E('forked', 'exists'), 'repoId': S, 'ownerId': S, 'name': S, 'forkOf': S, 'parent': S, 'remoteUrl': S,
     'manifestsWritten': I, 'platformPacksReferenced': I, 'manifestsExisting': I, 'unreferenceablePacks': SA,
-    'refsWritten': D('The refs this run wrote to the fork.', SA), 'cost': COST, 'pin': OBJ,
+    'refsWritten': D('The refs this run wrote to the fork.', SA),
+    'packsCopied': D('Parent packs copied to your own storage and listed first in their manifests.', I),
+    'cost': COST, 'pin': OBJ,
 }, ['status', 'repoId'])
-cmd('repo sync', 'A fork brought up to date with its parent.', {'status': S}, ['status'])
+cmd('repo sync', 'A fork brought up to date with its parent.', {'status': S, 'packsCopied': I}, ['status'])
+cmd('repo pin', 'A repository\'s packs copied to your storage and recorded as pack mirrors, or followed repositories refreshed (`--all`).', {
+    'status': E('pinned', 'planned', 'partial', 'refreshed'), 'repo': S, 'repoId': S, 'storage': S,
+    'packsCopied': I, 'packsAlready': I, 'packsPlanned': I, 'bytes': I, 'failed': ANY,
+    'estimate': D('What recording the planned packs costs, before it is paid.', COST), 'cost': COST, 'following': B,
+    'repos': A(OBJ),
+}, ['status'])
+cmd('repo unpin', 'Your pack mirror records for a repository deleted.', {
+    'status': E('unpinned', 'partial'), 'repo': S, 'recordsRemoved': I, 'recordsLeft': I,
+}, ['status', 'repo', 'recordsRemoved'])
 STAR = {'status': S, 'repo': S, 'starred': B, 'stars': nl(I), 'cost': NCOST}
 cmd('repo star', 'The repository starred.', STAR, ['status', 'repo'])
 cmd('repo unstar', 'The star removed.', STAR, ['status', 'repo'])

@@ -55,6 +55,10 @@
       },
       "description": "The refs this run wrote to the fork."
     },
+    "packsCopied": {
+      "type": "integer",
+      "description": "Parent packs copied to your own storage and listed first in their manifests."
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     },
