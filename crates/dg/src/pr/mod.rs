@@ -4449,6 +4449,17 @@ struct Located {
     private: bool,
     /// A members-only PR from a members-only branch (its head is the real commit here).
     members: bool,
+    /// Merged PRs only: what their merge recorded.
+    merged: Option<MergedAt>,
+}
+
+/// A merged PR's recorded merge, which `dg pr diff` compares (#670): its base now contains the
+/// head, so the diff starts from the tip the merge built on, as `dg pr verify` and the web judge it.
+struct MergedAt {
+    /// The base tip just before the merge, or `None` when no recorded merge names one.
+    tip_before: Option<String>,
+    /// The head as it was merged.
+    head: String,
 }
 
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
@@ -4474,11 +4485,19 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
     } else {
         view.head.clone()
     };
+    let merged = recorded_merge(&view, members, &head);
     let (source, base_ref) = (view.patch.source_repo_id, view.merge_base.ref_name);
     // Every field came from a document anyone could have written: check the shapes before
     // any of them reaches git.
     if !git::is_oid(&head) {
         anyhow::bail!("PR #{number} names a malformed head commit {head:?}");
+    }
+    if let Some(m) = &merged {
+        for oid in m.tip_before.iter().chain([&m.head]) {
+            if !git::is_oid(oid) {
+                anyhow::bail!("PR #{number}'s merge names a malformed commit {oid:?}");
+            }
+        }
     }
     Ok(Located {
         source,
@@ -4487,6 +4506,7 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
         target,
         private: members || s.repo.visibility == forge_core::rules::v2::Visibility::Private,
         members,
+        merged,
     })
 }
 
@@ -4747,31 +4767,137 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         base_ref,
         target,
         private,
+        merged,
         ..
     } = locate(ctx, repo, number).await?;
     git::require_branch_ref(&base_ref)?;
     let (cwd, _scratch) = diff_workdir(std::env::current_dir()?)?;
-    fetch_head(ctx, &cwd, &source, &head, private)?;
-    // The base as the target repo has it now, fetched fresh.
+    let env = read_env(ctx, private)?;
+    // The base as the target repository has it now, fetched fresh (its packs bring every tip it held).
     let base_local = format!("refs/remotes/dash-pr/base-{number}");
-    git::git_dash(
+    let target_url = format!("dash://{target}");
+    let fetched = git::git_dash(
         &cwd,
         &[
             "fetch",
             "-q",
-            &format!("dash://{target}"),
+            &target_url,
             &format!("+{base_ref}:{base_local}"),
         ],
-        &read_env(ctx, private)?,
-    )
-    .context("fetching the base branch")?;
-    let range = format!("{base_local}...{head}");
+        &env,
+    );
+    let plan = diff_plan(merged.as_ref());
+    let head = merged.as_ref().map_or(head, |m| m.head.clone());
+    if plan.from.is_empty() {
+        fetched.context("fetching the base branch")?;
+    } else if fetched.is_err() {
+        // A merged PR's base branch may be deleted since: any branch brings the old tips.
+        let _ = git::git_dash(
+            &cwd,
+            &[
+                "fetch",
+                "-q",
+                &target_url,
+                &format!("+refs/heads/*:refs/remotes/dash-pr/target-{number}/*"),
+            ],
+            &env,
+        );
+    }
+    // A merged PR's source branch may be gone; its head usually came with the base.
+    let head_fetch = fetch_head(ctx, &cwd, &source, &head, private);
+    if merged.is_none() {
+        head_fetch?;
+    }
+    let base = if plan.from.is_empty() {
+        base_local
+    } else {
+        plan.from.clone()
+    };
+    for (what, oid) in [("head", &head), ("base tip before the merge", &base)] {
+        if git::is_oid(oid) && !git::has_object(&cwd, oid) {
+            return Err(crate::errors::not_found(
+                format!("PR #{number}'s {what} {} could not be fetched", short(oid)),
+                format!("try `git fetch dash://{target}` and `git fetch dash://{source}` by hand"),
+            ));
+        }
+    }
+    let range = format!("{base}...{head}");
     let text = git::git(&cwd, &["--no-pager", "diff", &range], &[])?;
+    if let Some(note) = plan.note(number, &base_ref, text.is_empty()) {
+        if !ctx.json {
+            eprintln!("{note}");
+        }
+    }
     ctx.emit(
-        json!({ "pr": number, "range": range, "diffAvailable": true, "diff": text }),
+        json!({
+            "pr": number,
+            "range": range,
+            "comparedWith": plan.compared,
+            "diffAvailable": true,
+            "diff": text,
+        }),
         || println!("{text}"),
     );
     Ok(())
+}
+
+/// Where `dg pr diff` starts its comparison (#670).
+#[derive(Debug, PartialEq, Eq)]
+struct DiffPlan {
+    /// The base commit to compare from, or `""` for the base branch as it is now.
+    from: String,
+    /// `"base"` (open), `"tipBeforeMerge"` (merged), or `"baseNow"` (merged, no recorded tip).
+    compared: &'static str,
+}
+
+impl DiffPlan {
+    fn note(&self, number: u64, base_ref: &str, empty: bool) -> Option<String> {
+        match self.compared {
+            "tipBeforeMerge" => Some(format!(
+                "PR #{number} is merged: showing its changes against {} as it was just before the merge ({})",
+                short_branch_name(base_ref),
+                short(&self.from)
+            )),
+            "baseNow" if empty => Some(format!(
+                "PR #{number} is merged, but its merge records no earlier base tip to compare from, so its diff against {} as it is now is empty (`dg pr verify` checks what the merge brought in)",
+                short_branch_name(base_ref)
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// `view`'s recorded merge, when it is merged. `head` is its current head (the real one for a
+/// members-only PR, whose head in the review fold is blinded).
+fn recorded_merge(view: &PatchView, members: bool, head: &str) -> Option<MergedAt> {
+    view.state.merged.then(|| MergedAt {
+        tip_before: verify::checkable_merge(view)
+            .map(|m| view.tip_before(&m))
+            .filter(|t| !t.is_empty()),
+        head: (!members)
+            .then(|| verify::merged_head(view))
+            .flatten()
+            .unwrap_or_else(|| head.to_string()),
+    })
+}
+
+/// The comparison for a PR: an open one from the base fetched now, a merged one from the tip
+/// its merge built on, when recorded.
+fn diff_plan(merged: Option<&MergedAt>) -> DiffPlan {
+    match merged.map(|m| m.tip_before.as_ref()) {
+        None => DiffPlan {
+            from: String::new(),
+            compared: "base",
+        },
+        Some(Some(before)) => DiffPlan {
+            from: before.clone(),
+            compared: "tipBeforeMerge",
+        },
+        Some(None) => DiffPlan {
+            from: String::new(),
+            compared: "baseNow",
+        },
+    }
 }
 
 /// Where `dg pr diff` fetches and diffs: the git repository at `cwd`, which keeps the objects
@@ -5038,6 +5164,62 @@ pub(crate) mod tests {
         assert_ne!(dir, outside.path());
         assert_eq!(dir, scratch.as_ref().unwrap().path());
         assert!(git::git_ok(&dir, &["rev-parse", "--git-dir"]));
+    }
+
+    /// #670: a merged PR (fast-forwarded into its base, which moved on since) diffs from the base
+    /// tip its merge built on, against the head as merged; the base as it is now gives nothing.
+    #[test]
+    fn a_merged_pr_diffs_from_the_tip_before_its_merge() {
+        let (repo, head) = checkout_fixture();
+        let d = repo.path();
+        let before = fixture_git(d, &["rev-parse", "main"]);
+        fixture_git(d, &["merge", "-q", "--ff-only", &head]);
+        std::fs::write(d.join("later.txt"), "after the merge\n").unwrap();
+        fixture_git(d, &["add", "later.txt"]);
+        fixture_git(d, &["commit", "-q", "-m", "later"]);
+        let now = fixture_git(d, &["rev-parse", "main"]);
+
+        let mut v = view_with("refs/heads/main", &head);
+        assert!(recorded_merge(&v, false, &head).is_none());
+        assert_eq!(diff_plan(None).compared, "base");
+        v.state.merged = true;
+        v.state.merge_on_base = Some(true);
+        v.base_history = vec![before.clone(), head.clone(), now];
+        v.log.transitions.push(
+            serde_json::from_value(
+                json!({ "kind": forge_core::rules::transition::PR_MERGE, "oid": head }),
+            )
+            .unwrap(),
+        );
+        let m = recorded_merge(&v, false, &head).unwrap();
+        assert_eq!(m.tip_before.as_deref(), Some(before.as_str()));
+        assert_eq!(m.head, head);
+        let plan = diff_plan(Some(&m));
+        assert_eq!(plan.compared, "tipBeforeMerge");
+        let diff = |range: &str| fixture_git(d, &["--no-pager", "diff", range]);
+        assert_eq!(
+            diff(&format!("main...{head}")),
+            "",
+            "the bug: the base now has the head"
+        );
+        let text = diff(&format!("{}...{head}", plan.from));
+        assert!(text.contains("pr.txt"), "{text}");
+        assert!(!text.contains("later.txt"), "{text}");
+        assert!(plan
+            .note(3, "refs/heads/main", false)
+            .unwrap()
+            .contains("PR #3 is merged"));
+
+        // A merge whose commit was never a tip of the base names no earlier tip: say so.
+        v.base_history.clear();
+        let m = recorded_merge(&v, false, &head).unwrap();
+        let plan = diff_plan(Some(&m));
+        assert_eq!((plan.from.as_str(), plan.compared), ("", "baseNow"));
+        assert!(plan
+            .note(3, "refs/heads/main", true)
+            .unwrap()
+            .contains("dg pr verify"));
+        assert!(plan.note(3, "refs/heads/main", false).is_none());
     }
 
     /// A repository on `main` (one commit) with a PR head one commit ahead of it that adds
