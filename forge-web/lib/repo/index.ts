@@ -44,6 +44,7 @@ export {
   readRepoById,
   resolveAnyRepo,
   resolveAnyRepoWith,
+  identityExists,
   isIdentifier,
   resolveOwner,
   seedOwner,

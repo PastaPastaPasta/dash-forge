@@ -14,6 +14,7 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { normalizeRepoName, type Visibility } from '../rules/v2'
 import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
+import { authSdk } from '../sdk/facade'
 import { DOC, asIdentifierString, stringArray, type RepoRef } from './contract'
 
 interface DpnsFacadeLike {
@@ -106,6 +107,29 @@ export function resolveOwner(sdk: EvoSDK, owner: string): Promise<string | null>
   }
   promise.then((id) => {
     if (id === null) setTimeout(evict, OWNER_MISS_TTL_MS)
+  }, evict)
+  return promise
+}
+
+const identityCache = new Map<string, Promise<boolean>>()
+
+/**
+ * Whether Platform holds identity `identityId`, from its proved balance (the smallest identity
+ * read). A hit is cached for the session; a miss is not (a node a block behind can prove a
+ * just-created identity absent), and a failed read rejects, never reads as absent.
+ */
+export function identityExists(sdk: EvoSDK, identityId: string): Promise<boolean> {
+  const hit = identityCache.get(identityId)
+  if (hit !== undefined) return hit
+  const promise = authSdk(sdk)
+    .identities.balance(identityId)
+    .then((b) => b !== undefined)
+  identityCache.set(identityId, promise)
+  const evict = (): void => {
+    if (identityCache.get(identityId) === promise) identityCache.delete(identityId)
+  }
+  promise.then((found) => {
+    if (!found) evict()
   }, evict)
   return promise
 }
