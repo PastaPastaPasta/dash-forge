@@ -527,11 +527,19 @@ export async function showOtherWays(scope: Page | Locator): Promise<void> {
   if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click()
 }
 
+/** Opens the protection form's collapsed "Use a password instead", where the passphrase fields sit. */
+export async function usePassword(scope: Page | Locator): Promise<void> {
+  const disclosure = scope.getByTestId('protect-password').first()
+  if ((await disclosure.count()) === 0 || (await disclosure.getAttribute('open')) !== null) return
+  await disclosure.locator('summary').click()
+}
+
 /** Import the identity file once: the master key registers a limited key for this browser. */
 export async function importIdentity(page: Page, name: string): Promise<void> {
   await openSignIn(page, page.getByTestId('tile-import'))
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', idFile(name))
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByRole('button', { name: /create this browser's key/i }).click()

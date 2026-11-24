@@ -9,9 +9,9 @@
  * {@link BrowseBoundary}.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, FileText, GitBranch, GitCommit, Rocket } from 'lucide-react'
+import { FileText, GitBranch, GitCommit, Rocket } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
@@ -54,7 +54,6 @@ import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/rep
 import { MarkdownView, type MarkdownRepoContext } from '@/components/markdown-view'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { GoToFile } from '@/components/repo/go-to-file'
-import { Oid } from '@/components/ui/oid'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { ForkSyncBar } from '@/components/repo/fork-sync'
@@ -210,7 +209,6 @@ function RootBody({
           <GitCommit className="h-3.5 w-3.5" aria-hidden />
           {commitCountLabel(commits.data)}
         </Link>
-        <Oid value={tipOid} />
         <GoToFile reader={reader} repoKey={key} tipOid={tipOid} rootTree={rootTreeOf} addr={addr} refParam={refParam} className="ml-auto" />
       </div>
 
@@ -317,27 +315,6 @@ function useCanConfigureStorage(home: RepoHome): boolean {
   return identity !== null && (identity === home.repo.ownerId || role === 'maintainer' || role === 'writer')
 }
 
-/** One numbered step of the empty-repository walkthrough. */
-function EmptyRepoStep({ n, title, children }: { n: number; title: string; children: ReactNode }): JSX.Element {
-  return (
-    <li className="relative pl-9">
-      <span
-        aria-hidden
-        className="absolute left-0 top-0 flex h-6 w-6 items-center justify-center rounded-full border border-anvil-300 bg-anvil-50 font-mono text-[12px] text-anvil-700 dark:border-anvil-700 dark:bg-anvil-850 dark:text-anvil-200"
-      >
-        {n}
-      </span>
-      <h3 className="mb-1.5 pt-0.5 text-dense font-medium">{title}</h3>
-      {children}
-    </li>
-  )
-}
-
-/**
- * The empty-repository state (`ux-dx-spec.md` §5.5): the first push in three numbered steps
- * (install the tools, sign `dg` in, push an existing repository or start from scratch), then
- * where the bytes will go and what a push costs.
- */
 function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddress; branch: string }): JSX.Element {
   const cmd = repoCommands(addr.owner, addr.name)
   const configured = home.backend.kind !== 'platform' || home.backend.uris.length > 0
@@ -348,71 +325,87 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
   return (
     <section
       aria-label="Empty repository"
-      className="rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
+      className="space-y-4 rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
     >
-      <div className="mb-1 flex items-center gap-2">
-        <Rocket className="h-5 w-5 text-fg-muted" aria-hidden />
-        <h2 className="text-prose">
-          <span className="font-mono">
-            {ownerLabel(addr.owner)}/{repoName}
-          </span>{' '}
-          is empty.
-        </h2>
+      <div>
+        <div className="flex items-center gap-2">
+          <Rocket className="h-5 w-5 text-fg-muted" aria-hidden />
+          <h2 className="text-prose">
+            <span className="font-mono">
+              {ownerLabel(addr.owner)}/{repoName}
+            </span>{' '}
+            is empty.
+          </h2>
+        </div>
+        <p className={`mt-1 ${note}`}>
+          {canConfigure ? 'Push your code to get started.' : 'Nothing has been pushed yet.'}
+        </p>
       </div>
-      <p className={`mb-4 ${note}`}>
-        {canConfigure ? 'Three steps to your first push.' : 'Nothing has been pushed yet. Its members push with these steps; the code shows up here once they do.'}
-      </p>
-      <ol className="space-y-5">
-        <EmptyRepoStep n={1} title="Install the Dash git tools">
-          <p className={note}>
-            <span className="font-mono">git-remote-dash</span> lets plain <span className="font-mono">git</span> push to Dash Platform, and{' '}
-            <span className="font-mono">dg</span> signs you in.{' '}
-            <Link href={DOCS.install} className="hit-area text-forge-700 underline dark:text-forge-400">
-              Install →
-            </Link>
-          </p>
-        </EmptyRepoStep>
-        <EmptyRepoStep n={2} title="Sign in on this computer">
-          <CopyRow text={cmd.authLogin} label="Copy the sign-in command" />
-          <p className={note} data-testid="empty-repo-sign-in">
-            It shows a QR code: scan it with DashPay Wallet{ACTIVE_NETWORK.network === 'testnet' ? "'s testnet build" : ''} (More →
-            Tools → Connections) and approve. No wallet? Use your 12
-            words with <span className="font-mono">{cmd.authLoginWords}</span> (an identity file works too). No identity
-            yet? Run <span className="font-mono">{cmd.authNew}</span>.
-          </p>
-        </EmptyRepoStep>
-        <EmptyRepoStep n={3} title="Push your code">
-          <h4 className="mb-1 text-[12px] font-medium text-anvil-700 dark:text-anvil-200">From a repository you already have</h4>
-          <CopyRow text={cmd.remoteAdd} label="Copy the remote add command" />
-          <CopyRow text={cmd.setNetwork} label="Copy the network setting" />
-          <CopyRow text={`git push -u origin ${branchName}`} label="Copy the push command" />
-          <h4 className="mb-1 mt-3 text-[12px] font-medium text-anvil-700 dark:text-anvil-200">Or start from scratch</h4>
-          <CopyRow text={`${cmd.dgClone} && cd ${shellWord(addr.name)}`} label="Copy the clone command" />
-          <CopyRow
-            text={`echo ${shellWord(`# ${repoName}`)} > README.md && git add README.md && git commit -m 'First commit' && git push -u origin HEAD:${branchName}`}
-            label="Copy the first commit and push commands"
-          />
-          <p className={`mt-2 ${note}`} data-testid="empty-repo-network">
-            This repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>: the commands set that in the
-            repository&apos;s git config, so a later <span className="font-mono">git push</span> goes there.
-          </p>
-        </EmptyRepoStep>
-      </ol>
-      <p className={`mt-5 border-t border-anvil-200 pt-3 dark:border-anvil-750 ${note}`}>
-        Storage: packs go to <span className="font-mono">{configured ? home.backend.kind : 'Platform'}</span>
-        {configured
-          ? <> (set by the owner) · Platform: manifest + refs only, ~{dashRange(PUSH_COST_DASH.byo)} DASH per push<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} /></>
-          : <> · a small push ≈ {dashRange(PUSH_COST_DASH.platform)} DASH with packs on Platform<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.platform.min} /> ({dashRange(PUSH_COST_DASH.byo)} with your own storage<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} />)</>}
-      </p>
+
+      <div className="space-y-1.5">
+        <h3 className="text-dense font-medium">Push an existing repository</h3>
+        <CopyRow text={cmd.remoteAdd} label="Copy the remote add command" />
+        <CopyRow text={cmd.setNetwork} label="Copy the network setting" />
+        <CopyRow text={`git push -u origin ${branchName}`} label="Copy the push command" />
+      </div>
+
+      <div className="space-y-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+        <details className="text-dense">
+          <summary className="hit-area cursor-pointer select-none font-medium text-anvil-700 hover:text-anvil-900 dark:text-anvil-200 dark:hover:text-anvil-50">
+            Start from scratch
+          </summary>
+          <div className="mt-2 space-y-1.5">
+            <CopyRow text={`${cmd.dgClone} && cd ${shellWord(addr.name)}`} label="Copy the clone command" />
+            <CopyRow
+              text={`echo ${shellWord(`# ${repoName}`)} > README.md && git add README.md && git commit -m 'First commit' && git push -u origin HEAD:${branchName}`}
+              label="Copy the first commit and push commands"
+            />
+          </div>
+        </details>
+
+        <details className="text-dense">
+          <summary className="hit-area cursor-pointer select-none font-medium text-anvil-700 hover:text-anvil-900 dark:text-anvil-200 dark:hover:text-anvil-50">
+            First time? Install tools &amp; sign in
+          </summary>
+          <div className="mt-2 space-y-2">
+            <p className={note}>
+              Needs <span className="font-mono">git-remote-dash</span> and <span className="font-mono">dg</span>.{' '}
+              <Link href={DOCS.install} className="hit-area text-forge-700 underline dark:text-forge-400">
+                Install →
+              </Link>
+            </p>
+            <CopyRow text={cmd.authLogin} label="Copy the sign-in command" />
+            <p className={note} data-testid="empty-repo-sign-in">
+              Scan the QR code with DashPay Wallet{ACTIVE_NETWORK.network === 'testnet' ? "'s testnet build" : ''}, or use your 12 words with{' '}
+              <span className="font-mono">{cmd.authLoginWords}</span>. New identity: <span className="font-mono">{cmd.authNew}</span>.
+            </p>
+          </div>
+        </details>
+
+        <details className="text-dense">
+          <summary className="hit-area cursor-pointer select-none font-medium text-anvil-700 hover:text-anvil-900 dark:text-anvil-200 dark:hover:text-anvil-50">
+            Storage &amp; push cost
+          </summary>
+          <div className={`mt-2 space-y-1.5 ${note}`}>
+            <p data-testid="empty-repo-network">
+              Network: <span className="font-mono">{ACTIVE_NETWORK.key}</span>.
+            </p>
+            <p>
+              Storage: packs go to <span className="font-mono">{configured ? home.backend.kind : 'Platform'}</span>
+              {configured
+                ? <> · ~{dashRange(PUSH_COST_DASH.byo)} DASH per push<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} /></>
+                : <> · a small push ≈ {dashRange(PUSH_COST_DASH.platform)} DASH<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.platform.min} /> ({dashRange(PUSH_COST_DASH.byo)} with your own storage<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} />)</>}
+            </p>
+          </div>
+        </details>
+      </div>
+
       {!configured && canConfigure ? (
-        <p role="note" className="mt-3 flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
-          <span>
-            No storage configured: pushes will be stored on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB<FiatNote dash={PUSH_COST_DASH.perMib} />.{' '}
-            <Link href="/settings/storage/" className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
-              Configure storage →
-            </Link>
-          </span>
+        <p className={note}>
+          No storage configured (~{PUSH_COST_DASH.perMib} DASH/MiB on Platform<FiatNote dash={PUSH_COST_DASH.perMib} />).{' '}
+          <Link href="/settings/storage/" className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
+            Configure storage →
+          </Link>
         </p>
       ) : null}
     </section>

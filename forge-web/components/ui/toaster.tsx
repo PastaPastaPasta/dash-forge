@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useRef, useState } from 'react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
 import { CheckCircle2, AlertTriangle, Loader2, X } from 'lucide-react'
@@ -7,11 +8,48 @@ import { useToasts } from '@/hooks/use-toasts'
 import { creditsAsDash } from '@/lib/view/format'
 import { cn } from '@/lib/utils'
 
+function ToastDetail({ detail, isError }: { detail: string; isError: boolean }): JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (isError) return
+    const el = ref.current
+    if (el) setOverflows(el.scrollHeight > el.clientHeight + 1)
+  }, [detail, isError])
+
+  if (isError) {
+    return (
+      <div className="mt-0.5 break-words text-[12px] text-anvil-500 dark:text-anvil-400">
+        {detail}
+      </div>
+    )
+  }
+  return (
+    <div className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400">
+      <div ref={ref} className={cn('break-words', !expanded && 'line-clamp-2')}>
+        {detail}
+      </div>
+      {overflows || expanded ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-0.5 font-medium underline hover:text-anvil-700 dark:hover:text-anvil-200"
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 /** Renders the toast queue (bottom-right, polite live region). */
 export function Toaster(): JSX.Element {
   const { toasts, dismiss } = useToasts()
   return (
-    <div aria-live="polite" className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+    <div aria-live="polite" className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
       {toasts.map((t) => (
         <div
           key={t.id}
@@ -39,9 +77,14 @@ export function Toaster(): JSX.Element {
                 </span>
               ) : null}
             </div>
-            {t.detail ? <div className="mt-0.5 break-words text-[12px] text-anvil-500 dark:text-anvil-400">{t.detail}</div> : null}
+            {t.detail ? <ToastDetail detail={t.detail} isError={t.tone === 'error'} /> : null}
           </div>
-          <button onClick={() => dismiss(t.id)} aria-label="Dismiss" className="text-anvil-500 dark:text-anvil-400 hover:text-anvil-700">
+          <button
+            type="button"
+            onClick={() => dismiss(t.id)}
+            aria-label="Dismiss"
+            className="-mr-1 -mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-anvil-500 hover:text-anvil-700 coarse:h-11 coarse:w-11 dark:text-anvil-400 dark:hover:text-anvil-200"
+          >
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
         </div>

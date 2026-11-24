@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { DEMO, E2E_NETWORK, PASSPHRASE, shot, skipWithoutFixture } from './helpers'
+import { DEMO, E2E_NETWORK, PASSPHRASE, shot, skipWithoutFixture, usePassword } from './helpers'
 import { deploymentFilePath, sdkOptions } from './network'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
@@ -92,6 +92,7 @@ async function importFile(p: Page, passphrase: string, fromTile = true): Promise
   if (fromTile) await p.getByTestId('tile-import').click()
   // The dialog's own file input (Settings → Keys has one too, for revoking).
   await p.getByRole('dialog').locator('input[type="file"]').setInputFiles(ID_FILE)
+  await usePassword(p)
   await p.getByLabel('Passphrase', { exact: true }).fill(passphrase)
   await p.getByLabel('Repeat passphrase').fill(passphrase)
   // From "Renew key" the same form's button says Renew (components/login-modal.tsx).

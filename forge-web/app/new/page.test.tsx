@@ -212,5 +212,26 @@ describe('/new: members-only content at creation', () => {
     expect(q('repo-name-converted')).toBeNull()
     expect(host.textContent).toContain('A repository name uses a–z')
     expect(createButton().disabled).toBe(true)
+    expect(q('new-repo-blocked')?.textContent).toContain('A repository name uses a–z')
+  })
+
+  it('branch disclosure stays open while typing past a transient branch error', async () => {
+    await render()
+    const details = q('new-branch-details') as HTMLDetailsElement
+    const branch = host.querySelector('#repo-branch') as HTMLInputElement
+    expect(details.open).toBe(false)
+    const setBranch = async (text: string): Promise<void> => {
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(branch, text)
+        branch.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await flush()
+    }
+    await setBranch('feature/')
+    expect(details.open).toBe(true)
+    expect(host.querySelector('#repo-branch-error')).not.toBeNull()
+    await setBranch('feature/l')
+    expect(host.querySelector('#repo-branch-error')).toBeNull()
+    expect(details.open).toBe(true)
   })
 })

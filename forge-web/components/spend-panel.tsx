@@ -182,8 +182,7 @@ export function SpendPanel(): JSX.Element {
   }
 
   return (
-    <div className="space-y-4 text-dense" data-testid="spend-panel">
-      {rate !== undefined ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Fiat amounts use today&apos;s price.</p> : null}
+    <div className="space-y-3 text-dense" data-testid="spend-panel">
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="text-[12px] text-anvil-500 dark:text-anvil-400">This month</div>
@@ -194,6 +193,11 @@ export function SpendPanel(): JSX.Element {
           <Dash credits={s.allTime} />
         </div>
       </div>
+      {s.missed > 0 ? (
+        <p className="flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> {plural(s.missed, 'estimate')} missed by more than 25 %.
+        </p>
+      ) : null}
       {rec ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile" data-unexplained={rec.unexplained}>
           Since the ledger began: <Dash credits={since?.allTime ?? 0} /> spent
@@ -216,77 +220,80 @@ export function SpendPanel(): JSX.Element {
           Ledger <Dash credits={s.allTime} /> · reading the balance to reconcile…
         </p>
       ) : null}
-      {s.missed > 0 ? (
-        <p className="flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> {plural(s.missed, 'estimate')} missed by more than 25 %.
-        </p>
-      ) : null}
 
-      <section aria-labelledby="spend-by-repo">
-        <h3 id="spend-by-repo" className="mb-1 text-[12px] font-medium text-anvil-500 dark:text-anvil-400">
-          By repo, all time
-        </h3>
-        <ul className="divide-y divide-anvil-100 dark:divide-anvil-850" data-testid="spend-by-repo">
-          {s.byRepo.map((r) => (
-            <li key={r.repo} className="flex flex-wrap items-center justify-between gap-x-3 py-1.5 coarse:min-h-11" data-repo={r.repo}>
-              <span className="min-w-0 max-w-full">{repoLabel(r.repo)}</span>
-              <span className="flex items-baseline gap-2 text-[12px]">
-                <span className="text-anvil-500 dark:text-anvil-400">
-                  {plural(r.writes, 'write')}
-                </span>
-                <Dash credits={r.credits} />
-              </span>
-            </li>
-          ))}
-        </ul>
-      </section>
+      <details className="text-dense">
+        <summary className="w-fit cursor-pointer text-[12px] font-medium text-anvil-600 hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:text-anvil-300 dark:hover:text-anvil-100">
+          Spend history by repo &amp; write
+        </summary>
+        <div className="mt-3 space-y-4">
+          {rate !== undefined ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Fiat amounts use today&apos;s price.</p> : null}
 
-      <section aria-labelledby="spend-rows">
-        <h3 id="spend-rows" className="mb-1 text-[12px] font-medium text-anvil-500 dark:text-anvil-400">
-          Latest {latest.length}, newest first
-        </h3>
-        {/* A list, not a four-column table: each row wraps to two lines on a phone. */}
-        <ul className="divide-y divide-anvil-100 text-[12px] dark:divide-anvil-850" data-testid="spend-rows">
-          {latest.map((r) => {
-            const missed = estimateMissed(r)
-            if (isCredit(r)) {
-              return (
-                <li key={`${r.at}:${r.documentId}`} className="grid grid-cols-[1fr_auto] gap-x-3 py-1.5" data-kind={r.kind}>
-                  <span className="min-w-0">
-                    <span className="block truncate text-anvil-800 dark:text-anvil-100">{spendKindLabel(r.kind)}</span>
-                    <span className="text-anvil-500 dark:text-anvil-400">{timeAgo(r.at)}</span>
-                  </span>
-                  <span className="text-right text-verify-700 dark:text-verify-400">
-                    {r.actualCredits === null ? '—' : <Dash credits={-r.actualCredits} signed balance />}
-                    <span className="block text-anvil-500 dark:text-anvil-400">credited</span>
+          <section aria-labelledby="spend-by-repo">
+            <h3 id="spend-by-repo" className="mb-1 text-[12px] font-medium text-anvil-500 dark:text-anvil-400">
+              By repo, all time
+            </h3>
+            <ul className="divide-y divide-anvil-100 dark:divide-anvil-850" data-testid="spend-by-repo">
+              {s.byRepo.map((r) => (
+                <li key={r.repo} className="flex flex-wrap items-center justify-between gap-x-3 py-1.5 coarse:min-h-11" data-repo={r.repo}>
+                  <span className="min-w-0 max-w-full">{repoLabel(r.repo)}</span>
+                  <span className="flex items-baseline gap-2 text-[12px]">
+                    <span className="text-anvil-500 dark:text-anvil-400">
+                      {plural(r.writes, 'write')}
+                    </span>
+                    <Dash credits={r.credits} />
                   </span>
                 </li>
-              )
-            }
-            return (
-              <li key={`${r.at}:${r.documentId}`} className="grid grid-cols-[1fr_auto] gap-x-3 py-1.5" data-kind={r.kind}>
-                <span className="min-w-0">
-                  <span className="block truncate text-anvil-800 dark:text-anvil-100">{spendKindLabel(r.kind)}</span>
-                  <span className="text-anvil-500 dark:text-anvil-400">
-                    {timeAgo(r.at)}
-                    {r.repo !== null ? <> · {repoLabel(r.repo, false)}</> : null}
-                  </span>
-                </span>
-                <span className="text-right">
-                  <span className={cn('block', missed && 'text-caution-700 dark:text-caution-400')}>
-                    {r.actualCredits === null ? <span title="Not measured in time">—</span> : <Dash credits={r.actualCredits} />}
-                  </span>
-                  {r.estimateCredits !== 0 ? (
-                    <span className="text-anvil-500 dark:text-anvil-400">
-                      est. <Estimate row={r} />
+              ))}
+            </ul>
+          </section>
+
+          <section aria-labelledby="spend-rows">
+            <h3 id="spend-rows" className="mb-1 text-[12px] font-medium text-anvil-500 dark:text-anvil-400">
+              Latest {latest.length}, newest first
+            </h3>
+            <ul className="divide-y divide-anvil-100 text-[12px] dark:divide-anvil-850" data-testid="spend-rows">
+              {latest.map((r) => {
+                const missed = estimateMissed(r)
+                if (isCredit(r)) {
+                  return (
+                    <li key={`${r.at}:${r.documentId}`} className="grid grid-cols-[1fr_auto] gap-x-3 py-1.5" data-kind={r.kind}>
+                      <span className="min-w-0">
+                        <span className="block truncate text-anvil-800 dark:text-anvil-100">{spendKindLabel(r.kind)}</span>
+                        <span className="text-anvil-500 dark:text-anvil-400">{timeAgo(r.at)}</span>
+                      </span>
+                      <span className="text-right text-verify-700 dark:text-verify-400">
+                        {r.actualCredits === null ? '—' : <Dash credits={-r.actualCredits} signed balance />}
+                        <span className="block text-anvil-500 dark:text-anvil-400">credited</span>
+                      </span>
+                    </li>
+                  )
+                }
+                return (
+                  <li key={`${r.at}:${r.documentId}`} className="grid grid-cols-[1fr_auto] gap-x-3 py-1.5" data-kind={r.kind}>
+                    <span className="min-w-0">
+                      <span className="block truncate text-anvil-800 dark:text-anvil-100">{spendKindLabel(r.kind)}</span>
+                      <span className="text-anvil-500 dark:text-anvil-400">
+                        {timeAgo(r.at)}
+                        {r.repo !== null ? <> · {repoLabel(r.repo, false)}</> : null}
+                      </span>
                     </span>
-                  ) : null}
-                </span>
-              </li>
-            )
-          })}
-        </ul>
-      </section>
+                    <span className="text-right">
+                      <span className={cn('block', missed && 'text-caution-700 dark:text-caution-400')}>
+                        {r.actualCredits === null ? <span title="Not measured in time">—</span> : <Dash credits={r.actualCredits} />}
+                      </span>
+                      {r.estimateCredits !== 0 ? (
+                        <span className="text-anvil-500 dark:text-anvil-400">
+                          est. <Estimate row={r} />
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
+        </div>
+      </details>
     </div>
   )
 }

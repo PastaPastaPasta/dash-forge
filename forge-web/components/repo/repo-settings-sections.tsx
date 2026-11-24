@@ -118,12 +118,12 @@ const NAV_ITEM =
 /** The sections that have their own page. */
 const PAGES: Readonly<Record<string, string>> = { environments: '/repo/settings/environments', bots: '/repo/settings/bots' }
 
-/** In-page navigation between the sections, and the links to Settings → Environments and → Bots and runners. */
-export function SettingsNav(): JSX.Element {
+export function SettingsNav({ showDanger = true }: { showDanger?: boolean }): JSX.Element {
   const addr = useRepoAddress()
+  const items = showDanger ? SECTIONS : SECTIONS.filter(([id]) => id !== 'danger')
   return (
     <nav aria-label="Settings sections" className="flex flex-wrap gap-1 border-b border-anvil-200 pb-2 text-dense dark:border-anvil-800">
-      {SECTIONS.map(([id, label]) => {
+      {items.map(([id, label]) => {
         const page = PAGES[id]
         return page !== undefined ? (
           <Link key={id} href={repoHref(page, addr)} className={NAV_ITEM}>
@@ -167,7 +167,6 @@ function Note({ children }: { children: React.ReactNode }): JSX.Element {
   return <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{children}</p>
 }
 
-/** Only for a rule narrower than the page's read-only banner (that banner already names maintainers). */
 function OwnerOnlyNote(): JSX.Element {
   return <Note>Only the owner can change this.</Note>
 }
@@ -274,7 +273,7 @@ export function GeneralSettings({
       <div className="space-y-5 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <VisibilityRow home={home} />
         <div className="border-t border-anvil-100 pt-4 dark:border-anvil-850">
-          <Field label="Default branch" htmlFor="default-branch" hint="What a clone checks out and what the repo page opens on.">
+          <Field label="Default branch" htmlFor="default-branch" hint={maintainer ? 'Checked out by default on clone.' : undefined}>
             <div className="flex flex-wrap items-center gap-2">
               <select
                 id="default-branch"
@@ -314,7 +313,7 @@ export function GeneralSettings({
           {live.length === 0 ? <Note>Push a branch first: the default branch is picked from the branches this repo has.</Note> : null}
           {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch>`} /> : null}
         </div>
-        <RepoDocForm home={home} owner={owner} onSaved={onSaved} />
+        <RepoDocForm home={home} maintainer={maintainer} owner={owner} onSaved={onSaved} />
       </div>
       {cfg.dialog}
     </Section>
@@ -363,7 +362,7 @@ export function VisibilityRow({ home }: { home: RepoHome }): JSX.Element {
 }
 
 /** Description and topics: the `repo` document, which only its owner can edit. */
-function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean; onSaved: () => void }): JSX.Element {
+function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; maintainer: boolean; owner: boolean; onSaved: () => void }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   // The topic documents the save reconciles, for its price (the owner only: only they can save).
   const held = useAsync(() => readTopicDocNames(sdk!, home.repo), [ready, repoKey(home.repo)], { enabled: owner && ready && sdk !== null })
@@ -408,14 +407,14 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
       <Field
         label="Topics"
         htmlFor="repo-topics"
-        hint={`Comma-separated, up to ${MAX_TOPICS}: lowercase letters and digits, words joined by single dashes (web-dev).`}
+        hint={owner ? `Comma-separated, up to ${MAX_TOPICS} (e.g. web-dev).` : undefined}
       >
         <Input id="repo-topics" value={topicsText} disabled={!owner} onChange={(e) => setTopicsText(e.target.value)} placeholder="rust, dash-platform" />
       </Field>
       {problem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
       {home.repo.visibility === 'private' ? (
         <Note>
-          The description and topics are public, even for a private repo. Private repos aren&apos;t listed on Explore&apos;s topic pages.
+          Description and topics are public, even for a private repo.
         </Note>
       ) : null}
       {owner ? (
@@ -425,8 +424,6 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
             size="sm"
             disabled={!changed || problem !== null || guard.disabledReason !== null}
             onClick={() => {
-              // The repo document is forge-core's; a public repo's topic documents are forge-meta's on
-              // a four-contract set (a private repo writes none)
               const topicDocs = edit.topics !== undefined && home.repo.visibility !== 'private'
               if (guard.check(cost, topicDocs ? ['core', writeContractKind(home.repo.forge, DOC.topic)] : 'core')) setPending(edit)
             }}
@@ -435,9 +432,9 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
           </Button>
           {changed ? <CostPreview cost={cost} /> : null}
         </div>
-      ) : (
+      ) : maintainer ? (
         <OwnerOnlyNote />
-      )}
+      ) : null}
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
@@ -560,16 +557,16 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                 <CostPreview cost={cfg.cost({ addPatterns: [candidate] })} />
               </div>
             ) : null}
-            <p className="mt-2 flex gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-              <span>
+            <details className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+              <summary className="hit-area inline-flex cursor-pointer select-none items-center gap-1 hover:text-anvil-700 dark:hover:text-anvil-200">
+                <Info className="h-3.5 w-3.5 shrink-0" aria-hidden /> Pattern syntax
+              </summary>
+              <p className="mt-1">
                 A bare name means <span className="font-mono">refs/heads/&lt;name&gt;</span>. <span className="font-mono">*</span> matches within one
-                path segment (<span className="font-mono">release/*</span> matches <span className="font-mono">release/1.x</span>, not{' '}
-                <span className="font-mono">release/1.x/rc</span>); <span className="font-mono">**</span> crosses segments;{' '}
-                <span className="font-mono">?</span> and <span className="font-mono">[a-z]</span> work as in git. <span className="font-mono">refs/tags/**</span> covers every
+                path segment; <span className="font-mono">**</span> crosses segments; <span className="font-mono">refs/tags/**</span> covers every
                 tag. Up to {MAX_PROTECTED_PATTERNS} patterns.
-              </span>
-            </p>
+              </p>
+            </details>
           </div>
         ) : cfg.sealed ? (
           <SealedNote command={`dg repo protect add ${home.repo.ownerId}/${home.repo.name} <pattern>`} />
@@ -741,7 +738,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
         <Scale className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Branch policy
       </h3>
       <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="policy-note">
-        <span>Forge blocks merging until these are met. Maintainers can override, and the override is shown on the PR.</span>
+        <span>Blocks merging until met. Maintainers can override.</span>
         <EnforcedBy by="apps" />
       </p>
       {current.loading && !current.settled ? (
@@ -801,11 +798,8 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
               checked={shown.requireCodeOwners === true}
               onChange={(e) => set({ requireCodeOwners: e.target.checked })}
             />
-            <span>
+            <span title="Each changed file assigned by CODEOWNERS on the base branch needs an approval from one of its owners.">
               Require approval from code owners
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
-                Each changed file that CODEOWNERS on the base branch assigns needs an approval from one of its owners.
-              </span>
             </span>
           </label>
           <RequiredChecksEditor draft={shownChecks} onChange={setChecksDraft} problems={problems} sources={pinning ? sources : null} maintainer={maintainer} />
@@ -867,16 +861,19 @@ function RequiredChecksEditor({
       <p className="text-anvil-700 dark:text-anvil-200" id="required-checks-label">
         Required checks by name
       </p>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Each must be reported on the PR head and pass. Once any are listed, only these are required, ticked above or not. Up to {MAX_REQUIRED_CHECKS}.
-      </p>
-      <label className="mt-2 flex items-start gap-2 coarse:min-h-11">
-        <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={draft.pinned} onChange={(e) => onChange({ ...draft, pinned: e.target.checked })} data-testid="pin-sources" />
-        <span>
-          Pin each check to the runner or maintainer that must report it
-          <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">All or none: every check names its source, or any trusted reporter counts for all of them.</span>
-        </span>
-      </label>
+      {maintainer ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+          When listed, only these checks must pass on the PR head (up to {MAX_REQUIRED_CHECKS}).
+        </p>
+      ) : null}
+      {maintainer || draft.pinned || rows.length > 0 ? (
+        <label className="mt-2 flex items-start gap-2 coarse:min-h-11">
+          <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={draft.pinned} onChange={(e) => onChange({ ...draft, pinned: e.target.checked })} data-testid="pin-sources" />
+          <span>
+            Pin each check to a specific runner or maintainer
+          </span>
+        </label>
+      ) : null}
       {rows.length > 0 ? (
         <ul className="mt-2 space-y-2" aria-labelledby="required-checks-label">
           {rows.map((row, i) => {
@@ -993,9 +990,10 @@ function SourceChoice({ id, role }: { id: string; role: string | null }): JSX.El
 // Danger zone: archive
 // ---------------------------------------------------------------------------------------------
 
-export function DangerZone({ home, maintainer, onSaved }: { home: RepoHome; maintainer: boolean; onSaved: () => void }): JSX.Element {
+export function DangerZone({ home, maintainer, owner = false, onSaved }: { home: RepoHome; maintainer: boolean; owner?: boolean; onSaved: () => void }): JSX.Element | null {
   const cfg = useConfigWrite(home, onSaved)
   const archived = cfg.current.archived
+  if (!maintainer && !owner) return null
   return (
     <Section id="danger" title="Danger zone" tone="danger" icon={<Archive className="h-4 w-4" aria-hidden />}>
       <div className="space-y-3">

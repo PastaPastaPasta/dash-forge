@@ -228,12 +228,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
               All
             </StateTab>
           </StateTabs>
-          <FilterBar active={filterCount(query)}>
+          <FilterBar
+            active={filterCount({ ...query, sort: 'newest' })}
+            sort={<SortSelect id="pull-sort" value={query.sort} onChange={(sort) => change({ sort })} />}
+          >
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
             <MilestoneFilter milestones={milestones.data} value={query.milestone} none={query.noMilestone} onChange={(c) => change(c)} />
             <PersonFilter label="Author" value={query.author} signedIn={identity !== null} onChange={(author) => change({ author, authorLogin: null })} />
             <PersonFilter label="Assignee" value={query.assignee} signedIn={identity !== null} allowNone onChange={(assignee) => change({ assignee })} />
-            <SortSelect id="pull-sort" value={query.sort} onChange={(sort) => change({ sort })} />
           </FilterBar>
         </div>
 

@@ -1,0 +1,219 @@
+name: Forge sync
+
+# Mirrors master and every tag of this repository to its mainnet Dash Forge copy,
+# dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge (owner forge.dash).
+# GitHub is primary and the mirror is one-way: tools/forge-sync/mirror.sh never force-pushes,
+# and when Forge has a change GitHub lacks it pushes nothing, fails, and opens an issue.
+# tools/forge-sync/README.md has the operator notes.
+#
+# Secrets, in the `forge-mainnet` environment (deployments from master only):
+#   FORGE_MAINNET_KEY   dfk1: limited key of forge.dash bound to forge-core only, with a budget
+#                       and an expiry (`dg auth export --new-key --scope core`).
+#   FORGE_IPFS_SSH_KEY  ssh key whose only power on our IPFS host is a forced command that
+#                       imports one CAR into its kubo node and pins it.
+# Packs go to a kubo service container in the job, then each new CID is copied to that host as a
+# CAR and confirmed pinned, so nothing depends on a third-party pinning service. Platform keeps
+# only the manifest, the ref update and the history index (~0.004 DASH a push).
+
+on:
+  push:
+    branches: [master]
+    tags: ['**']
+  schedule:
+    - cron: '23 4 * * *' # daily reconcile: catches a run that failed or was skipped
+  pull_request:
+    paths:
+      - tools/forge-sync/**
+      - .github/workflows/forge-sync.yml
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Compare only, push nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One live sync at a time; a newer pending run replaces an older one, which is fine since each
+# run mirrors whatever master is by then. Runs on any other ref (pull requests, tags, dispatches
+# elsewhere) and dry runs never displace it.
+concurrency:
+  group: forge-sync-${{ github.ref != 'refs/heads/master' && github.ref || (inputs.dry-run && 'dry-run' || 'live') }}
+  cancel-in-progress: false
+
+env:
+  FORGE_REMOTE: dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge
+  FORGE_NETWORK: mainnet
+  IPFS_HOST: build.thepasta.org
+  IPFS_HOST_KEY: build.thepasta.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDvEY6zdgninySKvcbwmLeucxNH5sxfGkvKPCJSUBIXp
+
+jobs:
+  test:
+    name: shellcheck, tools/forge-sync/test.sh
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: shellcheck tools/forge-sync/*.sh
+      - run: bash tools/forge-sync/test.sh
+
+  # A tag push runs this workflow as it is at the tag's commit. Rather than let that code near
+  # the key, it asks for a run on master, which pushes every tag Forge lacks.
+  tag:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'PastaPastaPasta/dash-forge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run forge-sync.yml -R "$GITHUB_REPOSITORY" --ref master
+
+  sync:
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && github.repository == 'PastaPastaPasta/dash-forge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: forge-mainnet
+    permissions:
+      contents: read
+      issues: write
+    services:
+      kubo:
+        image: ipfs/kubo:v0.43.1@sha256:b293923d66e490e70ced64df42ea7a6cf7eac2740e3fb29101df18070fa7be48
+        ports:
+          - 127.0.0.1:5001:5001
+          - 127.0.0.1:8080:8080
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch GitHub's master and tags
+        run: |
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          git fetch --tags --force origin
+
+      # Built from this commit with no build cache: any workflow on master can write the
+      # repository's caches, and these binaries hold a mainnet key.
+      - name: Build dg and git-remote-dash
+        env:
+          FORGE_BINARIES: dg git-remote-dash
+          FORGE_BIN_DIR: ${{ runner.temp }}/forge-bin
+          FORGE_TARGET_DIR: ${{ runner.temp }}/dash-forge-build
+          FORGE_TOOLS_DIR: ${{ runner.temp }}/forge-tools
+          DASH_FORGE_ACTION_REF: ${{ github.sha }}
+        run: |
+          bash action/install-forge.sh build
+          echo "$RUNNER_TEMP/forge-bin" >> "$GITHUB_PATH"
+
+      - name: Configure storage and the IPFS host
+        id: configure
+        env:
+          FORGE_IPFS_SSH_KEY: ${{ secrets.FORGE_IPFS_SSH_KEY }}
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS -X POST http://127.0.0.1:5001/api/v0/id >/dev/null && break
+            [ "$i" -lt 30 ] || { echo "::error::the kubo service did not start"; exit 1; }
+            sleep 2
+          done
+          mkdir -p "$RUNNER_TEMP/forge-ssh" "$RUNNER_TEMP/forge-config"
+          chmod 700 "$RUNNER_TEMP/forge-ssh"
+          [ -n "$FORGE_IPFS_SSH_KEY" ] || { echo "::error::FORGE_IPFS_SSH_KEY is not set"; exit 1; }
+          printf '%s\n' "$FORGE_IPFS_SSH_KEY" > "$RUNNER_TEMP/forge-ssh/id"
+          chmod 600 "$RUNNER_TEMP/forge-ssh/id"
+          printf '%s\n' "$IPFS_HOST_KEY" > "$RUNNER_TEMP/forge-ssh/known_hosts"
+          cat > "$RUNNER_TEMP/forge-config/storage.toml" <<'EOF'
+          [profiles.ci-kubo]
+          kind = "ipfs-kubo"
+          api = "http://127.0.0.1:5001"
+          gateway = "http://127.0.0.1:8080"
+          EOF
+          # timeout bounds a hung import on the host; the job's 60 minutes would otherwise.
+          {
+            echo "DASH_FORGE_STORAGE_CONFIG=$RUNNER_TEMP/forge-config/storage.toml"
+            echo "XDG_CONFIG_HOME=$RUNNER_TEMP/forge-config"
+            echo "STATE_DIR=$RUNNER_TEMP/forge-state"
+            echo "CAR_DIR=$RUNNER_TEMP/forge-cars"
+            echo "PIN_CMD=timeout 900 ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/forge-ssh/known_hosts -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o LogLevel=ERROR -i $RUNNER_TEMP/forge-ssh/id pasta@$IPFS_HOST"
+          } >> "$GITHUB_ENV"
+          dg --version
+
+      - name: Mirror master and tags to Forge
+        id: sync
+        # Leaves the copy step job time even when a push hangs.
+        timeout-minutes: 20
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MAINNET_KEY }}
+          DASH_FORGE_NO_KEYCHAIN: '1'
+          DRY_RUN: ${{ inputs.dry-run && '1' || '' }}
+        run: bash tools/forge-sync/mirror.sh
+
+      # Also after a failed or cancelled push: the helper writes refs one by one, so some may
+      # have landed, and their packs are only on this job's kubo until they are copied.
+      - name: Copy the new packs to the IPFS host
+        if: always() && steps.configure.outcome == 'success'
+        timeout-minutes: 30
+        run: bash tools/forge-sync/replicate.sh
+
+      - name: Check the key's budget
+        if: always() && steps.configure.outcome == 'success'
+        continue-on-error: true
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MAINNET_KEY }}
+          DASH_FORGE_NO_KEYCHAIN: '1'
+        run: |
+          s=$(dg auth status --network "$FORGE_NETWORK" --json </dev/null)
+          left=$(jq -r '.budgetRemainingCredits // empty' <<<"$s")
+          total=$(jq -r '.budgetCredits // empty' <<<"$s")
+          expires=$(jq -r '.expiresAt // empty' <<<"$s")
+          [ -n "$left" ] && [ -n "$total" ] && [ -n "$expires" ] || { echo "::warning::could not read the key's budget"; exit 0; }
+          days=$(( (expires / 1000 - $(date +%s)) / 86400 ))
+          line="Key budget: $(awk -v l="$left" 'BEGIN { printf "%.4f", l / 1e11 }') of $(awk -v t="$total" 'BEGIN { printf "%.4f", t / 1e11 }') DASH left, expires in $days days."
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          if [ $((left * 5)) -lt "$total" ] || [ "$days" -lt 14 ]; then
+            echo "::warning title=Forge sync::$line Rotate FORGE_MAINNET_KEY (tools/forge-sync/README.md)."
+          fi
+
+      # replicate.sh removes the CARs it copied, so anything left reached no durable node.
+      - name: Keep unreplicated packs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: forge-sync-cars-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forge-cars
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Open an issue
+        if: (failure() || cancelled()) && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIVERGED: ${{ steps.sync.outputs.diverged }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$DIVERGED" = true ]; then
+            title="Forge mirror diverged from GitHub"
+            body="The Forge sync found a change on $FORGE_REMOTE that GitHub's master or tags do not have, so it pushed nothing (GitHub never overwrites Forge). The job summary of $RUN_URL lists the refs. Bring the change into GitHub, or remove it on Forge, then re-run the workflow."
+          elif [ -e "${STATE_DIR:-/nonexistent}/pushed" ]; then
+            title="Forge mirror push or replication failed"
+            body="The Forge sync pushed to $FORGE_REMOTE, but the push or the copy of its packs to the IPFS host failed or was cancelled, so Forge may name packs no durable node holds. A later run will not notice. The job summary of $RUN_URL says what failed; any unreplicated CARs are in the run's artifact. Import them on the IPFS host (tools/forge-sync/README.md), then close this issue."
+          else
+            title="Forge sync failing"
+            body="The Forge sync failed before pushing anything, so $FORGE_REMOTE is behind GitHub until a run passes. See $RUN_URL."
+          fi
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "Again: $RUN_URL"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+      - name: Clean up the ssh key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/forge-ssh"

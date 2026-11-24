@@ -316,12 +316,12 @@ test.describe('LICENSE and languages (showcase repos)', () => {
       const bar = about.getByTestId('language-bar')
       await expect(bar).toBeVisible({ timeout: 90_000 })
       await expect(bar.getByTestId('language').first()).toContainText(first)
-      await expect(bar.getByTestId('language-note')).toContainText('≈ by stored (compressed) size')
+      await expect(bar).toHaveAttribute('title', /≈ by stored \(compressed\) size/)
       await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
       const cold = [...counts.values()].reduce((a, n) => a + n, 0)
       test.info().annotations.push({
         type: 'dapi',
-        description: `${name} cold home with the About facts: ${cold} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}; ${await bar.getByTestId('language-note').innerText()}`,
+        description: `${name} cold home with the About facts: ${cold} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}; ${await bar.getAttribute('title')}`,
       })
       // A cold home with the facts worked out (the About card scrolled into view): the home's
       // budget plus the facts' walk (repo-home-latency rhl-1).

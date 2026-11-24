@@ -8,7 +8,7 @@
 
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
-import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Globe, Info, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
+import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Globe, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { Author } from '@/components/author'
@@ -97,13 +97,15 @@ export default function NotificationsPage(): JSX.Element {
   if (!identity) {
     return (
       <AppShell>
-        <h1 className="mb-4 text-xl">Notifications</h1>
-        <EmptyState
-          icon={Bell}
-          title={locked ? 'Unlock to see your notifications' : 'Sign in to see your notifications'}
-          body={`${INBOX_EMPTY} They follow the identity you sign in with.`}
-          action={<SignInButton />}
-        />
+        <div className="mx-auto max-w-xl">
+          <EmptyState
+            heading="h1"
+            icon={Bell}
+            title={locked ? 'Unlock to see your notifications' : 'Sign in to see your notifications'}
+            body={INBOX_EMPTY}
+            action={<SignInButton />}
+          />
+        </div>
       </AppShell>
     )
   }
@@ -124,46 +126,43 @@ export default function NotificationsPage(): JSX.Element {
           </div>
         </div>
 
-        <p role="note" className="flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200">
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-          <span data-testid="inbox-reach-note">{inboxReachNote(NOTIFY_URL !== null)}</span>
-        </p>
-
-        <div role="group" aria-label="Show" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
-          {(['unread', 'all'] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              aria-pressed={filter === f}
-              onClick={() => setFilter(f)}
-              className={cn('rounded px-3 py-1 text-dense font-medium coarse:min-h-11', filter === f ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
-            >
-              {f === 'unread' ? `Unread (${unread})` : `All (${byReason.length})`}
-            </button>
-          ))}
-        </div>
-        <div role="group" aria-label="Reason" className="flex flex-wrap gap-1.5" data-testid="inbox-reasons">
-          {INBOX_FILTERS.map((r) => {
-            const count = threads.filter((t) => matchesFilter(t.reasons, r.id) && t.thread.unread > 0).length
-            return (
+        <div className="flex flex-wrap items-center gap-2">
+          <div role="group" aria-label="Show" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+            {(['unread', 'all'] as const).map((f) => (
               <button
-                key={r.id}
+                key={f}
                 type="button"
-                aria-pressed={reason === r.id}
-                onClick={() => setReason(reason === r.id ? null : r.id)}
-                data-reason={r.id}
-                className={cn(
-                  'rounded-full border px-3 py-1 text-dense coarse:min-h-11',
-                  reason === r.id
-                    ? 'border-forge-500 bg-forge-500/15 font-medium text-forge-800 dark:text-forge-300'
-                    : 'border-anvil-200 text-anvil-600 hover:border-anvil-300 dark:border-anvil-750 dark:text-anvil-300 dark:hover:border-anvil-600',
-                )}
+                aria-pressed={filter === f}
+                onClick={() => setFilter(f)}
+                className={cn('rounded px-3 py-1 text-dense font-medium coarse:min-h-11', filter === f ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
               >
-                {r.label}
-                {count > 0 ? <span className="ml-1 font-mono text-[11px] text-anvil-500 dark:text-anvil-400">{count}</span> : null}
+                {f === 'unread' ? `Unread (${unread})` : `All (${byReason.length})`}
               </button>
-            )
-          })}
+            ))}
+          </div>
+          <div role="group" aria-label="Reason" className="flex flex-wrap gap-1.5" data-testid="inbox-reasons">
+            {INBOX_FILTERS.map((r) => {
+              const count = threads.filter((t) => matchesFilter(t.reasons, r.id) && t.thread.unread > 0).length
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  aria-pressed={reason === r.id}
+                  onClick={() => setReason(reason === r.id ? null : r.id)}
+                  data-reason={r.id}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-dense coarse:min-h-11',
+                    reason === r.id
+                      ? 'border-forge-500 bg-forge-500/15 font-medium text-forge-800 dark:text-forge-300'
+                      : 'border-anvil-200 text-anvil-600 hover:border-anvil-300 dark:border-anvil-750 dark:text-anvil-300 dark:hover:border-anvil-600',
+                  )}
+                >
+                  {r.label}
+                  {count > 0 ? <span className="ml-1 font-mono text-[11px] text-anvil-500 dark:text-anvil-400">{count}</span> : null}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
         {error && items.length === 0 ? (
@@ -201,39 +200,29 @@ export default function NotificationsPage(): JSX.Element {
         )}
 
         <section className="rounded-lg border border-anvil-200 p-4 text-dense dark:border-anvil-800" aria-labelledby="watching">
-          <h2 id="watching" className="mb-2 font-medium">What this browser watches</h2>
-          {subs && counts !== null ? (
-            <ul className="list-inside list-disc space-y-1 text-anvil-600 dark:text-anvil-300">
-              <li>
-                {plural(counts.member, 'repo')} you own or belong to: new issues and pull
-                requests{prefs?.pushes ? ', pushes' : ''}.
-              </li>
-              <li>
-                {plural(counts.watched, 'repo')} you watch (on every device): new issues and pull
-                requests{prefs?.pushes ? ', pushes' : ''}.
-              </li>
-              <li>
-                {plural(counts.joined, 'issue or pull request', 'issues and pull requests')} you
-                opened or commented on: comments, state changes, and reviews on your pull requests
-                {subs.reviewIndexes?.toAuthor ? ' (on every pull request you opened)' : ''}.
-              </li>
-              <li>
-                {plural(counts.addressed, 'issue or pull request', 'issues and pull requests')} you
-                were assigned or asked to review (on every device): the assignment, comments and state changes.
-              </li>
-              {subs.reviewIndexes?.author ? (
-                <li>
-                  {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
-                  reviewed (on every device) or were mentioned in (as this browser saw it): comments and state changes. Other devices
-                  do not know about the mentions.
-                </li>
-              ) : (
-                <li>
-                  {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
-                  reviewed or were mentioned in, as this browser saw it: comments and state changes. Other devices do not know about these.
-                </li>
-              )}
-              {prefs?.stars ? <li>{plural(counts.starred, 'starred repo')}: new issues and pull requests.</li> : null}
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 id="watching" className="font-medium">What this browser watches</h2>
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
+              {lastPoll ? `Last checked ${timeAgo(lastPoll)}` : 'Not checked yet'}
+            </span>
+          </div>
+          {prefs ? (
+            <div className="mt-2.5 flex flex-wrap gap-x-5 gap-y-1">
+              <label className="flex items-center gap-2 coarse:min-h-11">
+                <input type="checkbox" className="h-4 w-4 accent-forge-600" checked={prefs.stars} onChange={(e) => void setPrefs({ ...prefs, stars: e.target.checked })} />
+                Also watch repos I starred
+              </label>
+              <label className="flex items-center gap-2 coarse:min-h-11">
+                <input type="checkbox" className="h-4 w-4 accent-forge-600" checked={prefs.pushes} onChange={(e) => void setPrefs({ ...prefs, pushes: e.target.checked })} />
+                Tell me about pushes to repos I watch
+              </label>
+            </div>
+          ) : null}
+          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="inbox-reach-note">
+            {inboxReachNote(NOTIFY_URL !== null)}
+          </p>
+          {subs && (subs.droppedRepos > 0 || subs.droppedThreads > 0 || (subs.incomplete && subs.incomplete.length > 0)) ? (
+            <ul className="mt-2 list-inside list-disc space-y-1 text-[12px] text-anvil-600 dark:text-anvil-300">
               {subs.droppedRepos > 0 ? (
                 <li>
                   Capped at {MAX_REPOS} repos: {subs.droppedRepos} more are not watched.
@@ -246,31 +235,58 @@ export default function NotificationsPage(): JSX.Element {
               ) : null}
               {subs.incomplete && subs.incomplete.length > 0 ? (
                 <li className="text-caution-700 dark:text-caution-400" data-partial="true">
-                  Could not read all of: {subs.incomplete.join('; ')}. What they would add is not watched until the next check
-                  succeeds.
+                  Could not read all of: {subs.incomplete.join('; ')}.
                 </li>
               ) : null}
             </ul>
-          ) : (
-            <p className="text-anvil-500 dark:text-anvil-400">Working out your repos and threads…</p>
-          )}
-          {prefs ? (
-            <div className="mt-3 space-y-1.5">
-              <label className="flex items-center gap-2 coarse:min-h-11">
-                <input type="checkbox" className="h-4 w-4 accent-forge-600" checked={prefs.stars} onChange={(e) => void setPrefs({ ...prefs, stars: e.target.checked })} />
-                Also watch repos I starred
-              </label>
-              <label className="flex items-center gap-2 coarse:min-h-11">
-                <input type="checkbox" className="h-4 w-4 accent-forge-600" checked={prefs.pushes} onChange={(e) => void setPrefs({ ...prefs, pushes: e.target.checked })} />
-                Tell me about pushes to repos I watch
-              </label>
-            </div>
           ) : null}
-          <p className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400">
-            {lastPoll ? `Last checked ${timeAgo(lastPoll)}` : 'Not checked yet'}
-            {lastFeeds ? ` · ${lastFeeds.read} of ${plural(lastFeeds.total, 'feed')} this round${lastFeeds.failed ? `, ${lastFeeds.failed} failed (retried next round)` : ''}` : ''}
-            . Your own actions never notify you.
-          </p>
+          <details className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+            <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
+              Watched sources &amp; details
+            </summary>
+            <div className="mt-2 space-y-2">
+              {subs && counts !== null ? (
+                <ul className="list-inside list-disc space-y-1 text-anvil-600 dark:text-anvil-300">
+                  <li>
+                    {plural(counts.member, 'repo')} you own or belong to: new issues and pull
+                    requests{prefs?.pushes ? ', pushes' : ''}.
+                  </li>
+                  <li>
+                    {plural(counts.watched, 'repo')} you watch (on every device): new issues and pull
+                    requests{prefs?.pushes ? ', pushes' : ''}.
+                  </li>
+                  <li>
+                    {plural(counts.joined, 'issue or pull request', 'issues and pull requests')} you
+                    opened or commented on: comments, state changes, and reviews on your pull requests
+                    {subs.reviewIndexes?.toAuthor ? ' (on every pull request you opened)' : ''}.
+                  </li>
+                  <li>
+                    {plural(counts.addressed, 'issue or pull request', 'issues and pull requests')} you
+                    were assigned or asked to review (on every device): the assignment, comments and state changes.
+                  </li>
+                  {subs.reviewIndexes?.author ? (
+                    <li>
+                      {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
+                      reviewed (on every device) or were mentioned in (as this browser saw it): comments and state changes.
+                    </li>
+                  ) : (
+                    <li>
+                      {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
+                      reviewed or were mentioned in, as this browser saw it: comments and state changes.
+                    </li>
+                  )}
+                  {prefs?.stars ? <li>{plural(counts.starred, 'starred repo')}: new issues and pull requests.</li> : null}
+                </ul>
+              ) : (
+                <p>Working out your repos and threads…</p>
+              )}
+              {lastFeeds ? (
+                <p>
+                  {lastFeeds.read} of {plural(lastFeeds.total, 'feed')} this round{lastFeeds.failed ? `, ${lastFeeds.failed} failed (retried next round)` : ''}. Your own actions never notify you.
+                </p>
+              ) : null}
+            </div>
+          </details>
         </section>
       </div>
     </AppShell>

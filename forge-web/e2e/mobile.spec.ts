@@ -1,6 +1,6 @@
 import { test, expect, devices, type Browser, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { atRoute, expectLanded, loadSeedPulls, PASSPHRASE, repoUrl, waitForRepoResolved, skipWithoutFixture, showOtherWays } from './helpers'
+import { atRoute, expectLanded, loadSeedPulls, PASSPHRASE, repoUrl, waitForRepoResolved, skipWithoutFixture, showOtherWays, usePassword } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
@@ -223,6 +223,7 @@ test.describe('signed in with a low balance', () => {
       await showOtherWays(page)
       await page.getByTestId('tile-import').click()
       await page.setInputFiles('input[type="file"]', { name: 'id.json', mimeType: 'application/json', buffer: readFileSync(LOW_ID_FILE) })
+      await usePassword(page)
       await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
       await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
       await page.getByRole('button', { name: /create this browser's key/i }).click()
@@ -266,6 +267,7 @@ test.describe('signed in with a low balance', () => {
     await showOtherWays(page)
     await page.getByTestId('tile-import').click()
     await page.setInputFiles('input[type="file"]', { name: 'id.json', mimeType: 'application/json', buffer: readFileSync(LOW_ID_FILE) })
+    await usePassword(page)
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
     await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
     await page.getByRole('button', { name: /create this browser's key/i }).click()

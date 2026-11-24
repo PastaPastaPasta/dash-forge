@@ -33,7 +33,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { devices, expect, test, type Browser, type Locator, type Page } from '@playwright/test'
-import { DAPI_METHOD, PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved, showOtherWays } from './helpers'
+import { DAPI_METHOD, PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved, showOtherWays, usePassword } from './helpers'
 
 const env = (k: string, d = ''): string => process.env[k] ?? d
 const OWNER = env('E2E_MPB_OWNER')
@@ -75,6 +75,7 @@ async function signedInAs(browser: Browser, name: string): Promise<Page> {
     await showOtherWays(page)
     await page.getByTestId('tile-import').click()
     await page.setInputFiles('input[type="file"]', idFile(name))
+    await usePassword(page)
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
     await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
     await page.getByTestId('enable-private-repos').check()

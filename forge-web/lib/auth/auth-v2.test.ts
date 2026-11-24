@@ -18,9 +18,15 @@ import {
   prfKey,
   sharedOriginProblem,
   storeInVault,
+  DeviceOnlyRefusedError,
+  protectVault,
+  unlockScope,
+  unlockWithDevice,
   unlockWithPassphrase,
   unlockedSecret,
+  writeStorageBlob,
 } from './vault'
+import { deviceResumeAllowed } from './session-resume'
 import { DepositTracker, buildAssetLock, buildPayment, hash160, txid, type Utxo } from './asset-lock'
 import { masterMaterialFromFile } from './identity-file'
 import { base58CheckEncode } from './base58'
@@ -72,7 +78,54 @@ describe('vault', () => {
 
   it('refuses short passphrases and an unprotected vault', async () => {
     await expect(storeInVault('devnet', SECRET, { passphrase: 'short' })).rejects.toThrow(/at least/)
-    await expect(storeInVault('devnet', SECRET, {})).rejects.toThrow(/passphrase or a passkey/)
+    await expect(storeInVault('devnet', SECRET, {})).rejects.toThrow(/a passphrase, a passkey or this browser/)
+  })
+
+  it('keeps a key for this browser alone: sealed at rest, opened without a prompt, never by a passphrase', async () => {
+    await storeInVault('devnet', SECRET, { device: true })
+    const [[, record]] = (await idbEntries<Record<string, unknown>>('vault')) as [[string, Record<string, unknown>]]
+    expect(JSON.stringify(record)).not.toContain(SECRET.wif)
+    expect((await listVaults('devnet'))[0]!.methods).toEqual(['device'])
+    lockVault()
+    await expect(unlockWithPassphrase('devnet', SECRET.identityId, 'correct horse battery')).rejects.toBeInstanceOf(VaultLockedError)
+    expect((await unlockWithDevice('devnet', SECRET.identityId)).wif).toBe(SECRET.wif)
+    // The signing key only: nothing else may be sealed under, or opened by, this browser alone.
+    expect(unlockScope('devnet', SECRET.identityId)).toBe('signing')
+  })
+
+  it('never keeps wallet grants or storage settings by this browser alone', async () => {
+    const extra = [{ contractId: 'GPHh5EAjvh346epUPQSijmz1xgJp6APjn45EPkGMCjLo', keyId: 9, wif: SECRET.wif, holdOnly: true as const }]
+    await expect(storeInVault('devnet', { ...SECRET, extra }, { device: true })).rejects.toBeInstanceOf(DeviceOnlyRefusedError)
+    await storeInVault('devnet', SECRET, { passphrase: 'correct horse battery' })
+    await writeStorageBlob('devnet', SECRET.identityId, { bucket: 'b' })
+    await expect(storeInVault('devnet', SECRET, { device: true })).rejects.toBeInstanceOf(DeviceOnlyRefusedError)
+  }, 60_000)
+
+  it('protects a browser-only key later with a passphrase, then opens all of it', async () => {
+    await storeInVault('devnet', SECRET, { device: true })
+    await protectVault('devnet', SECRET.identityId, { passphrase: 'correct horse battery' })
+    expect((await listVaults('devnet'))[0]!.methods).toEqual(['passphrase'])
+    expect(unlockScope('devnet', SECRET.identityId)).toBe('full')
+    lockVault()
+    await expect(unlockWithDevice('devnet', SECRET.identityId)).rejects.toBeInstanceOf(VaultLockedError)
+  }, 60_000)
+
+  it('a lock stops a browser-only key from reopening by itself until it is opened on purpose', async () => {
+    const store = new Map<string, string>()
+    ;(globalThis as { window?: unknown }).window = {
+      location: { hostname: 'forge.dashhq.org', pathname: '/' },
+      localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) },
+    }
+    try {
+      await storeInVault('devnet', SECRET, { device: true })
+      expect(deviceResumeAllowed()).toBe(true)
+      lockVault()
+      expect(deviceResumeAllowed()).toBe(false)
+      await unlockWithDevice('devnet', SECRET.identityId)
+      expect(deviceResumeAllowed()).toBe(true)
+    } finally {
+      delete (globalThis as { window?: unknown }).window
+    }
   })
 
   it('binds a record to its network and identity (a copied record does not open)', async () => {

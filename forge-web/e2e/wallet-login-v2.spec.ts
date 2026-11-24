@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { resolve } from 'node:path'
 import { deploymentFilePath } from './network'
-import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, idFile, repoUrl, shot, unlock, showOtherWays } from './helpers'
+import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, idFile, repoUrl, shot, unlock, showOtherWays, usePassword } from './helpers'
 import { approveV2, disableGrants, newV2Wallet } from './wallet-responder-v2'
 
 /**
@@ -18,7 +18,7 @@ import { approveV2, disableGrants, newV2Wallet } from './wallet-responder-v2'
  * r1. Desktop: the wallet tile comes first; the request is v2 (`v=2`, one approval for all of
  *     Forge, with the budget and the date), the support note names App Connect v2, and there is no
  *     older code to switch to (v1 DashConnect was removed).
- * r2. Phone: "Open in DashPay (Dash Wallet)" is the v2 link (no callback on a local http build:
+ * r2. Phone: "Open in wallet" is the v2 link (no callback on a local http build:
  *     `cb` needs the canonical https site).
  * r3. `/connect/`, where a wallet returns: a malformed link goes home, a declined approval says
  *     so, a tab that shows a code answers the page (which then steps aside), and with no such
@@ -66,11 +66,11 @@ async function devnetReachable(): Promise<boolean> {
   }
 }
 
-/** The URI a QR on the page encodes (the Qr component prints it as its caption). */
+/** The URI a QR on the page encodes (the Qr component carries it as `data-value`). */
 async function shownUri(page: Page, scheme = 'dashpay'): Promise<string> {
-  const caption = page.locator('figcaption', { hasText: `${scheme}:` }).first()
-  await expect(caption).toBeVisible({ timeout: 60_000 })
-  return (await caption.textContent())!.trim()
+  const qr = page.locator(`[role="img"][data-value^="${scheme}:"]`).first()
+  await expect(qr).toBeVisible({ timeout: 60_000 })
+  return (await qr.getAttribute('data-value'))!.trim()
 }
 
 async function openWalletRequest(page: Page): Promise<void> {
@@ -106,12 +106,14 @@ test.describe('v2 request (read-only)', () => {
     await expect(page.getByTestId('approval-terms')).toContainText(/one approval covers all of forge, spending up to 0\.05 dash/i)
     await expect(page.getByTestId('approval-terms')).toContainText(/until /)
     await expect(page.getByTestId('wallet-support')).toContainText(/app connect v2/i)
-    await expect(page.getByTestId('wallet-deep-link')).toHaveCount(0)
+    await expect(page.getByTestId('scan-warning')).toBeVisible()
+    await expect(page.getByTestId('wallet-copy-link')).toBeVisible()
+    await expect(page.locator('figcaption', { hasText: 'dashpay:' })).toHaveCount(0)
     await expect(page.getByText(/older code/i)).toHaveCount(0)
     await shot(page, 'wallet-login-v2-01-request')
   })
 
-  test('r2. phone: "Open in DashPay (Dash Wallet)" is the v2 link, with the QR behind a disclosure', async ({ browser }) => {
+  test('r2. phone: "Open in wallet" is the v2 link, with the QR behind a disclosure', async ({ browser }) => {
     const page = await (await browser.newContext({ ...devices['Pixel 7'] })).newPage()
     await openWalletRequest(page)
     const link = page.getByTestId('wallet-deep-link')
@@ -121,7 +123,7 @@ test.describe('v2 request (read-only)', () => {
     // `cb` needs the canonical https site: this local http build leaves it out (BroadcastChannel
     // would not reach the tab either).
     expect(href).not.toContain('cb=')
-    await expect(link).toHaveText(/open in dashpay \(dash wallet\)/i)
+    await expect(link).toHaveText(/open in wallet/i)
     await shot(page, 'wallet-login-v2-03-phone')
   })
 })
@@ -182,14 +184,15 @@ test.describe('v2 sign-in and renewal (live, real spend)', () => {
       expect(first.replacedKeyId).toBeNull()
 
       // Confirm: the identity and the limits the chain records; not the shipped wallets' warning.
-      await expect(page.getByTestId('granted-identity')).toHaveText(relay, { timeout: 120_000 })
+      await expect(page.getByTestId('granted-identity')).toHaveAttribute('title', relay, { timeout: 120_000 })
       await expect(page.getByTestId('unlimited-key-warning')).toHaveCount(0)
       await expect(page.getByTestId('approval-terms')).toContainText(/spending capped at 0\.05 dash/i)
       await shot(page, 'wallet-login-v2-04-confirm')
-      await page.getByLabel(/this is my identity/i).check()
+      await page.getByRole('button', { name: /that's me, continue/i }).click()
+      await usePassword(page)
       await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
       await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
-      await page.getByRole('button', { name: /finish signing in/i }).click()
+      await page.getByRole('button', { name: /save with password/i }).click()
       await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
 
       // One key covers every contract: nothing more to approve, and the key shows its limits.
@@ -220,6 +223,7 @@ test.describe('v2 sign-in and renewal (live, real spend)', () => {
       await page.getByTestId('key-renew-in-wallet').click()
       await expect(page.getByTestId('wallet-renew-prepare')).toBeVisible({ timeout: 30_000 })
       await expect(page.locator('figcaption', { hasText: 'dashpay:' })).toHaveCount(0)
+      await usePassword(page)
       await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
       await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
       await page.getByRole('button', { name: /continue to your wallet/i }).click()

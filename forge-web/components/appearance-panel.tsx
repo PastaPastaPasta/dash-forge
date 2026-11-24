@@ -32,7 +32,6 @@ export function AppearancePanel(): JSX.Element {
             </label>
           ))}
         </div>
-        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">System follows your device&apos;s light or dark setting.</p>
       </fieldset>
       <fieldset className="space-y-1.5 border-t border-anvil-100 pt-3 dark:border-anvil-850">
         <legend className="text-dense font-medium text-anvil-700 dark:text-anvil-200">Diffs</legend>
@@ -46,10 +45,9 @@ export function AppearancePanel(): JSX.Element {
         </label>
         <label className="flex items-center gap-2 text-dense coarse:min-h-11">
           <input type="checkbox" checked={prefs.palette === 'colorblind'} onChange={(e) => update({ palette: e.target.checked ? 'colorblind' : 'standard' })} />
-          Blue and orange diff colors, for red-green color blindness
+          Blue and orange diff colors
         </label>
       </fieldset>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Saved in this browser only.</p>
     </div>
   )
 }

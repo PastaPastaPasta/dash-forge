@@ -110,20 +110,17 @@ const LABEL: Readonly<Record<ProfileField, string>> = {
   company: 'Company',
 }
 
-/** The public-data notice (P1-7): a profile is never encrypted, whatever repos it shows beside. */
 export function ProfilePublicNote({ className }: { className?: string }): JSX.Element {
   return (
     <p
       className={cn(
-        'flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-[12px] text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200',
+        'flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400',
         className,
       )}
       data-testid="profile-public-note"
     >
-      <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span>
-        Your profile is public, even next to private repos. Don&apos;t add anything you want to keep private.
-      </span>
+      <Globe className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span>Your profile is public, even beside private repos.</span>
     </p>
   )
 }

@@ -126,8 +126,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
     <Section id="webhooks" title="Webhooks" icon={<WebhookIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="webhooks">
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          A relay watches this repo and sends GitHub-style events to your URL, signed with a secret only the relay can read. The URL and events
-          are public on Platform.
+          Delivers repository events to your URL via a relay. URLs and events are public; secrets are encrypted to the relay.
         </p>
         {!isPublic ? (
           <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="webhooks-private">
