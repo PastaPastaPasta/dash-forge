@@ -357,7 +357,7 @@ function BlobMoreMenu({
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         data-testid="blob-more"
-        className={cn(HEADER_BTN, 'px-1.5 coarse:px-2.5')}
+        className={cn(HEADER_BTN, 'px-1.5 coarse:min-w-11 coarse:justify-center coarse:px-2.5')}
       >
         <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
       </button>
