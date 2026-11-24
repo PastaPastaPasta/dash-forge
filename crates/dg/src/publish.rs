@@ -632,6 +632,12 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         }
         .into());
     }
+    if flow.pushes() && !crate::repo::helper_installed() {
+        return Err(crate::repo::helper_missing(
+            "not published: git can't push to dash:// URLs".into(),
+        )
+        .into());
+    }
     let owner = ctx.load_bridge()?.identity_id;
     let local = if flow.pushes() {
         Some(Local::discover().ok_or_else(|| {
