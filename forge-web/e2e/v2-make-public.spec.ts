@@ -24,7 +24,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { expect, test, type Browser, type Page } from '@playwright/test'
-import { DAPI_METHOD, PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { DAPI_METHOD, PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved, showOtherWays } from './helpers'
 
 const OWNER = process.env['E2E_MP_OWNER'] ?? ''
 const NAME = process.env['E2E_MP_NAME'] ?? ''
@@ -53,6 +53,7 @@ async function signedInAs(browser: Browser, name: string): Promise<Page> {
     await unlock(page)
   } else {
     await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
+    await showOtherWays(page)
     await page.getByTestId('tile-import').click()
     await page.setInputFiles('input[type="file"]', idFile(name))
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)

@@ -514,7 +514,17 @@ export function stateFile(name: string): string {
 export async function openSignIn(page: Page, ready: Locator): Promise<void> {
   // "Sign in", or "Session locked — Unlock" when this browser holds a locked key.
   await page.getByRole('banner').getByRole('button', { name: /^sign in$|unlock$/i }).first().click()
+  const more = page.getByTestId('signin-more')
+  await more.or(ready).first().waitFor({ state: 'visible', timeout: 30_000 })
+  if (!(await ready.isVisible()) && (await more.isVisible())) await showOtherWays(page)
   await ready.waitFor({ state: 'visible', timeout: 30_000 })
+}
+
+/** Opens the sign-in sheet's collapsed "Other ways to sign in", where every tile but the wallet and the passkey sits. */
+export async function showOtherWays(scope: Page | Locator): Promise<void> {
+  const more = scope.getByTestId('signin-more')
+  await more.waitFor({ state: 'visible', timeout: 60_000 })
+  if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click()
 }
 
 /** Import the identity file once: the master key registers a limited key for this browser. */

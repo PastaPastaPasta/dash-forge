@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { encodeWif } from '../lib/auth/wif'
-import { PASSPHRASE, shot } from './helpers'
+import { PASSPHRASE, shot, showOtherWays } from './helpers'
 import { E2E_NETWORK } from './network'
 
 /**
@@ -49,6 +49,7 @@ const WITHIN = 30_000
 
 async function openSheet(page: Page, tile: 'create' | 'import' | 'wallet' | 'advanced'): Promise<void> {
   await page.getByRole('button', { name: /^sign in$/i }).first().click({ timeout: 60_000 })
+  await showOtherWays(page)
   if (tile === 'advanced') {
     await page.getByRole('button', { name: 'Advanced' }).click()
   }
@@ -121,6 +122,7 @@ test('s2. the Platform library cannot download: a named error and a working "Try
 
   // The wallet tile still shows (its availability could not be checked) and names the failure.
   await dialog.getByRole('button', { name: 'All options' }).click()
+  await showOtherWays(dialog)
   await dialog.getByTestId('tile-wallet').click({ timeout: WITHIN })
   await expect(dialog.getByRole('alert')).toContainText('Could not download the Dash Platform library', { timeout: WITHIN })
   await expect(dialog.getByRole('button', { name: /try again/i })).toBeVisible()
@@ -132,6 +134,7 @@ test('s2. the Platform library cannot download: a named error and a working "Try
   await expect(dialog.getByRole('alert').filter({ hasText: 'Could not download the Dash Platform library' })).toHaveCount(0, { timeout: 60_000 })
   // And Create, opened again, shows the words.
   await dialog.getByRole('button', { name: 'All options' }).click()
+  await showOtherWays(dialog)
   await dialog.getByTestId('tile-create').click()
   await expect(page.getByTestId('mnemonic-words').locator('li')).toHaveCount(12, { timeout: 60_000 })
   await context.close()
@@ -223,6 +226,7 @@ test('s5. a pasted private key never reaches the DOM', async ({ page }) => {
   // A recovery phrase typed into Import: in the field, never in the page's HTML.
   const words = 'abandon ability able about above absent absorb abstract absurd abuse access accident'
   await page.getByRole('button', { name: 'All options' }).click()
+  await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.getByRole('tab', { name: 'Recovery phrase' }).click()
   await page.getByLabel('Recovery phrase (12 or 24 words)').fill(words)
@@ -240,6 +244,7 @@ test('s8. a remounted passphrase form never keeps a passphrase the screen does n
   await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeEnabled()
   // Away to the tile list and back: a fresh form, empty, and nothing to submit with.
   await dialog.getByRole('button', { name: 'All options' }).click()
+  await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', identityFile())
   await expect(page.getByLabel('Passphrase', { exact: true })).toHaveValue('')
@@ -345,6 +350,7 @@ test('s7. a slow first download shows how much of the Platform library has arriv
   await cdp.send('Network.enable')
   await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 50, downloadThroughput: 500_000, uploadThroughput: 500_000 })
   await page.goto('/login/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await showOtherWays(page)
   await page.getByTestId('tile-create').click({ timeout: 60_000 })
   const waiting = page.getByTestId('signin-waiting')
   await expect(waiting).toContainText('Downloading the Dash Platform library')

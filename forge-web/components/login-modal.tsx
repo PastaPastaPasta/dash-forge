@@ -259,9 +259,17 @@ function describeView(view: View, limitedKeys: boolean, notWalletGrant: boolean)
   if (view === 'import') return <>This browser gets its own Forge key: it can spend {limits}.</>
   if (view === 'create') return <>This browser gets its own Forge key: it can spend {fixedLimits}.</>
   if (view === 'unlock') return 'Unlock the key this browser already holds.'
-  // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md). Creating
-  // fixes the lifetime (renewable later); importing lets you pick up to a year at once (Q5-C04).
-  return <>This browser gets its own Forge key: {base}, for {BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity&apos;s key can be renewed for up to a year later.</>
+  // The tile list: one short line; the key's limits are under Other ways to sign in.
+  return 'Your keys stay in your wallet or on this device.'
+}
+
+/** The browser key's limits, shown with the other ways in. Creating fixes the lifetime (renewable later); importing lets you pick up to a year at once (Q5-C04). */
+function KeyLimitsNote(): JSX.Element {
+  return (
+    <p data-testid="signin-key-limits" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+      This browser gets its own Forge key. It spends at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge. It lasts {BROWSER_KEY_DEFAULTS.days} days by default, and up to a year.
+    </p>
+  )
 }
 
 function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () => void }): JSX.Element {
@@ -269,6 +277,7 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
   const closeLogin = useUiStore((s) => s.closeLogin)
   const { available: walletAvailable, v2: walletV2 } = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
+  const [more, setMore] = useState(false)
   const creating = useCreationInProgress()
   // While writes are paused (a devnet move, or the operator's PAGES_NOTICE=paused), no identity is
   // created, imported or given a wallet key here.
@@ -404,36 +413,38 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
     }
   }
   const group = (g: SignInGroup): ReactNode[] => methods.filter((m) => m.group === g).map(tile)
-  const otherTiles = group('other')
   const advancedTiles = group('advanced')
   return (
     <div className="space-y-2">
-      {group('lead')}
-      <GroupLabel>New to Dash?</GroupLabel>
-      {group('new')}
-      <GroupLabel>Already have a Dash identity?</GroupLabel>
-      {group('existing')}
-      {otherTiles.length > 0 ? (
-        <>
-          <GroupLabel>Other ways to sign in</GroupLabel>
-          {otherTiles}
-        </>
-      ) : null}
-      {advancedTiles.length > 0 ? (
-        <div className="pt-2">
-          <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
-            Advanced
-          </button>
-          {advanced ? <div className="mt-2">{advancedTiles}</div> : null}
+      {group('primary')}
+      <div className="pt-2">
+        <button
+          type="button"
+          data-testid="signin-more"
+          aria-expanded={more}
+          aria-controls="signin-more-panel"
+          onClick={() => setMore((o) => !o)}
+          className="hit-area flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-dense font-medium text-anvil-600 hover:text-anvil-900 dark:text-anvil-300 dark:hover:text-anvil-100"
+        >
+          <span className="flex-1">Other ways to sign in</span>
+          <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 transition-transform', more && 'rotate-180')} aria-hidden />
+        </button>
+        <div id="signin-more-panel" hidden={!more} className="mt-2 space-y-2">
+          {group('more')}
+          <KeyLimitsNote />
+          {advancedTiles.length > 0 ? (
+            <div className="pt-2">
+              <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
+                Advanced
+              </button>
+              {advanced ? <div className="mt-2">{advancedTiles}</div> : null}
+            </div>
+          ) : null}
+          <SignInHelp onLeave={closeLogin} />
         </div>
-      ) : null}
-      <SignInHelp onLeave={closeLogin} />
+      </div>
     </div>
   )
-}
-
-function GroupLabel({ children }: { children: ReactNode }): JSX.Element {
-  return <h3 className="pt-2 text-[12px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">{children}</h3>
 }
 
 /** The words the sheet uses, in plain English, without leaving it (F3; QW-013 linked out instead). */

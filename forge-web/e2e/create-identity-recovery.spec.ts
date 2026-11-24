@@ -2,7 +2,7 @@ import { test, expect, type Page, type Route } from '@playwright/test'
 import { existsSync, mkdirSync, rmdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, nodeSdk, shot, unlock } from './helpers'
+import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, nodeSdk, shot, unlock, showOtherWays } from './helpers'
 
 /**
  * L-06, live on a devnet (real spend: two 0.03 DASH deposits from the devnet funding key):
@@ -52,6 +52,7 @@ function fundingKeyFile(): string {
 async function openDeposit(page: Page): Promise<string> {
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await showOtherWays(page)
   await page.getByTestId('tile-create').click()
   const words = page.getByTestId('mnemonic-words')
   await expect(words).toBeVisible({ timeout: 60_000 })

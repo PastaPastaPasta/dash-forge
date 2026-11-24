@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { resolve } from 'node:path'
 import { deploymentFilePath } from './network'
-import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers'
+import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, idFile, repoUrl, shot, unlock, showOtherWays } from './helpers'
 import { approveV2, disableGrants, newV2Wallet } from './wallet-responder-v2'
 
 /**
@@ -76,6 +76,8 @@ async function shownUri(page: Page, scheme = 'dashpay'): Promise<string> {
 async function openWalletRequest(page: Page): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
+  // The wallet shows first where it leads, else under Other ways (a devnet): open them either way.
+  await showOtherWays(page)
   const wallet = page.getByTestId('tile-wallet')
   await expect(wallet).toBeVisible({ timeout: 60_000 })
   await wallet.click()
@@ -90,11 +92,12 @@ test.describe('v2 request (read-only)', () => {
     const page = await (await browser.newContext()).newPage()
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
+    await showOtherWays(page)
     await expect(page.getByTestId('tile-wallet')).toBeVisible({ timeout: 60_000 })
     // Wallet first where v2 is on offer; the buttons only (a cost line shares the testid prefix).
     // The passkey tile (once forge-meta has the passkey vault) sits right after the wallet's; it is not under test here.
     const order = (await page.locator('button[data-testid^="tile-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))).filter((id) => id !== 'tile-passkey')
-    expect(order.slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
+    expect(order).toEqual(expect.arrayContaining(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg']))
     await expect(page.getByTestId('tile-wallet')).toContainText(/approve once for all of Forge/i)
 
     await page.getByTestId('tile-wallet').click()

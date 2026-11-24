@@ -548,12 +548,12 @@ describe('QW4-022: creating an identity is titled as sign-up', () => {
 })
 
 describe('Q5-C04: the key lifetime is worded for each path', () => {
-  it('the tile list says an import can pick up to a year, and a new key is renewed later', async () => {
+  it('the tile list notes the key lasts 90 days by default and up to a year', async () => {
     auth.vaults = []
     act(() => useUiStore.getState().openLogin())
     await flush()
     const text = host.ownerDocument.body.textContent ?? ''
-    expect(text).toContain("An import can pick up to a year; a new identity's key can be renewed for up to a year later.")
+    expect(q('[data-testid="signin-key-limits"]')!.textContent).toContain('It lasts 90 days by default, and up to a year.')
     expect(text).not.toContain('you can renew it for up to a year later')
     // Create fixes the lifetime; Import offers the picker.
     await click(q('[data-testid="tile-create"]'))
@@ -566,6 +566,8 @@ describe('Q5-C04: the key lifetime is worded for each path', () => {
 
 describe('App Connect v2 in the sheet', () => {
   const tileOrder = (): (string | undefined)[] => [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].map((t) => t.dataset['testid'])
+  const shownTiles = (): (string | undefined)[] =>
+    [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].filter((t) => t.closest('[hidden]') === null).map((t) => t.dataset['testid'])
 
   it('puts the wallet tile first where a released wallet answers v2, and says one approval covers Forge', async () => {
     auth.vaults = []
@@ -573,12 +575,33 @@ describe('App Connect v2 in the sheet', () => {
     v2Available = true
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
-    expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
+    expect(shownTiles()).toEqual(['tile-wallet'])
+    expect(tileOrder()).toEqual(['tile-wallet', 'tile-import', 'tile-dg', 'tile-create'])
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
     expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/approve once for all of Forge/)
-    // The sheet under test is a testnet build: the badge stays on creating (mainnet: sign-in-methods.test.ts).
-    expect(q('[data-testid="tile-wallet-badge"]')).toBeNull()
-    expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-create-badge"]')).toBeNull()
+  })
+
+  it('keeps every other way in under one collapsed Other ways to sign in', async () => {
+    auth.vaults = []
+    platformUp = true
+    v2Available = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    const more = q<HTMLButtonElement>('[data-testid="signin-more"]')!
+    expect(more.tagName).toBe('BUTTON')
+    expect(more.getAttribute('aria-expanded')).toBe('false')
+    const panel = host.ownerDocument.getElementById(more.getAttribute('aria-controls')!)!
+    expect(panel.hidden).toBe(true)
+    expect(panel.contains(q('[data-testid="signin-help"]'))).toBe(true)
+    expect(panel.contains(q('[data-testid="signin-key-limits"]'))).toBe(true)
+    expect(panel.contains(q('[data-testid="tile-create-cost"]'))).toBe(true)
+    expect(panel.contains(byText('Advanced'))).toBe(true)
+    await click(more)
+    expect(more.getAttribute('aria-expanded')).toBe('true')
+    expect(panel.hidden).toBe(false)
+    expect(shownTiles()).toEqual(['tile-wallet', 'tile-import', 'tile-dg', 'tile-create'])
   })
 
   it('on testnet with v2 on offer, the wallet leads and names its testnet build; creating stays recommended for newcomers', async () => {
@@ -587,15 +610,12 @@ describe('App Connect v2 in the sheet', () => {
     v2Available = true
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
-    expect(tileOrder().slice(0, 4)).toEqual(['tile-wallet', 'tile-create', 'tile-import', 'tile-dg'])
+    expect(shownTiles()).toEqual(['tile-wallet'])
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBeUndefined()
-    expect(q('[data-testid="tile-wallet-badge"]')).toBeNull()
     expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/its testnet build/)
     expect(q('[data-testid="tile-wallet"]')!.textContent).not.toMatch(/#591/)
-    expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-cost"]')!.textContent).toMatch(/Testnet · free test credits/)
     expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
-    expect(byText('Other ways to sign in', 'h3')).toBeNull()
   })
 
   it('on mainnet with v2 on offer, newcomers get DashPay and sign in with it; in-page create is under Other ways', async () => {
@@ -605,13 +625,13 @@ describe('App Connect v2 in the sheet', () => {
     v2Available = true
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(shownTiles()).toEqual(['tile-wallet'])
     expect(tileOrder()).toEqual(['tile-wallet', 'tile-get-dashpay', 'tile-import', 'tile-dg', 'tile-create'])
     expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-badge"]')).toBeNull()
     expect(q('[data-testid="tile-get-dashpay"]')!.textContent).toMatch(/Get DashPay, create your identity there, then sign in/)
     expect(q<HTMLAnchorElement>('[data-testid="get-dashpay-links"] a')!.href).toBe('https://github.com/dashpay/dash-wallet/releases/latest')
-    const headings = [...host.ownerDocument.querySelectorAll('h3')].map((h) => h.textContent)
-    expect(headings).toEqual(['New to Dash?', 'Already have a Dash identity?', 'Other ways to sign in'])
+    expect(q('[data-testid="signin-more"]')!.textContent).toBe('Other ways to sign in')
     await click(q('[data-testid="tile-get-dashpay"]'))
     expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
     expect(host.ownerDocument.body.textContent).toMatch(/Your wallet gives this browser a key for Dash Forge/)
