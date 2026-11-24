@@ -159,7 +159,7 @@ export default function NewRepoPage(): JSX.Element {
   const withMembers = !isPrivate && membersOnly && !keyMissing
   const usesKey = isPrivate || withMembers
   // A reloaded tab holds the signing key only: the encryption key needs an unlock here first.
-  const needsUnlock = usesKey && unlockScope === 'signing'
+  const needsUnlock = usesKey && !noKey && unlockScope === 'signing'
   // A public create waits only for an unlock: a key read that is slow or fails never holds it up
   // (turning members-only content on then fails on its own, and the repo page offers it again).
   const privateBlocked = !usesKey

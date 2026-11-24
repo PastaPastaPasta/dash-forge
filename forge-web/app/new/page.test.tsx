@@ -164,6 +164,18 @@ describe('/new: members-only content at creation', () => {
     expect(createButton().disabled).toBe(false)
   })
 
+  it('a locked tab with no encryption key stored: a private create points to Settings, not to an unlock', async () => {
+    unlockScope = 'signing'
+    held = null
+    await render()
+    act(() => q('visibility-private')!.click())
+    await flush()
+    expect(q('new-private-unlock')).toBeNull()
+    expect(q('private-no-key')).not.toBeNull()
+    expect(createButton().disabled).toBe(true)
+    expect(createButton().title).toMatch(/Add your encryption key/)
+  })
+
   it('a failed members-only step says why and opens the repo with the notice', async () => {
     createRepo.mockResolvedValue({ repoId: 'R', name: 'demo', membersOnly: { on: false, error: 'quorum not found' } })
     await render()
