@@ -240,7 +240,7 @@ The code is valid for 10 minutes; in a terminal `dg` offers a new one when it ex
 
 `dg auth status` shows each key's origin (`Origin:`: your DashPay wallet, registered with your recovery phrase, an identity file, a dfk1 key, or the OS keychain for a key an earlier `dg` stored), its budget left and its expiry, and for a wallet key "Renew in your wallet". `--json` has the same as `keyOrigin` (`wallet`, `phrase`, `file`, `dfk1`, `keychain`). To renew it, run `dg auth login` again: the request names the identity, and the wallet disables the previous key it gave this computer in the same update (dg sends the same connection id, kept in `app-connect.toml` beside `config.toml`; a damaged file or id is reported, not replaced). Signing in again as the same identity keeps the encryption key the old key had beside it, when `dg` can open the stored copy (not a sealed file you replace without its passphrase); a wallet sign-in does not bring one of its own, so private repositories otherwise need `dg auth login <file>` or `--mnemonic` once. To disable the key, disconnect Dash Forge in the wallet (Connections), or `dg auth keys disable <id>` with your master key.
 
-Wallets: DashPay for Android 11.9.2 or later. On testnet, where Forge runs today, use DashPay's testnet build: the `-testnet.apk` on the [latest dash-wallet release](https://github.com/dashpay/dash-wallet/releases/latest), installed beside the store app. Dash Wallet for iOS speaks the same protocol, but no testnet build of it is available to download.
+Wallets: DashPay for Android 11.9.2 or later, or Dash Wallet for iOS 9.1.4 or later, on mainnet. On testnet, use DashPay's testnet build: the `-testnet.apk` on the [latest dash-wallet release](https://github.com/dashpay/dash-wallet/releases/latest), installed beside the store app.
 
 ### A browser key from dg
 
@@ -283,13 +283,13 @@ Losing a device costs nothing beyond that key's remaining budget. Register a new
 
 ### Signing in with the Dash Wallet app: what works today
 
-The **Use my Dash wallet** tile asks your wallet for one key for all of Forge through **App Connect v2** (Dash Platform's App Connect contract, protocol 14). The key it grants is limited: bound to Forge's contracts, with a spending limit and an expiry you confirm in the wallet. Released wallets answer it (checked 2026-11-22):
+The **Use my Dash wallet** tile asks your wallet for one key for all of Forge through **App Connect v2** (Dash Platform's App Connect contract, protocol 14). The key it grants is limited: bound to Forge's contracts, with a spending limit and an expiry you confirm in the wallet. Released wallets answer it:
 
 | Wallet | Network | Works today |
 |---|---|---|
-| DashPay Wallet for Android 11.9.2 or later, testnet build (`dashpay-wallet-…-testnet.apk` on the [DashPay Wallet releases](https://github.com/dashpay/dash-wallet/releases/latest)) | testnet | **Yes.** Checked end to end on 2026-11-22: approval, sign-in and a write with the granted key. The testnet build installs next to the store app. |
-| Dash Wallet for iOS 9.1.4 or later | testnet | Speaks App Connect v2, but there is no verified way to put a store build on testnet. |
-| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | Both answer App Connect v2 on mainnet. Forge is not deployed on mainnet yet. |
+| DashPay Wallet for Android 11.9.2 or later, testnet build (`dashpay-wallet-…-testnet.apk` on the [DashPay Wallet releases](https://github.com/dashpay/dash-wallet/releases/latest)) | testnet | **Yes.** The testnet build installs next to the store app. |
+| Dash Wallet for iOS 9.1.4 or later | testnet | No: there is no testnet build of the iOS app to install. |
+| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | **Yes**: the web app at forge.dashhq.org and `dg auth login --network mainnet --wallet` both show a `dashpay://connect` code. |
 | Any released wallet | devnets | No: released wallets carry no devnet's settings. |
 
 On testnet the sheet lists the wallet first; creating an identity in the browser stays the recommended start for newcomers, since the testnet wallet is a sideloaded app. In the wallet the feature is under More → Tools → Connections.
@@ -353,7 +353,7 @@ What the vault does **not** protect against:
 
 - **Script running in the page.** The vault protects the key at rest. While it is unlocked, any script running on the page (an XSS) can use it. During the stay-signed-in window a script on any page load of this site can also read the kept signing key and send it off, bounded by that key's budget and on-chain expiry (not the encryption key, storage credentials or wallet grants, which are never kept). The page's CSP allows inline scripts, which Next's static bootstrap needs. It does not allow JavaScript `eval`, only `wasm-unsafe-eval` for the SDK's WebAssembly. forge.dashhq.org also runs one third-party script, Cloudflare's Web Analytics beacon, with the page's privileges. The CSP allows only its exact URL and the page pins its bytes by SRI hash, so a changed script is refused, not run ([Hosting §6](../hosting.md#6-cloudflare-web-analytics-the-page-carries-the-beacon)). A build you host yourself has no such script unless you set `NEXT_PUBLIC_CF_BEACON_TOKEN`.
 - **Someone with a copy of your browser profile, taken within the window.** The kept record is deleted when the app next runs after it expires, not the moment it does, and the browser may keep the key that seals it in the profile. So a copy taken before your next visit can use the signing key without your passphrase or passkey, until its budget or on-chain expiry runs out, or you revoke it. Nothing else of the vault is in that record. **Stay signed in for public repos** off closes this.
-- **Clickjacking where the host sends no header.** `frame-ancestors` only works as an HTTP header, and GitHub Pages can't send one. Cloudflare, in front of Pages, can add it ([Hosting the web app](../hosting.md#7-security-headers) lists the headers); until it does, forge.dashhq.org can be framed. A framed page never picks up a kept session, so it opens locked. A copy you host yourself needs `Content-Security-Policy: frame-ancestors 'none'` too.
+- **Clickjacking where the host sends no header.** `frame-ancestors` only works as an HTTP header, and GitHub Pages can't send one. A Cloudflare proxy in front of Pages could add it ([Hosting the web app](../hosting.md#7-security-headers) lists the headers); none is in front today, so forge.dashhq.org can be framed. A framed page never picks up a kept session, so it opens locked. A copy you host yourself needs `Content-Security-Policy: frame-ancestors 'none'` too.
 - **A shared origin.** On a GitHub Pages project site (`*.github.io/<repo>`) or an IPFS path gateway (`ipfs.io/ipfs/…`), other sites share the origin and could read the vault or ask the browser for the passkey's PRF output. So the app refuses to create or unlock a vault there. Browsing still works. Use <https://forge.dashhq.org> (the Pages deployment's custom domain, set in the repository's Pages settings) or an IPFS subdomain gateway (`<cid>.ipfs.<gateway>`).
 
 ---

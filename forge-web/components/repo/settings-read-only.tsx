@@ -57,19 +57,17 @@ export function SettingsReadOnly({ ownerId, role }: { ownerId: string; role: Rol
   return (
     <div
       role="note"
-      className="flex gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200"
+      className="flex flex-wrap items-center gap-3 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200"
       data-testid="settings-read-only"
       data-viewer={viewer.kind}
     >
-      <Lock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-      <div className="min-w-0 flex-1">
-        <p>{text}</p>
-        {viewer.kind !== 'signedIn' ? (
-          <Button size="sm" variant="outline" className="mt-2" onClick={() => openLogin()} data-testid="settings-read-only-sign-in">
-            {viewer.kind === 'locked' ? 'Unlock' : 'Sign in'}
-          </Button>
-        ) : null}
-      </div>
+      <Lock className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+      <p className="min-w-0 flex-1">{text}</p>
+      {viewer.kind !== 'signedIn' ? (
+        <Button size="sm" variant="outline" onClick={() => openLogin()} data-testid="settings-read-only-sign-in">
+          {viewer.kind === 'locked' ? 'Unlock' : 'Sign in'}
+        </Button>
+      ) : null}
     </div>
   )
 }

@@ -58,7 +58,7 @@ async function openHome(page: Page): Promise<void> {
 /** The Verification card once its chain check settled (never green before). */
 async function settledCard(page: Page) {
   const card = page.getByTestId('verification-card')
-  await expect(card.getByTestId('verification-summary')).not.toHaveText('Checking…', { timeout: 45_000 })
+  await expect(card.getByTestId('verification-chip')).not.toHaveText('Checking…', { timeout: 45_000 })
   return card
 }
 
@@ -90,7 +90,8 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expect(release).toContainText(/No releases yet|v\d/, { timeout: 45_000 })
 
     const card = await settledCard(page)
-    await expect(card.getByTestId('verification-summary')).toHaveText(/^(Verified|Partly verified) · refs by proof/)
+    await expect(card.getByTestId('verification-chip')).toHaveText(/^(Verified|Partly verified)$/)
+    await expect(card.getByTestId('verification-chip')).toHaveAttribute('title', /^(Verified|Partly verified) · refs by proof/)
     await card.screenshot({ path: join(SCREENSHOT_DIR, 'b-verification-collapsed.png') })
     await shot(page, 'b-repo-home')
     expect(errors, errors.join('\n')).toEqual([])
@@ -164,21 +165,18 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     expect(await tabCount(/^Pull requests/)).toBe(await rows.count())
   })
 
-  test('b-4. clone box: tabbed dash:// + commands, install sheet, and a hash-checked zip', async ({ page }) => {
+  test('b-4. clone box: network-pinned git clone upfront, extra options in disclosure, install sheet, and a hash-checked zip', async ({ page }) => {
     await openHome(page)
     const box = page.getByTestId('clone-box')
-    await expect(box.getByRole('tab', { name: /Dash remote/, selected: true })).toBeVisible()
-    await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     // L-03 / L-21: pasted on a machine where nothing chose a network, a bare `git clone` goes to
     // testnet. Both commands name the build's devnet, which the clone keeps in its git config.
     await expect(
       box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true }),
     ).toBeVisible()
-    await box.getByRole('tab', { name: 'dg CLI' }).click()
+    await box.getByTestId('clone-more').click()
+    await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} ${DG_NETWORK}`, { exact: true })).toBeVisible()
-    await expect(box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true })).toBeHidden()
-    await expectNoSeriousA11y(page, 'b-clone-dg-tab')
-    await box.getByRole('tab', { name: /Dash remote/ }).click()
+    await expectNoSeriousA11y(page, 'b-clone-more')
 
     await box.getByRole('button', { name: 'Install' }).click()
     const sheet = page.getByRole('dialog', { name: /Install git-remote-dash/ })
@@ -206,17 +204,19 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expectLanded(page, empty)
     await expect(empty.getByText(/is empty\./)).toBeVisible()
     await expect(empty.getByText(`git remote add origin dash://${MAINTAINER}/forge-v2-empty`)).toBeVisible()
+    await empty.getByText('Start from scratch').click()
+    await empty.getByText('First time? Install tools & sign in').click()
+    await empty.getByText('Storage & push cost').click()
     // The network goes into the repository's git config before the push (L-03), and the
     // from-scratch line clones on the build's network before its `cd` (L-21).
     const lines = await empty.locator('code').allInnerTexts()
-    // Numbered: sign dg in, then push an existing repository or start from scratch (UX wave 4).
     expect(lines).toEqual([
-      `dg auth login ${DG_NETWORK}`,
       `git remote add origin dash://${MAINTAINER}/forge-v2-empty`,
       SET_NETWORK,
       'git push -u origin main',
       `dg repo clone ${MAINTAINER}/forge-v2-empty ${DG_NETWORK} && cd forge-v2-empty`,
       "echo '# forge-v2-empty' > README.md && git add README.md && git commit -m 'First commit' && git push -u origin HEAD:main",
+      `dg auth login ${DG_NETWORK}`,
     ])
     await expect(empty.getByTestId('empty-repo-network')).toContainText(NETWORK_KEY)
     await expect(empty.getByText(/Storage: packs go to/)).toBeVisible()
@@ -271,11 +271,12 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     const [cardBox, listBox] = [await card.boundingBox(), await list.boundingBox()]
     expect(cardBox && listBox && cardBox.y > listBox.y).toBe(true)
     const box = page.getByTestId('clone-box')
-    await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     // A long command scrolls inside its box: it never wraps mid-id or widens the page.
     const command = box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true })
     await expect(command).toBeVisible()
     expect(await command.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap')
+    await box.getByTestId('clone-more').click()
+    await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     await expect(box.getByTestId('zip-download')).toBeVisible()
     // The page never scrolls sideways.
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)

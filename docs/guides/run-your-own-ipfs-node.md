@@ -156,7 +156,7 @@ To keep a second copy elsewhere, list both: `dg storage use r2-main,kubo`. [Choo
 
 Two cautions, both from [Bring your own storage](bring-your-own-storage.md#ipfs-your-own-kubo-node):
 
-- The profile `dg ipfs up` saves has no public gateway. Other people can read your packs only if they can find your node on the IPFS network ([Being reachable](#being-reachable)). A laptop that is often off is a poor only copy. Keep a bucket or a pinning service as well.
+- The profile `dg ipfs up` saves has no public gateway. Other people can read your packs only if they can find your node on the IPFS network ([Being reachable](#being-reachable)). A laptop that is often off is a poor only copy. Keep a bucket as well.
 
 ---
 
@@ -314,4 +314,4 @@ Private repositories need more care:
 | `some repository files could not be pinned` | Run the same command again. Each failed file is listed with its reason. If no copy can be read, the repository may have lost its stored bytes. |
 | `status` says `private-only` | [Forward the TCP and UDP port shown by status](#being-reachable). |
 
-Beyond that: a manual kubo setup, with the preflight proxy a browser needs, is in [Bring your own storage](bring-your-own-storage.md#set-up-kubo-by-hand), and kubo on a NAS is in [Storage on your home NAS](home-nas-storage.md#ipfs-kubo-on-the-nas).
+Beyond that: a manual kubo setup, with the preflight proxy a browser needs, is in [Bring your own storage](bring-your-own-storage.md#set-up-kubo-by-hand).

@@ -1,6 +1,6 @@
 import { test, expect, type Browser, type BrowserContext, type Page, type Route } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { E2E_NETWORK, PASSPHRASE, idFile, importIdentity, shot, unlock, showOtherWays } from './helpers'
+import { E2E_NETWORK, PASSPHRASE, idFile, importIdentity, shot, unlock, showOtherWays, usePassword } from './helpers'
 
 /**
  * Passkeys that hold a key on Platform (docs/security/passkey-vault.md): the sign-in sheet's
@@ -250,6 +250,7 @@ test.describe('live (real spend)', () => {
     // Renew with the identity file: the key changes, and this device's passkey is re-sealed to it.
     await page.getByRole('button', { name: /^renew key$|renew with identity file/i }).first().click()
     await page.setInputFiles('input[type="file"]', idFile('RELAY'))
+    await usePassword(page)
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
     await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
     await page.getByRole('button', { name: /renew this browser's key/i }).click()

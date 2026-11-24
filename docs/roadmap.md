@@ -68,7 +68,7 @@ Every roadmap item must keep all of these true:
 3. **No moderation.** The contracts are registered without Platform contract moderation, so no one can ban identities or delete content at the protocol level.
 4. **The UI shows only what was verified.** A "verified" badge comes from a check that actually passed, and a button's label says what the click actually does.
 5. **Cost honesty.** Show an estimate before every paid write, split into deposit and burn, with DASH primary. No surprise spend, including on `git push`.
-6. **Zero workflow change.** Plain git (jj talks to git remotes and is expected to work, but is untested since July 2026); `dg` mirrors `gh`.
+6. **Zero workflow change.** Plain git, and jj through the same remote helper; `dg` mirrors `gh`.
 
 ## 5. Decisions
 

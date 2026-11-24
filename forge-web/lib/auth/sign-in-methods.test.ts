@@ -16,20 +16,20 @@ describe('signInMethods', () => {
     expect(order({ network: 'devnet', walletV2: true })).toEqual(order({}))
   })
 
-  it('mainnet with App Connect v2: the wallet and the passkey show; Get DashPay leads Other ways, in-page create is last', () => {
+  it('mainnet with App Connect v2: the wallet and the passkey show; Get DashPay leads Other ways; every recovery-phrase path is under Advanced', () => {
     expect(order({ network: 'mainnet', walletV2: true })).toEqual([
       'primary:wallet*',
       'primary:passkey',
       'more:get-dashpay',
-      'more:import',
+      'advanced:import',
       'more:dg',
-      'more:create',
+      'advanced:create',
       'advanced:raw-key',
     ])
   })
 
   it('mainnet without v2: no wallet to finish in, so creating shows and nothing sends newcomers to DashPay', () => {
-    expect(order({ network: 'mainnet', walletV2: false })).toEqual(['primary:create*', 'primary:passkey', 'more:import', 'more:dg', 'more:wallet', 'advanced:raw-key'])
+    expect(order({ network: 'mainnet', walletV2: false })).toEqual(['primary:create*', 'primary:passkey', 'advanced:import', 'more:dg', 'more:wallet', 'advanced:raw-key'])
   })
 
   it('at most two choices show where the wallet leads', () => {
@@ -45,9 +45,9 @@ describe('signInMethods', () => {
       'primary:wallet',
       'primary:passkey',
       'more:get-dashpay',
-      'more:import',
+      'advanced:import',
       'more:dg',
-      'more:create',
+      'advanced:create',
       'advanced:raw-key',
     ])
   })
@@ -64,9 +64,10 @@ describe('signInMethods', () => {
     const rest = ['more:import', 'more:dg']
 
     it('mainnet', () => {
-      expect(order({ network: 'mainnet', ...offered })).toEqual(['primary:wallet*', 'primary:passkey', 'more:get-dashpay', ...rest, 'more:create', 'advanced:raw-key'])
-      expect(order({ network: 'mainnet', ...notOffered })).toEqual(['primary:create*', 'primary:passkey', ...rest, 'advanced:raw-key'])
-      expect(order({ network: 'mainnet', ...unchecked })).toEqual(['primary:create*', 'primary:passkey', ...rest, 'more:wallet', 'advanced:raw-key'])
+      const main = ['advanced:import', 'more:dg']
+      expect(order({ network: 'mainnet', ...offered })).toEqual(['primary:wallet*', 'primary:passkey', 'more:get-dashpay', ...main, 'advanced:create', 'advanced:raw-key'])
+      expect(order({ network: 'mainnet', ...notOffered })).toEqual(['primary:create*', 'primary:passkey', ...main, 'advanced:raw-key'])
+      expect(order({ network: 'mainnet', ...unchecked })).toEqual(['primary:create*', 'primary:passkey', ...main, 'more:wallet', 'advanced:raw-key'])
     })
 
     it('testnet', () => {

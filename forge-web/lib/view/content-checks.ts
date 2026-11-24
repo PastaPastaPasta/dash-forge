@@ -264,6 +264,7 @@ export function resetContentChecks(): void {
  * the host, so a reader can see *which* gateway or bucket answered.
  */
 export function externalSourceName(uri: string): string {
+  if (uri.startsWith('ipfs-peer:')) return 'ipfs peer'
   try {
     const url = new URL(uri)
     return url.host !== '' ? url.host : url.protocol.replace(/:$/, '')

@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::create::{create_repo, CreateRepoOpts, CreateRepoResult};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
+use crate::own_copy::{with_own_first, OwnCopy};
 use crate::platform::{self, LoadedIdentity, PlatformClient};
 use crate::repo::{
     order_copies, PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2,
@@ -39,6 +40,7 @@ use crate::repo::{
 use crate::rules::v2::Visibility;
 use crate::rules::RefState;
 use crate::scope::RepoRef;
+use crate::storage::ExternalTarget;
 
 /// The fork manifest for one pack of `parent`, from all of the parent's `copies` of it
 /// (manifests with the same pack hash) in the order a reader should try them: the same pack
@@ -466,11 +468,39 @@ pub struct ForkResult {
     pub refs_written: Vec<String>,
     /// The balance change over the whole session, in credits.
     pub cost_credits: u64,
+    /// Packs copied to the forker's own storage (listed first in their manifests).
+    pub copied: usize,
+}
+
+/// The addresses of `copies`' pack stored on `own_copy`'s target that other readers can use. A
+/// failure stops the fork before that pack's manifest (and any ref) is written, so running it
+/// again copies the pack rather than leaving the fork on the parent's storage for good.
+pub async fn own_copy_of(
+    own_copy: &OwnCopy<'_>,
+    copies: &[&PackManifestInfo],
+) -> Result<Vec<String>> {
+    let short = hex::encode(&copies[0].pack_hash[..6]);
+    let stored = own_copy.copy(copies).await.map_err(|e| {
+        Error::Io(format!(
+            "pack {short} could not be copied to {}: {}; run the same command again to resume, or pass --no-copy to record it by reference",
+            own_copy.target_name(),
+            crate::user_error::redact(&crate::user_error::one_line(&e.to_string()))
+        ))
+    })?;
+    let own = crate::own_copy::shareable(&stored.0);
+    if own.is_empty() {
+        return Err(Error::Config(format!(
+            "{} stored pack {short} at no address other readers can use",
+            own_copy.target_name()
+        )));
+    }
+    Ok(own)
 }
 
 /// Fork `parent` as `opts.name` (with `opts.fork_of` set to the parent) under the signer.
 /// `default_branch_only`: copy `opts.default_branch` alone, not every branch and tag
 /// ([`plan_refs`]).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn fork_repo(
     client: &PlatformClient,
     identity: &LoadedIdentity,
@@ -479,6 +509,7 @@ pub async fn fork_repo(
     opts: &CreateRepoOpts,
     journal_dir: &std::path::Path,
     default_branch_only: bool,
+    copy_to: Option<ExternalTarget>,
 ) -> Result<ForkResult> {
     // RC1 `repo_shape`: a fork is public (`forkIsPublic`) and so is its parent (the `forkOf`
     // reference requires the same visibility). Both are refused here, before anything is signed.
@@ -539,16 +570,28 @@ pub async fn fork_repo(
     let sealed = sealed_parent_packs(&svc, parent, &parent_manifests, &roles).await?;
     let skip: BTreeSet<[u8; 32]> = fork_has.union(&sealed).copied().collect();
     let plan = plan_manifests(&parent_manifests, &roles, &skip);
+    let own_copy = match copy_to {
+        Some(target) => {
+            Some(OwnCopy::new(&svc, parent, &parent_manifests, roles.clone(), target).await?)
+        }
+        None => None,
+    };
     let mut written = 0;
     let mut platform_referenced = 0;
     let mut unreferenceable = Vec::new();
+    let mut copied = 0;
     for copies in plan {
-        let Some(input) = fork_manifest(parent, &copies)? else {
+        let Some(mut input) = fork_manifest(parent, &copies)? else {
             unreferenceable.push(copies[0].pack_hash);
             continue;
         };
-        // A Platform copy is recorded as the parent's chunk locator.
-        if copies.iter().any(|m| m.storage == 0) {
+        let on_platform = copies.iter().any(|m| m.storage == 0);
+        // A Platform copy is permanent: it is recorded as the parent's chunk locator, never copied.
+        if let Some(own_copy) = own_copy.as_ref().filter(|_| !on_platform) {
+            input = with_own_first(input, &own_copy_of(own_copy, &copies).await?);
+            copied += 1;
+        }
+        if on_platform {
             platform_referenced += 1;
         }
         svc.write_pack_manifest(&fork, &input).await?;
@@ -581,6 +624,7 @@ pub async fn fork_repo(
         unreferenceable,
         refs_written,
         cost_credits: before.saturating_sub(after),
+        copied,
     })
 }
 

@@ -35,12 +35,18 @@ const REPO_URL = 'https://github.com/PastaPastaPasta/dash-forge'
  * The license expressions the production tree may use (as the packages' package.json declares
  * them). `LGPL-3.0+` is OpenPGP.js, handled by {@link openpgpNotice}; `CC-BY-4.0` is
  * caniuse-lite's browser-support data, read at build time only and not part of the bundle.
+ * `Apache-2.0 OR MIT` is the same choice as `(MIT OR Apache-2.0)`, spelled the way the js-libp2p
+ * monorepo (`libp2p`, `@libp2p/*`, `@chainsafe/libp2p-yamux`, `@multiformats/*`, `multiformats`,
+ * `uint8arrays`, `it-*`, `progress-events`, …: the browser's IPFS peer, lib/storage/p2p) declares
+ * it; each of those packages ships both texts (LICENSE-APACHE, LICENSE-MIT), and either alone
+ * permits the use here.
  */
 export const ALLOWED = new Set([
   '0BSD',
   '(MIT AND Zlib)',
   '(MIT OR Apache-2.0)',
   'Apache-2.0',
+  'Apache-2.0 OR MIT',
   'BSD-3-Clause',
   'CC-BY-4.0',
   'ISC',
@@ -72,6 +78,60 @@ export const CLARIFIED = {
   '@next/env': { license: 'MIT', versions: /^14\.2\./, textFile: 'next-LICENSE.md', checksum: 'e4f76a7a19ef2989dd79339bd3abf8afcf1d6f065e5a10c76c19415ffd727eb3', source: () => 'https://github.com/vercel/next.js/blob/v14.2.25/license.md' },
   '@swc/counter': { license: 'Apache-2.0', versions: /^0\.1\./, textFile: 'swc-counter-LICENSE.txt', checksum: 'd96eba1f1881334d50ffc144276dfa98e147a415e7c591ecdfcb81680361dc91', source: () => 'https://github.com/swc-project/pkgs/blob/main/packages/counter/LICENSE.txt' },
   'client-only': { license: 'MIT', versions: /^0\.0\./, textFile: 'react-LICENSE', checksum: '52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85', source: () => 'https://github.com/facebook/react/blob/v18.3.1/LICENSE' },
+}
+
+/**
+ * Repositories whose npm packages declare `Apache-2.0 OR MIT` but publish no license file (the
+ * js-libp2p family: the texts sit at the root of each repository, not in the package). A package
+ * is clarified here only when it declares exactly that license, ships no text, its
+ * package.json `repository` is one of these, and its name is one that repository publishes. Each repository's LICENSE-APACHE and LICENSE-MIT
+ * were read on 2026-11-24 at its default branch: the MIT text is the same file in all of them,
+ * and the Apache-2.0 text is either the full license (`full`) or the short "Licensed under the
+ * Apache License, Version 2.0" notice that points to it (`short`: js-stores, it, protons). Both
+ * are kept in scripts/third-party/ and checked by checksum like {@link CLARIFIED}.
+ */
+const LIBP2P_TEXTS = {
+  full: { file: 'js-libp2p-LICENSE-APACHE', checksum: '50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a' },
+  short: { file: 'js-stores-LICENSE-APACHE', checksum: '30fdfde4dbde73c66123aba24487366771ffc54bba09566b313338199c3eb7dc' },
+  mit: { file: 'js-libp2p-LICENSE-MIT', checksum: '8f71659370c5268d9a1dc962a46232540e8fca63462586d8efaa95aab492a208' },
+}
+const gh = (repo, names, apache = 'full') => [`https://github.com/${repo}`, { names, apache }]
+export const CLARIFIED_BY_REPOSITORY = new Map([
+  gh('ChainSafe/js-libp2p-yamux', /^@chainsafe\/libp2p-yamux$/),
+  gh('libp2p/js-libp2p', /^(?:libp2p|@libp2p\/[a-z-]+)$/),
+  gh('multiformats/js-dns', /^@multiformats\/dns$/),
+  gh('multiformats/js-multiaddr', /^@multiformats\/multiaddr$/),
+  gh('multiformats/js-multiaddr-matcher', /^@multiformats\/multiaddr-matcher$/),
+  gh('multiformats/js-multiaddr-to-uri', /^@multiformats\/multiaddr-to-uri$/),
+  gh('achingbrain/abort-error', /^abort-error$/),
+  gh('jacobheun/any-signal', /^any-signal$/),
+  gh('ipfs/js-stores', /^(?:datastore-core|interface-datastore|interface-store)$/, 'short'),
+  gh('achingbrain/it', /^it-[a-z-]+$/, 'short'),
+  gh('alanshaw/it-length-prefixed', /^it-length-prefixed$/),
+  gh('alanshaw/it-pushable', /^it-pushable$/),
+  gh('alanshaw/it-reader', /^it-reader$/),
+  gh('achingbrain/it-stream-types', /^it-stream-types$/),
+  gh('achingbrain/main-event', /^main-event$/),
+  gh('achingbrain/mortice', /^mortice$/),
+  gh('achingbrain/progress-events', /^progress-events$/),
+  gh('ipfs/protons', /^protons-runtime$/, 'short'),
+  gh('achingbrain/race-event', /^race-event$/),
+  gh('achingbrain/race-signal', /^race-signal$/),
+  gh('achingbrain/uint8-varint', /^uint8-varint$/),
+  gh('achingbrain/uint8arraylist', /^uint8arraylist$/),
+  gh('achingbrain/uint8arrays', /^uint8arrays$/),
+  gh('achingbrain/weald', /^weald$/),
+])
+
+/** The pinned texts for a package {@link CLARIFIED_BY_REPOSITORY} covers, or null. */
+function repositoryTexts(p, source, thirdPartyDir) {
+  const repo = p.license === 'Apache-2.0 OR MIT' && source ? CLARIFIED_BY_REPOSITORY.get(source) : undefined
+  if (repo === undefined || !repo.names.test(p.name)) return null
+  const a = LIBP2P_TEXTS[repo.apache]
+  return [
+    { file: `LICENSE-APACHE of ${source}`, text: pinnedText(thirdPartyDir, a.file, a.checksum) },
+    { file: `LICENSE-MIT of ${source}`, text: pinnedText(thirdPartyDir, LIBP2P_TEXTS.mit.file, LIBP2P_TEXTS.mit.checksum) },
+  ]
 }
 
 /**
@@ -247,6 +307,7 @@ export function renderNotices(list, opts = {}) {
     } else {
       if (!ALLOWED.has(p.license)) throw new Error(`${p.name}@${p.version}: license "${p.license}" is not allowed; read it and add it to ALLOWED in third-party-licenses.mjs if it is acceptable`)
       texts = licenseTexts(p.dir)
+      if (texts.length === 0) texts = repositoryTexts(p, repositoryOf(p.dir), thirdPartyDir) ?? []
       if (texts.length === 0) throw new Error(`${p.name}@${p.version}: ships no license file; read its repository's LICENSE and add it to CLARIFIED, pinned by checksum`)
     }
     const head = `${p.name} ${p.version} (${license})${source ? `\n${source}` : ''}`

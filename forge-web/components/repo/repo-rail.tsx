@@ -32,6 +32,7 @@ import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
+import { SecurityPolicyLink } from '@/components/repo/security-policy'
 import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
 import { readAboutTotals, repoFactsLoading, repoSizeOf, subscribeRepoFacts, wantRepoFacts, type AboutTotals } from '@/lib/view/repo-facts'
 import { peeledCommitOf } from '@/lib/view/tip'
@@ -56,8 +57,6 @@ export function RepoRail({
   return (
     <aside className="min-w-0 space-y-4" aria-label="About this repository">
       <TrustPanel report={report} />
-      {/* A private repo shows a non-member (or a viewer whose role is still loading) nothing
-          past the card: no clone box (it would start reading packs), no members, no releases. */}
       {isPrivate && role === null ? null : (
         <>
           <CloneBox home={home} addr={addr} selected={selected} />
@@ -87,7 +86,6 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   const totals = useAboutTotals(home.repo, countsInView)
   return (
     <Card title="About">
-      {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
       <MirrorClaim home={home} />
       {home.v2.topics.length > 0 ? (
         <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="Topics" data-testid="repo-topics">
@@ -137,9 +135,11 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
         <RepoSize totals={totals} />
       </div>
       <Facts home={home} addr={addr} selected={selected} />
-      <div className="mt-2 flex items-center justify-between gap-2 border-t border-anvil-100 pt-2 dark:border-anvil-850">
-        <span className="text-anvil-500 dark:text-anvil-400">Storage</span>
-        <BackendBadge backend={home.backend} />
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-anvil-100 pt-2 dark:border-anvil-850">
+        <SecurityPolicyLink home={home} addr={addr} load />
+        <span className="ml-auto flex items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
+          Storage <BackendBadge backend={home.backend} />
+        </span>
       </div>
     </Card>
   )

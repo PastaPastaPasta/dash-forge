@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
-import { Check, Copy, Download, ExternalLink, FileText, Link2 } from 'lucide-react'
+import { Check, Copy, Download, ExternalLink, FileText, Link2, MoreHorizontal } from 'lucide-react'
 import { MODE_TREE, type BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
@@ -250,8 +250,8 @@ function BlobBody({
   const permalink = pinned === null ? null : `${typeof window === 'undefined' ? '' : window.location.origin}${pinned}`
 
   return (
-    <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-3 py-2 text-dense sm:px-4 dark:border-anvil-800 dark:bg-anvil-900">
+    <div className="rounded-lg border border-anvil-200 dark:border-anvil-800">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-t-lg border-b border-anvil-200 bg-anvil-50 px-3 py-2 text-dense sm:px-4 dark:border-anvil-800 dark:bg-anvil-900">
         <div className="flex min-w-0 items-center gap-2">
           <FileText className="h-3.5 w-3.5 shrink-0 text-anvil-600 dark:text-anvil-300" aria-hidden />
           <span className="truncate font-mono font-medium text-anvil-900 dark:text-anvil-50">{name}</span>
@@ -280,40 +280,127 @@ function BlobBody({
               ))}
             </div>
           ) : null}
-          <Oid value={data.oid} chars={9} />
-          {rawHref ? (
-            <a href={rawHref} target="_blank" rel="noopener noreferrer" className={HEADER_BTN} data-testid="blob-raw">
-              <ExternalLink className="h-3.5 w-3.5" aria-hidden /> Raw
-              <span className="sr-only"> (opens in a new tab)</span>
-            </a>
-          ) : null}
           {data.text !== null ? (
             <button type="button" onClick={() => void copyFile()} className={HEADER_BTN} data-testid="blob-copy">
               {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
               {copied ? 'Copied' : 'Copy'}
               {copied ? null : <span className="sr-only"> file contents</span>}
             </button>
-          ) : null}
-          {downloadHref ? (
+          ) : downloadHref ? (
             <a href={downloadHref} download={name} className={HEADER_BTN} data-testid="blob-download">
               <Download className="h-3.5 w-3.5" aria-hidden /> Download
             </a>
           ) : null}
+          <BlobMoreMenu
+            oid={data.oid}
+            name={name}
+            rawHref={rawHref}
+            downloadHref={data.text !== null ? downloadHref : null}
+            permalink={permalink}
+          />
           <span role="status" className="sr-only">
             {copied ? 'File copied to clipboard' : ''}
           </span>
         </div>
       </div>
-      <BlobView
-        display={display}
-        size={data.bytes.length}
-        name={name}
-        imageHref={imageHref}
-        rawHref={rawHref}
-        permalink={permalink}
-        markdownRepo={markdownRepo}
-        onRenderLarge={() => setRenderLarge(true)}
-      />
+      <div className="overflow-hidden rounded-b-lg">
+        <BlobView
+          display={display}
+          size={data.bytes.length}
+          name={name}
+          imageHref={imageHref}
+          rawHref={rawHref}
+          permalink={permalink}
+          markdownRepo={markdownRepo}
+          onRenderLarge={() => setRenderLarge(true)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function BlobMoreMenu({
+  oid,
+  name,
+  rawHref,
+  downloadHref,
+  permalink,
+}: {
+  oid: string
+  name: string
+  rawHref: string | null
+  downloadHref: string | null
+  permalink: string | null
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // A selected range (`#L2-L4` in the address) travels with the link, as the toolbar's does.
+  const range = typeof window !== 'undefined' && /^#L\d+(-L\d+)?$/.test(window.location.hash) ? window.location.hash : ''
+  const [copiedLink, copyLink] = useCopy(permalink === null ? '' : `${permalink}${range}`)
+  const close = (): void => setOpen(false)
+  const itemCls =
+    'flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-dense text-anvil-700 hover:bg-anvil-100 coarse:min-h-11 dark:text-anvil-200 dark:hover:bg-anvil-800'
+
+  return (
+    <div
+      className="relative"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return
+        e.preventDefault()
+        close()
+        triggerRef.current?.focus()
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label="More file actions"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        data-testid="blob-more"
+        className={cn(HEADER_BTN, 'px-1.5 coarse:min-w-11 coarse:justify-center coarse:px-2.5')}
+      >
+        <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
+      </button>
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-10" aria-hidden onClick={close} />
+          <div
+            aria-label="File actions"
+            className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-anvil-200 bg-white p-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-900"
+          >
+            {rawHref ? (
+              <a href={rawHref} target="_blank" rel="noopener noreferrer" className={itemCls} onClick={close} data-testid="blob-raw">
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden /> Raw
+                <span className="sr-only"> (opens in a new tab)</span>
+              </a>
+            ) : null}
+            {downloadHref ? (
+              <a href={downloadHref} download={name} className={itemCls} onClick={close} data-testid="blob-download">
+                <Download className="h-3.5 w-3.5 shrink-0" aria-hidden /> Download
+              </a>
+            ) : null}
+            {permalink !== null ? (
+              <button
+                type="button"
+               
+                onClick={() => void copyLink()}
+                data-testid="copy-permalink"
+                data-href={permalink}
+                className={itemCls}
+                title="Copy a link to this file at this commit (press y to show it in the address bar)"
+              >
+                {copiedLink ? <Check className="h-3.5 w-3.5 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden /> : <Link2 className="h-3.5 w-3.5 shrink-0" aria-hidden />}
+                {copiedLink ? 'Copied permalink' : 'Copy permalink'}
+              </button>
+            ) : null}
+            <div className="mt-1 flex items-center justify-between gap-2 border-t border-anvil-100 px-2.5 py-1.5 text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
+              <span>Blob</span>
+              <Oid value={oid} chars={9} />
+            </div>
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }
@@ -340,29 +427,21 @@ function BlobView({
   switch (display.kind) {
     case 'markdown':
       return (
-        <>
-          <BlobToolbar href={permalink} />
-          <article className="px-5 py-4 sm:px-8 sm:py-6" data-testid="blob-markdown">
-            <MarkdownView source={display.text} images="auto" repo={markdownRepo} />
-          </article>
-        </>
+        <article className="px-5 py-4 sm:px-8 sm:py-6" data-testid="blob-markdown">
+          <MarkdownView source={display.text} images="auto" repo={markdownRepo} />
+        </article>
       )
     case 'image':
       if (imageHref === null) return <LoadingBlock />
       return (
-        <>
-          <BlobToolbar href={permalink} />
-          <div className="flex justify-center bg-anvil-50 p-6 dark:bg-anvil-900/60">
-            {/* An <img> runs no script and loads nothing; see useImageUrl for why SVG is a data: URL. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={imageHref} alt={name} className="max-h-[70vh] max-w-full object-contain" data-testid="blob-image" />
-          </div>
-        </>
+        <div className="flex justify-center bg-anvil-50 p-6 dark:bg-anvil-900/60">
+          {/* An <img> runs no script and loads nothing; see useImageUrl for why SVG is a data: URL. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={imageHref} alt={name} className="max-h-[70vh] max-w-full object-contain" data-testid="blob-image" />
+        </div>
       )
     case 'confirm-large':
       return (
-        <>
-        <BlobToolbar href={permalink} />
         <div className="flex flex-col items-center gap-3 px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
           <p>This file is {formatBytes(size)}. Rendering it in the page is slow, so it is not shown by default.</p>
           <div className="flex gap-2">
@@ -381,24 +460,20 @@ function BlobView({
             </Button>
           </div>
         </div>
-        </>
       )
     case 'text':
       return <TextLines text={display.text} name={name} permalink={permalink} />
     case 'binary':
       return (
-        <>
-          <BlobToolbar href={permalink} />
-          <div className="px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
-            Binary file ({formatBytes(size)}) — use Download to save it.
-          </div>
-        </>
+        <div className="px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
+          Binary file ({formatBytes(size)}) — use Download to save it.
+        </div>
       )
   }
 }
 
-/** The strip above a file's contents: the selection (children) and the permalink. */
-export function BlobToolbar({ href, children }: { href: string | null; children?: ReactNode }): JSX.Element {
+export function BlobToolbar({ href, children }: { href: string | null; children?: ReactNode }): JSX.Element | null {
+  if (!children) return null
   return (
     <div className="flex items-center justify-end gap-2 border-b border-anvil-100 px-4 py-1 text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
       {children}

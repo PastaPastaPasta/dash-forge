@@ -15,6 +15,7 @@ export function Qr({ value, label, size = 184, caption }: { value: string; label
       <div
         role="img"
         aria-label={label}
+        data-value={value}
         className="rounded-md bg-white p-1 [&>svg]:h-full [&>svg]:w-full"
         style={{ width: size, height: size }}
         dangerouslySetInnerHTML={{ __html: svg }}

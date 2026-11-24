@@ -228,10 +228,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   }
   return (
     <div className="max-w-2xl space-y-8">
-      <SettingsNav />
+      <SettingsNav showDanger={viewerRole === 'maintainer' || isOwner} />
 
-      {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. The
-          sections carry no note of their own, so a failed role read still gets the banner. */}
       {viewer.known || viewer.failed ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
 
       <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
@@ -452,10 +450,14 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
 
       <BanSettings home={home} maintainer={viewerRole === 'maintainer'} />
 
-      <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
+      <DangerZone home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
 
-      <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
+      <details className="rounded-lg border border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="platform-details">
+        <summary className="hit-area flex cursor-pointer select-none items-center gap-2 text-dense font-medium text-anvil-700 hover:text-anvil-900 dark:text-anvil-200 dark:hover:text-anvil-50">
+          <Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+          Platform &amp; contract IDs
+        </summary>
+        <dl className="mt-3 divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           <DetailRow label="Repo id">
             <Oid value={repo.repoId} label="repo id" />
           </DetailRow>
@@ -480,8 +482,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             <NetworkBadge always />
           </DetailRow>
         </dl>
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Ids for developers and the CLI. Click one to copy it.</p>
-      </Section>
+      </details>
     </div>
   )
 }

@@ -137,12 +137,12 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
         ) : null}
         {commit.parents.length > 1 ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-            Merge commit — changes are shown against the first parent.
+            Merge commit · diff against first parent.
           </p>
         ) : null}
       </div>
 
-      <CommitChecks repo={repo} oid={full} />
+      <CommitChecks repo={repo} oid={full} hideEmpty />
 
       {changes.length === 0 && !truncated && !firstParentMissing ? (
         <EmptyState title="No file changes" body="This commit touches no tree paths (e.g. a merge with no diff to its first parent)." />
@@ -167,7 +167,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
  * branch reported on this commit's blinds that their session verified (§19.9; `dg ci status`), each
  * by its real name once its log opens.
  */
-function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Element {
+function CommitChecks({ repo, oid, hideEmpty = false }: { repo: RepoRef; oid: string; hideEmpty?: boolean }): JSX.Element | null {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const lane = membersLane(repo)
   const blinds = lane === undefined ? [] : blindBook(lane.ctx).blindsOf(oid)
@@ -186,6 +186,7 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
     { enabled: ready && sdk !== null && oid !== '' },
   )
   if (checks.error === null && checks.data?.runs.length === 0) {
+    if (hideEmpty) return null
     return (
       <section aria-label="Checks" data-testid="commit-checks" className="flex items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
         <ListChecks className="h-4 w-4 shrink-0" aria-hidden />

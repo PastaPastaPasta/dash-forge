@@ -48,20 +48,20 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-Measured on devnets (to be re-measured on testnet): creating a repository costs about **0.0027 DASH**, which is 0.0016 for the repository and 0.0011 for the members-only key that new public repositories get by default. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0006–0.001 DASH. Storing packs on Platform costs about 0.33 DASH per MiB. On devnet moutai, a fork of a small repository cost about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On testnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
+Measured on testnet: creating a repository costs about **0.0024 DASH**. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0012 DASH, and a fork of a small repository about 0.008 DASH. Storing packs on Platform costs up to about 0.39 DASH per MiB. Mainnet charges the same amounts in real Dash. The full table is in [Costs](guides/costs.md).
 
 ## What happened to devnet bonsia?
 
 Retired; everything on it is gone. See the [archived devnet move notes](archive/devnet-move.md).
 
-## When is it on mainnet?
+## Is it on mainnet?
 
-After **Dash Platform v5** activates on mainnet and the project owner registers Forge's contracts there. Forge needs Platform v5 for its shared contracts, membership checks and limited keys. Until then:
+Yes, since 2026-11-24, at [forge.dashhq.org](https://forge.dashhq.org).
 
 | Network | Status |
 |---|---|
-| **Testnet** | **Live** since 2026-10-26. forge.dashhq.org runs here, and it is the CLI's default network, so no flag is needed. Its DASH is free test money and the network can be reset. |
-| **Mainnet** | Not deployed yet. After Dash Platform v5 activates, the owner registers Forge's contracts ([runbook](deploying-to-a-network.md)). |
+| **Mainnet** | **Live** since 2026-11-24 at forge.dashhq.org. Real DASH. |
+| **Testnet** | **Live** since 2026-10-26 at testnet-forge.dashhq.org. Free test DASH; the network can be reset. The CLI's default until you pick a network. |
 
 Forge has left the devnets it ran on before testnet. [Networks](networks.md) has their history, and [Dash Forge moved to testnet](guides/devnet-move.md) says how to push again.
 
@@ -71,13 +71,13 @@ An earlier version of Forge (forge-v1, one contract per repository) ran on testn
 
 ## Can I have private repositories?
 
-Yes, on testnet: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
+Yes: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
 
 ## How does this relate to GitHub?
 
 Forge is not a GitHub clone, and it does not need you to leave GitHub.
 
-- **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj push and fetch work too (tested in October 2026); see the [quick start](guides/quick-start.md#jj) for the one setup step that differs.
+- **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj push and fetch work too; see the [quick start](guides/quick-start.md#jj) for the one setup step that differs.
 - **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. The Mirror Action keeps code, issues, PRs, releases and labels in sync on every GitHub event.
 - **CI can listen.** `dg webhook add` and a relay you run deliver GitHub-shaped webhooks, so existing CI receivers work ([Collaborating](guides/collaborating.md#webhooks-and-ci)).
 - **It is not at feature parity.** No hosted CI (bring your own: [forge-runner](guides/self-host-runner.md) runs GitHub Actions workflows on your machine and reports checks with a runner key), and no wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. The web app opens, reviews and merges PRs and forks repositories, but some merges still need `dg`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. See [Collaborating](guides/collaborating.md#from-the-web-app). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists what has no equivalent, and the workarounds.

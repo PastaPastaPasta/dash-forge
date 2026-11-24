@@ -46,10 +46,12 @@ test.describe('shell resilience (L-10, L-56)', () => {
 
     // Back online: the page finishes loading with no reload, and the card is Verified.
     await expect(README(page)).toBeVisible({ timeout: 90_000 })
-    await expect(summary(page)).toContainText('Verified', { timeout: 60_000 })
+    const chip = page.getByTestId('verification-chip')
+    await expect(chip).toContainText('Verified', { timeout: 60_000 })
+    await chip.click()
+    await expect(summary(page)).toContainText('Verified')
     await expect(summary(page)).not.toContainText('Failed')
     await expect(summary(page)).toContainText('checked this session')
-    await page.getByRole('button', { name: /Verification/ }).click()
     await expect(page.getByText(/did not match their git hash/)).toHaveCount(0)
   })
 

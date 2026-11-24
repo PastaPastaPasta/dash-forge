@@ -99,24 +99,24 @@ describe('the empty repo’s storage warning', () => {
 })
 
 describe('the empty repo’s first-push steps', () => {
-  it('numbers install, sign in and push, with a first commit for a repo started from scratch', () => {
+  it('leads with pushing an existing repo and folds start-from-scratch, setup and cost behind disclosures', () => {
     identity = OWNER
     render(home([]))
-    const steps = [...host.querySelectorAll('section[aria-label="Empty repository"] ol > li h3')].map((h) => h.textContent)
-    expect(steps).toEqual(['Install the Dash git tools', 'Sign in on this computer', 'Push your code'])
+    const summaries = [...host.querySelectorAll('section[aria-label="Empty repository"] details > summary')].map((s) => s.textContent)
+    expect(summaries).toEqual(['Start from scratch', 'First time? Install tools & sign in', 'Storage & push cost'])
     const lines = [...host.querySelectorAll('section[aria-label="Empty repository"] code')].map((c) => c.textContent)
-    // Plan item 9: the wallet is the sign-in; the 12 words are named beside it.
-    expect(lines[0]).toMatch(/^dg auth login --network /)
+    expect(lines[0]).toMatch(/^git remote add origin dash:\/\//)
+    expect(lines).toContainEqual(expect.stringMatching(/^dg auth login --network /))
     const signIn = host.querySelector('[data-testid="empty-repo-sign-in"]')?.textContent ?? ''
-    expect(signIn).toContain('scan it with DashPay Wallet')
+    expect(signIn).toContain('Scan the QR code with DashPay Wallet')
     expect(signIn).toMatch(/dg auth login --mnemonic --network /)
-    expect(lines.at(-1)).toMatch(/> README\.md && git add README\.md && git commit -m 'First commit' && git push -u origin HEAD:main$/)
-    expect(host.textContent).toContain('Three steps to your first push.')
+    expect(lines).toContainEqual(expect.stringMatching(/> README\.md && git add README\.md && git commit -m 'First commit' && git push -u origin HEAD:main$/))
+    expect(host.textContent).toContain('Push your code to get started.')
   })
 
   it('tells a visitor nothing is pushed yet instead of addressing them as the pusher', () => {
     render(home([]))
     expect(host.textContent).toContain('Nothing has been pushed yet.')
-    expect(host.textContent).not.toContain('Three steps to your first push.')
+    expect(host.textContent).not.toContain('Push your code to get started.')
   })
 })
