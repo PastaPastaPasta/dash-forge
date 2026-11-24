@@ -1,7 +1,9 @@
 /**
  * Where a passkey that holds a key on Platform may be made and used (PLAN-passkey-vault.md §3,
- * "RP ID policy"). Its relying party id is exactly the page's host, and only two hosts qualify:
- * `forge.dashhq.org` and `localhost` (development and the e2e suite). Never a parent domain such
+ * "RP ID policy"). Its relying party id is exactly the page's host, and only these hosts qualify:
+ * `forge.dashhq.org` (mainnet), `testnet-forge.dashhq.org` (testnet) and `localhost` (development
+ * and the e2e suite). The testnet site is a sibling, never a child of forge.dashhq.org: a child
+ * host may ask the browser for forge.dashhq.org's passkeys. Never a parent domain such
  * as `dashhq.org`: every subdomain could then ask the browser for the same PRF output, so any of
  * them could open every Forge passkey's entry. IPFS subdomain gateways are refused too: each CID is
  * its own origin, so a passkey made there would be lost with the next release.
@@ -10,10 +12,11 @@
  */
 
 import type { ForgeIds } from '../../deployments'
+import { SITE_URL } from '../../site'
 import { passkeysAvailable, sharedOriginProblem } from '../vault'
 
 /** The only relying party ids a vault passkey is made for. */
-const PASSKEY_VAULT_RP_IDS: readonly string[] = ['forge.dashhq.org', 'localhost']
+const PASSKEY_VAULT_RP_IDS: readonly string[] = ['forge.dashhq.org', 'testnet-forge.dashhq.org', 'localhost']
 
 /** Why the controls are hidden on a network without forge-meta, or whose forge-meta has no `vaultEntry` yet. */
 export const PASSKEYS_NOT_DEPLOYED = "Passkeys that work on your other devices aren't available on this network yet."
@@ -42,6 +45,6 @@ export function passkeyVaultProblem(forge: Pick<ForgeIds, 'meta'> | null, locati
   if (location === null || !available()) return "This browser can't use passkeys on this page."
   const shared = sharedOriginProblem(location)
   if (shared !== null) return shared
-  if (passkeyVaultRpId(location) === null) return 'Passkeys that work on your other devices need Forge’s own address: open https://forge.dashhq.org.'
+  if (passkeyVaultRpId(location) === null) return `Passkeys that work on your other devices need Forge’s own address: open ${SITE_URL.replace(/\/$/, '')}.`
   return null
 }

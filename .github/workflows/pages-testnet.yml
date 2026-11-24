@@ -1,0 +1,181 @@
+name: Deploy forge-web (testnet) to testnet-forge.dashhq.org
+
+# Once forge.dashhq.org serves mainnet (pages.yml, PAGES_NETWORK=mainnet), the testnet build lives
+# on its own site (docs/launch/mainnet-runbook.md). GitHub Pages serves one custom domain per
+# repository, so this builds forge-web for testnet and pushes the export to the gh-pages branch of
+# a separate site repository, whose Pages setting serves that branch at testnet-forge.dashhq.org.
+#
+# Repository settings it reads:
+#   - secret TESTNET_SITE_DEPLOY_KEY: an SSH deploy key with write access to the site repository.
+#     Unset: the workflow says so and deploys nothing.
+#   - variable TESTNET_SITE_REPO (default PastaPastaPasta/dash-forge-testnet-site)
+#   - variable TESTNET_SITE_URL (default https://testnet-forge.dashhq.org): the build's
+#     NEXT_PUBLIC_SITE_URL, and the CNAME the site repository serves.
+#   - variables TESTNET_SITE_GATEWAY_URL / TESTNET_SITE_GATEWAY_LABEL / TESTNET_SITE_NOTIFY_URL:
+#     the testnet forge-gateway and forge-notify (hidden when unset), like PAGES_GATEWAY_URL.
+#   - variables PAGES_MAINNET_SITE_URL / PAGES_TESTNET_SITE_URL and PAGES_NOTICE* are shared with
+#     pages.yml.
+#
+# Deploy skew: files under _next/static are never deleted from the site repository, so a tab
+# opened before a deploy can still load its build's chunks; everything else is replaced. The build
+# manifest is attested like pages.yml's (docs/guides/verify-the-app.md).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'forge-web/**'
+      - 'docs/**'
+      - 'forge-contracts/deployments/**'
+      - 'forge-contracts/config/**'
+      - '.github/workflows/pages-testnet.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-testnet
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: forge-web
+    outputs:
+      enabled: ${{ steps.enabled.outputs.enabled }}
+    steps:
+      - id: enabled
+        working-directory: .
+        env:
+          KEY: ${{ secrets.TESTNET_SITE_DEPLOY_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo enabled=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Testnet site not configured::TESTNET_SITE_DEPLOY_KEY is unset; nothing is deployed (docs/launch/mainnet-runbook.md)."
+            echo enabled=false >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.enabled.outputs.enabled == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - if: steps.enabled.outputs.enabled == 'true'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 11
+      - if: steps.enabled.outputs.enabled == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: forge-web/pnpm-lock.yaml
+      - if: steps.enabled.outputs.enabled == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Build (testnet)
+        if: steps.enabled.outputs.enabled == 'true'
+        env:
+          NEXT_PUBLIC_NETWORK: testnet
+          NEXT_PUBLIC_SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
+          NEXT_PUBLIC_PAGES_NOTICE: ${{ vars.PAGES_NOTICE }}
+          NEXT_PUBLIC_PAGES_NOTICE_TEXT: ${{ vars.PAGES_NOTICE_TEXT }}
+          NEXT_PUBLIC_PAGES_NOTICE_URL: ${{ vars.PAGES_NOTICE_URL }}
+          NEXT_PUBLIC_GATEWAY_URL: ${{ vars.TESTNET_SITE_GATEWAY_URL }}
+          NEXT_PUBLIC_GATEWAY_LABEL: ${{ vars.TESTNET_SITE_GATEWAY_LABEL }}
+          NEXT_PUBLIC_NOTIFY_URL: ${{ vars.TESTNET_SITE_NOTIFY_URL }}
+          NEXT_PUBLIC_MAINNET_SITE_URL: ${{ vars.PAGES_MAINNET_SITE_URL }}
+          NEXT_PUBLIC_TESTNET_SITE_URL: ${{ vars.PAGES_TESTNET_SITE_URL }}
+          FORGE_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          for v in NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL NEXT_PUBLIC_MAINNET_SITE_URL NEXT_PUBLIC_TESTNET_SITE_URL; do
+            [ -n "${!v}" ] || unset "$v"
+          done
+          pnpm build
+          test -s out/.well-known/security.txt
+          grep -q '"network": "testnet"' out/forge-manifest.json
+      - if: steps.enabled.outputs.enabled == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-manifest-testnet
+          path: forge-web/out/forge-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+      - if: steps.enabled.outputs.enabled == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: site-testnet
+          path: forge-web/out
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  attest:
+    needs: build
+    if: needs.build.outputs.enabled == 'true' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: forge-manifest-testnet
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: forge-manifest.json
+
+  deploy:
+    needs: [build, attest]
+    if: needs.build.outputs.enabled == 'true' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site-testnet
+          path: site
+      - name: Push to the site repository
+        env:
+          DEPLOY_KEY: ${{ secrets.TESTNET_SITE_DEPLOY_KEY }}
+          SITE_REPO: ${{ vars.TESTNET_SITE_REPO || 'PastaPastaPasta/dash-forge-testnet-site' }}
+          SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          ssh-keyscan -t ed25519 github.com > ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          remote="git@github.com:${SITE_REPO}.git"
+          if git ls-remote --exit-code "$remote" gh-pages >/dev/null 2>&1; then
+            git clone -q --depth 1 --branch gh-pages "$remote" dest
+          else
+            git init -q -b gh-pages dest
+            git -C dest remote add origin "$remote"
+          fi
+          # Replace everything but .git and the kept static chunks, then lay the new build over it.
+          find dest -mindepth 1 -maxdepth 1 ! -name .git ! -name _next -exec rm -rf {} +
+          if [ -d dest/_next ]; then find dest/_next -mindepth 1 -maxdepth 1 ! -name static -exec rm -rf {} +; fi
+          cp -R site/. dest/
+          host="${SITE_URL#https://}"; host="${host%%/*}"
+          printf '%s\n' "$host" > dest/CNAME
+          touch dest/.nojekyll
+          cd dest
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all .
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          git commit -q -m "deploy ${SHA}"
+          git push -q origin gh-pages
+          du -sh .
+      - name: Check the live site
+        continue-on-error: true
+        env:
+          SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
+          SHA: ${{ github.sha }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsSL "${SITE_URL%/}/forge-manifest.json" 2>/dev/null | grep -q "\"commit\": \"$SHA\""; then echo "live: $SHA"; exit 0; fi
+            sleep 20
+          done
+          echo "::warning title=Testnet site not updated yet::${SITE_URL} does not serve ${SHA} after 10 minutes"
