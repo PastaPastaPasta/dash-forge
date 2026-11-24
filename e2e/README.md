@@ -5,7 +5,7 @@
 - `node ../forge-contracts/scripts/seed-offline.mjs [--out <dir>]` runs every seed and verify script against an in-memory chain, with no network. It fails when one writes a document the chain-state rules refuse, or when a rerun writes anything. With `--out`, it saves every document as an rc1 vector for `tools/contract-validate --vectors <dir>`. The `Contracts` workflow runs both.
 - `../forge-web/e2e/`: the Playwright specs, run against a sakura build (`E2E_DEVNET=sakura`, the default) or, with `E2E_NETWORK=testnet`, a testnet build (`forge-web/e2e/network.ts`). The read specs only read the read fixture.
 
-**Run the suites on testnet.** The Testnet Nightly (`.github/workflows/nightly.yml`) runs both of them there; see "Running on testnet" below. The defaults (`E2E_NETWORK=devnet`, `E2E_DEVNET=sakura`, and the CLI suite's sakura config) still name devnet sakura, which went down on 2026-10-24, so set `E2E_NETWORK=testnet` or `DASH_FORGE_NETWORK=testnet`. The sakura notes below are historical.
+**Run the suites on testnet.** The Testnet Nightly (`.github/workflows/nightly.yml`) runs both of them there; see "Running on testnet" below. The defaults (`E2E_NETWORK=devnet`, `E2E_DEVNET=sakura`, and the CLI suite's sakura config) still name devnet sakura, which went down on 2026-10-24, so set `E2E_NETWORK=testnet` for the Playwright specs and `DASH_FORGE_NETWORK=testnet` for the CLI suite (`cli/run.sh`). The sakura notes below are historical.
 
 ## Running on testnet
 

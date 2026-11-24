@@ -37,7 +37,7 @@ jobs:
         with:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}
-          network: testnet                      # the default; or mainnet
+          network: testnet                      # the default; mainnet also needs a recent commit in uses: and install: 'source' (see Inputs)
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}
 ```

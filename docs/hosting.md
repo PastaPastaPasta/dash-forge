@@ -193,7 +193,7 @@ Check the live site afterwards: the banner shows (or is gone), and a write butto
 
 The switch covers this Pages build only. The IPFS release copies, `dg`, and CI or mirror runners ignore it.
 
-This switch is the lever for a bug in the client, not for a compromised site: a compromised build can ignore its own pause. If forge.dashhq.org itself serves wrong bytes, point its DNS away from GitHub Pages first (only the zone owner can), then `gh workflow disable pages.yml`, investigate, fix, re-enable, check the result with `dg verify-app` and announce it. Unpublishing Pages without a replacement leaves nobody a copy to verify against, so do that last.
+This switch is the lever for a bug in the client, not for a compromised site: a compromised build can ignore its own pause. If forge.dashhq.org itself serves wrong bytes, save a copy of what it serves (for comparison later), then take it down: unpublish the Pages site and point its DNS away from GitHub Pages (only the zone owner can); cached DNS alone keeps sending some visitors to Pages. Then `gh workflow disable pages.yml`, investigate, fix, re-enable, check the result with `dg verify-app` and announce it.
 
 ## Linking the mainnet and testnet sites
 

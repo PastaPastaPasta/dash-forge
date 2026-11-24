@@ -302,6 +302,8 @@ Nothing is lost: when the NAS comes back, every clone works again.
 dg storage use nas,second
 ```
 
+That covers new pushes. To give the packs already pushed a second copy too, run `dg repack <owner>/<repo> --profile nas,second` while the NAS is up: it writes one consolidated pack to both. A repository that is still a single pack can't be repacked ([E204](../errors.md#e204)); its next push goes to both.
+
 Run `dg storage status <owner>/<repo>` after any change: it probes every recorded copy of every pack.
 
 ## Backups

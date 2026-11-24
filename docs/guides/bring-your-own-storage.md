@@ -128,7 +128,7 @@ Any S3-compatible store works if it gives you four things:
   }
   ```
 - **Anonymous reads of objects** (not of the bucket listing) at a public https URL ([Public addresses](#public-addresses)).
-- **CORS**, so the web app can read packs. Save this as `cors.json` and apply it with the store's S3 API (`aws s3api put-bucket-cors --bucket forge --cors-configuration file://cors.json`):
+- **CORS**, so the web app can read packs. Save this as `cors.json` and apply it through the store's S3 API with a key that may change bucket settings (`aws --endpoint-url <store endpoint> s3api put-bucket-cors --bucket forge --cors-configuration file://cors.json`, with that key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` and the store's region in `AWS_DEFAULT_REGION`):
   ```json
   {
     "CORSRules": [
