@@ -165,16 +165,16 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     expect(await tabCount(/^Pull requests/)).toBe(await rows.count())
   })
 
-  test('b-4. clone box: dash:// upfront, commands in More options, install sheet, and a hash-checked zip', async ({ page }) => {
+  test('b-4. clone box: network-pinned git clone upfront, extra options in disclosure, install sheet, and a hash-checked zip', async ({ page }) => {
     await openHome(page)
     const box = page.getByTestId('clone-box')
-    await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
-    await box.getByTestId('clone-more').click()
     // L-03 / L-21: pasted on a machine where nothing chose a network, a bare `git clone` goes to
     // testnet. Both commands name the build's devnet, which the clone keeps in its git config.
     await expect(
       box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true }),
     ).toBeVisible()
+    await box.getByTestId('clone-more').click()
+    await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} ${DG_NETWORK}`, { exact: true })).toBeVisible()
     await expectNoSeriousA11y(page, 'b-clone-more')
 
@@ -271,14 +271,12 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     const [cardBox, listBox] = [await card.boundingBox(), await list.boundingBox()]
     expect(cardBox && listBox && cardBox.y > listBox.y).toBe(true)
     const box = page.getByTestId('clone-box')
-    const remote = box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })
-    await expect(remote).toBeVisible()
-    expect(await remote.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap')
-    await box.getByTestId('clone-more').click()
     // A long command scrolls inside its box: it never wraps mid-id or widens the page.
     const command = box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true })
     await expect(command).toBeVisible()
     expect(await command.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap')
+    await box.getByTestId('clone-more').click()
+    await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     await expect(box.getByTestId('zip-download')).toBeVisible()
     // The page never scrolls sideways.
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)

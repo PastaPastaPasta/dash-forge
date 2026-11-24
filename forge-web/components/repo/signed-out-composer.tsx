@@ -10,7 +10,6 @@ import { MessageSquare } from 'lucide-react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { SignInButton } from '@/components/sign-in-button'
-import type { CostPreview as Cost } from '@/lib/sdk'
 
 /**
  * Whether to show {@link SignedOutComposer}: nobody signed in, and no stored key to unlock (a
@@ -23,13 +22,13 @@ export function useSignedOut(): boolean {
   return identity === null && !locked && !resuming && (vaultsLoaded || vaultsError !== null)
 }
 
-export function SignedOutComposer({ cost: _cost }: { cost: Cost }): JSX.Element {
+export function SignedOutComposer(): JSX.Element {
   return (
     <div className="flex flex-wrap items-center gap-3" data-testid="signed-out-composer">
-      <MessageSquare className="h-5 w-5 shrink-0 text-anvil-400 dark:text-anvil-500" aria-hidden />
-      <p className="min-w-0 flex-1 text-dense font-medium text-anvil-900 dark:text-anvil-50">
+      <MessageSquare className="h-5 w-5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+      <h3 className="min-w-0 flex-1 text-dense font-medium text-anvil-900 dark:text-anvil-50">
         Sign in to join the conversation
-      </p>
+      </h3>
       <SignInButton size="sm" />
     </div>
   )

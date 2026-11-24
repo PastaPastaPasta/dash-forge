@@ -6,9 +6,9 @@
  * `(owner, name)` address.
  */
 
-import { useSyncExternalStore } from 'react'
+import { useRef, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
+import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, MoreHorizontal, Settings, ShieldCheck, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Author } from '@/components/author'
@@ -31,6 +31,8 @@ import { MembersChip } from '@/components/repo/audience'
 import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
 import { MovedBanner } from '@/components/repo/moved-banner'
 import { SealOffBanner } from '@/components/repo/seal-off-banner'
+import { useDeferredSecurityPolicy } from '@/components/repo/security-policy'
+import { useDismiss } from '@/components/repo/target-rail'
 
 /**
  * How many of the repo's open issues and PRs are members-only (and, apart, sent to specific
@@ -171,6 +173,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <PinButton repo={home.repo} member={role !== null} />
           <WatchButton repo={home.repo} />
           <StarButton repo={home.repo} count={home.starCount} lookalikes={lookalikes} />
+          <RepoMoreMenu home={home} addr={addr} load={current === 'code'} />
         </div>
       </div>
 
@@ -245,5 +248,46 @@ function PrivateChip({ home }: { home: RepoHome }): JSX.Element {
       <Lock className="h-3 w-3" aria-hidden />
       Private
     </span>
+  )
+}
+
+function RepoMoreMenu({ home, addr, load }: { home: RepoHome; addr: RepoAddress; load: boolean }): JSX.Element | null {
+  const policy = useDeferredSecurityPolicy(home, load)
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  useDismiss(open, root, () => setOpen(false))
+  if (!policy) return null
+  return (
+    <div ref={root} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label="More repository links"
+        title="More"
+        data-testid="repo-more"
+        className="inline-flex h-7 items-center rounded-md px-1.5 text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 coarse:min-h-11 coarse:min-w-11 coarse:justify-center dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+      >
+        <MoreHorizontal className="h-4 w-4" aria-hidden />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-30 mt-1 w-44 rounded-md border border-anvil-200 bg-white p-1 shadow-md dark:border-anvil-750 dark:bg-anvil-900"
+        >
+          <Link
+            href={repoHref('/repo/security', addr)}
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            data-testid="repo-more-security"
+            className="flex items-center gap-2 rounded px-2 py-1.5 text-dense text-anvil-700 hover:bg-anvil-100 hover:text-anvil-900 coarse:min-h-11 dark:text-anvil-200 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"
+          >
+            <ShieldCheck className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            Security policy
+          </Link>
+        </div>
+      ) : null}
+    </div>
   )
 }

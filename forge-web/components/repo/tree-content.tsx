@@ -5,12 +5,13 @@
  * last-commit column the repo home has (from the history index, else a walk), and Go to file.
  */
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { isMissingPathError, readTree, selectedTip, selectRef, treeAtPath, type TreeEntry } from '@/lib/view'
 import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
-import { repoKey } from '@/lib/repo'
+import { repoKey, type RepoRef } from '@/lib/repo'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ReadErrorState, ResolvedTip } from '@/components/repo/resolved-tip'
@@ -41,6 +42,7 @@ export function TreeContent({
   path: string
   refParam?: string
 }): JSX.Element {
+  const [goToFileSlot, setGoToFileSlot] = useState<HTMLDivElement | null>(null)
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
   const tipOid = selectedTip(selected)
   const unknown = unknownRefState(home, addr, selected, refParam, path)
@@ -54,6 +56,14 @@ export function TreeContent({
   }
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <RefSwitcher home={home} addr={addr} current={selected} path={path} />
+        <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div ref={setGoToFileSlot} className="contents" />
+          {path ? <PathActions addr={addr} path={path} refParam={refParam} show={['history']} /> : null}
+        </div>
+      </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (
           <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="tree" label="Reading tree">
@@ -65,8 +75,8 @@ export function TreeContent({
                 path={path}
                 addr={addr}
                 refParam={refParam}
-                home={home}
-                selected={selected}
+                repo={home.repo}
+                goToFileSlot={goToFileSlot}
               />
             )}
           </ResolvedTip>
@@ -83,8 +93,8 @@ function DirBody({
   path,
   addr,
   refParam,
-  home,
-  selected,
+  repo,
+  goToFileSlot,
 }: {
   reader: BrowseReader
   retry: () => void
@@ -92,60 +102,28 @@ function DirBody({
   path: string
   addr: RepoAddress
   refParam: string
-  home: RepoHome
-  selected: ReturnType<typeof selectRef>
+  repo: RepoRef
+  goToFileSlot: HTMLDivElement | null
 }): JSX.Element {
-  const repo = home.repo
   const { data, loading, error, cause } = useAsync(() => loadDir(reader, tip, path), [tip.oid, path])
   usePermalinkKey(tip.type === 'commit' ? pinnedHref(addr, 'tree', tip.oid, path, repo.visibility === 'private') : null)
   const names = useMemo(() => (data === null || tip.type !== 'commit' ? null : data.map((e) => e.name)), [data, tip.type])
   const lastCommits = useLastCommits(reader, tip.oid, path, names)
   const rootTree = useCallback(() => rootTreeOf(reader, tip), [reader, tip])
-  const headerBar = (
-    <div className="flex flex-wrap items-center gap-2">
-      <RefSwitcher home={home} addr={addr} current={selected} path={path} />
-      <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
-      <div className="ml-auto flex flex-wrap items-center gap-2">
-        {data ? <GoToFile reader={reader} repoKey={repoKey(repo)} tipOid={tip.oid} rootTree={rootTree} addr={addr} refParam={refParam} /> : null}
-        {path ? <PathActions addr={addr} path={path} refParam={refParam} show={['history']} /> : null}
-      </div>
-    </div>
-  )
-  if (loading) {
-    return (
-      <div className="space-y-4">
-        {headerBar}
-        <LoadingBlock label="Reading tree" />
-      </div>
-    )
-  }
+  if (loading) return <LoadingBlock label="Reading tree" />
   if (isMissingPathError(error)) {
-    return (
-      <div className="space-y-4">
-        {headerBar}
-        <EmptyState icon={FolderOpen} title="Directory not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse from the repo root.`} />
-      </div>
-    )
+    return <EmptyState icon={FolderOpen} title="Directory not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse from the repo root.`} />
   }
-  if (error) {
-    return (
-      <div className="space-y-4">
-        {headerBar}
-        <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
-      </div>
-    )
-  }
-  if (!data) {
-    return (
-      <div className="space-y-4">
-        {headerBar}
-        <LoadingBlock />
-      </div>
-    )
-  }
+  if (error) return <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
+  if (!data) return <LoadingBlock />
   return (
     <div className="space-y-4">
-      {headerBar}
+      {goToFileSlot !== null
+        ? createPortal(
+            <GoToFile reader={reader} repoKey={repoKey(repo)} tipOid={tip.oid} rootTree={rootTree} addr={addr} refParam={refParam} />,
+            goToFileSlot,
+          )
+        : null}
       <FileList
         entries={data}
         addr={addr}

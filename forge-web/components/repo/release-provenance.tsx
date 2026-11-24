@@ -159,9 +159,13 @@ export function ReleaseProvenanceCard({ home, addr, list, tag }: { home: RepoHom
     )
   }
   const altered = provenanceAltered(p)
-  const caution = !altered && (p.tag === 'restored' || p.lateTag)
   const assets = assetSentence(p.assets)
   const tagsProtected = home.config === null ? null : matchesProtected(`refs/tags/${tag}`, home.config.protectedPatterns)
+  const sigGood = sig?.kind === 'signed' && sig.state !== 'checking' && sig.state !== 'error' && sig.state.status === 'verified'
+  const sigPending = sig === null || (sig.kind === 'signed' && sig.state === 'checking')
+  const sigNotGood = !sigPending && !sigGood
+  const caution = !altered && (p.tag === 'restored' || p.lateTag || tagsProtected === false || sigNotGood)
+  const collapsible = !altered && !caution && sigGood && tagsProtected === true
   const moved = p.current !== null && p.baseline !== null && p.current.oid !== p.baseline.oid
   const details = (
     <dl className="mt-2 divide-y divide-anvil-100 text-[13px] dark:divide-anvil-850">
@@ -229,7 +233,7 @@ export function ReleaseProvenanceCard({ home, addr, list, tag }: { home: RepoHom
     </dl>
   )
 
-  if (!altered && !caution) {
+  if (collapsible) {
     return (
       <details
         aria-label="Provenance"
@@ -254,17 +258,23 @@ export function ReleaseProvenanceCard({ home, addr, list, tag }: { home: RepoHom
     <section
       aria-label="Provenance"
       data-testid="release-provenance"
-      data-state={altered ? 'altered' : 'caution'}
+      data-state={altered ? 'altered' : caution ? 'caution' : 'intact'}
       className={cn(
         'rounded-lg border p-4',
-        altered ? 'border-danger/50 bg-danger/5' : 'border-caution/40 bg-caution/5',
+        altered
+          ? 'border-danger/50 bg-danger/5'
+          : caution
+            ? 'border-caution/40 bg-caution/5'
+            : 'border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-900',
       )}
     >
       <h2 className="flex items-center gap-2 text-dense font-semibold">
         {altered ? (
           <ShieldAlert className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
+        ) : caution ? (
+          <ShieldAlert className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
         ) : (
-          <ShieldCheck className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
+          <ShieldCheck className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         )}
         Provenance
       </h2>

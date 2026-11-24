@@ -70,11 +70,8 @@ test.describe('keyboard', () => {
 
   test('a repo-page dialog traps focus and restores it', async ({ page }) => {
     await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
-    const more = page.getByTestId('clone-box').getByTestId('clone-more')
-    await expectLanded(page, more, 60_000)
-    await more.click()
     const trigger = page.getByTestId('clone-box').getByRole('button', { name: /install/i }).first()
-    await expect(trigger).toBeVisible()
+    await expectLanded(page, trigger, 60_000)
     await trigger.focus()
     await page.keyboard.press('Enter')
     const dialog = page.getByRole('dialog', { name: /Install git-remote-dash/ })

@@ -118,9 +118,9 @@ const NAV_ITEM =
 /** The sections that have their own page. */
 const PAGES: Readonly<Record<string, string>> = { environments: '/repo/settings/environments', bots: '/repo/settings/bots' }
 
-export function SettingsNav({ maintainer = true }: { maintainer?: boolean }): JSX.Element {
+export function SettingsNav({ showDanger = true }: { showDanger?: boolean }): JSX.Element {
   const addr = useRepoAddress()
-  const items = maintainer ? SECTIONS : SECTIONS.filter(([id]) => id !== 'danger')
+  const items = showDanger ? SECTIONS : SECTIONS.filter(([id]) => id !== 'danger')
   return (
     <nav aria-label="Settings sections" className="flex flex-wrap gap-1 border-b border-anvil-200 pb-2 text-dense dark:border-anvil-800">
       {items.map(([id, label]) => {
@@ -165,6 +165,10 @@ export function Section({
 
 function Note({ children }: { children: React.ReactNode }): JSX.Element {
   return <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{children}</p>
+}
+
+function OwnerOnlyNote(): JSX.Element {
+  return <Note>Only the owner can change this.</Note>
 }
 
 /** A private repo's config cannot be written from here: say so, and name the CLI command. */
@@ -309,7 +313,7 @@ export function GeneralSettings({
           {live.length === 0 ? <Note>Push a branch first: the default branch is picked from the branches this repo has.</Note> : null}
           {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch>`} /> : null}
         </div>
-        <RepoDocForm home={home} owner={owner} onSaved={onSaved} />
+        <RepoDocForm home={home} maintainer={maintainer} owner={owner} onSaved={onSaved} />
       </div>
       {cfg.dialog}
     </Section>
@@ -358,7 +362,7 @@ export function VisibilityRow({ home }: { home: RepoHome }): JSX.Element {
 }
 
 /** Description and topics: the `repo` document, which only its owner can edit. */
-function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean; onSaved: () => void }): JSX.Element {
+function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; maintainer: boolean; owner: boolean; onSaved: () => void }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   // The topic documents the save reconciles, for its price (the owner only: only they can save).
   const held = useAsync(() => readTopicDocNames(sdk!, home.repo), [ready, repoKey(home.repo)], { enabled: owner && ready && sdk !== null })
@@ -428,6 +432,8 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
           </Button>
           {changed ? <CostPreview cost={cost} /> : null}
         </div>
+      ) : maintainer ? (
+        <OwnerOnlyNote />
       ) : null}
       <ConfirmDialog
         open={pending !== null}
@@ -984,10 +990,10 @@ function SourceChoice({ id, role }: { id: string; role: string | null }): JSX.El
 // Danger zone: archive
 // ---------------------------------------------------------------------------------------------
 
-export function DangerZone({ home, maintainer, onSaved }: { home: RepoHome; maintainer: boolean; onSaved: () => void }): JSX.Element | null {
+export function DangerZone({ home, maintainer, owner = false, onSaved }: { home: RepoHome; maintainer: boolean; owner?: boolean; onSaved: () => void }): JSX.Element | null {
   const cfg = useConfigWrite(home, onSaved)
   const archived = cfg.current.archived
-  if (!maintainer) return null
+  if (!maintainer && !owner) return null
   return (
     <Section id="danger" title="Danger zone" tone="danger" icon={<Archive className="h-4 w-4" aria-hidden />}>
       <div className="space-y-3">

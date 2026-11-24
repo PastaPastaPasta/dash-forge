@@ -29,7 +29,7 @@ import { useAsync } from '@/hooks/use-async'
 import { useLatestRelease, useViewerRole } from '@/hooks/use-repo-chrome'
 import { useInView } from '@/hooks/use-in-view'
 import { useRepoTrust } from '@/hooks/use-repo-trust'
-import { RepoVerificationChip } from '@/components/repo/repo-verification'
+import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
 import { SecurityPolicyLink } from '@/components/repo/security-policy'
@@ -56,7 +56,7 @@ export function RepoRail({
 
   return (
     <aside className="min-w-0 space-y-4" aria-label="About this repository">
-      <RepoVerificationChip report={report} />
+      <TrustPanel report={report} />
       {isPrivate && role === null ? null : (
         <>
           <CloneBox home={home} addr={addr} selected={selected} />

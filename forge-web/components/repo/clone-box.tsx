@@ -65,7 +65,10 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
         </h2>
       </div>
       <div className="space-y-2.5 p-3">
-        <CommandBox text={cmd.remote} what="clone URL" />
+        <CommandBox text={cmd.gitClone} what="git clone command" />
+        <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
+          Needs git-remote-dash · {install}
+        </p>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <ZipDownload home={home} addr={addr} selected={selected} />
           <button
@@ -82,8 +85,8 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
         </div>
         <div id={moreId} hidden={!moreOpen} className="space-y-3 border-t border-anvil-100 pt-3 dark:border-anvil-850" data-testid="clone-more-panel">
           <div className="space-y-1">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">Git command</p>
-            <CommandBox text={cmd.gitClone} what="git clone command" />
+            <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">Remote URL</p>
+            <CommandBox text={cmd.remote} what="clone URL" />
           </div>
           <div className="space-y-1">
             <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">dg CLI</p>
@@ -95,9 +98,6 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
               <GatewayRow gateway={gateway} home={home} addr={addr} />
             </div>
           ) : null}
-          <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
-            Needs git-remote-dash · {install}
-          </p>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
             Checks out <span className="font-mono">{home.defaultBranch}</span>.
           </p>
@@ -349,11 +349,9 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
           ) : null}
         </div>
       )}
-      {statusText ? (
-        <p role="status" className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-          {statusText}
-        </p>
-      ) : null}
+      <p role="status" className={statusText ? 'mt-1 text-[12px] text-anvil-600 dark:text-anvil-300' : 'sr-only'}>
+        {statusText ?? ''}
+      </p>
     </div>
   )
 }

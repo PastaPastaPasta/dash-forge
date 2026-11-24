@@ -213,7 +213,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   }
   return (
     <div className="max-w-2xl space-y-8">
-      <SettingsNav maintainer={viewerRole === 'maintainer'} />
+      <SettingsNav showDanger={viewerRole === 'maintainer' || isOwner} />
 
       {viewer.known || viewer.failed ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
 
@@ -425,7 +425,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
 
       <BanSettings home={home} maintainer={viewerRole === 'maintainer'} />
 
-      <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
+      <DangerZone home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
 
       <details className="rounded-lg border border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="platform-details">
         <summary className="hit-area flex cursor-pointer select-none items-center gap-2 text-dense font-medium text-anvil-700 hover:text-anvil-900 dark:text-anvil-200 dark:hover:text-anvil-50">

@@ -11,7 +11,8 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { FileText, History, X } from 'lucide-react'
+import { Check, FileText, History, Link2, X } from 'lucide-react'
+import { useCopy } from '@/hooks/use-copy'
 import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
@@ -488,6 +489,7 @@ export function BlameTable({
             Followed a rename from <span className="font-mono">{r.from}</span>
           </span>
         ))}
+        {range === null && href !== null ? <BlamePermalinkButton href={href} /> : null}
       </div>
       <BlobToolbar href={href}>
         {range ? <span>{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} selected</span> : null}
@@ -502,5 +504,21 @@ export function BlameTable({
         </table>
       </ScrollRegion>
     </div>
+  )
+}
+
+function BlamePermalinkButton({ href }: { href: string }): JSX.Element {
+  const [copied, copy] = useCopy(href)
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      data-testid="copy-permalink"
+      data-href={href}
+      className="hit-area inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[12px] font-medium text-anvil-600 hover:bg-anvil-200/70 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Link2 className="h-3.5 w-3.5" aria-hidden />}
+      {copied ? 'Copied' : 'Copy permalink'}
+    </button>
   )
 }

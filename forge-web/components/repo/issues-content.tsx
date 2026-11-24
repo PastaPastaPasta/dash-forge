@@ -329,7 +329,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               allowNone
               onChange={(assignee) => change({ assignee })}
             />
-            {identity !== null ? (
+            {identity !== null || query.mentions ? (
               <label className="inline-flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300 coarse:min-h-11 coarse:min-w-11">
                 <input
                   type="checkbox"

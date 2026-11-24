@@ -311,7 +311,7 @@ function IndexLine({ summary, stale, target, building, onUpdate }: { summary: Co
           {plural(summary.files, 'file')} indexed on {summary.ref} · {formatBytes(summary.bytes)}
         </summary>
         <ul className="mt-2 list-disc space-y-0.5 pl-5">
-          <li>Commit {shortOid(summary.commit ?? summary.tip)} · indexed {timeAgo(summary.builtAt)} in this browser{target.persist ? '' : ' tab only'}. Searching sends no request.</li>
+          <li>Commit {shortOid(summary.commit ?? summary.tip)} · indexed {timeAgo(summary.builtAt)} in this browser{target.persist ? '' : ' tab only (a private repo’s files are never written to disk)'}. Searching sends no request.</li>
           <li>
             Not searched: {left === 0 ? 'nothing' : [summary.skipped.binary ? plural(summary.skipped.binary, 'binary file') : '', summary.skipped.large ? `${plural(summary.skipped.large, 'file')} over ${formatBytes(MAX_FILE_BYTES)}` : '', summary.skipped.symlink ? plural(summary.skipped.symlink, 'symlink') : ''].filter(Boolean).join(', ')}; submodules.
           </li>

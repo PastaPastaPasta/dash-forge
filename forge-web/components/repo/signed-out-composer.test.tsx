@@ -14,10 +14,9 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => auth }))
 import { SignedOutComposer, useSignedOut } from './signed-out-composer'
 
 const base = { identity: null, locked: false, resuming: false, vaultsLoaded: true, vaultsError: null, vaultsSlow: false, vaults: [] }
-const COST = { credits: 982_000_000, dash: 0.00982 } as Parameters<typeof SignedOutComposer>[0]['cost']
 
 function Probe(): JSX.Element {
-  return <>{useSignedOut() ? <SignedOutComposer cost={COST} /> : <textarea />}</>
+  return <>{useSignedOut() ? <SignedOutComposer /> : <textarea />}</>
 }
 
 let root: Root

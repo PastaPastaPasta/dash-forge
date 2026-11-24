@@ -59,3 +59,41 @@ describe('TrustPanel privacy row', () => {
     expect(host.querySelector('[data-testid="trust-privacy"]')!.textContent).toContain('Not deployed')
   })
 })
+
+describe('TrustPanel chip and degraded states', () => {
+  it('renders a compact collapsed chip when verified and expands details on click', () => {
+    const report = deriveTrust({
+      network: 'testnet',
+      connection: 'trusted',
+      quorum: { state: 'agreed', primary: 'quorums.testnet.networks.dash.org', secondary: 'node.invalid', overlap: 2 },
+      tip: 'missing',
+      checks: NO_CONTENT_CHECKS,
+      configuredBackend: 'ipfs',
+      deployed: true,
+    })
+    act(() => root.render(<TrustPanel report={report} />))
+    const chip = host.querySelector<HTMLButtonElement>('[data-testid="verification-chip"]')
+    expect(chip?.textContent).toBe('Verified')
+    expect(chip?.getAttribute('aria-expanded')).toBe('false')
+    expect(chip?.getAttribute('title')).toBe(report.summary)
+    expect(host.querySelector('[data-testid="verification-summary"]')).toBeNull()
+
+    act(() => chip?.click())
+    expect(chip?.getAttribute('aria-expanded')).toBe('true')
+    expect(host.querySelector('[data-testid="verification-summary"]')?.textContent).toBe(report.summary)
+  })
+
+  it('shows the summary inline with caution styling when degraded', () => {
+    const report = deriveTrust({
+      network: 'testnet',
+      connection: 'offline',
+      tip: 'missing',
+      checks: NO_CONTENT_CHECKS,
+      configuredBackend: 'ipfs',
+      deployed: true,
+    })
+    act(() => root.render(<TrustPanel report={report} />))
+    expect(host.querySelector('[data-testid="verification-summary"]')?.textContent).toBe(report.summary)
+    expect(host.querySelector('[data-testid="verification-card"]')?.innerHTML).toContain('border-caution')
+  })
+})

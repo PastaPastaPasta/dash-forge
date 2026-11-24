@@ -319,6 +319,16 @@ export function ChecksTab({
         icon={ListChecks}
         title={`No checks reported for ${headOid.slice(0, 7)}`}
         body={`No CI checks have been reported for this ${subject} yet.`}
+        action={
+          <details className="text-left text-[12px] text-anvil-600 dark:text-anvil-300">
+            <summary className="hit-area cursor-pointer select-none font-medium text-anvil-700 hover:text-anvil-900 dark:text-anvil-200 dark:hover:text-anvil-50">
+              How to report checks
+            </summary>
+            <p className="mt-1.5 max-w-md">
+              Enrol a runner (<code className="font-mono">dg ci runner new</code>), use the GitHub Action, or report as a member (<code className="font-mono">dg ci report</code>).
+            </p>
+          </details>
+        }
       />
     )
   }

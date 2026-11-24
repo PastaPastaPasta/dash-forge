@@ -29,7 +29,7 @@ import { MirrorTrustProvider } from '@/components/repo/mirror-trust'
 import { failedRows, selectRef, type RepoHome, type RepoHomeRefs, type SelectedRef } from '@/lib/view'
 import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustFailureBanner } from '@/components/ui/trust-alert'
-import { RepoVerificationChip } from '@/components/repo/repo-verification'
+import { TrustPanel } from '@/components/ui/trust-panel'
 import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
 import { SignedOutView } from '@/contexts/auth-context'
 import { usePublicView } from '@/hooks/use-public-view'
@@ -240,7 +240,7 @@ function ScaffoldBody({
  * re-renders only it.
  */
 export function RepoVerification({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element {
-  return <RepoVerificationChip report={useRepoTrust(home, selected)} />
+  return <TrustPanel report={useRepoTrust(home, selected)} />
 }
 
 /**

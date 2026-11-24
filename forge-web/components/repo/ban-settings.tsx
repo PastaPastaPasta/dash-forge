@@ -113,7 +113,7 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
     <Section id="bans" title="Bans" icon={<BanIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="bans">
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Hides posts from banned identities and blocks new ones in Forge apps. Only the maintainer who added a ban can lift it.
+          Hides posts from banned identities and blocks new ones in Forge apps (Platform itself still accepts their writes). Only the maintainer who added a ban can lift it.
         </p>
         {bans.error ? (
           <ErrorState message={bans.error} onRetry={bans.reload} />

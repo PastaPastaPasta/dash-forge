@@ -839,7 +839,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
           {signedOut && !lockApplies && !archived ? (
-            <SignedOutComposer cost={commentCost} />
+            <SignedOutComposer />
           ) : (
           <>
           {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}

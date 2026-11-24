@@ -165,6 +165,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
 
   // A branch for fewer people than all members is neither the head nor the base of a members-only PR (DESIGN §4.3).
   const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null && b.narrower === undefined), home.defaultBranch), [home.branches, home.defaultBranch])
+  const [hintOpen, setHintOpen] = useState(() => branches.length <= 1)
   // A fork the link's (or the kept draft's) head names, e.g. a fork's Contribute link: listed even
   // when it is not the viewer's, for as long as this form is open.
   const [namedFork] = useState(() => {
@@ -501,7 +502,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         {forks.loading && identity !== null ? <span className="pb-2 text-[12px] text-anvil-600 dark:text-anvil-400">Looking for your forks…</span> : null}
       </div>
 
-      <details className="text-dense" open={options.length <= 1 || undefined}>
+      <details className="text-dense" open={hintOpen} onToggle={(e) => setHintOpen(e.currentTarget.open)}>
         <summary className="hit-area cursor-pointer select-none text-anvil-600 hover:text-anvil-900 dark:text-anvil-300 dark:hover:text-anvil-50">
           Need to push a branch first?
         </summary>

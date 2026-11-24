@@ -84,28 +84,29 @@ function advert(oid: string): string {
 }
 
 describe('CloneBox with a gateway', () => {
-  it('shows dash:// upfront and folds git, dg CLI and HTTPS behind More options', async () => {
+  it('shows the network-pinned git clone command upfront and folds remote URL, dg CLI and HTTPS behind More options', async () => {
     await render()
-    expect(codes()[0]).toBe(cmd.remote)
+    expect(codes()[0]).toBe(cmd.gitClone)
+    expect(host.textContent).toContain('Needs git-remote-dash')
     expect(moreButton()?.getAttribute('aria-expanded')).toBe('false')
     expect(morePanel()?.hidden).toBe(true)
     await click(moreButton())
     expect(moreButton()?.getAttribute('aria-expanded')).toBe('true')
     expect(morePanel()?.hidden).toBe(false)
-    expect(codes()).toContain(cmd.gitClone)
+    expect(codes()).toContain(cmd.remote)
     expect(codes()).toContain(cmd.dgClone)
     expect(morePanel()?.textContent).toContain('git clone https://gw.invalid/alice/proj.git')
     expect(morePanel()?.textContent).toContain('HTTPS via dashhq gateway')
   })
 
-  it('copies the clone URL whole and says so', async () => {
+  it('copies the git clone command whole and says so', async () => {
     const writeText = vi.fn(async () => undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
     await render()
     const button = host.querySelector('button:not([data-testid])') as HTMLButtonElement
-    expect(button.textContent).toBe('Copy clone URL')
+    expect(button.textContent).toBe('Copy git clone command')
     await click(button)
-    expect(writeText).toHaveBeenCalledWith(cmd.remote)
+    expect(writeText).toHaveBeenCalledWith(cmd.gitClone)
     expect(button.textContent).toBe('Copied!')
     expect(host.textContent).toContain('Copied to clipboard')
   })
@@ -122,13 +123,13 @@ describe('CloneBox with a gateway', () => {
   it('gateway down: dash:// and the commands are unaffected; verify says it could not check', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))))
     await render()
-    expect(codes()[0]).toBe(cmd.remote)
+    expect(codes()[0]).toBe(cmd.gitClone)
     await click(moreButton())
     await click(host.querySelector('[data-testid="gateway-verify"]'))
     const verdict = host.querySelector('[data-testid="gateway-verdict"]')?.textContent ?? ''
     expect(verdict).toContain('could not be checked')
     expect(verdict).toContain('The Dash remote does not need it')
-    expect(codes()[0]).toBe(cmd.remote)
+    expect(codes()[0]).toBe(cmd.gitClone)
   })
 
   it('verify matches a gateway serving the proved tip', async () => {

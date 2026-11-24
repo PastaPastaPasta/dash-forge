@@ -254,7 +254,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           <EmptyState
             icon={GitPullRequest}
             title={filtered ? 'No pull requests match' : query.state === 'all' ? 'No pull requests yet' : `No ${query.state} pull requests`}
-            body={!filtered && query.state === 'open' && !settled ? 'Push a branch, then open a pull request to propose changes.' : emptyPullsBody(filtered, query.state, settled)}
+            body={emptyPullsBody(filtered, query.state, settled)}
             action={filtered && query.state !== 'all' ? <Button onClick={() => change({ state: 'all' })} data-testid="pulls-search-all">Search all pull requests</Button> : undefined}
           />
         ) : (
