@@ -51,7 +51,7 @@ describe('ScanSafety (under Details)', () => {
     expect(host.textContent).toContain('signs as you on Forge')
     expect(host.querySelector('a[href*="/docs/revoke-keys"]')).not.toBeNull()
     expect(host.textContent).not.toContain('CID')
-    expect(host.querySelector('[data-testid="scan-warning-keys"]')!.getAttribute('href')).toBe('/settings/keys/')
+    expect(host.querySelector('[data-testid="scan-warning-keys"]')!.getAttribute('href')).toBe('/settings/keys/#disable')
   })
 
   it('on a copy served by CID, names the gateway host and points to checking the CID', () => {

@@ -52,7 +52,7 @@ export function ScanSafety(): JSX.Element {
       <li data-testid="scan-warning-limits">An approval gives this browser a key that signs as you on Forge, within the limits above.</li>
       <li>
         Scanned a code you didn’t trust?{' '}
-        <Link href="/settings/keys/" onClick={closeLogin} className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-keys">
+        <Link href="/settings/keys/#disable" onClick={closeLogin} className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-keys">
           Disable its key
         </Link>{' '}
         (

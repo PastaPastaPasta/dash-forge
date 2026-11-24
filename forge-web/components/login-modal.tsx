@@ -200,7 +200,7 @@ export function LoginModal(): JSX.Element {
       {view === 'wallet-renew' || view === 'wallet-replace' ? (
         <>
           <WalletConnectFlow mode={view === 'wallet-renew' ? 'renew' : 'login'} onDone={close} onUnlock={() => setView('unlock')} />
-          <div className="mt-3 border-t border-anvil-200 pt-3 dark:border-anvil-800">
+          <div className={cn('mt-3 border-t border-anvil-200 pt-3 dark:border-anvil-800', ACTIVE_NETWORK.network === 'mainnet' && 'hidden')}>
             <button type="button" data-testid="renew-with-file-instead" onClick={() => setView('renew')} className="hit-area text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100">
               {view === 'wallet-renew' ? 'Renew with identity file or recovery phrase instead' : 'Use your identity file or recovery phrase instead'}
             </button>
@@ -795,9 +795,15 @@ function UnlockView({
           registers a new key for this browser and disables the one it cannot open. */}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="unlock-forgot">
         {v.methods.includes('passphrase') ? 'Forgot the passphrase' : v.methods.includes('passkey') ? 'Lost the passkey' : 'Key not working'}?{' '}
-        <button type="button" onClick={() => onRenew(v)} className="hit-area text-forge-700 underline dark:text-forge-400">
-          {v.fromDg ? 'Replace this key with dg' : 'Replace this key with your recovery phrase or identity file'}
-        </button>
+        {ACTIVE_NETWORK.network === 'mainnet' && !v.fromDg ? (
+          <button type="button" onClick={onOther} className="hit-area text-forge-700 underline dark:text-forge-400">
+            Sign in again with your wallet
+          </button>
+        ) : (
+          <button type="button" onClick={() => onRenew(v)} className="hit-area text-forge-700 underline dark:text-forge-400">
+            {v.fromDg ? 'Replace this key with dg' : 'Replace this key with your recovery phrase or identity file'}
+          </button>
+        )}
       </p>
       <div className="flex justify-between pt-1 text-[12px]">
         <button type="button" onClick={onOther} className="hit-area text-anvil-500 dark:text-anvil-400 underline">

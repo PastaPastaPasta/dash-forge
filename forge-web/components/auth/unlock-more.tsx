@@ -8,6 +8,7 @@
  * the unlock (a renewal, a revoke, a wallet login over the stored key).
  */
 
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { useCallback, useRef, useState } from 'react'
 import { Fingerprint, Lock } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -129,8 +130,8 @@ export function UnlockMore({
       {forgot ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid={`${testId}-forgot`}>
           {methods.includes('passphrase') ? 'Forgot the passphrase' : methods.includes('passkey') ? 'Lost the passkey' : 'Key not working'}?{' '}
-          <button type="button" onClick={() => openLogin('import')} className="hit-area text-forge-700 underline dark:text-forge-400">
-            Replace this key with your recovery phrase or identity file
+          <button type="button" onClick={() => openLogin(ACTIVE_NETWORK.network === 'mainnet' ? 'wallet' : 'import')} className="hit-area text-forge-700 underline dark:text-forge-400">
+            {ACTIVE_NETWORK.network === 'mainnet' ? 'Sign in again with your wallet' : 'Replace this key with your recovery phrase or identity file'}
           </button>
         </p>
       ) : null}
