@@ -8,6 +8,10 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dash Wallet for iOS no longer refuses the web app's sign-in code as "dated ahead of the network's time".** The request's creation time came from the browser's clock, and the wallet compares it with Platform's latest block time, which can be minutes behind on mainnet. It is now the browser's clock held within 90 seconds of the chain time Forge read.
+
 ### Changed
 
 - **The web app's sign-in sheet shows two choices: Use my Dash wallet (recommended) and Sign in with a passkey.** Every other way in sits under one collapsed **Other ways to sign in**: getting DashPay, the recovery phrase or identity file, dg, creating an identity, the browser key's limits, Advanced and the glossary. Where no released wallet can finish sign-in (a devnet, or a chain without App Connect v2), creating an identity shows beside the passkey instead.

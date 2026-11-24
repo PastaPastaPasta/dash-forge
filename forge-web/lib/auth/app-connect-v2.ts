@@ -84,6 +84,18 @@ export const RENEW_MODE = false
 /** The App Connect contract and v2 requests exist from protocol 14. */
 export const APP_CONNECT_MIN_PROTOCOL = 14
 
+/** How far past the chain time Forge read a request may be dated: under the wallets' 2-minute skew. */
+export const APP_CONNECT_CREATED_AT_LEAD_MS = 90_000
+
+/**
+ * `CREATED_AT`: this device's clock, clamped to [chain time, chain time + 90 s]. A wallet judges it
+ * against the latest block time Platform proves and refuses one more than 2 minutes ahead; blocks
+ * can be minutes apart, so the device's clock alone reads as "dated ahead of the network's time".
+ */
+export function requestCreatedAt(now: number, chainNow: number): number {
+  return Math.min(Math.max(now, chainNow), chainNow + APP_CONNECT_CREATED_AT_LEAD_MS)
+}
+
 /** The request Forge makes: one group-bound HIGH key with Forge's default limits. */
 export function forgeV2Request(
   forge: ForgeIds,
@@ -92,7 +104,7 @@ export function forgeV2Request(
     readonly connectionId: Uint8Array
     /** Chain time (ms): the proposed expiry counts from it. */
     readonly chainNow: number
-    /** This device's clock (ms): `CREATED_AT`. */
+    /** This device's clock (ms); `CREATED_AT` is it clamped to chain time (see {@link requestCreatedAt}). */
     readonly now: number
     /** The identity a renewal is for. */
     readonly identityHint?: string
@@ -113,7 +125,7 @@ export function forgeV2Request(
       },
     ],
     encBindings: [],
-    createdAt: p.now,
+    createdAt: requestCreatedAt(p.now, p.chainNow),
     connectionId: p.connectionId,
     ...(p.identityHint !== undefined ? { identityHint: decodeIdentifier(p.identityHint) } : {}),
     ...(RENEW_MODE && p.identityHint !== undefined ? { mode: 'renew' as const } : {}),
@@ -128,7 +140,7 @@ export interface V2LoginRequest {
   readonly linkUri: string
   /** `hash160(appEphemeralPub)`: what the answers are stored under (the callback's `r`). */
   readonly requestHash: Uint8Array
-  /** `CREATED_AT`, this device's clock (ms). */
+  /** When this device made the request (its clock, ms); the request's `CREATED_AT` is chain-clamped. */
   readonly createdAt: number
   /** When the poll stops: the protocol's 10 minutes after `createdAt`. */
   readonly expiresAt: number
