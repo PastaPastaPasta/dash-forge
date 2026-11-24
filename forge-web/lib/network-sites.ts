@@ -47,8 +47,8 @@ export interface OtherSite {
 }
 
 /**
- * The site to point to from this build: on mainnet the testnet site; on a test network the
- * mainnet site, once the bundled mainnet record has Forge's contracts. Null when there is none.
+ * The site to point to from this build: on mainnet the testnet site, on a test network the
+ * mainnet site, once that network's bundled record has Forge's contracts. Null when there is none.
  */
 export function otherNetworkSite(
   config: Pick<NetworkConfig, 'network'> = ACTIVE_NETWORK,
@@ -58,6 +58,6 @@ export function otherNetworkSite(
   const key = config.network === 'mainnet' ? 'testnet' : 'mainnet'
   const url = siteUrlFor(key, sites)
   if (url === null) return null
-  if (key === 'mainnet' && forgeV2Ids(deployments['mainnet']) === null) return null
+  if (forgeV2Ids(deployments[key]) === null) return null
   return { key, url, host: new URL(url).host }
 }

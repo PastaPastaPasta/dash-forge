@@ -46,6 +46,11 @@ describe('MainnetLiveBanner', () => {
     expect(banner()).toBeNull()
   })
 
+  it('shows nothing when served from the mainnet site itself', () => {
+    render(TESTNET, { ...SITE, url: window.location.origin, host: window.location.host })
+    expect(banner()).toBeNull()
+  })
+
   it('is not in the static HTML (it waits for storage)', () => {
     expect(renderToString(<MainnetLiveBanner config={TESTNET} site={SITE} />)).toBe('')
   })

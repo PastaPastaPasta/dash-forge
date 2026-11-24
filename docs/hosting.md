@@ -208,10 +208,10 @@ Each build reads and writes one network, so the hosted mainnet and testnet build
 
 | Variable | What it adds |
 |---|---|
-| `PAGES_MAINNET_SITE_URL` | On a test network's build: an "Open Forge on Mainnet" link on the Networks page and a dismissible "Forge is live on mainnet" banner on every page, both only once the bundled `forge-contracts/deployments/mainnet.json` has Forge's contracts. |
-| `PAGES_TESTNET_SITE_URL` | On the mainnet build: an "Open Forge on Testnet" link on the Networks page and a "Testnet" link in the footer. |
+| `PAGES_MAINNET_SITE_URL` | On a testnet or devnet build: an "Open Forge on Mainnet" link on the Networks page and a dismissible "Forge is live on mainnet" banner on every page, both only once the bundled `forge-contracts/deployments/mainnet.json` has Forge's contracts. |
+| `PAGES_TESTNET_SITE_URL` | An "Open Forge on Testnet" link on the Networks page of the mainnet and devnet builds, and a "Testnet" link in the mainnet build's footer, while `forge-contracts/deployments/testnet.json` has Forge's contracts. |
 
-Each value is an `https://` origin with no path, such as `https://forge.dashhq.org`; anything else is ignored and the link stays hidden. Set both on every site's build, since a build never links to itself:
+Each value is an `https://` origin with no path, such as `https://forge.dashhq.org`; anything else is ignored and the link stays hidden. A build never links to its own network, so every site's deploy can set both. Set them only once each origin serves the build for its network: while forge.dashhq.org still serves the testnet build, `PAGES_MAINNET_SITE_URL=https://forge.dashhq.org` would make the testnet Networks page link to itself (the banner hides itself on that origin).
 
 ```sh
 gh variable set PAGES_MAINNET_SITE_URL --body https://forge.dashhq.org

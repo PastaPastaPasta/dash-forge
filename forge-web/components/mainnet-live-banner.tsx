@@ -43,8 +43,9 @@ export function MainnetLiveBanner({
   config?: NetworkConfig
   site?: OtherSite | null
 }): JSX.Element | null {
-  // Browser-only storage: hidden until mounted, so people who closed it see no flash.
-  const dismissed = useSyncExternalStore(subscribe, isDismissed, () => true)
+  // Browser-only storage: hidden until mounted, so people who closed it see no flash. Also hidden
+  // on the mainnet site's own origin, should a test build be served there before the hosts move.
+  const hidden = useSyncExternalStore(subscribe, () => isDismissed() || window.location.origin === site?.url, () => true)
   const dismiss = useCallback(() => {
     try {
       window.localStorage.setItem(MAINNET_LIVE_DISMISS_KEY, '1')
@@ -54,7 +55,7 @@ export function MainnetLiveBanner({
     for (const l of listeners) l()
   }, [])
 
-  if (config.network === 'mainnet' || site?.key !== 'mainnet' || dismissed) return null
+  if (config.network === 'mainnet' || site?.key !== 'mainnet' || hidden) return null
   return (
     <div role="status" data-testid="mainnet-live-banner" className="border-b border-caution/40 bg-caution/10">
       <div className="mx-auto flex max-w-[1280px] items-start gap-3 px-4 py-2 text-dense sm:px-6">

@@ -31,8 +31,9 @@ describe('siteUrlFor', () => {
 
 describe('otherNetworkSite', () => {
   it('points a mainnet build at the testnet site', () => {
-    expect(otherNetworkSite({ network: 'mainnet' }, sites, {})).toEqual({ key: 'testnet', url: 'https://testnet-forge.example', host: 'testnet-forge.example' })
-    expect(otherNetworkSite({ network: 'mainnet' }, { ...sites, testnet: null }, {})).toBeNull()
+    expect(otherNetworkSite({ network: 'mainnet' }, sites, { testnet: live })).toEqual({ key: 'testnet', url: 'https://testnet-forge.example', host: 'testnet-forge.example' })
+    expect(otherNetworkSite({ network: 'mainnet' }, sites, { testnet: {} })).toBeNull()
+    expect(otherNetworkSite({ network: 'mainnet' }, { ...sites, testnet: null }, { testnet: live })).toBeNull()
   })
 
   it('points a test network at the mainnet site only once Forge is live there', () => {
