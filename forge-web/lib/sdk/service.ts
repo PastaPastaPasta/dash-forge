@@ -42,9 +42,10 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { noteClockOk, noteClockSkew } from './clock-skew'
 
-import { dapiReadAddresses, NETWORKS, type Network } from '../constants'
+import { dapiReadAddresses, NETWORKS, quorumEndpoint, type Network } from '../constants'
 import { forgeContractIds } from '../deployments'
 import { userQuorumUrl } from '../quorum-url'
+import { installQuorumFetch } from './quorum-fetch'
 import { dapiBudget, installDapiFetchGate } from './budget'
 import { ContractReadRefusedError, isContractMissingError } from './contract-missing'
 import { isQuorumMiss, isStaleConnectionError } from './unreachable'
@@ -131,8 +132,13 @@ export const QUORUM_BUDGET_MS = 120_000
 export const QUORUM_QUIET_MS = 120_000
 /** Before reconnecting after "no available addresses", wait out rate-limit holds up to this. */
 export const RECOVER_MAX_WAIT_MS = 15_000
-/** Waits before retrying a failed connect (the last one repeats). */
-export const CONNECT_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000, 60_000, 120_000]
+/**
+ * Waits before each automatic retry of a failed connect. After the last one the service stops
+ * retrying by itself (`stopped`): a link that failed this many connects in a row will not get
+ * better on a timer, and a page that spins on it forever reads as broken. "Try again", a tab that
+ * is shown again, or the browser coming back online tries once more.
+ */
+export const CONNECT_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000, 60_000]
 /** A connect (quorum prefetch + contract warm-up) that takes longer than this is abandoned. */
 export const CONNECT_TIMEOUT_MS = 60_000
 /** Retry unproved refusals on the normal SDK rotation (four attempts, retaining stale recovery). */
@@ -149,8 +155,12 @@ export type SdkStatus =
   | { readonly phase: 'downloading'; readonly progress: DownloadProgress }
   | { readonly phase: 'connecting' }
   | { readonly phase: 'ready' }
-  /** The connect failed; `retryAt` is when the next automatic attempt runs (epoch ms). */
-  | { readonly phase: 'error'; readonly message: string; readonly retryAt: number | null }
+  /**
+   * The connect failed; `retryAt` is when the next automatic attempt runs (epoch ms). `stopped`:
+   * the automatic retries ran out ({@link CONNECT_BACKOFF_MS}); only "Try again" (or the tab
+   * shown again, or the browser back online) tries once more.
+   */
+  | { readonly phase: 'error'; readonly message: string; readonly retryAt: number | null; readonly stopped?: boolean }
 
 /**
  * Facade methods that only read, keyed `facade.method`, so running one again on a new
@@ -323,7 +333,12 @@ export class EvoSdkService {
       document.addEventListener('visibilitychange', () => {
         if (!visible()) return
         if (this.refreshDue) void this.refresh()
-        if (this.status.phase === 'error' && this.retryTimer === null) this.scheduleRetry()
+        if (this.status.phase === 'error' && this.retryTimer === null) this.retryOnceMore()
+      })
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        if (this.status.phase === 'error' && this.retryTimer === null) this.retryOnceMore()
       })
     }
   }
@@ -549,15 +564,25 @@ export class EvoSdkService {
     else void this.refresh()
   }
 
+  /** A retry the user's own action earned once the automatic ones ran out (else the next one). */
+  private retryOnceMore(): void {
+    if (this.status.phase === 'error' && this.status.stopped === true) this.retryConnect()
+    else this.scheduleRetry()
+  }
+
   private scheduleRetry(): void {
     this.clearRetry()
     if (this.status.phase !== 'error') return
+    if (this.failures > CONNECT_BACKOFF_MS.length) {
+      this.setStatus({ ...this.status, retryAt: null, stopped: true })
+      return
+    }
     // A hidden tab waits: the visibilitychange listener schedules the retry when it is shown.
     if (!visible()) {
       this.setStatus({ ...this.status, retryAt: null })
       return
     }
-    const wait = CONNECT_BACKOFF_MS[Math.min(this.failures, CONNECT_BACKOFF_MS.length) - 1] ?? 5_000
+    const wait = CONNECT_BACKOFF_MS[this.failures - 1] ?? 5_000
     this.setStatus({ ...this.status, retryAt: this.clock.now() + wait })
     this.retryTimer = this.clock.setTimeout(() => {
       this.retryTimer = null
@@ -1310,6 +1335,8 @@ export function withTimeout<T>(work: Promise<T>, ms: number, what: string, contr
 async function connectTrusted(config: EvoSdkConfig, carry: Carry, signal: AbortSignal): Promise<Connection> {
   // Every DAPI request this page makes goes through the shared request budget (`budget.ts`).
   installDapiFetchGate(dapiReadAddresses(NETWORKS[config.network]))
+  // Quorum key requests get a longer deadline than wasm-sdk's ~5 s, and kept keys when they fail.
+  installQuorumFetch(() => quorumEndpoint(NETWORKS[config.network]))
   // In a browser, start the wasm download (a separate asset with its own stall timer,
   // wasm-fetch.ts) next to the SDK's JS chunk rather than after it. Both load on first data
   // need, never in the first-paint bundle. Elsewhere (Node, the live tests) the SDK's own

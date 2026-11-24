@@ -50,6 +50,16 @@ const auth = {
 /** The unfinished identity creation this browser holds, if any. */
 let journal: { depositAddress: string } | undefined
 
+/** The network the sheet renders for; null keeps the build's (testnet). */
+const network = vi.hoisted(() => ({ override: null as 'mainnet' | null }))
+vi.mock('@/lib/constants', async (orig) => {
+  const real = await orig<typeof import('@/lib/constants')>()
+  const active = new Proxy(real.ACTIVE_NETWORK, {
+    get: (target, prop, receiver) => (network.override !== null && (prop === 'network' || prop === 'key') ? network.override : Reflect.get(target, prop, receiver)),
+  })
+  return { ...real, ACTIVE_NETWORK: active }
+})
+
 /** Whether Platform answers (a fake connection); off, the wallet tile still shows, as offline. */
 let platformUp = false
 /** Whether the chain supports App Connect v2. */
@@ -123,6 +133,7 @@ vi.mock('@/contexts/auth-context', () => ({
     controller: {
       supportsLimitedKeys: () => false,
       checkGroup: async () => ({ notice: null }),
+      walletSignInBlocker: async () => null,
       checkFileNetwork: (key: string | null) => {
         if (key !== null && key !== 'devnet-sakura') throw new Error(`This identity file is for ${key}, but this site is on devnet-sakura.`)
       },
@@ -188,6 +199,7 @@ beforeEach(() => {
   balanceCalls.length = 0
   platformUp = false
   v2Available = false
+  network.override = null
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
   auth.passkeyProblem = 'Checking whether passkeys work on this page.'
@@ -599,6 +611,37 @@ describe('App Connect v2 in the sheet', () => {
     expect(q('[data-testid="tile-wallet"]')!.textContent).not.toMatch(/#591/)
     expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-cost"]')!.textContent).toMatch(/Testnet · free test credits/)
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
+    expect(byText('Other ways to sign in', 'h3')).toBeNull()
+  })
+
+  it('on mainnet with v2 on offer, newcomers get DashPay and sign in with it; in-page create is under Other ways', async () => {
+    network.override = 'mainnet'
+    auth.vaults = []
+    platformUp = true
+    v2Available = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder()).toEqual(['tile-wallet', 'tile-get-dashpay', 'tile-import', 'tile-dg', 'tile-create'])
+    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-create-badge"]')).toBeNull()
+    expect(q('[data-testid="tile-get-dashpay"]')!.textContent).toMatch(/Get DashPay, create your identity there, then sign in/)
+    expect(q<HTMLAnchorElement>('[data-testid="get-dashpay-links"] a')!.href).toBe('https://github.com/dashpay/dash-wallet/releases/latest')
+    const headings = [...host.ownerDocument.querySelectorAll('h3')].map((h) => h.textContent)
+    expect(headings).toEqual(['New to Dash?', 'Already have a Dash identity?', 'Other ways to sign in'])
+    await click(q('[data-testid="tile-get-dashpay"]'))
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
+    expect(host.ownerDocument.body.textContent).toMatch(/Your wallet gives this browser a key for Dash Forge/)
+  })
+
+  it('on mainnet without v2, creating stays first: there is no wallet to finish in yet', async () => {
+    network.override = 'mainnet'
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
+    expect(byText('Other ways to sign in', 'h3')).toBeNull()
   })
 
   it('keeps the wallet tile last where no wallet can answer and v2 is not on offer', async () => {

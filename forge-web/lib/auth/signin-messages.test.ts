@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetMemoryStores } from '../idb'
 import { SECURITY_LEVEL } from '../sdk/write'
-import { identityIdProblem, otherIdentityFileMessage, rawKeyProblem, wrongWordsMessage, type RawKeyView } from './controller'
+import { AuthController, identityIdProblem, otherIdentityFileMessage, rawKeyProblem, wrongWordsMessage, type RawKeyView } from './controller'
 import { mnemonicProblem, quizAnswerOk } from './hd'
 import { listVaults, lockVault, passkeyFailure, storeEncryptionKey, storeInVault } from './vault'
 import { encodeWif } from './wif'
@@ -73,6 +73,21 @@ describe('identityIdProblem', () => {
     expect(identityIdProblem(`${ID}${ID.slice(0, 6)}`)).toMatch(/too long/)
     expect(identityIdProblem('0OIl-not-base58')).toMatch(/characters an ID can't have/)
     for (const id of ['', 'x', '0OIl']) expect(identityIdProblem(id)).not.toMatch(/byte length|Identifier must/)
+  })
+})
+
+describe('importing words with an Identity ID that cannot be one', () => {
+  beforeEach(() => resetMemoryStores())
+  it('says what is wrong with the ID, before any read', async () => {
+    const sdk = vi.fn(async () => {
+      throw new Error('no read expected')
+    })
+    const c = new AuthController(sdk as never, NET)
+    const words = `${'abandon '.repeat(11)}about`
+    await expect(c.importIdentity({ mnemonic: words, identityId: 'not-an-id' }, { passphrase: 'correct horse battery' })).rejects.toThrow(
+      "That isn't an identity ID: it has characters an ID can't have.",
+    )
+    expect(sdk).not.toHaveBeenCalled()
   })
 })
 

@@ -7,6 +7,8 @@
  *   New to Dash: Create a new identity, badged Recommended — mnemonic + backup quiz + deposit
  *      QR, registered with a limited key inside the IdentityCreate. It ends on a "You're in"
  *      view with next steps and a check for a second payment left on the deposit address (F13, F14).
+ *      On mainnet, where the wallet leads, this is "Get DashPay" instead (create the identity in
+ *      the wallet, then sign in with it), and the in-page create sits under "Other ways to sign in".
  *   Already have one: a passkey from another device; Import an identity file (or mnemonic) — the
  *      master key signs one IdentityUpdate that registers a limited key for this browser, and is
  *      not stored; dg; and Use my Dash wallet — App Connect v2 where the chain supports it (one
@@ -28,7 +30,7 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, ArrowLeft, ChevronDown, Compass, CopyPlus, Fingerprint, HelpCircle, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, Compass, CopyPlus, Fingerprint, HelpCircle, KeyRound, Lock, Plus, RotateCw, Smartphone, SquareTerminal, Upload, Wallet } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { PushCostText } from '@/components/ui/push-cost-text'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -40,7 +42,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow, type CreatedIdentity } from '@/components/auth/create-identity-flow'
 import { TestCreditsBadge, isTestNetwork } from '@/components/ui/test-credits'
-import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
+import { DASHPAY_ANDROID_RELEASES, WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { Tile } from '@/components/auth/sign-in-tile'
 import { PasskeySignIn } from '@/components/auth/passkey-sign-in'
 import { DgHandoffFlow, type HandoffTarget } from '@/components/auth/dg-handoff-flow'
@@ -385,6 +387,26 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
             pausedReason={pausedReason}
           />
         )
+      case 'get-dashpay':
+        return (
+          <Fragment key={id}>
+            <Tile
+              testId="tile-get-dashpay"
+              icon={Smartphone}
+              title="Get DashPay, create your identity there, then sign in"
+              body="Install DashPay (Android) or Dash Wallet (iPhone) and create your Dash identity in it; your recovery phrase stays on the phone. Then come back and choose this to sign in with it."
+              onClick={() => onPick('wallet')}
+              pausedReason={pausedReason}
+            />
+            <p data-testid="get-dashpay-links" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+              DashPay for Android 11.9.2 or later (see the{' '}
+              <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
+                DashPay Wallet releases (opens in a new tab)
+              </a>
+              ), or Dash Wallet for iOS 9.1.4 or later.
+            </p>
+          </Fragment>
+        )
       case 'create':
         return (
           <Fragment key={id}>
@@ -446,6 +468,7 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
     }
   }
   const group = (g: SignInGroup): ReactNode[] => methods.filter((m) => m.group === g).map(tile)
+  const otherTiles = group('other')
   const advancedTiles = group('advanced')
   return (
     <div className="space-y-2">
@@ -454,6 +477,12 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
       {group('new')}
       <GroupLabel>Already have a Dash identity?</GroupLabel>
       {group('existing')}
+      {otherTiles.length > 0 ? (
+        <>
+          <GroupLabel>Other ways to sign in</GroupLabel>
+          {otherTiles}
+        </>
+      ) : null}
       {advancedTiles.length > 0 ? (
         <div className="pt-2">
           <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
