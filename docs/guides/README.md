@@ -1,6 +1,6 @@
 # User guides
 
-Task-oriented guides for using Dash Forge. For how it is built, see the [document index](../../README.md#document-index).
+Task-oriented guides for using Dash Forge. For how it is built, see the [architecture](../architecture.md).
 
 | Guide | Read it when you want to… |
 |---|---|

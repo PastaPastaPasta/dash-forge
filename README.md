@@ -40,8 +40,7 @@ dg init                  # creates the repository, adds `origin`, pushes this br
 
 Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push`. Every push prints its cost first ([costs](docs/guides/costs.md)).
 
-- **Network:** the tools use testnet until you pick one. `--network mainnet` on `dg auth login` (or `dg auth new`) makes mainnet your default for `dg` and `git`.
-- **Mainnet:** DashPay doesn't accept `dg`'s QR code on mainnet yet ([#714](https://github.com/PastaPastaPasta/dash-forge/issues/714)). Until that's fixed, sign in to mainnet from the terminal with an identity file (below), or use the browser.
+- **Network:** the tools use testnet until you pick one. `dg auth login --network mainnet --wallet` signs in on mainnet and makes it your default for `dg` and `git`.
 - **v0.2.0 binaries:** `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh` installs them ([INSTALL.md](docs/INSTALL.md)). They work on testnet only and have no `--wallet`, so sign in with an identity file there.
 
 <details>
@@ -73,7 +72,7 @@ You can replicate packs across several of these. [Bring your own storage](docs/g
 - **Verify:** every repository page has a Verification card ([what is checked](docs/guides/verify-forge.md)).
 - **Wire up CI:** `dg webhook add` plus a relay you run (`forge-relay`) turns on-chain activity into GitHub-style webhooks.
 
-This repository's home is GitHub. A copy is on Forge at `dash://forg3/dash-forge` on mainnet (`git -c dash.network=mainnet clone dash://forg3/dash-forge`).
+This repository's home is GitHub. Every push to master, and every tag, is mirrored to Forge on mainnet by [forge-sync](tools/forge-sync/README.md): `git -c dash.network=mainnet clone dash://forg3/dash-forge`.
 
 ## Docs
 
