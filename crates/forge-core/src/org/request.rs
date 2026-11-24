@@ -85,16 +85,26 @@ pub struct Request {
     pub problem: Option<String>,
 }
 
-/// Every request in the room, oldest first.
+/// Every request in the room, oldest first. A request is one proposer's proposals sharing a
+/// group, so nobody else can break a member's request by reusing its group: the earliest
+/// proposer keeps the group as the request id, a later one gets `<group>-<its key prefix>`.
 pub fn requests(state: &RoomState) -> Vec<Request> {
-    let mut groups: BTreeMap<String, Vec<(Note, &Proposal)>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<(Note, &Proposal)>> = BTreeMap::new();
+    let mut first: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut out = Vec::new();
     for p in state.proposals.values() {
         match p.note().and_then(Note::parse) {
-            Some(note) => groups
-                .entry(note.group.clone())
-                .or_default()
-                .push((note, p)),
+            Some(note) => {
+                let seen = (p.at.clone(), p.from.clone());
+                first
+                    .entry(note.group.clone())
+                    .and_modify(|e| *e = e.clone().min(seen.clone()))
+                    .or_insert(seen);
+                groups
+                    .entry((note.group.clone(), p.from.clone()))
+                    .or_default()
+                    .push((note, p));
+            }
             None => out.push(Request {
                 id: p.id.clone(),
                 title: String::new(),
@@ -106,7 +116,12 @@ pub fn requests(state: &RoomState) -> Vec<Request> {
             }),
         }
     }
-    for (group, mut members) in groups {
+    for ((group, from), mut members) in groups {
+        let id = if first.get(&group).is_some_and(|(_, f)| *f == from) {
+            group
+        } else {
+            format!("{group}-{}", from.get(..8).unwrap_or(&from))
+        };
         members.sort_by(|a, b| a.0.seq.cmp(&b.0.seq).then_with(|| a.1.id.cmp(&b.1.id)));
         let of = members[0].0.of;
         let proposer = members[0].1.from.clone();
@@ -116,7 +131,7 @@ pub fn requests(state: &RoomState) -> Vec<Request> {
                 .enumerate()
                 .all(|(i, (n, p))| n.seq == i && n.of == of && p.from == proposer);
         out.push(Request {
-            id: group,
+            id,
             title: members[0].0.title.clone(),
             forge: true,
             proposals: members.iter().map(|(_, p)| p.id.clone()).collect(),
@@ -178,6 +193,8 @@ impl RequestStatus {
 pub struct ChainView {
     pub landed: BTreeSet<String>,
     pub spent: BTreeSet<String>,
+    /// Reported executed, but the nonce is still free: it has not landed.
+    pub unproven: BTreeSet<String>,
 }
 
 /// The request's status (§9 "Request status"). Without a chain view, `done` comes from
@@ -195,7 +212,8 @@ pub fn status(state: &RoomState, req: &Request, chain: Option<&ChainView>) -> Re
         return RequestStatus::Invalid;
     }
     let landed = |p: &Proposal| {
-        p.status == ProposalStatus::Executed || chain.is_some_and(|c| c.landed.contains(&p.id))
+        (p.status == ProposalStatus::Executed && !chain.is_some_and(|c| c.unproven.contains(&p.id)))
+            || chain.is_some_and(|c| c.landed.contains(&p.id))
     };
     if ps.iter().all(|p| landed(p)) {
         return RequestStatus::Done;
@@ -307,11 +325,22 @@ mod tests {
     #[test]
     fn a_whole_request_is_one_member_with_seqs_zero_to_of() {
         assert!(!problem(&[("a", G, 0, 2), ("a", G, 1, 2)]));
-        assert!(problem(&[("a", G, 0, 2), ("b", G, 1, 2)]));
         assert!(problem(&[("a", G, 0, 2)]));
         assert!(problem(&[("a", G, 0, 2), ("a", G, 0, 2)]));
         assert!(problem(&[("a", G, 0, 3), ("a", G, 1, 3), ("a", G, 1, 3)]));
         assert!(problem(&[("a", G, 0, 2), ("a", G, 1, 3)]));
+    }
+
+    #[test]
+    fn someone_reusing_a_group_does_not_break_the_request() {
+        let st = state(&[("a", G, 0, 1), ("bbbbbbbbbb", G, 0, 1)]);
+        let reqs = requests(&st);
+        assert_eq!(reqs.len(), 2);
+        let mine = reqs.iter().find(|r| r.proposer == "a").unwrap();
+        assert_eq!(mine.id, G);
+        assert!(mine.problem.is_none());
+        let theirs = reqs.iter().find(|r| r.proposer != "a").unwrap();
+        assert_eq!(theirs.id, format!("{G}-bbbbbbbb"));
     }
 
     #[test]

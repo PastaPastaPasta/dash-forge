@@ -138,13 +138,15 @@ pub fn parse_group_id(text: &str) -> Option<String> {
     ceremony::room_name_ok(t).then(|| t.to_string())
 }
 
-/// The slot an organization signs Forge documents with: purpose AUTHENTICATION, level HIGH.
+/// The slot an organization signs Forge documents with: the first AUTHENTICATION/HIGH slot in
+/// config order, as web picks it.
 pub fn signing_slot(c: &Ceremony) -> Option<(&KeySlot, &SlotKeys)> {
-    c.result
-        .as_ref()?
+    let keys = &c.result.as_ref()?.keys;
+    c.config
         .keys
-        .values()
-        .find(|(k, _)| k.purpose == "AUTHENTICATION" && k.security_level == "HIGH")
+        .iter()
+        .filter(|k| k.purpose == "AUTHENTICATION" && k.security_level == "HIGH")
+        .find_map(|k| keys.get(&k.slot))
         .map(|(k, s)| (k, s))
 }
 
@@ -156,13 +158,9 @@ pub fn signing_ceremonies(state: &RoomState) -> Vec<&Ceremony> {
         .filter(|c| signing_slot(c).is_some())
         .collect();
     list.sort_by(|a, b| {
-        let at = |c: &Ceremony| {
-            c.config.raw["createdAt"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string()
-        };
-        at(b).cmp(&at(a)).then_with(|| a.cid.cmp(&b.cid))
+        b.config_at
+            .cmp(&a.config_at)
+            .then_with(|| b.cid.cmp(&a.cid))
     });
     list
 }

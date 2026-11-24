@@ -46,7 +46,7 @@ Creating the organization (key ceremony, funding, identity) is done in multisig.
 
 Forge reuses `dti/1` as is: a group is an append-only log of Ed25519-signed envelopes on an untrusted relay. A proposal carries the unsigned transition and the bytes to sign; each `approve` carries one BLS signature share; any *N* valid shares combine into the identity's signature.
 
-**Create.** A member starts an owner action in Forge as they would for a personal repo. Because the owner is an organization, Forge builds the unsigned transition(s) with the organization as owner and its HIGH authentication key as signer, and posts them as `proposal` envelopes. A multi-document action (create repository) is several proposals with consecutive nonces, tied together by a `note` of the form `{"forge":1,"group":"<id>","seq":i,"of":k,"title":"…"}`. Forge calls the whole thing a **request**.
+**Create.** A member starts an owner action in Forge as they would for a personal repo. Because the owner is an organization, Forge builds the unsigned transition(s) with the organization as owner and its HIGH authentication key as signer, and posts them as `proposal` envelopes. A multi-document action (create repository) is several proposals, tied together by a `note` of the form `{"forge":1,"group":"<id>","seq":i,"of":k,"title":"…"}`. Forge calls the whole thing a **request**: one member's proposals sharing a group (someone else reusing the group makes a separate request, `<group>-<their key prefix>`). Each write takes the lowest identity-contract nonce above the identity's current one that no open request holds; Platform accepts nonces out of order up to 24 ahead (23 on a contract the identity never wrote to), so one request's far nonce blocks nothing.
 
 **Review.** A signer's client never trusts the proposal's description. It decodes the transition bytes and checks:
 
@@ -61,7 +61,7 @@ It then describes the action from the decoded content ("Give `alice.dash` Mainta
 
 **Broadcast.** The signature that completes the threshold also finishes the job: that client combines the shares, checks the result against the group key, broadcasts the transitions in nonce order, confirms each with a proved read and posts `broadcast`. If it fails midway, any member (or `dg org finish`) can resume; BLS signatures are deterministic, so a rebroadcast is the same transition.
 
-**Decline.** A member can decline a request (`reject`). Declines do not block; a request that will never reach N simply stays open and can be dismissed locally. A request whose nonce was overtaken is shown as expired.
+**Decline.** A member can decline a request (`reject`). Declines do not block; a request that will never reach N simply stays open and can be dismissed locally. Once more than M−N members decline it, it no longer holds its nonces. A request whose nonce was overtaken is shown as expired.
 
 Requests made in Forge are visible in multisig.dashhq.org as proposals, and its members can see shares arrive there.
 
@@ -118,7 +118,7 @@ Protocol reference: `dash-threshold-identity` `docs/PROTOCOL.md` and `src/{util,
 4. The identity-contract nonce is above the current one.
 5. The (document type, action) pair is one Forge recognises: `repo` create/replace, `maintainer` create/delete, `writer` create/delete, `config` create, `profile` create/replace, `topic` create/delete, `runner` create/delete. A delete is described from the stored document (proved read).
 
-**Request status.** `collecting` (fewer than N valid shares on some proposal), `ready`, `done` (every proposal has a member's `broadcast` with `ok: true`, or its document write is visible on chain), `expired` (a proposal's nonce is at or below the identity's current one and it was not broadcast), `invalid`.
+**Request status.** `collecting` (fewer than N valid shares on some proposal), `ready`, `done` (every proposal has a member's `broadcast` with `ok: true` and its nonce is spent, or its document write is visible on chain: a broadcast record whose nonce is still free is a claim, and Finish broadcasts it), `expired` (a proposal's nonce is spent, Platform's skipped-nonce window included, and its write is not on chain), `invalid`.
 
 **Signing a request** posts one `approve` per proposal the member has not approved. If that makes the request `ready`, the same client finishes it.
 

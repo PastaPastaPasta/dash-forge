@@ -630,7 +630,7 @@ async fn config_written(
 
 /// Why the first config's patterns can't be written: `refs/heads/<branch>` can outgrow a
 /// pattern's 100 characters. `None` when there is nothing to protect or they fit.
-fn protect_problem(opts: &CreateRepoOpts) -> Option<Error> {
+pub(crate) fn protect_problem(opts: &CreateRepoOpts) -> Option<Error> {
     if !opts.protect || crate::repo::check_patterns(&opts.protected_patterns()).is_ok() {
         return None;
     }

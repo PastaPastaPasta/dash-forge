@@ -272,10 +272,27 @@ fn same(a: &FieldValue, b: &FieldValue) -> bool {
     }
 }
 
+/// Whether two documents carry the same fields, system (`$`) fields aside.
+pub fn same_fields(a: &BTreeMap<String, FieldValue>, b: &BTreeMap<String, FieldValue>) -> bool {
+    let user = |m: &BTreeMap<String, FieldValue>| m.keys().filter(|k| !k.starts_with('$')).count();
+    user(a) == user(b)
+        && a.iter()
+            .filter(|(k, _)| !k.starts_with('$'))
+            .all(|(k, v)| b.get(k).is_some_and(|w| same(v, w)))
+}
+
 /// `: set description to “…”; remove website` — what a replace changes against `stored`.
 fn changes(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) -> String {
     let Some(before) = stored else {
-        return " (its current version could not be read)".into();
+        let blank = DecodedWrite {
+            properties: BTreeMap::new(),
+            ..d.clone()
+        };
+        let sets = changes(d, Some(&blank), names);
+        return format!(
+            " (its current version could not be read; it would {})",
+            sets.trim_start_matches(": ")
+        );
     };
     let mut out = Vec::new();
     for (k, v) in &d.properties {
@@ -386,6 +403,7 @@ mod tests {
             describe(&after, Some(&before), &names),
             "Edit the listing of acme/widgets: set description to “new”; set renamedTo to mallory/trap; remove website"
         );
-        assert!(describe(&after, None, &names).ends_with("could not be read)"));
+        assert!(describe(&after, None, &names)
+            .contains("could not be read; it would set description to “new”"));
     }
 }

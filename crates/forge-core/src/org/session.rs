@@ -248,11 +248,12 @@ impl Org {
             .collect()
     }
 
-    /// The nonces per contract that requests still collecting or ready hold.
+    /// The nonces per contract that open requests hold. A request enough members declined that
+    /// it can never be signed holds none.
     pub fn open_nonces(&self) -> BTreeMap<String, BTreeSet<u64>> {
         let mut out: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         for r in self.requests() {
-            if !request::status(&self.state, &r, None).is_open() {
+            if !request::status(&self.state, &r, None).is_open() || self.unreachable(&r) {
                 continue;
             }
             for d in r.proposals.iter().filter_map(|id| self.decoded(id)) {
@@ -264,6 +265,24 @@ impl Org {
             }
         }
         out
+    }
+
+    /// Whether so many members declined `req` that the rest cannot reach the threshold.
+    fn unreachable(&self, req: &Request) -> bool {
+        let members: BTreeSet<&str> = self
+            .record
+            .members
+            .iter()
+            .map(|m| m.auth_pub.as_str())
+            .collect();
+        let declined: BTreeSet<&str> = req
+            .proposals
+            .iter()
+            .filter_map(|id| self.state.proposals.get(id))
+            .flat_map(|p| p.rejections.keys().map(String::as_str))
+            .filter(|k| members.contains(k))
+            .collect();
+        declined.len() > members.len().saturating_sub(self.record.threshold)
     }
 
     pub fn decoded(&self, proposal_id: &str) -> Option<DecodedWrite> {
@@ -313,9 +332,13 @@ impl Org {
         let mut view = ChainView::default();
         for id in &req.proposals {
             let Some(d) = self.decoded(id) else { continue };
-            if self.state.proposals[id].status == ProposalStatus::Executed
-                || d.owner_id != self.record.org_id
-            {
+            if d.owner_id != self.record.org_id {
+                continue;
+            }
+            if self.state.proposals[id].status == ProposalStatus::Executed {
+                if self.executed_unproven(client, id).await? {
+                    view.unproven.insert(id.clone());
+                }
                 continue;
             }
             let current = client
@@ -329,6 +352,18 @@ impl Org {
             }
         }
         Ok(view)
+    }
+
+    /// Whether a proposal a member reported executed cannot have landed: its nonce is still
+    /// free. A member's report is a claim, and a write that lands spends its nonce.
+    async fn executed_unproven(&self, client: &PlatformClient, id: &str) -> Result<bool> {
+        let Some(d) = self.decoded(id) else {
+            return Ok(false);
+        };
+        Ok(!client
+            .proved_contract_nonce(&self.record.org_id, &d.contract_id)
+            .await?
+            .spent(d.nonce))
     }
 
     /// Names for describing `req`: repositories (those it creates included) and members.
@@ -530,10 +565,29 @@ impl Org {
         }
         self.bind(client).await?;
         let network = client.network().key();
+        // Nothing is broadcast unless every part still to land can be: a ready delete must not
+        // land while the create that replaces it is short of signatures.
+        for id in &req.proposals {
+            let p = &self.state.proposals[id];
+            if p.status == ProposalStatus::Executed || p.status == ProposalStatus::Ready {
+                continue;
+            }
+            let reviewed = review::review_offline(&self.expect(&network, forge), p);
+            let landed = match &reviewed.decoded {
+                Some(d) if reviewed.ok() => landed(client, d).await?,
+                _ => false,
+            };
+            if !landed {
+                return Ok(Finished {
+                    broadcast: 0,
+                    done: false,
+                });
+            }
+        }
         let mut broadcast = 0;
         for id in &req.proposals {
             let p = &self.state.proposals[id];
-            if p.status == ProposalStatus::Executed {
+            if p.status == ProposalStatus::Executed && !self.executed_unproven(client, id).await? {
                 continue;
             }
             let reviewed = review::review_offline(&self.expect(&network, forge), p);
@@ -546,7 +600,7 @@ impl Org {
                     .await?;
                 continue;
             }
-            if p.status != ProposalStatus::Ready {
+            if !matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed) {
                 return Ok(Finished {
                     broadcast,
                     done: false,
@@ -640,7 +694,14 @@ async fn landed(client: &PlatformClient, d: &DecodedWrite) -> Result<bool> {
         .await?;
     Ok(match d.action.as_str() {
         "create" => doc.is_some(),
-        "replace" => doc.is_some_and(|x| x.revision >= d.revision),
+        "replace" => match doc {
+            Some(x) if x.revision == d.revision => review::same_fields(&x.fields, &d.properties),
+            Some(x) if x.revision > d.revision => client
+                .proved_contract_nonce(&d.owner_id, &d.contract_id)
+                .await?
+                .spent(d.nonce),
+            _ => false,
+        },
         "delete" => {
             doc.is_none()
                 && client

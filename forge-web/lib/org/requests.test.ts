@@ -54,10 +54,17 @@ describe('grouping', () => {
     expect(solo.title).toBeNull()
   })
 
-  it('a group with a missing part, a duplicate seq or a second proposer is malformed', () => {
+  it('someone reusing a group gets a request of their own and leaves the original whole', () => {
+    const reqs = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2026-11-25T00:00:00.000Z' })]), CID)
+    expect(reqs).toHaveLength(2)
+    expect(reqs.every((r) => !r.malformed)).toBe(true)
+    expect(reqs.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
+    expect(reqs.find((r) => r.from === B)!.id).toBe(`0123456789abcdef-${B.slice(0, 8)}`)
+  })
+
+  it('a group with a missing part or a duplicate seq is malformed', () => {
     expect(groupRequests(state([proposal('p1', note(0, 2))]), CID)[0]!.malformed).toBe(true)
     expect(groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(0, 2))]), CID)[0]!.malformed).toBe(true)
-    expect(groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(1, 2), { from: B })]), CID)[0]!.malformed).toBe(true)
   })
 
   it('ignores proposals for another ceremony', () => {
@@ -77,6 +84,7 @@ describe('request status', () => {
     expect(requestStatus(ready, (id) => nonces[id], at(4n))).toBe('ready')
     const done = { ...req!, proposals: req!.proposals.map((p) => ({ ...p, status: 'executed' as const })) }
     expect(requestStatus(done, (id) => nonces[id], at(9n))).toBe('done')
+    expect(requestStatus(done, (id) => ({ ...nonces[id]!, unproven: true }), at(4n))).toBe('ready')
     expect(requestStatus(req!, (id) => nonces[id], at(5n))).toBe('expired')
     expect(requestStatus(req!, (id) => nonces[id], at(7n | (3n << 40n)))).toBe('collecting')
     expect(requestStatus(req!, (id) => ({ ...nonces[id]!, onChain: id === 'p1' }), at(5n))).toBe('collecting')

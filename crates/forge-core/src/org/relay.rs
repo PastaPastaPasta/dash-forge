@@ -75,13 +75,15 @@ impl Relay {
             if let Some(list) = page["messages"].as_array() {
                 out.extend(list.iter().filter_map(|m| m.get("envelope").cloned()));
             }
-            let next = page["next"].as_i64().filter(|n| *n > after);
-            match next {
-                Some(n) if page["more"].as_bool() == Some(true) => after = n,
-                _ => return Ok(out),
+            if page["more"].as_bool() != Some(true) {
+                return Ok(out);
             }
+            after = page["next"]
+                .as_i64()
+                .filter(|n| *n > after)
+                .ok_or_else(|| self.incomplete())?;
         }
-        Ok(out)
+        Err(self.incomplete())
     }
 
     /// Add one envelope to `room`.
@@ -104,6 +106,13 @@ impl Relay {
             self.base,
             text.chars().take(300).collect::<String>()
         )))
+    }
+
+    fn incomplete(&self) -> OrgError {
+        OrgError::Relay(format!(
+            "the relay at {} did not return the whole room; try again",
+            self.base
+        ))
     }
 
     fn failed(&self, e: &reqwest::Error) -> OrgError {

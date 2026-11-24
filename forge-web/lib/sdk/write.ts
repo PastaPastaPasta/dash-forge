@@ -40,6 +40,7 @@ import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite, refreshSt
 import { currentSpendAction } from './spend-scope'
 import { setWritePhase, trackWrite } from './write-progress'
 import { isNonceSpent, nonceTip } from './nonce'
+import { sameFields } from '../org/util'
 
 export type { CostPreview } from './cost'
 
@@ -2016,8 +2017,25 @@ export interface PresignedWrite {
   readonly action: 'create' | 'replace' | 'delete'
   /** The revision a replace writes. */
   readonly revision?: bigint
+  /** The fields a replace writes: a competing edit at the same revision is not this one. */
+  readonly data?: Readonly<Record<string, unknown>>
   readonly nonce: bigint
   readonly confirmTimeoutMs?: number
+}
+
+/**
+ * Whether a replace is on Platform: the document is at its revision with its fields, or already
+ * past it and its nonce is spent. A competing edit at the same revision is not this replace.
+ */
+export async function replaceLanded(
+  revision: bigint,
+  stored: Readonly<Record<string, unknown>>,
+  w: { readonly revision?: bigint; readonly data?: Readonly<Record<string, unknown>> },
+  nonceSpent: () => Promise<boolean>,
+): Promise<boolean> {
+  const want = w.revision ?? 0n
+  if (revision === want) return w.data === undefined || sameFields(w.data, stored)
+  return revision > want && (await nonceSpent())
 }
 
 /**
@@ -2036,9 +2054,10 @@ export function broadcastPresigned(sdk: EvoSDK, st: StateTransition, w: Presigne
   const confirmTimeoutMs = w.confirmTimeoutMs ?? 30_000
   const there = async (): Promise<boolean> => {
     if (w.action === 'delete') return definitelyAbsent(sdk, w.contractId, w.documentType, w.documentId)
-    const doc = (await getDocument(sdk, w.contractId, w.documentType, w.documentId).catch(() => null)) as { revision?: bigint } | null
+    const doc = (await getDocument(sdk, w.contractId, w.documentType, w.documentId).catch(() => null)) as { revision?: bigint; toObject?: () => Record<string, unknown> } | null
     if (doc === null || doc === undefined) return false
-    return w.action === 'create' || (doc.revision ?? 0n) >= (w.revision ?? 0n)
+    if (w.action === 'create') return true
+    return replaceLanded(doc.revision ?? 0n, doc.toObject?.() ?? {}, w, () => nonceSpent(sdk, w.identityId, w.contractId, w.nonce))
   }
   const landed = (ms: number): Promise<boolean> => pollUntil(there, ms)
   return serialized(w.identityId, () =>

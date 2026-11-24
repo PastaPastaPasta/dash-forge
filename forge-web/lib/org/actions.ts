@@ -5,7 +5,8 @@ import type { ForgeIds } from '../deployments'
 import { DOC, type RepoRef } from '../repo/contract'
 import { descriptionProblem, readTopicDocIds, repoEditChanges, topicChanges, topicDocData, topicsProblem, type RepoDocEdit } from '../repo/settings'
 import { contractOf } from '../repo/source'
-import { checkRepoInput, firstConfigData, membershipData, normalizeRepoName, planMemberGrant, planMemberRevoke, planRoleChange, repoCreateData, type CreateRepoInput } from '../repo/writes'
+import { checkRepoInput, firstConfigData, membershipData, normalizeRepoName, planMemberGrant, planMemberRevoke, planRoleChange, refuseMemberChangeWithEnvironments, repoCreateData, type CreateRepoInput } from '../repo/writes'
+import { hasMembersKey } from '../repo/members-writes'
 import { ROLE_LABEL } from '../rules/roles'
 import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof } from '../sdk'
@@ -46,19 +47,34 @@ export async function newRepoRequest(sdk: EvoSDK, forge: ForgeIds, orgId: string
   }
 }
 
+/**
+ * An organization can't change the members of a repository with members-only content or
+ * environments yet: those changes re-share keys and re-save environments, which a request does
+ * not carry. Refused before anything is requested.
+ */
+async function refuseKeyedMemberChange(sdk: EvoSDK, repo: RepoRef): Promise<void> {
+  if (repo.visibility !== 'public' || (await hasMembersKey(sdk, repo))) {
+    throw new Error(`${repo.name} has members-only content, and an organization can't change its members yet`)
+  }
+  await refuseMemberChangeWithEnvironments(sdk, repo)
+}
+
 export async function grantRequest(sdk: EvoSDK, repo: RepoRef, memberId: string, role: Role): Promise<CreateRequestInput | null> {
+  await refuseKeyedMemberChange(sdk, repo)
   const plan = await planMemberGrant(sdk, repo, memberId, role)
   if (plan.heldId !== null) return null
   return { title: `Give ${ROLE_LABEL[role]} access to ${repo.name}`, specs: [{ action: 'create', contractId: repo.forge.core, documentType: plan.documentType, data: plan.data }] }
 }
 
 export async function revokeRequest(sdk: EvoSDK, repo: RepoRef, memberId: string, role: Role): Promise<CreateRequestInput | null> {
+  await refuseKeyedMemberChange(sdk, repo)
   const plan = await planMemberRevoke(sdk, repo, memberId, role)
   if (plan === null) return null
   return { title: `Remove ${ROLE_LABEL[role]} access to ${repo.name}`, specs: [{ action: 'delete', contractId: repo.forge.core, documentType: plan.documentType, documentId: plan.documentId }] }
 }
 
 export async function changeRoleRequest(sdk: EvoSDK, repo: RepoRef, memberId: string, from: Role, to: Role): Promise<CreateRequestInput> {
+  await refuseKeyedMemberChange(sdk, repo)
   const { revoke, grant } = await planRoleChange(sdk, repo, memberId, from, to)
   return {
     title: `Change access to ${ROLE_LABEL[to]} on ${repo.name}`,

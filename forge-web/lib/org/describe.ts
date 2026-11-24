@@ -2,6 +2,7 @@ import { base58Encode } from '../auth/base58'
 import { ROLE_LABEL, writerRoleOf } from '../rules/roles'
 import type { DecodedTransition } from './transition'
 import { isAllowed } from './transition'
+import { sameValue } from './util'
 
 export interface DescribeNames {
   readonly org: string
@@ -27,14 +28,10 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
 const plain = (v: unknown): unknown =>
   v instanceof Uint8Array ? (v.length === 32 ? base58Encode(v) : Array.from(v)) : typeof v === 'bigint' || typeof v === 'number' ? String(v) : Array.isArray(v) ? v.map(plain) : v
 
-function same(a: unknown, b: unknown): boolean {
-  return JSON.stringify(plain(a)) === JSON.stringify(plain(b))
-}
-
 /** What a replace changes against the stored document: every field, so nothing is left unsaid. */
 function changes(next: Record<string, unknown>, stored: Record<string, unknown> | null | undefined, repo: (id: string) => string | null): string {
-  if (!stored) return 'its current version could not be read'
-  const keys = [...new Set([...Object.keys(next), ...Object.keys(stored)])].filter((k) => !k.startsWith('$') && !same(next[k], stored[k]))
+  if (!stored) return `its current version could not be read; it would ${changes(next, {}, repo)}`
+  const keys = [...new Set([...Object.keys(next), ...Object.keys(stored)])].filter((k) => !k.startsWith('$') && !sameValue(next[k], stored[k]))
   if (keys.length === 0) return 'no change'
   return keys
     .map((k) => {
@@ -81,6 +78,7 @@ export function describeTransition(d: DecodedTransition, names: DescribeNames): 
       return `Set up ${repoName} with default branch ${branch}${protectedPatterns ? ', protected' : ''}`
     }
     case 'profile:create':
+      return `Create the organization's profile: ${changes(d.data, {}, names.repo)}`
     case 'profile:replace': {
       return `Update the organization's profile: ${changes(d.data, names.stored, names.repo)}`
     }

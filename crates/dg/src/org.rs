@@ -471,11 +471,23 @@ async fn find_request(ctx: &Ctx, id: &str) -> Result<(Org, Request)> {
                 .into(),
         );
     }
+    let mut unread = Vec::new();
     for record in orgs {
-        let org = Org::load(record).await?;
-        if let Ok(req) = org.find(id) {
-            return Ok((org, req));
+        let label = record.label.clone();
+        match Org::load(record).await {
+            Ok(org) => {
+                if let Ok(req) = org.find(id) {
+                    return Ok((org, req));
+                }
+            }
+            Err(e) => unread.push(format!("{}: {}", line(&label), line(&e.to_string()))),
         }
+    }
+    if !unread.is_empty() {
+        anyhow::bail!(
+            "request {id} was not found, and these organizations could not be read: {}",
+            unread.join("; ")
+        );
     }
     Err(crate::errors::not_found(
         format!("no connected organization has a request {id}"),
@@ -672,6 +684,13 @@ async fn post_request(
     planned: core_org::actions::Planned,
     extra: Value,
 ) -> Result<()> {
+    ctx.confirm_or_cancel(&format!(
+        "Ask {} ({} of {}) to: {}? It posts a request with your signature; the organization pays once enough members sign.",
+        line(&org.record.label),
+        org.record.threshold,
+        org.record.members.len(),
+        line(&planned.title)
+    ))?;
     let req = org
         .propose(client, seed, keys, &planned.title, planned.writes)
         .await?;

@@ -45,6 +45,8 @@ pub struct CeremonyResult {
 pub struct Ceremony {
     pub cid: String,
     pub config: Config,
+    /// When the config envelope was posted; orders ceremonies (newest first) as web does.
+    pub config_at: String,
     accepts: BTreeSet<u32>,
     raw_commits: BTreeMap<u32, Vec<String>>,
     raw_reveals: BTreeMap<u32, Vec<Value>>,
@@ -356,6 +358,7 @@ fn apply(state: &mut RoomState, m: &Message) {
             state.ceremonies.entry(cid.clone()).or_insert(Ceremony {
                 cid,
                 config,
+                config_at: m.at.clone(),
                 accepts: BTreeSet::new(),
                 raw_commits: BTreeMap::new(),
                 raw_reveals: BTreeMap::new(),

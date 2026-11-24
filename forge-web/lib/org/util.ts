@@ -65,3 +65,27 @@ export function memo<A extends unknown[], R>(fn: (...args: A) => R, keyOf: (...a
     return value
   }
 }
+
+const comparable = (v: unknown): unknown =>
+  v instanceof Uint8Array
+    ? `0x${bytesToHex(v)}`
+    : typeof v === 'bigint' || typeof v === 'number'
+      ? String(v)
+      : Array.isArray(v)
+        ? v.map(comparable)
+        : isObject(v)
+          ? Object.fromEntries(
+              Object.keys(v)
+                .sort()
+                .map((k) => [k, comparable(v[k])]),
+            )
+          : v
+
+/** Equal by value: bytes by content, integers whatever their width. */
+export const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(comparable(a)) === JSON.stringify(comparable(b))
+
+/** Whether two documents carry the same fields, system (`$`) fields aside. */
+export function sameFields(a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)].filter((k) => !k.startsWith('$')))
+  return [...keys].every((k) => sameValue(a[k], b[k]))
+}

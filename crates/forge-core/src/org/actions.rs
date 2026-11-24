@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::create::{config_props, owner_maintainer_props, repo_props, validated, CreateRepoOpts};
+use crate::create::{
+    config_props, owner_maintainer_props, protect_problem, repo_props, validated, CreateRepoOpts,
+};
 use crate::error::{Error, Result};
 use crate::members::{
     check_grant, consent_doc, doc_type, member_doc_props, owner_row_refusal, scoped, MemberReader,
@@ -104,6 +106,9 @@ pub async fn repo_create(
         members_only: false,
         ..opts.clone()
     })?;
+    if let Some(problem) = protect_problem(&opts) {
+        return Err(problem);
+    }
     let forge = forge_of(client)?;
     let owner_id = platform::decode_identifier(&org.id())?;
     if find_named(client, &forge, owner_id, &opts.name)
@@ -150,10 +155,23 @@ pub async fn repo_create(
     })
 }
 
+/// An organization can't change the members of a repository with members-only content or
+/// environments yet: those changes re-share keys and re-save environments, which a request
+/// does not carry.
 async fn refuse_keyed(client: &PlatformClient, repo: &RepoRef, label: &str) -> Result<()> {
     if crate::keyring::has_members_key(client, repo).await? {
         return Err(Error::Config(format!(
             "{label} has members-only content, and an organization can't change its members yet"
+        )));
+    }
+    let environments = crate::repo::RepoService::reader(client)
+        .read_pack_manifests(repo)
+        .await?
+        .iter()
+        .any(|m| m.kind == u64::from(crate::pack::KIND_ENV_SNAPSHOT));
+    if environments {
+        return Err(Error::Config(format!(
+            "{label} has environments, and an organization can't change its members yet"
         )));
     }
     Ok(())

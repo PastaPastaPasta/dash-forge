@@ -22,7 +22,11 @@ export function isNonceSpent(current: bigint, nonce: bigint): boolean {
   return (current & (1n << (behind + 39n))) === 0n
 }
 
-/** Whether `nonce` is further ahead of the tip than Drive accepts (more than 24). */
+/**
+ * Whether `nonce` is further ahead of the tip than Drive accepts (more than 24). With no nonce yet
+ * (a contract the identity never wrote to), Drive refuses 24 and up.
+ */
 export function isNonceTooFar(current: bigint, nonce: bigint): boolean {
+  if (current === 0n) return nonce >= MAX_MISSING_REVISIONS
   return nonce > nonceTip(current) + MAX_MISSING_REVISIONS
 }

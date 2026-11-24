@@ -570,9 +570,14 @@ impl NonceState {
         super::nonce_is_spent(self.0, nonce, Identifier::default())
     }
 
-    /// Whether `nonce` is further ahead than Platform accepts.
+    /// Whether `nonce` is further ahead than Platform accepts. With no nonce yet (a contract the
+    /// identity never wrote to), Drive refuses 24 and up.
     pub fn too_far(self, nonce: u64) -> bool {
-        nonce > self.tip().saturating_add(MAX_NONCE_AHEAD)
+        if self.0 == 0 {
+            nonce >= MAX_NONCE_AHEAD
+        } else {
+            nonce > self.tip().saturating_add(MAX_NONCE_AHEAD)
+        }
     }
 }
 
@@ -893,6 +898,7 @@ mod tests {
         let skipped_one_behind = NonceState((1u64 << 40) + 10);
         assert!(!skipped_one_behind.spent(9));
         assert!(!n.too_far(34) && n.too_far(35));
+        assert!(!NonceState(0).too_far(23) && NonceState(0).too_far(24));
         let w = build("repo", repo_props(), ORG).await;
         let mut d = decode_unsigned(&w.unsigned).unwrap();
         d.nonce = 9;

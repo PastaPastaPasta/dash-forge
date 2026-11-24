@@ -45,8 +45,14 @@ export interface OrgRequest {
   readonly malformed: boolean
 }
 
+/**
+ * A request is one proposer's proposals sharing a group, so nobody else can break a member's
+ * request by reusing its group: the earliest proposer keeps the group as the request id, a later
+ * one gets `<group>-<its key prefix>`.
+ */
 export function groupRequests(state: RoomState, cid: string): OrgRequest[] {
   const groups = new Map<string, { note: ForgeNote; p: Proposal }[]>()
+  const first = new Map<string, { at: string; from: string }>()
   const out: OrgRequest[] = []
   for (const p of Object.values(state.proposals)) {
     if (!p.body.requirements.some((r) => r.cid === cid)) continue
@@ -55,18 +61,21 @@ export function groupRequests(state: RoomState, cid: string): OrgRequest[] {
       out.push({ id: p.id, title: null, forge: false, proposals: [p], from: p.from, at: p.at, malformed: false })
       continue
     }
-    const list = groups.get(note.group) ?? []
+    const key = `${note.group}\u0000${p.from}`
+    const list = groups.get(key) ?? []
     list.push({ note, p })
-    groups.set(note.group, list)
+    groups.set(key, list)
+    const seen = first.get(note.group)
+    if (!seen || p.at < seen.at || (p.at === seen.at && p.from < seen.from)) first.set(note.group, { at: p.at, from: p.from })
   }
-  for (const [id, list] of groups) {
+  for (const list of groups.values()) {
     list.sort((a, b) => a.note.seq - b.note.seq || a.p.id.localeCompare(b.p.id))
-    const first = list[0]!
-    const of = first.note.of
-    const malformed =
-      list.length !== of ||
-      list.some((x, i) => x.note.seq !== i || x.note.of !== of || x.p.from !== first.p.from)
-    out.push({ id, title: first.note.title, forge: true, proposals: list.map((x) => x.p), from: first.p.from, at: first.p.at, malformed })
+    const head = list[0]!
+    const group = head.note.group
+    const id = first.get(group)?.from === head.p.from ? group : `${group}-${head.p.from.slice(0, 8)}`
+    const of = head.note.of
+    const malformed = list.length !== of || list.some((x, i) => x.note.seq !== i || x.note.of !== of)
+    out.push({ id, title: head.note.title, forge: true, proposals: list.map((x) => x.p), from: head.p.from, at: list.map((x) => x.p.at).reduce((a, b) => (b < a ? b : a)), malformed })
   }
   return out.sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id))
 }
@@ -78,10 +87,12 @@ export interface ProposalFacts {
   readonly nonce: bigint | null
   readonly contractId: string | null
   readonly onChain: boolean
+  /** Reported executed by a member, but its nonce is still free: it has not landed. */
+  readonly unproven?: boolean
 }
 
 export function proposalDone(p: Proposal, facts: ProposalFacts | undefined): boolean {
-  return p.status === 'executed' || facts?.onChain === true
+  return (p.status === 'executed' && facts?.unproven !== true) || facts?.onChain === true
 }
 
 export function requestStatus(

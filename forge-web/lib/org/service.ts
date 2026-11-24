@@ -6,7 +6,7 @@ import type { ForgeIds } from '../deployments'
 import { rc1WriteProblem } from '../layout'
 import { DOC } from '../repo/contract'
 import { isNonceSpent, isNonceTooFar, nonceTip } from '../sdk/nonce'
-import { broadcastPresigned } from '../sdk/write'
+import { broadcastPresigned, replaceLanded } from '../sdk/write'
 import { resolveDpnsName } from '../view/dpns'
 import { shortIdentity } from '../view/format'
 import { participantIndex } from './ceremony'
@@ -197,7 +197,9 @@ async function writtenOnChain(sdk: EvoSDK, d: DecodedTransition): Promise<boolea
     const doc = await storedDoc(sdk, d.contractId, d.documentType, d.documentId)
     if (d.action === 'delete') return doc === null
     if (doc === null) return false
-    return d.action === 'create' || doc.revision >= (d.revision ?? 0n)
+    if (d.action === 'create') return true
+    // Called once the nonce is spent.
+    return await replaceLanded(doc.revision, doc.data, { revision: d.revision ?? 0n, data: d.data }, async () => true)
   } catch {
     return false
   }
@@ -221,9 +223,10 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
       const d = decoded.get(p.id) ?? null
       const current = d ? currentNonce(d.contractId) : undefined
       const onChain = p.status !== 'executed' && d !== null && current !== undefined && isNonceSpent(current, d.nonce) ? await writtenOnChain(sdk, d) : false
-      const settled = onChain || p.status === 'executed'
+      const unproven = p.status === 'executed' && d !== null && current !== undefined && !isNonceSpent(current, d.nonce)
+      const settled = onChain || (p.status === 'executed' && !unproven)
       const problems = settled ? [] : d === null ? ['the transition does not decode'] : reviewDecoded(d, p.body, ctx)
-      facts.set(p.id, { reviewProblems: problems, nonce: d?.nonce ?? null, contractId: d?.contractId ?? null, onChain })
+      facts.set(p.id, { reviewProblems: problems, nonce: d?.nonce ?? null, contractId: d?.contractId ?? null, onChain, unproven })
     }
   }
   const names = new Map<string, string>()
@@ -305,11 +308,18 @@ export function requestLink(orgId: string, requestId: string): string {
   return `/org/?id=${encodeURIComponent(orgId)}&request=${encodeURIComponent(requestId)}`
 }
 
-/** The nonces per contract that requests still collecting or ready hold. */
-function openNonces(view: OrgView | null): Map<string, Set<bigint>> {
+/**
+ * The nonces per contract that requests not yet done or expired hold (an invalid one too: a
+ * failed nonce read marks it so). A request enough members declined that it can never be signed
+ * holds none.
+ */
+function openNonces(view: OrgView): Map<string, Set<bigint>> {
   const held = new Map<string, Set<bigint>>()
-  for (const r of view?.requests ?? []) {
-    if (r.status !== 'collecting' && r.status !== 'ready') continue
+  const members = new Set(view.record.members.map((m) => m.authPub))
+  for (const r of view.requests) {
+    if (r.status === 'done' || r.status === 'expired') continue
+    const declined = new Set(r.request.proposals.flatMap((p) => Object.keys(p.rejections)).filter((k) => members.has(k)))
+    if (declined.size > members.size - r.needed) continue
     for (const p of r.proposals) {
       const d = p.decoded
       if (!d) continue
@@ -437,12 +447,12 @@ export async function finishRequest(sdk: EvoSDK, view: OrgView, request: Request
   for (const [i, p] of request.request.proposals.entries()) {
     const pv = request.proposals[i] as ProposalView
     const d = pv.decoded
-    if (p.status === 'executed' || d === null) continue
+    if (d === null || (p.status === 'executed' && pv.done)) continue
     if (pv.done) {
       await postEnvelopes(record.relay, record.room, [recordBroadcast(unlocked.keys, record.room, p.id, { ok: true, confirmed: true })])
       continue
     }
-    if (p.status !== 'ready') break
+    if (p.status !== 'ready' && p.status !== 'executed') break
     const signature = combine(state, p.id)[key]
     assert(signature, 'the shares do not combine')
     try {
@@ -453,7 +463,7 @@ export async function finishRequest(sdk: EvoSDK, view: OrgView, request: Request
         documentType: d.documentType,
         documentId: d.documentId,
         action: d.action as 'create' | 'replace' | 'delete',
-        ...(d.revision !== null ? { revision: d.revision } : {}),
+        ...(d.revision !== null ? { revision: d.revision, data: d.data } : {}),
         nonce: d.nonce,
       })
     } catch (e) {
