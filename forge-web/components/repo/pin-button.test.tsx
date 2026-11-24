@@ -118,7 +118,7 @@ describe('Pin on a public repo', () => {
     publicPin({ profiles: [], profile: null }); await render(); await open()
     const setup = [...host.querySelectorAll('a')].find((a) => a.textContent === 'Set up storage')
     expect(setup?.getAttribute('href')).toBe('/settings/storage/')
-    expect([...host.querySelectorAll('a')].find((a) => a.textContent === 'Self-host guide')?.getAttribute('href')).toMatch(/\/blob\/master\/docs\/self-host\.md$/)
+    expect([...host.querySelectorAll('a')].find((a) => a.textContent === 'Self-host guide')?.getAttribute('href')).toMatch(/\/blob\/master\/docs\/guides\/self-host-backend\.md$/)
     expect([...host.querySelectorAll('[role="dialog"] button')].map((b) => b.textContent?.trim())).not.toContain('Pin')
   })
 
