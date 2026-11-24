@@ -68,7 +68,7 @@ describe('signInMethods', () => {
     const rest = ['existing:passkey', 'existing:import', 'existing:dg']
 
     it('mainnet', () => {
-      expect(order({ network: 'mainnet', ...offered })).toEqual(['lead:wallet*', 'new:create', ...rest, 'advanced:raw-key'])
+      expect(order({ network: 'mainnet', ...offered })).toEqual(['lead:wallet*', 'new:get-dashpay', ...rest, 'other:create', 'advanced:raw-key'])
       expect(order({ network: 'mainnet', ...notOffered })).toEqual(['new:create*', ...rest, 'advanced:raw-key'])
       expect(order({ network: 'mainnet', ...unchecked })).toEqual(['new:create*', ...rest, 'existing:wallet', 'advanced:raw-key'])
     })
@@ -87,7 +87,7 @@ describe('signInMethods', () => {
     it('the recovery phrase or identity file, dg, raw key paste and in-page create stay on every network', () => {
       for (const network of ['mainnet', 'testnet', 'devnet'] as const) {
         for (const ctx of [offered, notOffered, unchecked]) {
-          expect(order({ network, ...ctx }).map((m) => m.replace(/\*$/, ''))).toEqual(expect.arrayContaining(['new:create', 'existing:import', 'existing:dg', 'advanced:raw-key']))
+          expect(order({ network, ...ctx }).map((m) => m.replace(/^\w+:|\*$/g, ''))).toEqual(expect.arrayContaining(['create', 'import', 'dg', 'raw-key']))
         }
       }
     })
