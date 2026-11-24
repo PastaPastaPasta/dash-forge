@@ -2023,6 +2023,75 @@ async function replaceDocumentUnlocked(
   return { result: { documentId, revision: next, cost, actualCredits: null }, spend: spend('replace') }
 }
 
+/** What a transition signed elsewhere (an organization's threshold signature) writes. */
+export interface PresignedWrite {
+  readonly identityId: string
+  readonly contractId: string
+  readonly documentType: string
+  readonly documentId: string
+  readonly action: 'create' | 'replace' | 'delete'
+  /** The revision a replace writes. */
+  readonly revision?: bigint
+  readonly nonce: bigint
+  readonly confirmTimeoutMs?: number
+}
+
+/**
+ * Broadcast a transition that is already signed, and confirm it with a proved read: a create or
+ * replace is there (a replace at `revision` or later), a delete is gone. Resolves once confirmed;
+ * a refusal throws {@link ConsensusRefusal}, an unseen write {@link UnconfirmedWriteError}. A
+ * rebroadcast of the same bytes is the same transition, so this is safe to run again.
+ */
+export function broadcastPresigned(sdk: EvoSDK, st: StateTransition, w: PresignedWrite): Promise<void> {
+  try {
+    assertWritesAllowed()
+  } catch (e) {
+    return Promise.reject(e)
+  }
+  followSdkVersion(sdk)
+  const confirmTimeoutMs = w.confirmTimeoutMs ?? 30_000
+  const there = async (): Promise<boolean> => {
+    if (w.action === 'delete') return definitelyAbsent(sdk, w.contractId, w.documentType, w.documentId)
+    const doc = (await getDocument(sdk, w.contractId, w.documentType, w.documentId).catch(() => null)) as { revision?: bigint } | null
+    if (doc === null || doc === undefined) return false
+    return w.action === 'create' || (doc.revision ?? 0n) >= (w.revision ?? 0n)
+  }
+  const landed = (ms: number): Promise<boolean> => pollUntil(there, ms)
+  return serialized(w.identityId, () =>
+    trackWrite(() =>
+      wrote(
+        sdk,
+        (async () => {
+          if (await there()) return
+          try {
+            await facades(sdk).stateTransitions.broadcastStateTransition(st)
+          } catch (e) {
+            const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
+            if (refusal) throw refusal.atBroadcast()
+            setWritePhase('rechecking')
+            if (await landed(confirmTimeoutMs)) return
+            throw isNonceUsedError(e) || isAlreadyExistsError(e) ? new UnconfirmedWriteError(w.documentId) : e
+          }
+          let outcome = await awaitOutcome(sdk, st, w.contractId, false)
+          if (outcome === 'unknown') {
+            outcome = await settleUnanswered(
+              sdk,
+              st,
+              { identityId: w.identityId, contractId: w.contractId, nonce: w.nonce },
+              false,
+              landed,
+              async () => !(await there()),
+              confirmTimeoutMs,
+            ).then((o) => (o === 'lost' ? 'unknown' : o))
+          }
+          setWritePhase('rechecking')
+          if (!(await landed(confirmTimeoutMs))) throw new UnconfirmedWriteError(w.documentId)
+        })(),
+      ),
+    ),
+  )
+}
+
 /** Read an identity's credit balance (for the auth surface / cost affordability checks). */
 export async function readIdentityBalance(sdk: EvoSDK, identityId: string): Promise<bigint> {
   const identity = await facades(sdk).identities.fetch(identityId)
