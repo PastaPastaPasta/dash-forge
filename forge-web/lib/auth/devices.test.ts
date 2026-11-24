@@ -91,6 +91,10 @@ describe('Devices & keys', () => {
     const budget = { totalBudget: 100n }
     const kind = (o: Parameters<typeof key>[1]): string => keyKindOf(key(1, o), forge)
     expect(kind({ bounds: { $type: 'contractGroup', id: 'G' }, ...budget })).toBe('forge-limited')
+    // forge-core alone with a budget: a code-only CI key (`dg auth export --new-key --scope core`)
+    expect(kind({ bounds: { $type: 'singleContract', id: 'C' }, ...budget })).toBe('forge-limited')
+    expect(kind({ bounds: { $type: 'singleContract', id: 'C' } })).toBe('wallet')
+    expect(kind({ bounds: { $type: 'singleContract', id: 'L' }, ...budget })).toBe('wallet')
     expect(kind(undefined)).toBe('wallet')
     expect(kind({ bounds: { $type: 'singleContract', id: 'L' } })).toBe('wallet')
     expect(kind({ bounds: { $type: 'contractGroup', id: 'G' } })).toBe('wallet')
@@ -108,8 +112,9 @@ describe('Devices & keys', () => {
     expect(t()).toBe('any contract')
     expect(t({ bounds: { $type: 'contractGroup', id: 'G' } })).toBe('Forge contract group')
     expect(t({ bounds: { $type: 'contractGroup', id: 'G2' } })).toBe('contract group G2')
-    expect(t({ bounds: { $type: 'singleContract', id: 'L' } })).toBe('forge-collab')
-    expect(t({ bounds: { $type: 'singleContract', id: 'X' } })).toBe('contract X')
+    expect(t({ bounds: { $type: 'singleContract', id: 'C' } })).toBe('forge-core only')
+    expect(t({ bounds: { $type: 'singleContract', id: 'L' } })).toBe('forge-collab only')
+    expect(t({ bounds: { $type: 'singleContract', id: 'X' } })).toBe('contract X only')
     expect(t({ bounds: { $type: 'documentType', id: 'C', documentTypeName: 'checkRun' } })).toBe('checkRun records of forge-core')
   })
 

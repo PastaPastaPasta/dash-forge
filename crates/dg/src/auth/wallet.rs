@@ -746,7 +746,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let spec = LimitedKeySpec {
         budget_credits: grant.total_budget,
         expires_at_ms: grant.expires_at_ms,
-        group: forge.group.clone(),
+        bounds: forge_core::platform::identity::LimitedBounds::Group(forge.group.clone()),
     };
     let identity = verify_grant(&client, ctx, &grant, &spec, renewing).await?;
     let names = client

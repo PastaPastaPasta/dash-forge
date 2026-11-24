@@ -369,8 +369,29 @@ pub struct LimitedKeySpec {
     pub budget_credits: u64,
     /// When it stops signing (Unix ms).
     pub expires_at_ms: u64,
-    /// The contract group it is bound to (base58).
-    pub group: String,
+    /// What it may sign for.
+    pub bounds: LimitedBounds,
+}
+
+/// What a Forge limited key is bound to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LimitedBounds {
+    /// The Forge contract group (base58): every Forge contract
+    /// (`ContractBounds::ContractGroup`).
+    Group(String),
+    /// One contract (base58), every document type of it (`ContractBounds::SingleContract`):
+    /// forge-core for a key that only pushes code, releases and labels.
+    Contract(String),
+}
+
+impl LimitedKeySpec {
+    /// The contract group the key is bound to, if it is group-bound.
+    pub fn group(&self) -> Option<&str> {
+        match &self.bounds {
+            LimitedBounds::Group(g) => Some(g),
+            LimitedBounds::Contract(_) => None,
+        }
+    }
 }
 
 fn key_v0(
@@ -427,11 +448,18 @@ fn bounded_public_key(
 }
 
 fn limited_public_key(id: u32, key: &FreshKey, spec: &LimitedKeySpec) -> Result<IdentityPublicKey> {
-    let group = parse_id(&spec.group, "contract group id")?;
+    let bounds = match &spec.bounds {
+        LimitedBounds::Group(g) => ContractBounds::ContractGroup {
+            id: parse_id(g, "contract group id")?,
+        },
+        LimitedBounds::Contract(c) => ContractBounds::SingleContract {
+            id: parse_id(c, "contract id")?,
+        },
+    };
     Ok(bounded_public_key(
         id,
         key,
-        ContractBounds::ContractGroup { id: group },
+        bounds,
         spec.budget_credits,
         spec.expires_at_ms,
     ))
@@ -1065,18 +1093,22 @@ impl LoadedIdentity {
     }
 
     /// Whether key `key_id` is a live Forge limited key: AUTHENTICATION / HIGH, bound to a
-    /// contract group, with a budget. Only such keys are renewed over or disabled by `dg auth`
-    /// without `--force`.
-    pub fn is_limited_key(&self, key_id: u32) -> bool {
+    /// contract group or to forge-core alone (`core`, the network's forge-core id; a
+    /// `--scope core` CI key), with a budget. Only such keys are renewed over or disabled by
+    /// `dg auth` without `--force`.
+    pub fn is_limited_key(&self, key_id: u32, core: Option<&str>) -> bool {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
         self.0.public_keys().get(&key_id).is_some_and(|k| {
             !k.is_disabled()
                 && k.purpose() == Purpose::AUTHENTICATION
                 && k.security_level() == SecurityLevel::HIGH
-                && matches!(
-                    k.contract_bounds(),
-                    Some(ContractBounds::ContractGroup { .. })
-                )
+                && match k.contract_bounds() {
+                    Some(ContractBounds::ContractGroup { .. }) => true,
+                    Some(ContractBounds::SingleContract { id }) => {
+                        core.is_some_and(|c| id.to_string(Encoding::Base58) == c)
+                    }
+                    _ => false,
+                }
                 && k.total_budget().is_some()
         })
     }
@@ -1094,6 +1126,15 @@ impl LoadedIdentity {
     pub fn key_group(&self, key_id: u32) -> Option<String> {
         match self.0.public_keys().get(&key_id)?.contract_bounds()? {
             ContractBounds::ContractGroup { id } => Some(id.to_string(Encoding::Base58)),
+            _ => None,
+        }
+    }
+
+    /// The one whole contract key `key_id` is bound to (base58), if it is bound to one
+    /// contract (`SingleContract`, not one document type of it).
+    pub fn key_contract(&self, key_id: u32) -> Option<String> {
+        match self.0.public_keys().get(&key_id)?.contract_bounds()? {
+            ContractBounds::SingleContract { id } => Some(id.to_string(Encoding::Base58)),
             _ => None,
         }
     }
@@ -1215,7 +1256,7 @@ impl LoadedIdentity {
     }
 
     /// Check that key `key_id` is what a Forge limited key must be: live, AUTHENTICATION /
-    /// HIGH, bound to `spec.group`, with exactly `spec`'s budget and expiry, and controlled by
+    /// HIGH, bound to `spec.bounds`, with exactly `spec`'s budget and expiry, and controlled by
     /// `wif`.
     pub fn check_limited_key(
         &self,
@@ -1224,13 +1265,19 @@ impl LoadedIdentity {
         network: &Network,
         spec: &LimitedKeySpec,
     ) -> Result<()> {
-        let bound = self.key_group(key_id).as_deref() == Some(spec.group.as_str());
+        let unbound = match &spec.bounds {
+            LimitedBounds::Group(g) => (self.key_group(key_id).as_deref() != Some(g.as_str()))
+                .then_some("not bound to the dash-forge contract group"),
+            LimitedBounds::Contract(c) => (self.key_contract(key_id).as_deref()
+                != Some(c.as_str()))
+            .then_some("not bound to the requested contract"),
+        };
         self.check_budgeted_key(
             key_id,
             wif,
             network,
             (spec.budget_credits, spec.expires_at_ms),
-            (!bound).then_some("not bound to the dash-forge contract group"),
+            unbound,
             "the stored private key",
         )
     }
@@ -1371,7 +1418,7 @@ mod tests {
         let spec = LimitedKeySpec {
             budget_credits: 5_000_000_000,
             expires_at_ms: 1_000,
-            group: group.to_string(Encoding::Base58),
+            bounds: LimitedBounds::Group(group.to_string(Encoding::Base58)),
         };
         wallet
             .check_limited_key(6, w.expose(), &testnet(), &spec)
@@ -1401,6 +1448,84 @@ mod tests {
             key(4, KeyType::ECDSA_HASH160, vec![0; 20], None),
         ]);
         assert_eq!(other.key_id_for(w.expose(), &testnet()), None);
+    }
+
+    /// `--scope core`: a limited key bound to forge-core alone (`SingleContract`), with its
+    /// budget and expiry, checks out against that spec and counts as a Forge limited key; it
+    /// is not what a group-bound spec asks for.
+    #[test]
+    fn a_core_scoped_limited_key_is_bound_to_one_contract() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+        use dash_sdk::dpp::identity::v0::IdentityV0;
+        let core = Identifier::from([3u8; 32]).to_string(Encoding::Base58);
+        let group = Identifier::from([9u8; 32]).to_string(Encoding::Base58);
+        let spec = LimitedKeySpec {
+            budget_credits: 50_000_000_000,
+            expires_at_ms: 2_000,
+            bounds: LimitedBounds::Contract(core.clone()),
+        };
+        assert_eq!(spec.group(), None);
+        let fresh = FreshKey::generate(&testnet());
+        let pk = limited_public_key(6, &fresh, &spec).unwrap();
+        assert_eq!(
+            pk.contract_bounds(),
+            Some(&ContractBounds::SingleContract {
+                id: Identifier::from([3u8; 32])
+            })
+        );
+        assert_eq!(pk.purpose(), Purpose::AUTHENTICATION);
+        assert_eq!(pk.security_level(), SecurityLevel::HIGH);
+        assert_eq!(pk.total_budget(), Some(50_000_000_000));
+        assert_eq!(pk.expires_at(), Some(2_000));
+        let runner = doc_type_public_key(
+            7,
+            &FreshKey::generate(&testnet()),
+            &DocTypeKeySpec {
+                budget_credits: 1,
+                expires_at_ms: 2_000,
+                contract: core.clone(),
+                document_type: "checkRun".into(),
+            },
+        )
+        .unwrap();
+        let identity = LoadedIdentity(Identity::V0(IdentityV0 {
+            id: [7u8; 32].into(),
+            public_keys: [(6, pk), (7, runner)].into_iter().collect(),
+            balance: 0,
+            revision: 0,
+        }));
+        assert!(identity.is_limited_key(6, Some(&core)));
+        // bound to another contract (or with no forge-core to compare), it is not one
+        assert!(!identity.is_limited_key(6, Some("OTHER")));
+        assert!(!identity.is_limited_key(6, None));
+        assert!(
+            !identity.is_limited_key(7, Some(&core)),
+            "a runner key is not a limited key"
+        );
+        assert_eq!(identity.key_contract(6), Some(core.clone()));
+        assert_eq!(identity.key_group(6), None);
+        let wif = fresh.wif();
+        identity
+            .check_limited_key(6, wif.expose(), &testnet(), &spec)
+            .unwrap();
+        let grouped = LimitedKeySpec {
+            bounds: LimitedBounds::Group(group),
+            ..spec.clone()
+        };
+        assert!(identity
+            .check_limited_key(6, wif.expose(), &testnet(), &grouped)
+            .unwrap_err()
+            .to_string()
+            .contains("not bound to the dash-forge contract group"));
+        let other = LimitedKeySpec {
+            bounds: LimitedBounds::Contract(
+                Identifier::from([4u8; 32]).to_string(Encoding::Base58),
+            ),
+            ..spec
+        };
+        assert!(identity
+            .check_limited_key(6, wif.expose(), &testnet(), &other)
+            .is_err());
     }
 
     #[test]
