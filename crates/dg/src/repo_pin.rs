@@ -459,7 +459,7 @@ pub async fn unpin(ctx: &Ctx, repo: &str) -> Result<()> {
                 "✓ unpinned {} ({} removed)",
                 safe(&display),
                 plural(mine.len(), "record")
-            )
+            );
         },
     );
     Ok(())

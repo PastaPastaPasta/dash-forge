@@ -561,7 +561,7 @@ async fn copy_new_packs(
     }
     let groups =
         forge_core::fork::plan_manifests(parent_packs, roles, &std::collections::BTreeSet::new());
-    let copier = forge_core::own_copy::OwnCopy::new(
+    let own_copy = forge_core::own_copy::OwnCopy::new(
         svc,
         parent,
         roles.clone(),
@@ -573,7 +573,7 @@ async fn copy_new_packs(
         let Some(group) = groups.iter().find(|g| g[0].pack_hash == m.pack_hash) else {
             continue;
         };
-        match copier.copy(group).await {
+        match own_copy.copy(group).await {
             Ok((own, _)) => {
                 *m = forge_core::own_copy::with_own_first(m.clone(), &own);
                 copied += 1;
