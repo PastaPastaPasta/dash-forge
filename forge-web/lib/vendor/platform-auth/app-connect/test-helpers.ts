@@ -101,7 +101,7 @@ export async function buildAppConnectVectors() {
     request: {
       appEphemeralPubKey: bytesToHex(request.appEphemeralPubKey),
       bytes: bytesToHex(encodeAppConnectRequest(request)),
-      uri: buildAppConnectUri(request, 'devnet', callbackUrl),
+      uri: buildAppConnectUri(request, 'devnet', callbackUrl, 'dash-key'),
       appEphemeralPubKeyHash: bytesToHex(requestHash),
     },
     response: {
@@ -119,7 +119,7 @@ export async function buildAppConnectVectors() {
     },
     renewRequest: {
       bytes: bytesToHex(encodeAppConnectRequest(renew)),
-      uri: buildAppConnectUri(renew, 'testnet'),
+      uri: buildAppConnectUri(renew, 'testnet', undefined, 'dash-key'),
     },
   }
 }
