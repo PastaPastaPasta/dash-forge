@@ -14,6 +14,15 @@
     "range": {
       "type": "string"
     },
+    "comparedWith": {
+      "type": "string",
+      "enum": [
+        "base",
+        "tipBeforeMerge",
+        "baseNow"
+      ],
+      "description": "What the diff starts from: the base branch now (an open PR), the base tip its merge built on (a merged PR), or the base now when a merged PR's merge records no earlier tip."
+    },
     "diffAvailable": {
       "type": "boolean"
     },

@@ -531,7 +531,13 @@ cmd('pr suggestion apply', 'Suggested changes committed to the pull request\'s b
 PRSTATE = {'status': S, 'pr': I, 'via': ANY, 'transitionId': S, 'kind': ANY, 'draft': B, 'written': B, 'cost': COST}
 cmd('pr close', 'A pull request closed.', PRSTATE, ['status', 'pr'])
 cmd('pr reopen', 'A pull request reopened.', PRSTATE, ['status', 'pr'])
-cmd('pr diff', 'The pull request\'s diff.', {'pr': I, 'range': S, 'diffAvailable': B, 'diff': S}, ['pr', 'diff'])
+cmd('pr diff', 'The pull request\'s diff.', {
+    'pr': I, 'range': S,
+    'comparedWith': D('What the diff starts from: the base branch now (an open PR), the base tip its merge built on '
+                      '(a merged PR), or the base now when a merged PR\'s merge records no earlier tip.',
+                      E('base', 'tipBeforeMerge', 'baseNow')),
+    'diffAvailable': B, 'diff': S,
+}, ['pr', 'diff'])
 cmd('pr revert', 'A pull request that reverts a merged one, opened on a new branch.', {
     'status': E('created'), 'pr': D('The merged pull request reverted.', I),
     'number': D('The new pull request.', I), 'documentId': S, 'title': S, 'baseRef': S, 'headRef': S,

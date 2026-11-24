@@ -488,7 +488,7 @@ dg pr status   <owner>/project            # your current branch's PR, yours, and
 dg pr list     <owner>/project [--state open|closed|all] [--include-hidden]
 dg pr view     <owner>/project 7          # state, reviewers, approvals, reviews
 dg pr view     <owner>/project 7 --comments   # + threads under their file and line
-dg pr diff     <owner>/project 7          # fetches head and base, then git diff base...head
+dg pr diff     <owner>/project 7          # fetches head and base, then git diff base...head (merged: from the base tip before the merge)
 dg pr commits  <owner>/project 7          # the commits the PR adds
 dg pr checks   <owner>/project 7          # check runs reported on the head
 dg pr checkout <owner>/project 7          # branch pr/7 at the PR head, switched to if the tree is clean

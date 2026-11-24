@@ -16,6 +16,8 @@
 #   7. OWNER `dg pr merge`s: fetch both, build a merge commit, push it to the base, post the
 #      merge transition; the PR reads merged and the base tip is a merge whose parents are the old
 #      base and the PR head.
+#   8. `dg pr diff` of the merged PR still shows its own change, against the base tip the
+#      merge built on (#670), not the base now (which contains the head: an empty diff).
 SCENARIO_NAME="10 PR from a fork: review + real client-side merge"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
@@ -152,6 +154,14 @@ if dg_write "$ID_OWNER" "$LOG-merge" pr merge "$REPO" "$N"; then
   check "base tip is the merge commit" assert_eq "$MERGE" "$(git -C "$VER" rev-parse HEAD)"
   check "parents: old base, PR head" assert_eq "$BASE2 $HEAD_OID" "$(git -C "$VER" rev-list --parents -n1 HEAD | cut -d' ' -f2-)"
   check "fsck clean" git -C "$VER" fsck --no-progress --no-dangling
+  step "a merged PR's diff is still its own change (#670)"
+  if ( cd "$CO" && dg_as "$ID_OWNER" --json pr diff "$REPO" "$N" >"$LOG-mdiff.json" 2>"$LOG-mdiff.err" ); then
+    check "compared with the tip before the merge" assert_eq "tipBeforeMerge" "$(jq_py "$LOG-mdiff.json" 'd["comparedWith"]')"
+    check "merged diff shows the feature file" assert_file_contains "$LOG-mdiff.json" "feature.txt"
+    check "merged diff does not show the base's own change" assert_not_file_contains "$LOG-mdiff.json" "base-only.txt"
+  else
+    cat "$LOG-mdiff.err" "$LOG-mdiff.json" >&2; bad "pr diff of the merged PR failed"
+  fi
 else
   cat "$LOG-merge.err" "$LOG-merge.json" >&2
   is_flake "$LOG-merge.err" && skip_scenario "merge flaked"
