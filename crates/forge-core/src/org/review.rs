@@ -206,8 +206,12 @@ pub fn describe(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) 
             format!("Remove a {} access that no longer exists", d.document_type)
         }
         ("config", "create") => format!(
-            "Set up {repo} (default branch {})",
-            text(d, "defaultBranch").unwrap_or_else(|| "main".into())
+            "Set up {repo} (default branch {}{})",
+            text(d, "defaultBranch").unwrap_or_else(|| "main".into()),
+            match d.properties.get("protectedPatterns") {
+                Some(FieldValue::List(p)) if !p.is_empty() => ", protected",
+                _ => ", not protected",
+            }
         ),
         ("profile", "create") => "Create the organization's profile".into(),
         ("profile", "replace") => format!(
