@@ -660,7 +660,8 @@ export class AuthController {
     const key = this.serviceKey()
     const origin = this.state.session?.origin ?? null
     const identity = await authSdk(await this.getSdk()).identities.fetch(key.identityId)
-    if (identity && !(await findSigningKey(identity, key.wif, this.network, SECURITY_LEVEL.HIGH))) {
+    if (!identity) throw new WriteAuthError(`identity ${key.identityId} not found on ${this.network}`)
+    if (!(await findSigningKey(identity, key.wif, this.network, SECURITY_LEVEL.HIGH))) {
       const failure = keyFailure(identity, key.keyId, origin)
       // Disabled or expired on chain: the session ends as a balance read would end it.
       if (failure.definite) await this.refreshBalance()

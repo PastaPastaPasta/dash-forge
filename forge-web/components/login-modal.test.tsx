@@ -381,6 +381,28 @@ describe('a key the wallet disconnected', () => {
     expect(q('[data-testid="unlock-disconnected"]')).toBeNull()
   })
 
+  it("forgetting the disconnected key leaves no disconnected message on the next key", async () => {
+    auth.vaults = [...auth.vaults, { identityId: OTHER, keyId: 3, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
+    auth.unlock.mockRejectedValueOnce(new Error('this key was disconnected in your wallet, so sign in again'))
+    auth.forget.mockImplementationOnce(async () => {
+      auth.vaults = auth.vaults.filter((x) => x.identityId !== ID)
+    })
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    act(() => type(q<HTMLInputElement>('#unlock-passphrase')!, 'pw'))
+    await flush()
+    await click(byText('Unlock'))
+    expect(q('[data-testid="unlock-disconnected"]')).not.toBeNull()
+    await click(byText('Forget this key'))
+    await click(q('[data-testid="confirm-action"]'))
+    expect(auth.forget).toHaveBeenCalledWith(ID)
+    act(() => root.render(<LoginModal />))
+    await flush()
+    expect(q('[data-testid="unlock-disconnected"]')).toBeNull()
+    await click(byText('Forget this key'))
+    expect(host.ownerDocument.body.textContent).not.toMatch(/Forget this disabled key\?/)
+  })
+
   it('an unlock that finds it disconnected shows the same, in place of the raw error', async () => {
     auth.unlock.mockRejectedValueOnce(new Error('this key was disconnected in your wallet, so sign in again'))
     act(() => useUiStore.getState().openLogin())

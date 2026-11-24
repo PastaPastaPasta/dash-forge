@@ -589,6 +589,14 @@ describe('the controller', () => {
       expect(keyDisconnected(NET, ID)).toBe(5)
     }, 30_000)
 
+    it('a service request whose identity read comes back empty signs nothing', async () => {
+      const c = await restoredByPasskey()
+      lockVault()
+      await c.unlock(ID, 'passkey')
+      reads = 'missing'
+      await expect(c.checkedServiceKey()).rejects.toThrow(/not found/)
+    }, 30_000)
+
     it('a key that is live again (a lagging read) clears the flag on the next unlock', async () => {
       await restoredByPasskey()
       lockVault()

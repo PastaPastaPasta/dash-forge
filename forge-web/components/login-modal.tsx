@@ -692,8 +692,11 @@ function UnlockView({
   const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === (initial ?? lockedIdentityOf(vaults, lastIdentity)))))
   const [passphrase, setPassphrase] = useState('')
   const passphraseRef = useRef<HTMLInputElement>(null)
-  const [error, setError] = useState<string | null>(null)
+  // An error belongs to the key it came from: after a pick or a forget, another key shows none.
+  const [failure, setFailure] = useState<{ id: string; text: string } | null>(null)
   const v = vaults[pick] ?? vaults[0]
+  const error = failure !== null && failure.id === v?.identityId ? failure.text : null
+  const setError = (text: string | null): void => setFailure(text === null || !v ? null : { id: v.identityId, text })
   if (!v) {
     return (
       <div className="space-y-3">
