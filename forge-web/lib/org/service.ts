@@ -227,7 +227,7 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
       if (slot !== null) used.add(slot)
       const current = d ? currentNonce(d.contractId) : undefined
       const onChain = p.status !== 'executed' && d !== null && current !== undefined && isNonceSpent(current, d.nonce) ? await writtenOnChain(sdk, d) : false
-      const unproven = p.status === 'executed' && d !== null && current !== undefined && !isNonceSpent(current, d.nonce)
+      const unproven = p.status === 'executed' && (d === null || (current !== undefined && !isNonceSpent(current, d.nonce)))
       const settled = onChain || (p.status === 'executed' && !unproven)
       const problems = settled ? [] : d === null ? ['the transition does not decode'] : [...reviewDecoded(d, p.body, ctx), ...(reused ? ['it uses the same nonce as another part of this request'] : [])]
       facts.set(p.id, { reviewProblems: problems, nonce: d?.nonce ?? null, contractId: d?.contractId ?? null, onChain, unproven })

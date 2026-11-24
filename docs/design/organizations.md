@@ -108,7 +108,7 @@ Protocol reference: `dash-threshold-identity` `docs/PROTOCOL.md` and `src/{util,
 - `derived`: `{ documentId }`.
 - `note`: `{"forge":1,"group":"<16 hex>","seq":<0-based>,"of":<count>,"title":"<at most 120 characters>"}` as a JSON string.
 
-**Request.** The proposals sharing a `note.group`, ordered by `seq`. Its id is the group value. A proposal without a Forge note is a request of its own, with the proposal id as request id, shown as "Made outside Forge" and signable only when its decoded transition passes the review below.
+**Request.** One proposer's proposals sharing a `note.group`, ordered by `seq`, among the proposals that ask for the organization's ceremony. Its id is the group value when its earliest proposal (by `at`, then proposer key) is the earliest in the group among proposals the room accepted, made by a participant of the organization's ceremony and asking for its key alone; any other proposer's request with that group gets `<group>-<first 16 hex of the proposer's key>`. It is whole only when its parts are exactly `seq` 0 to `of`−1 with one `of`. A proposal without a Forge note is a request of its own, with the proposal id as request id, shown as "Made outside Forge" and signable only when its decoded transition passes the review below.
 
 **Review before signing** (every proposal of the request; all must pass):
 

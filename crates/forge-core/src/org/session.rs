@@ -651,13 +651,17 @@ impl Org {
     ) -> Result<bool> {
         let mut used: BTreeSet<(String, u64)> = BTreeSet::new();
         for id in &req.proposals {
-            if let Some(d) = self.decoded(id) {
-                if !used.insert((d.contract_id, d.nonce)) {
-                    return Err(refused(
-                        "broadcast this request",
-                        &["two of its parts use the same nonce".into()],
-                    ));
-                }
+            let Some(d) = self.decoded(id) else {
+                return Err(refused(
+                    "broadcast this request",
+                    &["one of its parts can't be read".into()],
+                ));
+            };
+            if !used.insert((d.contract_id, d.nonce)) {
+                return Err(refused(
+                    "broadcast this request",
+                    &["two of its parts use the same nonce".into()],
+                ));
             }
         }
         for id in &req.proposals {
