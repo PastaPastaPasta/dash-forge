@@ -589,6 +589,7 @@ const TIMED_OUT_MEMORY_MS = 5 * 60_000
 
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
+  forgetCoalescedSpans()
   deadUrls.clear()
   timedOutUrls.clear()
   resetGatewayHealth()
@@ -602,6 +603,7 @@ export function forgetDeadMirrors(): void {
 
 /** Test hook: forget the dead-URL list, the gateway probes and the per-origin queues. */
 export function resetExternalFetchState(): void {
+  forgetCoalescedSpans()
   deadUrls.clear()
   timedOutUrls.clear()
   originSlots.clear()
@@ -799,11 +801,95 @@ function preferredFailures(
 type OnServed = (uri: string, failed: readonly string[]) => void
 
 /**
+ * Ranged reads of an external artifact of at least this many bytes (a reader's read-ahead block)
+ * are widened to the aligned {@link COALESCE_BLOCK}-byte span around them, and every later range
+ * inside a span already asked for is answered from it: a history walk through a 27 MB pack cost
+ * one request per 256 KiB, a quarter as many this way. Smaller reads (one object) stay exact, so a
+ * file view does not download a mebibyte per object.
+ */
+const COALESCE_MIN = 128 * 1024
+const COALESCE_BLOCK = 1024 * 1024
+/** Bytes of coalesced spans kept (least recently used dropped first). */
+const COALESCED_BYTES_KEPT = 32 * 1024 * 1024
+
+interface CoalescedSpan {
+  readonly read: Promise<{ readonly bytes: Uint8Array; readonly url: string; readonly failed: readonly string[] }>
+  readonly size: number
+}
+const coalescedSpans = new Map<string, CoalescedSpan>()
+let coalescedBytes = 0
+
+/** One copy's span: copies of a pack are read apart, so a reader can fall back from a bad one. */
+function spanKey(manifest: PackManifest, index: number): string {
+  return `${manifest.documentId}:${manifest.packHash.toLowerCase()}:${index}`
+}
+
+function forgetCoalescedSpans(): void {
+  coalescedSpans.clear()
+  coalescedBytes = 0
+}
+
+/** The span `index` of `manifest`, fetched (or being fetched) once for every range inside it. */
+function coalescedSpan(manifest: PackManifest, index: number, gateways: readonly string[]): CoalescedSpan {
+  const key = spanKey(manifest, index)
+  const hit = coalescedSpans.get(key)
+  if (hit !== undefined) {
+    coalescedSpans.delete(key)
+    coalescedSpans.set(key, hit)
+    return hit
+  }
+  const from = index * COALESCE_BLOCK
+  const to = Math.min(manifest.sizeBytes, from + COALESCE_BLOCK)
+  let served: { url: string; failed: readonly string[] } = { url: '', failed: [] }
+  const read = fetchExactRange(manifest, from, to, gateways, (url, failed) => {
+    served = { url, failed }
+  }).then((bytes) => ({ bytes, ...served }))
+  const span: CoalescedSpan = { read, size: to - from }
+  read.catch(() => {
+    if (coalescedSpans.get(key) === span) {
+      coalescedSpans.delete(key)
+      coalescedBytes -= span.size
+    }
+  })
+  coalescedSpans.set(key, span)
+  coalescedBytes += span.size
+  for (const [k, old] of coalescedSpans) {
+    if (coalescedBytes <= COALESCED_BYTES_KEPT) break
+    coalescedSpans.delete(k)
+    coalescedBytes -= old.size
+  }
+  return span
+}
+
+/**
+ * Bytes `[start, end)` of an external artifact: from the coalesced span holding them when one is
+ * held (or the range is a read-ahead block, {@link COALESCE_MIN}), else as an exact range.
+ */
+async function fetchExternalRange(
+  manifest: PackManifest,
+  start: number,
+  end: number,
+  gateways: readonly string[],
+  onServed?: OnServed,
+): Promise<Uint8Array> {
+  const index = Math.floor(start / COALESCE_BLOCK)
+  const inOneSpan = manifest.sizeBytes > 0 && end <= manifest.sizeBytes && Math.floor((end - 1) / COALESCE_BLOCK) === index
+  const key = spanKey(manifest, index)
+  if (inOneSpan && (end - start >= COALESCE_MIN || coalescedSpans.has(key))) {
+    const { bytes, url, failed } = await coalescedSpan(manifest, index, gateways).read
+    onServed?.(url, failed)
+    const from = start - index * COALESCE_BLOCK
+    return bytes.subarray(from, from + (end - start))
+  }
+  return fetchExactRange(manifest, start, end, gateways, onServed)
+}
+
+/**
  * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
  * mirror in turn. `onServed` is told which URL answered (and which failed first). A range
  * cannot be hashed on its own: the reader re-hashes every object it reconstructs from it.
  */
-async function fetchExternalRange(
+async function fetchExactRange(
   manifest: PackManifest,
   start: number,
   end: number,
@@ -897,7 +983,7 @@ async function fetchExternalWhole(
   }
 
   try {
-    const got = (await raceBounded(live, mirrorRaceWidth, attempt, winner.signal)) ??
+    const got = (await raceBounded(live, mirrorRaceWidth, attempt, winner.signal, HEDGE_AFTER_MS)) ??
       (await firstSequential(timedOut, attempt, winner.signal))
     if (got !== null) {
       winner.abort()
@@ -913,46 +999,51 @@ async function fetchExternalWhole(
 }
 
 /**
+ * How long a whole-artifact fetch waits on the URLs it started before starting the next one too
+ * (a hedge): the first gateway usually serves, and racing them all from the start downloaded every
+ * pack (a 2 MB index on each page load) two or three times over. A failure starts the next at once.
+ */
+const HEDGE_AFTER_MS = 2_500
+
+/**
  * Run `attempt` over `items` with at most `width` in flight; resolve with the first success,
- * or null once every item has failed (or `stop` fired).
+ * or null once every item has failed (or `stop` fired). With `hedgeMs`, one starts at a time and
+ * another joins it each `hedgeMs` without a winner (or at once when one fails), still at most `width`.
  */
 function raceBounded<T, R>(
   items: readonly T[],
   width: number,
   attempt: (item: T) => Promise<R>,
   stop: AbortSignal,
+  hedgeMs = 0,
 ): Promise<R | null> {
   return new Promise((resolve) => {
     let next = 0
     let running = 0
     let settled = false
-    const launch = (): void => {
-      while (!settled && !stop.aborted && running < width && next < items.length) {
+    let hedge: ReturnType<typeof setTimeout> | undefined
+    const finish = (r: R | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(hedge)
+      resolve(r)
+    }
+    const launch = (count: number): void => {
+      for (let started = 0; started < count && !settled && !stop.aborted && running < width && next < items.length; started++) {
         const item = items[next++] as T
         running += 1
-        attempt(item).then(
-          (r) => {
-            if (!settled) {
-              settled = true
-              resolve(r)
-            }
-          },
-          () => {
-            running -= 1
-            if (settled) return
-            if ((next >= items.length || stop.aborted) && running === 0) {
-              settled = true
-              resolve(null)
-            } else launch()
-          },
-        )
+        attempt(item).then(finish, () => {
+          running -= 1
+          if (settled) return
+          if ((next >= items.length || stop.aborted) && running === 0) finish(null)
+          else launch(hedgeMs > 0 ? 1 : width)
+        })
       }
-      if (!settled && running === 0) {
-        settled = true
-        resolve(null)
-      }
+      if (!settled && running === 0) finish(null)
+      clearTimeout(hedge)
+      if (hedgeMs > 0 && !settled && next < items.length) hedge = setTimeout(() => launch(1), hedgeMs)
     }
-    launch()
+    launch(hedgeMs > 0 ? 1 : width)
   })
 }
 
