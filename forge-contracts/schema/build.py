@@ -178,6 +178,8 @@ UPDATE3_FLAGS = ('boards',)
 NETWORK_REGISTRATIONS = {
     # testnet (dash-testnet-51), Platform 5.0.0-rc.8, 2026-10-26: forge-core D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9
     'testnet': {'set': 'mainnet', 'since': ('passkey_vault', 'boards')},
+    # mainnet (evo1), Platform 5.0.0-rc.8, 2026-11-24: forge-core GPHh5EAjvh346epUPQSijmz1xgJp6APjn45EPkGMCjLo
+    'mainnet': {'set': 'mainnet', 'since': ()},
 }
 # ---- Mainnet-only (a fresh registration may add them; an update never can: rules, references and
 # required fields on existing types are frozen, forge-v2.md §9). Off in every devnet build; the mainnet
