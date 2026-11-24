@@ -45,7 +45,22 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             name,
             default_branch_only,
             pin,
-        } => Box::pin(fork(ctx, repo, name.as_deref(), *default_branch_only, *pin)).await,
+            storage,
+            no_copy,
+        } => {
+            Box::pin(fork(
+                ctx,
+                repo,
+                name.as_deref(),
+                *default_branch_only,
+                *pin,
+                storage.as_deref(),
+                *no_copy,
+            ))
+            .await
+        }
+        RepoCommand::Pin(args) => crate::repo_pin::pin(ctx, args).await,
+        RepoCommand::Unpin { repo } => crate::repo_pin::unpin(ctx, repo).await,
         RepoCommand::Sync { repo, branch } => {
             crate::repo_sync::sync(ctx, repo, branch.as_deref()).await
         }
@@ -208,16 +223,21 @@ fn clone_dir_name(name: &str) -> &str {
 }
 
 /// Fork `repo`: a new forge-v2 repository with `forkOf` = the parent, the parent's packs
-/// recorded without re-uploading (external URIs as they are; Platform chunks by a locator
-/// into the parent's scope), and the parent's branches and tags copied (its default branch
-/// alone with `default_branch_only`). Resumable.
+/// copied to the forker's own storage when they have some (listed first, the parent's copies
+/// after them) or else recorded by reference (external URIs as they are; Platform chunks by a
+/// locator into the parent's scope), and the parent's branches and tags copied (its default
+/// branch alone with `default_branch_only`). Resumable.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 async fn fork(
     ctx: &Ctx,
     repo: &str,
     name: Option<&str>,
     default_branch_only: bool,
     pin: bool,
+    storage: Option<&str>,
+    no_copy: bool,
 ) -> Result<()> {
+    let copy_to = crate::repo_pin::fork_storage(storage, no_copy)?;
     let Session {
         client,
         bridge,
@@ -278,16 +298,28 @@ async fn fork(
     .len();
     let estimate = fork_estimate(&manifest_uris, refs as u64);
     if !ctx.json {
+        let packs_line = match &copy_to {
+            Some((name, _)) => format!("{} copied to {name}", crate::fmt::plural(packs, "pack")),
+            None => format!("{} by reference", crate::fmt::plural(packs, "pack")),
+        };
         println!(
-            "Forking {} as {}/{slug} on {}\n  repo + {}, nothing re-uploaded, + {}   {}",
+            "Forking {} as {}/{slug} on {}\n  repo + {packs_line} + {}   {}",
             parent.display(),
             identity.id(),
             ctx.network_label(),
-            crate::fmt::plural(packs, "pack"),
             crate::fmt::plural(refs, "ref"),
             cost_line(estimate, price)
         );
+        if copy_to.is_none() && packs > 0 {
+            println!(
+                "  Files stay on {}'s storage; `--storage <profile>` keeps your own copy.",
+                parent.display()
+            );
+        }
     }
+    let copy_to = copy_to
+        .map(|(name, profile)| crate::repo_pin::target(&name, &profile))
+        .transpose()?;
     ctx.confirm_or_cancel(&format!("Fork {}?", parent.display()))?;
     let result = forge_core::fork::fork_repo(
         &client,
@@ -297,9 +329,16 @@ async fn fork(
         &opts,
         &default_journal_dir()?,
         default_branch_only,
+        copy_to,
     )
     .await
     .context("forking the repository")?;
+    for (hash, why) in &result.copy_failed {
+        eprintln!(
+            "warning: pack {} was not copied to your storage ({why}); the fork reads it from the parent's",
+            &hash[..hash.len().min(12)]
+        );
+    }
     let pinned = if pin && result.unreferenceable.is_empty() {
         Some(
             Box::pin(crate::ipfs_pin::pin_parent_after_fork(
@@ -404,6 +443,8 @@ pub(crate) fn fork_body(
         "manifestsExisting": result.manifests_existing,
         "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
         "refsWritten": result.refs_written,
+        "packsCopied": result.copied,
+        "packsNotCopied": result.copy_failed.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(),
         "cost": cost_json(result.cost_credits, price),
     })
 }
@@ -462,10 +503,17 @@ fn report_fork(
         body,
         || {
             println!("✓ forked {} → {}", parent.display(), fork.display());
-            println!(
-                "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
-                result.manifests_written, result.platform_referenced
-            );
+            if result.copied > 0 {
+                println!(
+                    "  packs:   {} recorded, {} copied to your storage",
+                    result.manifests_written, result.copied
+                );
+            } else {
+                println!(
+                    "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
+                    result.manifests_written, result.platform_referenced
+                );
+            }
             println!("  refs:    {} copied", result.refs_written.len());
             println!("  remote:  {}", fork.remote_url());
             println!("  cost:    {}", cost_line(result.cost_credits, price));

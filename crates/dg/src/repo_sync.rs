@@ -411,7 +411,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     let sealed = forge_core::fork::sealed_parent_packs(&svc, &parent, &parent_packs, &roles)
         .await
         .context("checking the parent's packs")?;
-    let plan = plan_sync_manifests(
+    let mut plan = plan_sync_manifests(
         &parent,
         &parent_packs,
         &roles,
@@ -461,6 +461,9 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!("Sync {}?", fork.display()))?;
+    if let Some((name, profile)) = crate::repo_pin::fork_storage(None, false)? {
+        copy_new_packs(&svc, &parent, &parent_packs, &roles, &name, &profile, &mut plan).await?;
+    }
     let before = s.balance().await;
     let result = sync_fork(
         &svc,
@@ -553,4 +556,42 @@ mod tests {
         assert!(e.contains("not a plain branch name"), "{e}");
         assert!(!e.contains("pull request"), "{e}");
     }
+}
+
+/// Copy each pack `plan` records to the forker's storage profile `name` and list that copy first
+/// (`docs/design/pin-and-fork-copies.md`). A pack that cannot be copied stays by reference.
+async fn copy_new_packs(
+    svc: &RepoService<'_>,
+    parent: &forge_core::scope::RepoRef,
+    parent_packs: &[forge_core::repo::PackManifestInfo],
+    roles: &forge_core::repo::RoleMap,
+    name: &str,
+    profile: &forge_core::storage::Profile,
+    plan: &mut forge_core::fork::SyncManifests,
+) -> Result<()> {
+    if plan.manifests.is_empty() {
+        return Ok(());
+    }
+    let groups = forge_core::fork::plan_manifests(parent_packs, roles, &Default::default());
+    let copier = forge_core::own_copy::OwnCopy::new(
+        svc,
+        parent,
+        roles.clone(),
+        crate::repo_pin::target(name, profile)?,
+    )
+    .await?;
+    for m in &mut plan.manifests {
+        let Some(copies) = groups.iter().find(|g| g[0].pack_hash == m.pack_hash) else {
+            continue;
+        };
+        match copier.copy(copies).await {
+            Ok((own, _)) => *m = forge_core::own_copy::with_own_first(m.clone(), &own),
+            Err(e) => eprintln!(
+                "warning: pack {} was not copied to {name} ({}); the fork reads it from the parent's",
+                &hex::encode(m.pack_hash)[..12],
+                forge_core::user_error::one_line(&e.to_string())
+            ),
+        }
+    }
+    Ok(())
 }

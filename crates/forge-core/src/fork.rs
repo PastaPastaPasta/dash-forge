@@ -32,6 +32,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::create::{create_repo, CreateRepoOpts, CreateRepoResult};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
+use crate::own_copy::{with_own_first, OwnCopy};
+use crate::storage::ExternalTarget;
 use crate::platform::{self, LoadedIdentity, PlatformClient};
 use crate::repo::{
     order_copies, PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2,
@@ -466,6 +468,10 @@ pub struct ForkResult {
     pub refs_written: Vec<String>,
     /// The balance change over the whole session, in credits.
     pub cost_credits: u64,
+    /// Packs copied to the forker's own storage (listed first in their manifests).
+    pub copied: usize,
+    /// Packs that could not be copied and are recorded by reference only (pack hash, why).
+    pub copy_failed: Vec<(String, String)>,
 }
 
 /// Fork `parent` as `opts.name` (with `opts.fork_of` set to the parent) under the signer.
@@ -479,6 +485,7 @@ pub async fn fork_repo(
     opts: &CreateRepoOpts,
     journal_dir: &std::path::Path,
     default_branch_only: bool,
+    copy_to: Option<ExternalTarget>,
 ) -> Result<ForkResult> {
     // RC1 `repo_shape`: a fork is public (`forkIsPublic`) and so is its parent (the `forkOf`
     // reference requires the same visibility). Both are refused here, before anything is signed.
@@ -539,14 +546,32 @@ pub async fn fork_repo(
     let sealed = sealed_parent_packs(&svc, parent, &parent_manifests, &roles).await?;
     let skip: BTreeSet<[u8; 32]> = fork_has.union(&sealed).copied().collect();
     let plan = plan_manifests(&parent_manifests, &roles, &skip);
+    let copier = match copy_to {
+        Some(target) => Some(OwnCopy::new(&svc, parent, roles.clone(), target).await?),
+        None => None,
+    };
     let mut written = 0;
     let mut platform_referenced = 0;
     let mut unreferenceable = Vec::new();
+    let mut copied = 0;
+    let mut copy_failed = Vec::new();
     for copies in plan {
-        let Some(input) = fork_manifest(parent, &copies)? else {
+        let Some(mut input) = fork_manifest(parent, &copies)? else {
             unreferenceable.push(copies[0].pack_hash);
             continue;
         };
+        if let Some(copier) = &copier {
+            match copier.copy(&copies).await {
+                Ok((own, _)) => {
+                    input = with_own_first(input, &own);
+                    copied += 1;
+                }
+                Err(e) => copy_failed.push((
+                    hex::encode(copies[0].pack_hash),
+                    crate::user_error::one_line(&e.to_string()),
+                )),
+            }
+        }
         // A Platform copy is recorded as the parent's chunk locator.
         if copies.iter().any(|m| m.storage == 0) {
             platform_referenced += 1;
@@ -581,6 +606,8 @@ pub async fn fork_repo(
         unreferenceable,
         refs_written,
         cost_credits: before.saturating_sub(after),
+        copied,
+        copy_failed,
     })
 }
 

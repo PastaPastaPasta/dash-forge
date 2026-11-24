@@ -57,6 +57,7 @@ mod ref_activity;
 mod release;
 mod release_verify;
 mod repo;
+mod repo_pin;
 mod repo_make_public;
 mod repo_settings;
 mod repo_sync;
@@ -483,9 +484,11 @@ pub enum RepoCommand {
         /// Where to clone it (default: the repository's name).
         dir: Option<std::path::PathBuf>,
     },
-    /// Fork a repo (nothing is re-uploaded).
+    /// Fork a repo: your own copy you can push to.
     ///
-    /// The fork records the parent's packs by reference and copies its branches and tags.
+    /// The parent's packs are copied to your storage (the first profile in your storage policy
+    /// that others can read, or --storage) and recorded with your copy first; with no such
+    /// storage, or --no-copy, they are recorded by reference. Its branches and tags are copied.
     Fork {
         /// The repository (`owner/name`).
         repo: String,
@@ -497,8 +500,27 @@ pub enum RepoCommand {
         #[arg(long)]
         default_branch_only: bool,
         /// Also keep the parent's files on your IPFS node.
-        #[arg(long)]
+        #[arg(long, hide = true)]
         pin: bool,
+        /// The storage profile to copy the parent's packs to.
+        #[arg(long, value_name = "PROFILE", conflicts_with = "no_copy")]
+        storage: Option<String>,
+        /// Record the parent's packs by reference only, without copying them.
+        #[arg(long)]
+        no_copy: bool,
+    },
+    /// Pin a repo: keep a copy of its packs on your own storage and tell readers about it.
+    ///
+    /// Each pack is copied to your storage profile (an IPFS node, or a bucket with a public
+    /// URL) and recorded as a pack mirror, so clones fall back to your copy when the repo's own
+    /// storage is gone. One record per pack (shown before you confirm). Public repos only.
+    Pin(crate::repo_pin::RepoPinArgs),
+    /// Unpin a repo: delete your pack mirror records for it and stop following it.
+    ///
+    /// The copies stay on your storage.
+    Unpin {
+        /// The repository (`owner/name`).
+        repo: String,
     },
     /// Sync a fork with the repo it was forked from (GitHub's "Sync fork").
     ///
