@@ -89,6 +89,15 @@ On mainnet the same set costs the same number of DASH, in real money. A dry run 
 
 ## 5. Register
 
+`forge-contracts/scripts/launch-network.mjs` runs this section and [§6](#6-after-registration) steps 1 to 3 as one re-runnable command. It dry-runs unless given `--execute`, asks the operator to type `mainnet` before a mainnet broadcast, and never passes `--force-new`, `--update` or `--replay`:
+
+```bash
+node forge-contracts/scripts/launch-network.mjs --network <testnet|mainnet> --identity <deployer.identity.json> \
+     --deployer-created-height <n> --expect-sha256 <signed sums> [--execute | --post-only]
+```
+
+The commands it runs, one by one:
+
 ```bash
 # Once: the pinned SDK the script uses.
 (cd forge-contracts/sdk-v2 && npm ci)
