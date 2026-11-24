@@ -5,7 +5,7 @@ Two ways to keep someone else's repository on storage you run:
 - **Fork** it to get your own copy you can push to. The parent's packs are copied to your storage, and your copy is listed first.
 - **Pin** it to help host it without taking it over. Your storage keeps a copy of every pack, and a pack mirror record tells readers where it is. If the repository's own storage goes away, `git clone` still works from your copy.
 
-Both need storage that other people can read: an IPFS node (yours from `dg ipfs up`, or one on a NAS or server, see [self-hosting](../self-host.md)), or a bucket with a public URL. A bucket with no public URL works for a fork you read yourself, but not for a pin. Platform storage needs neither: it is already permanent.
+Both need storage that other people can read: an IPFS node (yours from `dg ipfs up`, or one on a NAS or server, see [Self-host a storage backend](self-host-backend.md)), or a bucket with a public URL. A bucket with no public URL works for a fork you read yourself, but not for a pin. Platform storage needs neither: it is already permanent.
 
 ## On the web
 
