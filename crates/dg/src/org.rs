@@ -333,7 +333,7 @@ struct Row {
 impl Row {
     async fn of(org: &Org, client: Option<&PlatformClient>, req: Request) -> Self {
         let mut status = request::status(&org.state, &req, None);
-        if let (Some(client), true) = (client, status.is_open()) {
+        if let (Some(client), true) = (client, status.is_open() || status == RequestStatus::Done) {
             if let Ok(view) = org.chain_view(client, &req).await {
                 status = request::status(&org.state, &req, Some(&view));
             }

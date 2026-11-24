@@ -65,8 +65,9 @@ export function groupRequests(state: RoomState, cid: string): OrgRequest[] {
     const list = groups.get(key) ?? []
     list.push({ note, p })
     groups.set(key, list)
+    // Only a proposal the room accepted (a member's) can claim the plain id.
     const seen = first.get(note.group)
-    if (!seen || p.at < seen.at || (p.at === seen.at && p.from < seen.from)) first.set(note.group, { at: p.at, from: p.from })
+    if (p.status !== 'invalid' && (!seen || p.at < seen.at || (p.at === seen.at && p.from < seen.from))) first.set(note.group, { at: p.at, from: p.from })
   }
   for (const list of groups.values()) {
     list.sort((a, b) => a.note.seq - b.note.seq || a.p.id.localeCompare(b.p.id))

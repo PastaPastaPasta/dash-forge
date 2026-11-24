@@ -95,11 +95,14 @@ pub fn requests(state: &RoomState) -> Vec<Request> {
     for p in state.proposals.values() {
         match p.note().and_then(Note::parse) {
             Some(note) => {
-                let seen = (p.at.clone(), p.from.clone());
-                first
-                    .entry(note.group.clone())
-                    .and_modify(|e| *e = e.clone().min(seen.clone()))
-                    .or_insert(seen);
+                // Only a proposal the room accepted (a member's) can claim the plain id.
+                if p.status != ProposalStatus::Invalid {
+                    let seen = (p.at.clone(), p.from.clone());
+                    first
+                        .entry(note.group.clone())
+                        .and_modify(|e| *e = e.clone().min(seen.clone()))
+                        .or_insert(seen);
+                }
                 groups
                     .entry((note.group.clone(), p.from.clone()))
                     .or_default()
@@ -341,6 +344,13 @@ mod tests {
         assert!(mine.problem.is_none());
         let theirs = reqs.iter().find(|r| r.proposer != "a").unwrap();
         assert_eq!(theirs.id, format!("{G}-bbbbbbbb"));
+
+        let mut st = state(&[("zz", G, 0, 1), ("bbbbbbbbbb", G, 0, 1)]);
+        let outsider = st.proposals.get_mut("p1").unwrap();
+        outsider.at = "2000-01-01T00:00:00.000Z".into();
+        outsider.status = ProposalStatus::Invalid;
+        let reqs = requests(&st);
+        assert_eq!(reqs.iter().find(|r| r.proposer == "zz").unwrap().id, G);
     }
 
     #[test]

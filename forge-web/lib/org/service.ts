@@ -309,26 +309,34 @@ export function requestLink(orgId: string, requestId: string): string {
 }
 
 /**
- * The nonces per contract that requests not yet done or expired hold (an invalid one too: a
- * failed nonce read marks it so). A request enough members declined that it can never be signed
- * holds none.
+ * The nonces per contract that the organization's requests hold: every proposal a member made
+ * that the room accepted and that writes as the organization, whatever its request's status (a
+ * landed or overtaken nonce is at or below the tip, below anything handed out). A request still
+ * collecting that enough members declined, without approving, holds none. dg holds by the same
+ * rule (`Org::open_nonces`).
  */
 function openNonces(view: OrgView): Map<string, Set<bigint>> {
   const held = new Map<string, Set<bigint>>()
   const members = new Set(view.record.members.map((m) => m.authPub))
   for (const r of view.requests) {
-    if (r.status === 'done' || r.status === 'expired') continue
-    const declined = new Set(r.request.proposals.flatMap((p) => Object.keys(p.rejections)).filter((k) => members.has(k)))
-    if (declined.size > members.size - r.needed) continue
-    for (const p of r.proposals) {
-      const d = p.decoded
-      if (!d) continue
+    if (unreachable(r.request, members, view.identity.ceremony.config.threshold)) continue
+    for (const [i, p] of r.request.proposals.entries()) {
+      const d = r.proposals[i]?.decoded
+      if (!d || p.status === 'invalid' || !members.has(p.from) || d.ownerId !== view.record.orgId) continue
       const set = held.get(d.contractId) ?? new Set<bigint>()
       set.add(d.nonce)
       held.set(d.contractId, set)
     }
   }
   return held
+}
+
+/** Still collecting, and so many members declined it without approving that the rest cannot reach the threshold. */
+function unreachable(req: OrgRequest, members: ReadonlySet<string>, threshold: number): boolean {
+  if (req.proposals.some((p) => p.status === 'ready' || p.status === 'executed')) return false
+  const approved = new Set(req.proposals.flatMap((p) => Object.keys(p.approvals)))
+  const declined = new Set(req.proposals.flatMap((p) => Object.keys(p.rejections)).filter((k) => members.has(k) && !approved.has(k)))
+  return declined.size > members.size - threshold
 }
 
 /**

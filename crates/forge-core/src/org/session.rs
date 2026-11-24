@@ -16,7 +16,7 @@ use super::derive::{MemberKeys, Seed};
 use super::envelope::{now_iso, seal};
 use super::request::{self, ChainView, Note, Request, RequestStatus};
 use super::review::{self, Expect, Names, Reviewed};
-use super::state::{reduce, Ceremony, ProposalStatus, RoomState};
+use super::state::{reduce, Ceremony, Proposal, ProposalStatus, RoomState};
 use super::{member, signing_ceremonies, signing_slot, MemberRecord, OrgError, OrgRecord, Relay};
 
 const CONFIRM_ATTEMPTS: usize = 8;
@@ -248,41 +248,70 @@ impl Org {
             .collect()
     }
 
-    /// The nonces per contract that open requests hold. A request enough members declined that
-    /// it can never be signed holds none.
+    /// The nonces per contract that the organization's requests hold: every proposal a member
+    /// made that the room accepted and that writes as the organization, whatever its request's
+    /// status (a landed or overtaken nonce is at or below the tip, below anything handed out).
+    /// A request still collecting that enough members declined, without approving, holds none.
+    /// Web holds by the same rule.
     pub fn open_nonces(&self) -> BTreeMap<String, BTreeSet<u64>> {
         let mut out: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         for r in self.requests() {
-            if !request::status(&self.state, &r, None).is_open() || self.unreachable(&r) {
+            if self.unreachable(&r) {
                 continue;
             }
-            for d in r.proposals.iter().filter_map(|id| self.decoded(id)) {
-                if d.owner_id == self.record.org_id {
-                    out.entry(d.contract_id.clone())
-                        .or_default()
-                        .insert(d.nonce);
+            for id in &r.proposals {
+                let Some(p) = self.state.proposals.get(id) else {
+                    continue;
+                };
+                if p.status == ProposalStatus::Invalid || !self.is_member(&p.from) {
+                    continue;
+                }
+                if let Some(d) = self.decoded(id) {
+                    if d.owner_id == self.record.org_id {
+                        out.entry(d.contract_id.clone())
+                            .or_default()
+                            .insert(d.nonce);
+                    }
                 }
             }
         }
         out
     }
 
-    /// Whether so many members declined `req` that the rest cannot reach the threshold.
+    fn is_member(&self, auth_pub: &str) -> bool {
+        self.record.members.iter().any(|m| m.auth_pub == auth_pub)
+    }
+
+    /// Whether `req` is still collecting and so many members declined it, without approving,
+    /// that the rest cannot reach the threshold.
     fn unreachable(&self, req: &Request) -> bool {
-        let members: BTreeSet<&str> = self
-            .record
-            .members
-            .iter()
-            .map(|m| m.auth_pub.as_str())
-            .collect();
-        let declined: BTreeSet<&str> = req
+        let ps: Vec<&Proposal> = req
             .proposals
             .iter()
             .filter_map(|id| self.state.proposals.get(id))
-            .flat_map(|p| p.rejections.keys().map(String::as_str))
-            .filter(|k| members.contains(k))
             .collect();
-        declined.len() > members.len().saturating_sub(self.record.threshold)
+        if ps
+            .iter()
+            .any(|p| matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed))
+        {
+            return false;
+        }
+        let approved: BTreeSet<&str> = ps
+            .iter()
+            .flat_map(|p| p.approvals.keys().map(String::as_str))
+            .collect();
+        let declined = ps
+            .iter()
+            .flat_map(|p| p.rejections.keys().map(String::as_str))
+            .filter(|k| self.is_member(k) && !approved.contains(k))
+            .collect::<BTreeSet<_>>()
+            .len();
+        declined
+            > self
+                .record
+                .members
+                .len()
+                .saturating_sub(self.record.threshold)
     }
 
     pub fn decoded(&self, proposal_id: &str) -> Option<DecodedWrite> {
@@ -549,6 +578,42 @@ impl Org {
         Ok(posted)
     }
 
+    /// Whether every part of `req` still to land can be broadcast now: nothing is, otherwise, so
+    /// a ready delete never lands while the create that replaces it is short of signatures or
+    /// overtaken.
+    async fn can_finish(
+        &self,
+        client: &PlatformClient,
+        forge: &ForgeIds,
+        network: &str,
+        req: &Request,
+    ) -> Result<bool> {
+        for id in &req.proposals {
+            let p = &self.state.proposals[id];
+            if p.status == ProposalStatus::Executed {
+                continue;
+            }
+            let reviewed = review::review_offline(&self.expect(network, forge), p);
+            let Some(d) = reviewed.decoded.as_ref().filter(|_| reviewed.ok()) else {
+                return Err(refused("broadcast this request", &reviewed.problems));
+            };
+            if landed(client, d).await? {
+                continue;
+            }
+            if p.status == ProposalStatus::Ready {
+                let current = client
+                    .proved_contract_nonce(&self.record.org_id, &d.contract_id)
+                    .await?;
+                match review::nonce_problem(d, current) {
+                    None => continue,
+                    Some(problem) => return Err(refused("broadcast this request", &[problem])),
+                }
+            }
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     /// Combine, broadcast and confirm each ready proposal of `req` in order (§9 "Finishing").
     pub async fn finish(
         &mut self,
@@ -565,24 +630,11 @@ impl Org {
         }
         self.bind(client).await?;
         let network = client.network().key();
-        // Nothing is broadcast unless every part still to land can be: a ready delete must not
-        // land while the create that replaces it is short of signatures.
-        for id in &req.proposals {
-            let p = &self.state.proposals[id];
-            if p.status == ProposalStatus::Executed || p.status == ProposalStatus::Ready {
-                continue;
-            }
-            let reviewed = review::review_offline(&self.expect(&network, forge), p);
-            let landed = match &reviewed.decoded {
-                Some(d) if reviewed.ok() => landed(client, d).await?,
-                _ => false,
-            };
-            if !landed {
-                return Ok(Finished {
-                    broadcast: 0,
-                    done: false,
-                });
-            }
+        if !self.can_finish(client, forge, &network, req).await? {
+            return Ok(Finished {
+                broadcast: 0,
+                done: false,
+            });
         }
         let mut broadcast = 0;
         for id in &req.proposals {
