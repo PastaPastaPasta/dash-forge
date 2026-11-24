@@ -263,7 +263,6 @@ function RepoMoreMenu({ home, addr, load }: { home: RepoHome; addr: RepoAddress;
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        aria-haspopup="menu"
         aria-label="More repository links"
         title="More"
         data-testid="repo-more"
@@ -273,12 +272,10 @@ function RepoMoreMenu({ home, addr, load }: { home: RepoHome; addr: RepoAddress;
       </button>
       {open ? (
         <div
-          role="menu"
           className="absolute right-0 z-30 mt-1 w-44 rounded-md border border-anvil-200 bg-white p-1 shadow-md dark:border-anvil-750 dark:bg-anvil-900"
         >
           <Link
             href={repoHref('/repo/security', addr)}
-            role="menuitem"
             onClick={() => setOpen(false)}
             data-testid="repo-more-security"
             className="flex items-center gap-2 rounded px-2 py-1.5 text-dense text-anvil-700 hover:bg-anvil-100 hover:text-anvil-900 coarse:min-h-11 dark:text-anvil-200 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"

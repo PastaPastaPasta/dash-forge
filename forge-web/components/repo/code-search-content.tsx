@@ -315,7 +315,7 @@ function IndexLine({ summary, stale, target, building, onUpdate }: { summary: Co
           <li>
             Not searched: {left === 0 ? 'nothing' : [summary.skipped.binary ? plural(summary.skipped.binary, 'binary file') : '', summary.skipped.large ? `${plural(summary.skipped.large, 'file')} over ${formatBytes(MAX_FILE_BYTES)}` : '', summary.skipped.symlink ? plural(summary.skipped.symlink, 'symlink') : ''].filter(Boolean).join(', ')}; submodules.
           </li>
-          {summary.truncated ? <li>Only the first {plural(summary.files, 'file')} are indexed.</li> : null}
+          {summary.truncated ? <li>Only part of the repository is indexed: the file walk stopped at its limit.</li> : null}
           {summary.capped ? <li>Reading stopped at 100 MiB of text.</li> : null}
           {summary.large ? <li>Large repository: only the default branch is indexed.</li> : null}
         </ul>

@@ -55,6 +55,9 @@ export function LanguageBar({ stats }: { stats: LanguageStats }): JSX.Element | 
           </li>
         ))}
       </ul>
+      <p className="mt-1 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="language-estimate">
+        Estimated from stored sizes{truncated ? `, first ${plural(files, 'file')}` : ''}.
+      </p>
       {truncated ? (
         <p className="mt-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="language-note">
           Based on the first {plural(files, 'file')}.

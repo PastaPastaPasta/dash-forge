@@ -334,7 +334,9 @@ function BlobMoreMenu({
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const [copiedLink, copyLink] = useCopy(permalink ?? '')
+  // A selected range (`#L2-L4` in the address) travels with the link, as the toolbar's does.
+  const range = typeof window !== 'undefined' && /^#L\d+(-L\d+)?$/.test(window.location.hash) ? window.location.hash : ''
+  const [copiedLink, copyLink] = useCopy(permalink === null ? '' : `${permalink}${range}`)
   const close = (): void => setOpen(false)
   const itemCls =
     'flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-dense text-anvil-700 hover:bg-anvil-100 coarse:min-h-11 dark:text-anvil-200 dark:hover:bg-anvil-800'
@@ -353,7 +355,6 @@ function BlobMoreMenu({
         ref={triggerRef}
         type="button"
         aria-label="More file actions"
-        aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         data-testid="blob-more"
@@ -365,25 +366,24 @@ function BlobMoreMenu({
         <>
           <div className="fixed inset-0 z-10" aria-hidden onClick={close} />
           <div
-            role="menu"
             aria-label="File actions"
             className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-anvil-200 bg-white p-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-900"
           >
             {rawHref ? (
-              <a href={rawHref} target="_blank" rel="noopener noreferrer" role="menuitem" className={itemCls} onClick={close} data-testid="blob-raw">
+              <a href={rawHref} target="_blank" rel="noopener noreferrer" className={itemCls} onClick={close} data-testid="blob-raw">
                 <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden /> Raw
                 <span className="sr-only"> (opens in a new tab)</span>
               </a>
             ) : null}
             {downloadHref ? (
-              <a href={downloadHref} download={name} role="menuitem" className={itemCls} onClick={close} data-testid="blob-download">
+              <a href={downloadHref} download={name} className={itemCls} onClick={close} data-testid="blob-download">
                 <Download className="h-3.5 w-3.5 shrink-0" aria-hidden /> Download
               </a>
             ) : null}
             {permalink !== null ? (
               <button
                 type="button"
-                role="menuitem"
+               
                 onClick={() => void copyLink()}
                 data-testid="copy-permalink"
                 data-href={permalink}
