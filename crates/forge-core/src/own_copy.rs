@@ -75,6 +75,44 @@ pub fn with_own_first(mut input: PackManifestInput, own: &[String]) -> PackManif
     input
 }
 
+/// The artifact kinds a pin copies: git packs and the public indexes and bodies readers fetch
+/// (forge-web `PIN_KINDS`). Release assets and members-only kinds are left out.
+pub const PIN_KINDS: [u8; 6] = [
+    crate::pack::KIND_GIT_PACK,
+    crate::pack::KIND_OBJECT_LOCATOR,
+    crate::pack::KIND_FLAT_INDEX,
+    crate::pack::KIND_HISTORY_INDEX,
+    crate::pack::KIND_HISTORY_VERSIONS,
+    crate::pack::KIND_LONG_BODY,
+];
+
+/// The copies of each pinnable pack in `manifests` ([`PIN_KINDS`]), grouped by pack hash in the
+/// order a reader tries them, oldest pack first.
+#[must_use]
+pub fn pin_groups<'m>(
+    manifests: &'m [PackManifestInfo],
+    roles: &RoleMap,
+) -> Vec<Vec<&'m PackManifestInfo>> {
+    let mut by_hash: std::collections::BTreeMap<[u8; 32], Vec<&PackManifestInfo>> =
+        std::collections::BTreeMap::new();
+    for m in manifests {
+        if PIN_KINDS.iter().any(|k| u64::from(*k) == m.kind) {
+            by_hash.entry(m.pack_hash).or_default().push(m);
+        }
+    }
+    let mut out: Vec<Vec<&PackManifestInfo>> = by_hash
+        .into_values()
+        .map(|copies| crate::repo::order_copies(&copies, roles))
+        .collect();
+    out.sort_by_key(|g| {
+        g.iter()
+            .map(|m| (m.created_at, m.document_id.clone()))
+            .min()
+            .unwrap_or_default()
+    });
+    out
+}
+
 /// Reads packs of `source` and stores them on one target.
 pub struct OwnCopy<'a> {
     svc: &'a RepoService<'a>,

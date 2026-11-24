@@ -279,8 +279,7 @@ async fn pin_one(
         .filter(|m| m.repo_id == s.repo.id())
         .map(|m| m.pack_hash)
         .collect();
-    let all =
-        forge_core::fork::plan_manifests(&manifests, &roles, &std::collections::BTreeSet::new());
+    let all = forge_core::own_copy::pin_groups(&manifests, &roles);
     let (already, todo): (Vec<_>, Vec<_>) = all
         .into_iter()
         .partition(|copies| mine.contains(&hex::encode(copies[0].pack_hash)));
