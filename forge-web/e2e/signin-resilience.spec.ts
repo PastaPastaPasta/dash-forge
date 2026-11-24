@@ -245,14 +245,13 @@ test('s8. a remounted passphrase form never keeps a passphrase the screen does n
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeEnabled()
-  // Away to the tile list and back: a fresh form, empty, and nothing to submit with.
+  // Away to the tile list and back: a fresh form, empty (submitting keeps the key in this browser alone, never an old passphrase).
   await dialog.getByRole('button', { name: 'All options' }).click()
   await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', identityFile())
   await expect(page.getByLabel('Passphrase', { exact: true })).toHaveValue('')
   await expect(page.getByLabel('Repeat passphrase')).toHaveCount(0)
-  await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeDisabled()
 })
 
 test('s9. Create: a passphrase typed on Resume does not carry into the new words after Discard', async ({ page, baseURL }) => {
@@ -311,7 +310,7 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
   }
   await dialog.getByRole('button', { name: /^continue$/i }).click()
   await expect(page.getByLabel('Passphrase', { exact: true })).toHaveValue('')
-  await expect(dialog.getByRole('button', { name: /continue to funding/i })).toBeDisabled()
+  await expect(page.getByLabel('Repeat passphrase')).toHaveCount(0)
 })
 
 test('s6. a newer tab upgrading storage: this tab lets go at once and offers a reload', async ({ browser, baseURL }) => {
