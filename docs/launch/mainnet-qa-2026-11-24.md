@@ -87,7 +87,7 @@ Severity: **blocker** = don't launch with this. **should-fix** = fix soon, launc
 | `dg` / helper with `--network mainnet` and no record / dummy record | E702, no fallback to testnet | PASS |
 | Mainnet protocol version | 14, from a proof-verified response | PASS |
 | Pages build with `PAGES_NETWORK=mainnet` but the testnet gateway URL | would ship a mainnet site whose clone and share links resolve on testnet | **blocker → fixed, #679** |
-| Defaults when nothing is set: CLI, Action, check-action, GitLab template, `pages.yml`, gateway compose | all default to testnet | should-fix (owner decision) |
+| Defaults when nothing is set: CLI, Action, check-action, GitLab template, `pages.yml`, gateway compose | all default to testnet | should-fix (runbook §1: stays testnet in v0.3.0, flip in a later release) |
 | Web origin `forge.dashhq.org` hardcoded for every network (CLI links, relay, gateway, passkey RP id, `dg ipfs`) | | should-fix (follows the runbook's hosting move) |
 | Security headers on forge.dashhq.org (HSTS, frame-ancestors, X-Frame-Options) | missing; DNS points straight at GitHub Pages, not through Cloudflare | should-fix, do before announcing (owner) |
 | Docs drift: `deploying-to-a-network.md` (names the retired devnet, rc.4 pin, unmeasured costs), `hosting.md` (says behind Cloudflare), `roadmap.md:38`, in-app quick-start points mainnet users at testnet faucets | | should-fix |
@@ -144,7 +144,7 @@ The web-A lane tried the BIP-39 example phrase as an "unknown" phrase. It turned
 Follow [the mainnet runbook](mainnet-runbook.md) (§2 owner steps, §4 order). It already settles hosting: mainnet takes forge.dashhq.org and testnet moves to testnet-forge.dashhq.org. It also covers the deployer, registration, the client release and rollback. This QA adds (★ = owner only):
 
 1. ★ Security headers on forge.dashhq.org: the Cloudflare proxy plus the hosting.md §7 rule, or a host that sends them.
-2. ★ Decide whether the mainnet release makes mainnet the default network (CLI `network.rs`, Action, check-action, GitLab template, `pages.yml`, gateway compose, docs).
+2. ★ Flip the default network to mainnet in a release after v0.3.0, after an announcement (runbook §1): CLI `network.rs`, Action, check-action, GitLab template, `pages.yml`, gateway compose, docs.
 3. Merge #698 before the release tag.
 4. ★ At smoke-test time (runbook P9): a real DashPay App Connect v2 sign-in and one write on a phone.
 
