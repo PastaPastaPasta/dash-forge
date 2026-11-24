@@ -72,14 +72,14 @@ async function rpc(s: IpfsSettings, secrets: ProfileSecrets, op: string, pathAnd
     throw new IpfsError(op, `${op}: the kubo API at ${new URL(url).host}: ${why}`)
   }
   if (!resp.ok) {
-    const msg = /"Message"\s*:\s*"([^"]{1,200})"/.exec(text)?.[1] ?? text.slice(0, 200)
+    const msg = resp.status === 401 || resp.status === 403 ? '' : /"Message"\s*:\s*"([^"]{1,200})"/.exec(text)?.[1] ?? text.slice(0, 200)
     const hint =
       resp.status === 403
         ? ' — kubo refuses this origin: allow it in API.HTTPHeaders (see the fix below)'
         : resp.status === 401
           ? ' — kubo wants an API Authorization token (see API.Authorizations)'
           : ''
-    throw new IpfsError(op, `${op} failed: HTTP ${resp.status} ${msg}${hint}`)
+    throw new IpfsError(op, `${op} failed: HTTP ${resp.status}${msg ? ` ${msg}` : ''}${hint}`)
   }
   return text
 }

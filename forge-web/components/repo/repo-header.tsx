@@ -169,8 +169,10 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
             visibility={home.repo.visibility}
             className="border-transparent bg-transparent text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:border-transparent dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
           />
-          {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
-          <PinButton repo={home.repo} member={role !== null} />
+          <div role="group" aria-label="Fork or pin" className="inline-flex items-center [&>button:not(:first-of-type)]:-ml-px [&>button:not(:first-of-type)]:rounded-l-none [&>button:not(:last-of-type)]:rounded-r-none">
+            {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
+            <PinButton repo={home.repo} member={role !== null} />
+          </div>
           <WatchButton repo={home.repo} />
           <StarButton repo={home.repo} count={home.starCount} lookalikes={lookalikes} />
           <RepoMoreMenu home={home} addr={addr} load={current === 'code'} />

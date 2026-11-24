@@ -10,7 +10,8 @@
  * fork's reader and the parent's, then each side's own commits counted.
  *
  * Only a fast-forward is written (`syncFork`, parity with `dg repo sync`): the parent's packs the
- * fork does not record yet, by reference, then one ref update. A branch with commits of its own
+ * fork does not record yet (all copied to the viewer's storage before anything is written when they
+ * have some, else by reference), then one ref update. A branch with commits of its own
  * is never moved: the bar offers a pull request into the fork that merges the parent's branch,
  * or, when the fork is only ahead, the parent's New pull request form.
  */
@@ -30,11 +31,16 @@ import { ARCHIVED_REASON, formatBytes, plural, type RepoHome } from '@/lib/view'
 import { historyWalker } from '@/lib/view/pull-diff'
 import { syncAncestry, SYNC_COUNT_CAP } from '@/lib/view/fork-sync'
 import { shortId } from '@/lib/utils'
+import { CopyFailed, forkCopier, forkCopyProfile, pricedManifests, storageHolding } from '@/lib/storage/pin-copies'
+import type { StorageProfile } from '@/lib/storage/profiles'
+import { UnlockMore } from '@/components/auth/unlock-more'
+import { redactSecrets } from '@/lib/redact'
 import { useAsync } from '@/hooks/use-async'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { useSdk } from '@/hooks/use-sdk'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { useStorageConfig } from '@/hooks/use-storage-config'
 import { useAuth } from '@/contexts/auth-context'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { contributeHref, useForkParent } from '@/components/repo/fork-contribute'
@@ -52,9 +58,12 @@ function commitsText(n: number | null): string {
   return n === null ? `more than ${SYNC_COUNT_CAP.toLocaleString('en-US')} commits` : plural(n, 'commit')
 }
 
-/** The pre-sign cost of a sync writing `plan`: its manifests into a repo that has some, and one ref update. */
-export function syncCost(plan: SyncManifests): Cost {
-  return sumPreviews([...plan.manifests.map((m) => previewCreate('packManifest', { uris: m.uris }, EXISTING)), previewCreate('refUpdate', {}, EXISTING)])
+/**
+ * The pre-sign cost of a sync writing `plan`: its manifests into a repo that has some (naming the
+ * copies on `copyTo` when it copies), and one ref update.
+ */
+export function syncCost(plan: SyncManifests, copyTo: StorageProfile | null = null): Cost {
+  return sumPreviews([...pricedManifests(plan, copyTo).map((m) => previewCreate('packManifest', { uris: m.uris }, EXISTING)), previewCreate('refUpdate', {}, EXISTING)])
 }
 
 /**
@@ -282,20 +291,29 @@ function UpdateBranch({
   reload?: () => void
 }): JSX.Element {
   const { sdk, ready } = useSdk()
-  const { signer } = useAuth()
+  const { identity, signer } = useAuth()
   const guard = useWriteGuard()
+  const storage = useStorageConfig()
+  const [byReference, setByReference] = useState(false)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   // One intent per sync: a retry after an unconfirmed write finishes it, never signs twice.
   const [intent] = useState(newIntent)
   const plan = useAsync(() => readSyncManifests(sdk!, home.repo, parent), [ready, repoKey(home.repo), repoKey(parent)], { enabled: ready && sdk !== null })
-  const cost = plan.data === null ? null : syncCost(plan.data)
+  // Where this fork's earlier packs were copied, else the default policy's first readable target.
+  const target = storageHolding(plan.data?.fork ?? [], identity ?? '', storage.usable) ?? forkCopyProfile(storage.usable)
+  const copyTo = byReference ? null : target
+  const copyable = (plan.data?.manifests ?? []).filter((m) => !plan.data?.onPlatform.has(m.packHash))
+  // Stored settings this tab cannot open: never fall back to by-reference without being asked.
+  const blocked = target === null && !byReference && copyable.length > 0 && !storage.loading && (storage.sealed || (storage.usable === null && storage.error !== null))
+  const cost = plan.data === null ? null : syncCost(plan.data, copyTo)
+  const newPacks = plural(plan.data?.manifests.length ?? 0, `new pack of ${parent.name}`, `new packs of ${parent.name}`)
   const unreferenceable = plan.data?.unreferenceable.length ?? 0
   const off = block ?? guard.disabledReason ?? (unreferenceable > 0 ? `${plural(unreferenceable, 'pack')} of ${parent.name} have no copy a fork can name: push the branch from a full clone instead.` : null)
 
   const update = async (): Promise<void> => {
-    if (pending || done || plan.data === null || cost === null || off !== null || !sdk || !signer || !guard.check(cost, 'core', 'sync this fork')) return
+    if (pending || done || blocked || plan.data === null || cost === null || off !== null || !sdk || !signer || !guard.check(cost, 'core', 'sync this fork')) return
     setPending(true)
     setError(null)
     try {
@@ -307,12 +325,13 @@ function UpdateBranch({
           parentTip,
           plan: data,
           intent: `fork-sync:${home.repo.repoId}:${intent}`,
+          ...(copyTo ? { copy: forkCopier(sdk, parent, copyTo, { again: 'Update branch', cli: 'dg repo sync' }) } : {}),
         }),
       )
       setDone(true)
       reload?.()
     } catch (e) {
-      setError(guard.failed(e))
+      setError(e instanceof CopyFailed ? e.message : redactSecrets(guard.failed(e)))
     } finally {
       setPending(false)
     }
@@ -323,7 +342,9 @@ function UpdateBranch({
       {plan.data !== null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           {plan.data.manifests.length > 0
-            ? `Records ${plural(plan.data.manifests.length, `new pack of ${parent.name}`, `new packs of ${parent.name}`)} by reference (nothing is uploaded), then moves ${home.defaultBranch}.`
+            ? copyTo
+              ? `Copies ${newPacks} to ${copyTo.name}, then moves ${home.defaultBranch}.`
+              : `Records ${newPacks} by reference: files stay on ${parent.name}'s storage. Then moves ${home.defaultBranch}.`
             : `Moves ${home.defaultBranch}: this fork already records every pack it needs.`}
         </p>
       ) : plan.error !== null ? (
@@ -332,12 +353,39 @@ function UpdateBranch({
         </p>
       ) : null}
       {cost !== null ? <CostPreview cost={cost} /> : null}
+      {target && (plan.data?.manifests.length ?? 0) > 0 ? (
+        <details className="text-[12px]">
+          <summary className="cursor-pointer">Storage</summary>
+          <label className="mt-1 flex items-start gap-2">
+            <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700" checked={byReference} disabled={pending} onChange={(e) => setByReference(e.target.checked)} data-testid="fork-sync-by-reference" />
+            Don&apos;t copy to {target.name}: keep the files on {parent.name}&apos;s storage.
+          </label>
+        </details>
+      ) : null}
+      {blocked ? (
+        <div className="space-y-2" data-testid="fork-sync-storage-locked">
+          {storage.sealed ? (
+            <UnlockMore title="Unlock this tab to copy the new files to your storage" />
+          ) : (
+            <p className="text-dense">
+              Couldn&apos;t open your storage settings.{' '}
+              <Button variant="outline" size="sm" onClick={storage.reload}>
+                Try again
+              </Button>
+            </p>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setByReference(true)} data-testid="fork-sync-skip-copy">
+            Update without copying
+          </Button>
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" size="sm" onClick={update} loading={pending} disabled={off !== null || cost === null || done} title={off ?? undefined} data-testid="fork-sync-update">
+        <Button variant="primary" size="sm" onClick={update} loading={pending || storage.loading} disabled={off !== null || cost === null || done} title={off ?? undefined} data-testid="fork-sync-update">
           {done ? 'Updated' : 'Update branch'}
         </Button>
         {off !== null ? <span className="text-[12px] text-caution-700 dark:text-caution-400">{off}</span> : null}
       </div>
+      )}
       {error ? (
         <div role="alert" className="break-words rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
           {error}
