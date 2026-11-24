@@ -38,10 +38,10 @@ jobs:
           network: testnet               # the default; for mainnet see Status
           sync: code,releases
           storage-kind: s3
-          s3-endpoint: https://<account>.r2.cloudflarestorage.com
-          s3-region: auto
+          s3-endpoint: https://s3.example.org
+          s3-region: us-east-1
           s3-bucket: forge
-          s3-public-url: https://pub-9a1.r2.dev
+          s3-public-url: https://s3.example.org/forge
           cost-cap: '0.05'
         env:
           DASH_FORGE_KEY: ${{ secrets.DASH_FORGE_KEY }}
@@ -78,7 +78,7 @@ This is opt-in, because it lets anyone spend your DASH. Anyone with a GitHub acc
 | `devnet-name` | empty | The devnet's name. Required when `network` is `devnet`, ignored otherwise. |
 | `sync` | `code,releases` | Comma list of `code`, `issues`, `prs`, `releases`, `labels`. |
 | `storage-kind` | `platform` | Where pack bytes go: `platform`, `s3` or `ipfs-pinning`. Refs, manifests, issues and PRs are always on Platform. |
-| `s3-endpoint`, `s3-region`, `s3-bucket`, `s3-public-url`, `s3-prefix` | | S3-compatible bucket (R2, B2, S3, MinIO). `s3-public-url` is the origin browsers read packs from. See [Bring your own storage](../docs/guides/bring-your-own-storage.md). |
+| `s3-endpoint`, `s3-region`, `s3-bucket`, `s3-public-url`, `s3-prefix` | | S3-compatible bucket. `s3-public-url` is the origin browsers read packs from. See [Bring your own storage](../docs/guides/bring-your-own-storage.md). |
 | `s3-virtual-hosted` | `false` | `true`: virtual-hosted addressing (`https://<bucket>.<endpoint host>/<key>`), the same as `dg storage add --virtual-hosted`. Use it for AWS S3, which deprecates path-style. |
 | `pinning-endpoint` | | `ipfs-pinning`: Pinning Service API base URL. |
 | `ipfs-api` | `http://127.0.0.1:5001` | `ipfs-pinning`: the kubo RPC API the job runs, for example as a service container. |

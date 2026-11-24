@@ -105,7 +105,7 @@ detect_target() {
             printf '%s\n' "${arch}-apple-darwin"
             ;;
         MINGW* | MSYS* | CYGWIN* | Windows_NT)
-            die "on Windows, download the .zip for x86_64-pc-windows-msvc from $DEFAULT_BASE_URL and follow $DOCS_URL"
+            die "on Windows, run this script inside WSL (it installs the Linux build); see $DOCS_URL"
             ;;
         *) die "no prebuilt binaries for OS '$os'; build from source: $DOCS_URL" ;;
     esac

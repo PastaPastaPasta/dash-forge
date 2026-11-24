@@ -56,7 +56,6 @@ curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip, deflate, br, zstd' https://
 
 Cloudflare asks the origin for gzip or Brotli only and recompresses at the edge, so zstd needs no origin support.
 
-
 ### 4. HTML stays short-lived
 
 Leave HTML (`/`, `/repo/…`) at the origin's `max-age=600`, or shorter. A deploy changes which hashed chunks the HTML names. Old chunks stay available for two generations (`pages.yml` merges them), so a stale HTML page still loads.
@@ -75,7 +74,7 @@ The security headers in section 7 are a separate matter: every host should send 
 
 ### 6. Cloudflare Web Analytics: the page carries the beacon
 
-forge.dashhq.org uses Cloudflare Web Analytics, which is cookieless (see [Privacy](#privacy-the-hosted-site-counts-visits)). The beacon is part of the build, and the zone's automatic setup also stays on (the owner's choice), so Cloudflare injects a second copy into every page.
+forge.dashhq.org uses Cloudflare Web Analytics, which is cookieless (see [Privacy](#privacy-the-hosted-site-counts-visits)). The beacon is part of the build. With no Cloudflare proxy in front of the site today, Cloudflare injects nothing, and every page carries the build's one beacon. If the proxy is turned on with the zone's automatic setup, Cloudflare injects a second copy, which the paragraphs below handle.
 
 **Why the build carries it.** Automatic setup inserts its beacon `<script>` before `</body>` in every HTML response, with a `data-cf-beacon` config that tells it to report to the zone's own `/cdn-cgi/rum`. On its own, that collected nothing: the page CSP allows no script it did not name, so it refused the injected one. The build's copy is the one that runs and that the CSP names. Other Cloudflare features that rewrite HTML (Rocket Loader, Email Address Obfuscation, the old Auto Minify) must stay off. The inline scripts are allowed by their exact bytes, so a rewritten script no longer matches its hash, the page does not start, and `dg verify-app` reports the changed file.
 
@@ -85,7 +84,7 @@ forge.dashhq.org uses Cloudflare Web Analytics, which is cookieless (see [Privac
 
 **`dg verify-app` and the injection.** The injected tag changes the bytes of every page the build manifest lists. `dg verify-app` removes exactly that tag and hashes the page again (`without_cf_injected_beacon` in `crates/dg/src/verify_app.rs`). It removes only Cloudflare's own form: a `static.cloudflareinsights.com/beacon.min.js/v…` module script with an SRI hash, directly before `</body>`, whose config has only `version`, `token`, `r` and `spa`, with the same site token as the beacon the build carries, and, when it names the build's own beacon URL, the build's pinned SRI digest. Anything else that differs fails the check as before: another script, attribute, position, token or config (`send` or `forward`, which point reports elsewhere), or a page without the build's own beacon. Its output counts the pages it matched that way (`cfBeaconRemoved` in `--json`). The match is exact on purpose: if Cloudflare changes the tag's form (attribute order, quoting, the trailing newline, a new config key) or the build's tag changes its serialization, verify-app fails again and the code needs the new form. Nothing new gets through in the meantime. The removal also leans on the page CSP allowing only the build's beacon URL, so keep it that narrow.
 
-**The zone setting.** Cloudflare dashboard → **Web Analytics** → the site `forge.dashhq.org`. Either **Enable** (automatic setup, today's setting) or **Enable with JS Snippet installation** works. Not **Disable**: that stops collection. The site token shown there must be the one `pages.yml` builds with. If it differs, set the repository variable `PAGES_CF_BEACON_TOKEN` to it and redeploy. (A `Cache-Control: no-transform` response header also stops the injection, but only as a side effect Cloudflare does not support, and GitHub Pages sets no such header.)
+**The zone setting.** Cloudflare dashboard → **Web Analytics** → the site `forge.dashhq.org`. With the proxy on, either **Enable** (automatic setup) or **Enable with JS Snippet installation** works. Not **Disable**: that stops collection. The site token shown there must be the one `pages.yml` builds with. If it differs, set the repository variable `PAGES_CF_BEACON_TOKEN` to it and redeploy. (A `Cache-Control: no-transform` response header also stops the injection, but only as a side effect Cloudflare does not support, and GitHub Pages sets no such header.)
 
 Count the beacons:
 
@@ -93,11 +92,11 @@ Count the beacons:
 curl -s -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' https://forge.dashhq.org/ | grep -o -i '<script[^>]*static\.cloudflareinsights\.com' | wc -l
 ```
 
-Expect `2` while automatic setup is on (the build's own and Cloudflare's), `1` with snippet installation. `pages.yml` runs the same check after each deploy and prints a notice with the count. `dg verify-app https://forge.dashhq.org` is the full check.
+Expect `1` today (the build's own); `2` only behind the proxy with automatic setup. `pages.yml` runs the same check after each deploy and prints a notice with the count. `dg verify-app https://forge.dashhq.org` is the full check.
 
 #### Privacy: the hosted site counts visits
 
-The site at forge.dashhq.org loads Cloudflare's Web Analytics script. Cloudflare says it sets no cookies, uses no local storage, and does not fingerprint visitors or follow them by IP address. It reports page views (the path and referrer), the browser, the country and page-load timings to Cloudflare, which already serves every request to the site. The script runs with the page's privileges, which is why it is pinned by its hash: Cloudflare cannot swap in other code without the browser refusing it. Builds you run yourself carry no analytics unless you set `NEXT_PUBLIC_CF_BEACON_TOKEN`, and the IPFS release never does. Blocking `static.cloudflareinsights.com` in your browser changes nothing in the app.
+The site at forge.dashhq.org loads Cloudflare's Web Analytics script. Cloudflare says it sets no cookies, uses no local storage, and does not fingerprint visitors or follow them by IP address. It reports page views (the path and referrer), the browser, the country and page-load timings to Cloudflare. The script runs with the page's privileges, which is why it is pinned by its hash: Cloudflare cannot swap in other code without the browser refusing it. Builds you run yourself carry no analytics unless you set `NEXT_PUBLIC_CF_BEACON_TOKEN`, and the IPFS release never does. Blocking `static.cloudflareinsights.com` in your browser changes nothing in the app.
 
 ### 7. Security headers
 

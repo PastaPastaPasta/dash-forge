@@ -2,8 +2,8 @@
 
 > **Current release: [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0)**
 > ([release notes](releases/v0.2.0.md), [changelog](../CHANGELOG.md)), the first published
-> release. You can also [build from source](#build-from-source) from any commit. Forge runs
-> on testnet, the tools' default network; it is not on mainnet yet. The version policy is in [VERSIONING.md](VERSIONING.md).
+> release. You can also [build from source](#build-from-source) from any commit. v0.2.0 predates
+> Forge's mainnet registration, so its binaries work on testnet only; for mainnet, build from source. The version policy is in [VERSIONING.md](VERSIONING.md).
 
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
 ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use

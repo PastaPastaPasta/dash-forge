@@ -8,8 +8,8 @@
 # from that tag. Between releases master still pins the latest release, so a workflow on
 # master's scripts that needs master's binaries sets `install: 'source'`.
 #
-# The network defaults to testnet, which the hosted site (forge.dashhq.org) targets: Forge's
-# contracts are registered there, and not on mainnet yet (forge-contracts/deployments/).
+# The network defaults to testnet. Forge is registered on testnet and mainnet
+# (forge-contracts/deployments/); mainnet needs binaries built after its registration.
 name: Dash Forge mirror
 description: Mirror a GitHub repository into Dash Forge (Dash Platform), idempotently and under a per-run cost cap.
 author: PastaPastaPasta

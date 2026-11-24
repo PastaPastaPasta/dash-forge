@@ -26,7 +26,7 @@ The rest of this guide covers the command-line path: private repositories, GitLa
 9. [What it costs](#9-what-it-costs)
 10. [GitHub features with no Forge equivalent](#10-github-features-with-no-forge-equivalent)
 
-Replace every `<…>` placeholder with your own value. Forge runs on **testnet**, where Dash is free ([Which network](README.md#which-network)).
+Replace every `<…>` placeholder with your own value. The commands use **testnet**, where Dash is free; add `--network mainnet` for real repositories ([Which network](README.md#which-network)).
 
 ---
 

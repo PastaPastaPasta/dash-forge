@@ -75,7 +75,7 @@ Estimate for a first push of the repository at /home/me/qw-cost-s3 (HEAD: 334 B,
   pack bytes:  on your own storage (s3), billed by your provider, not by Platform
 ```
 
-On devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30) these two first pushes were charged 0.0104 DASH and 0.0052 DASH. With `--backend s3`, `ipfs` or `https` the quote is the same whatever the size: Platform bills the manifests and the ref update, never the bytes. `--backend mixed` keeps a copy in each place and pays for both.
+With `--backend s3`, `ipfs` or `https` the quote is the same whatever the size: Platform bills the manifests and the ref update, never the bytes. `--backend mixed` keeps a copy in each place and pays for both.
 
 `--bytes <N>` prices a pack of that size without a repository. It assumes one object per 512 bytes for the browse index, and on Platform it leaves out the history index's chunks, whose size depends on the repository (it says so):
 
@@ -109,7 +109,7 @@ A first write can create repository, author, target or identity-contract index s
 | Create a public repository, members-only on (default) | **~0.00236 DASH** for the first measured bundle; later-owner bundles ~0.00229 DASH. Includes the initial anchor and owner key share |
 | Create a private repository | **~0.00199 DASH** for the first measured bundle; later-owner bundles ~0.00200 DASH. Includes the owner membership, key share and anchor |
 | Push with packs on Platform | **~0.00714–0.00742 DASH later, 0.00893 first** for four tiny public pushes with browse/history indexes. Exact 128-byte chunks cost 0.00058–0.00093, one manifest 0.00081–0.00129, one existing-name ref update 0.00058–0.00089. Larger packs: **~0.33–0.36 DASH per MiB measured historically†**, quoted at about 0.39; permanent storage |
-| Push to your own bucket † | ~0.0040 DASH later, 0.0052 first on bonsia (2026-09-30); manifests, history index and ref, without Platform pack bytes |
+| Push to your own bucket | ~0.0043 DASH later, 0.0054 first (testnet); manifests, history index and ref, without Platform pack bytes |
 | Push to a private repository, packs on Platform † | 20 KiB: 0.0112 DASH first; tiny follow-up 0.0022; three new branches 0.0078. Packs are sealed and slightly larger |
 | History index † | Extra manifests and, on Platform, delta chunks; historical upper bounds ~0.0026–0.006 DASH for a typical push, occasional full index ~0.28 on dashpay/dash. See [History index](#history-index) |
 | Each extra new branch or tag | **~0.00066–0.00067 DASH** (one ref update, commit already stored); protected existing-name ref updates ~0.00058–0.00089 |
@@ -136,7 +136,7 @@ A first write can create repository, author, target or identity-contract index s
 | Policy / ban | Policy ~0.00027 DASH later, ~0.00035 first; ban ~0.00040 |
 | CI check run | ~0.00072 DASH later, ~0.00122 first (queued check) |
 | Bot push grant | ~0.00028 DASH later, ~0.00044 first. The CLI bot-allow aggregate cost ~0.00218, including its additional artifact writes |
-| Fork a repository † | ~0.01 DASH for 8 packs / 5 branches, ~0.03 for 36 packs on moutai; parent packs referenced, not uploaded |
+| Fork a repository | ~0.008 DASH for a small repository (1 pack, 1 branch, testnet); parent packs referenced, not uploaded |
 | Mirror a GitHub repository, first run † | Historical moutai examples: 0.078 DASH (`dash-faucet`) and 0.112 for a repository with 2 PRs, 15 comments and 7 reviews. No-new-content rerun: 0 |
 | Top up a browser key's budget † | ~0.00002 DASH on moutai |
 | Clone, fetch, browse, read issues, download a zip | **free** |

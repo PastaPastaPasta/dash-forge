@@ -279,7 +279,7 @@ The push prints where the pack went and what Platform charged:
 dash: stored pack 7b246a46c436 (201.0 KiB, 4 objects)
 dash: pack 7b246a46c436 (201.0 KiB) stored on nas (1 verified)
 dash: updated main → 2ca4b79
-dash: done · Platform charged ≈0.0054 DASH · remaining 0.9900 DASH · https://forge.dashhq.org/<owner>/nas-demo
+dash: done · Platform charged ≈0.0054 DASH · remaining 0.9900 DASH · https://testnet-forge.dashhq.org/<owner>/nas-demo
 ```
 
 **The same profile also takes CI logs.** `dg ci report <owner>/<repo> --sha <commit> --name build --status completed --conclusion success --log build.log --storage nas` (see [CI and check runs](ci.md)) uploads a run's log to this bucket.

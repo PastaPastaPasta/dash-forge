@@ -37,7 +37,7 @@ jobs:
         with:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}
-          network: testnet                      # Forge's network today (the default)
+          network: testnet                      # the default; or mainnet
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}
 ```
@@ -63,7 +63,7 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 | `log` | | A file to upload as the run's log. It needs `log-storage`. |
 | `log-storage` | | The storage profile the log goes to. The job must provide it: a `storage.toml` under `$XDG_CONFIG_HOME/dash-forge/` naming a bucket, with the bucket's credentials in the job's environment (see [Bring your own storage](../docs/guides/bring-your-own-storage.md)). |
 | `public-log` | `false` | No longer has any effect (it warns): a private repository's check run cannot carry a log. |
-| `network` / `devnet-name` | `testnet` / empty | Which network the Forge repository is on. The default is testnet, which the hosted site uses; Forge has no mainnet deployment yet. `devnet-name` (lowercase letters, digits, `-`) is required with `network: devnet` and ignored otherwise. |
+| `network` / `devnet-name` | `testnet` / empty | Which network the Forge repository is on. The default is testnet. Mainnet needs binaries built after its registration (a recent commit with `install: 'source'`); the v0.2.0 release knows testnet only. `devnet-name` (lowercase letters, digits, `-`) is required with `network: devnet` and ignored otherwise. |
 | `version` | `0.2.0` | The Dash Forge release to install: the release this action version was cut with. Empty: `install: 'true'` builds from source. |
 | `install` | `true` | `true`: install release `version` (the step warns, or fails with `fail-on-error`, if it is not published), or, with `version` empty, build `dg` from the action's own source. `source`: always build from source. `false`: use a `dg` already on `PATH`. A second use of the action in the same job reuses the installed `dg`. |
 | `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, which is trusted like any other cache of your repository: a workflow there that can write the default branch's caches (one that runs a pull request's code, say) could plant one. `false`: compile everything on every run. |

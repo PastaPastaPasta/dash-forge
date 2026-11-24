@@ -85,11 +85,11 @@ dg auth new
 
 `dg` proves the deposit with an InstantSend lock when it can, which takes seconds, and otherwise with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
 
-> **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
+> **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet.
 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
-- **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On mainnet the sheet leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under **Other ways to sign in**.)
+- **In the web app**: on [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org) (or [forge.dashhq.org](https://forge.dashhq.org) on mainnet), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On mainnet the sheet leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under **Other ways to sign in**.)
 - **With the Dash bridge**: <https://bridge.thepasta.org>, on testnet, then **Download Key Backup**.
 
 To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with DashPay and approve once for all of Forge). On testnet that needs DashPay Wallet for Android's testnet build, 11.9.2 or later; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
@@ -168,7 +168,7 @@ dg storage add            # e.g. a profile named r2-main; offers to make it your
 dg storage test r2-main   # re-run the checks at any time
 ```
 
-**In the browser**, open **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for everything the web app uploads: a merge's pack, a commit the browser makes to a pull request's branch (applying suggestions, "Update branch"), and release assets. `git push` uses `dg`'s profiles.
+**In the browser**, open **Settings → Storage** (`/settings/storage`) in the web app. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for everything the web app uploads: a merge's pack, a commit the browser makes to a pull request's branch (applying suggestions, "Update branch"), and release assets. `git push` uses `dg`'s profiles.
 
 [Bring your own storage](bring-your-own-storage.md) has the provider-by-provider setup and the flags for scripts.
 
@@ -189,7 +189,7 @@ Creating Exam…/my-project on testnet
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)
 Proceed? [Y/n] y
-✓ created  https://forge.dashhq.org/Exam…/my-project
+✓ created  https://testnet-forge.dashhq.org/Exam…/my-project
 ✓ remote 'origin' → dash://Exam…/my-project
 ✓ git config dash.storage=r2-main
 dash: Exam…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
@@ -200,18 +200,18 @@ dash: stored pack 6ce98e05facd (1.2 MiB, 312 objects)
 dash: pack 6ce98e05facd (1.2 MiB) stored on r2-main (1 verified)
 dash: updated main → 8f3e2a1
 dash: history index published (full, 42 paths, 1 commits)
-dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://forge.dashhq.org/Exam…/my-project
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
 To dash://Exam…/my-project
  * [new branch]      main -> main
 branch 'main' set up to track 'origin/main'.
 ✓ main → 8f3e2a1   this push ~0.0052 DASH
   total ~0.0076 DASH (create ~0.0024 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
-Open it: https://forge.dashhq.org/Exam…/my-project
+Open it: https://testnet-forge.dashhq.org/Exam…/my-project
 ```
 
 (A first push to your own bucket; the size and paths are illustrative. On testnet, DASH is test money; when `dg` can fetch a price it adds what the same charge would cost on mainnet (`≈ $… on mainnet`). See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0025 DASH**, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH**, is printed afterwards. Members-only content (below), on by default, adds about 0.0011 DASH on its own line, so a default `dg init` creates for about 0.0025 DASH. See [Costs](costs.md).
 
 What it does, in order:
 
@@ -278,7 +278,7 @@ dash: storage      → r2-main · Platform stores manifest + refs only, est 0.00
 dash: r2-main      ████████████████ 245 B  verified   0.2 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0058 DASH
 dash: history index published (full, 3 paths, 2 commits)
-dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://forge.dashhq.org/Exam…/my-project
+dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
 ```
 
 (The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)
@@ -370,7 +370,7 @@ The check is a safety net, not a guarantee: it knows a handful of formats, and i
 
 ## 7. View it on the web
 
-Open the link from the push's last line. Short links work too: `https://forge.dashhq.org/<owner id>/my-project`.
+Open the link from the push's last line. Short links work too: `https://testnet-forge.dashhq.org/<owner id>/my-project` (`forge.dashhq.org` on mainnet).
 
 The web app has no server behind it. Your browser reads the repository straight from Dash Platform, checks the Platform proofs, and re-hashes every file it shows. The **Verification** card in the right-hand rail says what was checked, including whether the quorum keys the proofs rest on agreed with a second source. [Verify Forge](verify-forge.md) explains it.
 

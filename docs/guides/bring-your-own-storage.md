@@ -365,7 +365,7 @@ The examples in this guide use the mainnet origin. A rule that names an origin (
 
 ## CORS header names
 
-Browsers send the request headers of a preflight in lowercase (`Access-Control-Request-Headers: range`), and some stores compare `AllowedHeaders` case-sensitively: Garage refuses a `range` preflight for `"AllowedHeaders": ["Range"]`. So every document in this guide lists lowercase names, which work on AWS, R2, B2, Garage and RustFS alike.
+Browsers send the request headers of a preflight in lowercase (`Access-Control-Request-Headers: range`), and some stores compare `AllowedHeaders` case-sensitively: Garage refuses a `range` preflight for `"AllowedHeaders": ["Range"]`. So every document in this guide lists lowercase names, which work on Garage and RustFS alike.
 
 The web app does not need `Content-Range` in `Access-Control-Expose-Headers` (it slices ranged reads itself), so `dg storage test` only warns when a store does not expose it.
 

@@ -289,7 +289,7 @@ The **Use my Dash wallet** tile asks your wallet for one key for all of Forge th
 |---|---|---|
 | DashPay Wallet for Android 11.9.2 or later, testnet build (`dashpay-wallet-…-testnet.apk` on the [DashPay Wallet releases](https://github.com/dashpay/dash-wallet/releases/latest)) | testnet | **Yes.** The testnet build installs next to the store app. |
 | Dash Wallet for iOS 9.1.4 or later | testnet | No: there is no testnet build of the iOS app to install. |
-| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | **Yes**, in the web app at forge.dashhq.org, which shows a `dashpay://connect` code. |
+| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | **Yes**: the web app at forge.dashhq.org and `dg auth login --network mainnet --wallet` both show a `dashpay://connect` code. |
 | Any released wallet | devnets | No: released wallets carry no devnet's settings. |
 
 On testnet the sheet lists the wallet first; creating an identity in the browser stays the recommended start for newcomers, since the testnet wallet is a sideloaded app. In the wallet the feature is under More → Tools → Connections.

@@ -51,7 +51,7 @@ pnpm test                    # vitest: unit, component and conformance tests, no
 
 `pnpm test` includes the client-rule conformance suite, which runs every case in `forge-contracts/vectors/` against the TypeScript rules in `lib/rules/`. The Rust rules run the same cases, so a rule change updates both (see [CONTRIBUTING.md](../CONTRIBUTING.md#rules-that-both-clients-share)).
 
-Files named `*.live.test.ts` talk to a real network and are skipped unless `FORGE_LIVE=1` is set. Each file's header says which network it needs. Most still target devnet sakura, which is gone, so they skip.
+Files named `*.live.test.ts` talk to a real network and are skipped unless `FORGE_LIVE=1` is set. Each file's header says which network it needs. Most still target devnet sakura, which is gone, and fail if run.
 
 ### Browser tests (Playwright)
 
