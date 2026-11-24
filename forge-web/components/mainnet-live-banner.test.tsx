@@ -59,7 +59,7 @@ describe('MainnetLiveBanner', () => {
     render(TESTNET, SITE)
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
-    expect(b.textContent).toContain('You’re on Forge testnet, where DASH has no cash value. Forge is live on mainnet at forge.example')
+    expect(b.textContent).toContain('Forge testnet (test DASH only) — mainnet is live at forge.example')
     expect(b.querySelector('a')!.getAttribute('href')).toBe('https://forge.example')
   })
 

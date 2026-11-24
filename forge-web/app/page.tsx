@@ -76,15 +76,14 @@ export default function LandingPage(): JSX.Element {
   return (
     <AppShell wide>
       {/* Hero */}
-      <section className="mx-auto max-w-3xl pb-4 pt-8 text-center sm:pt-14">
+      <section className="mx-auto max-w-3xl pb-2 pt-6 text-center sm:pt-10">
         <h1 className="text-3xl leading-tight tracking-tight sm:text-5xl">
           A git forge with <span className="text-forge-700 dark:text-forge-500">no server to trust.</span>
         </h1>
-        <p className="mx-auto mt-4 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
-          Git repositories, issues, pull requests and reviews, like GitHub, with no server. Everything lives on
-          the Dash network, and your browser verifies what it shows. No host can take it down.
+        <p className="mx-auto mt-3 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
+          Git repositories, issues and pull requests on Dash Platform, verified in your browser. Reading and cloning are free.
         </p>
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
           <Link href="/mirror/" data-testid="hero-mirror">
             <Button variant="primary" size="lg">
               <CopyPlus className="h-4 w-4" aria-hidden /> Mirror a GitHub repo
@@ -112,86 +111,17 @@ export default function LandingPage(): JSX.Element {
         </div>
       </section>
 
-      {/* Why (CJ-2): three claims, each backed by something this page links to. */}
-      <section aria-label="Why Dash Forge" className="mx-auto mt-8 grid max-w-4xl grid-cols-1 gap-3 sm:grid-cols-3" data-testid="why-tiles">
-        <Feature
-          icon={<ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />}
-          title="Can’t go down, can’t be taken down"
-          body="No company runs a server. Your browser verifies every branch and file against Dash Platform, and this app is a static bundle anyone can host."
-          link={{ href: verifyGuideUrl(), label: 'Verify this build' }}
-        />
-        <Feature
-          icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />}
-          title="Private means encrypted"
-          body="A private repository’s code, issues and comments are encrypted on your device, and the network refuses unencrypted issues, comments and branch names for it."
-          link={{ href: '/private/', label: 'What stays visible' }}
-        />
-        <Feature
-          icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
-          title="Spam has a price"
-          body={<>Opening an issue costs its author about {creditsAsDash(typicalIssueCredits())} DASH on mainnet<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" />, so flooding a project costs real money. Reading and cloning are free.</>}
-          link={{ href: DOCS.costs, label: 'What it costs' }}
-        />
-      </section>
-
-      {/* How it works (QW-013): what an identity and credits are, before anyone is asked to sign in. */}
-      <section aria-labelledby="how-it-works" className="mx-auto mt-10 max-w-4xl" data-testid="how-it-works">
-        <h2 id="how-it-works" className="mb-3 text-xl">How it works</h2>
-        <ol className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Step
-            icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />}
-            title="1. Get a Dash identity"
-            body="Your identity is your account, made from a 12-word recovery phrase only you hold. Reading and cloning need no identity."
-            link={{ href: DOCS.identity, label: 'Identities and keys' }}
-          />
-          <Step
-            icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
-            title="2. Fund it with a little DASH"
-            body={
-              testNetwork ? (
-                <>
-                  <TestCreditsBadge className="mb-1 mr-1" />
-                  Every write costs a small fee, shown before you sign. On {networkName()} it&apos;s paid in free test DASH{faucet ? ' from the faucet' : ''}. On mainnet an issue would cost about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and <PushCostShort network="mainnet" />. Reading is free.
-                </>
-              ) : (
-                <>Every write costs a small fee, shown before you sign: an issue about {creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" /> and <PushCostShort network="mainnet" />, paid from your identity&apos;s credits. Reading is free.</>
-              )
-            }
-            link={faucet ? { href: faucet, label: `${networkName()} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
-          />
-          <Step
-            icon={<Upload className="h-4 w-4 text-forge-500" aria-hidden />}
-            title="3. Push with git"
-            body="Create a repo here or with the dg command line, then git push to a dash:// remote. Your code goes to your own storage or to Dash Platform."
-            link={{ href: DOCS.quickStart, label: 'Quick start' }}
-          />
-        </ol>
-        <p className="mt-3 text-dense text-anvil-600 dark:text-anvil-400">
-          <Link href="/start/" className="hit-area text-forge-700 underline dark:text-forge-300">
-            Getting started
-          </Link>
-          {' · '}
-          <Link href={DOCS.guides} className="hit-area text-forge-700 underline dark:text-forge-300">
-            All user guides
-          </Link>
-          {' · '}
-          <Link href={DOCS.movingFromGithub} className="hit-area text-forge-700 underline dark:text-forge-300">
-            Moving from GitHub
-          </Link>
-        </p>
-      </section>
-
-      {/* Featured (QW-045): the network's showcase repos, before the newest ones. */}
+      {/* Featured */}
       {deployed && featured && (showcase.data?.length ?? 0) > 0 ? (
-        <section className="mt-14" aria-labelledby="featured-repos" data-testid="featured-repos">
-          <h2 id="featured-repos" className="mb-4 text-xl">Featured repos</h2>
+        <section className="mt-10" aria-labelledby="featured-repos" data-testid="featured-repos">
+          <h2 id="featured-repos" className="mb-3 text-xl">Featured repos</h2>
           <RepoGrid repos={showcase.data ?? []} />
         </section>
       ) : null}
 
       {/* Discovery */}
-      <section className="mt-14">
-        <div className="mb-4 flex items-center justify-between gap-3">
+      <section className="mt-10">
+        <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-xl">Recent repos</h2>
           <div className="flex items-center gap-3">
             {feed.loading ? <Spinner label="Reading forge-core" /> : null}
@@ -250,6 +180,64 @@ export default function LandingPage(): JSX.Element {
             ))}
           </div>
         )}
+      </section>
+
+      {/* Why & how it works — one concise strip instead of six repeated cards. */}
+      <section aria-label="How Dash Forge works" className="mt-12 border-t border-anvil-200 pt-8 dark:border-anvil-800" data-testid="why-tiles">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <Feature
+            icon={<ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />}
+            title="No server to trust"
+            body="Your browser verifies every branch and file against Dash Platform."
+            link={{ href: verifyGuideUrl(), label: 'Verify this build' }}
+          />
+          <Feature
+            icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />}
+            title="Private means encrypted"
+            body="Private code, issues and comments encrypt on your device."
+            link={{ href: '/private/', label: 'What stays visible' }}
+          />
+          <Feature
+            icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
+            title="Small fee to write"
+            body={
+              testNetwork ? (
+                <>
+                  <TestCreditsBadge className="mr-1" />
+                  Reading is free. Writes use free test DASH on {networkName()}.
+                </>
+              ) : (
+                <>Reading is free. An issue costs ~{creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" />.</>
+              )
+            }
+            link={faucet ? { href: faucet, label: `${networkName()} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
+          />
+        </div>
+        <details className="mt-4 text-dense text-anvil-600 dark:text-anvil-400" data-testid="how-it-works">
+          <summary className="w-fit cursor-pointer font-medium text-anvil-700 hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:text-anvil-300 dark:hover:text-anvil-100">
+            How identities, costs and pushing work
+          </summary>
+          <ol className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Step
+              icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />}
+              title="1. Get a Dash identity"
+              body="A 12-word recovery phrase is your account. Reading needs none."
+              link={{ href: DOCS.identity, label: 'Identities and keys' }}
+            />
+            <Step
+              icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
+              title="2. Fund writes"
+              body={<>Every write shows its fee first: an issue ~{creditsAsDash(typicalIssueCredits())} DASH<FiatNote dash={creditsToDash(typicalIssueCredits())} network="mainnet" />, <PushCostShort network="mainnet" />.</>}
+              link={{ href: DOCS.costs, label: 'What it costs' }}
+            />
+            <Step
+              icon={<Upload className="h-4 w-4 text-forge-500" aria-hidden />}
+              title="3. Push with git"
+              body="Create a repo here or with dg, then git push to a dash:// remote."
+              link={{ href: DOCS.quickStart, label: 'Quick start' }}
+            />
+          </ol>
+        </details>
       </section>
     </AppShell>
   )

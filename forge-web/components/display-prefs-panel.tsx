@@ -16,8 +16,7 @@ export function DisplayPrefsPanel(): JSX.Element {
   return (
     <div className="space-y-3" data-testid="display-prefs">
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        Commits you make in this browser (merges, file edits, applied suggestions) are authored with this name and email, like
-        git&apos;s user.name and user.email.
+        Used as git author for commits made in this browser.
       </p>
       <Field label="Commit author name" htmlFor="merge-name">
         <Input id="merge-name" value={prefs.mergeName} onChange={(e) => update({ mergeName: e.target.value })} placeholder="Alice Example" />
