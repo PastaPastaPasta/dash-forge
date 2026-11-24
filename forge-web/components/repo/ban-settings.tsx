@@ -113,8 +113,7 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
     <Section id="bans" title="Bans" icon={<BanIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="bans">
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Forge hides what a banned identity wrote in this repository, behind a &ldquo;Show&rdquo; link, and won&apos;t post its new issues, pull requests,
-          comments or reviews. Platform still accepts its writes. Only the maintainer who banned someone can lift it.
+          Hides posts from banned identities and blocks new ones in Forge apps. Only the maintainer who added a ban can lift it.
         </p>
         {bans.error ? (
           <ErrorState message={bans.error} onRetry={bans.reload} />

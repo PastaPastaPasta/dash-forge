@@ -409,11 +409,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       <div>
         <h1 className="text-xl">Open a pull request</h1>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
-          Propose merging a branch into {repo.name}. Anyone can open one; maintainers and writers merge.{' '}
+          Pick a branch to merge into {repo.name}, or{' '}
           <Link href={repoHref('/repo/compare', addr, { base: branchName(base), head: head === null || head.repo.repoId !== repo.repoId ? '' : branchName(head.refName) })} className="hit-area text-forge-700 underline underline-offset-2 dark:text-forge-400">
-            Compare tags or commits
-          </Link>{' '}
-          without opening one.
+            compare tags or commits
+          </Link>
+          .
         </p>
       </div>
 
@@ -501,7 +501,14 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         {forks.loading && identity !== null ? <span className="pb-2 text-[12px] text-anvil-600 dark:text-anvil-400">Looking for your forks…</span> : null}
       </div>
 
-      <PushBranchHint repo={repo} forkDefaults={{ defaultBranch: home.defaultBranch, description: home.description }} forks={forks.error !== null ? 'failed' : forks.data === null ? null : ownForks.map((f) => f.fork)} />
+      <details className="text-dense" open={options.length <= 1 || undefined}>
+        <summary className="hit-area cursor-pointer select-none text-anvil-600 hover:text-anvil-900 dark:text-anvil-300 dark:hover:text-anvil-50">
+          Need to push a branch first?
+        </summary>
+        <div className="mt-2">
+          <PushBranchHint repo={repo} forkDefaults={{ defaultBranch: home.defaultBranch, description: home.description }} forks={forks.error !== null ? 'failed' : forks.data === null ? null : ownForks.map((f) => f.fork)} />
+        </div>
+      </details>
 
       {noBase ? (
         <p role="alert" className="text-dense text-caution-700 dark:text-caution-400">

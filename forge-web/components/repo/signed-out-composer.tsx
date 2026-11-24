@@ -10,7 +10,6 @@ import { MessageSquare } from 'lucide-react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { SignInButton } from '@/components/sign-in-button'
-import { CostPreview } from '@/components/ui/cost-preview'
 import type { CostPreview as Cost } from '@/lib/sdk'
 
 /**
@@ -24,15 +23,13 @@ export function useSignedOut(): boolean {
   return identity === null && !locked && !resuming && (vaultsLoaded || vaultsError !== null)
 }
 
-export function SignedOutComposer({ cost }: { cost: Cost }): JSX.Element {
+export function SignedOutComposer({ cost: _cost }: { cost: Cost }): JSX.Element {
   return (
     <div className="flex flex-wrap items-center gap-3" data-testid="signed-out-composer">
       <MessageSquare className="h-5 w-5 shrink-0 text-anvil-400 dark:text-anvil-500" aria-hidden />
-      <div className="min-w-0 flex-1">
-        <h3 className="text-dense font-medium text-anvil-900 dark:text-anvil-50">Sign in to join the conversation</h3>
-        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Comments are signed by your Dash identity and paid for in credits.</p>
-      </div>
-      <CostPreview cost={cost} className="text-[12px]" />
+      <p className="min-w-0 flex-1 text-dense font-medium text-anvil-900 dark:text-anvil-50">
+        Sign in to join the conversation
+      </p>
       <SignInButton size="sm" />
     </div>
   )

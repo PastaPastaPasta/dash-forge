@@ -152,7 +152,7 @@ test.describe('history index (live)', () => {
     await expect(log).toBeVisible({ timeout: 90_000 })
     await expect(log).toHaveAttribute('data-source', 'index')
     await expect(page.getByTestId('commit-row')).toHaveCount(40)
-    await expect(page.getByTestId('log-from-index')).toBeVisible()
+    await expect(page.getByTestId('log-status')).toHaveAttribute('title', /history index/)
     await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => undefined)
     const total = [...counts.values()].reduce((a, n) => a + n, 0)
     const budget = JSON.stringify(Object.fromEntries(counts))

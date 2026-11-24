@@ -10,7 +10,6 @@ import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { BackendBadge } from '@/components/ui/backend-badge'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
@@ -31,7 +30,6 @@ import { CodeSearchBox } from '@/components/repo/code-search-box'
 import { MembersChip } from '@/components/repo/audience'
 import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
 import { MovedBanner } from '@/components/repo/moved-banner'
-import { SecurityPolicyLink } from '@/components/repo/security-policy'
 import { SealOffBanner } from '@/components/repo/seal-off-banner'
 
 /**
@@ -161,12 +159,14 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           </TitleTag>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <MembersChip home={home} />
-          <BackendBadge backend={home.backend} />
-          <SecurityPolicyLink home={home} addr={addr} load={current === 'code'} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <CodeSearchBox addr={addr} />
-          <CopyLinkButton repo={addr} visibility={home.repo.visibility} />
+          <CopyLinkButton
+            repo={addr}
+            visibility={home.repo.visibility}
+            className="border-transparent bg-transparent text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:border-transparent dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+          />
           {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
           <PinButton repo={home.repo} member={role !== null} />
           <WatchButton repo={home.repo} />
@@ -234,16 +234,16 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
  * decrypted with; everyone else sees that the repo is private.
  */
 function PrivateChip({ home }: { home: RepoHome }): JSX.Element {
-  // The newest epoch the reader holds a key for (the current one, unless it is not readable yet).
   const keys = home.private?.access === 'member' ? [...home.private.session.resolution.keys.keys()] : []
   const epoch = keys.length > 0 ? Math.max(...keys) : null
   return (
     <span
       data-testid="private-chip"
+      title={epoch !== null ? `Private · decrypted with your key (epoch ${epoch})` : 'Private repository'}
       className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300"
     >
       <Lock className="h-3 w-3" aria-hidden />
-      {epoch !== null ? `Private · decrypted with your key (epoch ${epoch})` : 'private'}
+      Private
     </span>
   )
 }

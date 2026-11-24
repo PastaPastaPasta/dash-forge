@@ -1,0 +1,177 @@
+'use client'
+
+import { useEffect, useId, useState } from 'react'
+import { ChevronDown, Loader2, Lock } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { shortOid, timeAgo, TRUST_ROW_TITLE, type PrivacyNote, type TrustLink, type TrustReport } from '@/lib/view'
+import { Author } from '@/components/author'
+import { TRUST_META } from '@/components/ui/verification-chip'
+
+function Sentence({ text }: { text: string }): JSX.Element {
+  return (
+    <>
+      {text.split('`').map((part, i) =>
+        i % 2 === 1 ? (
+          <code key={i} className="font-mono text-anvil-800 dark:text-anvil-100">
+            {part}
+          </code>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  )
+}
+
+function StateWord({ link }: { link: TrustLink }): JSX.Element {
+  const meta = TRUST_META[link.state]
+  return (
+    <span className={cn('inline-flex shrink-0 items-center gap-1 text-[11px] font-medium', meta.klass)}>
+      {link.checking ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : <meta.Icon className="h-3 w-3" aria-hidden />}
+      {link.checking ? 'Checking…' : meta.label}
+    </span>
+  )
+}
+
+function Row({ title, link, children }: { title: string; link: TrustLink; children?: React.ReactNode }): JSX.Element {
+  return (
+    <li className="border-b border-anvil-200 py-2.5 first:pt-0 last:border-b-0 last:pb-0 dark:border-anvil-750">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">{title}</span>
+        <StateWord link={link} />
+      </div>
+      <p className="mt-0.5 text-[12px] leading-snug text-anvil-600 dark:text-anvil-300">
+        {children ?? <Sentence text={link.detail} />}
+      </p>
+      {link.note ? (
+        <p className="mt-1 text-[11px] leading-snug text-anvil-500 dark:text-anvil-400">{link.note}</p>
+      ) : null}
+    </li>
+  )
+}
+
+function PrivacyRow({ note }: { note: PrivacyNote }): JSX.Element {
+  return (
+    <li data-testid="trust-privacy" data-kind={note.kind} className="border-b border-anvil-200 py-2.5 last:border-b-0 last:pb-0 dark:border-anvil-750">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">{note.title}</span>
+        <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-anvil-600 dark:text-anvil-300">
+          <Lock className="h-3 w-3" aria-hidden />
+          {note.label}
+        </span>
+      </div>
+      <p className="mt-0.5 text-[12px] leading-snug text-anvil-600 dark:text-anvil-300">{note.detail}</p>
+      <p className="mt-1 text-[11px] leading-snug text-anvil-500 dark:text-anvil-400">{note.note}</p>
+    </li>
+  )
+}
+
+function TipSentence({ report }: { report: TrustReport }): JSX.Element {
+  const { tip } = report
+  if (tip.heads.length === 0) return <Sentence text={tip.detail} />
+  const heads = [...tip.heads].sort((a, b) => b.createdAt - a.createdAt)
+  const name = tip.name === '' ? 'This ref' : tip.name
+  if (heads.length === 1) {
+    const h = heads[0]!
+    return (
+      <>
+        <code className="font-mono text-anvil-800 dark:text-anvil-100">{name}</code> ={' '}
+        <code className="font-mono text-anvil-800 dark:text-anvil-100">{shortOid(h.oid)}</code>, the latest signed update by{' '}
+        <Author identityId={h.author} link={false} className="align-middle" />, {timeAgo(h.createdAt)}.
+      </>
+    )
+  }
+  return (
+    <>
+      <Sentence text={tip.detail} />
+      <span className="mt-1 block space-y-1">
+        {heads.map((h) => (
+          <span key={`${h.id}${h.oid}`} className="flex flex-wrap items-center gap-1">
+            <code className="font-mono text-anvil-800 dark:text-anvil-100">{shortOid(h.oid)}</code> by{' '}
+            <Author identityId={h.author} link={false} /> {timeAgo(h.createdAt)}
+          </span>
+        ))}
+      </span>
+    </>
+  )
+}
+
+function HostingNote(): JSX.Element {
+  const [host, setHost] = useState<string | null>(null)
+  useEffect(() => setHost(window.location.host), [])
+  const who =
+    host === 'forge.dashhq.org' ? 'forge.dashhq.org (GitHub Pages, behind Cloudflare)' : host === null ? 'the site you opened' : host
+  return (
+    <>
+      This app&apos;s code comes from {who}, and you trust that host for the code itself. If you don&apos;t, pin the IPFS build or
+      use the CLI, which needs no website.
+    </>
+  )
+}
+
+export function RepoVerificationChip({ report, className }: { report: TrustReport; className?: string }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const bodyId = useId()
+  const meta = TRUST_META[report.overall]
+  const checking = report.chain.checking === true
+  const statusLabel = checking ? 'Checking…' : meta.label
+
+  return (
+    <section
+      aria-label="Verification"
+      data-testid="verification-card"
+      data-state={report.overall}
+      className={cn('min-w-0', className)}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        aria-label={`Verification: ${statusLabel}`}
+        title={report.summary}
+        data-testid="verification-chip"
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors coarse:min-h-11 coarse:px-3',
+          report.overall === 'failed'
+            ? 'border-danger/40 bg-danger/5 text-danger-700 hover:bg-danger/10 dark:text-danger-400'
+            : 'border-anvil-200 bg-white text-anvil-700 hover:bg-anvil-50 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:bg-anvil-850',
+        )}
+      >
+        {checking ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
+        ) : (
+          <meta.Icon className={cn('h-3.5 w-3.5 shrink-0', meta.klass)} aria-hidden />
+        )}
+        <span className={checking ? 'text-anvil-500 dark:text-anvil-400' : meta.klass}>{statusLabel}</span>
+        <ChevronDown
+          className={cn('h-3.5 w-3.5 shrink-0 text-anvil-500 transition-transform dark:text-anvil-400', open && 'rotate-180')}
+          aria-hidden
+        />
+      </button>
+
+      {open ? (
+        <div
+          id={bodyId}
+          className="mt-2 animate-fade-in rounded-lg border border-anvil-200 bg-anvil-50 p-3 dark:border-anvil-750 dark:bg-anvil-850"
+        >
+          <p data-testid="verification-summary" className={cn('mb-2.5 text-[12px] font-medium', checking ? 'text-anvil-500 dark:text-anvil-400' : meta.klass)}>
+            {report.summary}
+          </p>
+          <ol className="mb-3">
+            <Row title={TRUST_ROW_TITLE.chain} link={report.chain} />
+            <Row title={TRUST_ROW_TITLE.tip} link={report.tip}>
+              <TipSentence report={report} />
+            </Row>
+            <Row title={TRUST_ROW_TITLE.content} link={report.content} />
+            <Row title={TRUST_ROW_TITLE.source} link={report.source} />
+            {report.privacy ? <PrivacyRow note={report.privacy} /> : null}
+          </ol>
+          <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
+            <HostingNote />
+          </p>
+        </div>
+      ) : null}
+    </section>
+  )
+}

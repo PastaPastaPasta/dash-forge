@@ -10,9 +10,8 @@
  * with who runs it, and "verify" checks the gateway's refs against the ones this page proved.
  */
 
-import { useId, useRef, useState, type ReactNode } from 'react'
-import { Check, Copy, Download, TerminalSquare } from 'lucide-react'
-import { BackendBadge } from '@/components/ui/backend-badge'
+import { useId, useRef, useState } from 'react'
+import { Check, ChevronDown, Copy, Download, TerminalSquare } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
@@ -39,49 +38,15 @@ import {
   type ZipProgress,
 } from '@/lib/view/zip'
 
-type CloneTab = 'dash' | 'https' | 'dg'
-
-const TAB_LABEL: Readonly<Record<CloneTab, string>> = { dash: 'Dash remote', https: 'HTTPS', dg: 'dg CLI' }
-
 const HELP_LINK = 'hit-area font-medium text-forge-700 underline underline-offset-2 hover:text-forge-800 dark:text-forge-400 dark:hover:text-forge-300'
 
 export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
   const cmd = repoCommands(addr.owner, addr.name)
   const [installing, setInstalling] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   const gateway = GATEWAY !== null && home.repo.visibility === 'public' ? GATEWAY : null
-  const tabs: CloneTab[] = gateway !== null ? ['dash', 'https', 'dg'] : ['dash', 'dg']
-  const [picked, setTab] = useState<CloneTab>('dash')
-  // A tab that went away (the repo turned private) falls back to the first.
-  const tab: CloneTab = tabs.includes(picked) ? picked : 'dash'
-  const uid = useId()
-  const tabId = (t: CloneTab): string => `${uid}-tab-${t}`
-  const panelId = (t: CloneTab): string => `${uid}-panel-${t}`
-  const tabRefs = useRef<Partial<Record<CloneTab, HTMLButtonElement | null>>>({})
+  const moreId = useId()
 
-  const onTabKey = (e: React.KeyboardEvent): void => {
-    const i = tabs.indexOf(tab)
-    let next: CloneTab | undefined
-    switch (e.key) {
-      case 'ArrowRight':
-        next = tabs[(i + 1) % tabs.length]
-        break
-      case 'ArrowLeft':
-        next = tabs[(i - 1 + tabs.length) % tabs.length]
-        break
-      case 'Home':
-        next = tabs[0]
-        break
-      case 'End':
-        next = tabs[tabs.length - 1]
-        break
-      default:
-        return
-    }
-    if (next === undefined) return
-    e.preventDefault()
-    setTab(next)
-    tabRefs.current[next]?.focus()
-  }
   const install = (
     <button type="button" onClick={() => setInstalling(true)} className={HELP_LINK}>
       Install
@@ -98,81 +63,48 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
         <h2 className="flex items-center gap-1.5 text-dense font-medium">
           <TerminalSquare className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Clone
         </h2>
-        <BackendBadge backend={home.backend} />
       </div>
-      <div role="tablist" aria-label="Clone with" className="flex gap-0.5 overflow-x-auto overflow-y-hidden border-b border-anvil-200 px-2 dark:border-anvil-800" onKeyDown={onTabKey}>
-        {tabs.map((t) => {
-          const on = t === tab
-          return (
-            <button
-              key={t}
-              ref={(el) => {
-                tabRefs.current[t] = el
-              }}
-              id={tabId(t)}
-              type="button"
-              role="tab"
-              aria-selected={on}
-              aria-controls={panelId(t)}
-              tabIndex={on ? 0 : -1}
-              data-testid={`clone-tab-${t}`}
-              onClick={() => setTab(t)}
-              className={cn(
-                '-mb-px inline-flex shrink-0 items-center gap-1 whitespace-nowrap border-b-2 px-1.5 py-2 text-[12px] font-medium coarse:min-h-11',
-                on
-                  ? 'border-forge-500 text-anvil-900 dark:text-anvil-50'
-                  : 'border-transparent text-anvil-600 hover:border-anvil-300 hover:text-anvil-900 dark:text-anvil-300 dark:hover:border-anvil-600 dark:hover:text-anvil-50',
-              )}
-            >
-              {TAB_LABEL[t]}
-              {t === 'dash' ? (
-                <>
-                  <span className="sr-only">,</span>
-                  <span className="rounded-full bg-verify/15 px-1.5 py-px text-[10px] font-semibold leading-4 text-verify-700 dark:text-verify-400">
-                    Recommended
-                  </span>
-                </>
-              ) : null}
-            </button>
-          )
-        })}
-      </div>
-      <div className="p-3">
-        <ClonePanel id={panelId('dash')} tabId={tabId('dash')} shown={tab === 'dash'}>
-          <CommandBox text={cmd.gitClone} what="git clone command" />
-          <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">Verified end to end from Dash Platform. Needs git-remote-dash · {install}</p>
-          <p className="mt-1 flex min-w-0 items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-            <span className="shrink-0">Remote URL</span>
-            <CommandBox text={cmd.remote} what="clone URL" compact />
-          </p>
-        </ClonePanel>
-        {gateway !== null ? (
-          <ClonePanel id={panelId('https')} tabId={tabId('https')} shown={tab === 'https'}>
-            <GatewayRow gateway={gateway} home={home} addr={addr} />
-          </ClonePanel>
-        ) : null}
-        <ClonePanel id={panelId('dg')} tabId={tabId('dg')} shown={tab === 'dg'}>
-          <CommandBox text={cmd.dgClone} what="dg repo clone command" />
-          <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">Clones and remembers the network; dg also pushes, opens PRs and more · {install}</p>
-        </ClonePanel>
-        <div className="mt-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+      <div className="space-y-2.5 p-3">
+        <CommandBox text={cmd.remote} what="clone URL" />
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <ZipDownload home={home} addr={addr} selected={selected} />
-          <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="clone-default-branch">
-            A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.
+          <button
+            type="button"
+            onClick={() => setMoreOpen((o) => !o)}
+            aria-expanded={moreOpen}
+            aria-controls={moreId}
+            data-testid="clone-more"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[12px] font-medium text-anvil-600 hover:bg-anvil-100 hover:text-anvil-900 coarse:min-h-11 coarse:px-2.5 dark:text-anvil-300 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"
+          >
+            More options
+            <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', moreOpen && 'rotate-180')} aria-hidden />
+          </button>
+        </div>
+        <div id={moreId} hidden={!moreOpen} className="space-y-3 border-t border-anvil-100 pt-3 dark:border-anvil-850" data-testid="clone-more-panel">
+          <div className="space-y-1">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">Git command</p>
+            <CommandBox text={cmd.gitClone} what="git clone command" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">dg CLI</p>
+            <CommandBox text={cmd.dgClone} what="dg repo clone command" />
+          </div>
+          {gateway !== null ? (
+            <div className="space-y-1">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">HTTPS</p>
+              <GatewayRow gateway={gateway} home={home} addr={addr} />
+            </div>
+          ) : null}
+          <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
+            Needs git-remote-dash · {install}
+          </p>
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
+            Checks out <span className="font-mono">{home.defaultBranch}</span>.
           </p>
         </div>
       </div>
       <InstallSheet open={installing} onClose={() => setInstalling(false)} />
     </section>
-  )
-}
-
-/** One tab's panel; the hidden ones stay mounted so a verify in flight keeps its result. */
-function ClonePanel({ id, tabId, shown, children }: { id: string; tabId: string; shown: boolean; children: ReactNode }): JSX.Element {
-  return (
-    <div id={id} role="tabpanel" aria-labelledby={tabId} hidden={!shown}>
-      {children}
-    </div>
   )
 }
 
@@ -392,15 +324,23 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
             ? 'Describing the commit for export-subst (git describe)…'
             : `Compressing ${formatBytes(progress.bytes)}…`
 
+  const statusText = label ?? message
   return (
-    <div className="mt-2">
+    <div>
       {tooLargeRef === tip ? (
-        <p className="text-[12px] text-caution-700 dark:text-caution-400">This ref is too large for a browser zip; clone instead.</p>
+        <p className="text-[12px] text-caution-700 dark:text-caution-400">Too large for a browser zip; clone instead.</p>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => void run()} disabled={busy || state.kind !== 'ready'} loading={busy} data-testid="zip-download">
+          <Button
+            size="sm"
+            onClick={() => void run()}
+            disabled={busy || state.kind !== 'ready'}
+            loading={busy}
+            title={state.kind === 'ready' ? `Download .zip of ${selected.name} (built in your browser, up to ${formatBytes(ZIP_MAX_BYTES)})` : 'Available once the code loads'}
+            data-testid="zip-download"
+          >
             {busy ? null : <Download className="h-3.5 w-3.5" aria-hidden />}
-            Download .zip of {selected.name}
+            Download .zip
           </Button>
           {busy ? (
             <button type="button" onClick={() => cancel.current?.abort()} className="text-[12px] underline">
@@ -409,9 +349,11 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
           ) : null}
         </div>
       )}
-      <p role="status" className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-        {label ?? message ?? (state.kind === 'ready' ? `Built in your browser, up to ${formatBytes(ZIP_MAX_BYTES)}.` : 'Available once the code loads.')}
-      </p>
+      {statusText ? (
+        <p role="status" className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
+          {statusText}
+        </p>
+      ) : null}
     </div>
   )
 }

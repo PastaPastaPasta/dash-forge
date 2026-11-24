@@ -136,7 +136,7 @@ function CommitRows({ commits, at, signatures }: { commits: PrCommits; at: RepoA
               <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                 <span className="min-w-0 truncate">{c.commit.author.name || 'unknown'}</span>
                 <span className="shrink-0 whitespace-nowrap">
-                  · <Time ms={c.commit.author.when} prefix="authored " />
+                  · <Time ms={c.commit.author.when} />
                 </span>
               </div>
             </div>
@@ -318,7 +318,7 @@ export function ChecksTab({
       <EmptyState
         icon={ListChecks}
         title={`No checks reported for ${headOid.slice(0, 7)}`}
-        body={`CI records check runs for the ${subject}: a runner the owner enrolled (dg ci runner new), the GitHub Action, or a maintainer or writer (dg ci report).`}
+        body={`No CI checks have been reported for this ${subject} yet.`}
       />
     )
   }

@@ -27,13 +27,8 @@ export function useRepoFacts(repoKey: string, tipOid: string | null): RepoFacts 
 /** The language bar and its legend, labelled approximate (stored sizes) and, when cut short, partial. */
 export function LanguageBar({ stats }: { stats: LanguageStats }): JSX.Element | null {
   const { languages, truncated, files } = stats
-  const note = (
-    <p className="mt-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="language-note">
-      ≈ by stored (compressed) size, adjusted for deltas and large data files{truncated ? `, based on the first ${plural(files, 'file')}` : ''}
-    </p>
-  )
+  const methodTitle = `≈ by stored (compressed) size, adjusted for deltas and large data files${truncated ? `, based on the first ${plural(files, 'file')}` : ''}`
   if (languages.length === 0) {
-    // Nothing counted: say so only when the walk was cut short (it may have stopped before any code).
     return truncated ? (
       <div className="mt-2 border-t border-anvil-100 pt-2 dark:border-anvil-850" data-testid="language-bar">
         <h3 className="text-anvil-500 dark:text-anvil-400">Languages</h3>
@@ -44,7 +39,7 @@ export function LanguageBar({ stats }: { stats: LanguageStats }): JSX.Element | 
     ) : null
   }
   return (
-    <div className="mt-2 border-t border-anvil-100 pt-2 dark:border-anvil-850" data-testid="language-bar">
+    <div className="mt-2 border-t border-anvil-100 pt-2 dark:border-anvil-850" data-testid="language-bar" title={methodTitle}>
       <h3 className="mb-1.5 text-anvil-500 dark:text-anvil-400">Languages</h3>
       <div className="flex h-2 overflow-hidden rounded-full" role="img" aria-label={languages.map((l) => `${l.name} ${l.percent}%`).join(', ')}>
         {languages.map((l) => (
@@ -60,7 +55,11 @@ export function LanguageBar({ stats }: { stats: LanguageStats }): JSX.Element | 
           </li>
         ))}
       </ul>
-      {note}
+      {truncated ? (
+        <p className="mt-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="language-note">
+          Based on the first {plural(files, 'file')}.
+        </p>
+      ) : null}
     </div>
   )
 }

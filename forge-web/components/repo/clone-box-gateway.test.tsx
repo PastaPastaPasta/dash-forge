@@ -68,11 +68,8 @@ const render = async (): Promise<void> => {
 
 const codes = (): string[] => [...host.querySelectorAll('code')].map((c) => c.textContent ?? '')
 const cmd = repoCommands('alice', 'proj')
-const tabs = (): string[] => [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent ?? '')
-const panel = (tab: string): HTMLElement => {
-  const t = host.querySelector<HTMLElement>(`[data-testid="clone-tab-${tab}"]`)
-  return document.getElementById(t?.getAttribute('aria-controls') ?? '') as HTMLElement
-}
+const moreButton = (): HTMLButtonElement | null => host.querySelector<HTMLButtonElement>('[data-testid="clone-more"]')
+const morePanel = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-testid="clone-more-panel"]')
 const click = async (el: Element | null): Promise<void> => {
   await act(async () => {
     ;(el as HTMLElement | null)?.click()
@@ -87,41 +84,28 @@ function advert(oid: string): string {
 }
 
 describe('CloneBox with a gateway', () => {
-  it('opens on the recommended Dash remote and labels the HTTPS tab with its operator', async () => {
+  it('shows dash:// upfront and folds git, dg CLI and HTTPS behind More options', async () => {
     await render()
-    expect(tabs()).toEqual(['Dash remote,Recommended', 'HTTPS', 'dg CLI'])
-    expect(host.querySelector('[aria-selected="true"]')?.textContent).toContain('Dash remote')
-    expect(codes()[0]).toBe(cmd.gitClone)
-    expect(codes()).toContain('dash://alice/proj')
-    expect(panel('dash').hidden).toBe(false)
-    expect(panel('https').hidden).toBe(true)
-    expect(panel('https').textContent).toContain('git clone https://gw.invalid/alice/proj.git')
-    expect(panel('https').textContent).toContain('HTTPS via dashhq gateway')
+    expect(codes()[0]).toBe(cmd.remote)
+    expect(moreButton()?.getAttribute('aria-expanded')).toBe('false')
+    expect(morePanel()?.hidden).toBe(true)
+    await click(moreButton())
+    expect(moreButton()?.getAttribute('aria-expanded')).toBe('true')
+    expect(morePanel()?.hidden).toBe(false)
+    expect(codes()).toContain(cmd.gitClone)
+    expect(codes()).toContain(cmd.dgClone)
+    expect(morePanel()?.textContent).toContain('git clone https://gw.invalid/alice/proj.git')
+    expect(morePanel()?.textContent).toContain('HTTPS via dashhq gateway')
   })
 
-  it('switches tabs by click and arrow keys, one panel shown at a time', async () => {
-    await render()
-    await click(host.querySelector('[data-testid="clone-tab-dg"]'))
-    expect(panel('dg').hidden).toBe(false)
-    expect(panel('dash').hidden).toBe(true)
-    expect(panel('dg').querySelector('code')?.textContent).toBe(cmd.dgClone)
-    await act(async () => {
-      host.querySelector('[role="tablist"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
-    })
-    expect(panel('dash').hidden).toBe(false)
-    expect(document.activeElement).toBe(host.querySelector('[data-testid="clone-tab-dash"]'))
-    expect(host.querySelector('[data-testid="clone-tab-dash"]')?.getAttribute('tabindex')).toBe('0')
-    expect(host.querySelector('[data-testid="clone-tab-dg"]')?.getAttribute('tabindex')).toBe('-1')
-  })
-
-  it('copies a command whole and says so', async () => {
+  it('copies the clone URL whole and says so', async () => {
     const writeText = vi.fn(async () => undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
     await render()
-    const button = panel('dash').querySelector('button:not([data-testid])') as HTMLButtonElement
-    expect(button.textContent).toBe('Copy git clone command')
+    const button = host.querySelector('button:not([data-testid])') as HTMLButtonElement
+    expect(button.textContent).toBe('Copy clone URL')
     await click(button)
-    expect(writeText).toHaveBeenCalledWith(cmd.gitClone)
+    expect(writeText).toHaveBeenCalledWith(cmd.remote)
     expect(button.textContent).toBe('Copied!')
     expect(host.textContent).toContain('Copied to clipboard')
   })
@@ -138,14 +122,13 @@ describe('CloneBox with a gateway', () => {
   it('gateway down: dash:// and the commands are unaffected; verify says it could not check', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))))
     await render()
-    expect(codes()[0]).toBe(cmd.gitClone)
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="gateway-verify"]')?.click()
-    })
+    expect(codes()[0]).toBe(cmd.remote)
+    await click(moreButton())
+    await click(host.querySelector('[data-testid="gateway-verify"]'))
     const verdict = host.querySelector('[data-testid="gateway-verdict"]')?.textContent ?? ''
     expect(verdict).toContain('could not be checked')
     expect(verdict).toContain('The Dash remote does not need it')
-    expect(codes()[0]).toBe(cmd.gitClone)
+    expect(codes()[0]).toBe(cmd.remote)
   })
 
   it('verify matches a gateway serving the proved tip', async () => {
@@ -158,9 +141,8 @@ describe('CloneBox with a gateway', () => {
       ),
     )
     await render()
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="gateway-verify"]')?.click()
-    })
+    await click(moreButton())
+    await click(host.querySelector('[data-testid="gateway-verify"]'))
     const verdict = host.querySelector('[data-testid="gateway-verdict"]')?.textContent ?? ''
     expect(verdict).toContain('Matches Dash Platform: 1 ref checked.')
     expect(verdict).toContain('block 9')
@@ -176,18 +158,17 @@ describe('CloneBox with a gateway', () => {
       ),
     )
     await render()
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="gateway-verify"]')?.click()
-    })
+    await click(moreButton())
+    await click(host.querySelector('[data-testid="gateway-verify"]'))
     expect(host.querySelector('[data-testid="gateway-verdict"]')?.textContent).toContain('Does not match Dash Platform')
   })
 })
 
 describe('CloneBox without a gateway', () => {
-  it('shows no HTTPS tab', async () => {
+  it('shows no HTTPS row inside More options', async () => {
     g.gateway = null
     await render()
-    expect(tabs()).toEqual(['Dash remote,Recommended', 'dg CLI'])
+    await click(moreButton())
     expect(host.querySelector('[data-testid="gateway-clone"]')).toBeNull()
     expect(codes().some((c) => c.includes('https://'))).toBe(false)
     expect(host.textContent).not.toContain('gateway')

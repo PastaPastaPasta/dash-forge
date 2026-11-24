@@ -34,14 +34,14 @@ afterEach(() => {
 })
 
 describe('SignedOutComposer', () => {
-  it('replaces the box for a signed-out visitor, with Sign in and the cost', () => {
+  it('replaces the box for a signed-out visitor with Sign in and hides cost math', () => {
     auth = base
     act(() => root.render(<Probe />))
     expect(el.querySelector('[data-testid=signed-out-composer]')).not.toBeNull()
     expect(el.querySelector('textarea')).toBeNull()
     expect(el.textContent).toContain('Sign in to join the conversation')
     expect(el.querySelector('button')?.textContent).toBe('Sign in')
-    expect(el.querySelector('[data-testid=cost-preview]')).not.toBeNull()
+    expect(el.querySelector('[data-testid=cost-preview]')).toBeNull()
   })
 
   it.each([

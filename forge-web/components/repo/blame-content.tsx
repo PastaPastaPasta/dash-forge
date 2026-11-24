@@ -460,7 +460,7 @@ export function BlameTable({
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-[12px] text-anvil-500 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-400" data-testid="blame-summary">
-        <span>
+        <span title="Computed in your browser from the file’s history. For authoritative results on repeated or moved lines, run git blame --first-parent.">
           {plural(lines.length, 'line')} · {plural(owning, 'commit')} · {plural(result.versions, 'version')} compared
         </span>
         {boundary !== null ? (
@@ -489,11 +489,6 @@ export function BlameTable({
           </span>
         ))}
       </div>
-      <p className="border-b border-anvil-100 px-4 py-1.5 text-[11px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400" data-testid="blame-caveat">
-        Computed in your browser from the file’s history. It can attribute some lines differently from{' '}
-        <span className="font-mono">git blame</span> (lines that repeat and move); <span className="font-mono">git blame --first-parent</span> is the
-        authoritative answer.
-      </p>
       <BlobToolbar href={href}>
         {range ? <span>{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} selected</span> : null}
       </BlobToolbar>

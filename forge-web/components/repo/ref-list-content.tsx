@@ -206,37 +206,49 @@ export function RefListContent({
       <EmptyState
         icon={Icon}
         title={empty}
-        body={`Push ${noun} with the git-remote-dash helper and it appears here.`}
+        body={`Push ${noun} to see it here.`}
       />
     )
   }
 
+  const showFilter = refs.length > 1 || query.trim() !== ''
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[14rem] flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-          <label htmlFor={`${kind}-search`} className="sr-only">Search {kind}</label>
-          <Input
-            id={`${kind}-search`}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="pl-8 font-mono text-[13px]"
-            placeholder={`Find a ${single}…`}
-          />
+      {showFilter || branchAdmin ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {showFilter ? (
+            <>
+              <div className="relative min-w-[14rem] flex-1">
+                <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+                <label htmlFor={`${kind}-search`} className="sr-only">Search {kind}</label>
+                <Input
+                  id={`${kind}-search`}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  className="pl-8 font-mono text-[13px]"
+                  placeholder={`Find a ${single}…`}
+                />
+              </div>
+              <label className="sr-only" htmlFor={`${kind}-sort`}>Sort</label>
+              <select
+                id={`${kind}-sort`}
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortMode)}
+                className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
+              >
+                <option value="name">Name</option>
+                <option value="version">Version</option>
+              </select>
+            </>
+          ) : null}
+          {branchAdmin ? (
+            <div className={showFilter ? '' : 'ml-auto'}>
+              <NewBranchButton home={home} admin={admin} onCreated={changed} />
+            </div>
+          ) : null}
         </div>
-        <label className="sr-only" htmlFor={`${kind}-sort`}>Sort</label>
-        <select
-          id={`${kind}-sort`}
-          value={sort}
-          onChange={(e) => setSort(e.target.value as SortMode)}
-          className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
-        >
-          <option value="name">Name</option>
-          <option value="version">Version</option>
-        </select>
-        {branchAdmin ? <NewBranchButton home={home} admin={admin} onCreated={changed} /> : null}
-      </div>
+      ) : null}
 
       {membersGroup ? (
         <h2 className="text-dense font-semibold text-anvil-800 dark:text-anvil-100" data-testid="refs-group-public">

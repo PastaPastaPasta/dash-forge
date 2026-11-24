@@ -310,7 +310,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               All
             </StateTab>
           </StateTabs>
-          <FilterBar active={filterCount(query) + (query.mentions ? 1 : 0)}>
+          <FilterBar
+            active={filterCount({ ...query, sort: 'newest' }) + (query.mentions ? 1 : 0)}
+            sort={<SortSelect id="issue-sort" value={query.sort} onChange={(sort) => change({ sort })} />}
+          >
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
             <MilestoneFilter milestones={milestones.data} value={query.milestone} none={query.noMilestone} onChange={(c) => change(c)} />
             <PersonFilter
@@ -326,17 +329,17 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               allowNone
               onChange={(assignee) => change({ assignee })}
             />
-            <label className="inline-flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300 coarse:min-h-11 coarse:min-w-11">
-              <input
-                type="checkbox"
-                checked={query.mentions}
-                disabled={identity === null}
-                onChange={(e) => change({ mentions: e.target.checked })}
-                className="accent-forge-600"
-              />
-              Mentions me
-            </label>
-            <SortSelect id="issue-sort" value={query.sort} onChange={(sort) => change({ sort })} />
+            {identity !== null ? (
+              <label className="inline-flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300 coarse:min-h-11 coarse:min-w-11">
+                <input
+                  type="checkbox"
+                  checked={query.mentions}
+                  onChange={(e) => change({ mentions: e.target.checked })}
+                  className="accent-forge-600"
+                />
+                Mentions me
+              </label>
+            ) : null}
           </FilterBar>
         </div>
 
@@ -357,11 +360,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             title={filtered ? 'No issues match' : query.state === 'closed' ? 'No closed issues' : query.state === 'all' ? 'No issues yet' : 'No open issues'}
             body={emptyIssuesBody(filtered, query.state, data?.closedCount ?? null, data?.openCount ?? null)}
             action={
-              filtered ? (
-                query.state === 'all' ? undefined : <Button onClick={() => change({ state: 'all' })} data-testid="issues-search-all">Search all issues</Button>
-              ) : !canCompose || archived ? undefined : (
-                <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>
-              )
+              filtered && query.state !== 'all' ? (
+                <Button onClick={() => change({ state: 'all' })} data-testid="issues-search-all">Search all issues</Button>
+              ) : undefined
             }
           />
         ) : (

@@ -228,12 +228,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
               All
             </StateTab>
           </StateTabs>
-          <FilterBar active={filterCount(query)}>
+          <FilterBar
+            active={filterCount({ ...query, sort: 'newest' })}
+            sort={<SortSelect id="pull-sort" value={query.sort} onChange={(sort) => change({ sort })} />}
+          >
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
             <MilestoneFilter milestones={milestones.data} value={query.milestone} none={query.noMilestone} onChange={(c) => change(c)} />
             <PersonFilter label="Author" value={query.author} signedIn={identity !== null} onChange={(author) => change({ author, authorLogin: null })} />
             <PersonFilter label="Assignee" value={query.assignee} signedIn={identity !== null} allowNone onChange={(assignee) => change({ assignee })} />
-            <SortSelect id="pull-sort" value={query.sort} onChange={(sort) => change({ sort })} />
           </FilterBar>
         </div>
 
@@ -252,7 +254,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           <EmptyState
             icon={GitPullRequest}
             title={filtered ? 'No pull requests match' : query.state === 'all' ? 'No pull requests yet' : `No ${query.state} pull requests`}
-            body={emptyPullsBody(filtered, query.state, settled)}
+            body={!filtered && query.state === 'open' && !settled ? 'Push a branch, then open a pull request to propose changes.' : emptyPullsBody(filtered, query.state, settled)}
             action={filtered && query.state !== 'all' ? <Button onClick={() => change({ state: 'all' })} data-testid="pulls-search-all">Search all pull requests</Button> : undefined}
           />
         ) : (

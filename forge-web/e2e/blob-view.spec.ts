@@ -103,9 +103,10 @@ test.describe('blob view (showcase repos)', () => {
     expect(copied.endsWith('\n')).toBe(true)
     expect(copied.split('\n').length - 1).toBe(lines)
 
+    await page.getByTestId('blob-more').click()
+    await expect(page.getByTestId('blob-raw')).toHaveAttribute('target', '_blank')
     const [download] = await Promise.all([page.waitForEvent('download', { timeout: 30_000 }), page.getByTestId('blob-download').click()])
     expect(download.suggestedFilename()).toBe('main.rs')
-    await expect(page.getByTestId('blob-raw')).toHaveAttribute('target', '_blank')
     await shot(page, 'bv-04-file-header')
   })
 })
