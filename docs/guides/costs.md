@@ -23,7 +23,7 @@ Rates come from [CTX](https://rates.ctx.com/rates?source=ctx), with [CoinGecko](
 
 Platform fees are paid in **credits**, from your identity's balance. **1 DASH = 100,000,000,000 credits.**
 
-You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Testnet Dash, where Forge runs today, is free test money, from the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org); the web app links both. Code stored on Platform adds about 0.39 DASH per MiB (permanent), so before a first push either add your own storage or deposit about 0.4 DASH per MiB.
+You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Testnet Dash, the tools' default network, is free test money, from the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org); the web app links both. Code stored on Platform adds about 0.39 DASH per MiB (permanent), so before a first push either add your own storage or deposit about 0.4 DASH per MiB.
 
 ```sh
 dg auth balance

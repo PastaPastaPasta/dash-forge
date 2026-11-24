@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge runs on **testnet** (Forge's contracts are registered on Platform v5.0.0-rc.8), and that is the Action's default network. Forge is also live on **mainnet** ([forge.dashhq.org](https://forge.dashhq.org)) since 2026-11-24: set `network: mainnet` for a mainnet repository. Pin a release tag: at `@v0.2.0` the Action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
+> **Status.** Forge runs on **testnet** (Forge's contracts are registered on Platform v5.0.0-rc.8), and that is the Action's default network. Forge is also live on **mainnet** ([forge.dashhq.org](https://forge.dashhq.org)) since 2026-11-24: set `network: mainnet` for a mainnet repository (with a v0.3.0 or later Action). Pin a release tag: at `@v0.2.0` the Action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ jobs:
       - uses: PastaPastaPasta/dash-forge/action@v0.2.0
         with:
           repo: dash://<owner identity id>/project
-          network: testnet               # Forge's network today (the default)
+          network: testnet               # the default; mainnet for a mainnet repository
           sync: code,releases
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com

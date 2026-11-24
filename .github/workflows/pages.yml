@@ -1,7 +1,7 @@
 name: Deploy forge-web to Pages
 
-# The hosted build (forge.dashhq.org) targets mainnet from 2026-11-24 (PAGES_NETWORK=mainnet); the
-# testnet build goes to testnet-forge.dashhq.org (pages-testnet.yml). The network is a build-time
+# The hosted build (forge.dashhq.org) targets mainnet from 2026-11-24, set by the repository
+# variable PAGES_NETWORK=mainnet; testnet-forge.dashhq.org gets the testnet build. The network is a build-time
 # choice (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME); override it with the repository variables
 # PAGES_NETWORK / PAGES_DEVNET_NAME (PAGES_NETWORK=devnet needs PAGES_DEVNET_NAME) without editing
 # this file. The header badge names the network the build reads.

@@ -44,7 +44,7 @@ These guides describe what is on `master` today. Features that are specified but
 
 Members-only issues, comments and reviews, messages to specific people, making posts public, members-only branches and pull requests, environments, and bots are built, in `dg` and the web app. What can be members-only, and who reads it, is in [Who can read what](../security/audiences.md), the single place to check. The features still marked **Beta** (narrower branches, branch sharing, bots and agents, bot push access, making a repository public, publication dates) work but have rough edges: [Known limitations](collaborating.md#known-limitations).
 
-Dash Wallet sign-in works on testnet with the testnet build of DashPay Wallet for Android 11.9.2 or later: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Dash Wallet sign-in works on testnet with the testnet build of DashPay Wallet for Android 11.9.2 or later, and on mainnet with the store apps (DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4): see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 

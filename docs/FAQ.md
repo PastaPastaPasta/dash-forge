@@ -60,7 +60,7 @@ It is, since **2026-11-24**. Testnet stays live next to it:
 
 | Network | Status |
 |---|---|
-| **Mainnet** | **Live** since 2026-11-24, at [forge.dashhq.org](https://forge.dashhq.org). Mainnet DASH is real money and there is no faucet: get credits from the [Dash bridge](https://bridge.thepasta.org/?network=mainnet) or the web app's identity flow. In `dg` and `git-remote-dash`, choose it with `--network mainnet`, `dg auth new` or `dg auth login` on mainnet (which records it as your default network), `DASH_FORGE_NETWORK=mainnet`, or git config `dash.network`. |
+| **Mainnet** | **Live** since 2026-11-24, at [forge.dashhq.org](https://forge.dashhq.org). Mainnet DASH is real money and there is no faucet: get credits from the [Dash bridge](https://bridge.thepasta.org/?network=mainnet) or the web app's identity flow. In `dg`, pass `--network mainnet`, or sign in on mainnet (`dg auth new --network mainnet` or `dg auth login --network mainnet`), which records mainnet as your default network. `git clone` and `git push` (`git-remote-dash`) follow `DASH_FORGE_NETWORK`, then git config `dash.network`, then the network `dg` recorded. |
 | **Testnet** | **Live** since 2026-10-26, at [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). It is still the CLI's default network, so no flag is needed. Its DASH is free test money and the network can be reset. |
 
 Forge has left the devnets it ran on before testnet. [Networks](networks.md) has their history, and [Dash Forge moved to testnet](guides/devnet-move.md) says how to push again.

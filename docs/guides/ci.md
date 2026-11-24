@@ -157,7 +157,7 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
-          network: testnet          # Forge runs on testnet (the default)
+          network: testnet          # the default; mainnet for a mainnet repository
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```

@@ -175,9 +175,9 @@ longer do.
 Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**.
 Every tool defaults to testnet, where Forge's forge-v2 contracts are registered (the production
 four-contract set, Platform 5.0.0-rc.8, protocol 14, chain id `dash-testnet-51`, since
-2026-10-26), so no flag is needed. Mainnet still runs protocol 13; forge-v2 is registered there
-after protocol 14 activates ([mainnet-runbook.md](mainnet-runbook.md)). The Pages and e2e
-workflows and `ipfs-release.sh` target testnet too.
+2026-10-26), so no flag is needed. forge-v2 is also registered on mainnet (since 2026-11-24;
+`--network mainnet`). forge.dashhq.org (pages.yml) and the release's IPFS build
+(`ipfs-release.sh`) target mainnet; the e2e workflows target testnet.
 
 Before testnet, Forge ran on devnets: moutai, then bonsia, then sakura, which went down around
 2026-10-24 ([networks.md](networks.md) has the history). Their deployment files stay in the

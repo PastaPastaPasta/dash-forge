@@ -32,7 +32,7 @@ This guide covers:
 
 ## The setup wizard
 
-Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. The hosted site runs on testnet ([Which network](README.md#which-network)).
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. forge.dashhq.org runs on mainnet; the guides use testnet, at [testnet-forge.dashhq.org/mirror](https://testnet-forge.dashhq.org/mirror/) ([Which network](README.md#which-network)).
 
 ### Automatic sync
 
@@ -81,7 +81,7 @@ For command-line imports, you need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
 
-> **Network.** Forge runs on testnet, the tools' default network, and comes to mainnet once Dash Platform v5 reaches it. See [Networks](../networks.md).
+> **Network.** Forge runs on mainnet and testnet; testnet is the tools' default network. See [Networks](../networks.md).
 
 > **Cost.** A first import is mostly git data plus one document per issue, PR, comment and review. The Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost about **0.078 DASH**; a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. Re-runs pay only for what is new, and nothing when nothing changed. `--dry-run` prices your repository before you spend anything.
 
@@ -280,7 +280,7 @@ jobs:
         with:
           install: 'source'
           repo: dash://<owner identity id>/<repo name>
-          network: testnet                # Forge's network today (also the Action's default)
+          network: testnet                # the Action's default; mainnet for a mainnet repository
           sync: code,releases
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com

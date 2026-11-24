@@ -31,7 +31,7 @@
    ```
    Without a storage profile, `dg init` stops before spending and prices the alternative; pass `--storage platform` to keep packs on Platform (~0.33 DASH/MiB; see [What things cost](docs/guides/costs.md)).
 
-`dg init` prints the repository's web address. Prefer the browser? On [forge.dashhq.org](https://forge.dashhq.org), **Sign in** creates an identity for you (or connects your DashPay wallet: see [Identity and keys](docs/guides/identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today)), **Settings → Storage** sets up your bucket, and **New → Repository** creates the repository. The [quick start guide](docs/guides/quick-start.md) walks through each step.
+`dg init` prints the repository's web address. Prefer the browser? On [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org) (or [forge.dashhq.org](https://forge.dashhq.org) for mainnet), **Sign in** creates an identity for you (or connects your DashPay wallet: see [Identity and keys](docs/guides/identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today)), **Settings → Storage** sets up your bucket, and **New → Repository** creates the repository. The [quick start guide](docs/guides/quick-start.md) walks through each step.
 
 ## What you can do
 
@@ -88,8 +88,8 @@ there, so no flag is needed. `--network` (and `--devnet-name` for a devnet) pick
 settings from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`, git config
 (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`), or else the default `dg` recorded, and the web build reads them from
 `NEXT_PUBLIC_NETWORK` and `NEXT_PUBLIC_DEVNET_NAME`. Contract ids come only from
-`forge-contracts/deployments/<network>.json`. A network with no deployment (mainnet
-today) fails with a clear "not deployed" error and never falls back to another
+`forge-contracts/deployments/<network>.json`. A network with no deployment
+fails with a clear "not deployed" error and never falls back to another
 network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Document index

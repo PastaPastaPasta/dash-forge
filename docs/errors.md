@@ -279,7 +279,7 @@ Nothing was signed in either case.
 
 **What to do:** top up the identity from any Dash wallet at <https://bridge.thepasta.org>. `dg auth balance` shows the balance. Reading, cloning and browsing are free and still work.
 
-**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here before it stores anything. (A push with a public pack and members-only packs checks before each pack: if an earlier pack was already stored, the note says so.) The estimate is an upper bound, so a balance only just above the real cost can still be refused: top up a little more. On testnet the faucet pays Core addresses, not identities: open the web app (<https://forge.dashhq.org>), click your balance (**Top up credits**), enter your 12 words, and pay the address it shows from <https://faucet.thepasta.org>.
+**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here before it stores anything. (A push with a public pack and members-only packs checks before each pack: if an earlier pack was already stored, the note says so.) The estimate is an upper bound, so a balance only just above the real cost can still be refused: top up a little more. On testnet the faucet pays Core addresses, not identities: open the testnet web app (<https://testnet-forge.dashhq.org>), click your balance (**Top up credits**), enter your 12 words, and pay the address it shows from <https://faucet.thepasta.org>.
 
 ## E402
 

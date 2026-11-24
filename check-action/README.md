@@ -37,7 +37,7 @@ jobs:
         with:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}
-          network: testnet                      # Forge's network today (the default)
+          network: testnet                      # the default; mainnet for a mainnet repository
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}
 ```
