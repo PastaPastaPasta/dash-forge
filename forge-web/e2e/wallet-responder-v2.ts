@@ -17,7 +17,7 @@
  *     cleanup: disable every key this wallet added that is still live.
  *
  * The wallet's memory of its grants is the `wallet` object (an identity-and-connection map to key
- * ids): the chain does not record connection ids. It reuses `connect()` of wallet-responder.mjs.
+ * ids): the chain does not record connection ids. It connects with `connect()` of devnet-sdk.mjs.
  * It broadcasts: run only against a devnet with a test identity of your own.
  */
 
@@ -27,7 +27,7 @@ import { pathToFileURL } from 'node:url'
 import * as secp from '@noble/secp256k1'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { APP_CONNECT_CONTRACT_ID } from '../lib/auth/app-connect'
+import { APP_CONNECT_CONTRACT_ID } from '../lib/auth/app-connect-port'
 import { base58Encode } from '../lib/auth/base58'
 import { answerV2 } from '../lib/auth/wallet-sim'
 import {
@@ -37,8 +37,8 @@ import {
   type AppConnectRequest,
 } from '../lib/vendor/platform-auth/app-connect'
 
-type Responder = typeof import('./wallet-responder.mjs')
-const responder = (): Promise<Responder> => import(pathToFileURL(join(__dirname, 'wallet-responder.mjs')).href)
+type DevnetSdk = typeof import('./devnet-sdk.mjs')
+const devnetSdk = (): Promise<DevnetSdk> => import(pathToFileURL(join(__dirname, 'devnet-sdk.mjs')).href)
 
 /** The grants one scripted wallet has made, so a renewal can disable the key it replaces. */
 export interface V2Wallet {
@@ -111,8 +111,7 @@ export async function approveV2(p: {
   readonly limits?: { readonly budget?: bigint; readonly expiresAt?: number }
   readonly now?: () => number
 }): Promise<ApprovedV2> {
-  const wallet = await responder()
-  const { evo, sdk, dep } = await wallet.connect(p.devnet)
+  const { evo, sdk, dep } = await (await devnetSdk()).connect(p.devnet)
   const groupId = String(dep.v2.contractGroupId)
   const rec = JSON.parse(readFileSync(p.identityFile, 'utf8')) as { identityId: string; identityKeys: IdentityFileKey[] }
   const identityId = rec.identityId
@@ -195,8 +194,7 @@ export async function approveV2(p: {
 
 /** Cleanup: disable every key this wallet added that is still live on `identityFile`'s identity. */
 export async function disableGrants(p: { readonly wallet: V2Wallet; readonly identityFile: string; readonly devnet: string }): Promise<number[]> {
-  const wallet = await responder()
-  const { evo, sdk } = await wallet.connect(p.devnet)
+  const { evo, sdk } = await (await devnetSdk()).connect(p.devnet)
   const rec = JSON.parse(readFileSync(p.identityFile, 'utf8')) as { identityId: string; identityKeys: IdentityFileKey[] }
   const mine = new Set(p.wallet.added.get(rec.identityId) ?? [])
   if (mine.size === 0) return []

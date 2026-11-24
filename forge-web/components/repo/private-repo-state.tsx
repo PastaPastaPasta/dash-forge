@@ -103,7 +103,7 @@ function SignedOutNote(): JSX.Element {
         <SignInButton size="sm" />
       ) : (
         // Says why the sheet opened, and has Import keep the encryption key (QW2-016).
-        <Button size="sm" variant="primary" data-testid="private-sign-in" onClick={() => openLogin(undefined, undefined, { action: 'read this private repo', privateRepo: true })}>
+        <Button size="sm" variant="primary" data-testid="private-sign-in" onClick={() => openLogin(undefined, { action: 'read this private repo', privateRepo: true })}>
           Sign in to read it
         </Button>
       )}

@@ -24,10 +24,9 @@ import {
   type VaultInfo,
 } from '../lib/auth'
 import { MissingGrantError, UnlockNeededError } from '../lib/auth/controller'
-import type { WalletKey } from '../lib/auth/key-registration'
+import type { WalletKey } from '../lib/auth/wallet-key'
 import { useUiStore } from '../hooks/use-ui-store'
-import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
-import { contractKind, type ForgeContractKind } from '../lib/deployments'
+import { DEFAULT_NETWORK, type Network } from '../lib/constants'
 import { type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
@@ -129,8 +128,6 @@ interface AuthContextValue {
   adoptHandoffKey: (reply: string, request: HandoffRequest, protection: Protection, options?: { readonly renew?: boolean }) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
   adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: Parameters<AuthController['adoptWalletKeys']>[3]) => Promise<void>
-  /** Add a wallet grant for another Forge contract to the signed-in identity. */
-  addWalletGrant: (identityId: string, key: WalletKey, requested: string, options?: Parameters<AuthController['addWalletGrant']>[3]) => Promise<void>
   /** Which Forge contracts the session's keys cover, and whether a held key is unlimited. */
   readonly grants: AuthSession['grants'] | null
   readonly unlimitedKey: boolean
@@ -185,12 +182,6 @@ const NO_KEYS: readonly WatchedKey[] = []
 const PASSKEYS_NOT_CHECKED = 'Checking whether passkeys work on this page.'
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
-
-/** The grant a refused write asks for: the contract it was signed for (undefined: the sheet's default). */
-function grantKindOf(network: Network, contractId: string): ForgeContractKind | undefined {
-  const forge = NETWORKS[network].v2
-  return (forge && contractKind(forge, contractId)) ?? undefined
-}
 
 export function AuthProvider({
   children,
@@ -287,7 +278,6 @@ export function AuthProvider({
       adoptLimitedKey: withReload(controller.adoptLimitedKey.bind(controller)),
       adoptHandoffKey: withReload(controller.adoptHandoffKey.bind(controller)),
       adoptWalletKeys: withReload(controller.adoptWalletKeys.bind(controller)),
-      addWalletGrant: withReload(controller.addWalletGrant.bind(controller)),
       unlock: withReload(controller.unlock.bind(controller)),
       loginWithRawKey: withReload(controller.loginWithRawKey.bind(controller)),
       refreshBalance: () => controller.refreshBalance(),
@@ -340,19 +330,19 @@ export function AuthProvider({
     return {
       ...auth,
       onSpend,
-      // A write to a contract no held key covers (a wallet granted forge-core only): open the
-      // one-tap wallet grant for it; the write itself fails with the reason, and can be retried.
+      // A write to a contract no held key covers (a wallet's older key, bound to forge-core only):
+      // offer to replace the key; the write itself fails with the reason, and can be retried.
       getSigningKeyWif: (contractId?: string): string => {
         try {
           return auth.getSigningKeyWif(contractId)
         } catch (e) {
-          if (e instanceof MissingGrantError) useUiStore.getState().openLogin('grant', grantKindOf(network, e.contractId))
+          if (e instanceof MissingGrantError) useUiStore.getState().openLogin('wallet-replace')
           else if (e instanceof UnlockNeededError) useUiStore.getState().openLogin('unlock')
           throw e
         }
       },
     }
-  }, [controller, sessionIdentity, onSpend, network])
+  }, [controller, sessionIdentity, onSpend])
   const keyLimits = session?.keyLimits ?? null
   // The funds state depends on the clock (a key expires, or comes within a week of it): wake
   // up at the next such moment and judge again, so the pill turns red when the key expires,

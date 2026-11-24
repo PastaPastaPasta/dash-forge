@@ -21,8 +21,10 @@ import type {
   AppConnectKeyBounds,
   AppConnectResponsePort,
 } from '../vendor/platform-auth/app-connect'
-import { APP_CONNECT_CONTRACT_ID } from './app-connect'
 import { base58Decode, decodeIdentifier } from './base58'
+
+/** The App Connect system contract (the same id on every network, protocol 14). */
+export const APP_CONNECT_CONTRACT_ID = 'H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ'
 
 /** The latest block's time and protocol version, from a proved response's metadata. */
 export interface ChainClock {

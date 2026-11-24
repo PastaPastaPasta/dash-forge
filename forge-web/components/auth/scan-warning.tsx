@@ -4,8 +4,7 @@
  * The anti-phishing note on the wallet QR step (SECU-08). The request a wallet answers names
  * Forge's contract and the label "Dash Forge" and nothing about who displays it, so any page can
  * show a code that looks like this one. The wallet's approval screen cannot tell them apart; the
- * address bar can. Says where to scan, what a scan grants and the only way to undo it. Copy only:
- * how the login derives and delivers the encryption key is unchanged (DESIGN D27).
+ * address bar can. Says where to scan, what a scan grants and the only way to undo it.
  */
 
 import Link from 'next/link'
@@ -27,13 +26,8 @@ function hostToCheck(): { host: string; ipfs: boolean } {
   return { host: SITE_HOST, ipfs: false }
 }
 
-/**
- * `capped`: the request proposes a spending limit and an expiry (App Connect v2, shown above the
- * QR), so the note must not also say the key has none (F3, 2026-11 new-user pass).
- * `withEncryption`: the approval also hands over the encryption key (the older code does; an App
- * Connect v2 request asks for no encryption key).
- */
-export function ScanOnlyHere({ host: given, capped = false, withEncryption = true }: { host?: string; capped?: boolean; withEncryption?: boolean }): JSX.Element {
+/** The request proposes a spending limit and an expiry (shown above the QR): the note does not contradict them (F3). */
+export function ScanOnlyHere({ host: given }: { host?: string }): JSX.Element {
   const closeLogin = useUiStore((s) => s.closeLogin)
   const here = hostToCheck()
   const host = given ?? here.host
@@ -52,17 +46,14 @@ export function ScanOnlyHere({ host: given, capped = false, withEncryption = tru
           {here.ipfs && given === undefined ? ', and check this copy’s CID against the release (see “Verify the app” in the guides)' : ''}.
         </li>
         <li data-testid="scan-warning-limits">
-          {capped
-            ? 'An approval gives a key that can sign as you on Forge, within the limits above unless your wallet changes them. Forge refuses a key without them.'
-            : 'An approval gives a key that can sign as you on Forge (an Android wallet’s key works on any Platform app), with no spending limit or expiry unless your wallet sets one; today’s wallets don’t.'}
+          An approval gives a key that can sign as you on Forge, within the limits above unless your wallet changes them. Forge refuses a key without them.
         </li>
-        {withEncryption ? <li>It also gives the encryption key that opens your private and members-only content.</li> : null}
         <li>
           If you scanned a code you didn’t trust:{' '}
           <Link href="/settings/keys/" onClick={closeLogin} className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-keys">
             Settings → Devices &amp; keys → Disable all other keys
           </Link>{' '}
-          (needs your recovery phrase or identity file){withEncryption ? ', then replace your encryption key' : ''}.{' '}
+          (needs your recovery phrase or identity file).{' '}
           <Link prefetch={false} href={DOCS.revokeKeys} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400">
             How
           </Link>

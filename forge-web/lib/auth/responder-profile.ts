@@ -1,7 +1,7 @@
 /**
  * What the confirmation step shows about the identity that answered a wallet request, so a
- * person can tell their identity from a stranger's that answered the same QR first (the legacy
- * key-exchange contract keeps only the first answer: docs/design/wallet-login.md).
+ * person can tell their identity from a stranger's that answered the same QR (the response does
+ * not prove who answered: docs/design/wallet-login.md).
  *
  * Platform stores no creation time for an identity. The DPNS name's `$createdAt` (a required
  * field of `domain`) is the age proxy: an identity that got its name minutes ago is suspicious

@@ -37,12 +37,8 @@ describe('ScanOnlyHere', () => {
     expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toBe(SITE_HOST)
     expect(note.textContent).toContain(`Scan only a code shown on ${SITE_HOST}.`)
     expect(note.textContent).toContain('can sign as you on Forge')
-    expect(note.textContent).toContain('unless your wallet sets one')
-    expect(note.textContent).toContain('encryption key that opens your private and members-only content')
     expect(note.textContent).toContain('Forge never asks you to scan a code it didn’t show you here')
-    expect(note.textContent).toContain('no spending limit or expiry')
     expect(note.textContent).toContain('Disable all other keys')
-    expect(note.textContent).toContain('then replace your encryption key')
     expect(host.querySelector('a[href*="/docs/revoke-keys"]')).not.toBeNull()
     expect(note.textContent).not.toContain('CID')
     expect(host.querySelector('[data-testid="scan-warning-keys"]')!.getAttribute('href')).toBe('/settings/keys/')
@@ -61,20 +57,12 @@ describe('ScanOnlyHere', () => {
     }
   })
 
-  it('under an App Connect v2 request, does not contradict the limits the request proposes (F3)', () => {
-    act(() => root.render(<ScanOnlyHere capped />))
+  it('does not contradict the limits the request proposes (F3), nor promise an encryption key it does not ask for', () => {
+    act(() => root.render(<ScanOnlyHere />))
     const limits = host.querySelector('[data-testid="scan-warning-limits"]')!.textContent
     expect(limits).toContain('within the limits above')
     expect(limits).not.toContain('no spending limit or expiry')
-    expect(limits).not.toContain('today’s wallets don’t')
-  })
-
-  it('under an App Connect v2 request, does not promise the encryption key it does not ask for', () => {
-    act(() => root.render(<ScanOnlyHere capped withEncryption={false} />))
     expect(host.textContent).not.toContain('encryption key')
-    act(() => root.render(<ScanOnlyHere />))
-    expect(host.textContent).toContain('It also gives the encryption key')
-    expect(host.textContent).toContain('then replace your encryption key')
   })
 
   it('shows the host it is given (a self-hosted build)', () => {

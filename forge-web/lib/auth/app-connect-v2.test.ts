@@ -15,10 +15,11 @@ import type { ForgeIds } from '../deployments'
 import { CREDITS_PER_DASH } from '../sdk/cost'
 import { bytesToBase64 } from '../sdk/query'
 import { AppConnectTlv, KeySecurityLevel, parseAppConnectUri } from '../vendor/platform-auth/app-connect'
-import { AmbiguousWalletLogin, APP_CONNECT_CONTRACT_ID, RequestExpired } from './app-connect'
 import {
+  AmbiguousWalletLogin,
   APP_CONNECT_LABEL,
   PollTrigger,
+  RequestExpired,
   TooManyAnswers,
   WalletGrantRefused,
   awaitV2Grant,
@@ -26,9 +27,9 @@ import {
   newV2LoginRequest,
   type V2LoginRequest,
 } from './app-connect-v2'
-import { compareIds } from './app-connect-port'
+import { APP_CONNECT_CONTRACT_ID, compareIds } from './app-connect-port'
 import { base58Decode, base58Encode } from './base58'
-import { isUnlimited } from './key-registration'
+import { isUnlimited } from './wallet-key'
 import { answerV2 } from './wallet-sim'
 import { decodeWif } from './wif'
 

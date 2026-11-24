@@ -53,7 +53,7 @@ let journal: { depositAddress: string } | undefined
 /** Whether Platform answers (a fake connection); off, the wallet tile still shows, as offline. */
 let platformUp = false
 /** Whether the chain supports App Connect v2. */
-let v2Available = false
+let v2Available: boolean | null = false
 vi.mock('@/lib/auth/connect', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/connect')>()),
   connectPlatform: () => (platformUp ? Promise.resolve({}) : Promise.reject(new Error('offline in tests'))),
@@ -62,18 +62,6 @@ vi.mock('@/lib/auth/app-connect-v2', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/app-connect-v2')>()),
   appConnectV2Available: async () => v2Available,
 }))
-/** Whether Dash Wallet can answer here (testnet); false mutes its tile, as on a devnet. */
-let walletSupported: boolean | null = null
-vi.mock('@/lib/auth/app-connect', async (orig) => {
-  const real = await orig<typeof import('@/lib/auth/app-connect')>()
-  return {
-    ...real,
-    walletSignInSupported: (n: Parameters<typeof real.walletSignInSupported>[0]) => walletSupported ?? real.walletSignInSupported(n),
-    walletSignInReady: (n: Parameters<typeof real.walletSignInReady>[0], v2: boolean) => walletReady ?? real.walletSignInReady(n, v2),
-  }
-})
-/** Whether a released wallet answers here; null keeps the real rule (mainnet or testnet, with v2). */
-let walletReady: boolean | null = null
 /** What the finished creation's deposit address still holds (duffs), or an Error when unreadable. */
 let leftover: number | Error | Promise<number> = 0
 const WELCOME_DEPOSIT = { depositAddress: 'yDepositAddressForTheWelcomeView1', startedAt: 1 }
@@ -181,8 +169,6 @@ beforeEach(() => {
   auth.unlockScope = null
   auth.storage = null
   journal = undefined
-  walletSupported = null
-  walletReady = null
   leftover = 0
   createdDeposit = WELCOME_DEPOSIT
   balanceCalls.length = 0
@@ -209,9 +195,8 @@ afterEach(() => {
 describe('the sheet on a phone (QA wave 4)', () => {
   it('QW4-041: the muted wallet tile is dashed, not faded, so its helper text keeps its contrast', async () => {
     auth.vaults = []
-    walletSupported = false
     act(() => useUiStore.getState().openLogin())
-    // The wallet tile shows once Platform could not be asked (offline in tests): muted on a devnet.
+    // The wallet tile shows once Platform could not be asked (offline in tests): muted.
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
     expect(q('[data-testid="tile-wallet"]')!.dataset.muted).toBe('true')
     const tiles = [...host.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="tile-"]')]
@@ -382,7 +367,7 @@ describe('QA wave 2 (bonsia): sign-in intent and polish', () => {
 
   it('QW2-016: signing in to read a private repo says so and ticks the encryption-key box', async () => {
     auth.vaults = []
-    act(() => useUiStore.getState().openLogin(undefined, undefined, { action: 'read this private repo', privateRepo: true }))
+    act(() => useUiStore.getState().openLogin(undefined, { action: 'read this private repo', privateRepo: true }))
     await flush()
     expect(host.ownerDocument.body.textContent).toMatch(/Sign in to read this private repo/)
     expect(q('[data-testid="signin-intent"]')!.textContent).toMatch(/Read and write members-only and private content/)
@@ -491,8 +476,6 @@ describe('App Connect v2 in the sheet', () => {
 
   it('puts the wallet tile first where a released wallet answers v2, and says one approval covers Forge', async () => {
     auth.vaults = []
-    walletSupported = false
-    walletReady = true
     platformUp = true
     v2Available = true
     act(() => useUiStore.getState().openLogin())
@@ -520,13 +503,51 @@ describe('App Connect v2 in the sheet', () => {
     expect(q('[data-testid="tile-create-cost"]')!.textContent).toMatch(/Testnet · free test credits/)
   })
 
-  it('keeps the wallet tile last where no wallet can answer and v2 is not on offer', async () => {
+  it('keeps the wallet tile last, muted, when Platform could not be asked', async () => {
     auth.vaults = []
-    walletSupported = false
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
-    expect(tileOrder().slice(0, 4)).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBe('true')
+    expect(q('[data-testid="tile-wallet"]')!.textContent).not.toMatch(/DashConnect|testnet only/)
+  })
+
+  it('keeps the wallet tile when Platform answered but its protocol could not be read', async () => {
+    auth.vaults = []
+    platformUp = true
+    v2Available = null
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+  })
+
+  it('shows no wallet tile where the chain answered without App Connect v2 (no older code to offer)', async () => {
+    auth.vaults = []
+    platformUp = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20; i++) await flush()
+    expect(q('[data-testid="tile-wallet"]')).toBeNull()
+    // The other ways in all stay: create, recovery phrase or identity file, dg, and raw key paste under Advanced.
+    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg'])
+    await click(byText('Advanced'))
+    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-advanced'])
+  })
+
+  it('replaces a key from the older wallet code on its own view, wallet first, with the identity file as the other way', async () => {
+    auth.identity = ID
+    auth.keyId = 6
+    auth.storage = 'vault'
+    auth.unlockScope = 'full'
+    act(() => useUiStore.getState().openLogin('wallet-replace'))
+    await flush()
+    const body = host.ownerDocument.body.textContent ?? ''
+    expect(body).toMatch(/Replace this browser's key/)
+    expect(body).toMatch(/One approval gives a limited key for all of Forge/)
+    expect(byText(/All options/)).toBeNull()
+    expect(q('[data-testid="wallet-request"]')).not.toBeNull()
+    await click(q('[data-testid="renew-with-file-instead"]'))
+    expect(q('[data-testid="wallet-request"]')).toBeNull()
+    expect(host.ownerDocument.body.textContent).toMatch(/Disables key #6 and registers/)
   })
 
   it('opens the renewal in the wallet on its own view, with the identity file as the other way', async () => {
@@ -563,7 +584,6 @@ describe('Sign in with a passkey (passkeys that hold a key on Platform)', () => 
 
   it('shows once passkeys are offered, first for an existing identity, and says what it does not do', async () => {
     auth.passkeyProblem = null
-    walletSupported = true
     await openChooser()
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
     const order = [...host.ownerDocument.querySelectorAll<HTMLElement>('button[data-testid^="tile-"]')].map((b) => b.dataset.testid)

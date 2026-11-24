@@ -11,7 +11,7 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { WasmKey } from '../sdk/facade'
 import { contractKind } from '../deployments'
-import { isForgeContract, keyScope } from './key-registration'
+import { isForgeContract, keyScope } from './wallet-key'
 
 /** What a key is, in the words Devices & keys uses. */
 export type KeyRole = 'master' | 'forge' | 'forge-contract' | 'signing' | 'encryption' | 'transfer' | 'other'

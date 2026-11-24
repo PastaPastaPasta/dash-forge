@@ -575,15 +575,6 @@ describe('the controller', () => {
     expect((await kept())?.keyId).toBe(6)
   }, 60_000)
 
-  it('addWalletGrant after a lock does not bring the session back (M4)', async () => {
-    const c = await signIn()
-    lockVault()
-    await expect(
-      c.addWalletGrant(ID, { keyId: 9, wif: WIF2, scope: { core: false, collab: true, community: true, meta: true, unbounded: false }, limits: null }, FORGE.collab),
-    ).rejects.toThrow()
-    expect(c.getState().session).toBeNull()
-  }, 30_000)
-
   it('a reload after a D-016 adoption resumes the adopted key', async () => {
     const c = make()
     await storeInVault(NET, SECRET, PASSKEY)
@@ -641,12 +632,9 @@ describe('the controller', () => {
     await tab.resume()
     expect(tab.unlockScope()).toBe('signing')
     await stageInVault(NET, { identityId: ID, keyId: 6, wif: WIF2 }, PASSKEY)
-    // Discard (keeping its key), renew, revoke, a wallet grant: each asks for the full unlock.
+    // Discard (keeping its key), renew, revoke: each asks for the full unlock.
     await expect(tab.abandonPendingRenewal(ID, 'passkey')).rejects.toBeInstanceOf(UnlockNeededError)
     await expect(tab.revokeStored(ID, { fileText: '{}' })).rejects.toBeInstanceOf(UnlockNeededError)
-    await expect(
-      tab.addWalletGrant(ID, { keyId: 9, wif: WIF2, scope: { core: false, collab: true, community: true, meta: true, unbounded: false }, limits: null }, FORGE.collab),
-    ).rejects.toBeInstanceOf(UnlockNeededError)
     expect(await tab.pendingRenewal(ID)).toMatchObject({ keyId: 6 })
     // The same one-gesture unlock the private repos use, then the action goes through.
     // Key 6 is live too: unlocking finishes the renewal, unless the user discards it. Keep 5

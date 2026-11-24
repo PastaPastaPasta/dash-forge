@@ -71,17 +71,16 @@ export function useWriteGuard(): WriteGuard {
         // Opens on Unlock when this browser holds a key (a locked session), else the sign-in tiles,
         // naming what the click was for and its cost (L-62).
         const credits = typeof need === 'number' ? need : need.credits
-        openLogin(undefined, undefined, action ? { action, ...(credits > 0 ? { credits } : {}) } : undefined)
+        openLogin(undefined, action ? { action, ...(credits > 0 ? { credits } : {}) } : undefined)
         return false
       }
       const kinds = typeof contract === 'string' ? [contract] : contract
       const ungranted = grants ? kinds.find((k) => !grants[k]) : undefined
       if (ungranted !== undefined) {
         // A reloaded tab holds the main key only: this browser may already hold that grant,
-        // sealed with the vault. Unlock first (a new wallet grant would register a key this tab
-        // cannot store).
-        if (unlockScope === 'signing') openLogin('unlock')
-        else openLogin('grant', ungranted)
+        // sealed with the vault. Unlock first. Otherwise the key is a wallet's older one, bound to
+        // part of Forge: replace it (one wallet approval covers all of Forge).
+        openLogin(unlockScope === 'signing' ? 'unlock' : 'wallet-replace')
         return false
       }
       if (funds?.level === 'empty') {
