@@ -173,7 +173,7 @@ describe('the top-up sheet for a key a wallet granted (App Connect)', () => {
     act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
     expect(byText('Renew in your wallet')).not.toBeNull()
     expect(byText('Renew with identity file')).not.toBeNull()
-    expect(document.querySelector('[data-testid="top-up-sheet"]')!.textContent).toMatch(/this one stays live until Revoke on Platform or a renewal with your identity file disables it/)
+    expect(document.querySelector('[data-testid="top-up-sheet"]')!.textContent).toMatch(/this one stays live until you revoke it/)
   })
 })
 
@@ -184,7 +184,7 @@ describe('the top-up sheet for a key a passkey restored (unknown origin)', () =>
     session.origin = 'passkey'
     act(() => root.render(<><FundsPill /><TopUpSheet /></>))
     act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
-    expect(document.querySelector('[data-testid="top-up-sheet"]')!.textContent).toMatch(/passkey brought this key here, so Forge can't tell who made it/)
+    expect(document.querySelector('[data-testid="top-up-sheet"]')!.textContent).toMatch(/this one stays live until you revoke it/)
     expect(byText('Renew in your wallet')).not.toBeNull()
     expect(byText('Renew with identity file')).not.toBeNull()
     expect(byText('Renew key')).toBeNull()
