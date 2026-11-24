@@ -663,8 +663,9 @@ export class AuthController {
     if (!identity) throw new WriteAuthError(`identity ${key.identityId} not found on ${this.network}`)
     if (!(await findSigningKey(identity, key.wif, this.network, SECURITY_LEVEL.HIGH))) {
       const failure = keyFailure(identity, key.keyId, origin)
-      // Disabled or expired on chain: the session ends as a balance read would end it.
-      if (failure.definite) await this.refreshBalance()
+      // Disabled or expired on chain: the session ends as a balance read would end it. A failed
+      // read there must not replace the failure already found.
+      if (failure.definite) await this.refreshBalance().catch(() => undefined)
       throw failure
     }
     return key

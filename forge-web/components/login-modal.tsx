@@ -805,9 +805,9 @@ function UnlockView({
             Forget this key and sign in again
           </Button>
         </div>
-      ) : (
-        <ErrorBox error={error} />
-      )}
+      ) : null}
+      {/* Any other failure (a wrong passphrase, a forget that failed) still shows. */}
+      <ErrorBox error={disconnected && error !== null && /so sign in again/i.test(error) ? null : error} />
       {expired ? (
         <Button variant="outline" className="w-full" onClick={() => onRenew(v)}>
           Renew this browser&apos;s key

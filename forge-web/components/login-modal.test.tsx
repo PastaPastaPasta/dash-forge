@@ -403,6 +403,18 @@ describe('a key the wallet disconnected', () => {
     expect(host.ownerDocument.body.textContent).not.toMatch(/Forget this disabled key\?/)
   })
 
+  it('a flagged key still shows other failures, such as a wrong passphrase', async () => {
+    auth.vaults = [{ ...auth.vaults[0]!, disconnected: true }]
+    auth.unlock.mockRejectedValueOnce(new Error('wrong passphrase'))
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    act(() => type(q<HTMLInputElement>('#unlock-passphrase')!, 'pw'))
+    await flush()
+    await click(byText('Unlock'))
+    expect(q('[data-testid="unlock-disconnected"]')).not.toBeNull()
+    expect(host.ownerDocument.body.textContent).toMatch(/wrong passphrase/)
+  })
+
   it('an unlock that finds it disconnected shows the same, in place of the raw error', async () => {
     auth.unlock.mockRejectedValueOnce(new Error('this key was disconnected in your wallet, so sign in again'))
     act(() => useUiStore.getState().openLogin())
