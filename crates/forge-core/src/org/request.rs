@@ -87,7 +87,7 @@ pub struct Request {
 
 /// Every request in the room, oldest first. A request is one proposer's proposals sharing a
 /// group, so nobody else can break a member's request by reusing its group: the earliest
-/// proposer keeps the group as the request id, a later one gets `<group>-<its key prefix>`.
+/// proposer keeps the group as the request id, a later one gets `<group>-<first 16 hex of its key>`.
 pub fn requests(state: &RoomState) -> Vec<Request> {
     let mut groups: BTreeMap<(String, String), Vec<(Note, &Proposal)>> = BTreeMap::new();
     let mut first: BTreeMap<String, (String, String)> = BTreeMap::new();
@@ -123,7 +123,7 @@ pub fn requests(state: &RoomState) -> Vec<Request> {
         let id = if first.get(&group).is_some_and(|(_, f)| *f == from) {
             group
         } else {
-            format!("{group}-{}", from.get(..8).unwrap_or(&from))
+            format!("{group}-{}", from.get(..16).unwrap_or(&from))
         };
         members.sort_by(|a, b| a.0.seq.cmp(&b.0.seq).then_with(|| a.1.id.cmp(&b.1.id)));
         let of = members[0].0.of;
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(mine.id, G);
         assert!(mine.problem.is_none());
         let theirs = reqs.iter().find(|r| r.proposer != "a").unwrap();
-        assert_eq!(theirs.id, format!("{G}-bbbbbbbb"));
+        assert_eq!(theirs.id, format!("{G}-bbbbbbbbbb"));
 
         let mut st = state(&[("zz", G, 0, 1), ("bbbbbbbbbb", G, 0, 1)]);
         let outsider = st.proposals.get_mut("p1").unwrap();

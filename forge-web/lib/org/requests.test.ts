@@ -59,7 +59,7 @@ describe('grouping', () => {
     expect(reqs).toHaveLength(2)
     expect(reqs.every((r) => !r.malformed)).toBe(true)
     expect(reqs.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
-    expect(reqs.find((r) => r.from === B)!.id).toBe(`0123456789abcdef-${B.slice(0, 8)}`)
+    expect(reqs.find((r) => r.from === B)!.id).toBe(`0123456789abcdef-${B.slice(0, 16)}`)
     const backdated = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2000-01-01T00:00:00.000Z', status: 'invalid' })]), CID)
     expect(backdated.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
   })

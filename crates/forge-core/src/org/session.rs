@@ -397,16 +397,20 @@ impl Org {
 
     /// Names for describing `req`: repositories (those it creates included) and members.
     pub async fn names(&self, client: &PlatformClient, req: &Request) -> Names {
-        let mut names = Names::default();
-        names
-            .identities
-            .insert(self.record.org_id.clone(), "the organization".into());
         let decoded: Vec<DecodedWrite> = req
             .proposals
             .iter()
             .filter_map(|id| self.decoded(id))
             .collect();
-        for d in &decoded {
+        self.names_of(client, &decoded).await
+    }
+
+    async fn names_of(&self, client: &PlatformClient, decoded: &[DecodedWrite]) -> Names {
+        let mut names = Names::default();
+        names
+            .identities
+            .insert(self.record.org_id.clone(), "the organization".into());
+        for d in decoded {
             if d.document_type == "repo" {
                 if let Some(n) = d.properties.get("name").and_then(|v| v.as_str()) {
                     names
@@ -415,7 +419,7 @@ impl Org {
                 }
             }
         }
-        for d in &decoded {
+        for d in decoded {
             let stored = review::stored_target(client, d).await.ok().flatten();
             let (mut repos, mut people) = review::referenced_ids(d);
             if let Some(s) = &stored {
@@ -448,13 +452,37 @@ impl Org {
 
     /// Describe each proposal of `req` in words.
     pub async fn describe(&self, client: &PlatformClient, req: &Request) -> Vec<String> {
-        let names = self.names(client, req).await;
+        let decoded: Vec<Option<DecodedWrite>> =
+            req.proposals.iter().map(|id| self.decoded(id)).collect();
+        self.describe_all(client, &decoded).await
+    }
+
+    /// Describe writes not posted yet, as [`Self::describe`] would once they are.
+    pub async fn describe_writes(
+        &self,
+        client: &PlatformClient,
+        writes: &[UnsignedWrite],
+    ) -> Vec<String> {
+        let decoded: Vec<Option<DecodedWrite>> = writes
+            .iter()
+            .map(|w| decode_unsigned(&w.unsigned).ok())
+            .collect();
+        self.describe_all(client, &decoded).await
+    }
+
+    async fn describe_all(
+        &self,
+        client: &PlatformClient,
+        decoded: &[Option<DecodedWrite>],
+    ) -> Vec<String> {
+        let known: Vec<DecodedWrite> = decoded.iter().flatten().cloned().collect();
+        let names = self.names_of(client, &known).await;
         let mut out = Vec::new();
-        for id in &req.proposals {
-            match self.decoded(id) {
+        for d in decoded {
+            match d {
                 Some(d) => {
-                    let stored = review::stored_target(client, &d).await.ok().flatten();
-                    out.push(review::describe(&d, stored.as_ref(), &names));
+                    let stored = review::stored_target(client, d).await.ok().flatten();
+                    out.push(review::describe(d, stored.as_ref(), &names));
                 }
                 None => out.push("Unrecognized write".into()),
             }

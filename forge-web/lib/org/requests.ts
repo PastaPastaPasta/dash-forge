@@ -48,7 +48,7 @@ export interface OrgRequest {
 /**
  * A request is one proposer's proposals sharing a group, so nobody else can break a member's
  * request by reusing its group: the earliest proposer keeps the group as the request id, a later
- * one gets `<group>-<its key prefix>`.
+ * one gets `<group>-<first 16 hex of its key>`.
  */
 export function groupRequests(state: RoomState, cid: string): OrgRequest[] {
   const groups = new Map<string, { note: ForgeNote; p: Proposal }[]>()
@@ -73,7 +73,7 @@ export function groupRequests(state: RoomState, cid: string): OrgRequest[] {
     list.sort((a, b) => a.note.seq - b.note.seq || a.p.id.localeCompare(b.p.id))
     const head = list[0]!
     const group = head.note.group
-    const id = first.get(group)?.from === head.p.from ? group : `${group}-${head.p.from.slice(0, 8)}`
+    const id = first.get(group)?.from === head.p.from ? group : `${group}-${head.p.from.slice(0, 16)}`
     const of = head.note.of
     const malformed = list.length !== of || list.some((x, i) => x.note.seq !== i || x.note.of !== of)
     out.push({ id, title: head.note.title, forge: true, proposals: list.map((x) => x.p), from: head.p.from, at: list.map((x) => x.p.at).reduce((a, b) => (b < a ? b : a)), malformed })

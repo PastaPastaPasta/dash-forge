@@ -684,6 +684,17 @@ async fn post_request(
     planned: core_org::actions::Planned,
     extra: Value,
 ) -> Result<()> {
+    if !ctx.json {
+        eprintln!("This asks {} to:", line(&org.record.label));
+        for (i, d) in org
+            .describe_writes(client, &planned.writes)
+            .await
+            .iter()
+            .enumerate()
+        {
+            eprintln!("  {}. {}", i + 1, line(d));
+        }
+    }
     ctx.confirm_or_cancel(&format!(
         "Ask {} ({} of {}) to: {}? It posts a request with your signature; the organization pays once enough members sign.",
         line(&org.record.label),
