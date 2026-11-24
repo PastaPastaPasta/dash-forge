@@ -148,7 +148,7 @@ It fails (exit 5, [`E504`](../errors.md#e504)) when the site has no manifest, wh
 
 ## What this proves, and what it does not
 
-**It proves** that the files in your browser are, byte for byte, what the tagged source builds into, if you loaded them through your own node and the CIDs match. Two parties vouch for the CID independently of your rebuild: GitHub Actions (Sigstore attestation) and the maintainer's identity on Platform (a signed release document).
+**It proves** that the files in your browser are, byte for byte, what the tagged source builds into, if you loaded them through your own node and the CIDs match. GitHub Actions vouches for the CID independently of your rebuild (Sigstore attestation). Once a Forge release is recorded, the maintainer's identity on Platform will vouch for it too (a signed release document).
 
 **It does not prove** that the source is safe. It tells you which source you are running, so a review of that tag applies to the app you loaded. Read the diff between tags, or trust someone who did.
 
