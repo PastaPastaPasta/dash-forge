@@ -7,7 +7,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToString } from 'react-dom/server'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { NetworkConfig } from '@/lib/constants'
 import type { OtherSite } from '@/lib/network-sites'
@@ -74,5 +74,20 @@ describe('MainnetLiveBanner', () => {
     root = createRoot(el)
     render(TESTNET, SITE)
     expect(banner()).toBeNull()
+  })
+
+  // Last: the in-memory dismissal lasts for the module's lifetime.
+  it('still dismisses for this page when storage refuses the write', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError')
+    })
+    try {
+      render(TESTNET, SITE)
+      act(() => el.querySelector('button')!.click())
+      expect(banner()).toBeNull()
+      expect(window.localStorage.getItem(MAINNET_LIVE_DISMISS_KEY)).toBeNull()
+    } finally {
+      setItem.mockRestore()
+    }
   })
 })
