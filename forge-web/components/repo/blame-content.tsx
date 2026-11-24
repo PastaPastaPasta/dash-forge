@@ -515,7 +515,7 @@ function BlamePermalinkButton({ href }: { href: string }): JSX.Element {
       onClick={() => void copy()}
       data-testid="copy-permalink"
       data-href={href}
-      className="hit-area inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[12px] font-medium text-anvil-600 hover:bg-anvil-200/70 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"
+      className="hit-area inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[12px] font-medium text-anvil-600 coarse:min-h-11 coarse:px-3 hover:bg-anvil-200/70 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"
     >
       {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Link2 className="h-3.5 w-3.5" aria-hidden />}
       {copied ? 'Copied' : 'Copy permalink'}
