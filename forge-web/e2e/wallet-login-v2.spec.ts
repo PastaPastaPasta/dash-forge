@@ -41,7 +41,7 @@ import { approveV2, disableGrants, newV2Wallet } from './wallet-responder-v2'
 test.skip(E2E_NETWORK === 'testnet', 'devnet spec (n=d requests, the scripted wallet); testnet v2 sign-in was checked with the released DashPay testnet build (docs/design/wallet-primary.md)')
 
 /** A v2 request's URI: `n=d` on a devnet, `v=2`. */
-const V2_URI = /^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=2$/
+const V2_URI = /^dashpay:\/\/connect\?v=2&n=d&r=[A-Za-z0-9_-]+$/
 const REQUEST_HASH = 'ab'.repeat(20)
 
 /** Whether the first DAPI node of the devnet under test accepts a TCP connection (5 s). */
@@ -67,7 +67,7 @@ async function devnetReachable(): Promise<boolean> {
 }
 
 /** The URI a QR on the page encodes (the Qr component prints it as its caption). */
-async function shownUri(page: Page, scheme = 'dash-key'): Promise<string> {
+async function shownUri(page: Page, scheme = 'dashpay'): Promise<string> {
   const caption = page.locator('figcaption', { hasText: `${scheme}:` }).first()
   await expect(caption).toBeVisible({ timeout: 60_000 })
   return (await caption.textContent())!.trim()
@@ -117,7 +117,7 @@ test.describe('v2 request (read-only)', () => {
     const link = page.getByTestId('wallet-deep-link')
     await expect(link).toBeVisible({ timeout: 60_000 })
     const href = (await link.getAttribute('href'))!
-    expect(href).toMatch(/^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=2/)
+    expect(href).toMatch(/^dashpay:\/\/connect\?v=2&n=d&r=[A-Za-z0-9_-]+/)
     // `cb` needs the canonical https site: this local http build leaves it out (BroadcastChannel
     // would not reach the tab either).
     expect(href).not.toContain('cb=')
@@ -219,7 +219,7 @@ test.describe('v2 sign-in and renewal (live, real spend)', () => {
       await unlock(page)
       await page.getByTestId('key-renew-in-wallet').click()
       await expect(page.getByTestId('wallet-renew-prepare')).toBeVisible({ timeout: 30_000 })
-      await expect(page.locator('figcaption', { hasText: 'dash-key:' })).toHaveCount(0)
+      await expect(page.locator('figcaption', { hasText: 'dashpay:' })).toHaveCount(0)
       await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
       await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
       await page.getByRole('button', { name: /continue to your wallet/i }).click()

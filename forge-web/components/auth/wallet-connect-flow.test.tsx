@@ -89,8 +89,8 @@ vi.mock('@/contexts/auth-context', () => ({
 function fakeV2Request(hint: string | null): { appEphemeralPriv: Uint8Array } & Record<string, unknown> {
   return {
     request: { authBindings: [{ totalBudget: 5_000_000_000n, expiresAt: 1_807_776_000_000 }] },
-    qrUri: 'dash-key:v2qr?v=2',
-    linkUri: 'dash-key:v2link?v=2&cb=x',
+    qrUri: 'dashpay://connect?v=2&n=d&r=qr',
+    linkUri: 'dashpay://connect?v=2&n=d&r=link&cb=x',
     requestHash: new Uint8Array(20).fill(0xab),
     createdAt: Date.now(),
     expiresAt: Date.now() + 600_000,
@@ -209,7 +209,7 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(v2.calls).toEqual(['group', 'blocker', 'request'])
-    expect(q('qr-value')!.textContent).toBe('dash-key:v2qr?v=2')
+    expect(q('qr-value')!.textContent).toBe('dashpay://connect?v=2&n=d&r=qr')
     expect(q('approval-terms')!.textContent).toMatch(/One approval covers all of Forge, spending up to 0\.05\d* DASH/)
     expect(q('approval-terms')!.textContent).toMatch(/until /)
     expect(q('wallet-support')!.textContent).toMatch(/App Connect v2/)
@@ -388,7 +388,7 @@ describe('WalletConnectFlow: renew in the wallet that granted the key', () => {
     await act(async () => byText('Continue to your wallet').click())
     await flush()
     expect(walletRenewalRequest).toHaveBeenCalledTimes(1)
-    expect(q('qr-value')!.textContent).toBe('dash-key:v2qr?v=2')
+    expect(q('qr-value')!.textContent).toBe('dashpay://connect?v=2&n=d&r=qr')
     expect(q('approval-terms')!.textContent).toMatch(/Approve the renewal in the wallet/)
     expect(endWalletRenewal).not.toHaveBeenCalled()
     await act(async () => v2.pending!.resolve(V2_GRANT))

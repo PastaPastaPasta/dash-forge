@@ -76,7 +76,7 @@ So **App Connect v2 from the two DashPay mobile wallets is the one real, release
 
 - v1 (`dash-key:` without `v=2`, answered in yappr's `7Uaq…`) is on its way out: Android 11.9.2 rejects it on every network and iOS `develop` rejects it. Only the released iOS 9.1.4 still answers it, on testnet. It never worked on mainnet.
 - `walletSignInReady` keeps the wallet tile last on testnet because "released wallets pin protocol 13 (#591)". That is no longer true: both released wallets need protocol 14, which testnet runs.
-- Forge's vendored platform-auth (`a627708d`) builds only `dash-key:…&v=2`. Current yappr adds the `dashpay://connect` carrier, which iOS `develop` requires on mainnet. Re-vendoring is needed before mainnet.
+- The web app builds `dashpay://connect?v=2&n=<m|t|d>&r=<base64url body>` (DIP dashpay/dips#181), ported from yappr's vendored platform-auth, on every network. DashPay for Android 11.9.2 and Dash Wallet for iOS 9.1.4 both read it. `dg` still prints `dash-key:…&v=2`.
 - Wallets accept up to two encryption bindings, but no Forge contract allows wallet-issued encryption keys, so a v2 sign-in still cannot set up private repos by itself.
 
 ## 3. What "wallet sign-in is primary" means per surface

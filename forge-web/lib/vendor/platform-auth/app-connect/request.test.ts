@@ -2,6 +2,8 @@ import { encodeBase58 } from './primitives'
 import { describe, expect, it } from 'vitest'
 import {
   AppConnectRequestError,
+  base64urlDecode,
+  base64urlEncode,
   buildAppConnectUri,
   checkAppConnectRequestAge,
   decodeAppConnectRequest,
@@ -44,8 +46,7 @@ describe('App Connect request v2 codec', () => {
   it('round-trips through the URI with network and callback', () => {
     const request = yapprVectorRequest()
     const uri = buildAppConnectUri(request, 'mainnet', 'https://yap.pr/connect?r=ab')
-    expect(uri.startsWith('dash-key:')).toBe(true)
-    expect(uri).toContain('?n=m&v=2&cb=https%3A%2F%2Fyap.pr%2Fconnect%3Fr%3Dab')
+    expect(uri).toMatch(/^dashpay:\/\/connect\?v=2&n=m&r=[A-Za-z0-9_-]+&cb=https%3A%2F%2Fyap.pr%2Fconnect%3Fr%3Dab$/)
     const parsed = parseAppConnectUri(uri)
     expect(parsed.request).toEqual(request)
     expect(parsed.network).toBe('mainnet')
@@ -86,7 +87,7 @@ describe('App Connect request v2 codec', () => {
     const bytes = encodeAppConnectRequest(yapprVectorRequest())
     bytes[0] = 1
     expect(refusal(() => decodeAppConnectRequest(bytes)).code).toBe('unsupported')
-    const uri = buildAppConnectUri(yapprVectorRequest(), 'testnet').replace('&v=2', '&v=1')
+    const uri = buildAppConnectUri(yapprVectorRequest(), 'testnet').replace('v=2', 'v=1')
     expect(refusal(() => parseAppConnectUri(uri)).code).toBe('unsupported')
   })
 
@@ -179,7 +180,39 @@ describe('App Connect request v2 codec', () => {
     expect(refusal(() => parseAppConnectUri(`${uri}&cb=${encodeURIComponent('http://yap.pr/connect')}`)).code).toBe('invalid')
     expect(refusal(() => parseAppConnectUri(`${uri}&cb=${encodeURIComponent('https://u:p@yap.pr/')}`)).code).toBe('invalid')
     expect(() => buildAppConnectUri(yapprVectorRequest(), 'devnet', 'javascript:alert(1)')).toThrow(AppConnectRequestError)
-    expect(refusal(() => parseAppConnectUri(uri.replace('dash-key:', 'dash-key:0OIl'))).code).toBe('invalid')
+    expect(refusal(() => parseAppConnectUri(uri.replace('&r=', '&r=+'))).code).toBe('invalid')
+    expect(refusal(() => parseAppConnectUri(uri.replace('v=2', 'v=3'))).code).toBe('unsupported')
+    expect(refusal(() => parseAppConnectUri(uri.replace('dashpay://connect', 'dashpay://invite'))).code).toBe('invalid')
+    expect(parseAppConnectUri(uri.replace('dashpay://connect', 'DashPay://Connect/')).network).toBe('devnet')
+  })
+
+  it('builds the dashpay://connect vector the wallets test against', () => {
+    // DashWalletTests/DashConnect/DashConnectUriTests.swift (dashwallet-ios v9.1.4), the DIP's request vector.
+    const walletVector = "dashpay://connect?v=2&n=d&r=AgPoPLkn6F-WrlCpXKO-Icx6N1UTmpQbFdmbAa9P7PDScPiDPHotWKuBbCSukV_iqpRnZYi0Z7oenyskwaPff9t4BVlhcHByAjICAbBZDlkmnGiFrPcdJ9386FGH4syXNsQulYEnzTW-bTjoAAAAC6Q7dAAAAAGi9760AAI6AQKiobSsb-8i6ioaaOgSNkSzV4dfa0EsGBCSgcFG57JxvAAAAAA7msoAAAABove-tAAHcHJvZmlsZQMQppsbT2ZmgUU97Dc0ZnpasgQh-IM8ei1Yq4FsJK6RX-KqlGdliLRnuh6fKyTBo99_23gBBggAAAGhKEJcAA&cb=https%3A%2F%2Fyap.pr%2Fconnect%3Fr%3Dd77dc0da9df83a47755a15c42c5d9db9d7a7fd62"
+    const callback = 'https://yap.pr/connect?r=d77dc0da9df83a47755a15c42c5d9db9d7a7fd62'
+    expect(buildAppConnectUri(yapprVectorRequest(), 'devnet', callback)).toBe(walletVector)
+    expect(parseAppConnectUri(walletVector).request).toEqual(yapprVectorRequest())
+  })
+
+  it('reads the transitional dash-key: carrier off mainnet only', () => {
+    const request = yapprVectorRequest()
+    const dashKey = buildAppConnectUri(request, 'testnet', undefined, 'dash-key')
+    expect(dashKey).toMatch(/^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=t&v=2$/)
+    expect(parseAppConnectUri(dashKey).requestBytes).toEqual(parseAppConnectUri(buildAppConnectUri(request, 'testnet')).requestBytes)
+    expect(refusal(() => parseAppConnectUri(dashKey.replace('dash-key:', 'dash-key:0OIl'))).code).toBe('invalid')
+    expect(() => buildAppConnectUri(request, 'mainnet', undefined, 'dash-key')).toThrow(AppConnectRequestError)
+    expect(refusal(() => parseAppConnectUri(dashKey.replace('n=t', 'n=m'))).code).toBe('invalid')
+  })
+
+  it('round-trips canonical base64url and refuses other spellings', () => {
+    for (let n = 0; n < 8; n++) {
+      const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 97 + 13) & 255)
+      expect(base64urlDecode(base64urlEncode(bytes))).toEqual(bytes)
+    }
+    expect(base64urlEncode(Uint8Array.of(0xfb, 0xff))).toBe('-_8')
+    for (const bad of ['A', 'AB==', 'AB', 'a+b/', 'AAB']) {
+      expect(() => base64urlDecode(bad)).toThrow(AppConnectRequestError)
+    }
   })
 
   it('applies the wallet freshness window', () => {
