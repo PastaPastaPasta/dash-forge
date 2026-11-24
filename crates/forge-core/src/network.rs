@@ -1438,14 +1438,12 @@ mod tests {
         let live = suggested_v2_network().expect("a live network is deployed");
         assert!(notice.contains(&live.dg_flags()), "{notice}");
         assert!(!notice.contains("--devnet-name moutai"), "{notice}");
-        // sakura went down after testnet's registration and names it; live networks get none.
+        // sakura names the same live network (mainnet once it is deployed); live networks get none.
         let sakura =
             retired_notice(&Network::from_key("devnet-sakura")).expect("sakura is retired");
-        assert!(
-            sakura.contains(&Network::Testnet.dg_flags()) || sakura.contains("testnet"),
-            "{sakura}"
-        );
+        assert!(sakura.contains(&live.dg_flags()), "{sakura}");
         assert!(retired_notice(&Network::Testnet).is_none());
+        assert!(retired_notice(&Network::Mainnet).is_none());
     }
 
     #[test]

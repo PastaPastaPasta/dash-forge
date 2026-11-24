@@ -19,7 +19,7 @@ forge-v2 was registered on mainnet (`evo1`, Platform 5.0, protocol 14, @dashevo/
 | `signed-sums.sha256` | The sums the owner signed in P4 (`deploy-v2.mjs --print-sha256 --set mainnet` at `6da7d1c5`), passed as `--expect-sha256`. `launch-network.mjs` refuses to register unless they equal `sha256sums.txt`; this copy is that file. |
 | `sha256sums.txt` | The sums `launch-network.mjs` computed from the checkout it registered from. |
 | `c1.json` | C1 on the live registration: every contract on chain equals the signed JSON. |
-| `group.json` | The contract group: owned by the deployer, no admins, exactly the four contracts. |
+| `group.json` | The contract group: owned by the deployer, with no admins. The record shows all four contracts carry this `contractGroupId`. |
 
 The same steps were rehearsed on testnet the same night with a scratch deployer
 ([docs/launch/mainnet-runbook.md §8](../../../docs/launch/mainnet-runbook.md#8-testnet-rehearsal)).
