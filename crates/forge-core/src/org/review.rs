@@ -255,6 +255,23 @@ fn shown(key: &str, v: &FieldValue, names: &Names) -> String {
     }
 }
 
+/// Equal by value: a transition carries identifiers as plain bytes and integers as `U64`, which
+/// Drive hands back as identifiers and narrower integers.
+fn same(a: &FieldValue, b: &FieldValue) -> bool {
+    match (a, b) {
+        (FieldValue::List(x), FieldValue::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(x, y))
+        }
+        _ => match (a.as_bytes(), b.as_bytes()) {
+            (Some(x), Some(y)) => x == y,
+            _ => match (a.as_i64(), b.as_i64()) {
+                (Some(x), Some(y)) => x == y,
+                _ => a == b,
+            },
+        },
+    }
+}
+
 /// `: set description to “…”; remove website` — what a replace changes against `stored`.
 fn changes(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) -> String {
     let Some(before) = stored else {
@@ -262,7 +279,7 @@ fn changes(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) -> St
     };
     let mut out = Vec::new();
     for (k, v) in &d.properties {
-        if before.properties.get(k) != Some(v) {
+        if !before.properties.get(k).is_some_and(|b| same(b, v)) {
             out.push(format!("set {k} to {}", shown(k, v, names)));
         }
     }
@@ -351,6 +368,8 @@ mod tests {
                 ("name", FieldValue::text("widgets")),
                 ("description", FieldValue::text("old")),
                 ("website", FieldValue::text("https://a")),
+                ("forkOf", FieldValue::Identifier([9; 32])),
+                ("stars", FieldValue::Integer(3)),
             ],
         );
         let after = write(
@@ -359,6 +378,8 @@ mod tests {
                 ("name", FieldValue::text("widgets")),
                 ("description", FieldValue::text("new")),
                 ("renamedTo", FieldValue::Bytes(other.to_vec())),
+                ("forkOf", FieldValue::Bytes(vec![9; 32])),
+                ("stars", FieldValue::Uint64(3)),
             ],
         );
         assert_eq!(

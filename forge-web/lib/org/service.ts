@@ -283,12 +283,12 @@ async function describe(
   }
   const source = d.action === 'delete' ? (stored ?? {}) : d.data
   const memberId = source['memberId'] instanceof Uint8Array ? base58Encode(source['memberId']) : null
-  const repoId = source['repoId'] instanceof Uint8Array ? base58Encode(source['repoId']) : null
+  const repoIds = [source['repoId'], d.data['renamedTo']].filter((v): v is Uint8Array => v instanceof Uint8Array).map(base58Encode)
   if (memberId) ids.add(memberId)
   await Promise.all(
     [...ids].filter((id) => !names.has(id)).map(async (id) => names.set(id, (await resolveDpnsName(sdk, id, opts.network)) ?? shortIdentity(id))),
   )
-  if (repoId && !repoNames.has(repoId)) {
+  for (const repoId of repoIds.filter((id) => !repoNames.has(id))) {
     const repo = await storedDoc(sdk, opts.forge.core, DOC.repo, repoId).catch(() => null)
     repoNames.set(repoId, repo ? `${record.label}/${String(repo.data['name'] ?? '')}` : null)
   }
@@ -305,18 +305,37 @@ export function requestLink(orgId: string, requestId: string): string {
   return `/org/?id=${encodeURIComponent(orgId)}&request=${encodeURIComponent(requestId)}`
 }
 
-function openNonces(view: OrgView | null, current: (contractId: string) => bigint | undefined): Map<string, bigint> {
-  const max = new Map<string, bigint>()
+/** The nonces per contract that requests still collecting or ready hold. */
+function openNonces(view: OrgView | null): Map<string, Set<bigint>> {
+  const held = new Map<string, Set<bigint>>()
   for (const r of view?.requests ?? []) {
     if (r.status !== 'collecting' && r.status !== 'ready') continue
     for (const p of r.proposals) {
       const d = p.decoded
-      const c = d ? current(d.contractId) : undefined
-      if (!d || c === undefined || isNonceTooFar(c, d.nonce)) continue
-      if ((max.get(d.contractId) ?? 0n) < d.nonce) max.set(d.contractId, d.nonce)
+      if (!d) continue
+      const set = held.get(d.contractId) ?? new Set<bigint>()
+      set.add(d.nonce)
+      held.set(d.contractId, set)
     }
   }
-  return max
+  return held
+}
+
+/**
+ * A nonce per write: the lowest ones above the tip that no open request holds. Platform accepts
+ * nonces out of order within its window, so one request holding a far nonce blocks nothing.
+ */
+export function freeNonces(contracts: readonly string[], current: (contractId: string) => bigint | undefined, held: ReadonlyMap<string, ReadonlySet<bigint>>): bigint[] {
+  const last = new Map<string, bigint>()
+  return contracts.map((contractId) => {
+    const c = current(contractId)
+    if (c === undefined) throw new Error("the organization's nonce could not be read; try again")
+    let n = (last.get(contractId) ?? nonceTip(c)) + 1n
+    while (held.get(contractId)?.has(n)) n += 1n
+    if (isNonceTooFar(c, n)) throw new Error("the organization's open requests hold every nonce Platform accepts: finish some first")
+    last.set(contractId, n)
+    return n
+  })
 }
 
 export interface LaterSpec {
@@ -343,19 +362,11 @@ export async function createRequest(
   const view = await loadOrg(sdk, record, { ...opts, describe: false })
   const { identity, state } = view
   const current = await nonceReader(sdk, record.orgId, input.specs.map((s) => s.contractId))
-  const taken = openNonces(view, current)
-  const next = new Map<string, bigint>()
-  const last = new Map<string, bigint>()
-  for (const s of input.specs) {
-    const c = current(s.contractId)
-    if (c === undefined) throw new Error("the organization's nonce could not be read; try again")
-    const tip = nonceTip(c)
-    const t = taken.get(s.contractId) ?? 0n
-    const n = (last.get(s.contractId) ?? (tip > t ? tip : t)) + 1n
-    if (isNonceTooFar(c, n)) throw new Error('the organization has too many open requests: finish or decline some first')
-    if (!next.has(s.contractId)) next.set(s.contractId, n)
-    last.set(s.contractId, n)
-  }
+  const nonces = freeNonces(
+    input.specs.map((s) => s.contractId),
+    current,
+    openNonces(view),
+  )
   const signer = { keyId: identity.keyId, cid: identity.ceremony.cid, slot: identity.slot }
   const group = newGroupId()
   const platformVersion = sdk.version()
@@ -368,8 +379,7 @@ export async function createRequest(
       const problem = rc1WriteProblem(opts.forge, spec.contractId, spec.documentType, spec.data)
       if (problem !== null) throw new Error(`refusing this write: ${problem}`)
     }
-    const nonce = next.get(spec.contractId) as bigint
-    next.set(spec.contractId, nonce + 1n)
+    const nonce = nonces[seq] as bigint
     const built = await buildUnsigned(spec, { ownerId: record.orgId, keyId: identity.keyId, nonce, platformVersion })
     ids.push(built.documentId)
     const body: ProposalBody = {
@@ -421,6 +431,8 @@ export async function declineRequest(view: OrgView, request: RequestView, unlock
 
 export async function finishRequest(sdk: EvoSDK, view: OrgView, request: RequestView, unlocked: Unlocked, opts: LoadOptions): Promise<RequestView | null> {
   const { record, state, identity } = view
+  if (request.request.malformed) throw new Error('The parts of this request do not fit together.')
+  if (request.status !== 'ready') throw new Error('this request is not ready to finish')
   const key = requirementKey({ cid: identity.ceremony.cid, slot: identity.slot })
   for (const [i, p] of request.request.proposals.entries()) {
     const pv = request.proposals[i] as ProposalView

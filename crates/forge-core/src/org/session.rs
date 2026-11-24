@@ -1,7 +1,7 @@
 //! A connected organization: its group's log read from the relay, and the request flows
 //! (§4, §9): create, sign, decline and finish.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 
@@ -248,17 +248,18 @@ impl Org {
             .collect()
     }
 
-    /// The highest nonce per contract that a request still collecting or ready holds.
-    pub fn open_nonces(&self) -> BTreeMap<String, u64> {
-        let mut out: BTreeMap<String, u64> = BTreeMap::new();
+    /// The nonces per contract that requests still collecting or ready hold.
+    pub fn open_nonces(&self) -> BTreeMap<String, BTreeSet<u64>> {
+        let mut out: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         for r in self.requests() {
             if !request::status(&self.state, &r, None).is_open() {
                 continue;
             }
             for d in r.proposals.iter().filter_map(|id| self.decoded(id)) {
                 if d.owner_id == self.record.org_id {
-                    let e = out.entry(d.contract_id.clone()).or_default();
-                    *e = (*e).max(d.nonce);
+                    out.entry(d.contract_id.clone())
+                        .or_default()
+                        .insert(d.nonce);
                 }
             }
         }

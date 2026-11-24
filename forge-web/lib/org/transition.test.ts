@@ -31,7 +31,7 @@ describe('organization transitions', () => {
     ['config', { action: 'create', contractId: forge.core, documentType: 'config', data: firstConfigData(decodeIdentifier(REPO_ID), 'public', { name: 'widgets', protect: true }) }, /Set up acme\/widgets with default branch main, protected/],
     ['grant', { action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(repo, ALICE, { role: 2 }) }, /Give alice\.dash Triage access to acme\/widgets/],
     ['revoke', { action: 'delete', contractId: forge.core, documentType: 'maintainer', documentId: base58Encode(new Uint8Array(32).fill(1)) }, /Remove alice\.dash's Maintain access to acme\/widgets/],
-    ['listing', { action: 'replace', contractId: forge.core, documentType: 'repo', documentId: REPO_ID, revision: 2n, data: { name: 'widgets', visibility: 'public', description: 'new words' } }, /Edit the listing of acme\/widgets: set the description to “new words”/],
+    ['listing', { action: 'replace', contractId: forge.core, documentType: 'repo', documentId: REPO_ID, revision: 2n, data: { name: 'widgets', visibility: 'public', description: 'new words' } }, /Edit the listing of acme\/widgets: set the description to “new words”, set the visibility to “public”$/],
     ['topic', { action: 'create', contractId: contractOf(forge, 'topic'), documentType: 'topic', data: { repoId: decodeIdentifier(REPO_ID), name: 'rust' } }, /Add the topic “rust” to acme\/widgets/],
   ]
 
@@ -49,7 +49,7 @@ describe('organization transitions', () => {
       expect(d.documentId).toBe(built.documentId)
       expect(d.signable).toBe(built.signable)
       expect(reviewDecoded(d, built, review)).toEqual([])
-      const stored = spec.action === 'delete' ? { repoId: decodeIdentifier(REPO_ID), memberId: decodeIdentifier(ALICE) } : spec.action === 'replace' ? { name: 'widgets', description: 'old' } : null
+      const stored = spec.action === 'delete' ? { repoId: decodeIdentifier(REPO_ID), memberId: decodeIdentifier(ALICE) } : spec.action === 'replace' ? { name: 'widgets', visibility: 'private', description: 'old' } : null
       expect(describeTransition(d, { ...names, stored })).toMatch(sentence)
       if (spec.action === 'create') {
         const plain = (v: unknown): string => JSON.stringify(v, (_k, x) => (x instanceof Uint8Array ? hex(x) : typeof x === 'bigint' ? Number(x) : x))

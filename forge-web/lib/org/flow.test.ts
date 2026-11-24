@@ -10,7 +10,7 @@ import { membershipData } from '../repo/writes'
 import type { RepoRef } from '../repo/contract'
 import { verify } from './bls'
 import type { Envelope } from './envelope'
-import { connect, createRequest, declineRequest, loadOrg, signRequest, verifyInvite } from './service'
+import { connect, createRequest, declineRequest, freeNonces, loadOrg, signRequest, verifyInvite } from './service'
 import { participantKeys, seedFromMnemonic } from './derive'
 import { hex } from './util'
 
@@ -149,6 +149,14 @@ describe('organization request flow', () => {
     const group = await createRequest(sdk, r1, people[0]!, { title: 'y', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, base58Encode(new Uint8Array(32).fill(6)), { role: 3 }) }] }, opts)
     const req = (await loadOrg(sdk, r1, opts)).requests.find((r) => r.request.id === group)!
     expect(req.proposals[0]!.decoded!.nonce).toBe(open.reduce((a, b) => (a > b ? a : b)) + 1n)
+  })
+
+  it('new requests take the lowest free nonces, so a far open one blocks nothing', async () => {
+    const held = new Map([['c', new Set([11n, 12n, 34n])]])
+    expect(freeNonces(['c', 'c', 'd'], () => 10n, held)).toEqual([13n, 14n, 11n])
+    expect(freeNonces(['c'], () => 33n | (1n << 40n), held)).toEqual([35n])
+    const full = new Map([['c', new Set(Array.from({ length: 24 }, (_, i) => 11n + BigInt(i)))]])
+    expect(() => freeNonces(['c'], () => 10n, full)).toThrow(/hold every nonce/)
   })
 
   it('a phrase that is not a member cannot create a request', async () => {

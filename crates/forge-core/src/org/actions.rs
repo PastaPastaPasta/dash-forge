@@ -1,7 +1,7 @@
 //! An organization's owner actions as unsigned writes, built from the same property builders a
 //! personal owner's writes use, so an organization's documents are identical to anyone's.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::create::{config_props, owner_maintainer_props, repo_props, validated, CreateRepoOpts};
 use crate::error::{Error, Result};
@@ -9,55 +9,58 @@ use crate::members::{
     check_grant, consent_doc, doc_type, member_doc_props, owner_row_refusal, scoped, MemberReader,
 };
 use crate::network::ForgeIds;
-use crate::platform::org::{OrgWriter, UnsignedWrite};
+use crate::platform::org::{NonceState, OrgWriter, UnsignedWrite};
 use crate::platform::{self, LoadedIdentity, PlatformClient};
 use crate::refs::DOC_CONFIG;
 use crate::resolve::{find_named, DOC_REPO};
 use crate::rules::v2::{Role, Visibility};
 use crate::scope::{DocScope, RepoRef};
 
-/// Hands out identity-contract nonces: above the identity's current one and above every nonce
-/// an open request of the organization already holds, consecutive within one request. An open
-/// nonce further ahead than Platform accepts is ignored (it can never land), and a nonce that
-/// would be is refused.
+/// Hands out identity-contract nonces: the lowest ones above the identity's current one that no
+/// open request of the organization holds. Platform accepts nonces out of order within its
+/// window, so one request holding a far nonce blocks nothing. A nonce beyond the window is
+/// refused.
 pub struct Nonces<'a> {
     writer: &'a OrgWriter<'a>,
-    floor: BTreeMap<String, u64>,
-    next: BTreeMap<String, u64>,
+    held: BTreeMap<String, BTreeSet<u64>>,
+    last: BTreeMap<String, (NonceState, u64)>,
 }
 
 impl<'a> Nonces<'a> {
-    pub fn new(writer: &'a OrgWriter<'a>, floor: BTreeMap<String, u64>) -> Self {
+    pub fn new(writer: &'a OrgWriter<'a>, held: BTreeMap<String, BTreeSet<u64>>) -> Self {
         Self {
             writer,
-            floor,
-            next: BTreeMap::new(),
+            held,
+            last: BTreeMap::new(),
         }
     }
 
     pub async fn take(&mut self, contract_id: &str) -> Result<u64> {
-        let next = if let Some(n) = self.next.get(contract_id) {
-            *n
+        let (current, last) = if let Some(v) = self.last.get(contract_id) {
+            *v
         } else {
             let current = self.writer.current_nonce(contract_id).await?;
-            let floor = self
-                .floor
-                .get(contract_id)
-                .copied()
-                .filter(|n| !current.too_far(*n))
-                .unwrap_or(0);
-            let next = current.tip().max(floor) + 1;
-            if current.too_far(next) {
-                return Err(Error::Config(
-                    "the organization has too many open requests: finish or decline some first"
-                        .into(),
-                ));
-            }
-            next
+            (current, current.tip())
         };
-        self.next.insert(contract_id.to_string(), next + 1);
+        let held = self.held.get(contract_id);
+        let next = free_after(last, held);
+        if current.too_far(next) {
+            return Err(Error::Config(
+                "the organization's open requests hold every nonce Platform accepts: finish some first"
+                    .into(),
+            ));
+        }
+        self.last.insert(contract_id.to_string(), (current, next));
         Ok(next)
     }
+}
+
+fn free_after(last: u64, held: Option<&BTreeSet<u64>>) -> u64 {
+    let mut n = last + 1;
+    while held.is_some_and(|h| h.contains(&n)) {
+        n += 1;
+    }
+    n
 }
 
 /// The organization acting as owner: its connection, its writer and its display label.
@@ -270,4 +273,18 @@ pub async fn revoke(
         ),
         writes: vec![delete],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_request_takes_the_lowest_free_nonces() {
+        let held: BTreeSet<u64> = [11, 12, 34].into();
+        assert_eq!(free_after(10, Some(&held)), 13);
+        assert_eq!(free_after(13, Some(&held)), 14);
+        assert_eq!(free_after(33, Some(&held)), 35);
+        assert_eq!(free_after(10, None), 11);
+    }
 }

@@ -15,28 +15,36 @@ const idOf = (v: unknown): string => (v instanceof Uint8Array && v.length === 32
 const text = (v: unknown): string => (typeof v === 'string' ? v : '')
 const quote = (s: string, max = 80): string => `“${s.length > max ? `${s.slice(0, max - 1)}…` : s}”`
 
-const LISTING_FIELDS: readonly [string, string][] = [
-  ['description', 'description'],
-  ['displayName', 'display name'],
-  ['topics', 'topics'],
-  ['language', 'language'],
-  ['renamedTo', 'new location'],
-  ['defaultBranch', 'default branch'],
-]
-
-function same(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a, (_k, v) => (v instanceof Uint8Array ? Array.from(v) : v)) === JSON.stringify(b, (_k, v) => (v instanceof Uint8Array ? Array.from(v) : v))
+const FIELD_LABELS: Readonly<Record<string, string>> = {
+  description: 'description',
+  displayName: 'display name',
+  topics: 'topics',
+  language: 'language',
+  renamedTo: 'new location',
+  defaultBranch: 'default branch',
 }
 
-function listingChanges(next: Record<string, unknown>, stored: Record<string, unknown> | null | undefined): string {
-  const changed = LISTING_FIELDS.filter(([k]) => !same(next[k], stored?.[k]))
-  if (changed.length === 0) return 'its listing (no visible change)'
-  return changed
-    .map(([k, label]) => {
+const plain = (v: unknown): unknown =>
+  v instanceof Uint8Array ? (v.length === 32 ? base58Encode(v) : Array.from(v)) : typeof v === 'bigint' || typeof v === 'number' ? String(v) : Array.isArray(v) ? v.map(plain) : v
+
+function same(a: unknown, b: unknown): boolean {
+  return JSON.stringify(plain(a)) === JSON.stringify(plain(b))
+}
+
+/** What a replace changes against the stored document: every field, so nothing is left unsaid. */
+function changes(next: Record<string, unknown>, stored: Record<string, unknown> | null | undefined, repo: (id: string) => string | null): string {
+  if (!stored) return 'its current version could not be read'
+  const keys = [...new Set([...Object.keys(next), ...Object.keys(stored)])].filter((k) => !k.startsWith('$') && !same(next[k], stored[k]))
+  if (keys.length === 0) return 'no change'
+  return keys
+    .map((k) => {
+      const label = FIELD_LABELS[k] ?? k
       const v = next[k]
       if (v === undefined) return `remove the ${label}`
-      if (Array.isArray(v)) return `set the ${label} to ${v.map(String).join(', ') || 'none'}`
-      return `set the ${label} to ${quote(String(v))}`
+      if (Array.isArray(v)) return `set the ${label} to ${v.map((x) => String(plain(x))).join(', ') || 'none'}`
+      const shown = plain(v)
+      if (k === 'renamedTo' && typeof shown === 'string') return `set the ${label} to ${repo(shown) ?? shown}`
+      return `set the ${label} to ${quote(String(shown))}`
     })
     .join(', ')
 }
@@ -53,7 +61,7 @@ export function describeTransition(d: DecodedTransition, names: DescribeNames): 
       return `Create the repository ${names.org}/${text(d.data['name'])}`
     case 'repo:replace': {
       const name = text(d.data['name']) || text(names.stored?.['name'])
-      return `Edit the listing of ${names.org}/${name}: ${listingChanges(d.data, names.stored)}`
+      return `Edit the listing of ${names.org}/${name}: ${changes(d.data, names.stored, names.repo)}`
     }
     case 'maintainer:create':
       return member === names.orgId ? `Make the organization the maintainer of ${repoName}` : `Give ${who} Maintain access to ${repoName}`
@@ -74,8 +82,7 @@ export function describeTransition(d: DecodedTransition, names: DescribeNames): 
     }
     case 'profile:create':
     case 'profile:replace': {
-      const display = text(d.data['displayName'])
-      return `Set the organization's profile${display ? ` (name ${quote(display)})` : ''}`
+      return `Update the organization's profile: ${changes(d.data, names.stored, names.repo)}`
     }
     case 'topic:create':
       return `Add the topic ${quote(text(d.data['name']))} to ${repoName}`
