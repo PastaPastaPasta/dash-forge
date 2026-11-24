@@ -636,7 +636,7 @@ impl Org {
     ) -> Result<bool> {
         for id in &req.proposals {
             let p = &self.state.proposals[id];
-            if p.status == ProposalStatus::Executed {
+            if p.status == ProposalStatus::Executed && !self.executed_unproven(client, id).await? {
                 continue;
             }
             let reviewed = review::review_offline(&self.expect(network, forge), p);
@@ -646,7 +646,7 @@ impl Org {
             if landed(client, d).await? {
                 continue;
             }
-            if p.status == ProposalStatus::Ready {
+            if matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed) {
                 let current = client
                     .proved_contract_nonce(&self.record.org_id, &d.contract_id)
                     .await?;
