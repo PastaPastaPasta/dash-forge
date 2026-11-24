@@ -308,16 +308,16 @@ function IndexLine({ summary, stale, target, building, onUpdate }: { summary: Co
       ) : null}
       <details className="text-[12px] text-anvil-600 dark:text-anvil-400">
         <summary className="hit-area cursor-pointer select-none">
-          {plural(summary.files, 'file')} of {summary.ref} at {shortOid(summary.commit ?? summary.tip)} · {formatBytes(summary.bytes)} of text · indexed in this browser {timeAgo(summary.builtAt)}
+          {plural(summary.files, 'file')} indexed on {summary.ref} · {formatBytes(summary.bytes)}
         </summary>
         <ul className="mt-2 list-disc space-y-0.5 pl-5">
-          <li>The files were read from the repo’s storage once, each checked against its id, and are kept in this browser{target.persist ? '' : ' tab only (a private repo’s files are never written to disk)'}. Searching sends no request.</li>
+          <li>Commit {shortOid(summary.commit ?? summary.tip)} · indexed {timeAgo(summary.builtAt)} in this browser{target.persist ? '' : ' tab only (a private repo’s files are never written to disk)'}. Searching sends no request.</li>
           <li>
             Not searched: {left === 0 ? 'nothing' : [summary.skipped.binary ? plural(summary.skipped.binary, 'binary file') : '', summary.skipped.large ? `${plural(summary.skipped.large, 'file')} over ${formatBytes(MAX_FILE_BYTES)}` : '', summary.skipped.symlink ? plural(summary.skipped.symlink, 'symlink') : ''].filter(Boolean).join(', ')}; submodules.
           </li>
-          {summary.truncated ? <li>The repo has more files than an index lists: only the first {plural(summary.files, 'file')} are searched.</li> : null}
-          {summary.capped ? <li>Reading stopped at 100 MiB of text: the files past it are not searched.</li> : null}
-          {summary.large ? <li>A large repo: only its default branch is indexed, and one index is kept.</li> : null}
+          {summary.truncated ? <li>Only part of the repository is indexed: the file walk stopped at its limit.</li> : null}
+          {summary.capped ? <li>Reading stopped at 100 MiB of text.</li> : null}
+          {summary.large ? <li>Large repository: only the default branch is indexed.</li> : null}
         </ul>
       </details>
     </div>
@@ -452,12 +452,10 @@ function IndexBuilder({
   }
   return (
     <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="code-search-plan">
-      <h3 className="text-prose font-semibold">{missing > 0 ? 'Rebuild this browser’s index' : `Index ${target.ref} for code search`}</h3>
+      <h3 className="text-prose font-semibold">{missing > 0 ? 'Rebuild local search index' : `Index ${target.ref} for code search`}</h3>
       <p className="text-dense text-anvil-700 dark:text-anvil-200">
-        {missing > 0 ? `${plural(missing, 'file')} of the index kept here went missing (the browser cleared some of its storage). ` : ''}
-        Code search reads each text file of {target.ref} once — {plural(p.readPaths, 'file')}, {p.unsized > 0 ? 'at least' : 'about'} {formatBytes(p.readBytes)} from the repo’s storage
-        {p.cached > 0 ? ` (${p.cached.toLocaleString('en-US')} more are already in this browser)` : ''} — checks each against its id and keeps them{' '}
-        {target.persist ? 'in this browser' : 'in this tab'}. After that, searching sends no request.
+        {missing > 0 ? `${plural(missing, 'file')} went missing from browser storage. ` : ''}
+        Reads {plural(p.readPaths, 'file')} ({p.unsized > 0 ? 'at least' : 'about'} {formatBytes(p.readBytes)}) once{p.cached > 0 ? `, with ${p.cached.toLocaleString('en-US')} already cached` : ''}, verified and kept {target.persist ? 'in this browser' : 'in this tab'}.
       </p>
       {p.large ? <p className="text-[12px] text-anvil-600 dark:text-anvil-400">A large repository: only its default branch is indexed, and one index is kept.</p> : null}
       {stopped ? <p className="text-[12px] text-anvil-600 dark:text-anvil-400">Stopped. What was read is kept: building again continues from there.</p> : null}
@@ -497,10 +495,15 @@ function Results({ target, summary, stale, query, addr, refParam }: { target: Co
   const linkRef = stale ? (summary.commit ?? summary.tip) : refParam
   return (
     <section aria-label="Results" className="space-y-3" data-testid="code-search-results">
-      <p role="status" className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="code-search-count" data-query={shownQuery}>
+      <p
+        role="status"
+        className="text-dense text-anvil-700 dark:text-anvil-200"
+        data-testid="code-search-count"
+        data-query={shownQuery}
+        title={`${Math.max(1, Math.round(data.ms))} ms in this browser`}
+      >
         {data.fileCount === 0 ? 'No files match.' : `${plural(data.fileCount, 'file')}`}
-        {data.stopped ? ' (the search stopped after 5 s; refine it for every match)' : ''}{' '}
-        <span className="ml-1 text-[12px] text-anvil-500 dark:text-anvil-400">{Math.max(1, Math.round(data.ms))} ms, in this browser</span>
+        {data.stopped ? ' (stopped after 5 s; refine query for all matches)' : ''}
       </p>
       {data.unknownLanguages.length > 0 ? (
         <p className="text-[12px] text-anvil-600 dark:text-anvil-400">Unknown language: {data.unknownLanguages.join(', ')}.</p>

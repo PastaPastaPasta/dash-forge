@@ -91,7 +91,12 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-xl">Releases</h1>
         <div className="ml-auto flex items-center gap-2">
-          <CopyLinkButton repo={addr} target={{ kind: 'releases' }} visibility={home.repo.visibility} />
+          <CopyLinkButton
+            repo={addr}
+            target={{ kind: 'releases' }}
+            visibility={home.repo.visibility}
+            className="border-transparent bg-transparent text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:border-transparent dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+          />
           <NewReleaseButton home={home} releases={data} onPublished={refreshAfterPublish} />
         </div>
       </div>
@@ -100,13 +105,13 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
       ) : data === null ? (
         <LoadingBlock label="Reading releases" />
       ) : data.locked === true ? (
-        <EmptyState icon={Lock} title="Releases are encrypted" body="This private repo's releases are readable only by its members, with their keys." />
+        <EmptyState icon={Lock} title="Releases are encrypted" body="Only members of this private repository can read its releases." />
       ) : data.current.length === 0 ? (
         <>
           <EmptyState
             icon={Tag}
             title={unpublished.length > 0 ? 'No published releases' : 'No releases yet'}
-            body="Maintainers publish one with New release (at the top of this page), or with dg release create --tag v1 --asset ./dist/app.tar.gz."
+            body="Publish one with New release, or with dg release create --tag v1 --asset ./dist/app.tar.gz."
           />
           <SealedListNotes list={data} />
         </>

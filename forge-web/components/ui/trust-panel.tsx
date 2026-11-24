@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useId, useState } from 'react'
-import { ChevronRight, Loader2, Lock } from 'lucide-react'
+import { ChevronDown, Loader2, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { shortOid, timeAgo, TRUST_ROW_TITLE, type PrivacyNote, type TrustLink, type TrustReport } from '@/lib/view'
 import { Author } from '@/components/author'
@@ -111,59 +111,116 @@ function TipSentence({ report }: { report: TrustReport }): JSX.Element {
   )
 }
 
-export function TrustPanel({ report }: { report: TrustReport }): JSX.Element {
+export function TrustPanel({ report, className }: { report: TrustReport; className?: string }): JSX.Element {
   const [open, setOpen] = useState(false)
   const bodyId = useId()
   const meta = TRUST_META[report.overall]
   const checking = report.chain.checking === true
+  const statusLabel = checking ? 'Checking…' : meta.label
+  const degraded = !checking && report.overall !== 'verified' && report.overall !== 'pending'
+  const failed = report.overall === 'failed'
 
   return (
     <section
       aria-label="Verification"
       data-testid="verification-card"
       data-state={report.overall}
-      className="rounded-lg border border-anvil-200 bg-anvil-50 dark:border-anvil-750 dark:bg-anvil-850"
+      className={cn('min-w-0', className)}
     >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-controls={bodyId}
-        className="flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-anvil-100 dark:hover:bg-anvil-800"
-      >
-        {checking ? (
-          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
-        ) : (
-          <meta.Icon className={cn('mt-0.5 h-4 w-4 shrink-0', meta.klass)} aria-hidden />
-        )}
-        <span className="min-w-0 flex-1">
-          <span className="block text-dense font-medium text-anvil-800 dark:text-anvil-100">Verification</span>
-          <span data-testid="verification-summary" className={cn('block text-[12px]', checking ? 'text-anvil-500 dark:text-anvil-400' : meta.klass)}>
-            {report.summary}
-          </span>
-        </span>
-        <ChevronRight
-          className={cn('mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400 transition-transform', open && 'rotate-90')}
-          aria-hidden
-        />
-      </button>
-
-      {open ? (
-        <div id={bodyId} className="animate-fade-in border-t border-anvil-200 px-3 py-3 dark:border-anvil-750">
-          <ol className="mb-3">
-            <Row title={TRUST_ROW_TITLE.chain} link={report.chain} />
-            <Row title={TRUST_ROW_TITLE.tip} link={report.tip}>
-              <TipSentence report={report} />
-            </Row>
-            <Row title={TRUST_ROW_TITLE.content} link={report.content} />
-            <Row title={TRUST_ROW_TITLE.source} link={report.source} />
-            {report.privacy ? <PrivacyRow note={report.privacy} /> : null}
-          </ol>
-          <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
-            <HostingNote />
-          </p>
+      {degraded ? (
+        <div
+          className={cn(
+            'rounded-lg border px-3 py-2',
+            failed ? 'border-danger/40 bg-danger/5' : 'border-caution/50 bg-caution/5',
+          )}
+        >
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <button
+              type="button"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              aria-controls={bodyId}
+              aria-label={`Verification: ${statusLabel}`}
+              title={report.summary}
+              data-testid="verification-chip"
+              className="hit-area inline-flex items-center gap-1.5 text-[12px] font-medium"
+            >
+              <meta.Icon className={cn('h-3.5 w-3.5 shrink-0', meta.klass)} aria-hidden />
+              <span className={meta.klass}>{statusLabel}</span>
+              <ChevronDown
+                className={cn('h-3.5 w-3.5 shrink-0 text-anvil-500 transition-transform dark:text-anvil-400', open && 'rotate-180')}
+                aria-hidden
+              />
+            </button>
+            <p data-testid="verification-summary" className={cn('min-w-0 flex-1 text-[12px] leading-snug', meta.klass)}>
+              {report.summary}
+            </p>
+          </div>
+          {open ? (
+            <div id={bodyId} className="mt-2.5 animate-fade-in border-t border-anvil-200 pt-2.5 dark:border-anvil-750">
+              <ol className="mb-3">
+                <Row title={TRUST_ROW_TITLE.chain} link={report.chain} />
+                <Row title={TRUST_ROW_TITLE.tip} link={report.tip}>
+                  <TipSentence report={report} />
+                </Row>
+                <Row title={TRUST_ROW_TITLE.content} link={report.content} />
+                <Row title={TRUST_ROW_TITLE.source} link={report.source} />
+                {report.privacy ? <PrivacyRow note={report.privacy} /> : null}
+              </ol>
+              <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
+                <HostingNote />
+              </p>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            aria-controls={bodyId}
+            aria-label={`Verification: ${statusLabel}`}
+            title={report.summary}
+            data-testid="verification-chip"
+            className="inline-flex items-center gap-1.5 rounded-full border border-anvil-200 bg-white px-2.5 py-1 text-[12px] font-medium text-anvil-700 transition-colors hover:bg-anvil-50 coarse:min-h-11 coarse:px-3 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:bg-anvil-850"
+          >
+            {checking ? (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
+            ) : (
+              <meta.Icon className={cn('h-3.5 w-3.5 shrink-0', meta.klass)} aria-hidden />
+            )}
+            <span className={checking ? 'text-anvil-500 dark:text-anvil-400' : meta.klass}>{statusLabel}</span>
+            <ChevronDown
+              className={cn('h-3.5 w-3.5 shrink-0 text-anvil-500 transition-transform dark:text-anvil-400', open && 'rotate-180')}
+              aria-hidden
+            />
+          </button>
+
+          {open ? (
+            <div
+              id={bodyId}
+              className="mt-2 animate-fade-in rounded-lg border border-anvil-200 bg-anvil-50 p-3 dark:border-anvil-750 dark:bg-anvil-850"
+            >
+              <p data-testid="verification-summary" className={cn('mb-2.5 text-[12px] font-medium', checking ? 'text-anvil-500 dark:text-anvil-400' : meta.klass)}>
+                {report.summary}
+              </p>
+              <ol className="mb-3">
+                <Row title={TRUST_ROW_TITLE.chain} link={report.chain} />
+                <Row title={TRUST_ROW_TITLE.tip} link={report.tip}>
+                  <TipSentence report={report} />
+                </Row>
+                <Row title={TRUST_ROW_TITLE.content} link={report.content} />
+                <Row title={TRUST_ROW_TITLE.source} link={report.source} />
+                {report.privacy ? <PrivacyRow note={report.privacy} /> : null}
+              </ol>
+              <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
+                <HostingNote />
+              </p>
+            </div>
+          ) : null}
+        </>
+      )}
     </section>
   )
 }

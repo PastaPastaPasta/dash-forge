@@ -92,13 +92,17 @@ export function useSecurityPolicy(home: RepoHome, enabled = true): SecurityPolic
   return state.data === null ? undefined : state.data.file
 }
 
+export function useDeferredSecurityPolicy(home: RepoHome, load: boolean): SecurityPolicyFile | null | undefined {
+  const later = useAfter(HEADER_DELAY_MS, load && home.repo.visibility === 'public')
+  return useSecurityPolicy(home, later)
+}
+
 /** "Security policy" in the repo header, when the default branch has one. */
 export function SecurityPolicyLink({ home, addr, load }: { home: RepoHome; addr: RepoAddress; load: boolean }): JSX.Element | null {
   // On every repo page, so it costs no request of its own where the page does not already read the
   // code (`load`: the Code tab's pages): there it shows what an earlier lookup of the tip found,
   // and it waits for the page's own reads before it looks.
-  const later = useAfter(HEADER_DELAY_MS, load && home.repo.visibility === 'public')
-  const policy = useSecurityPolicy(home, later)
+  const policy = useDeferredSecurityPolicy(home, load)
   if (!policy) return null
   return (
     <Link

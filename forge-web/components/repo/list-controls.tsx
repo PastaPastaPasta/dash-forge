@@ -356,24 +356,27 @@ export function filterCount(q: {
  * behind one "Filters" button (with how many are set), so the first result is on the first
  * screen rather than under five rows of selects (QW2-071).
  */
-export function FilterBar({ active, children }: { active: number; children: ReactNode }): JSX.Element {
+export function FilterBar({ active, sort, children }: { active: number; sort?: ReactNode; children: ReactNode }): JSX.Element {
   const [open, setOpen] = useState(false)
   const id = useId()
   return (
     <>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen((o) => !o)}
-        className="inline-flex items-center gap-1.5 rounded-md border border-anvil-300 px-2 py-1 text-dense dark:border-anvil-700 coarse:min-h-11 coarse:px-3 sm:hidden"
-        data-testid="filters-toggle"
-      >
-        <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
-        Filters{active > 0 ? ` (${active})` : ''}
-        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
-      </button>
-      <div id={id} className={cn('w-full flex-wrap items-center gap-2 sm:ml-auto sm:flex sm:w-auto', open ? 'flex' : 'hidden')}>
+      <div className="flex items-center gap-2 sm:ml-auto">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen((o) => !o)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-anvil-300 bg-white px-2.5 py-1 text-dense text-anvil-700 hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-200 dark:hover:bg-anvil-800"
+          data-testid="filters-toggle"
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
+          Filters{active > 0 ? ` (${active})` : ''}
+          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+        </button>
+        {sort}
+      </div>
+      <div id={id} className={cn('w-full flex-wrap items-center gap-2 border-t border-anvil-200 pt-2 dark:border-anvil-800', open ? 'flex' : 'hidden')}>
         {children}
       </div>
     </>

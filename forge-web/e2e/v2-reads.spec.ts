@@ -83,7 +83,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
       await expect(page.getByRole('link', { name: entry, exact: true }).first()).toBeVisible()
     }
     await expect(page.getByText(/code, issues and pull requests in the shared contracts/i).first()).toBeVisible()
-    await expect(page.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
+    // The clone box leads with the network-pinned command; the bare URL is under More options.
+    await expect(page.getByText(new RegExp(`^git clone .*dash://${OWNER}/${NAME}`)).first()).toBeVisible()
     await expect(page.getByText(/\bmain\b/).first()).toBeVisible()
     // The Verification card says the ref was built from proof-checked history.
     await page.getByRole('button', { name: /verification/i }).click()

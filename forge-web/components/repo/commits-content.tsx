@@ -416,11 +416,10 @@ function LogBody({
                 </Link>
                 <CheckDot counts={outcomes.get(entry.oid)} />
               </div>
-              {/* One line on a phone: the name gives way (ellipsis), the age never breaks. */}
               <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                 <span className="min-w-0 truncate">{entry.author.name || 'unknown'}</span>
                 <span className="shrink-0 whitespace-nowrap">
-                  · <Time ms={entry.author.when} prefix="authored " />
+                  · <Time ms={entry.author.when} />
                 </span>
               </div>
             </div>
@@ -431,14 +430,12 @@ function LogBody({
         ])}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-        <span data-testid="log-status">
+        <span
+          data-testid="log-status"
+          title={state.indexed > 0 ? 'Listed by the history index published on the last push' : undefined}
+        >
           {logStatus(state, total.data, path, firstParent)}
           {path && state.capped ? ` · searched the last ${plural(state.examined, 'commit')} (up to ${PATH_WALK_CAP} a page)` : ''}
-          {state.indexed > 0 ? (
-            <span title="Listed by the history index the last push published: no history walk in your browser" data-testid="log-from-index">
-              {' · from the history index'}
-            </span>
-          ) : null}
         </span>
         {state.error !== null ? <span className="text-danger-700 dark:text-danger-400">{state.error}</span> : null}
         {state.next !== null ? (

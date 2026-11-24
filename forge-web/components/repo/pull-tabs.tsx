@@ -136,7 +136,7 @@ function CommitRows({ commits, at, signatures }: { commits: PrCommits; at: RepoA
               <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                 <span className="min-w-0 truncate">{c.commit.author.name || 'unknown'}</span>
                 <span className="shrink-0 whitespace-nowrap">
-                  · <Time ms={c.commit.author.when} prefix="authored " />
+                  · <Time ms={c.commit.author.when} />
                 </span>
               </div>
             </div>
@@ -318,7 +318,17 @@ export function ChecksTab({
       <EmptyState
         icon={ListChecks}
         title={`No checks reported for ${headOid.slice(0, 7)}`}
-        body={`CI records check runs for the ${subject}: a runner the owner enrolled (dg ci runner new), the GitHub Action, or a maintainer or writer (dg ci report).`}
+        body={`No CI checks have been reported for this ${subject} yet.`}
+        action={
+          <details className="text-left text-[12px] text-anvil-600 dark:text-anvil-300">
+            <summary className="hit-area cursor-pointer select-none font-medium text-anvil-700 hover:text-anvil-900 dark:text-anvil-200 dark:hover:text-anvil-50">
+              How to report checks
+            </summary>
+            <p className="mt-1.5 max-w-md">
+              Enrol a runner (<code className="font-mono">dg ci runner new</code>), use the GitHub Action, or report as a member (<code className="font-mono">dg ci report</code>).
+            </p>
+          </details>
+        }
       />
     )
   }
