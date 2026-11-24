@@ -6,8 +6,10 @@ name: Deploy forge-web (testnet) to testnet-forge.dashhq.org
 # a separate site repository, whose Pages setting serves that branch at testnet-forge.dashhq.org.
 #
 # Repository settings it reads:
-#   - secret TESTNET_SITE_DEPLOY_KEY: an SSH deploy key with write access to the site repository.
-#     Unset: the workflow says so and deploys nothing.
+#   - variable TESTNET_SITE_ENABLED: `true` turns the workflow on; anything else deploys nothing.
+#   - environment `testnet-site` (deployments from master only) holds the secret
+#     TESTNET_SITE_DEPLOY_KEY, an SSH deploy key with write access to the site repository. Only the
+#     deploy job enters the environment, so a workflow edited on another branch never sees the key.
 #   - variable TESTNET_SITE_REPO (default PastaPastaPasta/dash-forge-testnet-site)
 #   - variable TESTNET_SITE_URL (default https://testnet-forge.dashhq.org): the build's
 #     NEXT_PUBLIC_SITE_URL, and the CNAME the site repository serves.
@@ -16,9 +18,11 @@ name: Deploy forge-web (testnet) to testnet-forge.dashhq.org
 #   - variables PAGES_MAINNET_SITE_URL / PAGES_TESTNET_SITE_URL and PAGES_NOTICE* are shared with
 #     pages.yml.
 #
-# Deploy skew: files under _next/static are never deleted from the site repository, so a tab
-# opened before a deploy can still load its build's chunks; everything else is replaced. The build
-# manifest is attested like pages.yml's (docs/guides/verify-the-app.md).
+# Deploy skew: the site keeps the _next/static files of this build and the two before it (their
+# forge-manifest.json files are kept under .deploys/), so a tab opened before a deploy can still
+# load its chunks; older chunks are pruned so the site stays under Pages' 1 GB. The build manifest
+# is attested like pages.yml's; `dg verify-app` checks it with
+# --signer-workflow .github/workflows/pages-testnet.yml (docs/guides/verify-the-app.md).
 
 on:
   push:
@@ -40,40 +44,23 @@ concurrency:
 
 jobs:
   build:
+    if: vars.TESTNET_SITE_ENABLED == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: forge-web
-    outputs:
-      enabled: ${{ steps.enabled.outputs.enabled }}
     steps:
-      - id: enabled
-        working-directory: .
-        env:
-          KEY: ${{ secrets.TESTNET_SITE_DEPLOY_KEY }}
-        run: |
-          if [ -n "$KEY" ]; then
-            echo enabled=true >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice title=Testnet site not configured::TESTNET_SITE_DEPLOY_KEY is unset; nothing is deployed (docs/launch/mainnet-runbook.md)."
-            echo enabled=false >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.enabled.outputs.enabled == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - if: steps.enabled.outputs.enabled == 'true'
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:
           version: 11
-      - if: steps.enabled.outputs.enabled == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: forge-web/pnpm-lock.yaml
-      - if: steps.enabled.outputs.enabled == 'true'
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - name: Build (testnet)
-        if: steps.enabled.outputs.enabled == 'true'
         env:
           NEXT_PUBLIC_NETWORK: testnet
           NEXT_PUBLIC_SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
@@ -91,17 +78,22 @@ jobs:
             [ -n "${!v}" ] || unset "$v"
           done
           pnpm build
-          test -s out/.well-known/security.txt
-          grep -q '"network": "testnet"' out/forge-manifest.json
-      - if: steps.enabled.outputs.enabled == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Check the export (network, security.txt, license notices)
+        run: |
+          grep -q '"network": "testnet"' out/forge-manifest.json || { echo "::error::the export is not a testnet build"; exit 1; }
+          test -s out/.well-known/security.txt || { echo "::error::out/.well-known/security.txt is missing from the export"; exit 1; }
+          grep -q '^Contact: ' out/.well-known/security.txt || { echo "::error::security.txt has no Contact field"; exit 1; }
+          grep -q '^Expires: ' out/.well-known/security.txt || { echo "::error::security.txt has no Expires field"; exit 1; }
+          for f in third-party-licenses.txt wasm-sdk-licenses.txt licenses/index.html licenses/LGPL-3.0.txt licenses/GPL-3.0.txt; do
+            test -s "out/$f" || { echo "::error::out/$f is missing from the export"; exit 1; }
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-manifest-testnet
           path: forge-web/out/forge-manifest.json
           if-no-files-found: error
           retention-days: 7
-      - if: steps.enabled.outputs.enabled == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: site-testnet
           path: forge-web/out
@@ -111,7 +103,7 @@ jobs:
 
   attest:
     needs: build
-    if: needs.build.outputs.enabled == 'true' && github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -127,13 +119,18 @@ jobs:
 
   deploy:
     needs: [build, attest]
-    if: needs.build.outputs.enabled == 'true' && github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    environment:
+      name: testnet-site
+      url: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: site-testnet
           path: site
+      - name: Check the downloaded export
+        run: test -s site/.well-known/security.txt && test -s site/forge-manifest.json
       - name: Push to the site repository
         env:
           DEPLOY_KEY: ${{ secrets.TESTNET_SITE_DEPLOY_KEY }}
@@ -142,10 +139,12 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          [ -n "$DEPLOY_KEY" ] || { echo "::error::the testnet-site environment has no TESTNET_SITE_DEPLOY_KEY"; exit 1; }
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
-          ssh-keyscan -t ed25519 github.com > ~/.ssh/known_hosts 2>/dev/null
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          # GitHub's published host key (docs.github.com, "GitHub's SSH key fingerprints").
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
           remote="git@github.com:${SITE_REPO}.git"
           if git ls-remote --exit-code "$remote" gh-pages >/dev/null 2>&1; then
             git clone -q --depth 1 --branch gh-pages "$remote" dest
@@ -153,10 +152,22 @@ jobs:
             git init -q -b gh-pages dest
             git -C dest remote add origin "$remote"
           fi
-          # Replace everything but .git and the kept static chunks, then lay the new build over it.
-          find dest -mindepth 1 -maxdepth 1 ! -name .git ! -name _next -exec rm -rf {} +
+          # The manifests of the two previous deploys name the chunks kept for open tabs.
+          mkdir -p dest/.deploys
+          if [ -f dest/.deploys/manifest-1.json ]; then mv dest/.deploys/manifest-1.json dest/.deploys/manifest-2.json; fi
+          if [ -f dest/forge-manifest.json ]; then cp dest/forge-manifest.json dest/.deploys/manifest-1.json; fi
+          find dest -mindepth 1 -maxdepth 1 ! -name .git ! -name _next ! -name .deploys -exec rm -rf {} +
           if [ -d dest/_next ]; then find dest/_next -mindepth 1 -maxdepth 1 ! -name static -exec rm -rf {} +; fi
           cp -R site/. dest/
+          keep="$(mktemp)"
+          for m in dest/forge-manifest.json dest/.deploys/manifest-1.json dest/.deploys/manifest-2.json; do
+            if [ -f "$m" ]; then jq -r '.files | keys[] | select(startswith("_next/static/"))' "$m" >> "$keep"; fi
+          done
+          LC_ALL=C sort -u -o "$keep" "$keep"
+          if [ -d dest/_next/static ]; then
+            (cd dest && find _next/static -type f | LC_ALL=C sort) | LC_ALL=C comm -23 - "$keep" | while IFS= read -r f; do rm -f "dest/$f"; done
+            find dest/_next/static -type d -empty -delete
+          fi
           host="${SITE_URL#https://}"; host="${host%%/*}"
           printf '%s\n' "$host" > dest/CNAME
           touch dest/.nojekyll
@@ -167,15 +178,19 @@ jobs:
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
           git commit -q -m "deploy ${SHA}"
           git push -q origin gh-pages
-          du -sh .
+          du -sh --exclude=.git .
       - name: Check the live site
         continue-on-error: true
         env:
           SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
           SHA: ${{ github.sha }}
         run: |
-          for i in $(seq 1 30); do
-            if curl -fsSL "${SITE_URL%/}/forge-manifest.json" 2>/dev/null | grep -q "\"commit\": \"$SHA\""; then echo "live: $SHA"; exit 0; fi
+          for _ in $(seq 1 30); do
+            if curl -fsSL "${SITE_URL%/}/forge-manifest.json" 2>/dev/null | grep -q "\"commit\": \"$SHA\""; then
+              echo "live: $SHA"
+              curl -fsSL "${SITE_URL%/}/.well-known/security.txt" | grep -q '^Contact: ' || echo "::warning title=security.txt not served::${SITE_URL}/.well-known/security.txt"
+              exit 0
+            fi
             sleep 20
           done
           echo "::warning title=Testnet site not updated yet::${SITE_URL} does not serve ${SHA} after 10 minutes"

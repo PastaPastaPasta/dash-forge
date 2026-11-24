@@ -28,6 +28,12 @@ const currentLocation = (): PageLocation | null => (typeof window === 'undefined
 /** An IPFS or IPNS subdomain gateway host (`<cid>.ipfs.<gateway>`): one origin per release. */
 const IPFS_SUBDOMAIN = /\.ip[fn]s\./i
 
+/** The build's own address when it is one of the passkey hosts, else forge.dashhq.org. */
+function officialSite(): string {
+  const host = new URL(SITE_URL).hostname
+  return host !== 'localhost' && PASSKEY_VAULT_RP_IDS.includes(host) ? `https://${host}` : 'https://forge.dashhq.org'
+}
+
 /** The relying party id for vault passkeys on this page, or null when the page may not have one. */
 export function passkeyVaultRpId(location: PageLocation | null = currentLocation()): string | null {
   if (location === null) return null
@@ -45,6 +51,6 @@ export function passkeyVaultProblem(forge: Pick<ForgeIds, 'meta'> | null, locati
   if (location === null || !available()) return "This browser can't use passkeys on this page."
   const shared = sharedOriginProblem(location)
   if (shared !== null) return shared
-  if (passkeyVaultRpId(location) === null) return `Passkeys that work on your other devices need Forge’s own address: open ${SITE_URL.replace(/\/$/, '')}.`
+  if (passkeyVaultRpId(location) === null) return `Passkeys that work on your other devices need Forge’s own address: open ${officialSite()}.`
   return null
 }
