@@ -102,6 +102,15 @@ describe('quorumFetch', () => {
     expect(storage.map.get(`forge.quorumKeys.${BASE}/previous`)).toContain('1597491')
   })
 
+  it('never keeps an empty list, and ignores an entry dated in the future', async () => {
+    const storage = memory()
+    await quorumFetch(slowFetch(0, '{"success":true,"data":[]}'), () => BASE, { storage: () => storage, now: () => 1 })(`${BASE}/quorums`)
+    expect(storage.map.size).toBe(0)
+    storage.map.set(`forge.quorumKeys.${BASE}/quorums`, JSON.stringify({ at: 10 * 60_000, body: LIST }))
+    const failing = quorumFetch(slowFetch(0, 'busy', 503), () => BASE, { storage: () => storage, now: () => 1 })
+    expect((await failing(`${BASE}/quorums`)).status).toBe(503)
+  })
+
   it('never keeps an answer that is not a key list, and passes other requests through untouched', async () => {
     const storage = memory()
     const base = slowFetch(0, '{"success":false}')

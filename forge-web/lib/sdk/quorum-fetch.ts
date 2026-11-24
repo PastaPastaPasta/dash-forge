@@ -12,12 +12,17 @@
  *     service already recovers from by reconnecting (D-024).
  *
  * The keys are public (anyone can fetch them), so keeping them in localStorage leaks nothing.
+ * Because the SDK's abort is ignored, a connect that times out or is torn down leaves a quorum
+ * request in flight until its own {@link QUORUM_FETCH_TIMEOUT_MS}; its answer is then only kept.
  */
 
 /** How long one quorum key request may take before it fails over to the kept keys. */
 export const QUORUM_FETCH_TIMEOUT_MS = 20_000
 /** Kept keys older than this are not used: a list that old misses most of the active quorums. */
 export const QUORUM_CACHE_MAX_AGE_MS = 24 * 60 * 60_000
+
+/** How far ahead of this clock a kept entry's time may be before it is ignored. */
+const QUORUM_CLOCK_SKEW_MS = 5 * 60_000
 
 const KEY_PREFIX = 'forge.quorumKeys.'
 const PATHS = new Set(['quorums', 'previous', 'masternodes'])
@@ -80,12 +85,14 @@ function json(body: string, url: string): Response {
 
 /**
  * A well-formed quorum service answer, the only kind kept: `{"success":true,"data":…}` with a
- * list (`/quorums`, `/masternodes`) or an object (`/previous` is `{height, quorums}`).
+ * non-empty list (`/quorums`, `/masternodes`) or an object (`/previous` is `{height, quorums}`).
+ * An empty list from a broken service never replaces keys kept earlier.
  */
 function keepable(body: string): boolean {
   try {
     const v = JSON.parse(body) as { success?: unknown; data?: unknown }
-    return v.success === true && typeof v.data === 'object' && v.data !== null
+    if (v.success !== true || typeof v.data !== 'object' || v.data === null) return false
+    return !Array.isArray(v.data) || v.data.length > 0
   } catch {
     return false
   }
@@ -99,7 +106,9 @@ export function quorumFetch(base: typeof fetch, quorumBase: () => string, deps: 
   /** The kept answer for `url`, when there is one young enough. */
   const fromKept = (storage: QuorumStorage | null, url: string): Response | null => {
     const kept = read(storage, url)
-    if (kept === null || deps.now() - kept.at > QUORUM_CACHE_MAX_AGE_MS) return null
+    // An entry from the future (a clock that was ahead, or a planted value) would never expire.
+    const age = kept === null ? 0 : deps.now() - kept.at
+    if (kept === null || age > QUORUM_CACHE_MAX_AGE_MS || age < -QUORUM_CLOCK_SKEW_MS) return null
     deps.onCached?.(kept.at)
     return json(kept.body, url)
   }
