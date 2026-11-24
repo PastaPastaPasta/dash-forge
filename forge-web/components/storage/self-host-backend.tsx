@@ -10,7 +10,7 @@ export const BACKEND_COMMAND =
 export function SelfHostBackend(): JSX.Element {
   return (
     <details>
-      <summary className="cursor-pointer text-dense">Run it on a server or NAS</summary>
+      <summary className="cursor-pointer text-dense coarse:flex coarse:min-h-11 coarse:items-center">Run it on a server or NAS</summary>
       <div className="mt-2 space-y-2 text-dense">
         <p>On a Linux machine with Docker, replace ipfs.example.org with a name that points at it, and run:</p>
         <CopyBlock text={BACKEND_COMMAND} label="Copy the backend setup command" />
