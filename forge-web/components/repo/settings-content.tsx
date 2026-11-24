@@ -8,6 +8,9 @@
  * the on-chain result. The config and policy sections live in `repo-settings-sections.tsx`.
  */
 
+import { OrgManagesAccess, useOwnerKind } from '@/components/org/owner-chip'
+import { useOrgRequester } from '@/components/org/use-org-requester'
+import { changeRoleRequest, grantRequest, revokeRequest } from '@/lib/org/actions'
 import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
@@ -109,7 +112,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
-  const isOwner = identity === repo.ownerId
+  const org = useOrgRequester(repo.ownerId)
+  const orgOwned = org.record !== null && repo.visibility === 'public'
+  const orgKind = useOwnerKind(repo.ownerId)
+  const isOwner = identity === repo.ownerId || orgOwned
+  const blockedByGuard = !orgOwned && guard.disabledReason !== null
   const viewer = useViewerRole(repo)
   const viewerRole = viewer.role
   // Bot is offered only where the registered contract admits it (never on sakura's live set).
@@ -154,7 +161,15 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   // A role change to or from Bot moves the key to members-only content: priced with it.
   const changeCost = (member: string, from: MemberRole, to: MemberRole): ReturnType<typeof keyedRoleChangeCost> =>
     keyedRoleChangeCost(keyed ? laneSession : null, identity, member, from, to, repo.forge.core, ops?.keyId ?? null)
+  const runOrgAction = async (): Promise<void> => {
+    if (!action) return
+    const a = action
+    await org.submit((s) =>
+      a.kind === 'change' ? changeRoleRequest(s, repo, a.member, a.role, a.to) : a.kind === 'grant' ? grantRequest(s, repo, a.member, a.role) : revokeRequest(s, repo, a.member, a.role),
+    )
+  }
   const runAction = async (intent: string): Promise<void> => {
+    if (orgOwned) return runOrgAction()
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     const planned = envFlow.envsPlanned
     // their consent is gone or not given yet: nothing about the membership was signed
@@ -251,10 +266,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                       <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
                       {m.identity !== repo.ownerId && isOwner && repo.visibility !== 'private' ? (
                         <div className="ml-auto flex gap-2">
-                          <Button size="sm" variant="outline" disabled={guard.disabledReason !== null} aria-expanded={changing === rowKey} onClick={() => setChanging((c) => (c === rowKey ? null : rowKey))}>
+                          <Button size="sm" variant="outline" disabled={blockedByGuard} aria-expanded={changing === rowKey} onClick={() => setChanging((c) => (c === rowKey ? null : rowKey))}>
                             Change role
                           </Button>
-                          <Button size="sm" variant="danger" disabled={guard.disabledReason !== null} onClick={() => setAction({ kind: 'revoke', member: m.identity, role: m.role })}>
+                          <Button size="sm" variant="danger" disabled={blockedByGuard} onClick={() => setAction({ kind: 'revoke', member: m.identity, role: m.role })}>
                             Remove
                           </Button>
                         </div>
@@ -272,9 +287,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                           exclude={grantableRoles(repo.visibility, { bots }).filter(
                             (r) => r === m.role || memberRows.some((o) => o.identity === m.identity && o.role !== m.role && memberDocOf(o.role) === memberDocOf(r)),
                           )}
-                          disabled={guard.disabledReason !== null}
+                          disabled={blockedByGuard}
                           onChange={(to) => {
-                            if (guard.check(changeCost(m.identity, m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
+                            if (orgOwned || guard.check(changeCost(m.identity, m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
                           }}
                         />
                         <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -291,6 +306,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         {locked ? (
           <div id="members-unlock" className="mt-4 scroll-mt-20">
             <UnlockMore title={isOwner ? 'Unlock this tab to add or remove members' : "Unlock this tab to see the repo's key epoch"} testId="members-unlock" />
+          </div>
+        ) : orgOwned && keyed ? (
+          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Member changes on a repo with members-only content are made by a maintainer of the organization&apos;s choosing, not by organization requests yet.</p>
+        ) : !isOwner && orgKind.isOrg ? (
+          <div className="mt-4">
+            <OrgManagesAccess />
           </div>
         ) : isOwner && repo.visibility === 'private' ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -309,9 +330,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               <RolePicker value={role} onChange={setRole} visibility={repo.visibility} bots={bots} />
               <Button
                 variant="primary"
-                disabled={typed === null || !mayAdd(consent) || guard.disabledReason !== null}
+                disabled={typed === null || !mayAdd(consent) || blockedByGuard}
                 onClick={() => {
-                  if (typed !== null && guard.check(previewCreate(memberDocOf(role)))) setAction({ kind: 'grant', member: typed, role })
+                  if (typed !== null && (orgOwned || guard.check(previewCreate(memberDocOf(role))))) setAction({ kind: 'grant', member: typed, role })
                 }}
               >
                 Add
@@ -325,10 +346,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               repo={repo}
               members={members.data === null ? null : memberRows.map((m) => m.identity)}
               awaiting={awaiting}
-              disabled={guard.disabledReason !== null}
+              disabled={blockedByGuard}
               role={role}
               onPick={(id, r) => {
-                if (guard.check(previewCreate(memberDocOf(r)))) setAction({ kind: 'grant', member: id, role: r })
+                if (orgOwned || guard.check(previewCreate(memberDocOf(r)))) setAction({ kind: 'grant', member: id, role: r })
               }}
             />
             {noKeyYet !== null ? (
@@ -345,7 +366,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
           <span>
             Members act according to their role. Removing someone takes effect immediately.
-            {!isOwner ? ' Only the owner can add or remove members.' : ''}
+            {!isOwner && !orgKind.isOrg ? ' Only the owner can add or remove members.' : ''}
+            {orgOwned && org.record ? ` Changes here are requests: they take effect once ${org.record.threshold} of ${org.record.members.length} members of ${org.record.label} sign.` : ''}
           </span>
           <EnforcedBy by="platform" />
         </p>
@@ -364,9 +386,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   : 'Remove member'
           }
           // The toast says the role granted, not the document type (QW4-033: triage was "Writer added").
-          toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
+          toast={action === null || orgOwned ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
-            action?.kind === 'grant'
+            orgOwned && org.record
+              ? `${action?.kind === 'grant' ? `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access` : action?.kind === 'change' ? `Changes ${shortId(action.member)}'s access from ${ROLE_LABEL[action.role]} to ${ROLE_LABEL[action.to]}` : action ? `Removes ${shortId(action.member)}'s ${ROLE_LABEL[action.role]} access` : ''} once ${org.record.threshold} of ${org.record.members.length} members of ${org.record.label} sign. You sign first; the organization pays the fee.`
+              : action?.kind === 'grant'
               ? action.role === 'bot'
                 ? addBotText(shortId(action.member))
                 : `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
@@ -378,7 +402,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     ? 'Removes them from this repo and changes the key to its members-only content.'
                     : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
-          cost={envFlow.cost(
+          cost={orgOwned ? null : envFlow.cost(
             action === null
               ? previewCreate('writer')
               : action.kind === 'revoke'
@@ -392,9 +416,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     : previewCreate(memberDocOf(action.role)),
           )}
           confirmLabel={
-            action?.kind === 'grant' ? envFlow.confirmLabel('Sign & add', 'add') : action?.kind === 'change' ? envFlow.confirmLabel('Sign & change', 'change') : envFlow.confirmLabel('Sign & remove', 'remove')
+            orgOwned ? 'Sign & ask co-signers' : action?.kind === 'grant' ? envFlow.confirmLabel('Sign & add', 'add') : action?.kind === 'change' ? envFlow.confirmLabel('Sign & change', 'change') : envFlow.confirmLabel('Sign & remove', 'remove')
           }
-          blocked={envFlow.blocked ?? keyBlock}
+          blocked={orgOwned ? undefined : (envFlow.blocked ?? keyBlock)}
           onConfirm={runAction}
         >
           {/* What they could read: members-only discussion. Nothing is listed when they keep a
@@ -403,8 +427,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             ? <RemovalReads lane={keyed} />
             : null}
           {/* The environments the change saves again, for whom, what it can't, and a removal's checklist. */}
-          <MemberEnvPlanView flow={envFlow} />
+          {orgOwned ? null : <MemberEnvPlanView flow={envFlow} />}
         </ConfirmDialog>
+        {org.dialog}
         <MemberEnvOutcomeView home={home} flow={envFlow} />
         </>
         )}

@@ -1655,22 +1655,14 @@ export async function grantMembershipDoc(
   intent?: string,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
-  await assertGrantable(sdk, repo, role)
-  const roleData = await writerRoleData(sdk, repo, role)
-  const held = await findMembership(sdk, repo, role, memberId)
-  if (held !== null) {
-    if (held.role === role) return alreadyThere(held.id)
-    throw new MemberRoleTakenError(memberId, held.role)
-  }
-  if (memberId !== repo.ownerId && (await retryWhileMissing(() => findConsent(sdk, repo, memberId), CONSENT_LAG_RETRIES)) === null) {
-    throw new ConsentMissingError(memberId)
-  }
+  const plan = await planMemberGrant(sdk, repo, memberId, role)
+  if (plan.heldId !== null) return alreadyThere(plan.heldId)
   const result = await createOrExisting(
     () =>
       createDocumentIdempotent(sdk, auth, {
         contractId: repo.forge.core,
-        documentType: memberDocOf(role),
-        data: membershipData(repo, memberId, roleData),
+        documentType: plan.documentType,
+        data: plan.data,
         ...(intent ? { intent } : {}),
       }),
     async () => (await findMembership(sdk, repo, role, memberId))?.id ?? null,
@@ -1679,6 +1671,70 @@ export async function grantMembershipDoc(
   // Membership decides which rows a private repo shows (a stranger's ciphertext is hidden).
   invalidateRepoFeed(repo)
   return result
+}
+
+/**
+ * The membership document a grant of `role` to `memberId` writes, after every check that would
+ * refuse it (the role is grantable, nobody holds another role's document, their consent stands).
+ * `heldId`: the membership they already hold of exactly this role (nothing to write).
+ */
+export async function planMemberGrant(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  memberId: string,
+  role: Role,
+): Promise<{ readonly documentType: string; readonly data: Record<string, unknown>; readonly heldId: string | null }> {
+  await assertGrantable(sdk, repo, role)
+  const roleData = await writerRoleData(sdk, repo, role)
+  const documentType = memberDocOf(role)
+  const held = await findMembership(sdk, repo, role, memberId)
+  if (held !== null) {
+    if (held.role === role) return { documentType, data: {}, heldId: held.id }
+    throw new MemberRoleTakenError(memberId, held.role)
+  }
+  if (memberId !== repo.ownerId && (await retryWhileMissing(() => findConsent(sdk, repo, memberId), CONSENT_LAG_RETRIES)) === null) {
+    throw new ConsentMissingError(memberId)
+  }
+  return { documentType, data: membershipData(repo, memberId, roleData), heldId: null }
+}
+
+/** The membership document a removal of `memberId`'s `role` deletes, or null when there is none. */
+export async function planMemberRevoke(sdk: EvoSDK, repo: RepoRef, memberId: string, role: Role): Promise<{ readonly documentType: string; readonly documentId: string } | null> {
+  refuseOwnerRow(repo, memberId, role)
+  const existing = await findMembership(sdk, repo, role, memberId)
+  return existing === null ? null : { documentType: memberDocOf(role), documentId: existing.id }
+}
+
+/**
+ * The two documents a role change of a public repo member writes (a delete of the `from`
+ * membership, then the `to` one), after the checks {@link changeMemberRole} makes before its
+ * delete. For an owner that signs both at once (an organization).
+ */
+export async function planRoleChange(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  memberId: string,
+  from: Role,
+  to: Role,
+): Promise<{ readonly revoke: { readonly documentType: string; readonly documentId: string }; readonly grant: { readonly documentType: string; readonly data: Record<string, unknown> } }> {
+  if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
+  if (from === to) throw new Error(`they are already a ${to}`)
+  await assertGrantable(sdk, repo, to)
+  const roleData = await writerRoleData(sdk, repo, to)
+  if (memberDocOf(from) !== memberDocOf(to)) {
+    const other = await findMembership(sdk, repo, to, memberId)
+    if (other !== null) throw new MemberRoleTakenError(memberId, other.role)
+  }
+  if ((await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
+  const current = await findMembership(sdk, repo, from, memberId)
+  if (current === null || current.role !== from) {
+    throw new Error(`they are no longer a ${from} here (their role changed meanwhile); reload the members and try again`)
+  }
+  return {
+    revoke: { documentType: memberDocOf(from), documentId: current.id },
+    grant: { documentType: memberDocOf(to), data: membershipData(repo, memberId, roleData) },
+  }
 }
 
 /** Why the owner's own maintainer document stays (mainnet R-08 `ownerRowStays` refuses its delete, 40147). */
@@ -1849,15 +1905,14 @@ export async function revokeMembershipDoc(
   role: Role,
 ): Promise<DeleteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can remove members')
-  refuseOwnerRow(repo, memberId, role)
   // A writer-document role (writer, triage, reader) deletes the member's `writer` document,
   // whichever of them it grants: a member holds at most one.
-  const existing = await findMembership(sdk, repo, role, memberId)
+  const existing = await planMemberRevoke(sdk, repo, memberId, role)
   if (existing === null) return ALREADY_GONE
   const result = await deleteDocumentIdempotent(sdk, auth, {
     contractId: repo.forge.core,
-    documentType: memberDocOf(role),
-    documentId: existing.id,
+    documentType: existing.documentType,
+    documentId: existing.documentId,
     repo: repo.repoId,
   })
   invalidateMembers(repo, auth.network)
@@ -2014,6 +2069,28 @@ export function normalizeRepoName(input: string): string {
   return name
 }
 
+/** The `repo` document a creation of `name` writes. */
+export function repoCreateData(name: string, input: CreateRepoInput, visibility: Visibility): Record<string, unknown> {
+  const data: Record<string, unknown> = { name, visibility }
+  if (input.description) data['description'] = input.description
+  // A private repo's default branch lives only in its sealed config (§7).
+  if (input.defaultBranch && visibility === 'public') data['defaultBranch'] = input.defaultBranch
+  if (input.forkOf) data['forkOf'] = decodeIdentifier(input.forkOf)
+  return data
+}
+
+/** A public repo's first `config` document. */
+export function firstConfigData(repoId: Uint8Array, visibility: Visibility, input: CreateRepoInput): Record<string, unknown> {
+  const patterns = createPatterns(input)
+  return withVis(visibility, DOC.config, {
+    repoId,
+    defaultBranch: input.defaultBranch ?? 'main',
+    backend: { mode: 0 },
+    // An empty list is the same as none, and omitting it keeps the document small.
+    ...(patterns.length > 0 ? { protectedPatterns: patterns } : {}),
+  })
+}
+
 /**
  * Create a forge-v2 repository: its `repo` document, the owner's `maintainer` document (the
  * owner self-enrols, `forge-v2.md` §6, or nobody could push) and its first `config`. Each step
@@ -2109,11 +2186,7 @@ export async function createRepo(
   let wrote = previous !== undefined || repoId === null
   await step('repo', async () => {
     if (repoId !== null) return
-    const data: Record<string, unknown> = { name, visibility }
-    if (input.description) data['description'] = input.description
-    // A private repo's default branch lives only in its sealed config (§7).
-    if (input.defaultBranch && visibility === 'public') data['defaultBranch'] = input.defaultBranch
-    if (input.forkOf) data['forkOf'] = decodeIdentifier(input.forkOf)
+    const data = repoCreateData(name, input, visibility)
     try {
       const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: DOC.repo, data, intent: `${key}:repo` })
       repoId = r.documentId
@@ -2148,10 +2221,9 @@ export async function createRepo(
   // 3. the first config (append-only; one is enough). A private repo's is its epoch-0 anchor,
   // after the owner's self-wrap of a fresh key (§5.3).
   await step('config', async () => {
-    const patterns = createPatterns(input)
     if (visibility === 'private') {
       const p = privateCreate as PrivateCreate
-      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key, patterns)
+      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key, createPatterns(input))
       return
     }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
@@ -2160,13 +2232,7 @@ export async function createRepo(
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
-      data: withVis(visibility, DOC.config, {
-        repoId: R,
-        defaultBranch: input.defaultBranch ?? 'main',
-        backend: { mode: 0 },
-        // An empty list is the same as none, and omitting it keeps the document small.
-        ...(patterns.length > 0 ? { protectedPatterns: patterns } : {}),
-      }),
+      data: firstConfigData(R, visibility, input),
       intent: `${key}:config`,
     })
   })

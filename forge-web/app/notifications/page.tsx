@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { useMemo, useState } from 'react'
 import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Globe, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
+import { NeedsSignature } from '@/components/org/needs-signature'
 import { SignInButton } from '@/components/sign-in-button'
 import { Author } from '@/components/author'
 import { WithAge } from '@/components/ui/with-age'
@@ -97,7 +98,7 @@ export default function NotificationsPage(): JSX.Element {
   if (!identity) {
     return (
       <AppShell>
-        <div className="mx-auto max-w-xl">
+        <div className="mx-auto max-w-xl space-y-4">
           <EmptyState
             heading="h1"
             icon={Bell}
@@ -105,6 +106,7 @@ export default function NotificationsPage(): JSX.Element {
             body={INBOX_EMPTY}
             action={<SignInButton />}
           />
+          <NeedsSignature />
         </div>
       </AppShell>
     )
@@ -125,6 +127,8 @@ export default function NotificationsPage(): JSX.Element {
             </Button>
           </div>
         </div>
+
+        <NeedsSignature />
 
         <div className="flex flex-wrap items-center gap-2">
           <div role="group" aria-label="Show" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">

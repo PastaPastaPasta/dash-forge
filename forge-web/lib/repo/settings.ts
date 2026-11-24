@@ -498,13 +498,23 @@ export async function syncTopicDocs(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef,
         documentType: DOC.topic,
         // `repoId` as the identifier's 32 bytes, like every other write; `vis` only where the
         // contract still declares it (mainnet R-11 proves a public repo by the reference alone).
-        data: await withoutUndeclaredVis(sdk, contractOf(repo.forge, DOC.topic), DOC.topic, withVis(repo.visibility, DOC.topic, { repoId: decodeIdentifier(repo.repoId), name })),
+        data: await topicDocData(sdk, repo, name),
       })
     } catch (e) {
       // Tagged in between (another device): the (repoId, name) index is unique.
       if (!(e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE)) throw e
     }
   }
+}
+
+/** A public repo's `topic` document for `name`. */
+export function topicDocData(sdk: EvoSDK, repo: RepoRef, name: string): Promise<Record<string, unknown>> {
+  return withoutUndeclaredVis(sdk, contractOf(repo.forge, DOC.topic), DOC.topic, withVis(repo.visibility, DOC.topic, { repoId: decodeIdentifier(repo.repoId), name }))
+}
+
+/** The repo's `topic` documents: name to document id. */
+export async function readTopicDocIds(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, string>> {
+  return readTopicDocs(sdk, repo)
 }
 
 /**
