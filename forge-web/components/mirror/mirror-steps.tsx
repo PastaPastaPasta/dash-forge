@@ -150,7 +150,7 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
           Check on GitHub
         </Button>
       </form>
-      <Hint>Public repositories only. Asked from your browser, anonymously: no GitHub sign-in, and nothing passes through a Forge server (there is none).</Hint>
+      <Hint>Public repositories only, checked directly from your browser.</Hint>
       {error && !(way === 'cli' && hidden !== null) ? <Hint tone="danger">{error}</Hint> : null}
       {way === 'cli' && hidden === 'not-found' ? <Hint tone="danger">GitHub doesn&apos;t show this repo publicly. Check its owner and name.</Hint> : null}
       {way === 'cli' && hidden !== null ? (
@@ -169,8 +169,13 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
           {found.archived ? <Hint tone="caution">Archived on GitHub: the mirror gets what is there now, and nothing new will arrive.</Hint> : null}
           {found.sizeKib === 0 ? <Hint tone="caution">GitHub reports it as empty: the first run has nothing to push until something is pushed there.</Hint> : null}
           <LicenseLine repo={found} />
-          <Hint>{LFS_NOTE}</Hint>
           <AlreadyMirrored github={found} />
+          <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
+            <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
+              Notes (LFS &amp; permanence)
+            </summary>
+            <p className="mt-1">{LFS_NOTE}</p>
+          </details>
           {way === 'action' ? <label className="flex items-start gap-2 text-dense" data-testid="mirror-rights">
             <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={acknowledged} onChange={(e) => setAcknowledged(e.target.checked)} />
             <span>{RIGHTS_ACKNOWLEDGEMENT}</span>
@@ -399,7 +404,7 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
   return (
     <>
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        Where the mirror&apos;s git data goes. <strong className="font-medium">Recommended: a Cloudflare R2 or S3 bucket of your own.</strong> Platform then keeps only each push&apos;s manifest and refs (about {PUSH_COST_DASH.byo.max} DASH a push<FiatNote dash={PUSH_COST_DASH.byo.max} />), and readers check every byte against the recorded hash.
+        <strong className="font-medium">Recommended: your own R2 or S3 bucket</strong> (about {PUSH_COST_DASH.byo.max} DASH a push<FiatNote dash={PUSH_COST_DASH.byo.max} />).
       </p>
       <fieldset className="space-y-2">
         <legend className="sr-only">Storage for the mirror</legend>
@@ -561,7 +566,7 @@ export function KeyStep({
   return (
     <>
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        The Action signs with its own key. If it leaks, it can spend at most its budget, only on Forge, and only until it expires. Dash Platform enforces those limits.
+        The Action signs with its own spend-capped, expiring key, enforced by Dash Platform.
       </p>
       <fieldset className="flex flex-wrap gap-4">
         <legend className="sr-only">Runner key</legend>
@@ -923,7 +928,6 @@ export function WaitStep({
   )
 }
 
-/** The first answer determines which steps follow. */
 export function WayStep({ initial, onDone }: { initial: MirrorWay | null; onDone: (way: MirrorWay) => void }): JSX.Element {
   const [way, setWay] = useState<MirrorWay | null>(initial)
   return (
@@ -931,21 +935,23 @@ export function WayStep({ initial, onDone }: { initial: MirrorWay | null; onDone
       <fieldset className="grid gap-3 sm:grid-cols-2">
         <legend className="sr-only">Do you maintain the repo on GitHub?</legend>
         {([
-          ['action', 'Yes, keep it in sync automatically', 'Needs write access on GitHub', 'A GitHub Action in the repo mirrors every push. Setting it up adds a workflow file and secrets to the GitHub repo.', 'You sign in here. The Action is optional. You can create the Forge repo now and add it later.'],
-          ['cli', 'No, copy it from the command line', 'Anyone', 'dg import copies the repo from your computer, once. Run it again whenever you want the copy brought up to date.', 'This page signs nothing. dg signs and pays from your identity.'],
-        ] as const).map(([value, title, badge, body, foot]) => (
-          <label key={value} className={cn('flex cursor-pointer flex-col gap-3 rounded-md border p-3', way === value ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750')}>
+          ['action', 'Yes, keep it in sync automatically', 'Needs GitHub write access', 'Adds a GitHub Action that mirrors every push.'],
+          ['cli', 'No, copy it from the command line', 'Anyone', 'Generates dg import commands to run on your computer.'],
+        ] as const).map(([value, title, badge, body]) => (
+          <label key={value} className={cn('flex cursor-pointer flex-col gap-2 rounded-md border p-3.5', way === value ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750')}>
             <span className="flex items-start gap-2 text-dense font-medium">
-              <input type="radio" name="mirror-way" aria-labelledby={`mirror-way-${value}-title`} aria-describedby={`mirror-way-${value}-badge mirror-way-${value}-body mirror-way-${value}-foot`} value={value} checked={way === value} onChange={() => setWay(value)} className="mt-1 accent-forge-700" />
+              <input type="radio" name="mirror-way" aria-labelledby={`mirror-way-${value}-title`} aria-describedby={`mirror-way-${value}-badge mirror-way-${value}-body`} value={value} checked={way === value} onChange={() => setWay(value)} className="mt-1 accent-forge-700" />
               <span id={`mirror-way-${value}-title`}>{title}</span>
             </span>
-            <span id={`mirror-way-${value}-badge`} className="w-fit rounded bg-surface-raised px-2 py-1 text-[12px] text-fg-muted">{badge}</span>
-            <span id={`mirror-way-${value}-body`} className="text-dense">{body}</span>
-            <span id={`mirror-way-${value}-foot`} className="mt-auto text-[12px] text-fg-muted">{foot}</span>
+            <span id={`mirror-way-${value}-badge`} className="w-fit rounded bg-surface-raised px-2 py-0.5 text-[12px] text-fg-muted">{badge}</span>
+            <span id={`mirror-way-${value}-body`} className="text-dense text-anvil-600 dark:text-anvil-300">{body}</span>
           </label>
         ))}
       </fieldset>
-      <Button variant="primary" disabled={way === null} onClick={() => way !== null && onDone(way)}>Continue</Button>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="primary" disabled={way === null} onClick={() => way !== null && onDone(way)}>Continue</Button>
+        {way === null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Pick an option above to continue.</span> : null}
+      </div>
     </>
   )
 }

@@ -94,17 +94,25 @@ export function DevnetNoticeBanner({
           )}
           aria-hidden
         />
-        <p className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">
-          <span className="font-medium">{copy.lead}</span> {copy.body}{' '}
-          <Link prefetch={false}
-            href={DEVNET_MOVE_DOC}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="whitespace-nowrap text-forge-700 underline dark:text-forge-400 coarse:inline-flex coarse:min-h-11 coarse:items-center"
-          >
-            What this means
-          </Link>
-        </p>
+        <div className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span className="font-medium">{copy.lead}</span>
+            <Link prefetch={false}
+              href={DEVNET_MOVE_DOC}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="whitespace-nowrap text-forge-700 underline dark:text-forge-400 coarse:inline-flex coarse:min-h-11 coarse:items-center"
+            >
+              What this means
+            </Link>
+          </div>
+          <details className="mt-0.5 text-[12px] text-anvil-600 dark:text-anvil-300">
+            <summary className="w-fit cursor-pointer hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-100">
+              More
+            </summary>
+            <p className="mt-1">{copy.body}</p>
+          </details>
+        </div>
         {moving ? null : (
           <Button size="icon" variant="ghost" onClick={dismiss} aria-label="Dismiss this notice" className="-my-1 -mr-2">
             <X className="h-4 w-4" aria-hidden />

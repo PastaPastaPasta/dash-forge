@@ -159,26 +159,36 @@ export function ExploreClient(): JSX.Element {
 
   return (
     <AppShell wide>
-      <div className="space-y-10">
+      <div className="space-y-8">
         <header className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="flex items-center gap-2 text-2xl">
               <Compass className="h-6 w-6 text-fg-muted" aria-hidden /> Explore
             </h1>
-            <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Everything here is read from {networkName(NETWORKS[network])} and verified in your browser. No server ranks it.{' '}
-              {curates() ? (
-                <>
-                  This site hides some repos from these lists; they stay on Dash Platform, and other sites and clients can show them.{' '}
-                  <Link href={DOCS.hostedCuration} className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="explore-curation-link">
-                    What that means
-                  </Link>
-                  .
-                </>
-              ) : null}
-              {fixturesLeftOut ? (
-                <span data-testid="explore-fixtures-note"> Repos made by Forge&apos;s automated tests (named e2e-…) are left out of these lists; search still finds them.</span>
-              ) : null}
+            <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
+              Verified in your browser on {networkName(NETWORKS[network])}.
             </p>
+            {curates() || fixturesLeftOut ? (
+              <details className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+                <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
+                  About these lists
+                </summary>
+                <p className="mt-1">
+                  {curates() ? (
+                    <>
+                      This site hides some repos from these lists; they stay on Dash Platform.{' '}
+                      <Link href={DOCS.hostedCuration} className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="explore-curation-link">
+                        What that means
+                      </Link>
+                      .{' '}
+                    </>
+                  ) : null}
+                  {fixturesLeftOut ? (
+                    <span data-testid="explore-fixtures-note">Automated test repos (e2e-…) are left out; search still finds them.</span>
+                  ) : null}
+                </p>
+              </details>
+            ) : null}
           </div>
         </header>
 
@@ -188,8 +198,6 @@ export function ExploreClient(): JSX.Element {
           <DownloadProgressBar status={sdkStatus} />
         ) : null}
 
-        {/* Only the search reads the URL's query, so only it waits on Suspense: the page shell
-            (and its skip link) is the static HTML, never swapped out on hydration. */}
         <Suspense fallback={null}>
           <ExploreSearch on={on} network={network} />
         </Suspense>
@@ -201,7 +209,7 @@ export function ExploreClient(): JSX.Element {
             icon={Award}
             state={featured}
             empty="None of the featured repos could be read on this network."
-            note="Picked by the Dash Forge maintainers for this network. Everything below is ranked by the network itself, without the automated tests' repos."
+            note="Picked by the Dash Forge maintainers for this network."
           >
             {(d) => <RepoGrid repos={d} />}
             {(d) => d.length === 0}
@@ -234,17 +242,12 @@ export function ExploreClient(): JSX.Element {
           testId="explore-trending"
           icon={Flame}
           state={trendingShown}
+          headerAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
           empty={onlyFixtures(trending) ? ONLY_FIXTURES : trendWindow === 'week' ? `No repo has ${MIN_STARGAZERS} new stars in the last week.` : `No repo has ${MIN_STARGAZERS} new stars since ${todayStart ?? '00:00 UTC'} yet.`}
-          emptyAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
           note={`${trendNote} ${TRENDING_FLOOR}`}
           partial={missingNote}
         >
-          {(d) => (
-            <>
-              <TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />
-              <RankedGrid repos={d.repos} unit="new star" />
-            </>
-          )}
+          {(d) => <RankedGrid repos={d.repos} unit="new star" />}
           {(d) => d.repos.length === 0}
         </Section>
 
@@ -280,7 +283,7 @@ export function ExploreClient(): JSX.Element {
 
 
         {signedIn ? (
-          <div className="space-y-10" data-testid="explore-mine">
+          <div className="space-y-8" data-testid="explore-mine">
             <Section title="My repos" icon={GitBranch} state={mine} empty="You don't own any repos yet." emptyAction={<NewRepoLink />}>
               {() => (
                 <>
@@ -331,9 +334,9 @@ export function ExploreClient(): JSX.Element {
             </Section>
           </div>
         ) : on ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700">
-            <span>{locked ? 'Unlock' : 'Sign in'} to see your repos, issues, pull requests and stars.</span>
-            <SignInButton size="sm" />
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-anvil-200 px-4 py-2.5 text-dense dark:border-anvil-800">
+            <span className="text-anvil-600 dark:text-anvil-300">{locked ? 'Unlock' : 'Sign in'} to see your repos, issues, pull requests and stars.</span>
+            <SignInButton size="sm" variant="outline" />
           </div>
         ) : null}
 
@@ -482,7 +485,6 @@ function NewRepoLink(): JSX.Element {
 
 type SectionState<T> = Pick<AsyncState<T>, 'data' | 'loading' | 'error' | 'reload'>
 
-/** A titled section over one async read: spinner, error with retry, honest empty, or data. */
 function Section<T>({
   title,
   testId,
@@ -490,19 +492,19 @@ function Section<T>({
   state,
   empty,
   emptyAction,
+  headerAction,
   note,
   partial,
   children: [render, isEmpty],
 }: {
   title: string
-  /** The section's id and test id (default: from the title). */
   testId?: string
   icon: typeof Compass
   state: SectionState<T>
   empty: string
   emptyAction?: ReactNode
+  headerAction?: ReactNode
   note?: string
-  /** A "could not read all of it" line for the data, or null when it is complete. */
   partial?: (d: T) => string | null
   children: [(d: T) => ReactNode, (d: T) => boolean]
 }): JSX.Element {
@@ -514,25 +516,33 @@ function Section<T>({
           <Icon className="h-4 w-4 text-fg-muted" aria-hidden /> {title}
         </h2>
         {state.loading ? <Spinner label="Reading" /> : null}
+        {headerAction ? <div className="ml-auto">{headerAction}</div> : null}
       </div>
-      {note ? <p className="mb-3 text-[12px] text-anvil-500 dark:text-anvil-400">{note}</p> : null}
       {state.error ? (
         <ErrorState message={state.error} onRetry={state.reload} />
       ) : state.data !== null ? (
         <>
           {partial?.(state.data) ? (
-            <p role="note" className="mb-3 rounded-md border border-caution/30 bg-caution/5 px-3 py-1.5 text-[12px] text-anvil-700 dark:text-anvil-200" data-partial="true">
+            <p role="note" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-partial="true">
               {partial(state.data)}
             </p>
           ) : null}
           {isEmpty(state.data) ? (
-            <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-4 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-empty="true">
+            <p className="text-dense text-anvil-500 dark:text-anvil-400" data-empty="true">
               {empty} {emptyAction}
-            </div>
+            </p>
           ) : (
             render(state.data)
           )}
         </>
+      ) : null}
+      {note ? (
+        <details className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+          <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:min-w-11 coarse:items-center dark:hover:text-anvil-200">
+            About this list
+          </summary>
+          <p className="mt-1 max-w-2xl">{note}</p>
+        </details>
       ) : null}
     </section>
   )
@@ -570,10 +580,9 @@ function missingNote(d: RankedRepos): string | null {
   return d.missing > 0 ? `${plural(d.missing, 'ranked repo')} could not be read and ${d.missing === 1 ? 'is' : 'are'} not shown.` : null
 }
 
-/** Week (the oldest open window, a near-full trailing week) or today (the newest window). */
 function TrendWindowToggle({ value, onChange }: { value: TrendingWindow; onChange: (v: TrendingWindow) => void }): JSX.Element {
   return (
-    <div role="group" aria-label="Trending window" className="mb-3 inline-flex overflow-hidden rounded-md border border-anvil-200 text-dense dark:border-anvil-800">
+    <div role="group" aria-label="Trending window" className="inline-flex overflow-hidden rounded-md border border-anvil-200 text-dense dark:border-anvil-800">
       {(['week', 'today'] as const).map((w) => (
         <button
           key={w}
@@ -636,7 +645,7 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (text: st
           type="search"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Search repositories by the start of their name"
+          placeholder="Search repositories…"
           autoComplete="off"
           spellCheck={false}
           className="h-9 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-2 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"

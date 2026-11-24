@@ -61,8 +61,9 @@ describe('DevnetNoticeBanner', () => {
     render('upcoming')
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
-    expect(b.textContent).toContain(
-      'bonsia is moving to a new devnet soon. Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
+    expect(b.textContent).toContain('bonsia is moving to a new devnet soon.')
+    expect(b.querySelector('details')?.textContent).toContain(
+      'Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
     )
     const link = b.querySelector('a')!
     expect(link.getAttribute('href')).toBe(DEVNET_MOVE_DOC.replace(/\/$/, ''))

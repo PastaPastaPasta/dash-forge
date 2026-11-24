@@ -597,14 +597,14 @@ function NewMenu(): JSX.Element | null {
             <Plus className="mt-0.5 h-4 w-4 shrink-0 text-fg-muted" aria-hidden />
             <span>
               Repository
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Create a repo on {ACTIVE_NETWORK.key}</span>
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Create a new repo</span>
             </span>
           </Link>
           <Link href="/mirror/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             <GitFork className="mt-0.5 h-4 w-4 shrink-0 text-fg-muted" aria-hidden />
             <span>
               Mirror a GitHub repo
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Set up in your browser, about 10 minutes</span>
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Sync or copy from GitHub</span>
             </span>
           </Link>
         </nav>
@@ -714,11 +714,10 @@ function AccountMenu({
             className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
           >
             <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            {/* What Lock does (QW-044): the pages then say "Session locked", not "Sign in to …". */}
             <span>
               Lock
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
-                {pasted ? 'Signs you out and forgets the pasted key.' : 'Signs you out; your key stays in this browser until you forget it in Settings.'}
+                {pasted ? 'Signs you out and forgets this key.' : 'Signs you out of this tab.'}
               </span>
             </span>
           </button>

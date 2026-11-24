@@ -224,11 +224,9 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
 
   return (
     <div className="space-y-6 md:grid md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] md:gap-8 md:space-y-0">
-      <aside aria-label="Profile" className="min-w-0 space-y-4" data-testid="profile-card">
+      <aside aria-label="Profile" className="min-w-0 space-y-3" data-testid="profile-card">
         <div className="flex items-center gap-4 md:flex-col md:items-start">
-          {/* A phone shows the avatar beside the name; from `md` it heads the column, full width. */}
-          <ProfileAvatar identityId={identityId} config={fields.avatarConfig} className="[--avatar:72px] md:[--avatar:256px]" />
-          {/* The page's one h1: whose profile this is (QW4-044: its only heading was "Repositories"). */}
+          <ProfileAvatar identityId={identityId} config={fields.avatarConfig} className="[--avatar:72px] md:[--avatar:128px]" />
           <div className="min-w-0 flex-1 md:w-full">
             <h1 className="min-w-0 max-w-full font-normal">
               <span className="sr-only">Profile of {heading}</span>

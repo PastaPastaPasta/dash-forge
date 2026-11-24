@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 export function Toaster(): JSX.Element {
   const { toasts, dismiss } = useToasts()
   return (
-    <div aria-live="polite" className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+    <div aria-live="polite" className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
       {toasts.map((t) => (
         <div
           key={t.id}
@@ -39,9 +39,18 @@ export function Toaster(): JSX.Element {
                 </span>
               ) : null}
             </div>
-            {t.detail ? <div className="mt-0.5 break-words text-[12px] text-anvil-500 dark:text-anvil-400">{t.detail}</div> : null}
+            {t.detail ? (
+              <div className="mt-0.5 line-clamp-2 break-words text-[12px] text-anvil-500 dark:text-anvil-400" title={t.detail}>
+                {t.detail}
+              </div>
+            ) : null}
           </div>
-          <button onClick={() => dismiss(t.id)} aria-label="Dismiss" className="text-anvil-500 dark:text-anvil-400 hover:text-anvil-700">
+          <button
+            type="button"
+            onClick={() => dismiss(t.id)}
+            aria-label="Dismiss"
+            className="-mr-1 -mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-anvil-500 hover:text-anvil-700 coarse:h-11 coarse:w-11 dark:text-anvil-400 dark:hover:text-anvil-200"
+          >
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
         </div>

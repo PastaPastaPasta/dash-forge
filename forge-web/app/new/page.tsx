@@ -294,12 +294,12 @@ export default function NewRepoPage(): JSX.Element {
   return (
     <AppShell>
       <div className="mx-auto max-w-xl">
-        <div className="mb-6 flex items-center gap-3">
+        <div className="mb-5 flex items-center gap-3">
           <span className="flex h-9 w-9 items-center justify-center rounded-md bg-surface-raised ring-1 ring-inset ring-anvil-200 dark:ring-anvil-700">
             <Hammer className="h-5 w-5 text-fg-muted" aria-hidden />
           </span>
           <div>
-            <h1 className="text-xl">Forge a new repo</h1>
+            <h1 className="text-xl">New repository</h1>
             <p className="text-dense text-anvil-500 dark:text-anvil-400">
               On {networkName()}, owned by your identity.
             </p>
@@ -328,7 +328,7 @@ export default function NewRepoPage(): JSX.Element {
         ))}
 
         <div className="space-y-4">
-          <Field label="Repository name" htmlFor="repo-name" hint="Lowercase; letters, digits, and . _ - (max 63). The name is permanent.">
+          <Field label="Repository name" htmlFor="repo-name" hint="Lowercase letters, digits, . _ - (permanent).">
             <Input id="repo-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="forge-core" className="font-mono" spellCheck={false} autoFocus />
           </Field>
           {nameError ? (
@@ -339,8 +339,8 @@ export default function NewRepoPage(): JSX.Element {
             </p>
           ) : null}
 
-          <Field label="Description" htmlFor="repo-desc" hint="Shown in discovery. Optional; editable later.">
-            <Textarea id="repo-desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What is this repo for?" className="min-h-[72px]" maxLength={500} />
+          <Field label="Description" htmlFor="repo-desc" hint="Optional; editable later.">
+            <Textarea id="repo-desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What is this repo for?" className="min-h-[64px]" maxLength={500} />
           </Field>
 
           <fieldset>
@@ -349,7 +349,7 @@ export default function NewRepoPage(): JSX.Element {
               {(
                 [
                   ['public', Globe, 'Public', 'Anyone can read it.'],
-                  ['private', Lock, 'Private', 'Encrypted to its members. Set now; it cannot change later.'],
+                  ['private', Lock, 'Private', 'Encrypted to members. Cannot change later.'],
                 ] as const
               ).map(([v, Icon, label, hint], i) => (
                 <button
@@ -393,16 +393,16 @@ export default function NewRepoPage(): JSX.Element {
                 <p id="repo-members-only-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
                   {keyMissing ? (
                     <>
-                      Members-only content needs your encryption key in this browser.{' '}
+                      Needs your encryption key in this browser.{' '}
                       <Link href={PRIVATE_REPOS_SETTINGS} className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
                         {SET_UP_KEY}
                       </Link>
-                      , or turn it on later in Settings.
+                      , or turn on later.
                     </>
                   ) : withMembers ? (
-                    'Members can post comments, reviews and issues only members can read. Everyone can still see that something was posted, by whom and when.'
+                    'Members can post private comments, reviews and issues.'
                   ) : (
-                    'Members can only post what everyone can read. A maintainer can turn it on later in Settings.'
+                    'Off: can be turned on later in Settings.'
                   )}
                 </p>
                 {withMembers && needsUnlock ? (
@@ -418,28 +418,32 @@ export default function NewRepoPage(): JSX.Element {
             </div>
           ) : null}
           {isPrivate ? (
-            <div className="rounded-md border border-anvil-200 p-3 text-[12px] text-anvil-600 dark:border-anvil-750 dark:text-anvil-300" data-testid="private-facts">
-              <ul className="list-disc space-y-0.5 pl-4">
-                {PRIVATE_FACTS.map((f) => (
-                  <li key={f}>{f}</li>
-                ))}
-              </ul>
-              <p className="mt-2" data-testid="private-browser-limits">
-                {PRIVATE_BROWSER_LIMITS}
-              </p>
-              {description.trim() ? <p className="mt-2 text-caution-700 dark:text-caution-400">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
+            <div className="space-y-2 rounded-md border border-anvil-200 p-3 text-[12px] text-anvil-600 dark:border-anvil-750 dark:text-anvil-300" data-testid="private-facts">
+              <p>Code, branch names, issues and comments encrypt to members; name, description and activity stay public.</p>
+              <details>
+                <summary className="w-fit cursor-pointer font-medium text-anvil-700 hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:text-anvil-200">
+                  What stays private and what&apos;s visible
+                </summary>
+                <ul className="mt-1.5 list-disc space-y-0.5 pl-4">
+                  {PRIVATE_FACTS.map((f) => (
+                    <li key={f}>{f}</li>
+                  ))}
+                </ul>
+                <p className="mt-2" data-testid="private-browser-limits">
+                  {PRIVATE_BROWSER_LIMITS}
+                </p>
+              </details>
+              {description.trim() ? <p className="text-caution-700 dark:text-caution-400">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
               {needsUnlock ? (
-                <div className="mt-2">
-                  <UnlockMore title="Unlock to create a private repo" testId="new-private-unlock" />
-                </div>
+                <UnlockMore title="Unlock to create a private repo" testId="new-private-unlock" />
               ) : ops.error !== null ? (
-                <p className="mt-2 text-danger-700 dark:text-danger-400" data-testid="private-key-error">
+                <p className="text-danger-700 dark:text-danger-400" data-testid="private-key-error">
                   Couldn&apos;t read your encryption key: {ops.error}
                 </p>
               ) : null}
               {noKey ? (
-                <p className="mt-2 text-caution-700 dark:text-caution-400" data-testid="private-no-key">
-                  cannot create a private repository: your identity has no encryption key in this browser. Add it in{' '}
+                <p className="text-caution-700 dark:text-caution-400" data-testid="private-no-key">
+                  Private repositories need an encryption key in this browser. Add it in{' '}
                   <Link href="/settings/" className="text-forge-700 underline dark:text-forge-400">
                     Settings → Members-only and private content
                   </Link>
@@ -449,57 +453,71 @@ export default function NewRepoPage(): JSX.Element {
             </div>
           ) : null}
 
-          <Field label="Default branch" htmlFor="repo-branch">
-            <div className="relative">
-              <GitBranch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
-              <Input
-                id="repo-branch"
-                value={defaultBranch}
-                onChange={(e) => setDefaultBranch(e.target.value)}
-                className="pl-8 font-mono"
-                aria-invalid={branchError !== null}
-                aria-describedby={branchError !== null ? 'repo-branch-error' : undefined}
-              />
-            </div>
-            {branchError !== null ? (
-              <p id="repo-branch-error" className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">
-                {branchError}
-              </p>
-            ) : null}
-          </Field>
+          <details open={branchError !== null} className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-750">
+            <summary className="cursor-pointer text-dense font-medium text-anvil-700 coarse:flex coarse:min-h-11 coarse:items-center dark:text-anvil-200">
+              Branch &amp; protection <span className="ml-1 font-normal text-anvil-500 dark:text-anvil-400">({branchShown}, {protect ? 'protected' : 'unprotected'})</span>
+            </summary>
+            <div className="mt-3 space-y-3 pb-1">
+              <Field label="Default branch" htmlFor="repo-branch">
+                <div className="relative">
+                  <GitBranch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
+                  <Input
+                    id="repo-branch"
+                    value={defaultBranch}
+                    onChange={(e) => setDefaultBranch(e.target.value)}
+                    className="pl-8 font-mono"
+                    aria-invalid={branchError !== null}
+                    aria-describedby={branchError !== null ? 'repo-branch-error' : undefined}
+                  />
+                </div>
+                {branchError !== null ? (
+                  <p id="repo-branch-error" className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">
+                    {branchError}
+                  </p>
+                ) : null}
+              </Field>
 
-          <div className="flex items-start gap-2.5 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">
-            <input
-              id="repo-protect"
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700"
-              checked={protect}
-              onChange={(e) => setProtect(e.target.checked)}
-              aria-describedby="repo-protect-hint"
-              data-testid="repo-protect"
-            />
-            <div className="min-w-0">
-              <label htmlFor="repo-protect" className="text-dense font-medium">
-                Protect <span className="break-all font-mono">{branchShown}</span> and tags
-              </label>
-              <p id="repo-protect-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-                {protect
-                  ? 'Only maintainers can push to it or create and move tags. Writers open pull requests. Change this later in Settings.'
-                  : 'Any writer can push to it and move tags, including the ones releases point to.'}
-              </p>
+              <div className="flex items-start gap-2.5">
+                <input
+                  id="repo-protect"
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700"
+                  checked={protect}
+                  onChange={(e) => setProtect(e.target.checked)}
+                  aria-describedby="repo-protect-hint"
+                  data-testid="repo-protect"
+                />
+                <div className="min-w-0">
+                  <label htmlFor="repo-protect" className="text-dense font-medium">
+                    Protect <span className="break-all font-mono">{branchShown}</span> and tags
+                  </label>
+                  <p id="repo-protect-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                    {protect
+                      ? 'Only maintainers can push directly or move tags. Change later in Settings.'
+                      : 'Any writer can push directly and move tags.'}
+                  </p>
+                </div>
+              </div>
             </div>
-          </div>
+          </details>
 
           {differs ? (
             <p className="text-[12px] text-caution-700 dark:text-caution-400">
-              An unfinished creation of this name started with different settings; finishing it keeps those. Change them after
-              it exists.
+              An unfinished creation of this name started with different settings; finishing it keeps those.
             </p>
           ) : null}
-          <CostPreview cost={cost} />
-          <p className="-mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-            One-time. Code goes to storage you choose when you push; Platform keeps manifests and refs.
-          </p>
+
+          <div className="space-y-1.5">
+            <CostPreview cost={cost} />
+            <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
+              <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
+                About creation &amp; push costs
+              </summary>
+              <p className="mt-1">
+                One-time fee to create the repository. Code goes to storage you choose when you push; Platform keeps manifests and refs.
+              </p>
+            </details>
+          </div>
 
           {progress ? (
             <ol aria-label="Creation steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">

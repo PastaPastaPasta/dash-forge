@@ -154,7 +154,6 @@ export function FollowListContent({ address, byId = false, side }: { address: st
           ) : null}
         </div>
       ) : null}
-      {ids.length > 0 ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">In identity-id order: a follow records no time.</p> : null}
     </div>
   )
 }

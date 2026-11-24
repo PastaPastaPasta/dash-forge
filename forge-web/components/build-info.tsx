@@ -17,14 +17,14 @@ export function BuildInfo(): JSX.Element {
   useEffect(() => setCid(servedCid(window.location)), [])
   const commit = commitUrl()
   return (
-    <p className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="build-info">
-      <span>About this build:</span>
+    <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="build-info">
+      <span>Build</span>
       {commit ? (
         <a href={commit} className={`${LINK} font-mono`} title={BUILD_COMMIT} rel="noreferrer">
           {BUILD_COMMIT.slice(0, 12)}
         </a>
       ) : (
-        <span className="font-mono">unknown commit</span>
+        <span className="font-mono">unknown</span>
       )}
       {cid && (
         <>
@@ -39,8 +39,8 @@ export function BuildInfo(): JSX.Element {
       )}
       <span aria-hidden="true">·</span>
       <a href={verifyGuideUrl()} className={LINK} rel="noreferrer">
-        Verify this build
+        Verify
       </a>
-    </p>
+    </span>
   )
 }

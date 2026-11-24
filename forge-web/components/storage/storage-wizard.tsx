@@ -92,6 +92,13 @@ export function StorageWizardView({ storage, embedded = false }: { storage: Stor
         </p>
       ) : null}
 
+      {!embedded && config.profiles.length > 0 ? (
+        <>
+          <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
+          <DefaultPolicy config={config} storable={storable} save={save} />
+        </>
+      ) : null}
+
       <section aria-labelledby="providers-title" className="space-y-3">
         <h2 id="providers-title" className="text-dense font-medium text-anvil-500 dark:text-anvil-400">
           Add storage
@@ -133,7 +140,7 @@ export function StorageWizardView({ storage, embedded = false }: { storage: Stor
 
       {provider === 'kubo' && !editing ? <KuboConnectView storage={storage} /> : null}
       {provider === 'kubo' && !editing ? (
-        <details><summary className="cursor-pointer text-dense">Set it up by hand</summary>
+        <details><summary className="cursor-pointer text-dense coarse:flex coarse:min-h-11 coarse:items-center">Set it up by hand</summary>
           <AddProfile provider="kubo" existing={null} config={config} storable={storable} save={save} onDone={() => setProvider(null)} />
         </details>
       ) : provider ? (
@@ -151,14 +158,18 @@ export function StorageWizardView({ storage, embedded = false }: { storage: Stor
         />
       ) : null}
 
-      {embedded ? null : (
-        <>
-          <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
-          <DefaultPolicy config={config} storable={storable} save={save} />
-        </>
-      )}
+      {!embedded && config.profiles.length === 0 ? (
+        <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
+      ) : null}
 
-      <CostCard />
+      <details className="text-dense">
+        <summary className="w-fit cursor-pointer font-medium text-anvil-600 hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:text-anvil-300 dark:hover:text-anvil-100">
+          Compare storage costs
+        </summary>
+        <div className="mt-2">
+          <CostCard />
+        </div>
+      </details>
     </div>
   )
 }
