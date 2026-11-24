@@ -20,10 +20,14 @@ import { clockSkewErrorCopy } from '@/lib/sdk/clock-skew'
  * passkey is the default choice, and a passphrase is still accepted (not every authenticator
  * supports PRF, and that is only known after trying).
  * `passwordOnly`: only the passphrase fields (the caller offers the passkey itself).
+ * `allowDevice`: false where the key must not be kept by this browser alone (a renewal of a key
+ * that had a passkey or passphrase, or protecting a browser-only key): nothing chosen is a problem.
  * `onSubmit`: what Enter in a passphrase field does (QW3-027: the sheet's button sits outside
  * this form, and a form of two password fields with no submit button ignores Enter).
  */
-export function useProtection(opts: { readonly preferPasskey?: boolean; readonly onSubmit?: () => void; readonly passwordOnly?: boolean } = {}): {
+export function useProtection(
+  opts: { readonly preferPasskey?: boolean; readonly onSubmit?: () => void; readonly passwordOnly?: boolean; readonly allowDevice?: boolean } = {},
+): {
   readonly fields: JSX.Element
   /** The protection, or null with `problem` set when not ready. */
   readonly protection: Protection | null
@@ -45,8 +49,8 @@ export function useProtection(opts: { readonly preferPasskey?: boolean; readonly
   const [enrolling, setEnrolling] = useState(false)
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const canPasskey = passkeysAvailable() && opts.passwordOnly !== true
-  const unlimited = opts.preferPasskey === true
-  const preferPasskey = unlimited && canPasskey
+  const unlimited = opts.preferPasskey === true || opts.allowDevice === false
+  const preferPasskey = opts.preferPasskey === true && canPasskey
 
   const enroll = async (): Promise<void> => {
     setEnrolling(true)
@@ -69,7 +73,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean; readonly
   let problem: string | null = null
   if (passphraseSet && passphrase.length < MIN_PASSPHRASE) problem = `Use at least ${MIN_PASSPHRASE} characters.`
   else if (passphraseSet && passphrase !== confirm) problem = 'The passphrases do not match.'
-  else if (!passphraseSet && !passkey && unlimited) problem = 'This key has no spending limit: add a passkey or a passphrase.'
+  else if (!passphraseSet && !passkey && unlimited) problem = opts.preferPasskey ? 'This key has no spending limit: add a passkey or a passphrase.' : 'Add a passkey or a passphrase.'
 
   const chosen = passphraseSet || passkey !== null
   const protection: Protection | null =
@@ -77,7 +81,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean; readonly
 
   let passkeyVariant: 'subtle' | 'primary' | 'outline' = 'outline'
   if (passkey) passkeyVariant = 'subtle'
-  else if (preferPasskey) passkeyVariant = 'primary'
+  else if (unlimited && canPasskey) passkeyVariant = 'primary'
 
   // Passphrases are uncontrolled inputs (never mirrored into a `value` attribute), inside a
   // form so the browser does not log the fields as "not contained in a form". A caller may

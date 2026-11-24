@@ -54,12 +54,12 @@ import { checkUsername } from '../view/username'
 import { deriveMasterKey, invalidMnemonicMessage, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS, withPlatformRead } from './connect'
-import { askToUnlockEveryVisit } from './session-resume'
+import { askToUnlockEveryVisit, deviceResumeAllowed, framed } from './session-resume'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
 import { clearDrafts } from '../view/draft-text'
-import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
+import { forgetLastIdentity, readLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './wallet-key'
 import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
@@ -157,6 +157,8 @@ import {
   type RecoverResult,
   type StagedKeyState,
   unlockWithDevice,
+  protectVault,
+  sharedOriginProblem,
   unlockWithPasskey,
   unlockWithPassphrase,
   type UnlockKind,
@@ -864,14 +866,27 @@ export class AuthController {
    * prompt, unless "Stay signed in" is off. The newest such key wins when there are several.
    */
   private async resumeDeviceKey(): Promise<boolean> {
-    if (askToUnlockEveryVisit()) return false
+    // Never in a frame or on a shared origin, and never after a lock until opened on purpose.
+    if (askToUnlockEveryVisit() || framed() || sharedOriginProblem() !== null || !deviceResumeAllowed()) return false
     const vaults = await withTimeout(listVaults(this.network), PLATFORM_READ_MS, 'Reading the stored keys').catch(() => [])
-    const device = vaults.filter((v) => v.staged !== true && v.methods.includes('device')).sort((x, y) => y.createdAt - x.createdAt)[0]
+    // The identity this browser used last, never another one it happens to hold.
+    const last = readLastIdentity(this.network)
+    const device = vaults.find((v) => v.identityId === last && v.staged !== true && v.methods.length === 1 && v.methods[0] === 'device')
     if (device === undefined || this.state.session !== null) return false
     return this.unlock(device.identityId, 'device').then(
       () => true,
       () => false,
     )
+  }
+
+  /**
+   * Protect a key kept by this browser alone with a passkey or passphrase (no new key, no fee),
+   * then open the rest of the vault: private content and storage settings can then be added.
+   */
+  async protectKey(protection: Protection): Promise<AuthSession> {
+    const session = this.state.session
+    if (session === null) throw new VaultLockedError('sign in first')
+    return this.run(async () => this.open(await protectVault(this.network, session.identityId, protection), 'vault'))
   }
 
   /**

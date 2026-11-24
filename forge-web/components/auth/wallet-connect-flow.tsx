@@ -161,7 +161,7 @@ export function WalletConnectFlow({
   /** Open the sheet's Unlock view (a v2 sign-in that must wait for a locked wallet key to be opened). */
   onUnlock?: () => void
 }): JSX.Element {
-  const { adoptWalletKeys, isLoading, vaults, unlockScope, controller, origin } = useAuth()
+  const { adoptWalletKeys, isLoading, vaults, unlockScope, controller, origin, identity } = useAuth()
   // Read when the request starts (a scope change must not restart a running request).
   const scopeRef = useRef(unlockScope)
   scopeRef.current = unlockScope
@@ -199,7 +199,9 @@ export function WalletConnectFlow({
     grant.current = null
   }, [])
   const mobile = onMobile()
-  const { fields, protection, problem } = useProtection()
+  // A renewal never weakens a key that had a passkey or passphrase.
+  const heldMethods = vaults.find((v) => v.staged !== true && v.identityId === identity)?.methods ?? []
+  const { fields, protection, problem } = useProtection({ allowDevice: mode !== 'renew' || heldMethods.every((m) => m === 'device') })
   /**
    * Renewal: the protection for the new key is chosen first (the wallet disables the old key when
    * it approves), then the code shows. `renewGo` flips on that choice; the protection is kept for
@@ -549,8 +551,8 @@ export function WalletConnectFlow({
           <CopyId id={profile.identityId} />
         </div>
         {profile.warnings.map((w) => (
-          <p key={w} role="note" data-testid="responder-warning" className="text-[12px] text-caution-700 dark:text-caution-400">
-            {w}
+          <p key={w} role="alert" data-testid="responder-warning" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
+            {w} If you didn&apos;t expect this, someone else may have answered your code.
           </p>
         ))}
         {step.limits?.total != null ? (
@@ -566,9 +568,15 @@ export function WalletConnectFlow({
         <Button variant="primary" className="w-full" onClick={() => setConfirmed(true)} data-testid="wallet-confirm-me">
           That&apos;s me, continue
         </Button>
-        <button type="button" onClick={restart} className="hit-area mx-auto block text-[12px] text-anvil-500 underline dark:text-anvil-400" data-testid="wallet-not-me">
-          Not me, start over
-        </button>
+        {profile.warnings.length > 0 ? (
+          <Button variant="outline" className="w-full" onClick={restart} data-testid="wallet-not-me">
+            Not me, start over
+          </Button>
+        ) : (
+          <button type="button" onClick={restart} className="hit-area mx-auto block text-[12px] text-anvil-500 underline dark:text-anvil-400" data-testid="wallet-not-me">
+            Not me, start over
+          </button>
+        )}
         <ErrorBox error={error} />
       </div>
     )

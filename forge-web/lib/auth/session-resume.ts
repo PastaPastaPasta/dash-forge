@@ -189,6 +189,22 @@ export function lockMarker(): number {
   return readMarker(LOCKED_AT_KEY)
 }
 
+/** When a key kept by this browser alone was last opened (stored or unlocked). */
+const DEVICE_OPENED_KEY = 'forge:device-opened-at'
+
+/** A key kept by this browser alone was stored or opened: later page loads may open it again. */
+export function markDeviceOpened(): void {
+  writeMarker(DEVICE_OPENED_KEY)
+}
+
+/**
+ * Whether a page load may open a key kept by this browser alone without asking: not after a lock
+ * (Lock, sign-out, the 12-hour lock) until the next time it was opened on purpose.
+ */
+export function deviceResumeAllowed(): boolean {
+  return readMarker(DEVICE_OPENED_KEY) > lockMarker()
+}
+
 /** Whether "Stay signed in for public repos" is off (every page load starts locked). */
 export function askToUnlockEveryVisit(): boolean {
   return readLocal(STRICT_KEY) === '1'

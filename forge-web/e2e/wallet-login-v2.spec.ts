@@ -18,7 +18,7 @@ import { approveV2, disableGrants, newV2Wallet } from './wallet-responder-v2'
  * r1. Desktop: the wallet tile comes first; the request is v2 (`v=2`, one approval for all of
  *     Forge, with the budget and the date), the support note names App Connect v2, and there is no
  *     older code to switch to (v1 DashConnect was removed).
- * r2. Phone: "Open in DashPay (Dash Wallet)" is the v2 link (no callback on a local http build:
+ * r2. Phone: "Open in wallet" is the v2 link (no callback on a local http build:
  *     `cb` needs the canonical https site).
  * r3. `/connect/`, where a wallet returns: a malformed link goes home, a declined approval says
  *     so, a tab that shows a code answers the page (which then steps aside), and with no such
@@ -113,7 +113,7 @@ test.describe('v2 request (read-only)', () => {
     await shot(page, 'wallet-login-v2-01-request')
   })
 
-  test('r2. phone: "Open in DashPay (Dash Wallet)" is the v2 link, with the QR behind a disclosure', async ({ browser }) => {
+  test('r2. phone: "Open in wallet" is the v2 link, with the QR behind a disclosure', async ({ browser }) => {
     const page = await (await browser.newContext({ ...devices['Pixel 7'] })).newPage()
     await openWalletRequest(page)
     const link = page.getByTestId('wallet-deep-link')
@@ -123,7 +123,7 @@ test.describe('v2 request (read-only)', () => {
     // `cb` needs the canonical https site: this local http build leaves it out (BroadcastChannel
     // would not reach the tab either).
     expect(href).not.toContain('cb=')
-    await expect(link).toHaveText(/open in dashpay \(dash wallet\)/i)
+    await expect(link).toHaveText(/open in wallet/i)
     await shot(page, 'wallet-login-v2-03-phone')
   })
 })

@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
 import type { UnlockMethod } from '@/lib/auth/vault'
+import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 
 /**
  * The prompt over members-only content this tab cannot read yet (DESIGN §4.8, §10):
@@ -84,14 +85,10 @@ export function UnlockMore({
       <p className="flex items-center gap-2 text-dense font-medium">
         <Lock className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> {title}
       </p>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        After a reload this browser keeps only its spend-capped signing key. Your encryption key, storage credentials and wallet grants open again for this tab.
-      </p>
-      {methods.includes('device') ? (
-        <Button variant="primary" size="sm" onClick={() => void go('device')} loading={isLoading} disabled={isLoading} data-testid={`${testId}-device`}>
-          Unlock
-        </Button>
-      ) : null}
+      {methods.length === 1 && methods[0] === 'device' ? null : (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">After a reload only the signing key opens by itself. Unlock once for this tab.</p>
+      )}
+      {methods.length === 1 && methods[0] === 'device' ? <ProtectThisKey testId={testId} then={then} /> : null}
       {methods.includes('passkey') ? (
         <Button variant="primary" size="sm" onClick={() => void go('passkey')} loading={isLoading} disabled={isLoading}>
           <Fingerprint className="h-3.5 w-3.5" aria-hidden /> Unlock with passkey
@@ -137,6 +134,39 @@ export function UnlockMore({
           </button>
         </p>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * A key kept by this browser alone opens for signing only: private content, storage settings and
+ * wallet grants need a passkey or passphrase on it first (no new key, no fee).
+ */
+function ProtectThisKey({ testId, then }: { testId: string; then?: () => void }): JSX.Element {
+  const { controller, isLoading } = useAuth()
+  const { fields, protection, problem } = useProtection({ allowDevice: false })
+  const [error, setError] = useState<string | null>(null)
+  const go = async (): Promise<void> => {
+    if (protection === null) {
+      setError(problem)
+      return
+    }
+    setError(null)
+    try {
+      await controller.protectKey(protection)
+      then?.()
+    } catch (e) {
+      setError(errorMessage(e))
+    }
+  }
+  return (
+    <div className="space-y-2" data-testid={`${testId}-protect`}>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Add a passkey or password to this browser&apos;s key first.</p>
+      {fields}
+      <Button variant="primary" size="sm" loading={isLoading} onClick={() => void go()}>
+        Protect and unlock
+      </Button>
+      <ErrorBox error={error} />
     </div>
   )
 }

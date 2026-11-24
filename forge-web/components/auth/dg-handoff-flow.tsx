@@ -62,6 +62,7 @@ export function DgHandoffFlow({ onDone, renew = false, target }: { readonly onDo
   const submitRef = useRef<() => void>(() => undefined)
   const { fields, protection, problem } = useProtection({
     onSubmit: () => submitRef.current(),
+    allowDevice: !withEncryption && !(renew && (held?.methods ?? []).some((m) => m !== 'device')),
   })
 
   // The key the new one replaces. Never left implicit: a key this browser holds and dg does not

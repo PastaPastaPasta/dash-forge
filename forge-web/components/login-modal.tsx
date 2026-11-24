@@ -893,9 +893,13 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
   }, [error])
   // Enter in a passphrase field submits (QW3-027); `submit` is declared below, so through a ref.
   const submitRef = useRef<() => void>(() => undefined)
-  const { fields, protection, problem } = useProtection({ onSubmit: () => submitRef.current() })
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
   const [enablePrivate, setEnablePrivate] = useState(wantsPrivate)
+  // Kept by this browser alone only when nothing else is: no encryption key, and a renewal never
+  // weakens a key that had a passkey or passphrase.
+  const heldMethods = vaults.find((v) => v.identityId === identity && v.staged !== true)?.methods ?? []
+  const allowDevice = !enablePrivate && !(renew && heldMethods.some((m) => m !== 'device'))
+  const { fields, protection, problem } = useProtection({ onSubmit: () => submitRef.current(), allowDevice })
   // The identity the words found, which this browser already holds a key for: filled into the ID
   // field, and cleared with it when the words change (other words, another identity).
   const [foundId, setFoundId] = useState<string | null>(null)

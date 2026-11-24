@@ -56,6 +56,7 @@ import {
   keptExpired,
   loadResume,
   lockMarker,
+  markDeviceOpened,
   markLocked,
   openResume,
   saveResume,
@@ -622,6 +623,11 @@ function assertProtection(protection: Protection): void {
 async function sealRecord(network: Network, main: Omit<VaultSecret, 'extra'>, protection: Protection, dataKey: Uint8Array): Promise<VaultRecord> {
   const { identityId } = main
   const body = await seal(dataKey, enc.encode(JSON.stringify(main)), aad(network, identityId, 'body'))
+  return { version: 1, network, identityId, keyId: main.keyId, createdAt: Date.now(), iv: body.iv, ciphertext: body.ct, slots: await wrapSlots(network, identityId, protection, dataKey) }
+}
+
+/** The data key wrapped under each method of `protection` (this browser alone only when it is the sole one). */
+async function wrapSlots(network: Network, identityId: string, protection: Protection, dataKey: Uint8Array): Promise<Slot[]> {
   const slots: Slot[] = []
   if (protection.passkey) {
     const kek = prfKey(protection.passkey.output, network, identityId)
@@ -643,7 +649,60 @@ async function sealRecord(network: Network, main: Omit<VaultSecret, 'extra'>, pr
     const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(ad) }, wrapKey, buf(dataKey)))
     slots.push({ kind: 'device', wrapKey, iv, wrapped })
   }
-  return { version: 1, network, identityId, keyId: main.keyId, createdAt: Date.now(), iv: body.iv, ciphertext: body.ct, slots }
+  return slots
+}
+
+/** Only this browser protects it (no passkey, no passphrase). */
+function deviceOnly(protection: Protection): boolean {
+  return protection.device === true && !protection.passphrase && !protection.passkey
+}
+
+/**
+ * A key kept by this browser alone may hold nothing but the limited signing key: never wallet
+ * grants held beside it, an encryption key or storage settings, which would then open without a
+ * prompt. Those need a passkey or passphrase.
+ */
+export class DeviceOnlyRefusedError extends Error {
+  constructor() {
+    super('This browser also holds other keys or storage settings for this identity: add a passkey or a password to keep them.')
+    this.name = 'DeviceOnlyRefusedError'
+  }
+}
+
+async function assertDeviceOnlyFits(network: Network, identityId: string, extra: readonly ExtraKey[] | undefined): Promise<void> {
+  if (extra?.length) throw new DeviceOnlyRefusedError()
+  const blobs = await Promise.all([idbGet('vault', storageBlobKey(network, identityId)), idbGet<StoredEncryption>('vault', encryptionBlobKey(network, identityId))])
+  if (blobs[0] !== undefined || encryptionEntries(blobs[1]).length > 0) throw new DeviceOnlyRefusedError()
+}
+
+/**
+ * Protect a key kept by this browser alone with a passkey or passphrase (no new key, no fee):
+ * its data key is re-wrapped under them and the browser-only slot is dropped. Then it unlocks
+ * fully, so private content and storage settings can be added.
+ */
+export async function protectVault(network: Network, identityId: string, protection: Protection): Promise<VaultSecret> {
+  assertDedicatedOrigin()
+  if (deviceOnly(protection) || (!protection.passphrase && !protection.passkey)) throw new Error('choose a passkey or a passphrase')
+  assertProtection(protection)
+  const at = key(network, identityId)
+  const record = await idbGet<VaultRecord>('vault', at)
+  const slot = record?.slots.find((x) => x.kind === 'device')
+  if (record === undefined || slot?.kind !== 'device') throw new VaultLockedError('this key is already protected')
+  const dataKey = new Uint8Array(
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(slot.iv), additionalData: buf(aad(network, identityId, 'device')) }, slot.wrapKey, buf(slot.wrapped)),
+  )
+  try {
+    const slots = await wrapSlots(network, identityId, { ...(protection.passphrase ? { passphrase: protection.passphrase } : {}), ...(protection.passkey ? { passkey: protection.passkey } : {}) }, dataKey)
+    await idbUpdate<VaultRecord>('vault', at, (current) => {
+      if (current?.keyId !== record.keyId) throw new VaultChangedError()
+      return [[at, { ...current, slots }]]
+    })
+  } finally {
+    dataKey.fill(0)
+  }
+  const opened = await unlockWithProtection(network, identityId, protection)
+  if (opened === null) throw new VaultLockedError("This browser's key could not be opened after protecting it.")
+  return opened
 }
 
 /**
@@ -676,6 +735,7 @@ async function readsBack(network: Network, at: string, main: Omit<VaultSecret, '
 export async function stageInVault(network: Network, secret: VaultSecret, protection: Protection): Promise<void> {
   assertDedicatedOrigin()
   assertProtection(protection)
+  if (deviceOnly(protection)) await assertDeviceOnlyFits(network, secret.identityId, secret.extra)
   const { extra: _extra, ...main } = secret
   const at = stagedKey(network, secret.identityId)
   // Fails fast, before the slow sealing; checked again inside the write below.
@@ -743,14 +803,15 @@ async function openRecord(
   method: UnlockMethod,
   withExtra: boolean,
   cachedOnly = false,
-): Promise<{ secret: VaultSecret; blobKeys: BlobKeys } | null> {
+): Promise<{ secret: VaultSecret; blobKeys: BlobKeys | null } | null> {
+  // This browser's own slot opens the signing key only: no grants, no blob keys (signing scope).
   if (method === 'device') {
     const slot = record.slots.find((s) => s.kind === 'device')
     if (slot?.kind !== 'device') return null
     try {
       const ad = aad(network, record.identityId, 'device')
       const dataKey = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(slot.iv), additionalData: buf(ad) }, slot.wrapKey, buf(slot.wrapped)))
-      return await unwrapData(network, record, dataKey, withExtra)
+      return { secret: (await unwrapData(network, record, dataKey, false)).secret, blobKeys: null }
     } catch {
       return null
     }
@@ -827,7 +888,7 @@ export async function recoverStaged(
   if (record === undefined) return { status: 'pending' }
   // A passkey unlock already prompted once, for whichever passkey the user picked: the staged
   // record opens only if that was its passkey (never a second prompt).
-  const opened = await openRecord(network, record, method, false, true)
+  const opened = (await openRecord(network, record, 'device', false)) ?? (await openRecord(network, record, method, false, true))
   if (opened === null) return { status: 'locked' }
   const s = await state(opened.secret)
   if (s === 'never') {
@@ -846,8 +907,10 @@ export async function recoverStaged(
   const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
   const hadBlob = (await idbGet('vault', storageBlobKey(network, identityId))) !== undefined
   const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
-  const encBlob = await sealEncryptionBlobs(opened.blobKeys.encryption, network, identityId, carriedEnc)
-  const blob = carried !== null ? await sealBlob(opened.blobKeys.storage, network, identityId, carried) : undefined
+  // A browser-only record holds no blobs (it was staged only where there were none to carry).
+  const keys = opened.blobKeys
+  const encBlob = keys === null ? undefined : await sealEncryptionBlobs(keys.encryption, network, identityId, carriedEnc)
+  const blob = keys !== null && carried !== null ? await sealBlob(keys.storage, network, identityId, carried) : undefined
   const { replaces: _replaces, ...promoted } = record
   let raced = false
   await idbUpdate<VaultRecord>(
@@ -873,11 +936,12 @@ export async function recoverStaged(
   if (raced) return { status: 'conflict' }
   // Adopted over an interactive unlock of this tab: its 12-hour lock carries over.
   const unlockedAt = unlockedFor(network, identityId)?.at
-  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(unlockedAt !== undefined ? { at: unlockedAt } : {}) })
+  setUnlocked(network, opened.secret, keys, { lockMarkerAt, ...(keys === null ? { scope: 'signing' as const } : {}), ...(unlockedAt !== undefined ? { at: unlockedAt } : {}) })
+  const lostEnc = keys === null ? carriedEnc.map((b) => b.keyId).concat(droppedEnc) : droppedEnc
   return {
     status: 'adopted',
     secret: opened.secret,
-    outcome: { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: droppedEnc.length > 0, encryptionKeysDropped: droppedEnc },
+    outcome: { storageSettingsDropped: hadBlob && (carried === null || keys === null), encryptionKeyDropped: lostEnc.length > 0, encryptionKeysDropped: lostEnc },
   }
 }
 
@@ -903,7 +967,7 @@ async function openWith(
   using: Protection | 'passkey' | 'device',
   withExtra: boolean,
   noPrompt = false,
-): Promise<{ secret: VaultSecret; blobKeys: BlobKeys } | null> {
+): Promise<{ secret: VaultSecret; blobKeys: BlobKeys | null } | null> {
   // A browser-only slot opens without a prompt, whatever was asked for.
   const device = await openRecord(network, record, 'device', withExtra)
   if (device !== null || using === 'device') return device
@@ -958,7 +1022,7 @@ export async function unlockWithProtection(network: Network, identityId: string,
   const opened = await openWith(network, record, protection, true)
   if (opened === null) return null
   const at = unlockedFor(network, identityId)?.at
-  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(at !== undefined ? { at } : {}) })
+  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(opened.blobKeys === null ? { scope: 'signing' as const } : {}), ...(at !== undefined ? { at } : {}) })
   return opened.secret
 }
 
@@ -997,6 +1061,7 @@ export async function storeInVault(
   assertDedicatedOrigin()
   assertProtection(protection)
   const { identityId } = secret
+  if (deviceOnly(protection)) await assertDeviceOnlyFits(network, identityId, secret.extra)
   // A renewal replaces the record (and its data key): carry the storage settings across when
   // this session can open them; otherwise they cannot be opened any more and are dropped.
   const hadBlob = (await idbGet<StorageBlob>('vault', storageBlobKey(network, identityId))) !== undefined
@@ -1048,7 +1113,11 @@ export async function storeInVault(
   } finally {
     dataKey.fill(0)
   }
-  setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
+  // A key kept by this browser alone opens for signing only: nothing else may be sealed under it.
+  if (deviceOnly(protection)) {
+    setUnlocked(network, main, null, { lockMarkerAt, scope: 'signing' })
+    markDeviceOpened()
+  } else setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
   // TS-17: ask the browser to keep the vault (Safari clears a site's storage after 7 days
   // without a visit otherwise). Most browsers answer without a prompt; a refusal is shown in
   // Settings → Devices & keys.
@@ -1228,9 +1297,10 @@ async function unlockWith(network: Network, identityId: string, method: UnlockMe
     }
     const opened = await openRecord(network, record, method, record === main)
     if (opened !== null) {
+      if (method === 'device') markDeviceOpened()
       // An interactive unlock over a resumed session keeps its first unlock's 12-hour lock.
       const at = unlockedFor(network, identityId)?.at
-      setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(at !== undefined ? { at } : {}) })
+      setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(opened.blobKeys === null ? { scope: 'signing' as const } : {}), ...(at !== undefined ? { at } : {}) })
       return opened.secret
     }
   }
