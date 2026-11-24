@@ -11,6 +11,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own R2, B2, S3, Storj, self-hosted S3 or IPFS instead of on Platform, from the CLI or the browser |
 | [Storage on your home NAS](home-nas-storage.md) | run RustFS or Garage (or kubo) on a Synology, TrueNAS or Linux box, publish it safely with a Cloudflare Tunnel, and keep a second copy |
 | [Run your own IPFS node](run-your-own-ipfs-node.md) | set up a node with one command (`dg ipfs up`), connect it to the web app, push to it, and keep a copy of someone else's repository with `dg ipfs pin` |
+| [Pin or fork a repository](pin-and-fork.md) | keep a copy of someone else's repository on your own storage: fork it to push your own work, or pin it to help host it (`dg repo pin`) |
 | [Collaborating](collaborating.md) | add members, work with issues, pull requests, reviews, merges, releases and webhooks |
 | [Boards](boards.md) | plan issues and pull requests on a board: columns, fields, iterations and views, from `dg board` |
 | [Bots and agents](bots.md) | add a bot, say what it may do, ask an agent to work on an issue or pull request, and give it push access to chosen branches (beta) |

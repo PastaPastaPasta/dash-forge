@@ -535,6 +535,13 @@ pub enum RepoCommand {
         /// The fork's branch to sync (default: its default branch).
         #[arg(long)]
         branch: Option<String>,
+        /// The storage profile to copy the parent's new packs to (default: the one the fork's
+        /// packs are already on, else your storage policy's).
+        #[arg(long, value_name = "PROFILE", conflicts_with = "no_copy")]
+        storage: Option<String>,
+        /// Record the parent's new packs by reference only, without copying them.
+        #[arg(long)]
+        no_copy: bool,
     },
     /// Star a repo. Stars count toward Trending on Explore.
     ///

@@ -477,6 +477,7 @@ pub struct ForkResult {
 /// Fork `parent` as `opts.name` (with `opts.fork_of` set to the parent) under the signer.
 /// `default_branch_only`: copy `opts.default_branch` alone, not every branch and tag
 /// ([`plan_refs`]).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn fork_repo(
     client: &PlatformClient,
     identity: &LoadedIdentity,
@@ -546,7 +547,7 @@ pub async fn fork_repo(
     let sealed = sealed_parent_packs(&svc, parent, &parent_manifests, &roles).await?;
     let skip: BTreeSet<[u8; 32]> = fork_has.union(&sealed).copied().collect();
     let plan = plan_manifests(&parent_manifests, &roles, &skip);
-    let copier = match copy_to {
+    let own_copy = match copy_to {
         Some(target) => Some(OwnCopy::new(&svc, parent, roles.clone(), target).await?),
         None => None,
     };
@@ -560,8 +561,8 @@ pub async fn fork_repo(
             unreferenceable.push(copies[0].pack_hash);
             continue;
         };
-        if let Some(copier) = &copier {
-            match copier.copy(&copies).await {
+        if let Some(own_copy) = &own_copy {
+            match own_copy.copy(&copies).await {
                 Ok((own, _)) => {
                     input = with_own_first(input, &own);
                     copied += 1;

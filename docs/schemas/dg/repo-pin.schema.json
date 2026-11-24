@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-pin.schema.json",
+  "title": "dg repo pin --json",
+  "description": "A repository's packs copied to your storage and recorded as pack mirrors, or followed repositories refreshed (`--all`).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pinned",
+        "planned",
+        "partial",
+        "refreshed"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "storage": {
+      "type": "string"
+    },
+    "packsCopied": {
+      "type": "integer"
+    },
+    "packsAlready": {
+      "type": "integer"
+    },
+    "bytes": {
+      "type": "integer"
+    },
+    "failed": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "following": {
+      "type": "boolean"
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}

@@ -101,6 +101,7 @@ struct Pinned {
     spent: u64,
     failed: Vec<String>,
     dry_run: bool,
+    price: crate::fmt::Price,
 }
 
 impl Pinned {
@@ -114,7 +115,7 @@ impl Pinned {
             "packsAlready": self.already,
             "bytes": self.bytes,
             "failed": self.failed,
-            "cost": cost_json(self.spent, None),
+            "cost": cost_json(self.spent, self.price),
         })
     }
 }
@@ -193,6 +194,34 @@ pub fn fork_storage(name: Option<&str>, no_copy: bool) -> Result<Option<(String,
         .find(|(_, p)| pin_profile_problem(p).is_none()))
 }
 
+/// The profile whose public address the first copy of one of `owner`'s `manifests` is at: where
+/// a fork's earlier packs were copied, so a sync copies the new ones there too.
+pub fn storage_holding(
+    manifests: &[forge_core::repo::PackManifestInfo],
+    owner: &str,
+) -> Option<(String, Profile)> {
+    let profiles = StorageProfiles::load().ok()?;
+    let firsts: Vec<&str> = manifests
+        .iter()
+        .filter(|m| m.owner_id == owner)
+        .filter_map(|m| m.uris.first().map(String::as_str))
+        .collect();
+    profiles
+        .profiles
+        .into_iter()
+        .filter(|(_, p)| pin_profile_problem(p).is_none())
+        .find(|(_, p)| {
+            let base = match p {
+                Profile::S3(s) => s.public_url.as_deref(),
+                _ => p.public_gateway(),
+            };
+            base.is_some_and(|b| {
+                let b = format!("{}/", b.trim_end_matches('/'));
+                firsts.iter().any(|u| u.starts_with(&b))
+            })
+        })
+}
+
 /// An [`ExternalTarget`] for the named profile.
 pub fn target(name: &str, profile: &Profile) -> Result<ExternalTarget> {
     Ok(ExternalTarget::from_profile(
@@ -237,7 +266,7 @@ async fn pin_one(
         .filter(|m| m.repo_id == s.repo.id())
         .map(|m| m.pack_hash)
         .collect();
-    let all = forge_core::fork::plan_manifests(&manifests, &roles, &Default::default());
+    let all = forge_core::fork::plan_manifests(&manifests, &roles, &std::collections::BTreeSet::new());
     let (already, todo): (Vec<_>, Vec<_>) = all
         .into_iter()
         .partition(|copies| mine.contains(&hex::encode(copies[0].pack_hash)));
@@ -255,8 +284,9 @@ async fn pin_one(
         spent: 0,
         failed: Vec::new(),
         dry_run,
+        price,
     };
-    if !ctx.json && !(unattended && todo.is_empty()) {
+    if !ctx.json && (!unattended || !todo.is_empty()) {
         println!(
             "Pin {} on {storage}: {} ({}) to copy, {} already pinned · {}",
             safe(&display),

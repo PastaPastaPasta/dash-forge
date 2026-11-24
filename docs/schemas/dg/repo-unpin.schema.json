@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-unpin.schema.json",
+  "title": "dg repo unpin --json",
+  "description": "Your pack mirror records for a repository deleted.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "unpinned"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "recordsRemoved": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo",
+    "recordsRemoved"
+  ],
+  "additionalProperties": true
+}
