@@ -65,8 +65,11 @@ const DEMO_COLD_HOME = 12
  * devnet grows.
  */
 const DEMO_COLD_ISSUES = 11 + DAPI_RESEND_SLACK
-/** A profile page, cold (pb-5): measured 9 on sakura, P1-7's profile document included. */
-const PROFILE_COLD = 10 + DAPI_RESEND_SLACK
+/**
+ * A profile page by `?id=`, cold (pb-5): measured 9 on sakura with P1-7's profile document, plus
+ * the identity balance read that proves the id is an identity (not measured live yet).
+ */
+const PROFILE_COLD = 11 + DAPI_RESEND_SLACK
 /**
  * The commit column's walk on a showcase repo: one chunk read per 256 KiB of pack history it
  * crosses (preact 12, dashpay/dash 20). Owned by the last-change index work; tracked, not S-1.
@@ -204,7 +207,8 @@ test.describe('page request budget (S-1)', () => {
   /**
    * P1-7: a profile, cold, by `?id=` (D-222). Measured on sakura (2026-10-02): 9 requests (the
    * contracts, the quorum cross-check, and 7 documents: DPNS, owned repos, member repos, the
-   * two follow counts and the `profile` document, which is the one P1-7 adds).
+   * two follow counts and the `profile` document, which is the one P1-7 adds). An `?id=` also
+   * reads the identity's balance once, so an id that is no identity offers no paid Follow.
    */
   test('pb-5. a profile by ?id=, cold, ≤ budget, with its profile document read once', async ({ browser }) => {
     const context = await browser.newContext()
@@ -219,6 +223,7 @@ test.describe('page request budget (S-1)', () => {
     test.info().annotations.push({ type: 'dapi', description: `profile cold: ${all.length} ${summary(all)}` })
     const profileReads = all.filter((r) => r.method === 'getDocuments' && decodeDocumentsRequest(r.body)?.documentType === 'profile')
     expect(profileReads.length, 'the profile document is read once').toBe(1)
+    expect(all.filter((r) => r.method === 'getIdentityBalance').length, 'the identity is read once').toBe(1)
     expect(all.length, summary(all)).toBeLessThanOrEqual(PROFILE_COLD)
     expect(errors, errors.join('\n')).toEqual([])
     await shot(page, 'pb-07-profile-cold')

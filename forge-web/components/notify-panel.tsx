@@ -100,7 +100,7 @@ export function NotifyService({ base }: { base: string }): JSX.Element {
       setError(null)
       setNote(null)
       try {
-        return await call<T>(base, info, controller.serviceKey(), action, payload)
+        return await call<T>(base, info, await controller.checkedServiceKey(), action, payload)
       } catch (e) {
         setError(errorMessage(e))
         return null

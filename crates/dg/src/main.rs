@@ -2824,6 +2824,7 @@ fn run(cli: &Cli) -> Result<()> {
         Err(e) => return Err(e),
     };
     let ctx = Ctx::resolve(cli, &config)?;
+    forge_core::user_error::set_network(ctx.network());
     forge_core::fiat::initialize(
         ctx.network(),
         cli.fiat.as_deref(),

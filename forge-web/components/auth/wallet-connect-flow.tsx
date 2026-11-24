@@ -651,7 +651,7 @@ const NOT_OFFERED = `Wallet sign-in needs App Connect v2, which can't be offered
 /** Platform did not answer the protocol check in time. */
 const UNREAD = "Couldn't read Platform to check what your wallet can answer. Try again."
 
-const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/releases/latest'
+export const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/releases/latest'
 
 /**
  * Which wallets can answer here (docs/design/wallet-primary.md, checked 2026-11-22): App Connect

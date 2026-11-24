@@ -345,7 +345,7 @@ For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads t
 1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` to `https://git-forge.dashhq.org`, and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
 2. Deploy: **Actions → Deploy forge-web to Pages → Run workflow** on master (or push to master). Don't re-run an older run: that deploys its older commit.
 
-Delete the variable and deploy again to hide the HTTPS line. A value that is not an `https://` or `http://` URL, or that carries a query, a fragment or credentials, is ignored, and the row stays hidden. Set it only once the gateway answers: the clone box doesn't check that the gateway is up before it shows the row.
+Delete the variable and deploy again to hide the HTTPS line. A value that is not an `https://` or `http://` URL, or that carries a query, a fragment or credentials, is ignored, and the row stays hidden. Set it only once the gateway answers: the clone box doesn't check that the gateway is up before it shows the row. The deploy fails when the gateway's `/readyz` names a different network from the build's (`PAGES_NETWORK`), so moving the site to another network means moving or unsetting the gateway too; a gateway it cannot reach only warns.
 
 ## Measured on a devnet
 

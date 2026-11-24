@@ -61,7 +61,7 @@ as_runner "$LOG-q" ci report "$REPO" --sha "$SHA" --name build --status queued -
 DOC="$(jq_py "$LOG-q.json" 'd["documentId"]')"
 check "queued: created" assert_eq "created" "$(jq_py "$LOG-q.json" 'd["status"]')"
 # A public repo's commit page is its short URL (core `commit_web_url`); a private one keeps the canonical route.
-check "the report links the commit page" assert_eq "https://forge.dashhq.org/${E2E_OWNER_ID}/${E2E_REPO_NAME}/commit/${SHA}" "$(jq_py "$LOG-q.json" 'd["url"]')"
+check "the report links the commit page" assert_eq "$(web_origin)/${E2E_OWNER_ID}/${E2E_REPO_NAME}/commit/${SHA}" "$(jq_py "$LOG-q.json" 'd["url"]')"
 as_runner "$LOG-p" ci report "$REPO" --sha "$SHA" --name build --status in_progress || must "$LOG-p" "report in_progress"
 check "in_progress: the same run, updated" assert_eq "updated $DOC" "$(jq_py "$LOG-p.json" 'd["status"]+" "+d["documentId"]')"
 as_runner "$LOG-p2" ci report "$REPO" --sha "$SHA" --name build --status in_progress || must "$LOG-p2" "report in_progress again"

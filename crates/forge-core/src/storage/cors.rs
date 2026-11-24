@@ -19,13 +19,13 @@
 //! `Access-Control-Allow-Headers` / `Access-Control-Expose-Headers` as several lines. `*`
 //! is a wildcard in both lists for a request without credentials, which is what the web
 //! app's reads are (`fetch` defaults to `credentials: "same-origin"`).
+//!
+//! The checks present the `origin` of the web app for the network in use
+//! ([`crate::network::Network::web_origin`]): a `*` policy admits any, a policy restricted
+//! to specific origins must include that one.
 
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Method, StatusCode};
-
-/// The origin the checks present (any https origin works for a `*` policy; a policy
-/// restricted to specific origins must include the forge web app's origin).
-pub const PROBE_ORIGIN: &str = "https://forge.dashhq.org";
 
 /// What the CORS probe found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -77,18 +77,22 @@ fn header_list_contains(h: &HeaderMap, name: &str, needle: &str) -> bool {
 
 /// Whether `Access-Control-Allow-Origin` admits the web app (exactly `*` or its origin),
 /// and the value. Repeated lines combine (`*, *`), which a browser rejects too.
-fn allows_probe_origin(h: &HeaderMap) -> (bool, String) {
+fn allows_probe_origin(h: &HeaderMap, origin: &str) -> (bool, String) {
     let allow = header_combined(h, "access-control-allow-origin").unwrap_or_default();
-    (allow == "*" || allow == PROBE_ORIGIN, allow)
+    (
+        allow == "*" || (!origin.is_empty() && allow == origin),
+        allow,
+    )
 }
 
-/// Probe `url` (an object that exists and is at least 2 bytes long) for browser readability.
-pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
+/// Probe `url` (an object that exists and is at least 2 bytes long) for browser readability
+/// from the web app at `origin`.
+pub async fn probe_cors(client: &Client, url: &str, origin: &str) -> CorsReport {
     let mut r = CorsReport::default();
 
     match client
         .get(url)
-        .header("origin", PROBE_ORIGIN)
+        .header("origin", origin)
         .header("range", "bytes=0-1")
         .send()
         .await
@@ -104,7 +108,7 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
             }
             let h = resp.headers();
             let allow;
-            (r.get_allows_origin, allow) = allows_probe_origin(h);
+            (r.get_allows_origin, allow) = allows_probe_origin(h, origin);
             if !r.get_allows_origin {
                 r.problems.push(if allow.is_empty() {
                     "GET responses carry no Access-Control-Allow-Origin header — browsers cannot \
@@ -113,7 +117,7 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
                 } else {
                     format!(
                         "Access-Control-Allow-Origin is {allow:?}, which excludes the web app \
-                         ({PROBE_ORIGIN}); allow \"*\" (the objects are public anyway)"
+                         ({origin}); allow \"*\" (the objects are public anyway)"
                     )
                 });
             }
@@ -132,7 +136,7 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
 
     match client
         .request(Method::OPTIONS, url)
-        .header("origin", PROBE_ORIGIN)
+        .header("origin", origin)
         .header("access-control-request-method", "GET")
         .header("access-control-request-headers", "range")
         .send()
@@ -141,12 +145,12 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
         Ok(resp) => {
             let h = resp.headers();
             r.preflight_allows_range = resp.status().is_success()
-                && allows_probe_origin(h).0
+                && allows_probe_origin(h, origin).0
                 && header_list_contains(h, "access-control-allow-headers", "range");
             if !r.preflight_allows_range {
                 // QW3-072: "refused (status 200 OK)" read as a contradiction; say what the
                 // answer lacked, in the words `dg doctor` uses too.
-                let why = preflight_verdict(resp.status(), h)
+                let why = preflight_verdict(resp.status(), h, origin)
                     .err()
                     .unwrap_or_default();
                 r.problems.push(format!(
@@ -159,45 +163,45 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
     r
 }
 
-/// The CORS preflight alone, for a ranged GET of `url` from the web app's origin: `Ok` when
+/// The CORS preflight alone, for a ranged GET of `url` from the web app at `origin`: `Ok` when
 /// a browser may send it. Read-only and object-agnostic (a preflight does not need the
 /// object to exist), so `dg doctor` can run it without uploading a probe; `dg storage test`
 /// does the full check.
-pub async fn probe_preflight(client: &Client, url: &str) -> Result<(), String> {
+pub async fn probe_preflight(client: &Client, url: &str, origin: &str) -> Result<(), String> {
     let resp = client
         .request(Method::OPTIONS, url)
-        .header("origin", PROBE_ORIGIN)
+        .header("origin", origin)
         .header("access-control-request-method", "GET")
         .header("access-control-request-headers", "range")
         .send()
         .await
         .map_err(|e| format!("OPTIONS {url} failed: {e}"))?;
-    preflight_verdict(resp.status(), resp.headers())
+    preflight_verdict(resp.status(), resp.headers(), origin)
 }
 
 /// What a preflight's answer lacked, in `dg storage test`'s words (QW3-072 / QW4-056: doctor's
 /// row said "was refused (status 200 OK, …)", which reads as a contradiction).
-fn preflight_verdict(status: StatusCode, h: &HeaderMap) -> Result<(), String> {
-    let (allowed, origin) = allows_probe_origin(h);
+fn preflight_verdict(status: StatusCode, h: &HeaderMap, origin: &str) -> Result<(), String> {
+    let (allowed, allow) = allows_probe_origin(h, origin);
     if !status.is_success() {
         return Err(format!(
-            "the CORS preflight from {PROBE_ORIGIN} answered {status}"
+            "the CORS preflight from {origin} answered {status}"
         ));
     }
     if !allowed {
-        return Err(if origin.is_empty() {
+        return Err(if allow.is_empty() {
             format!(
-                "the CORS preflight from {PROBE_ORIGIN} answered {status} with no Access-Control-Allow-Origin"
+                "the CORS preflight from {origin} answered {status} with no Access-Control-Allow-Origin"
             )
         } else {
             format!(
-                "the CORS preflight from {PROBE_ORIGIN} answered {status} with Access-Control-Allow-Origin {origin:?}, which excludes it"
+                "the CORS preflight from {origin} answered {status} with Access-Control-Allow-Origin {allow:?}, which excludes it"
             )
         });
     }
     if !header_list_contains(h, "access-control-allow-headers", "range") {
         return Err(format!(
-            "the CORS preflight from {PROBE_ORIGIN} answered {status} without `Range` in Access-Control-Allow-Headers"
+            "the CORS preflight from {origin} answered {status} without `Range` in Access-Control-Allow-Headers"
         ));
     }
     Ok(())
@@ -320,13 +324,13 @@ fn rules_json(rules: &serde_json::Value, indent: &str) -> String {
 }
 
 /// The exact CORS configuration to apply for `provider`, with how to apply it: a read rule
-/// for every origin and a write rule for the web app ([`s3_cors_rules`]).
-pub fn cors_fix(provider: Provider, bucket: &str) -> String {
-    let rules = s3_cors_rules(PROBE_ORIGIN);
+/// for every origin and a write rule for the web app at `origin` ([`s3_cors_rules`]).
+pub fn cors_fix(provider: Provider, bucket: &str, origin: &str) -> String {
+    let rules = s3_cors_rules(origin);
     let document = format!("{{\n  \"CORSRules\": {}\n}}", rules_json(&rules, "  "));
     let tail = format!(
         "The first rule lets any browser read the (public) packs; the second lets the web app \
-         at {PROBE_ORIGIN} push, merge and upload with your key."
+         at {origin} push, merge and upload with your key."
     );
     match provider {
         Provider::R2 => format!(
@@ -338,7 +342,7 @@ pub fn cors_fix(provider: Provider, bucket: &str) -> String {
         Provider::B2 => format!(
             "Save as cors.json and run `b2 bucket update --cors-rules \"$(cat cors.json)\" {bucket} allPublic` \
              (with a key that has writeBuckets):\n{}\n{tail}",
-            rules_json(&b2_cors_rules(PROBE_ORIGIN), "")
+            rules_json(&b2_cors_rules(origin), "")
         ),
         Provider::Aws => format!(
             "Save as cors.json and run `aws s3api put-bucket-cors --bucket {bucket} --cors-configuration file://cors.json`:\n\
@@ -367,28 +371,29 @@ then restart the daemon."
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::{MAINNET_WEB_ORIGIN as ORIGIN, TESTNET_WEB_ORIGIN};
 
     /// QW4-056: doctor's preflight row says what the answer lacked, as `dg storage test` does,
     /// never "refused (status 200 OK, …)".
     #[test]
     fn a_preflight_verdict_names_what_the_answer_lacked() {
         let mut h = HeaderMap::new();
-        let e = preflight_verdict(StatusCode::OK, &h).unwrap_err();
+        let e = preflight_verdict(StatusCode::OK, &h, ORIGIN).unwrap_err();
         assert_eq!(
             e,
-            format!("the CORS preflight from {PROBE_ORIGIN} answered 200 OK with no Access-Control-Allow-Origin")
+            format!("the CORS preflight from {ORIGIN} answered 200 OK with no Access-Control-Allow-Origin")
         );
         assert!(!e.contains("refused"), "{e}");
-        let e = preflight_verdict(StatusCode::FORBIDDEN, &h).unwrap_err();
+        let e = preflight_verdict(StatusCode::FORBIDDEN, &h, ORIGIN).unwrap_err();
         assert!(e.ends_with("answered 403 Forbidden"), "{e}");
         h.insert("access-control-allow-origin", "*".parse().unwrap());
-        let e = preflight_verdict(StatusCode::OK, &h).unwrap_err();
+        let e = preflight_verdict(StatusCode::OK, &h, ORIGIN).unwrap_err();
         assert!(
             e.ends_with("without `Range` in Access-Control-Allow-Headers"),
             "{e}"
         );
         h.insert("access-control-allow-headers", "range".parse().unwrap());
-        assert_eq!(preflight_verdict(StatusCode::OK, &h), Ok(()));
+        assert_eq!(preflight_verdict(StatusCode::OK, &h, ORIGIN), Ok(()));
     }
 
     #[test]
@@ -416,7 +421,7 @@ mod tests {
     #[test]
     fn fixes_are_valid_json_with_the_read_and_the_write_rule() {
         for p in [Provider::R2, Provider::B2, Provider::Aws, Provider::Other] {
-            let fix = cors_fix(p, "my-bucket");
+            let fix = cors_fix(p, "my-bucket", ORIGIN);
             assert!(fix.contains("my-bucket"));
             let start = fix.find("\n[").or_else(|| fix.find("\n{")).unwrap() + 1;
             let end = fix.rfind([']', '}']).unwrap();
@@ -429,13 +434,16 @@ mod tests {
             // browsers send lowercase names.
             assert!(text.contains(r#"["range"]"#), "{p:?}: {text}");
             assert!(!text.contains(r#""Range""#), "{p:?}: {text}");
-            assert!(text.contains(PROBE_ORIGIN), "{p:?}: {text}");
+            assert!(text.contains(ORIGIN), "{p:?}: {text}");
             for h in SIGNED_HEADERS {
                 assert!(text.contains(h), "{p:?}: {h}");
             }
             assert!(text.to_ascii_lowercase().contains("put"), "{p:?}");
         }
-        let other = cors_fix(Provider::Other, "b");
+        let testnet = cors_fix(Provider::Aws, "b", TESTNET_WEB_ORIGIN);
+        assert!(testnet.contains(TESTNET_WEB_ORIGIN), "{testnet}");
+        assert!(!testnet.contains(&format!("\"{ORIGIN}\"")), "{testnet}");
+        let other = cors_fix(Provider::Other, "b", ORIGIN);
         assert!(
             other.contains("Garage") && other.contains("RustFS"),
             "{other}"
@@ -504,11 +512,16 @@ mod tests {
         assert!(!header_list_contains(&h, "access-control-max-age", "x"));
         // Access-Control-Allow-Origin: one `*` or the exact origin; two lines combine.
         h.insert("access-control-allow-origin", "*".parse().unwrap());
-        assert!(allows_probe_origin(&h).0);
+        assert!(allows_probe_origin(&h, ORIGIN).0);
         h.append("access-control-allow-origin", "*".parse().unwrap());
-        assert_eq!(allows_probe_origin(&h), (false, "*, *".to_string()));
-        h.insert("access-control-allow-origin", PROBE_ORIGIN.parse().unwrap());
-        assert!(allows_probe_origin(&h).0);
+        assert_eq!(allows_probe_origin(&h, ORIGIN), (false, "*, *".to_string()));
+        h.insert("access-control-allow-origin", ORIGIN.parse().unwrap());
+        assert!(allows_probe_origin(&h, ORIGIN).0);
+        // An origin-restricted policy admits only the web app of the network being checked.
+        assert!(!allows_probe_origin(&h, TESTNET_WEB_ORIGIN).0);
+        // No origin to check against never passes for a missing header.
+        h.remove("access-control-allow-origin");
+        assert!(!allows_probe_origin(&h, "").0);
     }
 
     /// Storj linksharing: `Access-Control-Allow-Origin: *`, `Allow-Headers: *`, and no
@@ -527,7 +540,12 @@ mod tests {
                 .header("access-control-allow-headers", "*")
                 .header("access-control-allow-methods", "GET, HEAD")
         });
-        let r = probe_cors(&reqwest::Client::new(), &format!("{base}/raw/k/b/o")).await;
+        let r = probe_cors(
+            &reqwest::Client::new(),
+            &format!("{base}/raw/k/b/o"),
+            ORIGIN,
+        )
+        .await;
         assert!(r.browser_ok(), "{r:?}");
         assert!(!r.exposes_content_range);
         assert!(r.problems.is_empty(), "{r:?}");
@@ -559,10 +577,10 @@ mod tests {
         });
         let url = format!("{base}/ipfs/bafkqaaa");
         let client = reqwest::Client::new();
-        let r = probe_cors(&client, &url).await;
+        let r = probe_cors(&client, &url, ORIGIN).await;
         assert!(r.exposes_content_range, "{r:?}");
         assert!(r.preflight_allows_range, "{r:?}");
         assert!(r.browser_ok() && r.problems.is_empty(), "{r:?}");
-        assert_eq!(probe_preflight(&client, &url).await, Ok(()));
+        assert_eq!(probe_preflight(&client, &url, ORIGIN).await, Ok(()));
     }
 }

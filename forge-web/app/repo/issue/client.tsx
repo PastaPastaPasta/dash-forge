@@ -3,11 +3,11 @@
 import { RepoScaffold } from '@/components/repo/repo-scaffold'
 import { IssueContent } from '@/components/repo/issue-content'
 import { UpstreamRedirect } from '@/components/repo/upstream-redirect'
-import { useParam, useRepoAddress } from '@/hooks/use-query-param'
+import { parseItemNumber, useParam, useRepoAddress } from '@/hooks/use-query-param'
 
 export function IssueClient(): JSX.Element {
   const addr = useRepoAddress()
-  const number = Number.parseInt(useParam('number'), 10)
+  const number = parseItemNumber(useParam('number'))
   // `?upstream=N`: a mirrored body's `#N` (the source's number), resolved to this repo's item.
   const upstream = Number.parseInt(useParam('upstream'), 10)
   // Keyed by repo and number, as the PR page: the same number in another repo is a fresh page.

@@ -147,7 +147,7 @@ R2 has no egress fees, which makes it the cheapest way to serve clones.
      }
    ]
    ```
-   The first rule lets any browser read the (public) packs. The second lets the web app at `https://forge.dashhq.org` push, merge and upload release assets with your key; leave it out if you only push from the CLI. Header names are lowercase on purpose (see [CORS header names](#cors-header-names)).
+   The first rule lets any browser read the (public) packs. The second lets the web app at `https://forge.dashhq.org` push, merge and upload release assets with your key; leave it out if you only push from the CLI. That is the mainnet web app: on testnet, put `https://testnet-forge.dashhq.org` there ([which origin](#cors-origins-mainnet-and-testnet)). Header names are lowercase on purpose (see [CORS header names](#cors-header-names)).
 6. **Add and test the profile:**
    ```sh
    dg storage add r2-main --kind s3 \
@@ -191,7 +191,7 @@ R2 wants `region = auto` and path-style addressing (the default).
      }
    ]
    ```
-   Setting CORS needs a key with `writeBuckets`, which a key restricted to one bucket cannot have: run it with an unrestricted key, and give Forge the restricted one.
+   On testnet, `dashForgeWrite` allows `https://testnet-forge.dashhq.org` instead ([which origin](#cors-origins-mainnet-and-testnet)). Setting CORS needs a key with `writeBuckets`, which a key restricted to one bucket cannot have: run it with an unrestricted key, and give Forge the restricted one.
 6. **Add the profile:**
    ```sh
    export B2_SECRET=…   # or put it in the keychain
@@ -251,7 +251,7 @@ R2 wants `region = auto` and path-style addressing (the default).
      ]
    }
    ```
-   The second rule is only for pushing from the web app; see the R2 section.
+   The second rule is only for pushing from the web app, and names the web app of your network ([which origin](#cors-origins-mainnet-and-testnet)); see the R2 section.
 5. **Add the profile.** AWS prefers virtual-hosted addressing; path-style also works in most regions.
    ```sh
    dg storage add aws --kind s3 \
@@ -374,7 +374,7 @@ kubo's RPC API is its admin interface, so for the web app give it a token that c
    echo "API Authorization for the Forge profile: Bearer $TOKEN"
    ```
 
-2. **Allow the app, and move kubo's API aside.** Kubo checks the page's `Origin` against this exact list. The first command replaces any list you have. Put your Forge address in place of `https://forge.dashhq.org` if you run your own copy. Then restart kubo.
+2. **Allow the app, and move kubo's API aside.** Kubo checks the page's `Origin` against this exact list. The first command replaces any list you have. `https://forge.dashhq.org` is the mainnet web app. On testnet put `https://testnet-forge.dashhq.org` in its place, here and in the Caddyfile below ([which origin](#cors-origins-mainnet-and-testnet)). Put your Forge address there instead if you run your own copy. Then restart kubo.
 
    ```sh
    ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["https://forge.dashhq.org"]'
@@ -538,6 +538,17 @@ dg init --storage minio-lan --allow-private-uri    # dg init / dg repo create --
 `dg init --allow-private-uri` also sets `dash.allowPrivateUri true` in the repository's git config when one of its storage profiles needs it, so later plain `git push`es go to the same place.
 
 The web app refuses the same loopback, private and plain-http addresses and warns about temporary tunnels; `forge-contracts/fixtures/public-urls.json` holds the cases both test.
+
+## CORS origins: mainnet and testnet
+
+Each network has its own web app, and a browser sends that app's address as the `Origin`:
+
+| Network | Web app origin |
+|---|---|
+| Mainnet | `https://forge.dashhq.org` |
+| Testnet | `https://testnet-forge.dashhq.org` |
+
+The examples in this guide use the mainnet origin. A rule that names an origin (the write rule, a kubo API allow-list) must name the one for the network you use, or both if one bucket or node serves both networks. The read rule allows `*`, so reads work from either. `dg storage test` and `dg doctor` check from the origin of the network they run on (`--network`), and the CORS document `dg storage test` prints names it.
 
 ## CORS header names
 

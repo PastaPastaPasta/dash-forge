@@ -2124,6 +2124,7 @@ impl Helper {
         let (text, event) = progress::done_line(
             charge,
             after,
+            self.network(),
             conn.repo.owner_id(),
             conn.repo.name(),
             conn.repo.visibility,
@@ -5154,7 +5155,7 @@ struct Funds<'a> {
     identity: String,
     /// The signing key's id, when it has a total budget (a key without one has nothing to read).
     budgeted_key: Option<u32>,
-    testnet: bool,
+    network: forge_core::network::Network,
 }
 
 impl<'a> Funds<'a> {
@@ -5174,7 +5175,7 @@ impl<'a> Funds<'a> {
                         .key_limits(*id)
                         .is_some_and(|l| l.total_budget.is_some())
                 }),
-            testnet: matches!(network, forge_core::network::Network::Testnet),
+            network: network.clone(),
         }
     }
 }
@@ -5272,7 +5273,7 @@ impl PushContext<'_> {
             est_credits,
             balance,
             budget_left,
-            f.testnet,
+            &f.network,
             self.refusal_note(),
         )?;
         Ok(())

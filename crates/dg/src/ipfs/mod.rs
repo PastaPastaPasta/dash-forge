@@ -275,7 +275,13 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
                 .spawn()?,
         )
     };
-    let verified = Box::pin(verify(&node, &tokens, !ctx.json)).await;
+    let verified = Box::pin(verify(
+        &node,
+        &tokens,
+        !ctx.json,
+        ctx.network().web_origin(),
+    ))
+    .await;
     if let Some(child) = temporary.as_mut() {
         let stopped = serve::stop(&node).await;
         if stopped.is_ok()
@@ -298,7 +304,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     let auth_ref = if stored {
         format!("keychain:dash-forge/{}", node.config.name)
     } else {
-        eprintln!("The OS keychain is unavailable. The CLI profile uses env:DASH_FORGE_KUBO_AUTH; set it to the node's Forge bearer token when pushing. IPFS commands use private tokens.toml directly.");
+        eprintln!("The OS keychain is unavailable. The CLI profile uses env:DASH_FORGE_KUBO_AUTH; set it to `Bearer <token>`, where <token> is the `forge` value in {}, wherever you push. IPFS commands use tokens.toml directly.", node.dir.join("tokens.toml").display());
         "env:DASH_FORGE_KUBO_AUTH".into()
     };
     crate::storage::save_profile(
@@ -385,7 +391,12 @@ async fn check_public_ports(node: &Node) -> Result<()> {
     Ok(())
 }
 
-async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, String)> {
+async fn verify(
+    node: &Node,
+    tokens: &Tokens,
+    live: bool,
+    origin: &'static str,
+) -> Result<(String, String)> {
     let http = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -418,6 +429,7 @@ async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, Str
         &profile(node, None)?,
         live,
         Some(&format!("Bearer {}", tokens.forge)),
+        origin,
     )
     .await;
     if !report.ok() {
@@ -616,11 +628,26 @@ async fn open_link(link: &str, skip: bool) -> bool {
     }
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        command
-            .arg(link)
-            .output()
-            .await
-            .is_ok_and(|o| o.status.success())
+        command.arg(link);
+        run_opener(command, Duration::from_secs(3)).await
+    }
+}
+
+/// Run a URL opener without waiting on the browser. `xdg-open` without a desktop environment
+/// runs the browser in the foreground, and a browser it starts inherits the opener's stdout:
+/// waiting for its output or its exit hung `dg ipfs up` until the browser was closed. An opener
+/// still running after `grace` has started one, so it counts as opened.
+async fn run_opener(mut command: tokio::process::Command, grace: Duration) -> bool {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    match tokio::time::timeout(grace, child.wait()).await {
+        Ok(status) => status.is_ok_and(|s| s.success()),
+        Err(_) => true,
     }
 }
 
@@ -639,6 +666,26 @@ fn print_connection(connection: &pair::Connection, opened: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_opener_that_leaves_the_browser_running_does_not_block() {
+        let start = std::time::Instant::now();
+        let mut detached = tokio::process::Command::new("sh");
+        detached.args(["-c", "sleep 30 & exit 0"]);
+        assert!(run_opener(detached, Duration::from_secs(3)).await);
+        let mut foreground = tokio::process::Command::new("sh");
+        foreground.args(["-c", "sleep 30"]);
+        assert!(run_opener(foreground, Duration::from_millis(300)).await);
+        let mut failing = tokio::process::Command::new("sh");
+        failing.args(["-c", "exit 3"]);
+        assert!(!run_opener(failing, Duration::from_secs(3)).await);
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+    }
 
     #[test]
     fn up_output_reports_all_selected_daemon_ports() {

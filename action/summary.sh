@@ -66,8 +66,6 @@ output spent-dash "$(to_dash "$spent")"
 
 source=$(str .source)
 url=$(str .repo.url)
-owner=$(str .repo.owner)
-name=$(str .repo.name)
 created=$(jq -r '(try .repo.created catch null) == true' "$json")
 estimate=$(num .estimateCredits 0)
 balance=$(num .balanceCredits '')
@@ -78,7 +76,7 @@ expires=$(num .key.expiresAt '')
 [ -z "$expires" ] || [ "$expires" -lt 253402300800000 ] || expires=''
 pack_bytes=$(num .counts.packBytes 0)
 skipped=$(num .counts.skipped 0)
-renew="Renew at forge.dashhq.org/${owner:-<owner>}/${name:-<name>}/settings/mirror."
+renew="Make a new runner key at forge.dashhq.org/mirror/ (or dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1, then gh secret set DASH_FORGE_KEY${GITHUB_REPOSITORY:+ --repo $GITHUB_REPOSITORY} < runner.dfk1 && rm runner.dfk1) and replace the DASH_FORGE_KEY secret."
 
 case "$status" in
     ok) heading="Forge mirror updated" ;;

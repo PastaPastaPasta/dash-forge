@@ -52,7 +52,7 @@ Running it again is safe. It keeps the same kubo, repo and tokens, applies your 
 
 ### Your own Forge address
 
-The node only talks to websites on its allow-list. `https://forge.dashhq.org` is always on it. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
+The node only talks to websites on its allow-list. `https://forge.dashhq.org`, the mainnet web app, is always on it. To use the node from the testnet web app, start it with `dg ipfs up --origin https://testnet-forge.dashhq.org`: that allows the testnet app and makes the connection link open it. A later `dg ipfs up` without `--origin` points the link back at forge.dashhq.org; `dg ipfs connect --origin https://testnet-forge.dashhq.org` opens it on testnet again. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
 
 ```sh
 dg ipfs up --origin https://forge.example.org
@@ -199,7 +199,7 @@ Where the tokens are:
 
 | Token | Stored in |
 |---|---|
-| Scoped | `tokens.toml` (readable only by you); your OS keychain, as the `kubo` profile's credential (if there is no keychain, the profile uses the variable `DASH_FORGE_KUBO_AUTH`, and you set it to the token when you push); and the browser vault, once you connect |
+| Scoped | `tokens.toml` (readable only by you); your OS keychain, as the `kubo` profile's credential (if there is no keychain, the profile uses the variable `DASH_FORGE_KUBO_AUTH`, and you set it to `Bearer <token>`, with the `forge` value from `tokens.toml`, where you push: a bare token is refused); and the browser vault, once you connect |
 | Owner | `tokens.toml` only |
 
 Other programs running as you can read `tokens.toml`. `dg` trusts your own account, as it does for your identity file. To change the scoped token, run `dg ipfs up --rotate-token` and connect your browsers again.

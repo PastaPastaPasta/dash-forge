@@ -238,7 +238,7 @@ Save the CORS document once as `cors.json`. It is the one [Bring your own storag
 }
 ```
 
-The first rule lets any browser read packs. The second lets the web app at `https://forge.dashhq.org` upload with your key (release assets, browser merges); leave it out if you only push from the CLI.
+The first rule lets any browser read packs. The second lets the web app at `https://forge.dashhq.org` upload with your key (release assets, browser merges); leave it out if you only push from the CLI. That is the mainnet web app: on testnet, put `https://testnet-forge.dashhq.org` there, or both ([which origin](bring-your-own-storage.md#cors-origins-mainnet-and-testnet)).
 
 ### RustFS
 
@@ -440,7 +440,7 @@ Make two tokens and put them in `.env` next to `TUNNEL_TOKEN`. The owner token i
 printf 'OWNER_TOKEN=%s\nFORGE_TOKEN=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" >> .env
 ```
 
-`init.d/001-forge.sh` (`chmod +x` it) does three things. It makes the public gateway serve only what this node stores, so it can't be used to fetch arbitrary content through your connection. It lets your Forge address call the RPC. And it limits the Forge token to adding, pinning, unpinning and identifying. Replace `https://forge.dashhq.org` with your own Forge address if you run one:
+`init.d/001-forge.sh` (`chmod +x` it) does three things. It makes the public gateway serve only what this node stores, so it can't be used to fetch arbitrary content through your connection. It lets your Forge address call the RPC. And it limits the Forge token to adding, pinning, unpinning and identifying. `https://forge.dashhq.org` is the mainnet web app. On testnet use `https://testnet-forge.dashhq.org` here and in the Caddyfile below ([which origin](bring-your-own-storage.md#cors-origins-mainnet-and-testnet)). Replace it with your own Forge address if you run one:
 
 ```sh
 #!/bin/sh

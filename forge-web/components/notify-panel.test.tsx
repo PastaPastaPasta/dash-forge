@@ -16,7 +16,7 @@ import { requestDigest } from '@/lib/notify/client'
 import { base64ToBytes } from '@/lib/sdk/query'
 
 const SECRET = new Uint8Array(32).fill(0x22)
-const auth = { identity: null as string | null, controller: { serviceKey: () => ({ identityId: 'IDENTITY', keyId: 4, wif: encodeWif(SECRET, 'testnet') }) } }
+const auth = { identity: null as string | null, controller: { checkedServiceKey: async () => ({ identityId: 'IDENTITY', keyId: 4, wif: encodeWif(SECRET, 'testnet') }) } }
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => auth }))
 
 const { NotifyService, safeLink } = await import('./notify-panel')

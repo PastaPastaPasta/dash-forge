@@ -37,10 +37,21 @@ export const FORGET_CONFIRM: ConfirmActionOptions = {
   confirmLabel: 'Forget key',
 }
 
-/** {@link FORGET_CONFIRM}, saying what stays when the identity was topped up here. */
-export async function forgetConfirm(identityId: string): Promise<ConfirmActionOptions> {
+/** Shown before deleting a stored key found disabled on chain (a wallet disconnect): it can't sign. */
+export const FORGET_DISABLED_CONFIRM: ConfirmActionOptions = {
+  title: 'Forget this disabled key?',
+  body: `It's disabled on Platform and can't sign. Forgetting it also deletes this browser's storage settings, encryption key copy (import it again in Settings) and comment drafts for this identity. ${FORGET_DELETES}`,
+  confirmLabel: 'Forget key',
+}
+
+/**
+ * {@link FORGET_CONFIRM} ({@link FORGET_DISABLED_CONFIRM} for a key found `disabled`), saying
+ * what stays when the identity was topped up here.
+ */
+export async function forgetConfirm(identityId: string, { disabled = false }: { readonly disabled?: boolean } = {}): Promise<ConfirmActionOptions> {
+  const base = disabled ? FORGET_DISABLED_CONFIRM : FORGET_CONFIRM
   const stays = await topUpStays(identityId)
-  return stays === null ? FORGET_CONFIRM : { ...FORGET_CONFIRM, body: `${FORGET_CONFIRM.body} ${stays}` }
+  return stays === null ? base : { ...base, body: `${base.body} ${stays}` }
 }
 
 export function KeysPanel(): JSX.Element {

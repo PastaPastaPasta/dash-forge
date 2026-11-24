@@ -135,6 +135,8 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 **Git repository not usable.** `dg init` or `dg repo create --push` needs the local git repository, and could not use it: the current directory is not inside a git work tree, or the remote it would add (`origin` by default) already points somewhere else. Nothing was written to Platform when this is reported before the create; after a create, the repository exists and only the local setup is missing.
 
+`dg repo clone`, `dg init` and `dg repo create --push` also report it, before anything is written, when `git-remote-dash` is not installed: git runs it for every `dash://` URL, and without it git says only `'remote-dash' is not a git command`. Install it next to `dg` and put its directory on `PATH` ([INSTALL.md](INSTALL.md)); `dg doctor` checks it.
+
 `dg pr checkout` reports it when run outside a git repository (it needs one to put the `pr/<n>` branch in), and when the local branch `pr/<n>` has commits the PR head does not (the PR was force-pushed, or you committed on the branch). Moving the branch would drop them, so nothing is changed.
 
 **What to do:** run `git init` first (or `cd` into the repository), or pass `--remote <name>` to add the Forge remote under another name and leave the existing one alone. For `dg pr checkout` outside a repository, clone it first (`dg repo clone <owner>/<name>`) and run it inside the clone; when the branch has other commits, rename it to keep its commits (`git branch -m pr/<n> pr/<n>-old`) or delete it (`git branch -D pr/<n>`), then run it again.
@@ -277,9 +279,9 @@ Nothing was signed in either case.
 
 **Not enough credits.** The identity's balance cannot pay for the write. The `cause:` line starts with `insufficient credits:` and shows the amount needed and the current balance in DASH.
 
-**What to do:** top up the identity from any Dash wallet at <https://bridge.thepasta.org>. `dg auth balance` shows the balance. Reading, cloning and browsing are free and still work.
+**What to do:** top up the identity from any Dash wallet at the bridge, opened on your network: <https://bridge.thepasta.org/?network=mainnet> on mainnet, <https://bridge.thepasta.org/?network=testnet> on testnet (the fix line links the one for the network the command used). `dg auth balance` shows the balance. Reading, cloning and browsing are free and still work.
 
-**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here before it stores anything. (A push with a public pack and members-only packs checks before each pack: if an earlier pack was already stored, the note says so.) The estimate is an upper bound, so a balance only just above the real cost can still be refused: top up a little more. On testnet the faucet pays Core addresses, not identities: open the web app (<https://forge.dashhq.org>), click your balance (**Top up credits**), enter your 12 words, and pay the address it shows from <https://faucet.thepasta.org>.
+**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here before it stores anything. (A push with a public pack and members-only packs checks before each pack: if an earlier pack was already stored, the note says so.) The estimate is an upper bound, so a balance only just above the real cost can still be refused: top up a little more. On testnet the faucet pays Core addresses, not identities: open the testnet web app (<https://testnet-forge.dashhq.org>), click your balance (**Top up credits**), enter your 12 words, and pay the address it shows from <https://faucet.thepasta.org>.
 
 ## E402
 

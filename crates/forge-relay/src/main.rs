@@ -99,8 +99,9 @@ struct RunArgs {
     #[arg(long)]
     listen: Option<String>,
 
-    /// forge-web base URL for synthesized html_url / compare links [default:
-    /// https://forge.dashhq.org]. Include the base path of a sub-path deploy
+    /// forge-web base URL for synthesized html_url / compare links [default: the target
+    /// network's web app, https://forge.dashhq.org on mainnet and
+    /// https://testnet-forge.dashhq.org on testnet]. Include the base path of a sub-path deploy
     /// (e.g. https://owner.github.io/dash-forge).
     #[arg(long = "web-base-url")]
     web_base_url: Option<String>,

@@ -4,8 +4,10 @@ import Link from 'next/link'
 
 import { BuildInfo } from '@/components/build-info'
 import { DOCS } from '@/lib/docs-links'
+import { otherNetworkSite } from '@/lib/network-sites'
 
 export function AppFooter(): JSX.Element {
+  const testnet = otherNetworkSite()
   return (
     <footer className="mt-16 border-t border-anvil-200 dark:border-anvil-800">
       <div className="mx-auto flex max-w-[1280px] flex-col gap-2 px-4 py-6 text-[12px] text-anvil-500 dark:text-anvil-400 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -29,6 +31,11 @@ export function AppFooter(): JSX.Element {
           <Link href="/licenses/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Third-party licenses
           </Link>
+          {testnet?.key === 'testnet' ? (
+            <a href={testnet.url} data-testid="testnet-site-link" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+              Testnet
+            </a>
+          ) : null}
         </div>
       </div>
     </footer>
