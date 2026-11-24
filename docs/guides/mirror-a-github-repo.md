@@ -241,6 +241,8 @@ The Action signs with the `DASH_FORGE_KEY` repository secret (Settings → Secre
   Without `--master`, `dg` asks for your 12-word recovery phrase instead. `dg` only reads the master key from the file: the key is not stored and CI never sees it.
 
   The file's one line is the secret. Paste it, then delete the file. `dg auth keys list` shows the key, and `dg auth keys disable <id>` retires it.
+
+  If the mirror only syncs code and releases (`sync: code,releases`), add `--scope core` for the narrowest key Platform allows: it is bound to the forge-core contract alone, so it can write repositories, refs, packs and releases, and nothing else, even if it leaks. Issues, pull requests and labels live in other Forge contracts (labels in forge-meta on mainnet and testnet), so a mirror that syncs them needs the default `--scope group` key.
 - **A CI-only identity file**, stripped to the one signing key a push needs, the HIGH authentication key. The fields the tools need are kept, and every other secret is blanked:
 
   ```sh

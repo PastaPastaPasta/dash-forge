@@ -42,8 +42,8 @@ use forge_core::user_error::{codes, UserError};
 
 use super::group::GroupCheck;
 use super::{
-    check_group, dash_amount, expiry_text, key_spec, read_mnemonic, register_and_store, store,
-    KeyLimitArgs, StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
+    dash_amount, expiry_text, key_spec, read_mnemonic, register_and_store, store, KeyLimitArgs,
+    StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
 };
 use crate::context::Ctx;
 use crate::fmt::credits_to_dash;
@@ -949,7 +949,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
         }
     }
     let client = ctx.connect().await?;
-    let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+    let checked = super::check_key_group(ctx, &client, &spec, &args.limits).await?;
     checked.print_notice(ctx, "");
 
     let backup_pass = backup_passphrase(args)?;
