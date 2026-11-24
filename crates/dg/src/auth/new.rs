@@ -845,7 +845,7 @@ async fn register(
         let stored_source = forge_core::keystore::keychain_source(&network, identity_id);
         if let Ok(b) = BridgeIdentity::load_from_file(&stored_source) {
             if identity.signing_key_id(&b, ctx.network()) == Some(FIRST_LIMITED_KEY_ID)
-                && identity.is_limited_key(FIRST_LIMITED_KEY_ID)
+                && identity.is_limited_key(FIRST_LIMITED_KEY_ID, super::forge_core_id(ctx))
             {
                 return Ok((
                     FIRST_LIMITED_KEY_ID,
@@ -857,7 +857,7 @@ async fn register(
             }
         }
         let replace = identity
-            .is_limited_key(FIRST_LIMITED_KEY_ID)
+            .is_limited_key(FIRST_LIMITED_KEY_ID, super::forge_core_id(ctx))
             .then_some(FIRST_LIMITED_KEY_ID);
         let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &[&master]);
         let (id, stored) = register_and_store(

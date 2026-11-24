@@ -645,7 +645,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         None if args.keep_current => None,
         None => identity
             .signing_key_id(&current, ctx.network())
-            .filter(|id| identity.is_limited_key(*id)),
+            .filter(|id| identity.is_limited_key(*id, super::forge_core_id(ctx))),
     };
     // The encryption keys the key in use holds are kept too, whatever the master source holds.
     let encryption =
@@ -719,7 +719,8 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
         return Err(crate::errors::usage("the MASTER key cannot be disabled"));
     }
     // A CI runner key (bound to one document type, `dg ci runner new`) is a Forge key too.
-    let forge_key = identity.is_limited_key(id) || identity.key_doc_type(id).is_some();
+    let forge_key = identity.is_limited_key(id, super::forge_core_id(ctx))
+        || identity.key_doc_type(id).is_some();
     if !forge_key && !force {
         return Err(crate::errors::usage(format!(
             "key #{id} is not a Forge limited key ({} / {}); pass --force to disable it anyway",

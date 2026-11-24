@@ -1093,21 +1093,22 @@ impl LoadedIdentity {
     }
 
     /// Whether key `key_id` is a live Forge limited key: AUTHENTICATION / HIGH, bound to a
-    /// contract group or to one whole contract (a forge-core-only CI key), with a budget. Only such keys are renewed over or disabled by `dg auth`
-    /// without `--force`.
-    pub fn is_limited_key(&self, key_id: u32) -> bool {
+    /// contract group or to forge-core alone (`core`, the network's forge-core id; a
+    /// `--scope core` CI key), with a budget. Only such keys are renewed over or disabled by
+    /// `dg auth` without `--force`.
+    pub fn is_limited_key(&self, key_id: u32, core: Option<&str>) -> bool {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
         self.0.public_keys().get(&key_id).is_some_and(|k| {
             !k.is_disabled()
                 && k.purpose() == Purpose::AUTHENTICATION
                 && k.security_level() == SecurityLevel::HIGH
-                && matches!(
-                    k.contract_bounds(),
-                    Some(
-                        ContractBounds::ContractGroup { .. }
-                            | ContractBounds::SingleContract { .. }
-                    )
-                )
+                && match k.contract_bounds() {
+                    Some(ContractBounds::ContractGroup { .. }) => true,
+                    Some(ContractBounds::SingleContract { id }) => {
+                        core.is_some_and(|c| id.to_string(Encoding::Base58) == c)
+                    }
+                    _ => false,
+                }
                 && k.total_budget().is_some()
         })
     }
@@ -1493,9 +1494,12 @@ mod tests {
             balance: 0,
             revision: 0,
         }));
-        assert!(identity.is_limited_key(6));
+        assert!(identity.is_limited_key(6, Some(&core)));
+        // bound to another contract (or with no forge-core to compare), it is not one
+        assert!(!identity.is_limited_key(6, Some("OTHER")));
+        assert!(!identity.is_limited_key(6, None));
         assert!(
-            !identity.is_limited_key(7),
+            !identity.is_limited_key(7, Some(&core)),
             "a runner key is not a limited key"
         );
         assert_eq!(identity.key_contract(6), Some(core.clone()));
