@@ -199,7 +199,7 @@ Where the tokens are:
 
 | Token | Stored in |
 |---|---|
-| Scoped | `tokens.toml` (readable only by you); your OS keychain, as the `kubo` profile's credential (if there is no keychain, the profile uses the variable `DASH_FORGE_KUBO_AUTH`, and you set it to the token when you push); and the browser vault, once you connect |
+| Scoped | `tokens.toml` (readable only by you); your OS keychain, as the `kubo` profile's credential (if there is no keychain, the profile uses the variable `DASH_FORGE_KUBO_AUTH`, and you set it to `Bearer <token>`, with the `forge` value from `tokens.toml`, where you push: a bare token is refused); and the browser vault, once you connect |
 | Owner | `tokens.toml` only |
 
 Other programs running as you can read `tokens.toml`. `dg` trusts your own account, as it does for your identity file. To change the scoped token, run `dg ipfs up --rotate-token` and connect your browsers again.
