@@ -44,10 +44,10 @@ These guides describe what is on `master` today. Features that are specified but
 
 Members-only issues, comments and reviews, messages to specific people, making posts public, members-only branches and pull requests, environments, and bots are built, in `dg` and the web app. What can be members-only, and who reads it, is in [Who can read what](../security/audiences.md), the single place to check. The features still marked **Beta** (narrower branches, branch sharing, bots and agents, bot push access, making a repository public, publication dates) work but have rough edges: [Known limitations](collaborating.md#known-limitations).
 
-Dash Wallet sign-in works on testnet with the testnet build of DashPay Wallet for Android 11.9.2 or later: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Wallet sign-in works on mainnet with DashPay for Android 11.9.2+ or Dash Wallet for iOS 9.1.4+, and on testnet with DashPay for Android's testnet build: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
-The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. [Networks](../networks.md) has the details.
+The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. The v0.2.0 binaries work on testnet only and have no `--wallet`; for mainnet or wallet sign-in, build from source. [Networks](../networks.md) has the details.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

@@ -32,7 +32,7 @@ This guide covers:
 
 ## The setup wizard
 
-Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. The hosted site runs on testnet ([Which network](README.md#which-network)).
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs.. forge.dashhq.org is mainnet; testnet-forge.dashhq.org is testnet ([Which network](README.md#which-network)).
 
 ### Automatic sync
 
@@ -117,7 +117,7 @@ forge-import alice/project --network testnet --max-spend 0.5 --state ./alice-pro
 
 **Git LFS.** If the default branch's `.gitattributes` sets `filter=lfs`, the run warns that the mirror holds the LFS pointer files only: the large files stay on GitHub, and Dash Forge does not mirror LFS objects. The summary JSON says so too (`lfsDetected`).
 
-Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, which has no Forge deployment ([E702](../errors.md#e702)). `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
+Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet. `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
 
 Useful flags (see `forge-import --help`):
 
@@ -267,13 +267,13 @@ jobs:
         with:
           install: 'source'
           repo: dash://<owner identity id>/<repo name>
-          network: testnet                # Forge's network today (also the Action's default)
+          network: testnet                # the default; or mainnet
           sync: code,releases
           storage-kind: s3
-          s3-endpoint: https://<account>.r2.cloudflarestorage.com
-          s3-region: auto
+          s3-endpoint: https://s3.example.org
+          s3-region: us-east-1
           s3-bucket: forge
-          s3-public-url: https://pub-9a1.r2.dev
+          s3-public-url: https://s3.example.org/forge
           cost-cap: '0.05'
         env:
           DASH_FORGE_KEY: ${{ secrets.DASH_FORGE_KEY }}

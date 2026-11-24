@@ -249,7 +249,7 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Actions** (CI/CD runners) | No hosted runners; a runner you host yourself (`forge-runner`) | See [§8](#8-ci) |
 | **Discussions** | None | Issues with a `discussion` label |
 | **Wiki** | None | A `docs/` folder in the repository; the web app renders Markdown |
-| **GitHub Pages** | None: Forge serves no user content | Serve the site from your own bucket and domain (R2 and S3 host static sites) |
+| **GitHub Pages** | None: Forge serves no user content | Serve the site from your own host and domain |
 | **Packages** (npm, containers) | None | Publish to the usual registries, or attach build outputs to a release (`dg release create --asset`) |
 | **Projects / boards** | None | Labels, and `dg issue list --label … --assignee …` filters |
 | **Milestones** | Supported (`dg milestone`, and **Issues → Milestones** on the web), but the importer does not bring them over | Re-create the ones you need ([Milestones](collaborating.md#milestones)) and set them with `dg issue milestone` |

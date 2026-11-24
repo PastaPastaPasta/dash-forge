@@ -13,11 +13,12 @@ This guide covers:
 3. [IPFS: your own kubo node](#ipfs-your-own-kubo-node)
 4. [Choosing where a repo pushes](#choosing-where-a-repo-pushes)
 5. [Public addresses](#public-addresses)
-6. [CORS header names](#cors-header-names)
-7. [Cost guard](#cost-guard)
-8. [Reading: gateways and fallbacks](#reading-gateways-and-fallbacks)
-9. [Restoring a lost copy](#restoring-a-lost-copy)
-10. [Troubleshooting](#troubleshooting)
+6. [CORS origins: mainnet and testnet](#cors-origins-mainnet-and-testnet)
+7. [CORS header names](#cors-header-names)
+8. [Cost guard](#cost-guard)
+9. [Reading: gateways and fallbacks](#reading-gateways-and-fallbacks)
+10. [Restoring a lost copy](#restoring-a-lost-copy)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 

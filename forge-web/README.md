@@ -11,7 +11,7 @@ pnpm install --frozen-lockfile
 pnpm dev                     # http://localhost:3000
 ```
 
-Or `make dev-web` from the repository root. The first page load takes a while: the SDK is about 23 MB of WebAssembly.
+Or `make dev-web` from the repository root. The first page load takes a while: the SDK is about 26 MB of WebAssembly.
 
 `pnpm dev` reads `.env.development`, which points the app at testnet. To try another network, override these variables in `.env.development.local`, which git ignores:
 
@@ -58,7 +58,7 @@ Files named `*.live.test.ts` talk to a real network and are skipped unless `FORG
 ```sh
 pnpm exec playwright install --with-deps chromium   # once
 E2E_NETWORK=testnet pnpm test:e2e                   # builds for testnet, serves out/ on :4321
-pnpm test:e2e e2e/v2-home.spec.ts                   # one spec
+E2E_NETWORK=testnet pnpm test:e2e e2e/v2-home.spec.ts   # one spec
 ```
 
 The specs run against a local build of the app that reads live testnet. Without `E2E_NETWORK=testnet`, the suite still defaults to devnet sakura, which is gone. `E2E_SKIP_BUILD=1` serves an `out/` you already built.

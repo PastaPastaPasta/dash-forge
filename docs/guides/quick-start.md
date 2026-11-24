@@ -49,6 +49,8 @@ This one line installs the latest release's checksum-verified binaries into `~/.
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
 ```
 
+The latest release, v0.2.0, works on testnet only and has no `--wallet` sign-in: for mainnet or the wallet, build from source above.
+
 [INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads, Windows (WSL), `cargo binstall`, and pinning a version.
 
 ### Check the install
@@ -211,7 +213,7 @@ Open it: https://testnet-forge.dashhq.org/Exam…/my-project
 
 (A first push to your own bucket; the size and paths are illustrative. On testnet, DASH is test money; when `dg` can fetch a price it adds what the same charge would cost on mainnet (`≈ $… on mainnet`). See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH**, is printed afterwards. Members-only content (below), on by default, adds about 0.0011 DASH on its own line, so a default `dg init` creates for about 0.0025 DASH. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost is printed afterwards. Members-only content (below) is on by default, so a default `dg init` creates for about 0.0024 DASH on testnet. See [Costs](costs.md).
 
 What it does, in order:
 
@@ -229,7 +231,7 @@ It is safe to run again: an existing repository is reused (nothing written), a m
 
 Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. A directory name is folded to that form (`My Project` → `my-project`).
 
-You can also create a repository in the web app (**New → Repository**, about 0.0016 DASH, with a cost preview). Under **Public**, **Turn on members-only content now** is ticked, which adds about 0.0011 DASH; untick it to skip. It needs your encryption key in the browser. The empty repository page then shows the commands to push to it.
+You can also create a repository in the web app (**New → Repository**, with a cost preview). Under **Public**, **Turn on members-only content now** is ticked; untick it to skip. It needs your encryption key in the browser. The empty repository page then shows the commands to push to it.
 
 ---
 

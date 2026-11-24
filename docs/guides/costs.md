@@ -1,6 +1,6 @@
 # What things cost
 
-Forge charges nothing. Nobody runs it, so nobody takes a cut. What you pay goes to two places: **Dash Platform fees**, paid from your identity's credits, and **your own storage provider's bill**, if you use one. Reading, cloning and browsing cost nothing on Platform. If a repository's packs are in a bucket, its owner's provider may bill the owner for the download traffic (egress); R2 has none.
+Forge charges nothing. Nobody runs it, so nobody takes a cut. What you pay goes to two places: **Dash Platform fees**, paid from your identity's credits, and **your own storage provider's bill**, if you use one. Reading, cloning and browsing cost nothing on Platform. If a repository's packs are in a bucket, its owner's provider may bill the owner for the download traffic (egress).
 
 Amounts are in **DASH**. The CLIs and web app show an optional fiat equivalent beside costs using live mainnet rates. Costs, quotes and budgets on testnet and devnets say **on mainnet**; balances there remain **test DASH, no cash value**, with no fiat equivalent. With no usable rate, amounts stay in DASH alone. The dollar amounts in the examples below are illustrative; live rates vary.
 

@@ -156,7 +156,7 @@ To keep a second copy elsewhere, list both: `dg storage use r2-main,kubo`. [Choo
 
 Two cautions, both from [Bring your own storage](bring-your-own-storage.md#ipfs-your-own-kubo-node):
 
-- The profile `dg ipfs up` saves has no public gateway. Other people can read your packs only if they can find your node on the IPFS network ([Being reachable](#being-reachable)). A laptop that is often off is a poor only copy. Keep a bucket or a pinning service as well.
+- The profile `dg ipfs up` saves has no public gateway. Other people can read your packs only if they can find your node on the IPFS network ([Being reachable](#being-reachable)). A laptop that is often off is a poor only copy. Keep a bucket as well.
 
 ---
 
