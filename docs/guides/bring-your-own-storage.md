@@ -606,6 +606,14 @@ ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.filebase.io"]
 
 `dg storage status <owner>/<repo>` probes every copy of every pack: each recorded URL, and each CID on each gateway. A recorded URL on plain http, this machine or a private network is listed with the reason and not contacted, unless it is on an origin you configured.
 
+### The web app reads IPFS packs peer to peer first
+
+In a browser that supports it (Chrome 119, Firefox 121, Safari 17.4 or later), the web app joins the IPFS network as a libp2p peer and asks for an `ipfs://` pack's blocks over bitswap before it asks any gateway. A page that shows code dials the peers listed as `ipfsPeers` in `storage-defaults.json` as soon as it opens, unless the repo is already known to keep its packs on Platform, S3 or https. If those peers do not have a block, it looks up other providers through the routers in `ipfsRouters` (`delegated-ipfs.dev`), and at that moment it starts a gateway read alongside. Every block is checked against its CID, and a whole pack against the manifest's SHA-256.
+
+A read that starts before the peer connection is up starts a gateway read at once too. If the gateway wins, that read is not held against the peer, unless the connection then fails as well. A connected peer that has not answered within 1.5 s, stalls, or falls below about 1 MiB/s is raced by the gateway path above. Either way, the first to finish wins. After three reads in a row fall back, peer reads are switched off for five minutes.
+
+**Privacy.** The `ipfsPeers` nodes learn the IP address of everyone who opens a code page, including pages of repos that turn out not to use IPFS, because the dial starts before the page knows where the repo keeps its packs. A provider lookup tells the router which CID you are reading, and the peers you then dial learn your IP address and the blocks you ask for, as with any IPFS node. Gateways learn the same things about the reads they serve. To turn peer reads off in one browser, set `localStorage['forge.ipfsPeer'] = 'off'` in its console.
+
 ## Restoring a lost copy
 
 A pack's manifest is immutable. It permanently records the pack's SHA-256 and the URIs its copies were stored at. When every one of those copies is lost (the bucket was emptied, the kubo node wiped, the pinning service dropped it), the pack cannot be read, and neither can any clone that needs it. That situation is reported as `already recorded at …, none reachable`, or as a warning when a fetch skips the pack.

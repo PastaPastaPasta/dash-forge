@@ -6,11 +6,10 @@
  * `(owner, name)` address.
  */
 
-import { useSyncExternalStore } from 'react'
+import { useRef, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
+import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, MoreHorizontal, Settings, ShieldCheck, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { BackendBadge } from '@/components/ui/backend-badge'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
@@ -31,8 +30,9 @@ import { CodeSearchBox } from '@/components/repo/code-search-box'
 import { MembersChip } from '@/components/repo/audience'
 import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
 import { MovedBanner } from '@/components/repo/moved-banner'
-import { SecurityPolicyLink } from '@/components/repo/security-policy'
 import { SealOffBanner } from '@/components/repo/seal-off-banner'
+import { useDeferredSecurityPolicy } from '@/components/repo/security-policy'
+import { useDismiss } from '@/components/repo/target-rail'
 
 /**
  * How many of the repo's open issues and PRs are members-only (and, apart, sent to specific
@@ -161,18 +161,21 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           </TitleTag>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <MembersChip home={home} />
-          <BackendBadge backend={home.backend} />
-          <SecurityPolicyLink home={home} addr={addr} load={current === 'code'} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <CodeSearchBox addr={addr} />
-          <CopyLinkButton repo={addr} visibility={home.repo.visibility} />
+          <CopyLinkButton
+            repo={addr}
+            visibility={home.repo.visibility}
+            className="border-transparent bg-transparent text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:border-transparent dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+          />
           <div role="group" aria-label="Fork or pin" className="inline-flex items-center [&>button:not(:first-of-type)]:-ml-px [&>button:not(:first-of-type)]:rounded-l-none [&>button:not(:last-of-type)]:rounded-r-none">
             {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
             <PinButton repo={home.repo} member={role !== null} />
           </div>
           <WatchButton repo={home.repo} />
           <StarButton repo={home.repo} count={home.starCount} lookalikes={lookalikes} />
+          <RepoMoreMenu home={home} addr={addr} load={current === 'code'} />
         </div>
       </div>
 
@@ -236,16 +239,54 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
  * decrypted with; everyone else sees that the repo is private.
  */
 function PrivateChip({ home }: { home: RepoHome }): JSX.Element {
-  // The newest epoch the reader holds a key for (the current one, unless it is not readable yet).
   const keys = home.private?.access === 'member' ? [...home.private.session.resolution.keys.keys()] : []
   const epoch = keys.length > 0 ? Math.max(...keys) : null
   return (
     <span
       data-testid="private-chip"
+      title={epoch !== null ? `Private · decrypted with your key (epoch ${epoch})` : 'Private repository'}
       className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300"
     >
       <Lock className="h-3 w-3" aria-hidden />
-      {epoch !== null ? `Private · decrypted with your key (epoch ${epoch})` : 'private'}
+      Private
     </span>
+  )
+}
+
+function RepoMoreMenu({ home, addr, load }: { home: RepoHome; addr: RepoAddress; load: boolean }): JSX.Element | null {
+  const policy = useDeferredSecurityPolicy(home, load)
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  useDismiss(open, root, () => setOpen(false))
+  if (!policy) return null
+  return (
+    <div ref={root} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label="More repository links"
+        title="More"
+        data-testid="repo-more"
+        className="inline-flex h-7 items-center rounded-md px-1.5 text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 coarse:min-h-11 coarse:min-w-11 coarse:justify-center dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+      >
+        <MoreHorizontal className="h-4 w-4" aria-hidden />
+      </button>
+      {open ? (
+        <div
+          className="absolute right-0 z-30 mt-1 w-44 rounded-md border border-anvil-200 bg-white p-1 shadow-md dark:border-anvil-750 dark:bg-anvil-900"
+        >
+          <Link
+            href={repoHref('/repo/security', addr)}
+            onClick={() => setOpen(false)}
+            data-testid="repo-more-security"
+            className="flex items-center gap-2 rounded px-2 py-1.5 text-dense text-anvil-700 hover:bg-anvil-100 hover:text-anvil-900 coarse:min-h-11 dark:text-anvil-200 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"
+          >
+            <ShieldCheck className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            Security policy
+          </Link>
+        </div>
+      ) : null}
+    </div>
   )
 }

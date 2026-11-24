@@ -186,6 +186,7 @@ test('s4. changing the default branch updates the repo home and the clone box', 
 
   await page.goto(repoPath(''), { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
+  await page.getByTestId('clone-more').click()
   await expect(page.getByTestId('clone-default-branch')).toContainText('trunk', { timeout: 60_000 })
   await expect(page.getByRole('region', { name: 'About' }).getByText('trunk')).toBeVisible()
   await shot(page, 'settings-05-home-on-trunk')

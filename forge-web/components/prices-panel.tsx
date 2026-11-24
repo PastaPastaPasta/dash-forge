@@ -35,14 +35,22 @@ export function PricesPanel(): JSX.Element {
           {Object.keys(currencies).map((code) => <option key={code} value={code}>{code}</option>)}
         </select>
       </label>
-      <p data-testid="fiat-provenance" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        {provenanceText(settings.enabled, price, rates)}
-      </p>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Prices from <a href="https://ctx.com/" target="_blank" rel="noreferrer noopener" className="underline">CTX</a>, with CoinGecko as a fallback.{' '}
-        <a href="https://www.coingecko.com/" target="_blank" rel="noreferrer noopener" className="underline">Data provided by CoinGecko</a>.
-        {' '}Estimates use today&apos;s price. These providers see your IP address, standard browser headers and that the request comes from this site. Turn prices off above to stop requests.
-      </p>
+      <div className="space-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+        <p data-testid="fiat-provenance">
+          {provenanceText(settings.enabled, price, rates)}
+        </p>
+        <p>
+          <a href="https://www.coingecko.com/" target="_blank" rel="noreferrer noopener" className="underline">Data provided by CoinGecko</a>.
+        </p>
+      </div>
+      <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
+          About price data
+        </summary>
+        <p className="mt-1">
+          Prices from <a href="https://ctx.com/" target="_blank" rel="noreferrer noopener" className="underline">CTX</a>, with CoinGecko as a fallback. Estimates use today&apos;s price. These providers see your IP address, standard browser headers and that the request comes from this site. Turn prices off above to stop requests.
+        </p>
+      </details>
     </div>
   )
 }

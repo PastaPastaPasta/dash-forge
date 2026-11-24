@@ -54,11 +54,12 @@ import { checkUsername } from '../view/username'
 import { deriveMasterKey, invalidMnemonicMessage, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS, withPlatformRead } from './connect'
+import { askToUnlockEveryVisit, deviceResumeAllowed, framed, lockMarker } from './session-resume'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
 import { clearDrafts } from '../view/draft-text'
-import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
+import { forgetLastIdentity, readLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './wallet-key'
 import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
@@ -155,8 +156,13 @@ import {
   unlockWithProtection,
   type RecoverResult,
   type StagedKeyState,
+  unlockWithDevice,
+  protectVault,
+  sharedOriginProblem,
   unlockWithPasskey,
   unlockWithPassphrase,
+  type UnlockKind,
+  type UnlockMethod,
   unlockedSecret,
   type ExtraKey,
   type KeyOrigin,
@@ -830,7 +836,7 @@ export class AuthController {
     if (this.state.session !== null) return false
     // Bounded: a blocked or slow IndexedDB must not leave the header spinning (L4).
     const kept = await withTimeout(resumeVault(this.network), PLATFORM_READ_MS, 'Reading the kept session').catch(() => null)
-    if (kept === null) return false
+    if (kept === null) return this.resumeDeviceKey()
     const { secret } = kept
     const hint = parseHint(kept.hint, secret, this.network)
     // No usable hint: show nothing signed in until the key is verified (bounded, as above).
@@ -856,6 +862,35 @@ export class AuthController {
   }
 
   /**
+   * A key kept for this browser alone (no passkey or passphrase) opens on page load without a
+   * prompt, unless "Stay signed in" is off. The newest such key wins when there are several.
+   */
+  private async resumeDeviceKey(): Promise<boolean> {
+    // Never in a frame or on a shared origin, and never after a lock until opened on purpose.
+    if (askToUnlockEveryVisit() || framed() || sharedOriginProblem() !== null || !deviceResumeAllowed()) return false
+    const since = lockMarker()
+    const vaults = await withTimeout(listVaults(this.network), PLATFORM_READ_MS, 'Reading the stored keys').catch(() => [])
+    // The identity this browser used last, never another one it happens to hold.
+    const last = readLastIdentity(this.network)
+    const device = vaults.find((v) => v.identityId === last && v.staged !== true && v.methods.length === 1 && v.methods[0] === 'device')
+    if (device === undefined || this.state.session !== null) return false
+    return this.unlock(device.identityId, 'device', since).then(
+      () => true,
+      () => false,
+    )
+  }
+
+  /**
+   * Protect a key kept by this browser alone with a passkey or passphrase (no new key, no fee),
+   * then open the rest of the vault: private content and storage settings can then be added.
+   */
+  async protectKey(protection: Protection): Promise<AuthSession> {
+    const session = this.state.session
+    if (session === null) throw new VaultLockedError('sign in first')
+    return this.run(async () => this.open(await protectVault(this.network, session.identityId, protection), 'vault'))
+  }
+
+  /**
    * How much of the vault this tab holds open: `signing` after a reload picked up a kept session
    * (public-repo writes only; private repos, storage settings and wallet grants need
    * {@link unlockMore}), `full` after an interactive unlock, null when signed out or locked.
@@ -870,7 +905,7 @@ export class AuthController {
    * after a reload picked up a signing-only session: one passkey gesture, or the passphrase. The
    * result stays in this tab's memory only.
    */
-  async unlockMore(method: { passphrase: string } | 'passkey'): Promise<AuthSession> {
+  async unlockMore(method: UnlockMethod): Promise<AuthSession> {
     const session = this.state.session
     if (session === null) throw new VaultLockedError('sign in first')
     return this.unlock(session.identityId, method)
@@ -1263,7 +1298,7 @@ export class AuthController {
       /** Give up this device's unfinished renewal (the user chose the wallet). */
       readonly discardPendingRenewal?: boolean
       /** The renewal's own passphrase or passkey, when the protection chosen here is not it. */
-      readonly renewalUnlock?: { passphrase: string } | 'passkey'
+      readonly renewalUnlock?: UnlockMethod
       /** Give it up even though it cannot be opened (its key then stays live until it expires). */
       readonly dropUnopened?: boolean
     } = {},
@@ -1301,6 +1336,11 @@ export class AuthController {
     /** The key id of the record found for this identity before the answer (null: none). */
     previousKeyId: number | null = null,
   ): Promise<AuthSession> {
+    // A key without a budget or an expiry is never kept by this browser alone.
+    const unlimited = [main, ...rest].some((k) => k.limits === null || k.limits.total == null || k.limits.expiresAt == null)
+    if (unlimited && protection.device && !protection.passphrase && !protection.passkey) {
+      throw new Error('This key has no spending limit: add a passkey or a password.')
+    }
     const appConnect = options.origin === 'app-connect'
     const pending = await stagedInfo(this.network, identityId)
     let given: ExtraKey | null = null
@@ -1444,13 +1484,15 @@ export class AuthController {
   }
 
   /** Open the session of a key already in the vault and unlocked (identity creation). */
-  async openStored(identityId: string, method: { passphrase: string } | 'passkey' | null, limits?: KeyLimits): Promise<AuthSession> {
+  async openStored(identityId: string, method: UnlockMethod | null, limits?: KeyLimits): Promise<AuthSession> {
     return this.run(async () => {
       const secret =
         unlockedSecret(this.network, identityId) ??
         (method === 'passkey'
           ? await unlockWithPasskey(this.network, identityId, (why) => this.step(why))
-          : method !== null
+          : method === 'device'
+            ? await unlockWithDevice(this.network, identityId)
+            : method !== null
             ? await unlockWithPassphrase(this.network, identityId, method.passphrase)
             : null)
       if (!secret) throw new VaultLockedError('unlock to continue')
@@ -1463,7 +1505,8 @@ export class AuthController {
   }
 
   /** Unlock a stored vault and open its session. */
-  async unlock(identityId: string, method: { passphrase: string } | 'passkey'): Promise<AuthSession> {
+  /** `autoSince`: a page load opening a browser-only key by itself ({@link unlockWithDevice}). */
+  async unlock(identityId: string, method: UnlockMethod, autoSince?: number): Promise<AuthSession> {
     return this.run(async () => {
       // Connect first: a connect that times out then fails before the passphrase (Argon2id)
       // or passkey prompt, so "Try again" does not ask for them twice.
@@ -1474,7 +1517,9 @@ export class AuthController {
       const secret =
         method === 'passkey'
           ? await unlockWithPasskey(this.network, identityId, (why) => this.step(why))
-          : await unlockWithPassphrase(this.network, identityId, method.passphrase)
+          : method === 'device'
+            ? await unlockWithDevice(this.network, identityId, autoSince)
+            : await unlockWithPassphrase(this.network, identityId, method.passphrase)
       const { secret: finished, status } = await this.finishStagedRenewal(identityId, method)
       if (finished) return this.keyChanged(await this.open(finished, 'vault'))
       const main = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
@@ -1498,7 +1543,7 @@ export class AuthController {
    */
   async finishStagedRenewal(
     identityId: string,
-    method: { passphrase: string } | 'passkey',
+    method: UnlockMethod,
   ): Promise<{ readonly secret: VaultSecret | null; readonly status: RecoverResult['status'] | 'none' }> {
     if (!(await hasStaged(this.network, identityId).catch(() => false))) return { secret: null, status: 'none' }
     const r = await recoverStaged(this.network, identityId, method, (s) => this.stagedKeyState(s))
@@ -1534,7 +1579,7 @@ export class AuthController {
    * Without it (the user no longer has that passphrase), a key that was registered stays valid
    * on chain, unused, until it expires.
    */
-  async abandonPendingRenewal(identityId: string, unlockWith?: { passphrase: string } | 'passkey'): Promise<void> {
+  async abandonPendingRenewal(identityId: string, unlockWith?: UnlockMethod): Promise<void> {
     if (unlockWith !== undefined) this.requireFullUnlock(identityId)
     await serialized(identityId, async () => {
       const pending = await stagedInfo(this.network, identityId)
@@ -2687,7 +2732,7 @@ export class PendingRenewalChoiceError extends Error {
 export class PendingRenewalLockedError extends Error {
   constructor(
     readonly keyId: number,
-    readonly methods: readonly ('passkey' | 'passphrase')[],
+    readonly methods: readonly UnlockKind[],
     readonly retried: boolean,
   ) {
     super(

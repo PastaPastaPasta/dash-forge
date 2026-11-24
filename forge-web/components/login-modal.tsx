@@ -67,6 +67,7 @@ import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, typical
 import { writesPausedReason } from '@/lib/devnet-notice'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage, shortId } from '@/lib/utils'
+import type { UnlockMethod } from '@/lib/auth/vault'
 
 type View = 'choose' | 'unlock' | 'advanced' | 'welcome' | LoginView
 
@@ -199,7 +200,7 @@ export function LoginModal(): JSX.Element {
       {view === 'wallet-renew' || view === 'wallet-replace' ? (
         <>
           <WalletConnectFlow mode={view === 'wallet-renew' ? 'renew' : 'login'} onDone={close} onUnlock={() => setView('unlock')} />
-          <div className="mt-3 border-t border-anvil-200 pt-3 dark:border-anvil-800">
+          <div className={cn('mt-3 border-t border-anvil-200 pt-3 dark:border-anvil-800', ACTIVE_NETWORK.network === 'mainnet' && 'hidden')}>
             <button type="button" data-testid="renew-with-file-instead" onClick={() => setView('renew')} className="hit-area text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100">
               {view === 'wallet-renew' ? 'Renew with identity file or recovery phrase instead' : 'Use your identity file or recovery phrase instead'}
             </button>
@@ -238,16 +239,14 @@ function titleFor(view: View | null, action: string | undefined): string {
 function describeView(view: View, limitedKeys: boolean, notWalletGrant: boolean): ReactNode {
   if (view === 'welcome') return 'Your identity is registered and this browser is signed in. Pick a first step, or close this and look around.'
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
-  if (view === 'wallet') return 'Your wallet gives this browser a key for Dash Forge. Your recovery phrase and master key stay on the phone.'
+  if (view === 'wallet') return null
   if (view === 'wallet-replace') {
     return "This browser's key came from your wallet's older code, with no spending limit or only part of Forge. One approval gives a limited key for all of Forge. The current key stays live until Revoke on Platform disables it."
   }
   if (view === 'wallet-renew') {
     // A key a passkey or the master key brought here is not this browser's own wallet grant: the
     // wallet adds a new one and leaves it.
-    return notWalletGrant
-      ? 'Your wallet adds a new key for this browser. The current key stays live until Revoke on Platform or a renewal with your identity file disables it. Your recovery phrase and master key stay on the phone.'
-      : 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
+    return notWalletGrant ? 'Your wallet adds a new key for this browser.' : 'Your wallet adds a new key for this browser and disables the current one.'
   }
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
   const base = <>at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge</>
@@ -258,7 +257,7 @@ function describeView(view: View, limitedKeys: boolean, notWalletGrant: boolean)
   if (view === 'dg') return <>dg registers a limited key for this browser ({limits}). Your recovery phrase stays out of the browser.</>
   if (view === 'import') return <>This browser gets its own Forge key: it can spend {limits}.</>
   if (view === 'create') return <>This browser gets its own Forge key: it can spend {fixedLimits}.</>
-  if (view === 'unlock') return 'Unlock the key this browser already holds.'
+  if (view === 'unlock') return null
   // The tile list: one short line; the key's limits are under Other ways to sign in.
   return 'Your keys stay in your wallet or on this device.'
 }
@@ -681,7 +680,7 @@ function UnlockView({
       </div>
     )
   }
-  const go = async (method: { passphrase: string } | 'passkey'): Promise<void> => {
+  const go = async (method: UnlockMethod): Promise<void> => {
     if (isLoading) return
     setError(null)
     try {
@@ -740,6 +739,11 @@ function UnlockView({
           <span className="font-mono">{shortId(v.identityId)}</span>
         )}
       </div>
+      {v.methods.includes('device') ? (
+        <Button variant={disconnected ? 'outline' : 'primary'} className="w-full" onClick={() => go('device')} loading={isLoading} disabled={isLoading} data-testid="unlock-device">
+          Unlock
+        </Button>
+      ) : null}
       {v.methods.includes('passkey') ? (
         <Button variant={disconnected ? 'outline' : 'primary'} className="w-full" onClick={() => go('passkey')} loading={isLoading} disabled={isLoading}>
           <Fingerprint className="h-4 w-4" aria-hidden /> Unlock with passkey
@@ -790,10 +794,16 @@ function UnlockView({
       {/* The recovery route (like "Forgot password?"): the identity file or recovery phrase
           registers a new key for this browser and disables the one it cannot open. */}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="unlock-forgot">
-        {v.methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
-        <button type="button" onClick={() => onRenew(v)} className="hit-area text-forge-700 underline dark:text-forge-400">
-          {v.fromDg ? 'Replace this key with dg' : 'Replace this key with your recovery phrase or identity file'}
-        </button>
+        {v.methods.includes('passphrase') ? 'Forgot the passphrase' : v.methods.includes('passkey') ? 'Lost the passkey' : 'Key not working'}?{' '}
+        {ACTIVE_NETWORK.network === 'mainnet' && !v.fromDg ? (
+          <button type="button" onClick={onOther} className="hit-area text-forge-700 underline dark:text-forge-400">
+            Sign in again with your wallet
+          </button>
+        ) : (
+          <button type="button" onClick={() => onRenew(v)} className="hit-area text-forge-700 underline dark:text-forge-400">
+            {v.fromDg ? 'Replace this key with dg' : 'Replace this key with your recovery phrase or identity file'}
+          </button>
+        )}
       </p>
       <div className="flex justify-between pt-1 text-[12px]">
         <button type="button" onClick={onOther} className="hit-area text-anvil-500 dark:text-anvil-400 underline">
@@ -889,9 +899,13 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
   }, [error])
   // Enter in a passphrase field submits (QW3-027); `submit` is declared below, so through a ref.
   const submitRef = useRef<() => void>(() => undefined)
-  const { fields, protection, problem } = useProtection({ onSubmit: () => submitRef.current() })
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
   const [enablePrivate, setEnablePrivate] = useState(wantsPrivate)
+  // Kept by this browser alone only when nothing else is: no encryption key, and a renewal never
+  // weakens a key that had a passkey or passphrase.
+  const heldMethods = vaults.find((v) => v.identityId === identity && v.staged !== true)?.methods ?? []
+  const allowDevice = !enablePrivate && !(renew && heldMethods.some((m) => m !== 'device'))
+  const { fields, protection, problem } = useProtection({ onSubmit: () => submitRef.current(), allowDevice })
   // The identity the words found, which this browser already holds a key for: filled into the ID
   // field, and cleared with it when the words change (other words, another identity).
   const [foundId, setFoundId] = useState<string | null>(null)

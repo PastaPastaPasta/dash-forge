@@ -11,7 +11,8 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { FileText, History, X } from 'lucide-react'
+import { Check, FileText, History, Link2, X } from 'lucide-react'
+import { useCopy } from '@/hooks/use-copy'
 import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
@@ -460,7 +461,7 @@ export function BlameTable({
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-[12px] text-anvil-500 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-400" data-testid="blame-summary">
-        <span>
+        <span title="Computed in your browser from the file’s history. For authoritative results on repeated or moved lines, run git blame --first-parent.">
           {plural(lines.length, 'line')} · {plural(owning, 'commit')} · {plural(result.versions, 'version')} compared
         </span>
         {boundary !== null ? (
@@ -488,12 +489,8 @@ export function BlameTable({
             Followed a rename from <span className="font-mono">{r.from}</span>
           </span>
         ))}
+        {range === null && href !== null ? <BlamePermalinkButton href={href} /> : null}
       </div>
-      <p className="border-b border-anvil-100 px-4 py-1.5 text-[11px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400" data-testid="blame-caveat">
-        Computed in your browser from the file’s history. It can attribute some lines differently from{' '}
-        <span className="font-mono">git blame</span> (lines that repeat and move); <span className="font-mono">git blame --first-parent</span> is the
-        authoritative answer.
-      </p>
       <BlobToolbar href={href}>
         {range ? <span>{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} selected</span> : null}
       </BlobToolbar>
@@ -507,5 +504,21 @@ export function BlameTable({
         </table>
       </ScrollRegion>
     </div>
+  )
+}
+
+function BlamePermalinkButton({ href }: { href: string }): JSX.Element {
+  const [copied, copy] = useCopy(href)
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      data-testid="copy-permalink"
+      data-href={href}
+      className="hit-area inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[12px] font-medium text-anvil-600 coarse:min-h-11 coarse:px-3 hover:bg-anvil-200/70 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800 dark:hover:text-anvil-50"
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Link2 className="h-3.5 w-3.5" aria-hidden />}
+      {copied ? 'Copied' : 'Copy permalink'}
+    </button>
   )
 }

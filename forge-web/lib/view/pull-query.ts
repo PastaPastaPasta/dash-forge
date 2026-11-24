@@ -234,7 +234,7 @@ export function emptyPullsBody(filtered: boolean, state: PullStateFilter, settle
   if (filtered) return state === 'all' ? 'Try fewer filters.' : 'Try fewer filters, or search every state.'
   if (state === 'merged') return 'Nothing has been merged yet.'
   if (state === 'closed') return 'Nothing has been closed without merging.'
-  const open = 'Push a branch with the git-remote-dash helper (to this repo, or to your fork), then open a PR here or with dg pr create.'
+  const open = 'Push a branch, then open a pull request to propose changes.'
   // Nothing open or closed without merging: every PR there is was merged (none at all: how to open one).
   if (state === 'unmerged') return settled === 0 ? open : settled === null ? 'No pull request is open or closed without merging.' : 'Every pull request here has been merged.'
   if (state === 'all' || settled === 0) return open

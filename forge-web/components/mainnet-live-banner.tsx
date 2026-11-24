@@ -61,7 +61,7 @@ export function MainnetLiveBanner({
       <div className="mx-auto flex max-w-[1280px] items-start gap-3 px-4 py-2 text-dense sm:px-6">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
         <p className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">
-          <span className="font-medium">You’re on Forge {networkName(config)},</span> where DASH has no cash value. Forge is live on mainnet at{' '}
+          <span className="font-medium">Forge {networkName(config)}</span> (test DASH only) — mainnet is live at{' '}
           <a
             href={site.url}
             className="whitespace-nowrap text-forge-700 underline dark:text-forge-400 coarse:inline-flex coarse:min-h-11 coarse:items-center"

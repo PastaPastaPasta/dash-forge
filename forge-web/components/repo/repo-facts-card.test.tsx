@@ -28,7 +28,8 @@ const RUST = { name: 'Rust', color: '#dea584', bytes: 10, percent: 100 }
 describe('LanguageBar', () => {
   it('says a cut-short walk is partial', () => {
     act(() => root.render(<LanguageBar stats={{ languages: [RUST], files: 5000, truncated: true }} />))
-    expect(el.querySelector('[data-testid="language-note"]')?.textContent).toContain('based on the first 5,000 files')
+    expect(el.querySelector('[data-testid="language-note"]')?.textContent).toContain('Based on the first 5,000 files.')
+    expect(el.querySelector('[data-testid="language-bar"]')?.getAttribute('title')).toContain('≈ by stored (compressed) size')
   })
 
   it('says so when a cut-short walk counted no language at all', () => {

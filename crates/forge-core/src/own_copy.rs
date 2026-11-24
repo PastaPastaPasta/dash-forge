@@ -1,0 +1,313 @@
+//! Copies of another repository's packs on the user's own storage (`docs/design/pin-and-fork-copies.md`):
+//! a **pin** stores each pack on the user's profile and records a `packMirror` naming it, and a
+//! **fork** stores each parent pack before recording it, with its own address first.
+//!
+//! Bytes are read through the verified read path (recorded copies, then mirrors) and stored
+//! through the same verified upload a push uses ([`ExternalTarget`]), so a copy is never anything
+//! but the pack.
+
+use crate::backends::{PackMeta, Uri};
+use crate::error::{Error, Result};
+use crate::platform::LoadedContract;
+use crate::repo::{PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2};
+use crate::rules::pack_mirror::{check_mirror_uris, UriCheck, MAX_URIS};
+use crate::scope::RepoRef;
+use crate::storage::egress::{may_fetch, Trusted};
+use crate::storage::publish::{profile_problems, publish_problem};
+use crate::storage::targets::{ExternalTarget, StorageTarget as _};
+use crate::storage::{PackReader, Profile};
+
+/// Why `profile` cannot hold a pin other readers use; `None` when it can.
+#[must_use]
+pub fn pin_profile_problem(profile: &Profile) -> Option<&'static str> {
+    match profile {
+        Profile::Platform(_) => Some(
+            "Platform storage is already permanent, so it needs no pin; pin to storage you run (an IPFS node or a bucket)",
+        ),
+        Profile::S3(p) if p.public_url.is_none() => Some(
+            "this bucket has no public URL, so nobody else could read your copy; set its public URL first",
+        ),
+        _ if !profile_problems(profile).iter().all(|p| !p.problem.refused() && readable_by_others(&p.url)) => Some(
+            "its public address is on this machine or a private network (or a temporary tunnel), so nobody else could read your copy",
+        ),
+        _ => None,
+    }
+}
+
+/// Whether other readers fetch `url`: their egress guard (with none of this machine's trusted
+/// origins) lets it through, and a push would record it.
+fn readable_by_others(url: &str) -> bool {
+    may_fetch(url, &Trusted::default()) && publish_problem(url).is_none_or(|p| !p.refused())
+}
+
+/// The addresses a `packMirror` records for a copy stored at `stored`: its public `https://`
+/// addresses (an S3 public URL, an IPFS public gateway URL), else its `ipfs://` CID. `None` when
+/// the copy has neither (a private bucket's `s3://` locator).
+#[must_use]
+pub fn mirror_uris(stored: &[String]) -> Option<Vec<String>> {
+    let https: Vec<String> = stored
+        .iter()
+        .filter(|u| u.starts_with("https://") && readable_by_others(u))
+        .take(MAX_URIS)
+        .cloned()
+        .collect();
+    let pick = if https.is_empty() {
+        stored
+            .iter()
+            .find(|u| u.starts_with("ipfs://"))
+            .map(|u| vec![u.clone()])?
+    } else {
+        https
+    };
+    matches!(check_mirror_uris(&pick), UriCheck::Ok { .. }).then_some(pick)
+}
+
+/// The addresses of `stored` other readers can use in a manifest: the public https ones and the
+/// `ipfs://` CID (never a private bucket's `s3://` locator or a private host).
+#[must_use]
+pub fn shareable(stored: &[String]) -> Vec<String> {
+    stored
+        .iter()
+        .filter(|u| {
+            u.starts_with("ipfs://") || (u.starts_with("https://") && readable_by_others(u))
+        })
+        .cloned()
+        .collect()
+}
+
+/// `input` with `own` addresses first and its own after them, each once, cut to the manifest's
+/// URI budget: the parent's private `s3://` locators go first, then the tail.
+#[must_use]
+pub fn with_own_first(mut input: PackManifestInput, own: &[String]) -> PackManifestInput {
+    let mut uris: Vec<String> = Vec::new();
+    for u in own.iter().chain(input.uris.iter()) {
+        if !uris.contains(u) && u.len() <= MANIFEST_URIS_V2.max_item_len {
+            uris.push(u.clone());
+        }
+    }
+    if !MANIFEST_URIS_V2.fits(&uris) {
+        let mine = own.len();
+        let mut i = 0;
+        uris.retain(|u| {
+            i += 1;
+            i <= mine || !u.starts_with("s3://")
+        });
+    }
+    uris.truncate(MANIFEST_URIS_V2.max_items);
+    input.uris = uris;
+    input
+}
+
+/// The artifact kinds a pin copies: git packs and the public indexes and bodies readers fetch
+/// (forge-web `PIN_KINDS`). Release assets and members-only kinds are left out.
+pub const PIN_KINDS: [u8; 6] = [
+    crate::pack::KIND_GIT_PACK,
+    crate::pack::KIND_OBJECT_LOCATOR,
+    crate::pack::KIND_FLAT_INDEX,
+    crate::pack::KIND_HISTORY_INDEX,
+    crate::pack::KIND_HISTORY_VERSIONS,
+    crate::pack::KIND_LONG_BODY,
+];
+
+/// The copies of each pinnable pack in `manifests` ([`PIN_KINDS`]) that a current maintainer or
+/// writer lists, grouped by pack hash in the order a reader tries them, oldest pack first.
+#[must_use]
+pub fn pin_groups<'m>(
+    manifests: &'m [PackManifestInfo],
+    roles: &RoleMap,
+) -> Vec<Vec<&'m PackManifestInfo>> {
+    let mut by_hash: std::collections::BTreeMap<[u8; 32], Vec<&PackManifestInfo>> =
+        std::collections::BTreeMap::new();
+    for m in manifests {
+        if PIN_KINDS.iter().any(|k| u64::from(*k) == m.kind) {
+            by_hash.entry(m.pack_hash).or_default().push(m);
+        }
+    }
+    let listed_by_member = |copies: &Vec<&PackManifestInfo>| {
+        copies.iter().any(|m| {
+            matches!(
+                roles.get(&m.owner_id),
+                Some(crate::rules::v2::Role::Maintainer | crate::rules::v2::Role::Writer)
+            )
+        })
+    };
+    let mut out: Vec<Vec<&PackManifestInfo>> = by_hash
+        .into_values()
+        .filter(listed_by_member)
+        .map(|copies| crate::repo::order_copies(&copies, roles))
+        .collect();
+    out.sort_by_key(|g| {
+        g.iter()
+            .map(|m| (m.created_at, m.document_id.clone()))
+            .min()
+            .unwrap_or_default()
+    });
+    out
+}
+
+/// Reads packs of `source` and stores them on one target.
+pub struct OwnCopy<'a> {
+    svc: &'a RepoService<'a>,
+    source: &'a RepoRef,
+    contract: LoadedContract,
+    roles: RoleMap,
+    reader: PackReader,
+    target: ExternalTarget,
+}
+
+impl<'a> OwnCopy<'a> {
+    /// A copier of `source`'s packs onto `target`.
+    /// `manifests` are `source`'s: its own advertised gateways join the reader, as for a clone.
+    pub async fn new(
+        svc: &'a RepoService<'a>,
+        source: &'a RepoRef,
+        manifests: &[PackManifestInfo],
+        roles: RoleMap,
+        target: ExternalTarget,
+    ) -> Result<Self> {
+        let contract = svc.repo_contract(source).await?;
+        let reader = svc.repo_reader(source, manifests, &roles).await;
+        Ok(Self {
+            svc,
+            source,
+            contract,
+            roles,
+            reader,
+            target,
+        })
+    }
+
+    /// [`mirror_uris`] of `stored`, with an advertised https address checked to serve the pack
+    /// first: when none does, the `ipfs://` CID the upload verified is recorded instead.
+    pub async fn recordable(
+        &self,
+        stored: &[String],
+        pack_hash: &str,
+        size: u64,
+    ) -> Option<Vec<String>> {
+        let pick = mirror_uris(stored)?;
+        if !pick[0].starts_with("https://") {
+            return Some(pick);
+        }
+        let served = crate::pack_mirror::check_serves(
+            &PackReader::from_user_config(),
+            &pick,
+            pack_hash,
+            (size > 0).then_some(size),
+        )
+        .await;
+        if served == crate::pack_mirror::ServeCheck::Serves {
+            return Some(pick);
+        }
+        let cid: Vec<String> = stored
+            .iter()
+            .filter(|u| u.starts_with("ipfs://"))
+            .take(1)
+            .cloned()
+            .collect();
+        (!cid.is_empty()).then_some(cid)
+    }
+
+    /// The target's profile name.
+    #[must_use]
+    pub fn target_name(&self) -> &str {
+        self.target.name()
+    }
+
+    /// Store the pack `copies` record (verified against its hash) on the target; returns the
+    /// addresses it is stored at, and where the bytes were read from.
+    pub async fn copy(&self, copies: &[&PackManifestInfo]) -> Result<(Vec<String>, String)> {
+        let first = copies
+            .first()
+            .ok_or_else(|| Error::InvalidInput("no copy of the pack to read".into()))?;
+        let (bytes, from, _) = self
+            .svc
+            .fetch_pin_copy_or_mirror(
+                self.source,
+                &self.contract,
+                copies,
+                &self.roles,
+                &self.reader,
+            )
+            .await?;
+        let meta = PackMeta::for_bytes(&bytes);
+        if meta.pack_hash != hex::encode(first.pack_hash) {
+            return Err(Error::Io(
+                "the pack read back did not hash to its manifest".into(),
+            ));
+        }
+        let stored = self.target.store(&bytes, &meta).await?;
+        Ok((stored.into_iter().map(|Uri(u)| u).collect(), from))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|u| (*u).to_string()).collect()
+    }
+
+    #[test]
+    fn a_mirror_prefers_public_https_then_the_cid() {
+        assert_eq!(
+            mirror_uris(&s(&[
+                "https://gw.example.org/ipfs/bafyabc",
+                "ipfs://bafyabc"
+            ])),
+            Some(s(&["https://gw.example.org/ipfs/bafyabc"]))
+        );
+        assert_eq!(
+            mirror_uris(&s(&["ipfs://bafyabc"])),
+            Some(s(&["ipfs://bafyabc"]))
+        );
+        assert_eq!(
+            mirror_uris(&s(&["https://127.0.0.1/ipfs/bafyabc", "ipfs://bafyabc"])),
+            Some(s(&["ipfs://bafyabc"]))
+        );
+        assert_eq!(mirror_uris(&s(&["s3://bucket/key"])), None);
+    }
+
+    fn input(uris: &[&str]) -> PackManifestInput {
+        PackManifestInput {
+            pack_hash: [1; 32],
+            kind: 0,
+            size_bytes: 1,
+            object_count: 1,
+            chunk_count: 0,
+            storage: 1,
+            uris: s(uris),
+            supersedes: Vec::new(),
+            tips: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn own_addresses_go_first_and_the_parents_fill_the_rest() {
+        let got = with_own_first(
+            input(&["https://parent.example/p", "ipfs://bafyabc"]),
+            &s(&["https://mine.example/p", "ipfs://bafyabc"]),
+        );
+        assert_eq!(
+            got.uris,
+            s(&[
+                "https://mine.example/p",
+                "ipfs://bafyabc",
+                "https://parent.example/p"
+            ])
+        );
+    }
+
+    #[test]
+    fn an_overfull_list_drops_the_parents_private_locators_then_the_tail() {
+        let parent: Vec<String> = (0..8).map(|i| format!("https://p{i}.example/x")).collect();
+        let mut with_s3 = parent.clone();
+        with_s3.insert(0, "s3://parent/x".into());
+        let refs: Vec<&str> = with_s3.iter().map(String::as_str).collect();
+        let got = with_own_first(input(&refs), &s(&["https://mine.example/x"]));
+        assert_eq!(got.uris.len(), MANIFEST_URIS_V2.max_items);
+        assert_eq!(got.uris[0], "https://mine.example/x");
+        assert!(!got.uris.iter().any(|u| u.starts_with("s3://")));
+    }
+}

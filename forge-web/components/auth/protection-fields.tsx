@@ -1,32 +1,33 @@
 'use client'
 
 /**
- * How this browser's limited key is protected at rest (`ux-dx-spec.md` §2.3): a passkey (PRF)
- * when the browser supports it, a passphrase (Argon2id) otherwise — or both. Produces the
- * {@link Protection} the vault seals with. A passkey is enrolled on demand, so the ceremony
- * runs only when the user asks for it.
+ * How this browser's limited key is protected at rest (`ux-dx-spec.md` §2.3): by default this
+ * browser alone (`device`: the key is spend-capped and expires on chain), or a passkey (PRF), a
+ * passphrase (Argon2id), or both, when the user adds them. Produces the {@link Protection} the
+ * vault seals with. A passkey is enrolled on demand, so the ceremony runs only when asked for.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Fingerprint, KeyRound } from 'lucide-react'
+import { Fingerprint } from 'lucide-react'
 import { enrollPasskey, MIN_PASSPHRASE, passkeysAvailable, type Protection } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { cn, errorMessage } from '@/lib/utils'
 import { clockSkewErrorCopy } from '@/lib/sdk/clock-skew'
-import { AUTO_LOCK_MS } from '@/lib/auth/vault'
-import { KEPT_IDLE_MS } from '@/lib/auth/session-resume'
-
-const HOUR_MS = 60 * 60 * 1000
 
 /**
- * `preferPasskey`: the key has no budget or expiry (a shipped wallet's key), so a passkey is the
- * default choice (the primary button, with a caution against a passphrase alone). A passphrase
- * is still accepted: not every authenticator supports PRF, and that is only known after trying.
+ * `preferPasskey`: the key has no budget or expiry, so it is never kept by this browser alone: a
+ * passkey is the default choice, and a passphrase is still accepted (not every authenticator
+ * supports PRF, and that is only known after trying).
+ * `passwordOnly`: only the passphrase fields (the caller offers the passkey itself).
+ * `allowDevice`: false where the key must not be kept by this browser alone (a renewal of a key
+ * that had a passkey or passphrase, or protecting a browser-only key): nothing chosen is a problem.
  * `onSubmit`: what Enter in a passphrase field does (QW3-027: the sheet's button sits outside
  * this form, and a form of two password fields with no submit button ignores Enter).
  */
-export function useProtection(opts: { readonly preferPasskey?: boolean; readonly onSubmit?: () => void } = {}): {
+export function useProtection(
+  opts: { readonly preferPasskey?: boolean; readonly onSubmit?: () => void; readonly passwordOnly?: boolean; readonly allowDevice?: boolean } = {},
+): {
   readonly fields: JSX.Element
   /** The protection, or null with `problem` set when not ready. */
   readonly protection: Protection | null
@@ -47,7 +48,8 @@ export function useProtection(opts: { readonly preferPasskey?: boolean; readonly
   const passkey = hasPasskey ? passkeyRef.current : null
   const [enrolling, setEnrolling] = useState(false)
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
-  const canPasskey = passkeysAvailable()
+  const canPasskey = passkeysAvailable() && opts.passwordOnly !== true
+  const unlimited = opts.preferPasskey === true || opts.allowDevice === false
   const preferPasskey = opts.preferPasskey === true && canPasskey
 
   const enroll = async (): Promise<void> => {
@@ -71,14 +73,15 @@ export function useProtection(opts: { readonly preferPasskey?: boolean; readonly
   let problem: string | null = null
   if (passphraseSet && passphrase.length < MIN_PASSPHRASE) problem = `Use at least ${MIN_PASSPHRASE} characters.`
   else if (passphraseSet && passphrase !== confirm) problem = 'The passphrases do not match.'
-  else if (!passphraseSet && !passkey) problem = 'Protect the key with a passkey or a passphrase.'
+  else if (!passphraseSet && !passkey && unlimited) problem = opts.preferPasskey ? 'This key has no spending limit: add a passkey or a passphrase.' : 'Add a passkey or a passphrase.'
 
+  const chosen = passphraseSet || passkey !== null
   const protection: Protection | null =
-    problem !== null ? null : { ...(passphraseSet ? { passphrase } : {}), ...(passkey ? { passkey } : {}) }
+    problem !== null ? null : chosen ? { ...(passphraseSet ? { passphrase } : {}), ...(passkey ? { passkey } : {}) } : { device: true }
 
   let passkeyVariant: 'subtle' | 'primary' | 'outline' = 'outline'
   if (passkey) passkeyVariant = 'subtle'
-  else if (preferPasskey) passkeyVariant = 'primary'
+  else if (unlimited && canPasskey) passkeyVariant = 'primary'
 
   // Passphrases are uncontrolled inputs (never mirrored into a `value` attribute), inside a
   // form so the browser does not log the fields as "not contained in a form". A caller may
@@ -91,38 +94,9 @@ export function useProtection(opts: { readonly preferPasskey?: boolean; readonly
   }, [])
   const submitRef = useRef(opts.onSubmit)
   submitRef.current = opts.onSubmit
-  const fields = (
-    <form
-      ref={onFormMount}
-      className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800"
-      onSubmit={(e) => e.preventDefault()}
-      onKeyDown={(e) => {
-        // Enter in a passphrase field submits the sheet (an IME composing a character is not done).
-        if (e.key !== 'Enter' || e.nativeEvent.isComposing || !(e.target instanceof HTMLInputElement) || e.target.type !== 'password') return
-        e.preventDefault()
-        submitRef.current?.()
-      }}
-    >
-      <p className="text-dense font-medium">Protect this browser&apos;s key</p>
-      {preferPasskey && !passkey ? (
-        <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="prefer-passkey">
-          This key has no spending limit: use a passkey. A passphrase alone can be guessed offline by anyone who copies this browser&apos;s storage.
-        </p>
-      ) : null}
-      {canPasskey ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant={passkeyVariant} size="sm" onClick={enroll} loading={enrolling} disabled={passkey !== null}>
-            <Fingerprint className="h-3.5 w-3.5" aria-hidden /> {passkey ? 'Passkey added' : 'Use a passkey'}
-          </Button>
-          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Recommended: Touch ID, Windows Hello or a security key.</span>
-        </div>
-      ) : null}
-      {passkeyError ? <p className="text-[12px] text-caution-700 dark:text-caution-400">{passkeyError}</p> : null}
-      <Field
-        label={passkey ? 'Passphrase (optional backup)' : 'Passphrase'}
-        htmlFor="vault-passphrase"
-        hint="Encrypts the key on this device (Argon2id, 64 MiB). Never sent anywhere."
-      >
+  const passwordFields = (
+    <div className="space-y-3 pt-2">
+      <Field label={passkey ? 'Passphrase (optional backup)' : 'Passphrase'} htmlFor="vault-passphrase" hint="Never leaves this device.">
         <Input
           id="vault-passphrase"
           type="password"
@@ -139,10 +113,43 @@ export function useProtection(opts: { readonly preferPasskey?: boolean; readonly
           <Input id="vault-passphrase-2" type="password" autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
         </Field>
       ) : null}
-      <p className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-        <KeyRound className="h-3 w-3" aria-hidden /> Locks itself after {AUTO_LOCK_MS / HOUR_MS} hours or when you sign out. Reloads keep only the spend-capped key for
-        public repos, and lock after {KEPT_IDLE_MS / HOUR_MS} hours without use.
-      </p>
+    </div>
+  )
+  const fields = (
+    <form
+      ref={onFormMount}
+      className={opts.passwordOnly ? 'space-y-3' : 'space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800'}
+      onSubmit={(e) => e.preventDefault()}
+      onKeyDown={(e) => {
+        // Enter in a passphrase field submits the sheet (an IME composing a character is not done).
+        if (e.key !== 'Enter' || e.nativeEvent.isComposing || !(e.target instanceof HTMLInputElement) || e.target.type !== 'password') return
+        e.preventDefault()
+        submitRef.current?.()
+      }}
+    >
+      {opts.passwordOnly ? null : <p className="text-dense font-medium">{unlimited ? 'Protect this browser\'s key' : 'Lock this browser\'s key (optional)'}</p>}
+      {preferPasskey && !passkey ? (
+        <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="prefer-passkey">
+          This key has no spending limit: use a passkey.
+        </p>
+      ) : null}
+      {canPasskey ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant={passkeyVariant} size="sm" onClick={enroll} loading={enrolling} disabled={passkey !== null}>
+            <Fingerprint className="h-3.5 w-3.5" aria-hidden /> {passkey ? 'Passkey added' : 'Add a passkey'}
+          </Button>
+          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Touch ID, Windows Hello or a security key</span>
+        </div>
+      ) : null}
+      {passkeyError ? <p className="text-[12px] text-caution-700 dark:text-caution-400">{passkeyError}</p> : null}
+      {opts.passwordOnly ? (
+        passwordFields
+      ) : (
+        <details className="text-dense" data-testid="protect-password" open={unlimited && !canPasskey ? true : undefined}>
+          <summary className="cursor-pointer text-[12px] text-anvil-600 dark:text-anvil-300 coarse:py-2">{canPasskey ? 'Use a password instead' : 'Add a password'}</summary>
+          {passwordFields}
+        </details>
+      )}
     </form>
   )
   return { fields, protection, problem }

@@ -45,9 +45,29 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             name,
             default_branch_only,
             pin,
-        } => Box::pin(fork(ctx, repo, name.as_deref(), *default_branch_only, *pin)).await,
-        RepoCommand::Sync { repo, branch } => {
-            crate::repo_sync::sync(ctx, repo, branch.as_deref()).await
+            storage,
+            no_copy,
+        } => {
+            Box::pin(fork(
+                ctx,
+                repo,
+                name.as_deref(),
+                *default_branch_only,
+                *pin,
+                storage.as_deref(),
+                *no_copy,
+            ))
+            .await
+        }
+        RepoCommand::Pin(args) => crate::repo_pin::pin(ctx, args).await,
+        RepoCommand::Unpin { repo } => crate::repo_pin::unpin(ctx, repo).await,
+        RepoCommand::Sync {
+            repo,
+            branch,
+            storage,
+            no_copy,
+        } => {
+            crate::repo_sync::sync(ctx, repo, branch.as_deref(), storage.as_deref(), *no_copy).await
         }
         RepoCommand::Reindex {
             repo,
@@ -208,16 +228,25 @@ fn clone_dir_name(name: &str) -> &str {
 }
 
 /// Fork `repo`: a new forge-v2 repository with `forkOf` = the parent, the parent's packs
-/// recorded without re-uploading (external URIs as they are; Platform chunks by a locator
-/// into the parent's scope), and the parent's branches and tags copied (its default branch
-/// alone with `default_branch_only`). Resumable.
+/// copied to the forker's own storage when they have some (listed first, the parent's copies
+/// after them) or else recorded by reference (external URIs as they are; Platform chunks by a
+/// locator into the parent's scope), and the parent's branches and tags copied (its default
+/// branch alone with `default_branch_only`). Resumable.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_lines
+)]
 async fn fork(
     ctx: &Ctx,
     repo: &str,
     name: Option<&str>,
     default_branch_only: bool,
     pin: bool,
+    storage: Option<&str>,
+    no_copy: bool,
 ) -> Result<()> {
+    let copy_to = crate::repo_pin::fork_storage(storage, no_copy)?;
     let Session {
         client,
         bridge,
@@ -256,7 +285,20 @@ async fn fork(
                     .flatten()
             })
             .collect();
-    let manifest_uris: Vec<u64> = planned.iter().map(|m| m.uris.len() as u64).collect();
+    // A copy adds its own addresses (a public URL or gateway, and a locator or CID) to each
+    // manifest that is not on Platform.
+    let own_uris = if copy_to.is_some() { OWN_COPY_URIS } else { 0 };
+    let manifest_uris: Vec<u64> = planned
+        .iter()
+        .map(|m| {
+            let own = if m.storage == 1 && !m.uris.iter().any(|u| u.starts_with("platform://")) {
+                own_uris
+            } else {
+                0
+            };
+            (m.uris.len() as u64 + own).min(8)
+        })
+        .collect();
     let packs = manifest_uris.len();
     warn_unreadable_packs(&parent, &planned);
     // As on GitHub, the fork takes the parent's default branch (QW2-013) and description
@@ -278,16 +320,29 @@ async fn fork(
     .len();
     let estimate = fork_estimate(&manifest_uris, refs as u64);
     if !ctx.json {
+        let packs_line = match &copy_to {
+            Some((name, _)) => format!("{} copied to {name}", crate::fmt::plural(packs, "pack")),
+            None => format!("{} by reference", crate::fmt::plural(packs, "pack")),
+        };
         println!(
-            "Forking {} as {}/{slug} on {}\n  repo + {}, nothing re-uploaded, + {}   {}",
+            "Forking {} as {}/{slug} on {}\n  repo + {packs_line} + {}   {}",
             parent.display(),
             identity.id(),
             ctx.network_label(),
-            crate::fmt::plural(packs, "pack"),
             crate::fmt::plural(refs, "ref"),
             cost_line(estimate, price)
         );
+        if copy_to.is_none() && packs > 0 {
+            println!(
+                "  Files stay on {}'s storage; `--storage <profile>` keeps your own copy.",
+                parent.display()
+            );
+        }
     }
+    let copy_name = copy_to.as_ref().map(|(name, _)| name.clone());
+    let copy_to = copy_to
+        .map(|(name, profile)| crate::repo_pin::target(&name, &profile))
+        .transpose()?;
     ctx.confirm_or_cancel(&format!("Fork {}?", parent.display()))?;
     let result = forge_core::fork::fork_repo(
         &client,
@@ -297,9 +352,18 @@ async fn fork(
         &opts,
         &default_journal_dir()?,
         default_branch_only,
+        copy_to,
     )
     .await
     .context("forking the repository")?;
+    if let Some(name) = copy_name {
+        crate::repo_pin::record_fork_storage(
+            &ctx.network_label(),
+            &identity.id(),
+            result.created.repo.id(),
+            &name,
+        )?;
+    }
     let pinned = if pin && result.unreferenceable.is_empty() {
         Some(
             Box::pin(crate::ipfs_pin::pin_parent_after_fork(
@@ -350,6 +414,9 @@ fn fork_opts(slug: String, default_branch: Option<String>, description: &str) ->
         ..base
     }
 }
+
+/// The addresses one copy to the forker's storage adds to a manifest, at most.
+pub(crate) const OWN_COPY_URIS: u64 = 2;
 
 /// The pre-sign quote for a fork writing one manifest per entry of `manifest_uris` (each
 /// recording that many URIs) and copying `refs` refs (QW2-020: it priced each manifest and ref
@@ -404,6 +471,7 @@ pub(crate) fn fork_body(
         "manifestsExisting": result.manifests_existing,
         "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
         "refsWritten": result.refs_written,
+        "packsCopied": result.copied,
         "cost": cost_json(result.cost_credits, price),
     })
 }
@@ -462,10 +530,17 @@ fn report_fork(
         body,
         || {
             println!("✓ forked {} → {}", parent.display(), fork.display());
-            println!(
-                "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
-                result.manifests_written, result.platform_referenced
-            );
+            if result.copied > 0 {
+                println!(
+                    "  packs:   {} recorded, {} copied to your storage",
+                    result.manifests_written, result.copied
+                );
+            } else {
+                println!(
+                    "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
+                    result.manifests_written, result.platform_referenced
+                );
+            }
             println!("  refs:    {} copied", result.refs_written.len());
             println!("  remote:  {}", fork.remote_url());
             println!("  cost:    {}", cost_line(result.cost_credits, price));

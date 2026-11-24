@@ -45,6 +45,8 @@ describe('NewBuildBanner', () => {
     expect(banner?.getAttribute('role')).toBe('status')
     expect(banner?.textContent).toContain('A new version is available')
     expect(banner?.querySelector('button')?.textContent).toContain('Reload')
+    act(() => banner?.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')?.click())
+    expect(el.querySelector('[data-testid="new-build-banner"]')).toBeNull()
   })
 
   it('stops watching when the page goes away', () => {

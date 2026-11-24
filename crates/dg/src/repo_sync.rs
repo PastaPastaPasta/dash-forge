@@ -137,7 +137,13 @@ fn commits_between(dir: &Path, from: &str, to: &str) -> Option<u64> {
 
 /// `dg repo sync <fork> [--branch <name>]`.
 #[allow(clippy::too_many_lines)]
-pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
+pub async fn sync(
+    ctx: &Ctx,
+    repo: &str,
+    branch: Option<&str>,
+    storage: Option<&str>,
+    no_copy: bool,
+) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "fork not synced").await?;
     let fork = &s.repo;
     let Some(parent_id) = forge_core::resolve::fork_parent(&s.client, fork)
@@ -411,7 +417,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     let sealed = forge_core::fork::sealed_parent_packs(&svc, &parent, &parent_packs, &roles)
         .await
         .context("checking the parent's packs")?;
-    let plan = plan_sync_manifests(
+    let mut plan = plan_sync_manifests(
         &parent,
         &parent_packs,
         &roles,
@@ -439,28 +445,72 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     let commits = fork_tip
         .as_deref()
         .and_then(|t| commits_between(dir, t, &parent_tip));
+    let price = ctx.fiat_price();
+    let me = s.identity.id();
+    let copy_to = if storage.is_some() || no_copy {
+        crate::repo_pin::fork_storage(storage, no_copy)?
+    } else {
+        match crate::repo_pin::fork_storage_recorded(&ctx.network_label(), &me, fork.id())
+            .or_else(|| crate::repo_pin::storage_holding(&fork_packs, &me))
+        {
+            Some(p) => Some(p),
+            None => crate::repo_pin::fork_storage(None, false)?,
+        }
+    };
+    let own_uris = if copy_to.is_some() {
+        crate::repo::OWN_COPY_URIS
+    } else {
+        0
+    };
     let estimate = sync_estimate(
         &plan
             .manifests
             .iter()
-            .map(|m| m.uris.len() as u64)
+            .map(|m| {
+                let own = if m.uris.iter().any(|u| u.starts_with("platform://")) {
+                    0
+                } else {
+                    own_uris
+                };
+                (m.uris.len() as u64 + own).min(8)
+            })
             .collect::<Vec<_>>(),
         fork_has_packs,
         !fork_refs.is_empty(),
     );
-    let price = ctx.fiat_price();
     if !ctx.json {
+        let packs = crate::fmt::plural(plan.manifests.len(), "pack");
+        let packs = match &copy_to {
+            Some((name, _)) if !plan.manifests.is_empty() => format!("{packs} copied to {name}"),
+            _ => format!("{packs} by reference, nothing re-uploaded"),
+        };
         println!(
-            "Sync {}:{fork_branch} with {target}: fast-forward {} → {}{}\n  {} by reference, nothing re-uploaded, + 1 ref update   {}",
+            "Sync {}:{fork_branch} with {target}: fast-forward {} → {}{}\n  {packs}, + 1 ref update   {}",
             fork.display(),
             fork_tip.as_deref().map_or_else(|| "(new branch)".into(), short),
             short(&parent_tip),
             commits.map_or_else(String::new, |n| format!(" ({})", crate::fmt::plural(n, "commit"))),
-            crate::fmt::plural(plan.manifests.len(), "pack"),
             cost_line(estimate, price)
         );
     }
     ctx.confirm_or_cancel(&format!("Sync {}?", fork.display()))?;
+    let copied = match &copy_to {
+        Some((name, profile)) => {
+            let copied = copy_new_packs(
+                &svc,
+                &parent,
+                &parent_packs,
+                &roles,
+                name,
+                profile,
+                &mut plan,
+            )
+            .await?;
+            crate::repo_pin::record_fork_storage(&ctx.network_label(), &me, fork.id(), name)?;
+            copied
+        }
+        None => 0,
+    };
     let before = s.balance().await;
     let result = sync_fork(
         &svc,
@@ -481,6 +531,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
             "to": parent_tip,
             "commits": commits,
             "manifestsWritten": result.manifests_written,
+            "packsCopied": copied,
             "refUpdateId": result.ref_update,
             "cost": cost_json(spent, price),
         }),
@@ -494,14 +545,65 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
                     crate::fmt::plural(n, "new commit")
                 ))
             );
-            println!(
-                "  packs:   {} recorded by reference, nothing re-uploaded",
-                result.manifests_written
-            );
+            if copied > 0 {
+                println!(
+                    "  packs:   {} recorded, {copied} copied to your storage",
+                    result.manifests_written
+                );
+            } else {
+                println!(
+                    "  packs:   {} recorded by reference, nothing re-uploaded",
+                    result.manifests_written
+                );
+            }
             println!("  cost:    {}", cost_line(spent, price));
         },
     );
     Ok(())
+}
+
+/// Copy each pack `plan` records to the forker's storage profile `name` and list that copy first
+/// (`docs/design/pin-and-fork-copies.md`). A pack that cannot be copied stays by reference.
+async fn copy_new_packs(
+    svc: &RepoService<'_>,
+    parent: &forge_core::scope::RepoRef,
+    parent_packs: &[forge_core::repo::PackManifestInfo],
+    roles: &forge_core::repo::RoleMap,
+    name: &str,
+    profile: &forge_core::storage::Profile,
+    plan: &mut forge_core::fork::SyncManifests,
+) -> Result<usize> {
+    if plan.manifests.is_empty() {
+        return Ok(0);
+    }
+    let groups =
+        forge_core::fork::plan_manifests(parent_packs, roles, &std::collections::BTreeSet::new());
+    let own_copy = forge_core::own_copy::OwnCopy::new(
+        svc,
+        parent,
+        parent_packs,
+        roles.clone(),
+        crate::repo_pin::target(name, profile)?,
+    )
+    .await?;
+    // Every copy is made before anything is written: a failure leaves the fork as it was, and
+    // running the sync again copies the pack rather than recording it by reference for good.
+    let mut copied = 0;
+    for m in &mut plan.manifests {
+        let Some(group) = groups.iter().find(|g| g[0].pack_hash == m.pack_hash) else {
+            continue;
+        };
+        // A Platform copy is permanent: it stays the parent's chunk locator.
+        if group.iter().any(|c| c.storage == 0) {
+            continue;
+        }
+        let own = forge_core::fork::own_copy_of(&own_copy, group)
+            .await
+            .context("fork not synced; nothing was written")?;
+        *m = forge_core::own_copy::with_own_first(m.clone(), &own);
+        copied += 1;
+    }
+    Ok(copied)
 }
 
 #[cfg(test)]

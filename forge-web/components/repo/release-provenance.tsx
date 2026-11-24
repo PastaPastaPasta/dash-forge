@@ -159,10 +159,101 @@ export function ReleaseProvenanceCard({ home, addr, list, tag }: { home: RepoHom
     )
   }
   const altered = provenanceAltered(p)
-  const caution = !altered && (p.tag === 'restored' || p.lateTag)
   const assets = assetSentence(p.assets)
   const tagsProtected = home.config === null ? null : matchesProtected(`refs/tags/${tag}`, home.config.protectedPatterns)
+  const sigGood = sig?.kind === 'signed' && sig.state !== 'checking' && sig.state !== 'error' && sig.state.status === 'verified'
+  const sigPending = sig === null || (sig.kind === 'signed' && sig.state === 'checking')
+  const sigNotGood = !sigPending && !sigGood
+  const caution = !altered && (p.tag === 'restored' || p.lateTag || tagsProtected === false || sigNotGood)
+  const collapsible = !altered && !caution && sigGood && tagsProtected === true
   const moved = p.current !== null && p.baseline !== null && p.current.oid !== p.baseline.oid
+  const details = (
+    <dl className="mt-2 divide-y divide-anvil-100 text-[13px] dark:divide-anvil-850">
+      {p.published !== null ? (
+        <Row label="Published">
+          by <Author identityId={p.published.by} /> · <Time ms={p.published.at} withDate />
+        </Row>
+      ) : null}
+      {p.baseline !== null ? (
+        <Row label={p.pinnedBy === 'release' ? 'Release records' : p.lateTag ? 'Tag first pushed' : 'Tag at publish'}>
+          <Oid value={p.baseline.oid} />
+          {p.pinnedBy === 'tag' ? (
+            <>
+              pushed by <Author identityId={p.baseline.by} /> · <Time ms={p.baseline.at} withDate />
+              {p.lateTag ? <span className="text-caution-700 dark:text-caution-400">, after the release was published</span> : null}
+            </>
+          ) : null}
+        </Row>
+      ) : null}
+      {p.recorded !== null && p.pinnedBy === 'tag' ? (
+        <Row label="Release records">
+          <Oid value={p.recorded} />
+          {p.recordDiffers ? (
+            <span className="text-danger-700 dark:text-danger-400" data-testid="provenance-record-differs">
+              the tag did not point here at publish
+            </span>
+          ) : (
+            <span className="text-anvil-600 dark:text-anvil-300">matches the tag at publish</span>
+          )}
+        </Row>
+      ) : null}
+      {moved && p.current !== null ? (
+        <Row label="Tag now">
+          <Oid value={p.current.oid} />
+          pushed by <Author identityId={p.current.by} /> · <Time ms={p.current.at} withDate />
+        </Row>
+      ) : null}
+      {p.moves.length > 0 ? (
+        <Row label={plural(p.moves.length, 'move')}>
+          <ol className="w-full space-y-0.5" data-testid="provenance-moves">
+            {p.moves.map((m) => (
+              <li key={m.id} className="flex flex-wrap items-center gap-1">
+                <Author identityId={m.by} /> {m.to === null ? 'deleted it' : 'moved it to'}
+                {m.to !== null ? <Oid value={m.to} /> : null} · <Time ms={m.at} withDate />
+              </li>
+            ))}
+          </ol>
+        </Row>
+      ) : null}
+      <SignatureRow sig={sig} />
+      {tagsProtected !== null ? (
+        <Row label="Protection">
+          {tagsProtected ? (
+            <span>Only maintainers can move this tag.</span>
+          ) : (
+            <span className="text-caution-700 dark:text-caution-400" data-testid="provenance-unprotected">
+              Tags are not protected: any writer can move this one.{' '}
+              <Link href={repoHref('/repo/settings', addr)} className="underline hover:text-forge-800 dark:hover:text-forge-400">
+                Branch settings
+              </Link>
+            </span>
+          )}
+        </Row>
+      ) : null}
+    </dl>
+  )
+
+  if (collapsible) {
+    return (
+      <details
+        aria-label="Provenance"
+        data-testid="release-provenance"
+        data-state="intact"
+        className="rounded-lg border border-anvil-200 bg-white px-4 py-3 dark:border-anvil-750 dark:bg-anvil-900"
+      >
+        <summary className="hit-area flex cursor-pointer select-none flex-wrap items-center gap-2 text-dense">
+          <ShieldCheck className="h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden />
+          <span className="font-medium text-anvil-800 dark:text-anvil-100">Provenance</span>
+          <span className="text-anvil-600 dark:text-anvil-300" data-testid="provenance-headline">
+            {headline(p, tag)}
+            {assets !== null ? <> {assets}</> : null}
+          </span>
+        </summary>
+        {details}
+      </details>
+    )
+  }
+
   return (
     <section
       aria-label="Provenance"
@@ -180,8 +271,10 @@ export function ReleaseProvenanceCard({ home, addr, list, tag }: { home: RepoHom
       <h2 className="flex items-center gap-2 text-dense font-semibold">
         {altered ? (
           <ShieldAlert className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
+        ) : caution ? (
+          <ShieldAlert className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
         ) : (
-          <ShieldCheck className={cn('h-4 w-4', caution ? 'text-caution-700 dark:text-caution-400' : 'text-verify-700 dark:text-verify-400')} aria-hidden />
+          <ShieldCheck className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         )}
         Provenance
       </h2>
@@ -192,69 +285,7 @@ export function ReleaseProvenanceCard({ home, addr, list, tag }: { home: RepoHom
         {headline(p, tag)}
         {assets !== null ? <> {assets}</> : null}
       </p>
-      <dl className="mt-2 divide-y divide-anvil-100 text-[13px] dark:divide-anvil-850">
-        {p.published !== null ? (
-          <Row label="Published">
-            by <Author identityId={p.published.by} /> · <Time ms={p.published.at} withDate />
-          </Row>
-        ) : null}
-        {p.baseline !== null ? (
-          <Row label={p.pinnedBy === 'release' ? 'Release records' : p.lateTag ? 'Tag first pushed' : 'Tag at publish'}>
-            <Oid value={p.baseline.oid} />
-            {p.pinnedBy === 'tag' ? (
-              <>
-                pushed by <Author identityId={p.baseline.by} /> · <Time ms={p.baseline.at} withDate />
-                {p.lateTag ? <span className="text-caution-700 dark:text-caution-400">, after the release was published</span> : null}
-              </>
-            ) : null}
-          </Row>
-        ) : null}
-        {p.recorded !== null && p.pinnedBy === 'tag' ? (
-          <Row label="Release records">
-            <Oid value={p.recorded} />
-            {p.recordDiffers ? (
-              <span className="text-danger-700 dark:text-danger-400" data-testid="provenance-record-differs">
-                the tag did not point here at publish
-              </span>
-            ) : (
-              <span className="text-anvil-600 dark:text-anvil-300">matches the tag at publish</span>
-            )}
-          </Row>
-        ) : null}
-        {moved && p.current !== null ? (
-          <Row label="Tag now">
-            <Oid value={p.current.oid} />
-            pushed by <Author identityId={p.current.by} /> · <Time ms={p.current.at} withDate />
-          </Row>
-        ) : null}
-        {p.moves.length > 0 ? (
-          <Row label={plural(p.moves.length, 'move')}>
-            <ol className="w-full space-y-0.5" data-testid="provenance-moves">
-              {p.moves.map((m) => (
-                <li key={m.id} className="flex flex-wrap items-center gap-1">
-                  <Author identityId={m.by} /> {m.to === null ? 'deleted it' : 'moved it to'}
-                  {m.to !== null ? <Oid value={m.to} /> : null} · <Time ms={m.at} withDate />
-                </li>
-              ))}
-            </ol>
-          </Row>
-        ) : null}
-        <SignatureRow sig={sig} />
-        {tagsProtected !== null ? (
-          <Row label="Protection">
-            {tagsProtected ? (
-              <span>Only maintainers can move this tag.</span>
-            ) : (
-              <span className="text-caution-700 dark:text-caution-400" data-testid="provenance-unprotected">
-                Tags are not protected: any writer can move this one.{' '}
-                <Link href={repoHref('/repo/settings', addr)} className="underline hover:text-forge-800 dark:hover:text-forge-400">
-                  Branch settings
-                </Link>
-              </span>
-            )}
-          </Row>
-        ) : null}
-      </dl>
+      {details}
     </section>
   )
 }

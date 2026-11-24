@@ -181,6 +181,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg repo make-public` | [`repo-make-public.schema.json`](dg/repo-make-public.schema.json) |
 | `dg repo members enable` | [`repo-members-enable.schema.json`](dg/repo-members-enable.schema.json) |
 | `dg repo members status` | [`repo-members-status.schema.json`](dg/repo-members-status.schema.json) |
+| `dg repo pin` | [`repo-pin.schema.json`](dg/repo-pin.schema.json) |
 | `dg repo policy set` | [`repo-policy-set.schema.json`](dg/repo-policy-set.schema.json) |
 | `dg repo policy show` | [`repo-policy-show.schema.json`](dg/repo-policy-show.schema.json) |
 | `dg repo protect add` | [`repo-protect-add.schema.json`](dg/repo-protect-add.schema.json) |
@@ -193,6 +194,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg repo topic` | [`repo-topic.schema.json`](dg/repo-topic.schema.json) |
 | `dg repo unarchive` | [`repo-unarchive.schema.json`](dg/repo-unarchive.schema.json) |
 | `dg repo unban` | [`repo-unban.schema.json`](dg/repo-unban.schema.json) |
+| `dg repo unpin` | [`repo-unpin.schema.json`](dg/repo-unpin.schema.json) |
 | `dg repo unstar` | [`repo-unstar.schema.json`](dg/repo-unstar.schema.json) |
 | `dg repo unwatch` | [`repo-unwatch.schema.json`](dg/repo-unwatch.schema.json) |
 | `dg repo view` | [`repo-view.schema.json`](dg/repo-view.schema.json) |

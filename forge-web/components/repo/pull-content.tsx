@@ -1729,7 +1729,12 @@ function PullPage({
           <span className="sr-only" role="status" aria-live="polite" data-testid="pr-new-push-status">
             {open && newPush.found !== null ? 'New commits were pushed. Refresh to see them.' : ''}
           </span>
-          <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} visibility={home.repo.visibility} className="ml-auto" />
+          <CopyLinkButton
+            repo={addr}
+            target={{ kind: 'pull', number: pull.number }}
+            visibility={home.repo.visibility}
+            className="ml-auto border-transparent bg-transparent text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:border-transparent dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+          />
         </div>
       </div>
 
@@ -2236,7 +2241,7 @@ function PullPage({
               {/* Composer */}
               <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="pr-composer">
                 {signedOut && !thread.locked && !archived ? (
-                  <SignedOutComposer cost={commentCost} />
+                  <SignedOutComposer />
                 ) : (
                 <>
                 {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
