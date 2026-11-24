@@ -10,7 +10,8 @@
  * fork's reader and the parent's, then each side's own commits counted.
  *
  * Only a fast-forward is written (`syncFork`, parity with `dg repo sync`): the parent's packs the
- * fork does not record yet, by reference, then one ref update. A branch with commits of its own
+ * fork does not record yet (copied to the viewer's storage first when they have some, else by
+ * reference), then one ref update. A branch with commits of its own
  * is never moved: the bar offers a pull request into the fork that merges the parent's branch,
  * or, when the fork is only ahead, the parent's New pull request form.
  */
@@ -30,11 +31,13 @@ import { ARCHIVED_REASON, formatBytes, plural, type RepoHome } from '@/lib/view'
 import { historyWalker } from '@/lib/view/pull-diff'
 import { syncAncestry, SYNC_COUNT_CAP } from '@/lib/view/fork-sync'
 import { shortId } from '@/lib/utils'
+import { forkCopier, forkCopyProfile } from '@/lib/storage/pin-copies'
 import { useAsync } from '@/hooks/use-async'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { useSdk } from '@/hooks/use-sdk'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { useStorageConfig } from '@/hooks/use-storage-config'
 import { useAuth } from '@/contexts/auth-context'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { contributeHref, useForkParent } from '@/components/repo/fork-contribute'
@@ -284,6 +287,8 @@ function UpdateBranch({
   const { sdk, ready } = useSdk()
   const { signer } = useAuth()
   const guard = useWriteGuard()
+  const storage = useStorageConfig()
+  const target = forkCopyProfile(storage.config)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
@@ -307,6 +312,7 @@ function UpdateBranch({
           parentTip,
           plan: data,
           intent: `fork-sync:${home.repo.repoId}:${intent}`,
+          ...(target ? { copy: forkCopier(sdk, parent, target) } : {}),
         }),
       )
       setDone(true)
@@ -323,7 +329,9 @@ function UpdateBranch({
       {plan.data !== null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           {plan.data.manifests.length > 0
-            ? `Records ${plural(plan.data.manifests.length, `new pack of ${parent.name}`, `new packs of ${parent.name}`)} by reference (nothing is uploaded), then moves ${home.defaultBranch}.`
+            ? target
+              ? `Copies ${plural(plan.data.manifests.length, `new pack of ${parent.name}`, `new packs of ${parent.name}`)} to ${target.name}, then moves ${home.defaultBranch}.`
+              : `Records ${plural(plan.data.manifests.length, `new pack of ${parent.name}`, `new packs of ${parent.name}`)} by reference: files stay on ${parent.name}'s storage. Then moves ${home.defaultBranch}.`
             : `Moves ${home.defaultBranch}: this fork already records every pack it needs.`}
         </p>
       ) : plan.error !== null ? (

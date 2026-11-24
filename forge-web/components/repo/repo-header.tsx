@@ -167,8 +167,10 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <CodeSearchBox addr={addr} />
           <CopyLinkButton repo={addr} visibility={home.repo.visibility} />
-          {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
-          <PinButton repo={home.repo} member={role !== null} />
+          <div role="group" aria-label="Fork or pin" className="inline-flex items-center [&>button:not(:first-of-type)]:-ml-px [&>button:not(:first-of-type)]:rounded-l-none [&>button:not(:last-of-type)]:rounded-r-none">
+            {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
+            <PinButton repo={home.repo} member={role !== null} />
+          </div>
           <WatchButton repo={home.repo} />
           <StarButton repo={home.repo} count={home.starCount} lookalikes={lookalikes} />
         </div>

@@ -31,6 +31,8 @@ export const DOCS = {
   networks: '/docs/networks/',
   /** What to do when a key may be compromised (disable all other keys, replace the encryption key). */
   revokeKeys: '/docs/revoke-keys/',
+  /** Running your own storage and keeping pins in sync on a server of yours. */
+  selfHost: `${REPO_URL}/blob/master/docs/self-host.md`,
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
 } as const

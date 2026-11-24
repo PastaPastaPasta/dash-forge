@@ -3,19 +3,20 @@
 /**
  * Fork — a forge-v2 fork from the browser (`ux-dx-spec.md` §1d, P0 #14), the same documents
  * `dg repo fork` writes: the fork's `repo` (with `forkOf`), its owner's `maintainer` and first
- * `config`, one `packManifest` per parent pack by reference (nothing re-uploaded), and the
- * parent's branches and tags. As on GitHub, "Copy the <default> branch only" is ticked to start
+ * `config`, one `packManifest` per parent pack (copied to the forker's storage first when they
+ * have some, else by reference), and the parent's branches and tags. As on GitHub, "Copy the <default> branch only" is ticked to start
  * with (QW3-010: forking dash copied 604 refs, one signed write each). The dialog prices all of
  * it, says roughly how long the writes take, and lists the steps as they run; an interrupted
  * fork is finished by forking again under the same name.
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
 import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
-import { pinPlanBytes } from '@/lib/storage/pin-targets'
+import { forkCopier, forkCopyProfile, type CopyState } from '@/lib/storage/pin-copies'
 import { withoutMirrorMarker } from '@/lib/view/mirror-source'
 import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
@@ -28,15 +29,15 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
-import { useRepoPin } from '@/hooks/use-repo-pin'
-import { PinProgressList, pinMib } from '@/components/repo/pin-button'
+import { useStorageConfig } from '@/hooks/use-storage-config'
 import { CostPreview } from '@/components/ui/cost-preview'
+import { UnlockMore } from '@/components/auth/unlock-more'
 
 const STEPS: readonly { step: ForkStep; label: string }[] = [
   { step: 'repo', label: 'The fork' },
   { step: 'maintainer', label: 'You, as its first maintainer' },
   { step: 'config', label: 'Initial config' },
-  { step: 'manifests', label: "The parent's packs, by reference" },
+  { step: 'manifests', label: "The parent's packs" },
   { step: 'refs', label: "The parent's branches and tags" },
 ]
 
@@ -75,6 +76,7 @@ export function ForkButton({ parent, defaults }: { parent: RepoRef; defaults: Fo
     <>
       <Button
         size="sm"
+        variant="primary"
         onClick={() => {
           // Signed out, the sheet names the fork (L-62); its price is in the fork dialog, which
           // reads the parent's packs and refs first.
@@ -95,12 +97,10 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const router = useRouter()
-  const pin = useRepoPin(parent, { onlyWithProfile: true })
-  const [pinFiles, setPinFiles] = useState<boolean | null>(null)
-  const [pinConsent, setPinConsent] = useState(false)
+  const storage = useStorageConfig()
+  const target = forkCopyProfile(storage.config)
+  const [copies, setCopies] = useState<Record<string, { state: CopyState; why?: string }>>({})
   const [forkedHref, setForkedHref] = useState<string | null>(null)
-  const wantsPin = pinFiles ?? (pin.plan.data !== null && pinPlanBytes(pin.plan.data) < 256 * 1048576)
-  const needsPinConsent = pin.plan.data?.needsConsent === true
 
   const [name, setName] = useState(parent.name)
   // The parent's description, less a mirror's "(mirror of …)" marker: a fork is no mirror (QW3-011).
@@ -174,6 +174,14 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
     setPending(true)
     setError(null)
     setProgress({})
+    setCopies({})
+    let keptAny = false
+    const copy = target
+      ? forkCopier(sdk, parent, target, (hash, state, why) => {
+          if (state === 'failed' || state === 'skipped') keptAny = true
+          setCopies((prev) => ({ ...prev, [hash]: { state, ...(why ? { why } : {}) } }))
+        })
+      : undefined
     try {
       // Every document of the fork shows in one toast, with their total (QW3-039). A fork that
       // could copy no branches did not finish: its toast says so.
@@ -184,7 +192,7 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
             sdk,
             tag(signer),
             parent,
-            { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch, defaultBranchOnly: defaultOnly },
+            { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch, defaultBranchOnly: defaultOnly, ...(copy ? { copy } : {}) },
             (p) =>
               setProgress((prev) => ({
                 ...(prev ?? {}),
@@ -196,10 +204,8 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
         },
       )
       const href = `/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`
-      if (wantsPin && pin.profile && pin.plan.data) {
-        // The fork is complete. Pinning is optional and can never undo or fail its signed writes.
+      if (keptAny) {
         setForkedHref(href)
-        await pin.start(pinConsent)
         setPending(false)
       } else router.push(href)
     } catch (e) {
@@ -213,18 +219,19 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   }
 
   const p = plan.data
+  const kept = Object.values(copies).filter((c) => c.state === 'failed' || c.state === 'skipped').length
   return (
     <Dialog
       open
       onClose={pending ? () => undefined : onClose}
       title={`Fork ${parent.name}`}
-      description="A new repository of yours that points at this one's packs. Nothing is re-uploaded."
+      description={target ? "A new repository of yours, with its own copy of this one's files." : "A new repository of yours that points at this one's packs."}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          {forkedHref ? <Button variant="primary" disabled={pin.running} onClick={() => router.push(forkedHref)}>View fork</Button> : <Button variant="primary" onClick={run} loading={pending} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null || (wantsPin && !!pin.profile && (!pin.plan.data || (needsPinConsent && !pinConsent)))}>
+          {forkedHref ? <Button variant="primary" onClick={() => router.push(forkedHref)}>View fork</Button> : <Button variant="primary" onClick={run} loading={pending} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
             {check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork'}
           </Button>}
         </>
@@ -284,7 +291,7 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
               </label>
             ) : null}
             <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="fork-plan">
-              Repository, maintainer and config, {plural(p.manifests.length, 'pack manifest')} by reference, and {copiedRefs(refs)} copied:{' '}
+              Repository, maintainer and config, {plural(p.manifests.length, 'pack manifest')} {target ? `copied to ${target.name}` : 'by reference'}, and {copiedRefs(refs)} copied:{' '}
               {plural(3 + p.manifests.length + refs.length, 'signed write')}, {forkDuration(3 + p.manifests.length + refs.length)}.
             </p>
             {defaultOnly && refs.length === 0 && p.refs.length > 0 && p.unreferenceable.length === 0 ? (
@@ -301,18 +308,35 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           </>
         )}
 
-        {pin.profile && !forkedHref ? <div className="space-y-2">
-          <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={wantsPin} disabled={pending || (!pin.plan.data && !wantsPin)} onChange={(e) => setPinFiles(e.target.checked)} />Also pin its files on my IPFS node ({pin.plan.data ? pinMib(pinPlanBytes(pin.plan.data)) : '…'} MiB)</label>
-          {wantsPin ? <>
-            <label className="block text-dense">IPFS node<select aria-label="Fork pin node" value={pin.profile.name} disabled={pending} onChange={(e) => pin.setChosen(e.target.value)}>{pin.profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select></label>
-            {needsPinConsent ? <label className="flex items-start gap-2 text-dense"><input type="checkbox" checked={pinConsent} disabled={pending} onChange={(e) => setPinConsent(e.target.checked)} />My IP address will be listed on IPFS as holding this repo&apos;s members-only (encrypted) files.</label> : <p className="text-[12px]">Your node will tell the IPFS network it holds these files.</p>}
-          </> : null}
-        </div> : null}
-        {pin.plan.error && pin.profile && wantsPin ? <p role="alert">Could not read files to pin: {pin.plan.error}</p> : null}
-        {forkedHref ? <p role="status">Your fork is ready. Pinning its parent&apos;s files does not change the fork.</p> : null}
-        <PinProgressList rows={pin.rows} summary={pin.summary} />
-        {pin.running ? <Button size="sm" onClick={pin.cancel}>Cancel pinning</Button> : null}
-        {pin.error && forkedHref ? <p role="alert">Fork created; pinning failed: {pin.error}</p> : null}
+        {target ? null : storage.needsUnlock ? (
+          <UnlockMore title="Unlock this tab to copy the files to your storage" />
+        ) : (
+          <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="fork-storage">
+            Files stay on {parent.name}&apos;s storage.{' '}
+            <Link className="underline" href="/settings/storage/">
+              Set up storage
+            </Link>{' '}
+            to keep your own copy.
+          </p>
+        )}
+        {forkedHref ? (
+          <p role="status">
+            Your fork is ready. {plural(kept, 'file')} could not be copied and {kept === 1 ? 'stays' : 'stay'} on {parent.name}&apos;s storage.
+          </p>
+        ) : null}
+        {Object.keys(copies).length > 0 ? (
+          <details className="text-dense">
+            <summary className="cursor-pointer">Copies to {target?.name}</summary>
+            <ol aria-label="Copy progress" className="mt-1 max-h-48 space-y-1 overflow-auto">
+              {Object.entries(copies).map(([hash, c]) => (
+                <li key={hash}>
+                  pack {hash.slice(0, 12)}… · {c.state}
+                  {c.why ? `: ${c.why}` : ''}
+                </li>
+              ))}
+            </ol>
+          </details>
+        ) : null}
         {progress ? (
           <ol aria-label="Fork steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
             {STEPS.map(({ step, label }) => {

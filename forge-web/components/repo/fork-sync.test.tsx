@@ -21,7 +21,9 @@ const s = vi.hoisted(() => ({
   parentTip: '' as string,
   ancestry: { forkInParent: true, parentInFork: false, unrelated: false, behind: 3, ahead: 0 },
   synced: [] as unknown[],
+  storage: null as unknown,
 }))
+vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: s.storage, needsUnlock: false }) }))
 vi.mock('next/link', () => ({ default: (props: React.ComponentProps<'a'>) => <a {...props} /> }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, network: 'devnet', ready: true }) }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ signer: { identityId: 'M', network: 'devnet' } }) }))
@@ -62,6 +64,7 @@ beforeEach(() => {
   s.parentTip = PARENT_TIP
   s.ancestry = { forkInParent: true, parentInFork: false, unrelated: false, behind: 3, ahead: 0 }
   s.synced.length = 0
+  s.storage = null
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -105,6 +108,19 @@ describe('the fork bar', () => {
     expect(s.synced).toHaveLength(1)
     expect(s.synced[0]).toMatchObject({ refName: 'refs/heads/main', forkTip: FORK_TIP, parentTip: PARENT_TIP })
     expect(reload).toHaveBeenCalled()
+  })
+
+  it('copies the new packs to the viewer\'s storage when they have some', async () => {
+    s.storage = {
+      profiles: [{ name: 'r2', settings: { kind: 's3', provider: 'r2', endpoint: 'https://a.r2.cloudflarestorage.com', region: 'auto', bucket: 'forge', pathStyle: true, publicUrl: 'https://cdn.example', prefix: '' }, secrets: { accessKeyId: 'k', secretAccessKey: 's' } }],
+      defaultPolicy: { targets: ['r2'], replicas: 1, platformFallback: false },
+    }
+    await render()
+    await open()
+    expect(host.textContent).toMatch(/Copies 1 new pack of proj to r2, then moves main\./)
+    await act(async () => q('fork-sync-update')?.click())
+    await settle()
+    expect(s.synced[0]).toMatchObject({ copy: expect.any(Function) })
   })
 
   it('lets anyone compare, but only the fork’s maintainers and writers update', async () => {

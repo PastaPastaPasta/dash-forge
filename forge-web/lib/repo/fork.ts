@@ -49,6 +49,8 @@ import { manifestUrisProblem, refNameHash, writePackManifest, writeRefUpdate, ty
 import { readRefs, resolveRefByHash, type ResolvedRef } from './refs'
 import { readRepoById, toRepoDoc, repoRefOf, type RepoDoc } from './resolveRepo'
 import { createRepo, normalizeRepoName } from './writes'
+import { fitManifestUris } from '../storage/upload'
+import type { CopyPack } from '../storage/pin-copies'
 
 /** One copy of a parent pack, as the plan needs it (a `PackManifest` fits). */
 export type ForkCopy = Pick<
@@ -124,6 +126,18 @@ export function forkManifest(forge: ForgeIds, parentRepoId: string, copies: read
     uris,
     supersedes: first.supersedes,
   }
+}
+
+/**
+ * `manifest` naming the forker's own copy first, then the parent's addresses while they fit the
+ * manifest's URI budget.
+ */
+export function withOwnCopy(manifest: PackManifestInput, own: readonly string[]): PackManifestInput {
+  let uris = fitManifestUris(own)
+  for (const u of manifest.uris) {
+    if (!uris.includes(u) && manifestUrisProblem([...uris, u]) === null) uris = [...uris, u]
+  }
+  return { ...manifest, uris }
 }
 
 /** A ref and the tip it resolves to (a diverged ref at its provisional tip), or null. */
@@ -251,7 +265,7 @@ export async function syncFork(
   sdk: EvoSDK,
   auth: WriteAuth,
   fork: RepoRef,
-  input: { readonly refName: string; readonly forkTip: string | null; readonly parentTip: string; readonly plan: SyncManifests; readonly intent: string },
+  input: { readonly refName: string; readonly forkTip: string | null; readonly parentTip: string; readonly plan: SyncManifests; readonly intent: string; readonly copy?: CopyPack },
   onProgress?: (done: number, total: number) => void,
 ): Promise<{ readonly manifestsWritten: number }> {
   if (fork.visibility !== 'public') throw new Error('only a public fork syncs')
@@ -260,7 +274,9 @@ export async function syncFork(
   }
   const total = input.plan.manifests.length + 1
   let done = 0
-  for (const m of input.plan.manifests) {
+  for (const planned of input.plan.manifests) {
+    const own = input.copy ? await input.copy(planned.packHash) : null
+    const m = own ? withOwnCopy(planned, own) : planned
     await writePackManifest(sdk, auth, fork, m, `${input.intent}:manifest:${m.packHash}`)
     onProgress?.(++done, total)
   }
@@ -364,6 +380,8 @@ export async function forkRepoV2(
     readonly defaultBranch?: string
     /** Copy the default branch alone (GitHub's default), not every branch and tag (QW3-010). */
     readonly defaultBranchOnly?: boolean
+    /** Copy each parent pack to the forker's storage first; without it, packs are by reference. */
+    readonly copy?: CopyPack
   },
   onProgress?: (p: ForkProgress) => void,
 ): Promise<ForkResult> {
@@ -401,11 +419,13 @@ export async function forkRepoV2(
   const unreferenceable: string[] = []
   let written = 0
   for (const copies of plan) {
-    const manifest = forkManifest(parent.forge, parent.repoId, copies)
-    if (manifest === null) {
+    const planned = forkManifest(parent.forge, parent.repoId, copies)
+    if (planned === null) {
       unreferenceable.push((copies[0] as PackManifest).packHash)
       continue
     }
+    const own = input.copy ? await input.copy(planned.packHash, { ...(copies[0] as PackManifest), copies }) : null
+    const manifest = own ? withOwnCopy(planned, own) : planned
     await writePackManifest(sdk, auth, fork, manifest, `fork:${fork.repoId}:manifest:${manifest.packHash}`)
     written += 1
     onProgress?.({ step: 'manifests', state: 'start', done: written, total: plan.length })

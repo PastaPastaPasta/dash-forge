@@ -1,0 +1,86 @@
+// @vitest-environment jsdom
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { RepoRef } from '@/lib/repo/contract'
+
+const R2 = { name: 'r2', settings: { kind: 's3', provider: 'r2', endpoint: 'https://a.r2.cloudflarestorage.com', region: 'auto', bucket: 'forge', pathStyle: true, publicUrl: 'https://cdn.example', prefix: '' }, secrets: { accessKeyId: 'k', secretAccessKey: 's' } }
+const state = vi.hoisted(() => ({ fork: vi.fn(), push: vi.fn(), storage: null as unknown, needsUnlock: false, onCopy: null as null | ((hash: string, state: string, why?: string) => void) }))
+vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'me', signer: { identityId: 'me' } }) }))
+vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, disabledReason: null, failed: () => 'fork failed' }) }))
+vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true }) }))
+vi.mock('@/hooks/use-async', () => ({ useAsync: () => ({ data: { manifests: [], refs: [], unreferenceable: [] }, error: null }) }))
+vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: state.storage, needsUnlock: state.needsUnlock }) }))
+vi.mock('@/lib/storage/pin-copies', async (load) => ({
+  ...await load<object>(),
+  forkCopier: (_sdk: unknown, _parent: unknown, profile: { name: string }, onCopy: (hash: string, state: string, why?: string) => void) => {
+    state.onCopy = onCopy
+    return Object.assign(async () => null, { profile: profile.name })
+  },
+}))
+vi.mock('@/lib/repo', async (load) => ({ ...await load<object>(), forkRepoV2: state.fork, checkForkName: async () => ({ kind: 'free' }) }))
+vi.mock('@/lib/spend-toast', () => ({ spendAction: async (_: unknown, work: (tag: (v: unknown) => unknown) => Promise<unknown>) => work((v) => v) }))
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: state.push }) }))
+vi.mock('next/link', () => ({ default: (props: React.ComponentProps<'a'>) => <a {...props} /> }))
+vi.mock('@/components/ui/cost-preview', () => ({ CostPreview: () => <span>cost</span> }))
+vi.mock('@/components/auth/unlock-more', () => ({ UnlockMore: ({ title }: { title: string }) => <span>{title}</span> }))
+import { ForkButton } from './fork-button'
+;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+const parent = { forge: { core: 'core' }, repoId: 'r', ownerId: 'owner', name: 'repo', visibility: 'public' } as RepoRef
+let host: HTMLDivElement; let root: Root
+beforeEach(() => {
+  vi.useFakeTimers(); state.storage = null; state.needsUnlock = false; state.onCopy = null
+  state.fork.mockReset().mockResolvedValue({ name: 'repo', unreferenceable: [] }); state.push.mockReset()
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host)
+})
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers() })
+const button = (text: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === text)!
+const render = async () => {
+  await act(async () => root.render(<ForkButton parent={parent} defaults={{ defaultBranch: 'main', description: '' }} />))
+  await act(async () => button('Fork').click())
+  await act(async () => vi.advanceTimersByTimeAsync(301))
+}
+
+describe('a fork and storage', () => {
+  it('forks by reference with no storage, and says so in one line that links to setup', async () => {
+    await render()
+    const line = host.querySelector('[data-testid="fork-storage"]')!
+    expect(line.textContent).toBe("Files stay on repo's storage. Set up storage to keep your own copy.")
+    expect(line.querySelector('a')?.getAttribute('href')).toBe('/settings/storage/')
+    expect(host.textContent).not.toContain('IPFS')
+    await act(async () => button('Sign & fork').click())
+    expect(state.fork.mock.calls[0]![3]).not.toHaveProperty('copy')
+    expect(state.push).toHaveBeenCalledWith('/repo/?owner=me&name=repo&created=1')
+  })
+
+  it("copies the parent's packs to the default policy's first readable target", async () => {
+    state.storage = { profiles: [R2], defaultPolicy: { targets: ['r2'], replicas: 1, platformFallback: false } }
+    await render()
+    expect(host.querySelector('[data-testid="fork-storage"]')).toBeNull()
+    expect(host.querySelector('[data-testid="fork-plan"]')?.textContent).toContain('copied to r2')
+    await act(async () => button('Sign & fork').click())
+    expect(state.fork.mock.calls[0]![3]).toMatchObject({ copy: expect.objectContaining({ profile: 'r2' }) })
+    expect(state.push).toHaveBeenCalled()
+  })
+
+  it('stays on the dialog when some packs could not be copied', async () => {
+    state.storage = { profiles: [R2], defaultPolicy: { targets: ['r2'], replicas: 1, platformFallback: false } }
+    state.fork.mockImplementation(async () => {
+      state.onCopy!('aa'.repeat(32), 'failed', 'bucket unreachable')
+      return { name: 'repo', unreferenceable: [] }
+    })
+    await render()
+    await act(async () => button('Sign & fork').click())
+    expect(state.push).not.toHaveBeenCalled()
+    expect(host.textContent).toContain("Your fork is ready. 1 file could not be copied and stays on repo's storage.")
+    expect(host.querySelector('details')?.textContent).toContain('failed: bucket unreachable')
+    await act(async () => button('View fork').click())
+    expect(state.push).toHaveBeenCalledWith('/repo/?owner=me&name=repo&created=1')
+  })
+
+  it('asks for the unlock when stored settings are sealed', async () => {
+    state.needsUnlock = true
+    await render()
+    expect(host.textContent).toContain('Unlock this tab to copy the files to your storage')
+  })
+})

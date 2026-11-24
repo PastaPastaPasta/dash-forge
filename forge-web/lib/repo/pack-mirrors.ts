@@ -8,14 +8,28 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
+import { hexToBytes } from '@noble/hashes/utils.js'
+
+import { decodeIdentifier } from '../auth/base58'
 import { DEFAULT_NETWORK, type Network } from '../constants'
-import { queryDocuments, type PlainDocument, type WhereClause } from '../sdk'
-import { mirrorReadOrder, type MirrorRecord } from '../rules/pack-mirror'
-import { num, str, stringArray, type RepoRef } from './contract'
+import {
+  ConsensusRefusal,
+  DUPLICATE_UNIQUE_CODE,
+  createDocumentIdempotent,
+  deleteDocumentIdempotent,
+  queryAllDocuments,
+  queryDocuments,
+  type DeleteResult,
+  type PlainDocument,
+  type WhereClause,
+  type WriteAuth,
+} from '../sdk'
+import { checkMirrorUris, mirrorReadOrder, type MirrorRecord } from '../rules/pack-mirror'
+import { asIdentifierString, num, str, stringArray, type RepoRef } from './contract'
 import { readRoleOracle } from './members'
 import { packHashHex, packHashOperand } from './pack-hash'
 import type { PackManifest } from './packs'
-import { repoSource } from './source'
+import { contractOf, repoSource } from './source'
 
 /** forge-core's pack mirror type. */
 export const DOC_PACK_MIRROR = 'packMirror'
@@ -92,4 +106,74 @@ async function readMirrorUris(sdk: EvoSDK, repo: RepoRef, packHash: string, netw
 /** A stand-in external copy of `manifest` at `uris` (its mirrors). */
 export function mirrorCopy(manifest: PackManifest, uris: readonly string[]): PackManifest {
   return { ...manifest, storage: 1, uris, copies: undefined, documentId: `mirror:${manifest.packHash}` }
+}
+
+/** One of the signer's own `packMirror` records. */
+export interface OwnMirror {
+  readonly id: string
+  readonly repoId: string
+  readonly packHash: string
+  readonly kind: number
+  readonly uris: readonly string[]
+}
+
+/** Why a record of `uris` would be refused, in words, or null. Parity: forge-core `uri_problem_words`. */
+export function mirrorUrisProblem(uris: readonly string[]): string | null {
+  const check = checkMirrorUris(uris)
+  if ('kind' in check) return null
+  const which = check.index === undefined ? '' : `address ${check.index + 1}: `
+  switch (check.problem) {
+    case 'none': return 'give at least one address'
+    case 'tooMany': return 'a mirror holds at most 4 addresses'
+    case 'length': return `${which}an address is 1-300 characters`
+    case 'address': return `${which}use an https:// URL without a user name or password, or ipfs://<CID>`
+    case 'ipfsPath': return `${which}an ipfs:// address is the bare CID, no path`
+    case 'duplicate': return `${which}the same address twice`
+    case 'mixedKinds': return 'one mirror holds https addresses or IPFS addresses, not both'
+  }
+}
+
+/**
+ * Every mirror `owner` recorded in `repo`'s forge (the `byOwner` index), oldest first, kept to
+ * `repo`. Parity: forge-core `pack_mirror::mirrors_by`.
+ */
+export async function mirrorsBy(sdk: EvoSDK, repo: RepoRef, owner: string): Promise<OwnMirror[]> {
+  const docs = await queryAllDocuments(sdk, {
+    dataContractId: contractOf(repo.forge, DOC_PACK_MIRROR),
+    documentTypeName: DOC_PACK_MIRROR,
+    where: [['$ownerId', '==', owner]],
+    orderBy: [['$createdAt', 'asc']],
+  })
+  return docs.flatMap((d) => {
+    const r = mirrorRecordOf(d)
+    const repoId = asIdentifierString(d['repoId'])
+    return r === null || repoId !== repo.repoId ? [] : [{ id: r.id, repoId, packHash: r.packHash, kind: r.kind, uris: r.uris }]
+  })
+}
+
+/**
+ * Record a mirror of `packHash` at `uris` as the signer: one per pack each, public repositories
+ * only. A record the signer already holds (the unique slot) is not an error. Parity: forge-core
+ * `pack_mirror::record_mirror`.
+ */
+export async function recordMirror(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, packHash: string, uris: readonly string[], intent?: string): Promise<void> {
+  if (repo.visibility !== 'public') throw new Error("a private repository's packs are sealed to its members: mirrors are for public repositories")
+  const problem = mirrorUrisProblem(uris)
+  if (problem !== null) throw new Error(problem)
+  const check = checkMirrorUris(uris) as { kind: number }
+  try {
+    await createDocumentIdempotent(sdk, auth, {
+      contractId: contractOf(repo.forge, DOC_PACK_MIRROR),
+      documentType: DOC_PACK_MIRROR,
+      data: { repoId: decodeIdentifier(repo.repoId), packHash: hexToBytes(packHash.toLowerCase()), kind: check.kind, uris: [...uris] },
+      ...(intent ? { intent } : {}),
+    })
+  } catch (e) {
+    if (!(e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE)) throw e
+  }
+}
+
+/** Delete the signer's mirror record `id`. Parity: forge-core `pack_mirror::delete_mirror`. */
+export function deleteMirror(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, id: string): Promise<DeleteResult> {
+  return deleteDocumentIdempotent(sdk, auth, { contractId: contractOf(repo.forge, DOC_PACK_MIRROR), documentType: DOC_PACK_MIRROR, documentId: id, repo: repo.repoId })
 }

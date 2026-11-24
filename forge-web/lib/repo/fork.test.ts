@@ -24,7 +24,7 @@ vi.mock('./push', async (orig) => ({
   }),
 }))
 
-const { forkManifest, forkableRef, planManifests, planRefs, planSyncManifests, recordedPacks, syncFork } = await import('./fork')
+const { forkManifest, forkableRef, planManifests, planRefs, planSyncManifests, recordedPacks, syncFork, withOwnCopy } = await import('./fork')
 type ForkCopy = import('./fork').ForkCopy
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' }
@@ -186,10 +186,44 @@ describe('sync fork (P1-4)', () => {
     expect(written).toEqual([{ ref: { refName: 'refs/heads/main', newOid: B }, options: { intent: `i:ref:${B}` } }])
   })
 
+  it("records the forker's copy first when one is made, and by reference when not", async () => {
+    const plan = planSyncManifests(parentRepo as never, [manifest('a', 2, 0, 5, []), manifest('b', 3, 1, 6, ['https://parent.example/p3'])] as never, [])
+    const copy = vi.fn(async (hash: string) => (hash === '02'.repeat(32) ? ['https://mine.example/p2'] : null))
+    const seen: unknown[] = []
+    const push = await import('./push')
+    vi.mocked(push.writePackManifest).mockImplementation(async (_s, _a, _r, m) => {
+      seen.push(m.uris)
+      return { documentId: 'm' } as never
+    })
+    await syncFork({} as never, {} as never, forkRepo as never, { refName: 'refs/heads/main', forkTip: null, parentTip: 'b'.repeat(40), plan, intent: 'i', copy })
+    expect(copy).toHaveBeenCalledTimes(2)
+    expect(seen).toEqual([
+      ['https://mine.example/p2', `platform://CORE/${PARENT}/${UPLOADER}/${'02'.repeat(32)}`],
+      ['https://parent.example/p3'],
+    ])
+  })
+
   it('writes nothing when a pack has no copy a fork could name', async () => {
     await expect(
       syncFork({} as never, {} as never, forkRepo as never, { refName: 'refs/heads/main', forkTip: null, parentTip: 'b'.repeat(40), plan: { manifests: [], unreferenceable: ['03'] }, intent: 'i' }),
     ).rejects.toThrow(/no copy a fork can reference/)
     expect(written).toEqual([])
+  })
+})
+
+describe('a fork\'s own copy', () => {
+  const base = { packHash: '01'.repeat(32), kind: 0, sizeBytes: 10, objectCount: 3, chunkCount: 0, storage: 1, supersedes: [] } as const
+
+  it("puts the forker's URIs first, then the parent's while they fit", () => {
+    const parent = Array.from({ length: 8 }, (_, i) => `https://parent.example/${i}`)
+    const out = withOwnCopy({ ...base, uris: ['platform://CORE/p/u/h', ...parent.slice(0, 7)] }, ['https://mine.example/x', 's3://bucket/x'])
+    expect(out.uris).toEqual(['https://mine.example/x', 's3://bucket/x', 'platform://CORE/p/u/h', ...parent.slice(0, 5)])
+    expect(out.storage).toBe(1)
+    expect(out.chunkCount).toBe(0)
+  })
+
+  it('drops a duplicate address and refuses an own address nobody else can read', () => {
+    expect(withOwnCopy({ ...base, uris: ['ipfs://bafyx'] }, ['ipfs://bafyx']).uris).toEqual(['ipfs://bafyx'])
+    expect(() => withOwnCopy({ ...base, uris: [] }, ['http://192.168.1.2/x'])).toThrow(/only public https/)
   })
 })

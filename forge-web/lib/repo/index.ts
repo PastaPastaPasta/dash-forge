@@ -408,6 +408,7 @@ export {
   forkManifest,
   forkableRef,
   forkRepoV2,
+  withOwnCopy,
   planFork,
   planManifests,
   planRefs,
