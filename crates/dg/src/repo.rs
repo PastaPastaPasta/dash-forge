@@ -67,8 +67,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             storage,
             no_copy,
         } => {
-            crate::repo_sync::sync(ctx, repo, branch.as_deref(), storage.as_deref(), *no_copy)
-                .await
+            crate::repo_sync::sync(ctx, repo, branch.as_deref(), storage.as_deref(), *no_copy).await
         }
         RepoCommand::Reindex {
             repo,
@@ -233,7 +232,11 @@ fn clone_dir_name(name: &str) -> &str {
 /// after them) or else recorded by reference (external URIs as they are; Platform chunks by a
 /// locator into the parent's scope), and the parent's branches and tags copied (its default
 /// branch alone with `default_branch_only`). Resumable.
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_lines
+)]
 async fn fork(
     ctx: &Ctx,
     repo: &str,

@@ -33,7 +33,6 @@ use crate::create::{create_repo, CreateRepoOpts, CreateRepoResult};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::own_copy::{with_own_first, OwnCopy};
-use crate::storage::ExternalTarget;
 use crate::platform::{self, LoadedIdentity, PlatformClient};
 use crate::repo::{
     order_copies, PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2,
@@ -41,6 +40,7 @@ use crate::repo::{
 use crate::rules::v2::Visibility;
 use crate::rules::RefState;
 use crate::scope::RepoRef;
+use crate::storage::ExternalTarget;
 
 /// The fork manifest for one pack of `parent`, from all of the parent's `copies` of it
 /// (manifests with the same pack hash) in the order a reader should try them: the same pack

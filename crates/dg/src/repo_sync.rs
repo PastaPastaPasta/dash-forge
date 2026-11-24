@@ -458,8 +458,10 @@ pub async fn sync(
     let copy_to = if storage.is_some() || no_copy {
         crate::repo_pin::fork_storage(storage, no_copy)?
     } else {
-        crate::repo_pin::storage_holding(&fork_packs, &s.identity.id())
-            .map_or_else(|| crate::repo_pin::fork_storage(None, false), |p| Ok(Some(p)))?
+        crate::repo_pin::storage_holding(&fork_packs, &s.identity.id()).map_or_else(
+            || crate::repo_pin::fork_storage(None, false),
+            |p| Ok(Some(p)),
+        )?
     };
     if !ctx.json {
         let packs = crate::fmt::plural(plan.manifests.len(), "pack");
@@ -479,7 +481,16 @@ pub async fn sync(
     ctx.confirm_or_cancel(&format!("Sync {}?", fork.display()))?;
     let copied = match &copy_to {
         Some((name, profile)) => {
-            copy_new_packs(&svc, &parent, &parent_packs, &roles, name, profile, &mut plan).await?
+            copy_new_packs(
+                &svc,
+                &parent,
+                &parent_packs,
+                &roles,
+                name,
+                profile,
+                &mut plan,
+            )
+            .await?
         }
         None => 0,
     };
@@ -548,7 +559,8 @@ async fn copy_new_packs(
     if plan.manifests.is_empty() {
         return Ok(0);
     }
-    let groups = forge_core::fork::plan_manifests(parent_packs, roles, &std::collections::BTreeSet::new());
+    let groups =
+        forge_core::fork::plan_manifests(parent_packs, roles, &std::collections::BTreeSet::new());
     let copier = forge_core::own_copy::OwnCopy::new(
         svc,
         parent,
@@ -626,4 +638,3 @@ mod tests {
         assert!(!e.contains("pull request"), "{e}");
     }
 }
-

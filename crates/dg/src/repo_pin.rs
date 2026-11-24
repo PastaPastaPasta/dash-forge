@@ -18,7 +18,7 @@ use forge_core::pack_mirror::{
 use forge_core::repo::RepoService;
 use forge_core::rules::v2::Visibility;
 use forge_core::storage::policy::git_config_scoped;
-use forge_core::storage::{human_bytes, ExternalTarget, Profile, StorageProfiles, StoragePolicy};
+use forge_core::storage::{human_bytes, ExternalTarget, Profile, StoragePolicy, StorageProfiles};
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::Session;
@@ -60,7 +60,14 @@ pub async fn pin(ctx: &Ctx, args: &RepoPinArgs) -> Result<()> {
         return Box::pin(refresh_all(ctx)).await;
     }
     let repo = args.repo.as_deref().context("repository required")?;
-    let done = Box::pin(pin_one(ctx, repo, args.storage.as_deref(), args.dry_run, false)).await?;
+    let done = Box::pin(pin_one(
+        ctx,
+        repo,
+        args.storage.as_deref(),
+        args.dry_run,
+        false,
+    ))
+    .await?;
     if args.follow && !args.dry_run {
         let entry = Followed {
             network: ctx.network_label(),
@@ -126,8 +133,11 @@ fn pin_storage(name: Option<&str>) -> Result<(String, Profile)> {
     let profiles = StorageProfiles::load()?;
     if let Some(name) = name {
         let profile = profiles.get(name).ok_or_else(|| {
-            UserError::new(codes::STORAGE_CONFIG, format!("no storage profile {name:?}"))
-                .fix("`dg storage list` lists yours")
+            UserError::new(
+                codes::STORAGE_CONFIG,
+                format!("no storage profile {name:?}"),
+            )
+            .fix("`dg storage list` lists yours")
         })?;
         if let Some(why) = pin_profile_problem(&profile) {
             bail!(UserError::new(
@@ -150,21 +160,21 @@ fn pin_storage(name: Option<&str>) -> Result<(String, Profile)> {
         .collect();
     match usable.as_slice() {
         [(name, profile)] => Ok(((*name).clone(), (*profile).clone())),
-        [] => bail!(UserError::new(
-            codes::NO_STORAGE,
-            "set up storage of your own to pin to"
-        )
-        .fix("`dg ipfs up` runs an IPFS node on this machine")
-        .fix("or `dg storage add` adds a bucket or a node you run elsewhere")
-        .note(format!("to run one on a NAS or server: {SELF_HOST_GUIDE}"))),
-        many => bail!(UserError::new(
-            codes::USAGE,
-            "choose the storage to pin to"
-        )
-        .fix(format!(
-            "pass --storage with one of: {}",
-            many.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
-        ))),
+        [] => bail!(
+            UserError::new(codes::NO_STORAGE, "set up storage of your own to pin to")
+                .fix("`dg ipfs up` runs an IPFS node on this machine")
+                .fix("or `dg storage add` adds a bucket or a node you run elsewhere")
+                .note(format!("to run one on a NAS or server: {SELF_HOST_GUIDE}"))
+        ),
+        many => bail!(
+            UserError::new(codes::USAGE, "choose the storage to pin to").fix(format!(
+                "pass --storage with one of: {}",
+                many.iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        ),
     }
 }
 
@@ -244,7 +254,10 @@ async fn pin_one(
     if s.repo.visibility == Visibility::Private {
         bail!(UserError::new(
             codes::PRIVATE_UNSUPPORTED,
-            format!("{} is private: readers never use pinned copies of it", s.repo.display())
+            format!(
+                "{} is private: readers never use pinned copies of it",
+                s.repo.display()
+            )
         )
         .fix(format!(
             "a member can keep a backup on an IPFS node: `dg ipfs pin {}`",
@@ -266,7 +279,8 @@ async fn pin_one(
         .filter(|m| m.repo_id == s.repo.id())
         .map(|m| m.pack_hash)
         .collect();
-    let all = forge_core::fork::plan_manifests(&manifests, &roles, &std::collections::BTreeSet::new());
+    let all =
+        forge_core::fork::plan_manifests(&manifests, &roles, &std::collections::BTreeSet::new());
     let (already, todo): (Vec<_>, Vec<_>) = all
         .into_iter()
         .partition(|copies| mine.contains(&hex::encode(copies[0].pack_hash)));
@@ -310,9 +324,8 @@ async fn pin_one(
         let short = &hash[..12];
         let step = async {
             let (stored, from) = copier.copy(copies).await?;
-            let uris = mirror_uris(&stored).ok_or_else(|| {
-                anyhow::anyhow!("{storage} returned no address others can read")
-            })?;
+            let uris = mirror_uris(&stored)
+                .ok_or_else(|| anyhow::anyhow!("{storage} returned no address others can read"))?;
             record_mirror(&engine, &mirrors, &s.repo, &hash, &uris).await?;
             anyhow::Ok((from, uris))
         };
@@ -371,12 +384,19 @@ async fn refresh_all(ctx: &Ctx) -> Result<()> {
                 if !ctx.json {
                     eprintln!("{}: {why}", safe(&f.repo));
                 }
-                (Some(why.clone()), json!({"repo": f.repo, "status": "failed", "detail": why}))
+                (
+                    Some(why.clone()),
+                    json!({"repo": f.repo, "status": "failed", "detail": why}),
+                )
             }
         };
         failed += usize::from(error.is_some());
         update_pins(&path, |file| {
-            if let Some(r) = file.repo.iter_mut().find(|r| r.network == network && r.repo_id == f.repo_id) {
+            if let Some(r) = file
+                .repo
+                .iter_mut()
+                .find(|r| r.network == network && r.repo_id == f.repo_id)
+            {
                 r.last_run = now();
                 r.last_error.clone_from(&error);
             }
@@ -386,12 +406,18 @@ async fn refresh_all(ctx: &Ctx) -> Result<()> {
     let body = json!({"status": "refreshed", "repos": repos, "failed": failed});
     if failed > 0 {
         return Err(crate::errors::reported(
-            UserError::new(codes::PARTIAL, "some followed repositories could not be pinned"),
+            UserError::new(
+                codes::PARTIAL,
+                "some followed repositories could not be pinned",
+            ),
             body,
         ));
     }
     ctx.emit(body, || {
-        println!("✓ {} up to date", plural(repos.len(), "followed repository"));
+        println!(
+            "✓ {} up to date",
+            plural(repos.len(), "followed repository")
+        );
     });
     Ok(())
 }
@@ -423,11 +449,18 @@ pub async fn unpin(ctx: &Ctx, repo: &str) -> Result<()> {
     let network = ctx.network_label();
     let id = s.repo.id().to_string();
     update_pins(&pins_path()?, |file| {
-        file.repo.retain(|r| r.network != network || r.repo_id != id);
+        file.repo
+            .retain(|r| r.network != network || r.repo_id != id);
     })?;
     ctx.emit(
         json!({"status": "unpinned", "repo": display, "recordsRemoved": mine.len()}),
-        || println!("✓ unpinned {} ({} removed)", safe(&display), plural(mine.len(), "record")),
+        || {
+            println!(
+                "✓ unpinned {} ({} removed)",
+                safe(&display),
+                plural(mine.len(), "record")
+            )
+        },
     );
     Ok(())
 }

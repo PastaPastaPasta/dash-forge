@@ -9,7 +9,7 @@
 use crate::backends::{PackMeta, Uri};
 use crate::error::{Error, Result};
 use crate::platform::LoadedContract;
-use crate::repo::{PackManifestInput, PackManifestInfo, RepoService, RoleMap, MANIFEST_URIS_V2};
+use crate::repo::{PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2};
 use crate::rules::pack_mirror::{check_mirror_uris, UriCheck, MAX_URIS};
 use crate::scope::RepoRef;
 use crate::storage::publish::publish_problem;
@@ -118,11 +118,19 @@ impl<'a> OwnCopy<'a> {
             .ok_or_else(|| Error::InvalidInput("no copy of the pack to read".into()))?;
         let (bytes, from, _) = self
             .svc
-            .fetch_pin_copy_or_mirror(self.source, &self.contract, copies, &self.roles, &self.reader)
+            .fetch_pin_copy_or_mirror(
+                self.source,
+                &self.contract,
+                copies,
+                &self.roles,
+                &self.reader,
+            )
             .await?;
         let meta = PackMeta::for_bytes(&bytes);
         if meta.pack_hash != hex::encode(first.pack_hash) {
-            return Err(Error::Io("the pack read back did not hash to its manifest".into()));
+            return Err(Error::Io(
+                "the pack read back did not hash to its manifest".into(),
+            ));
         }
         let stored = self.target.store(&bytes, &meta).await?;
         Ok((stored.into_iter().map(|Uri(u)| u).collect(), from))
@@ -140,7 +148,10 @@ mod tests {
     #[test]
     fn a_mirror_prefers_public_https_then_the_cid() {
         assert_eq!(
-            mirror_uris(&s(&["https://gw.example.org/ipfs/bafyabc", "ipfs://bafyabc"])),
+            mirror_uris(&s(&[
+                "https://gw.example.org/ipfs/bafyabc",
+                "ipfs://bafyabc"
+            ])),
             Some(s(&["https://gw.example.org/ipfs/bafyabc"]))
         );
         assert_eq!(
@@ -176,7 +187,11 @@ mod tests {
         );
         assert_eq!(
             got.uris,
-            s(&["https://mine.example/p", "ipfs://bafyabc", "https://parent.example/p"])
+            s(&[
+                "https://mine.example/p",
+                "ipfs://bafyabc",
+                "https://parent.example/p"
+            ])
         );
     }
 
