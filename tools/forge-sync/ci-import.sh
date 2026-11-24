@@ -7,11 +7,11 @@
 #   restrict,command="/home/pasta/forge-ipfs/ci-import.sh" ssh-ed25519 AAAA... forge-ci-github-actions
 set -eu
 max=$((512 * 1024 * 1024))
-name="forge-ci-$$-$(date +%s).car"
-tmp="/tmp/$name"
+umask 077
+tmp=$(mktemp /tmp/forge-ci-XXXXXXXX)
+name="${tmp##*/}.car"
 cleanup() { rm -f "$tmp"; docker exec forge-ipfs rm -f "/tmp/$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
-umask 077
 head -c $((max + 1)) > "$tmp"
 size=$(stat -c %s "$tmp")
 if [ "$size" -eq 0 ]; then

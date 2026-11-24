@@ -146,6 +146,8 @@ jobs:
 
       - name: Mirror master and tags to Forge
         id: sync
+        # Leaves the copy step job time even when a push hangs.
+        timeout-minutes: 20
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_MAINNET_KEY }}
           DASH_FORGE_NO_KEYCHAIN: '1'
@@ -160,7 +162,7 @@ jobs:
         run: bash tools/forge-sync/replicate.sh
 
       - name: Check the key's budget
-        if: success()
+        if: always() && steps.configure.outcome == 'success'
         continue-on-error: true
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_MAINNET_KEY }}
