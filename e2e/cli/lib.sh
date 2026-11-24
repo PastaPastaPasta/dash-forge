@@ -430,6 +430,16 @@ na_scenario() {
   exit 3
 }
 
+# web_origin: the web app origin dg links to on this network (core `Network::web_origin`): testnet has
+# its own host; mainnet and devnets use forge.dashhq.org.
+web_origin() {
+  if [[ "$DASH_FORGE_NETWORK" == testnet ]]; then
+    echo "https://testnet-forge.dashhq.org"
+  else
+    echo "https://forge.dashhq.org"
+  fi
+}
+
 # require_not_july <identity file>: on testnet, refuse an identity file of the July-era pool (public keys,
 # QA-05). config.sh checks OWNER, COLLAB and CONTRIB; a scenario that takes an identity from an
 # override (E2E_S25_IDENTITY, E2E_CI_RUNNER, ...) calls this on it. A no-op on a devnet.

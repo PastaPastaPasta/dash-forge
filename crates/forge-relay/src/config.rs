@@ -177,7 +177,8 @@ pub struct RelayConfig {
     /// How many pre-existing docs per type to (re)deliver for repos found at startup. `0` =
     /// start from "now".
     pub lookback: u32,
-    /// forge-web base URL for `html_url`/`compare` synthesis.
+    /// forge-web base URL for `html_url`/`compare` synthesis: `--web-base-url`, else the
+    /// web app of the target network ([`forge_core::network::Network::web_origin`]).
     pub web_base_url: String,
     /// Whether to read `webhook` documents from Platform.
     pub use_platform_webhooks: bool,
@@ -262,6 +263,11 @@ impl RelayConfig {
             .resolve()
             .map_err(|e| RelayError::Config(e.to_string()))?;
 
+        let web_base_url = cli
+            .web_base_url
+            .clone()
+            .or(file.web_base_url)
+            .unwrap_or_else(|| target.network.web_origin().to_string());
         let wake = file.wake.map(WakeFile::resolve).transpose()?;
         let sinks = file
             .sink
@@ -304,11 +310,7 @@ impl RelayConfig {
             repos: cli.repos.clone().unwrap_or(file.repos),
             allow_private: cli.allow_private.or(file.allow_private).unwrap_or(false),
             lookback: cli.lookback.or(file.lookback).unwrap_or(0),
-            web_base_url: cli
-                .web_base_url
-                .clone()
-                .or(file.web_base_url)
-                .unwrap_or_else(|| forge_core::user_error::WEB_ORIGIN.to_string()),
+            web_base_url,
             use_platform_webhooks: file.use_platform_webhooks.unwrap_or(true),
             listen,
             static_webhooks: file.webhook,
@@ -421,6 +423,7 @@ mod tests {
         };
         let cfg = load_str("devnet2", src, &cli).unwrap();
         assert_eq!(cfg.target.network, Network::Testnet);
+        assert_eq!(cfg.web_base_url, "https://testnet-forge.dashhq.org");
     }
 
     #[test]
@@ -445,6 +448,8 @@ secret = "s3cr3t"
 "#;
         let cfg = load_str("full", src, &CliOverrides::default()).unwrap();
         assert_eq!(cfg.target.network, Network::Testnet);
+        // An explicit web-base-url wins over the network's web app.
+        assert_eq!(cfg.web_base_url, "https://forge.example");
         assert_eq!(cfg.poll_interval, Duration::from_secs(10));
         assert_eq!(cfg.refresh_cycles, 3);
         assert_eq!(cfg.repos, vec!["AAA".to_string(), "owner/bbb".to_string()]);
@@ -529,6 +534,7 @@ secret = "s3cr3t"
         };
         let cfg = RelayConfig::load(None, &cli).unwrap();
         assert_eq!(cfg.target.network, Network::Mainnet);
+        assert_eq!(cfg.web_base_url, "https://forge.dashhq.org");
         assert_eq!(cfg.repos, vec!["ZZZ".to_string()]);
         assert_eq!(cfg.poll_interval, Duration::from_secs(42));
         assert_eq!(cfg.refresh_cycles, 1, "clamped to at least one cycle");
@@ -552,8 +558,8 @@ secret = "s3cr3t"
         assert!(!cfg.allow_private);
         assert!(cfg.use_platform_webhooks);
         assert!(cfg.repos.is_empty());
-        // D-606: the default was https://forge.dash, which does not resolve.
-        assert_eq!(cfg.web_base_url, "https://forge.dashhq.org");
-        assert_eq!(cfg.web_base_url, forge_core::user_error::WEB_ORIGIN);
+        // D-606: the default was https://forge.dash, which does not resolve. It is the web
+        // app of the target network.
+        assert_eq!(cfg.web_base_url, cfg.target.network.web_origin());
     }
 }

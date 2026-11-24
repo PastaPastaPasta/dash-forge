@@ -10,7 +10,11 @@
 //        --record <scratch-record.json> --scratch-on testnet --out <dir> [--execute]               # rehearsal
 //
 // Steps, each a child process of the scripts this wraps; the first failure stops the run:
-//   1. preflight (always): deploy-v2 --self-test, the set's sums, refresh-dapi --check, deploy-v2 --dry-run.
+//   1. preflight (always): deploy-v2 --self-test, the set's sums (compared with --expect-sha256),
+//      refresh-dapi --check (--skip-dapi-check leaves it out), deploy-v2 --dry-run. Any WARNING line
+//      the dry run prints fails it: on a live record deploy-v2 only warns, in a dry run, about what
+//      would refuse the real registration (sums, uncommitted files, build.py --check, HEAD not pushed).
+//      A scratch rehearsal always warns that it is one, so there the warnings are only printed.
 //   2. register (--execute): deploy-v2 without --dry-run. deploy-v2 records every nonce before it
 //      broadcasts, so re-running this command after an interruption completes what landed and never
 //      registers a second copy. On mainnet it first asks the operator to type the network name
@@ -25,6 +29,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { parseSums, sumsProblems } from './deploy-v2.mjs';
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPTS, '..');
@@ -58,11 +64,12 @@ export function options(a) {
   if (scratch && a['scratch-on'] !== a.network) throw new Error('--scratch-on must equal --network');
   if (scratch && !a.out) throw new Error('a scratch rehearsal needs --out <dir> for its registered copy and snapshot');
   if (!a['post-only'] && !a.identity) throw new Error('--identity <deployer.identity.json> is required');
-  if (!scratch && a.execute && !a['expect-sha256']) throw new Error('registering the live record needs --expect-sha256 <the sums the owner signed>');
+  if (!scratch && !a['post-only'] && !a['expect-sha256']) throw new Error('the live record needs --expect-sha256 <the sums the owner signed>, in a dry run too');
   if (a['deployer-created-height'] !== undefined && !/^[0-9]+$/.test(a['deployer-created-height'])) throw new Error('--deployer-created-height is a block height');
   const mode = a.execute ? 'execute' : a['post-only'] ? 'post-only' : 'dry-run';
   const record = scratch ? resolve(a.record) : join(ROOT, 'deployments', `${a.network}.json`);
   const evidence = resolve(a.evidence ?? (scratch ? join(a.out, 'evidence') : join(process.cwd(), `launch-evidence-${a.network}`)));
+  for (const k of ['identity', 'expect-sha256']) if (a[k] !== undefined) a[k] = resolve(a[k]);
   return { network: a.network, mode, scratch, record, evidence, out: a.out && resolve(a.out), args: a };
 }
 
@@ -86,7 +93,7 @@ export function plan(o, { frozen = false } = {}) {
     steps.push(['self-test', 'deploy-v2.mjs', ['--self-test', '--contracts', join(ROOT, 'contracts', 'mainnet')]]);
     steps.push(['sums', 'deploy-v2.mjs', ['--print-sha256', '--set', 'mainnet'], { capture: 'sha256sums.txt' }]);
     if (!a['skip-dapi-check']) steps.push(['dapi', 'refresh-dapi.mjs', [...net, '--check']]);
-    steps.push(['dry-run', 'deploy-v2.mjs', [...deploy, '--dry-run']]);
+    steps.push(['dry-run', 'deploy-v2.mjs', [...deploy, '--dry-run'], { failOnWarning: !o.scratch }]);
   }
   if (o.mode === 'execute') steps.push(['register', 'deploy-v2.mjs', deploy, { confirm: true }]);
   if (o.mode !== 'dry-run') {
@@ -102,6 +109,9 @@ export function plan(o, { frozen = false } = {}) {
   }
   return steps;
 }
+
+/** The WARNING lines of a script's output. */
+export const warningLines = (text) => text.split('\n').filter((l) => /\bWARNING\b/.test(l));
 
 /** Problems with the recorded contract group as the chain reports it (empty when it is fine). */
 export function groupProblems(v2, info) {
@@ -131,7 +141,7 @@ async function checkGroup(o) {
 }
 
 async function confirmBroadcast(o) {
-  if (o.network !== 'mainnet' || o.scratch) return true;
+  if (o.network !== 'mainnet') return true;
   if (o.args.confirm !== undefined) return o.args.confirm === 'mainnet';
   if (!process.stdin.isTTY) {
     console.error('refusing a mainnet broadcast without a terminal; pass --confirm mainnet');
@@ -154,28 +164,42 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const frozen = !o.scratch && alreadyFrozen(o.network);
   if (frozen && o.mode !== 'dry-run') say(`contracts/registered/${o.network}/ is already frozen: not re-freezing`);
-  for (const [label, script, argv2, extra = {}] of plan(o, { frozen })) {
+  const steps = plan(o, { frozen });
+  for (const [label, script, argv2, extra = {}] of steps) {
     if (extra.confirm && !(await confirmBroadcast(o))) { say('not confirmed: nothing was broadcast'); return 1; }
     say(`step ${label}${script ? `: node ${script} ${argv2.join(' ')}` : ''}`);
     if (extra.group) {
       if (!(await checkGroup(o))) { say('step group FAILED'); return 1; }
       continue;
     }
+    const piped = Boolean(extra.capture || extra.failOnWarning);
     const r = spawnSync(process.execPath, [join(SCRIPTS, script), ...argv2], {
       cwd: resolve(ROOT, '..'),
-      stdio: ['inherit', extra.capture ? 'pipe' : 'inherit', 'inherit'],
+      stdio: ['inherit', piped ? 'pipe' : 'inherit', piped ? 'pipe' : 'inherit'],
       encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
     });
-    if (extra.capture && r.stdout) {
-      process.stdout.write(r.stdout);
-      writeFileSync(join(o.evidence, extra.capture), r.stdout);
+    if (piped) {
+      process.stdout.write(r.stdout ?? '');
+      process.stderr.write(r.stderr ?? '');
     }
     if (r.status !== 0) { say(`step ${label} FAILED (exit ${r.status ?? r.signal})`); return 1; }
+    if (extra.capture) {
+      writeFileSync(join(o.evidence, extra.capture), r.stdout);
+      const problems = o.args['expect-sha256'] ? sumsProblems(parseSums(readFileSync(o.args['expect-sha256'], 'utf8')), parseSums(r.stdout)) : [];
+      for (const p of problems) say(`FAIL sums: ${p}`);
+      if (problems.length) { say(`step ${label} FAILED: the set's files are not the signed sums`); return 1; }
+    }
+    if (extra.failOnWarning) {
+      writeFileSync(join(o.evidence, `${label}.log`), `${r.stdout ?? ''}${r.stderr ?? ''}`);
+      const warnings = warningLines(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
+      if (warnings.length) { say(`step ${label} FAILED: ${warnings.length} WARNING line(s) above would stop or need a decision before the real run`); return 1; }
+    }
   }
   if (o.mode === 'dry-run') say('dry run clean. Nothing was broadcast. Re-run with --execute to register.');
   else say(o.scratch
     ? `done. Registered copy and snapshot are under ${o.out}.`
-    : `done. Commit deployments/${o.network}.json, contracts/registered/${o.network}/, deployments/contracts/${o.network}.json, the NETWORK_REGISTRATIONS line printed above, and ${o.evidence}/c1.json (docs/deploying-to-a-network.md §6).`);
+    : `done. Commit deployments/${o.network}.json, contracts/registered/${o.network}/, deployments/contracts/${o.network}.json${steps.some(([l]) => l === 'freeze') ? ', the NETWORK_REGISTRATIONS line printed above' : ''}, and ${o.evidence}/c1.json (docs/deploying-to-a-network.md §6).`);
   return 0;
 }
 

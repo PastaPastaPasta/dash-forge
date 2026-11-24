@@ -13,7 +13,7 @@
 //!   base58 id itself is in `node_id`, GitHub's opaque global id. `repository` also carries
 //!   it as `dash_repo_id` (D-605).
 //! * **Links.** `html_url`s point at forge-web's real routes, under `--web-base-url` (default
-//!   [`forge_core::user_error::WEB_ORIGIN`]). forge-web is a static export with query routes
+//!   the target network's [`forge_core::network::Network::web_origin`]). forge-web is a static export with query routes
 //!   (`forge-web/hooks/use-query-param.ts` `repoHref`). It has no compare page and no
 //!   per-comment or per-review anchors, so `compare` links the pushed commit (the repo, for a
 //!   branch deletion), and a comment or review links its issue or PR (D-606).

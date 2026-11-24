@@ -2,16 +2,18 @@
  * Which ways in the sign-in sheet offers, in what order, and which one it recommends: one place
  * that decides, so the sheet only renders (docs/design/wallet-primary.md). The wallet leads only
  * where a wallet a newcomer can install finishes sign-in (`walletSignInReady`); elsewhere it is
- * listed last among existing identities, saying why.
+ * listed last among existing identities, saying why. On mainnet, where it leads, a newcomer is sent
+ * to DashPay to create the identity, and the in-page create moves under "Other ways to sign in"
+ * (decision 3).
  */
 
 import type { Network } from '@/lib/constants'
 import { walletSignInReady } from '@/lib/auth/app-connect'
 
-export type SignInMethodId = 'resume-create' | 'wallet' | 'create' | 'passkey' | 'import' | 'dg' | 'raw-key'
+export type SignInMethodId = 'resume-create' | 'wallet' | 'get-dashpay' | 'create' | 'passkey' | 'import' | 'dg' | 'raw-key'
 
-/** Where a method sits: above the groups, for newcomers, for existing identities, or under Advanced. */
-export type SignInGroup = 'lead' | 'new' | 'existing' | 'advanced'
+/** Where a method sits: above the groups, for newcomers, for existing identities, under Other ways, or under Advanced. */
+export type SignInGroup = 'lead' | 'new' | 'existing' | 'other' | 'advanced'
 
 export interface SignInMethod {
   readonly id: SignInMethodId
@@ -41,16 +43,20 @@ export function signInMethods(ctx: SignInContext): readonly SignInMethod[] {
   // On testnet the wallet leads for people who have DashPay's testnet build (a sideloaded APK),
   // but a newcomer is still pointed at creating an identity (wallet-primary.md, decision 3).
   const walletRecommended = leads && ctx.network !== 'testnet'
+  // On mainnet a newcomer gets DashPay and creates the identity there; only where the wallet can
+  // then sign them in, so the newcomer's first step is never a dead end.
+  const dashpayFirst = leads && ctx.network === 'mainnet' && ctx.walletAvailable
   const m = (id: SignInMethodId, group: SignInGroup, recommended = false): SignInMethod => ({ id, group, recommended })
   const wallet = (group: SignInGroup): SignInMethod[] => (ctx.walletAvailable ? [m('wallet', group, walletRecommended && !ctx.creating)] : [])
   return [
     ...(ctx.creating ? [m('resume-create', 'lead')] : []),
     ...(leads ? wallet('lead') : []),
-    m('create', 'new', !walletRecommended && !ctx.creating),
+    dashpayFirst ? m('get-dashpay', 'new') : m('create', 'new', !walletRecommended && !ctx.creating),
     m('passkey', 'existing'),
     m('import', 'existing'),
     m('dg', 'existing'),
     ...(leads ? [] : wallet('existing')),
+    ...(dashpayFirst ? [m('create', 'other')] : []),
     m('raw-key', 'advanced'),
   ]
 }

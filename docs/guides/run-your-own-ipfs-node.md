@@ -52,7 +52,7 @@ Running it again is safe. It keeps the same kubo, repo and tokens, applies your 
 
 ### Your own Forge address
 
-The node only talks to websites on its allow-list. `https://forge.dashhq.org` is always on it. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
+The node only talks to websites on its allow-list. `https://forge.dashhq.org`, the mainnet web app, is always on it. To use the node from the testnet web app, start it with `dg ipfs up --origin https://testnet-forge.dashhq.org`: that allows the testnet app and makes the connection link open it. A later `dg ipfs up` without `--origin` points the link back at forge.dashhq.org; `dg ipfs connect --origin https://testnet-forge.dashhq.org` opens it on testnet again. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
 
 ```sh
 dg ipfs up --origin https://forge.example.org

@@ -653,7 +653,27 @@ export class AuthController {
    * (`docs/design/service-auth.md`). Those signatures cover a domain-separated digest that can
    * never be a state transition, so this is not a way around the vault's contract scoping: the
    * key still signs no write outside Forge. Throws a {@link WriteAuthError} when signed out or
-   * locked.
+   * locked. The key is read on chain first: one disabled or expired since the session opened (a
+   * wallet disconnect) signs nothing, and the session ends.
+   */
+  async checkedServiceKey(): Promise<ReturnType<AuthController['serviceKey']>> {
+    const key = this.serviceKey()
+    const origin = this.state.session?.origin ?? null
+    const identity = await authSdk(await this.getSdk()).identities.fetch(key.identityId)
+    if (!identity) throw new WriteAuthError(`identity ${key.identityId} not found on ${this.network}`)
+    if (!(await findSigningKey(identity, key.wif, this.network, SECURITY_LEVEL.HIGH))) {
+      const failure = keyFailure(identity, key.keyId, origin)
+      // Disabled or expired on chain: the session ends as a balance read would end it. A failed
+      // read there must not replace the failure already found.
+      if (failure.definite) await this.refreshBalance().catch(() => undefined)
+      throw failure
+    }
+    return key
+  }
+
+  /**
+   * {@link serviceKey} without the chain check: callers that sign a service request use
+   * {@link checkedServiceKey}, which refuses a key disabled since the session opened.
    */
   serviceKey(): { readonly identityId: string; readonly keyId: number; readonly wif: string; readonly keyType?: number } {
     const session = this.state.session
@@ -676,7 +696,9 @@ export class AuthController {
 
   /** Vaults stored on this device for this network (for the unlock chooser). */
   storedVaults(): Promise<VaultInfo[]> {
-    return listVaults(this.network)
+    return listVaults(this.network).then((vaults) =>
+      vaults.map((v) => (keyDisconnected(this.network, v.identityId) === v.keyId ? { ...v, disconnected: true as const } : v)),
+    )
   }
 
   private async run<T>(fn: () => Promise<T>): Promise<T> {
@@ -718,8 +740,9 @@ export class AuthController {
       const balanceReadAt = Date.now()
       const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
+      const origin = storage === 'vault' ? await storedOrigin(this.network, secret.identityId, secret.keyId).catch(() => null) : null
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
-      if (!match) throw keyFailure(identity, secret.keyId)
+      if (!match) throw keyFailure(identity, secret.keyId, origin)
       const keyType = identity.publicKeys.find((k) => k.keyId === match.keyId)?.keyTypeNumber
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
       let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded' | 'origin'> = {}
@@ -727,7 +750,6 @@ export class AuthController {
         const forge = NETWORKS[this.network].v2
         if (!forge) throw new KeyNotUsableError(new NotDeployedError(NETWORKS[this.network]).message)
         extra = await this.verifyScopes(identity, secret, match.keyId, forge)
-        const origin = await storedOrigin(this.network, secret.identityId, secret.keyId).catch(() => null)
         if (origin !== null) extra = { ...extra, origin }
       }
       // Held to be disabled later: listed while still live on the identity.
@@ -754,14 +776,19 @@ export class AuthController {
       const own = [match.keyId, ...(secret.extra ?? []).map((e) => e.keyId), ...companions]
       const newKeys = storage === 'vault' ? checkKeys(this.network, secret.identityId, identity.publicKeys.map(watched), own) : []
       this.setState({ session, scope: unlockScope(this.network, secret.identityId), newKeys })
-      if (storage === 'vault') void this.keep(session).catch(() => undefined)
+      if (storage === 'vault') {
+        clearKeyDisconnected(this.network, secret.identityId)
+        void this.keep(session).catch(() => undefined)
+      }
       return session
     } catch (e) {
       // Only positive evidence that the key is disabled or expired on chain ends the session in
       // every tab (M1: a key a lagging node does not show yet is unknown), and not when another
       // tab's renewal replaced it (H3). Anything else only drops what this attempt unlocked.
-      if (e instanceof KeyNotUsableError && e.definite && !(await this.superseded(secret.identityId, secret.keyId))) lockVault()
-      else if (releaseOnFailure) releaseUnlocked()
+      if (e instanceof KeyNotUsableError && e.definite && !(await this.superseded(secret.identityId, secret.keyId))) {
+        lockVault()
+        if (e instanceof KeyDisconnectedError) markKeyDisconnected(this.network, secret.identityId, secret.keyId)
+      } else if (releaseOnFailure) releaseUnlocked()
       throw e
     }
   }
@@ -1001,6 +1028,9 @@ export class AuthController {
         identityId = m.identityId
         masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
       } else {
+        const givenId = input.identityId.trim()
+        const idProblem = givenId === '' ? null : identityIdProblem(givenId)
+        if (idProblem !== null) throw new WriteAuthError(idProblem)
         this.step('Checking the recovery phrase')
         if (!(await isValidMnemonic(input.mnemonic))) throw new Error(await invalidMnemonicMessage(input.mnemonic))
         const master = await deriveMasterKey(input.mnemonic, this.network)
@@ -1701,9 +1731,10 @@ export class AuthController {
         await this.supersede()
         return
       }
-      const failure = keyFailure(identity, secret.keyId)
+      const failure = keyFailure(identity, secret.keyId, current.origin ?? null)
       if (failure.definite) {
         lockVault()
+        if (failure instanceof KeyDisconnectedError) markKeyDisconnected(this.network, current.identityId, secret.keyId)
         this.setState({ session: null, notice: `Signed out: ${failure.message}.` })
         return
       }
@@ -2073,6 +2104,7 @@ export class AuthController {
     // This device's passkey markers go too: nothing here vouches for a passkey any more.
     await forgetPasskeyRecords(this.network, identityId)
     await forgetVault(this.network, identityId)
+    clearKeyDisconnected(this.network, identityId)
     forgetLastIdentity(this.network, identityId)
     clearDrafts(identityId)
     await Promise.allSettled([clearLedger(this.network, identityId), clearInbox(this.network, identityId)])
@@ -2804,14 +2836,63 @@ export class KeyNotUsableError extends WriteAuthError {
 }
 
 /**
- * Why `keyId` signs nothing on `identity`: disabled or expired on chain (definite), or not shown
- * at all (unknown: a node behind).
+ * A key a wallet made (App Connect) or a passkey restored, found disabled on chain: the wallet
+ * disconnected it (or it was revoked elsewhere). Renewing can't bring it back, and no phrase may
+ * be at hand: the way on is to sign in again. The vault entry is flagged
+ * ({@link markKeyDisconnected}) so the unlock view says so before another try.
  */
-function keyFailure(identity: WasmIdentity, keyId: number): KeyNotUsableError {
+export class KeyDisconnectedError extends KeyNotUsableError {
+  constructor(origin: KeyOrigin | null) {
+    // A passkey can hold a key another device registered with the recovery phrase: no wallet.
+    super(
+      origin === 'app-connect'
+        ? 'this key was disconnected in your wallet, so sign in again'
+        : 'this key was disabled on Platform (disconnected in your wallet, or revoked from another device), so sign in again',
+      true,
+    )
+    this.name = 'KeyDisconnectedError'
+  }
+}
+
+/**
+ * Why `keyId` signs nothing on `identity`: disabled or expired on chain (definite), or not shown
+ * at all (unknown: a node behind). `origin`: where the stored key came from.
+ */
+function keyFailure(identity: WasmIdentity, keyId: number, origin: KeyOrigin | null = null): KeyNotUsableError {
   const k = identity.publicKeys.find((x) => x.keyId === keyId)
   if (k === undefined) return new KeyNotUsableError("this browser's key does not show on the identity yet — try again in a moment", false)
+  if (k.disabledAt !== undefined && renewableInWallet(origin)) return new KeyDisconnectedError(origin)
   const expired = k.expiresAt !== undefined && k.expiresAt <= BigInt(Date.now())
   return new KeyNotUsableError(undefined, k.disabledAt !== undefined || expired)
+}
+
+const disconnectedKey = (network: Network, identityId: string): string => `forge.keyDisconnected.${network}.${identityId}`
+
+/** Flag `identityId`'s stored key `keyId` as disconnected in the wallet (ids only, no key material). */
+function markKeyDisconnected(network: Network, identityId: string, keyId: number): void {
+  try {
+    window.localStorage.setItem(disconnectedKey(network, identityId), String(keyId))
+  } catch {
+    // No storage: the next unlock finds it disabled again and says so then.
+  }
+}
+
+function clearKeyDisconnected(network: Network, identityId: string): void {
+  try {
+    window.localStorage.removeItem(disconnectedKey(network, identityId))
+  } catch {
+    // Nothing to clear.
+  }
+}
+
+/** The key id {@link markKeyDisconnected} flagged for `identityId`, or null. */
+export function keyDisconnected(network: Network, identityId: string): number | null {
+  try {
+    const raw = window.localStorage.getItem(disconnectedKey(network, identityId))
+    return raw === null || !/^\d+$/.test(raw) ? null : Number(raw)
+  } catch {
+    return null
+  }
 }
 
 /**

@@ -50,6 +50,16 @@ const auth = {
 /** The unfinished identity creation this browser holds, if any. */
 let journal: { depositAddress: string } | undefined
 
+/** The network the sheet renders for; null keeps the build's (testnet). */
+const network = vi.hoisted(() => ({ override: null as 'mainnet' | null }))
+vi.mock('@/lib/constants', async (orig) => {
+  const real = await orig<typeof import('@/lib/constants')>()
+  const active = new Proxy(real.ACTIVE_NETWORK, {
+    get: (target, prop, receiver) => (network.override !== null && (prop === 'network' || prop === 'key') ? network.override : Reflect.get(target, prop, receiver)),
+  })
+  return { ...real, ACTIVE_NETWORK: active }
+})
+
 /** Whether Platform answers (a fake connection); off, the wallet tile still shows, as offline. */
 let platformUp = false
 /** Whether the chain supports App Connect v2. */
@@ -123,6 +133,7 @@ vi.mock('@/contexts/auth-context', () => ({
     controller: {
       supportsLimitedKeys: () => false,
       checkGroup: async () => ({ notice: null }),
+      walletSignInBlocker: async () => null,
       checkFileNetwork: (key: string | null) => {
         if (key !== null && key !== 'devnet-sakura') throw new Error(`This identity file is for ${key}, but this site is on devnet-sakura.`)
       },
@@ -188,6 +199,7 @@ beforeEach(() => {
   balanceCalls.length = 0
   platformUp = false
   v2Available = false
+  network.override = null
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
   auth.passkeyProblem = 'Checking whether passkeys work on this page.'
@@ -343,6 +355,87 @@ describe('QW-051: forgetting a key asks in the app', () => {
     await click(q('[data-testid="confirm-action"]'))
     expect(auth.forget).toHaveBeenCalledWith(ID)
     expect(native).not.toHaveBeenCalled()
+  })
+})
+
+describe('a key the wallet disconnected', () => {
+  it('a flagged key says to sign in again and offers forgetting it, not a renewal', async () => {
+    auth.vaults = [{ ...auth.vaults[0]!, disconnected: true, fromAppConnect: true }]
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    const box = q('[data-testid="unlock-disconnected"]')!
+    expect(box.textContent).toMatch(/This key was disconnected in your wallet, so sign in again/)
+    expect(byText("Renew this browser's key")).toBeNull()
+    await click(byText('Forget this key and sign in again'))
+    expect(host.ownerDocument.body.textContent).toMatch(/Forget this disabled key\?/)
+    expect(host.ownerDocument.body.textContent).toMatch(/disabled on Platform and can't sign/)
+    expect(host.ownerDocument.body.textContent).not.toMatch(/stays valid until it expires/)
+    await click(q('[data-testid="confirm-action"]'))
+    expect(auth.forget).toHaveBeenCalledWith(ID)
+  })
+
+  it("picking another key clears the first key's disconnected message (Forget can't hit the wrong key)", async () => {
+    auth.vaults = [...auth.vaults, { identityId: OTHER, keyId: 3, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
+    auth.unlock.mockRejectedValueOnce(new Error('this key was disconnected in your wallet, so sign in again'))
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    act(() => type(q<HTMLInputElement>('#unlock-passphrase')!, 'pw'))
+    await flush()
+    await click(byText('Unlock'))
+    expect(q('[data-testid="unlock-disconnected"]')).not.toBeNull()
+    const select = q<HTMLSelectElement>('select[aria-label="Identity"]')!
+    const other = select.value === '0' ? '1' : '0'
+    act(() => {
+      select.value = other
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(q('[data-testid="unlock-disconnected"]')).toBeNull()
+  })
+
+  it("forgetting the disconnected key leaves no disconnected message on the next key", async () => {
+    auth.vaults = [...auth.vaults, { identityId: OTHER, keyId: 3, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
+    auth.unlock.mockRejectedValueOnce(new Error('this key was disconnected in your wallet, so sign in again'))
+    auth.forget.mockImplementationOnce(async () => {
+      auth.vaults = auth.vaults.filter((x) => x.identityId !== ID)
+    })
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    act(() => type(q<HTMLInputElement>('#unlock-passphrase')!, 'pw'))
+    await flush()
+    await click(byText('Unlock'))
+    expect(q('[data-testid="unlock-disconnected"]')).not.toBeNull()
+    await click(byText('Forget this key'))
+    await click(q('[data-testid="confirm-action"]'))
+    expect(auth.forget).toHaveBeenCalledWith(ID)
+    act(() => root.render(<LoginModal />))
+    await flush()
+    expect(q('[data-testid="unlock-disconnected"]')).toBeNull()
+    await click(byText('Forget this key'))
+    expect(host.ownerDocument.body.textContent).not.toMatch(/Forget this disabled key\?/)
+  })
+
+  it('a flagged key still shows other failures, such as a wrong passphrase', async () => {
+    auth.vaults = [{ ...auth.vaults[0]!, disconnected: true }]
+    auth.unlock.mockRejectedValueOnce(new Error('wrong passphrase'))
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    act(() => type(q<HTMLInputElement>('#unlock-passphrase')!, 'pw'))
+    await flush()
+    await click(byText('Unlock'))
+    expect(q('[data-testid="unlock-disconnected"]')).not.toBeNull()
+    expect(host.ownerDocument.body.textContent).toMatch(/wrong passphrase/)
+  })
+
+  it('an unlock that finds it disconnected shows the same, in place of the raw error', async () => {
+    auth.unlock.mockRejectedValueOnce(new Error('this key was disconnected in your wallet, so sign in again'))
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    act(() => type(q<HTMLInputElement>('#unlock-passphrase')!, 'pw'))
+    await flush()
+    await click(byText('Unlock'))
+    expect(q('[data-testid="unlock-disconnected"]')).not.toBeNull()
+    expect(byText("Renew this browser's key")).toBeNull()
   })
 })
 
@@ -518,6 +611,37 @@ describe('App Connect v2 in the sheet', () => {
     expect(q('[data-testid="tile-wallet"]')!.textContent).not.toMatch(/#591/)
     expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-cost"]')!.textContent).toMatch(/Testnet · free test credits/)
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
+    expect(byText('Other ways to sign in', 'h3')).toBeNull()
+  })
+
+  it('on mainnet with v2 on offer, newcomers get DashPay and sign in with it; in-page create is under Other ways', async () => {
+    network.override = 'mainnet'
+    auth.vaults = []
+    platformUp = true
+    v2Available = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder()).toEqual(['tile-wallet', 'tile-get-dashpay', 'tile-import', 'tile-dg', 'tile-create'])
+    expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-create-badge"]')).toBeNull()
+    expect(q('[data-testid="tile-get-dashpay"]')!.textContent).toMatch(/Get DashPay, create your identity there, then sign in/)
+    expect(q<HTMLAnchorElement>('[data-testid="get-dashpay-links"] a')!.href).toBe('https://github.com/dashpay/dash-wallet/releases/latest')
+    const headings = [...host.ownerDocument.querySelectorAll('h3')].map((h) => h.textContent)
+    expect(headings).toEqual(['New to Dash?', 'Already have a Dash identity?', 'Other ways to sign in'])
+    await click(q('[data-testid="tile-get-dashpay"]'))
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
+    expect(host.ownerDocument.body.textContent).toMatch(/Your wallet gives this browser a key for Dash Forge/)
+  })
+
+  it('on mainnet without v2, creating stays first: there is no wallet to finish in yet', async () => {
+    network.override = 'mainnet'
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
+    expect(byText('Other ways to sign in', 'h3')).toBeNull()
   })
 
   it('keeps the wallet tile last where no wallet can answer and v2 is not on offer', async () => {

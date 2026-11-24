@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use forge_core::network::Network;
 use forge_core::rules::v2::Visibility;
 use forge_core::storage::{human_bytes, ResolvedPolicy, StoreOutcome, PLATFORM_PROFILE};
 use forge_core::user_error::{dash, one_line, redact, repo_link};
@@ -501,12 +502,13 @@ pub enum Charge {
 pub fn done_line(
     charge: Charge,
     remaining: Option<u64>,
+    network: &Network,
     owner_id: &str,
     name: &str,
     visibility: Visibility,
 ) -> (String, Value) {
     // A public repo's short URL; a private repo's canonical link, which names no one.
-    let url = repo_link(owner_id, name, visibility);
+    let url = repo_link(network, owner_id, name, visibility);
     let (charged, kind, text) = match charge {
         Charge::Measured(c) => (
             c,
@@ -652,6 +654,7 @@ mod tests {
         let (d, ev) = done_line(
             Charge::Measured(29_000_000),
             Some(48_090_000_000),
+            &Network::Mainnet,
             "alice",
             "project",
             Visibility::Public,
@@ -665,6 +668,7 @@ mod tests {
         let (d, _) = done_line(
             Charge::Estimated(1),
             None,
+            &Network::Mainnet,
             "alice",
             "project",
             Visibility::Private,
@@ -677,6 +681,7 @@ mod tests {
         let (d, _) = done_line(
             Charge::Estimated(1),
             None,
+            &Network::Mainnet,
             "alice",
             ".hidden",
             Visibility::Public,
@@ -686,6 +691,19 @@ mod tests {
             "{d}"
         );
         assert_eq!(ev["chargedCredits"], 29_000_000);
+        // A testnet push links to the testnet web app.
+        let (d, _) = done_line(
+            Charge::Estimated(1),
+            None,
+            &Network::Testnet,
+            "alice",
+            "project",
+            Visibility::Public,
+        );
+        assert!(
+            d.ends_with(" · https://testnet-forge.dashhq.org/alice/project"),
+            "{d}"
+        );
     }
 
     #[test]
@@ -735,12 +753,13 @@ mod tests {
         });
         assert!(p.contains("chunk 3 · manifest 2 · refUpdate 2"), "{p}");
         assert_eq!(
-            forge_core::user_error::web_url("o", "a b&c"),
+            forge_core::user_error::web_url(&Network::Mainnet, "o", "a b&c"),
             "https://forge.dashhq.org/repo?owner=o&name=a%20b%26c"
         );
         let (d, ev) = done_line(
             Charge::Estimated(31_000_000),
             None,
+            &Network::Mainnet,
             "o",
             "r",
             Visibility::Public,

@@ -523,7 +523,7 @@ async fn choose_storage(ctx: &Ctx, opts: &CreateOptions, size: Option<u64>) -> R
         0 => forge_core::storage::PLATFORM_PROFILE.to_string(),
         i if i <= external.len() => external[i - 1].clone(),
         _ => {
-            let added = crate::storage_wizard::run(&mut p).await?;
+            let added = crate::storage_wizard::run(&mut p, ctx.network().web_origin()).await?;
             // Storage that just failed its checks would fail the push after the create.
             if added.broken
                 && !crate::prompt::Prompter::confirm(
@@ -710,7 +710,7 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         let needed = create_estimate(opts.private, members)
             + branch.map_or(0, |(l, b)| push_estimate(&storage.policy, &l.root, b));
         let balance = client.get_balance(&owner).await.ok();
-        check_funds(needed, balance, matches!(ctx.network(), Network::Testnet))?;
+        check_funds(needed, balance, ctx.network())?;
     }
     Ok(Plan {
         slug,
@@ -752,7 +752,7 @@ fn push_estimate(policy: &ResolvedPolicy, root: &Path, branch: &str) -> u64 {
 /// blocks (the create and the push check again).
 // A refusal happens at most once per command; boxing it buys nothing.
 #[allow(clippy::result_large_err)]
-fn check_funds(needed: u64, balance: Option<u64>, testnet: bool) -> Result<(), UserError> {
+fn check_funds(needed: u64, balance: Option<u64>, network: &Network) -> Result<(), UserError> {
     let Some(have) = balance.filter(|b| needed > *b) else {
         return Ok(());
     };
@@ -769,10 +769,10 @@ fn check_funds(needed: u64, balance: Option<u64>, testnet: bool) -> Result<(), U
     ))
     .fix(format!(
         "top up the identity from any Dash wallet at {} (`dg auth balance` shows the balance)",
-        forge_core::user_error::TOP_UP_URL
+        network.top_up_url()
     ));
-    let u = if testnet {
-        u.fix("on testnet: open the web app (https://forge.dashhq.org), click your balance (Top up credits), enter your 12 words, and pay the address it shows from the faucet at https://faucet.thepasta.org")
+    let u = if *network == Network::Testnet {
+        u.fix(format!("on testnet: open the web app ({}), click your balance (Top up credits), enter your 12 words, and pay the address it shows from the faucet at https://faucet.thepasta.org", network.web_origin()))
     } else {
         u
     };
@@ -1050,7 +1050,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     .await
     .context("creating the repository")?;
     let repo = &result.repo;
-    let url = repo_link(repo.owner_id(), repo.name(), repo.visibility);
+    let url = repo_link(ctx.network(), repo.owner_id(), repo.name(), repo.visibility);
     // The config is the last step. Only one this run signed is reported: a resumed one was
     // signed by an earlier run, whose flags this one may not share.
     let config_written = result
@@ -1561,15 +1561,30 @@ mod tests {
     #[test]
     fn init_refuses_an_underfunded_identity_before_the_create() {
         let needed = 4_330_000_000;
-        let e = check_funds(needed, Some(1_790_000_000), true).unwrap_err();
+        let e = check_funds(needed, Some(1_790_000_000), &Network::Testnet).unwrap_err();
         assert_eq!(e.code, codes::INSUFFICIENT_CREDITS);
         let text = format!("{e:?}");
         assert!(text.contains("faucet.thepasta.org"), "{text}");
+        assert!(
+            text.contains("bridge.thepasta.org/?network=testnet"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(https://testnet-forge.dashhq.org)"),
+            "{text}"
+        );
         assert!(text.contains("nothing was written"), "{text}");
-        let mainnet = format!("{:?}", check_funds(needed, Some(1), false).unwrap_err());
+        let mainnet = format!(
+            "{:?}",
+            check_funds(needed, Some(1), &Network::Mainnet).unwrap_err()
+        );
         assert!(!mainnet.contains("faucet"), "{mainnet}");
-        assert!(check_funds(needed, Some(needed), true).is_ok());
-        assert!(check_funds(needed, None, true).is_ok());
+        assert!(
+            mainnet.contains("bridge.thepasta.org/?network=mainnet"),
+            "{mainnet}"
+        );
+        assert!(check_funds(needed, Some(needed), &Network::Testnet).is_ok());
+        assert!(check_funds(needed, None, &Network::Testnet).is_ok());
     }
 
     /// The first push is weighed by the Platform chunks of the branch's own pack, and only
