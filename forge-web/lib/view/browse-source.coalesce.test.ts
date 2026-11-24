@@ -42,6 +42,10 @@ const sdk = {} as EvoSDK
 const asked: string[] = []
 /** Hosts that never answer: only the reader's own deadline ends their requests. */
 const silent = new Set<string>()
+/** Hosts that answer at once but stream the body a chunk a second. */
+const slow = new Set<string>()
+/** Hosts that end a ranged body of over 512 KiB early. */
+const short = new Set<string>()
 
 function serve(url: string, init?: RequestInit): Promise<Response> {
   const u = new URL(url)
@@ -51,9 +55,27 @@ function serve(url: string, init?: RequestInit): Promise<Response> {
   if (silent.has(u.host)) {
     return new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))))
   }
+  if (range === null && slow.has(u.host)) {
+    const parts = 6
+    let sent = 0
+    const step = Math.ceil(bytes.length / parts)
+    const body = new ReadableStream<Uint8Array>({
+      pull: (c) =>
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            c.enqueue(bytes.slice(sent * step, (sent + 1) * step))
+            sent += 1
+            if (sent === parts) c.close()
+            resolve()
+          }, 1_000),
+        ),
+    })
+    return Promise.resolve(new Response(body))
+  }
   if (range === null) return Promise.resolve(new Response(bytes.slice()))
   const [a, b] = range.replace('bytes=', '').split('-').map(Number) as [number, number]
-  return Promise.resolve(new Response(bytes.slice(a, b + 1), { status: 206 }))
+  const cut = short.has(u.host) && b + 1 - a > 512 * 1024 ? a + 1000 : b + 1
+  return Promise.resolve(new Response(bytes.slice(a, cut), { status: 206 }))
 }
 
 function same(got: Uint8Array, start: number, end: number): void {
@@ -65,6 +87,8 @@ describe('external range coalescing and the hedged whole fetch', () => {
   beforeEach(() => {
     asked.length = 0
     silent.clear()
+    slow.clear()
+    short.clear()
     resetExternalFetchState()
     overrideDefaultGateways(['https://a.example', 'https://b.example'])
     vi.stubGlobal('fetch', serve)
@@ -123,5 +147,25 @@ describe('external range coalescing and the hedged whole fetch', () => {
     for (let i = 0; i < 100 && !done; i++) await vi.advanceTimersByTimeAsync(250)
     expect((await pending).length).toBe(bytes.length)
     expect(asked).toEqual(['a.example whole', 'b.example whole'])
+  })
+
+  it('reads the exact range when a span comes back short', async () => {
+    short.add('a.example')
+    const read = artifactRangeFetch(sdk, REPO, manifest())
+    const got = await read(0, 256 * 1024)
+    same(got, 0, 256 * 1024)
+    expect(asked).toEqual([`a.example bytes=0-${MiB - 1}`, `a.example bytes=0-${256 * 1024 - 1}`])
+  })
+
+  it('does not hedge while the first gateway is streaming', async () => {
+    vi.useFakeTimers()
+    slow.add('a.example')
+    let done = false
+    const pending = loadArtifactBytesProgress(sdk, REPO, manifest()).finally(() => {
+      done = true
+    })
+    for (let i = 0; i < 100 && !done; i++) await vi.advanceTimersByTimeAsync(250)
+    expect((await pending).length).toBe(bytes.length)
+    expect(asked).toEqual(['a.example whole'])
   })
 })

@@ -625,7 +625,7 @@ export function resetExternalFetchState(): void {
 async function fetchBody(
   url: string,
   init: RequestInit = {},
-  opts: { readonly cancel?: AbortSignal; readonly maxBytes?: number } = {},
+  opts: { readonly cancel?: AbortSignal; readonly maxBytes?: number; readonly onResponse?: () => void } = {},
 ): Promise<Uint8Array> {
   return withOriginSlot(url, async () => {
     if (opts.cancel?.aborted) throw new FetchFailure('another mirror served it first', false)
@@ -645,6 +645,7 @@ async function fetchBody(
     try {
       const resp = await fetch(url, { ...init, signal: controller.signal })
       if (!resp.ok && resp.status !== 206) throw new FetchFailure(`HTTP ${resp.status}`, false, true)
+      opts.onResponse?.()
       if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
       const reader = resp.body.getReader()
       const parts: Uint8Array[] = []
@@ -843,7 +844,10 @@ function coalescedSpan(manifest: PackManifest, index: number, gateways: readonly
   let served: { url: string; failed: readonly string[] } = { url: '', failed: [] }
   const read = fetchExactRange(manifest, from, to, gateways, (url, failed) => {
     served = { url, failed }
-  }).then((bytes) => ({ bytes, ...served }))
+  }).then((bytes) => {
+    if (bytes.length !== to - from) throw new FetchFailure('served a short range', false, true)
+    return { bytes, ...served }
+  })
   const span: CoalescedSpan = { read, size: to - from }
   read.catch(() => {
     if (coalescedSpans.get(key) === span) {
@@ -876,10 +880,14 @@ async function fetchExternalRange(
   const inOneSpan = manifest.sizeBytes > 0 && end <= manifest.sizeBytes && Math.floor((end - 1) / COALESCE_BLOCK) === index
   const key = spanKey(manifest, index)
   if (inOneSpan && (end - start >= COALESCE_MIN || coalescedSpans.has(key))) {
-    const { bytes, url, failed } = await coalescedSpan(manifest, index, gateways).read
-    onServed?.(url, failed)
-    const from = start - index * COALESCE_BLOCK
-    return bytes.subarray(from, from + (end - start))
+    // A span no mirror served whole: the exact range, asked for on its own (the failed URLs are
+    // already marked, so it costs little more than before).
+    const span = await coalescedSpan(manifest, index, gateways).read.catch(() => null)
+    if (span !== null) {
+      onServed?.(span.url, span.failed)
+      const from = start - index * COALESCE_BLOCK
+      return span.bytes.subarray(from, from + (end - start))
+    }
   }
   return fetchExactRange(manifest, start, end, gateways, onServed)
 }
@@ -903,7 +911,8 @@ async function fetchExactRange(
       const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
       onServed?.(url, preferredFailures(urls, new Set(manifest.uris), url, failed))
       // Some hosts ignore Range and return the whole body — slice defensively.
-      return buf.length > end - start ? buf.subarray(start, end) : buf
+      // (`slice`, not `subarray`: a span cache must not keep a whole pack alive behind a range.)
+      return buf.length > end - start ? buf.slice(start, end) : buf
     } catch (e) {
       if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
       else if (e instanceof FetchFailure && e.timedOut) timedOutUrls.set(url, { why: errorText(e), at: Date.now() })
@@ -964,15 +973,23 @@ async function fetchExternalWhole(
   cancel?.addEventListener('abort', onCancel)
   if (cancel?.aborted) winner.abort()
 
+  /** Responses begun and not yet failed: a hedge waits while one is streaming. */
+  let streaming = 0
   const attempt = async (url: string): Promise<{ url: string; bytes: Uint8Array }> => {
+    let began = false
     try {
-      const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes })
+      const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes, onResponse: () => {
+          began = true
+          streaming += 1
+        },
+      })
       if (bytes.length !== manifest.sizeBytes || bytesToHex(sha256(bytes)) !== want) {
         corrupt = true
         throw new FetchFailure('served bytes that do not match the manifest sha256', false, true)
       }
       return { url, bytes }
     } catch (e) {
+      if (began) streaming -= 1
       if (!winner.signal.aborted) {
         failures.push(failureAt(url, errorText(e)))
         if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
@@ -983,7 +1000,7 @@ async function fetchExternalWhole(
   }
 
   try {
-    const got = (await raceBounded(live, mirrorRaceWidth, attempt, winner.signal, HEDGE_AFTER_MS)) ??
+    const got = (await raceBounded(live, mirrorRaceWidth, attempt, winner.signal, { ms: HEDGE_AFTER_MS, waiting: () => streaming > 0 })) ??
       (await firstSequential(timedOut, attempt, winner.signal))
     if (got !== null) {
       winner.abort()
@@ -1000,32 +1017,33 @@ async function fetchExternalWhole(
 
 /**
  * How long a whole-artifact fetch waits on the URLs it started before starting the next one too
- * (a hedge): the first gateway usually serves, and racing them all from the start downloaded every
+ * (a hedge) while none has begun to answer: the first gateway usually serves, and racing them all from the start downloaded every
  * pack (a 2 MB index on each page load) two or three times over. A failure starts the next at once.
  */
 const HEDGE_AFTER_MS = 2_500
 
 /**
  * Run `attempt` over `items` with at most `width` in flight; resolve with the first success,
- * or null once every item has failed (or `stop` fired). With `hedgeMs`, one starts at a time and
- * another joins it each `hedgeMs` without a winner (or at once when one fails), still at most `width`.
+ * or null once every item has failed (or `stop` fired). With `hedge`, one starts at a time and
+ * another joins it each `hedge.ms` without a winner while none is `waiting` on a response that has
+ * begun (or at once when one fails), still at most `width`.
  */
 function raceBounded<T, R>(
   items: readonly T[],
   width: number,
   attempt: (item: T) => Promise<R>,
   stop: AbortSignal,
-  hedgeMs = 0,
+  hedge?: { readonly ms: number; readonly waiting: () => boolean },
 ): Promise<R | null> {
   return new Promise((resolve) => {
     let next = 0
     let running = 0
     let settled = false
-    let hedge: ReturnType<typeof setTimeout> | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
     const finish = (r: R | null): void => {
       if (settled) return
       settled = true
-      clearTimeout(hedge)
+      clearTimeout(timer)
       resolve(r)
     }
     const launch = (count: number): void => {
@@ -1036,14 +1054,14 @@ function raceBounded<T, R>(
           running -= 1
           if (settled) return
           if ((next >= items.length || stop.aborted) && running === 0) finish(null)
-          else launch(hedgeMs > 0 ? 1 : width)
+          else launch(hedge ? 1 : width)
         })
       }
       if (!settled && running === 0) finish(null)
-      clearTimeout(hedge)
-      if (hedgeMs > 0 && !settled && next < items.length) hedge = setTimeout(() => launch(1), hedgeMs)
+      clearTimeout(timer)
+      if (hedge && !settled && next < items.length) timer = setTimeout(() => launch(hedge.waiting() ? 0 : 1), hedge.ms)
     }
-    launch(hedgeMs > 0 ? 1 : width)
+    launch(hedge ? 1 : width)
   })
 }
 
