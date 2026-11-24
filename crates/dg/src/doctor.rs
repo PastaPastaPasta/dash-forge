@@ -237,7 +237,7 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
         },
         Section {
             title: "storage",
-            checks: check_storage().await,
+            checks: check_storage(ctx).await,
         },
         Section {
             title: "read gateways",
@@ -703,10 +703,7 @@ fn balance_check(credits: u64, network: &forge_core::network::Network) -> Check 
         dash_amount(dash),
         crate::fmt::balance_note(dash, network)
     );
-    let fix = format!(
-        "top up from any Dash wallet at {}",
-        forge_core::user_error::TOP_UP_URL
-    );
+    let fix = format!("top up from any Dash wallet at {}", network.top_up_url());
     if credits == 0 {
         Check::fail(
             "balance",
@@ -1036,7 +1033,7 @@ fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
 
 // --- storage -----------------------------------------------------------------------------
 
-async fn check_storage() -> Vec<Check> {
+async fn check_storage(ctx: &Ctx) -> Vec<Check> {
     let path = StorageProfiles::default_path()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -1071,14 +1068,16 @@ async fn check_storage() -> Vec<Check> {
             ));
         }
         if let Some(url) = public_probe_url(profile) {
-            out.push(match probe_preflight(&http, &url).await {
-                Ok(()) => Check::ok("web CORS", format!("{name}: the web app may read {url}")),
-                Err(why) => Check::warn(
-                    "web CORS",
-                    format!("{name}: {why}; git works, the web app cannot read this storage"),
-                    format!("`dg storage test {name}` prints the exact CORS config to paste"),
-                ),
-            });
+            out.push(
+                match probe_preflight(&http, &url, ctx.network().web_origin()).await {
+                    Ok(()) => Check::ok("web CORS", format!("{name}: the web app may read {url}")),
+                    Err(why) => Check::warn(
+                        "web CORS",
+                        format!("{name}: {why}; git works, the web app cannot read this storage"),
+                        format!("`dg storage test {name}` prints the exact CORS config to paste"),
+                    ),
+                },
+            );
         }
     }
     out
@@ -2088,6 +2087,13 @@ mod tests {
         assert_eq!(
             balance_check(one_dash, &forge_core::network::Network::Mainnet).status,
             Status::Ok
+        );
+        // The top-up link opens the bridge on the network checked.
+        assert_eq!(
+            balance_check(0, &forge_core::network::Network::Testnet)
+                .fix
+                .as_deref(),
+            Some("top up from any Dash wallet at https://bridge.thepasta.org/?network=testnet")
         );
     }
 

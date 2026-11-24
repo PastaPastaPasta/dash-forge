@@ -176,9 +176,12 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
     let Some(name) = args.name.as_deref() else {
         let no_args = *args == StorageAddArgs::default();
         if no_args && ctx.interactive() {
-            return crate::storage_wizard::run(&mut crate::prompt::TtyPrompter)
-                .await
-                .map(drop);
+            return crate::storage_wizard::run(
+                &mut crate::prompt::TtyPrompter,
+                ctx.network().web_origin(),
+            )
+            .await
+            .map(drop);
         }
         return Err(UserError::new(codes::USAGE, "storage profile not added: no profile name")
             .cause(if no_args {
@@ -518,6 +521,8 @@ pub(crate) struct Report {
     pub fixes: Vec<String>,
     /// Print each row as it is recorded (human mode), so a slow check shows progress.
     live: bool,
+    /// The web app origin the browser CORS checks present ([`forge_core::network::Network::web_origin`]).
+    origin: &'static str,
 }
 
 impl Report {
@@ -604,9 +609,10 @@ impl Report {
 /// Run every check for `profile` (the same ones for `dg storage test` and the end of the
 /// `dg storage add` prompts): a signed PUT, a signed GET, an anonymous GET through the
 /// public URL, the browser CORS preflight for `Range`, and a delete of the probe (IPFS:
-/// add + pin, gateway reads, unpin). `live` prints each row as it finishes.
-pub(crate) async fn run_checks(profile: &Profile, live: bool) -> Report {
-    run_checks_with_auth(profile, live, None).await
+/// add + pin, gateway reads, unpin). `live` prints each row as it finishes. The CORS checks
+/// present `origin`, the web app of the network in use.
+pub(crate) async fn run_checks(profile: &Profile, live: bool, origin: &'static str) -> Report {
+    run_checks_with_auth(profile, live, None, origin).await
 }
 
 /// The managed node verifies with its private token even when no keychain is available.
@@ -615,10 +621,12 @@ pub(crate) async fn run_checks_with_auth(
     profile: &Profile,
     live: bool,
     auth: Option<&str>,
+    origin: &'static str,
 ) -> Report {
     let http = forge_core::storage::http_client();
     let mut r = Report {
         live,
+        origin,
         ..Report::default()
     };
     for w in publish_warnings(profile) {
@@ -666,7 +674,7 @@ async fn check_public_read(
     }
     let ok = r.steps.last().is_some_and(|s| s.ok);
     if ok {
-        let cors = probe_cors(http, url).await;
+        let cors = probe_cors(http, url, r.origin).await;
         if !cors.browser_ok() {
             r.fail("browser CORS", cors.problems.join("; "));
         } else if cors.warnings.is_empty() {
@@ -695,7 +703,7 @@ async fn test(ctx: &Ctx, name: &str) -> Result<()> {
     if !ctx.json {
         println!("Testing storage profile {name:?} ({}):", profile.kind());
     }
-    let r = run_checks(&profile, !ctx.json).await;
+    let r = run_checks(&profile, !ctx.json, ctx.network().web_origin()).await;
 
     let ok = r.ok();
     let body = json!({
@@ -796,7 +804,8 @@ async fn test_s3(p: &S3Profile, http: &reqwest::Client, r: &mut Report) {
                 p.bucket
             ));
         } else if cors_failed {
-            r.fixes.push(cors_fix(provider_of(&p.endpoint), &p.bucket));
+            let fix = cors_fix(provider_of(&p.endpoint), &p.bucket, r.origin);
+            r.fixes.push(fix);
         }
     } else {
         r.pass(

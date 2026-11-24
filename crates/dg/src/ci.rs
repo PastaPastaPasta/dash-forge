@@ -1244,7 +1244,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     } else {
         s.spent_since(before).await
     };
-    let url = commit_web_url(&s.repo, &r.head_oid);
+    let url = commit_web_url(ctx.network(), &s.repo, &r.head_oid);
     emit_report(
         ctx,
         &r,
@@ -1910,7 +1910,7 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
     let read = CommitRuns::read(ctx, repo, &sha).await?;
     let (r, runs) = (&read.reader, &read.runs);
     let members_runs = &read.members;
-    let url = commit_web_url(&r.repo, &sha);
+    let url = commit_web_url(ctx.network(), &r.repo, &sha);
     // The newest run per name is listed; when the branch policy pins that check to another
     // source, the run is shown but not counted (the merge judges only the pinned source's).
     let policy = if runs.is_empty() {
