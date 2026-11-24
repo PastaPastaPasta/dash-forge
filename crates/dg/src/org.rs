@@ -408,7 +408,7 @@ async fn requests(ctx: &Ctx, which: Option<&str>) -> Result<()> {
     let client = ctx.connect().await.ok();
     let mut rows = Vec::new();
     for record in orgs {
-        let org = Org::load(record).await?;
+        let org = load_bound(record, client.as_ref()).await?;
         for req in org.requests() {
             rows.push(Row::of(&org, client.as_ref(), req).await);
         }
@@ -461,6 +461,16 @@ fn not_connected(which: &str) -> anyhow::Error {
     .into()
 }
 
+/// An organization's room, bound to the ceremony whose key the identity holds when Platform can
+/// be read (requests are that ceremony's; after a re-run, the newest ceremony may not be it yet).
+async fn load_bound(record: OrgRecord, client: Option<&PlatformClient>) -> Result<Org> {
+    let mut org = Org::load(record).await?;
+    if let Some(client) = client {
+        let _ = org.bind(client).await;
+    }
+    Ok(org)
+}
+
 /// The connected organization holding request `id` on this network.
 async fn find_request(ctx: &Ctx, id: &str) -> Result<(Org, Request)> {
     let orgs = connected(ctx);
@@ -471,10 +481,11 @@ async fn find_request(ctx: &Ctx, id: &str) -> Result<(Org, Request)> {
                 .into(),
         );
     }
+    let client = ctx.connect().await.ok();
     let mut unread = Vec::new();
     for record in orgs {
         let label = record.label.clone();
-        match Org::load(record).await {
+        match load_bound(record, client.as_ref()).await {
             Ok(org) => {
                 if let Ok(req) = org.find(id) {
                     return Ok((org, req));
@@ -698,8 +709,8 @@ async fn post_request(
     ctx.confirm_or_cancel(&format!(
         "Ask {} ({} of {}) to: {}? It posts a request with your signature; the organization pays once enough members sign.",
         line(&org.record.label),
-        org.record.threshold,
-        org.record.members.len(),
+        org.quorum().0,
+        org.quorum().1,
         line(&planned.title)
     ))?;
     let req = org
@@ -908,9 +919,16 @@ pub async fn waiting_count(ctx: &Ctx) -> Option<usize> {
     if orgs.is_empty() || !core_org::enabled(ctx.network()) {
         return None;
     }
+    let client = tokio::time::timeout(std::time::Duration::from_secs(8), ctx.connect())
+        .await
+        .ok()
+        .and_then(Result::ok);
     let mut n = 0;
     for record in orgs {
-        let load = tokio::time::timeout(std::time::Duration::from_secs(8), Org::load(record));
+        let load = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            load_bound(record, client.as_ref()),
+        );
         if let Ok(Ok(org)) = load.await {
             n += org.waiting().len();
         }

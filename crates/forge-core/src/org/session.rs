@@ -293,6 +293,14 @@ impl Org {
             .unwrap_or_default()
     }
 
+    /// The signing ceremony's threshold and size (N of M).
+    pub fn quorum(&self) -> (usize, usize) {
+        self.ceremony()
+            .map_or((self.record.threshold, self.record.members.len()), |c| {
+                (c.config.threshold, c.config.participants.len())
+            })
+    }
+
     fn ceremony(&self) -> Option<&Ceremony> {
         self.state.ceremonies.get(&self.cid)
     }
