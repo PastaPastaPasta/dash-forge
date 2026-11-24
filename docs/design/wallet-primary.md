@@ -125,7 +125,7 @@ Each PR is small, changes one thing, and lands green.
 
 **Phase 1: abstraction, no behavior change**
 1. This document.
-2. forge-web: a sign-in method registry (`lib/auth/sign-in-methods.ts`, #654): which methods the sheet offers, in which group (lead / new / existing / advanced), and which is recommended; `ChooseView` renders from it. Tests pin today's order per network.
+2. forge-web: a sign-in method registry (`lib/auth/sign-in-methods.ts`, #654): which methods the sheet offers, in which group (lead / new / existing / other / advanced), and which is recommended; `ChooseView` renders from it. Tests pin today's order per network.
 
 A signer abstraction in `lib/sdk/write.ts` (a `WriteSigner` in place of `getSigningKeyWif`) is **not** planned: a v2 wallet grant is a plain limited key the page holds, which today's seam already handles, and no wallet offers per-transaction signing (`dashpay://sign` does not exist). It comes back only if a wallet does.
 

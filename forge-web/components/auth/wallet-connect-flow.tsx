@@ -817,7 +817,7 @@ export function WalletConnectFlow({
   )
 }
 
-const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/releases/latest'
+export const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/releases/latest'
 
 /**
  * Which wallets can answer here (docs/design/wallet-primary.md, checked 2026-11-22): App Connect
