@@ -17,8 +17,9 @@ import { isForgeContract, keyScope } from './wallet-key'
 export type KeyRole = 'master' | 'forge' | 'forge-contract' | 'signing' | 'encryption' | 'transfer' | 'other'
 
 /**
- * What a key is, for "Disable all other keys": a Forge limited key, a wallet sign-in (no contract
- * limits, or a Forge contract or group without a budget), a CI runner key (one document type of a
+ * What a key is, for "Disable all other keys": a Forge limited key (Forge's group, or forge-core
+ * alone for a code-only CI key, with a budget), a wallet sign-in (no contract limits, or a Forge
+ * contract or group without a budget), a CI runner key (one document type of a
  * Forge contract) or another app's key (or unknown). Matches `classify_key` in `dg auth keys`.
  */
 export type KeyKind = 'forge-limited' | 'wallet' | 'ci-runner' | 'other'
@@ -78,7 +79,7 @@ export function keyKindOf(k: Bounded, forge: ForgeIds | undefined): KeyKind {
   const hasBudget = k.totalBudget !== undefined
   if (b.$type === 'contractGroup') return b.id === forge.group ? (hasBudget ? 'forge-limited' : 'wallet') : 'other'
   const ours = isForgeContract(forge, b.id)
-  if (b.$type === 'singleContract') return ours ? 'wallet' : 'other'
+  if (b.$type === 'singleContract') return b.id === forge.core && hasBudget ? 'forge-limited' : ours ? 'wallet' : 'other'
   if (b.$type === 'documentType') return ours ? 'ci-runner' : 'other'
   return 'other'
 }
@@ -92,7 +93,7 @@ export function boundsText(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds |
     return kind !== null ? `forge-${kind}` : `contract ${id}`
   }
   if (b.$type === 'contractGroup') return forge !== undefined && b.id === forge.group ? 'Forge contract group' : `contract group ${b.id}`
-  if (b.$type === 'singleContract') return contract(b.id)
+  if (b.$type === 'singleContract') return `${contract(b.id)} only`
   if (b.$type === 'documentType') return `${b.documentTypeName ?? 'one kind of record'} records of ${contract(b.id)}`
   return 'unknown bounds'
 }
@@ -104,7 +105,7 @@ export const DISABLEABLE: ReadonlySet<KeyRole> = new Set(['forge', 'forge-contra
 export const ROLE_TEXT: Readonly<Record<KeyRole, string>> = {
   master: 'Master key. Adds and disables keys; never used to sign here.',
   forge: 'Forge key with a budget and an expiry: a browser, dg or a CI runner.',
-  'forge-contract': 'Key for one Forge contract (a wallet sign-in or a CI runner).',
+  'forge-contract': 'Key for one Forge contract (a wallet sign-in, a CI runner or a code-only CI key).',
   signing: 'Signing key with no contract limits: your wallet and other apps may sign with it.',
   encryption: 'Encryption key for private repos.',
   transfer: 'Transfer key. Moves credits out of the identity.',

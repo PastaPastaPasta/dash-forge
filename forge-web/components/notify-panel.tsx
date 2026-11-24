@@ -143,28 +143,32 @@ export function NotifyService({ base }: { base: string }): JSX.Element {
 
   const channels = [info.channels.email ? 'email' : null, info.channels.push ? 'browser push' : null].filter(Boolean).join(' and ')
   const privacy = (
-    <div className="space-y-1.5 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="notify-privacy">
+    <div className="space-y-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="notify-privacy">
       <p>
-        Optional. <strong className="font-medium text-anvil-700 dark:text-anvil-200">{info.operator}</strong> runs this service and sends {channels || 'nothing yet'}. Forge works the same
-        without it, and every notice links back here, where the chain is read again.
+        Optional {channels || 'notifications'} run by <strong className="font-medium text-anvil-700 dark:text-anvil-200">{info.operator}</strong>. None of it is written to Dash Platform.
       </p>
-      <p>
-        It keeps your identity id, your address and push subscriptions (encrypted), your choices below and which repos it follows for you.
-        None of it is written to Dash Platform.
-      </p>
-      <p>
-        It reads only public data: for a private repo it can say “new activity”, never a title. Sign-in is a request signed by this
-        browser&apos;s key, so there is no account or password.
-        {privacyUrl ? (
-          <>
-            {' '}
-            <a href={privacyUrl} target="_blank" rel="noreferrer" className="underline">
-              Privacy notice
-            </a>
-            .
-          </>
-        ) : null}
-      </p>
+      <details>
+        <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
+          Privacy &amp; how it works
+        </summary>
+        <div className="mt-1 space-y-1">
+          <p>
+            It keeps your identity id, your address and push subscriptions (encrypted), your choices below and which repos it follows for you. Forge works the same without it.
+          </p>
+          <p>
+            It reads only public data: for a private repo it can say “new activity”, never a title. Sign-in is a request signed by this browser&apos;s key, so there is no account or password.
+            {privacyUrl ? (
+              <>
+                {' '}
+                <a href={privacyUrl} target="_blank" rel="noreferrer" className="underline">
+                  Privacy notice
+                </a>
+                .
+              </>
+            ) : null}
+          </p>
+        </div>
+      </details>
     </div>
   )
 

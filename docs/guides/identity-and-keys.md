@@ -228,7 +228,7 @@ dg auth name register <label>                   # a DPNS username
 
 `dg auth login` signs in with the DashPay wallet on your phone (App Connect), so neither the recovery phrase nor the master key touches this computer. Giving it an identity file, `--identity <file>` or `--mnemonic` signs in from your identity's master key instead (`--full-key` and `--replace` need one of those, and stop with a usage error without); `--wallet` asks for the wallet explicitly:
 
-1. `dg` prints a QR code and the same request as a `dash-key:` link (copy it to the phone if the camera can't read the terminal). In DashPay, open **More → Tools → Connections → Scan QR**, or open the link on the phone.
+1. `dg` prints a QR code and the same request as a `dashpay://connect` link (copy it to the phone if the camera can't read the terminal). In DashPay, open **More → Tools → Connections → Scan QR**, or open the link on the phone.
 2. The wallet shows "Dash Forge" and the key it is asked for: one limited key (bound to the `dash-forge` contract group) with `dg`'s proposed limits, 0.25 DASH for 180 days, or `--budget` / `--expires` (a wallet grants at most 5 DASH and 365 days). You can keep them or pick another limit in the wallet. Approving adds the key to your identity.
 3. `dg` reads the answer from Platform (no Forge server is involved, so this works over SSH), checks the key on chain, and shows the identity, its username if it has one, and the budget and expiry the wallet granted. **Check that it is the identity your wallet showed** and confirm. The key is then stored like any limited key: the keychain, else a passphrase-sealed file (`--insecure-plaintext` as for `dg auth login`).
 

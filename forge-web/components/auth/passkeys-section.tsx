@@ -15,6 +15,7 @@
  * browser. A resumed tab asks for an unlock (`UnlockNeededError`), then carries on.
  */
 
+import { phraseIsAdvanced } from '@/components/auth/phrase-advanced'
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { Fingerprint, Plus, RefreshCw, Trash2 } from 'lucide-react'
@@ -124,7 +125,7 @@ function PasskeysPanel(): JSX.Element {
         <Fingerprint className="h-4 w-4" aria-hidden /> Passkeys for other devices
       </h2>
       <p className="text-anvil-700 dark:text-anvil-200" data-testid="passkeys-explain">
-        A passkey moves this sign-in to another device. It doesn&apos;t recover an account: when the key expires, renew it with your identity file or recovery phrase.
+        A passkey moves this sign-in to another device. It doesn&apos;t recover an account: when the key expires, renew it {phraseIsAdvanced() ? 'in your wallet' : 'with your identity file or recovery phrase'}.
       </p>
       <p className="text-anvil-700 dark:text-anvil-200" data-testid="passkeys-shared">
         Every device shares the same key and budget, so disabling the key signs them all out. Renewing it replaces the key for every device too.{' '}

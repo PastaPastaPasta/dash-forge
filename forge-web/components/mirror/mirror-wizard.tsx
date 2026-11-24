@@ -361,7 +361,7 @@ export function MirrorWizard(): JSX.Element {
   const left = [repoCost, keyCost].filter((c) => c !== null)
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className={progress.way === null ? 'mx-auto max-w-3xl' : 'mx-auto max-w-5xl'}>
       <div className="mb-5 flex items-start gap-3">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface-raised ring-1 ring-inset ring-anvil-200 dark:ring-anvil-700">
           <GitFork className="h-5 w-5 text-fg-muted" aria-hidden />
@@ -369,11 +369,11 @@ export function MirrorWizard(): JSX.Element {
         <div>
           <h1 className="text-xl">Mirror a GitHub repository</h1>
           <p className="max-w-2xl text-dense text-anvil-500 dark:text-anvil-400">
-            A copy on Dash Forge that nobody can take down. How you set it up depends on whether you maintain the repo on GitHub.
+            Keep a copy on Dash Forge that nobody can take down.
           </p>
         </div>
       </div>
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_16rem]">
+      <div className={progress.way === null ? '' : 'grid gap-5 lg:grid-cols-[minmax(0,1fr)_16rem]'}>
         <ol className="min-w-0 space-y-3" aria-label="Mirror setup steps">
           {order.map((s, i) => (
             <StepCard key={s} n={i + 1} id={s} title={TITLES[s]} state={stateOf(s)} summary={summaries[s]} optional={s === 'key'} onChange={s === 'wait' ? undefined : () => setReopened(s)}>
@@ -385,36 +385,35 @@ export function MirrorWizard(): JSX.Element {
             <ReadyCard key={progress.repo.repoId} identity={identity} github={progress.github} repo={progress.repo} onSetup={() => update({ actionLater: false })} />
           ) : null}
         </ol>
-        <aside aria-label={progress.way === 'cli' ? 'What you need' : 'What this writes to Platform'} className="h-fit space-y-3 rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-800 dark:bg-anvil-900 lg:sticky lg:top-20">
-          {progress.way === 'cli' ? (
-            <>
-              <h2 className="text-dense font-medium text-fg-muted">What you need</h2>
-              <ul className="space-y-2">
-                <RailItem label="dg and git-remote-dash" note={<>Build them from source with the <Link href={DOCS.quickStart} className="underline">install guide</Link>.</>} />
-                <RailItem label="The GitHub CLI, signed in" note="It reads the source repo." />
-                <RailItem label="A funded identity" note="The estimate comes before anything is written." />
-              </ul>
-            </>
-          ) : progress.way === 'action' ? (
-            <>
-              <h2 className="text-dense font-medium text-anvil-500 dark:text-anvil-400">On Platform</h2>
-              <ul className="space-y-2">
-                <RailItem label="Forge repository" note={done.repo ? 'done' : 'the repo, its owner and settings'} />
-                <RailItem label="Runner key" note={done.key ? 'optional · done' : 'optional · its budget is a cap, not a charge'} />
-                <RailItem label="Each mirror run" note="paid through the runner key, never more than the run's cost cap" />
-              </ul>
-              {left.length > 0 ? (
-                <div className="space-y-1">
-                  <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Still to sign here</p>
-                  <CostPreview cost={sumPreviews(left)} />
-                </div>
-              ) : null}
-              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-                Nothing passes through a Forge server: GitHub is asked from your browser, keys are made in it, and the Action runs on GitHub&apos;s runners.
-              </p>
-            </>
-          ) : <p className="text-dense text-fg-muted">Choose how to make your copy.</p>}
-        </aside>
+        {progress.way !== null ? (
+          <aside aria-label={progress.way === 'cli' ? 'What you need' : 'What this writes to Platform'} className="h-fit space-y-3 rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-800 dark:bg-anvil-900 lg:sticky lg:top-20">
+            {progress.way === 'cli' ? (
+              <>
+                <h2 className="text-dense font-medium text-fg-muted">What you need</h2>
+                <ul className="space-y-2">
+                  <RailItem label="dg and git-remote-dash" note={<><Link href={DOCS.quickStart} className="underline">Install guide</Link></>} />
+                  <RailItem label="GitHub CLI (gh)" note="Signed in to read the source." />
+                  <RailItem label="A funded identity" note="Estimate shown before writing." />
+                </ul>
+              </>
+            ) : (
+              <>
+                <h2 className="text-dense font-medium text-anvil-500 dark:text-anvil-400">On Platform</h2>
+                <ul className="space-y-2">
+                  <RailItem label="Forge repository" note={done.repo ? 'done' : 'repo, maintainer and settings'} />
+                  <RailItem label="Runner key" note={done.key ? 'optional · done' : 'optional · budget is a cap'} />
+                  <RailItem label="Mirror runs" note="capped per run via runner key" />
+                </ul>
+                {left.length > 0 ? (
+                  <div className="space-y-1">
+                    <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Still to sign here</p>
+                    <CostPreview cost={sumPreviews(left)} />
+                  </div>
+                ) : null}
+              </>
+            )}
+          </aside>
+        ) : null}
       </div>
     </div>
   )
