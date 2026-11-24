@@ -21,6 +21,15 @@ export function useParam(name: string, fallback = ''): string {
   return raw === null ? fallback : openParam(name, raw)
 }
 
+/** The largest issue or PR number the contracts accept (`$defs.num`: 1 to u32 max). */
+const MAX_ITEM_NUMBER = 4294967295
+
+/** An issue or PR number from the URL, or NaN when it is not one the contracts can hold. */
+export function parseItemNumber(raw: string): number {
+  const n = Number.parseInt(raw, 10)
+  return Number.isInteger(n) && n >= 1 && n <= MAX_ITEM_NUMBER ? n : Number.NaN
+}
+
 /**
  * Which identity a profile page (`/u`, `/u/followers`, `/u/following`) addresses (D-222):
  * `?id=` an identity id exactly, else `?name=` a DPNS name (or, as before, an identity id).
