@@ -43,7 +43,7 @@ inputs:
     description: "No longer has any effect: a private repository's check run cannot carry a log, so none is uploaded there."
     default: "false"
   network:
-    description: "mainnet, testnet or devnet. The default is testnet, which the hosted site targets; Forge is not deployed on mainnet yet."
+    description: "mainnet, testnet or devnet. The default is testnet. Mainnet needs binaries built after its registration (install: 'source' on a recent commit); the v0.2.0 release knows testnet only."
     default: testnet
   devnet-name:
     description: "Devnet name, required when network is devnet and ignored otherwise: lowercase letters, digits and -."

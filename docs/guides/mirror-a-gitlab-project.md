@@ -28,7 +28,7 @@ You need:
   - GitLab.com plans to limit anonymous API use to 60 requests an hour. Use a token for anything but a quick look.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), set with `dg storage use <profile> --global`, so pack bytes do not go on Platform.
 
-> **Network.** Forge runs on testnet, the tools' default network. See [Which network](README.md#which-network).
+> **Network.** The tools default to testnet; Forge is also live on mainnet. See [Which network](README.md#which-network).
 
 ---
 

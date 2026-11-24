@@ -21,7 +21,7 @@ We reply within 3 working days, agree a disclosure date with you, and credit you
 
 ## Network
 
-Forge runs on Dash Platform testnet (protocol 14). The contract ids are listed in [forge-contracts/deployments/testnet.json](forge-contracts/deployments/testnet.json) once registered. Do not test against mainnet.
+Forge runs on Dash Platform mainnet and testnet (protocol 14). The contract ids are in [forge-contracts/deployments/](forge-contracts/deployments/). Test against testnet, not mainnet.
 
 ## Supported versions
 

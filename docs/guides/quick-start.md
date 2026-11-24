@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is waiting for the network to confirm your identity (or, if you build from source, the first build).
 
-> **Which network?** The commands target **testnet**, a test network and the tools' default, which forge.dashhq.org also uses. The fees below were measured on Platform v5 test networks before Forge reached testnet (2026-10-01), or on the retired devnet bonsia where they say so; [Costs](costs.md) has both. Mainnet has no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
+> **Which network?** The commands use **testnet**, the tools' default, where DASH is free test money ([testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)). For real repositories, add `--network mainnet` to `dg auth new` or `dg auth login`; it becomes your default, and the web app is [forge.dashhq.org](https://forge.dashhq.org). [Networks](../networks.md) has the details.
 
 ---
 
@@ -49,7 +49,9 @@ This one line installs the latest release's checksum-verified binaries into `~/.
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
 ```
 
-[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads (Windows included), `cargo binstall`, and pinning a version.
+The latest release, v0.2.0, works on testnet only and has no `--wallet` sign-in: for mainnet or the wallet, build from source above.
+
+[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads, Windows (WSL), `cargo binstall`, and pinning a version.
 
 ### Check the install
 
@@ -73,7 +75,7 @@ dg auth new
 ```
 
 1. `dg` shows a **12-word recovery phrase**. Write the words down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on testnet use the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org). A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: whatever a faucet sends all becomes credits, where the sample below sent 0.05.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on testnet use the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org). A repository costs about 0.0024 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: whatever a faucet sends all becomes credits, where the sample below sent 0.05.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
@@ -85,11 +87,11 @@ dg auth new
 
 `dg` proves the deposit with an InstantSend lock when it can, which takes seconds, and otherwise with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
 
-> **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
+> **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet.
 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
-- **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On mainnet the sheet leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under **Other ways to sign in**.)
+- **In the web app**: on [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org) (or [forge.dashhq.org](https://forge.dashhq.org) on mainnet), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On mainnet the sheet leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under **Other ways to sign in**.)
 - **With the Dash bridge**: <https://bridge.thepasta.org>, on testnet, then **Download Key Backup**.
 
 To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with DashPay and approve once for all of Forge). On testnet that needs DashPay Wallet for Android's testnet build, 11.9.2 or later; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
@@ -157,8 +159,8 @@ Forge hosts nothing, so you decide where the pack bytes (the git objects) live. 
 
 | Option | Cost | |
 |---|---|---|
-| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.004–0.0055 DASH per push on Platform (measured on bonsia), plus your provider's bill | recommended; R2 has no egress fees |
-| Your IPFS node (kubo) or a pinning service | the same on Platform | |
+| Your S3-compatible bucket ([how](bring-your-own-storage.md#an-s3-compatible-bucket)), for example a store on [your own NAS](home-nas-storage.md) | about 0.004–0.0055 DASH per push on Platform, plus your provider's bill, if any | recommended |
+| Your IPFS node (kubo) | the same on Platform | |
 | Dash Platform | about **0.004–0.011 DASH** for a small push (the top of the range when it moves the default branch), plus about **0.33 DASH per MiB** (the tools quote up to 0.39), permanently | no account needed; fine for tiny repositories |
 
 **From the terminal**, `dg storage add` with no arguments asks for each value and tests the storage as it goes, printing the fix for anything that fails (usually CORS). For the secret access key it offers to paste it, hidden, into your OS keychain. Where there is no keychain (`DASH_FORGE_NO_KEYCHAIN=1`, which is what you want over SSH, or a container) it says so and leaves two choices: an environment variable that holds the secret (`env:R2_SECRET_ACCESS_KEY`; export it where `dg` and `git push` run), or a keychain entry that already exists. A scripted `--secret-access-key` takes one of those two references, never the secret itself ([E501](../errors.md#e501)):
@@ -168,7 +170,7 @@ dg storage add            # e.g. a profile named r2-main; offers to make it your
 dg storage test r2-main   # re-run the checks at any time
 ```
 
-**In the browser**, open **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for everything the web app uploads: a merge's pack, a commit the browser makes to a pull request's branch (applying suggestions, "Update branch"), and release assets. `git push` uses `dg`'s profiles.
+**In the browser**, open **Settings → Storage** (`/settings/storage`) in the web app. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for everything the web app uploads: a merge's pack, a commit the browser makes to a pull request's branch (applying suggestions, "Update branch"), and release assets. `git push` uses `dg`'s profiles.
 
 [Bring your own storage](bring-your-own-storage.md) has the provider-by-provider setup and the flags for scripts.
 
@@ -189,7 +191,7 @@ Creating Exam…/my-project on testnet
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)
 Proceed? [Y/n] y
-✓ created  https://forge.dashhq.org/Exam…/my-project
+✓ created  https://testnet-forge.dashhq.org/Exam…/my-project
 ✓ remote 'origin' → dash://Exam…/my-project
 ✓ git config dash.storage=r2-main
 dash: Exam…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
@@ -200,18 +202,18 @@ dash: stored pack 6ce98e05facd (1.2 MiB, 312 objects)
 dash: pack 6ce98e05facd (1.2 MiB) stored on r2-main (1 verified)
 dash: updated main → 8f3e2a1
 dash: history index published (full, 42 paths, 1 commits)
-dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://forge.dashhq.org/Exam…/my-project
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0418 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
 To dash://Exam…/my-project
  * [new branch]      main -> main
 branch 'main' set up to track 'origin/main'.
 ✓ main → 8f3e2a1   this push ~0.0052 DASH
-  total ~0.0068 DASH (create ~0.0016 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
-Open it: https://forge.dashhq.org/Exam…/my-project
+  total ~0.0076 DASH (create ~0.0024 DASH + push ~0.0052 DASH) · balance 0.0418 DASH
+Open it: https://testnet-forge.dashhq.org/Exam…/my-project
 ```
 
-(The charges are the ones measured on a Platform v5 test network on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On testnet, DASH is test money; when `dg` can fetch a price it adds what the same charge would cost on mainnet (`≈ $… on mainnet`). See [Costs](costs.md).)
+(A first push to your own bucket; the size and paths are illustrative. On testnet, DASH is test money; when `dg` can fetch a price it adds what the same charge would cost on mainnet (`≈ $… on mainnet`). See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH**, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost is printed afterwards. Members-only content (below) is on by default, so a default `dg init` creates for about 0.0024 DASH on testnet. See [Costs](costs.md).
 
 What it does, in order:
 
@@ -229,7 +231,7 @@ It is safe to run again: an existing repository is reused (nothing written), a m
 
 Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. A directory name is folded to that form (`My Project` → `my-project`).
 
-You can also create a repository in the web app (**New → Repository**, about 0.0016 DASH, with a cost preview). Under **Public**, **Turn on members-only content now** is ticked, which adds about 0.0011 DASH; untick it to skip. It needs your encryption key in the browser. The empty repository page then shows the commands to push to it.
+You can also create a repository in the web app (**New → Repository**, with a cost preview). Under **Public**, **Turn on members-only content now** is ticked; untick it to skip. It needs your encryption key in the browser. The empty repository page then shows the commands to push to it.
 
 ---
 
@@ -278,7 +280,7 @@ dash: storage      → r2-main · Platform stores manifest + refs only, est 0.00
 dash: r2-main      ████████████████ 245 B  verified   0.2 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0058 DASH
 dash: history index published (full, 3 paths, 2 commits)
-dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://forge.dashhq.org/Exam…/my-project
+dash: done · Platform charged ≈0.0040 DASH · remaining 0.0378 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
 ```
 
 (The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)
@@ -294,24 +296,19 @@ Everything else is plain git: branches, tags, force-push, `git fetch`, `git clon
 
 ### jj
 
-jj pushes and fetches through `git-remote-dash` like git does (tested on testnet in October 2026 with jj 0.46, in
-a repository that is not colocated). One step differs: `jj git clone` and `jj git remote add` store the URL with
-its owner in lower case, and an identity id is case-sensitive, so `dash://<identity id>/<name>` then fails with
-[E102](../errors.md#e102). Add the remote with git instead, then fetch with jj:
+jj pushes and fetches through `git-remote-dash` like git does, in colocated and non-colocated repositories. With an owner given as a DPNS name, `jj git clone dash://alice/project` just works.
+
+An identity id is different: `jj git clone` and `jj git remote add` store the URL with its owner in lower case, and an identity id is case-sensitive, so they fail with [E102](../errors.md#e102). Add the remote with git instead, then fetch with jj:
 
 ```sh
-jj git init --no-colocate
-git --git-dir=.jj/repo/store/git remote add origin dash://<identity id>/<name>
+jj git init                                   # colocated: the git directory is .git
+git remote add origin dash://<identity id>/<name>
 jj git fetch
 jj bookmark track main@origin
 jj new main
 ```
 
-In a colocated repository (what `jj git init` makes by default) the git directory is `.git`, so a plain
-`git remote add origin dash://<identity id>/<name>` does it; that setup has not been tested with jj yet.
-`jj git remote list` still shows the owner in lower case; jj passes git the URL as stored, so pushes and fetches
-work. An owner given as a DPNS name (`dash://alice/project`) is lower case already and is not affected (not yet
-tested with jj). Report problems in the [issue tracker](https://github.com/PastaPastaPasta/dash-forge/issues).
+In a non-colocated repository (`jj git init --no-colocate`), add the remote with `git --git-dir=.jj/repo/store/git remote add origin …`. `jj git remote list` then shows the owner in lower case, but jj passes git the URL as stored, so pushes and fetches work.
 
 ### Secrets in a push
 
@@ -375,7 +372,7 @@ The check is a safety net, not a guarantee: it knows a handful of formats, and i
 
 ## 7. View it on the web
 
-Open the link from the push's last line. Short links work too: `https://forge.dashhq.org/<owner id>/my-project`.
+Open the link from the push's last line. Short links work too: `https://testnet-forge.dashhq.org/<owner id>/my-project` (`forge.dashhq.org` on mainnet).
 
 The web app has no server behind it. Your browser reads the repository straight from Dash Platform, checks the Platform proofs, and re-hashes every file it shows. The **Verification** card in the right-hand rail says what was checked, including whether the quorum keys the proofs rest on agreed with a second source. [Verify Forge](verify-forge.md) explains it.
 
