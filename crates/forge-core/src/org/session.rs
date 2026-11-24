@@ -319,6 +319,9 @@ impl Org {
     /// Names for describing `req`: repositories (those it creates included) and members.
     pub async fn names(&self, client: &PlatformClient, req: &Request) -> Names {
         let mut names = Names::default();
+        names
+            .identities
+            .insert(self.record.org_id.clone(), "the organization".into());
         let decoded: Vec<DecodedWrite> = req
             .proposals
             .iter()
