@@ -26,6 +26,9 @@ import { useRouter } from 'next/navigation'
 import { Check, Globe, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
 import Link from 'next/link'
 import { AppShell } from '@/components/app-shell'
+import { useOrgRequester } from '@/components/org/use-org-requester'
+import { useOrgRecords } from '@/hooks/use-orgs'
+import { newRepoRequest } from '@/lib/org/actions'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { SignInButton } from '@/components/sign-in-button'
 import { Button } from '@/components/ui/button'
@@ -111,6 +114,16 @@ export default function NewRepoPage(): JSX.Element {
   const { identity, signer, unlockScope } = useAuth()
   const guard = useWriteGuard()
   const forge = ACTIVE_NETWORK.v2
+  const orgs = useOrgRecords()
+  const [owner, setOwner] = useState('')
+  useEffect(() => {
+    const asked = new URLSearchParams(window.location.search).get('owner')
+    if (asked && orgs.some((r) => r.orgId === asked)) setOwner(asked)
+  }, [orgs])
+  const effectiveOwner = identity === null && orgs.length > 0 && owner === '' ? (orgs[0]?.orgId ?? '') : owner
+  const org = useOrgRequester(effectiveOwner || null)
+  const orgRecord = org.record
+  const forOrg = orgRecord !== null
   // A returning owner's repo costs less than the first (D-011): read which it is.
   const creation = useAsync(
     () => repoCreationFirsts(sdk!, identity!, forge!.core),
@@ -133,7 +146,7 @@ export default function NewRepoPage(): JSX.Element {
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('visibility') === 'private') setVisibility('private')
   }, [])
-  const isPrivate = visibility === 'private'
+  const isPrivate = visibility === 'private' && !forOrg
   // A private create wraps its key from the encryption key in this browser's vault, and so does
   // a public one that turns members-only content on: read it for both.
   const ops = useAsync(
@@ -156,7 +169,7 @@ export default function NewRepoPage(): JSX.Element {
   const noKey = isPrivate && keyMissing
   // Members-only content at creation: ticked, and possible here (no key in this browser turns the
   // box off and says how to set one up).
-  const withMembers = !isPrivate && membersOnly && !keyMissing
+  const withMembers = !isPrivate && !forOrg && membersOnly && !keyMissing
   const usesKey = isPrivate || withMembers
   // A reloaded tab holds the signing key only: the encryption key needs an unlock here first.
   const needsUnlock = usesKey && !noKey && unlockScope === 'signing'
@@ -221,9 +234,9 @@ export default function NewRepoPage(): JSX.Element {
   }, [branchError])
   // An unfinished creation of this name resumes with the values it started with.
   const resuming = useMemo(() => {
-    if (nameError !== null || repoName === null) return null
+    if (forOrg || nameError !== null || repoName === null) return null
     return pending.find((j) => j.input.name === repoName) ?? null
-  }, [repoName, nameError, pending])
+  }, [repoName, nameError, pending, forOrg])
   const differs =
     resuming !== null &&
     ((resuming.input.description ?? '') !== description.trim() ||
@@ -244,6 +257,10 @@ export default function NewRepoPage(): JSX.Element {
   const cost = costOf(name.trim() && nameError === null && branchError === null ? input() : { name: 'x', ...(withMembers ? { membersOnly: true } : {}) })
 
   const create = async (i: CreateRepoInput): Promise<void> => {
+    if (orgRecord !== null && forge) {
+      await org.submit((s) => newRepoRequest(s, forge, orgRecord.orgId, orgRecord.label, i))
+      return
+    }
     if (!signer || !forge) throw new Error('sign in first')
     if (!sdk) throw new Error('still connecting to Dash Platform: try again in a moment')
     setProgress(initialProgress(i))
@@ -285,7 +302,7 @@ export default function NewRepoPage(): JSX.Element {
     )
   }
 
-  if (!identity) {
+  if (!identity && orgs.length === 0) {
     return (
       <AppShell>
         <EmptyState
@@ -309,12 +326,35 @@ export default function NewRepoPage(): JSX.Element {
           <div>
             <h1 className="text-xl">New repository</h1>
             <p className="text-dense text-anvil-500 dark:text-anvil-400">
-              On {networkName()}, owned by your identity.
+              On {networkName()}, owned by {orgRecord ? orgRecord.label : 'your identity'}.
             </p>
           </div>
         </div>
 
-        {pending.map((j) => (
+        {orgs.length > 0 ? (
+          <fieldset className="mb-4" data-testid="new-owner">
+            <legend className="mb-1 text-dense font-medium">Owner</legend>
+            <div className="flex flex-wrap gap-2">
+              {identity !== null ? (
+                <label className={'flex items-center gap-2 rounded-md border px-3 py-2 text-dense ' + (!forOrg ? 'border-forge-500 bg-forge-500/10' : 'border-anvil-200 dark:border-anvil-750')}>
+                  <input type="radio" name="repo-owner" checked={!forOrg} onChange={() => setOwner('')} />
+                  You
+                </label>
+              ) : null}
+              {orgs.map((r) => (
+                <label key={r.orgId} className={'flex items-center gap-2 rounded-md border px-3 py-2 text-dense ' + (effectiveOwner === r.orgId ? 'border-forge-500 bg-forge-500/10' : 'border-anvil-200 dark:border-anvil-750')}>
+                  <input type="radio" name="repo-owner" checked={effectiveOwner === r.orgId} onChange={() => setOwner(r.orgId)} />
+                  {r.label}
+                  <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                    {r.threshold} of {r.members.length}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        ) : null}
+
+        {(forOrg ? [] : pending).map((j) => (
           <div key={j.input.name} className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
             <span className="flex-1">
               Creating <span className="font-mono">{j.input.name}</span> did not finish ({j.done.length} of {createStepCount(j.input)} steps).
@@ -326,7 +366,7 @@ export default function NewRepoPage(): JSX.Element {
               size="sm"
               variant="ghost"
               onClick={() => {
-                void discardRepoCreation(DEFAULT_NETWORK, identity, j.input.name)
+                if (identity !== null) void discardRepoCreation(DEFAULT_NETWORK, identity, j.input.name)
                 setPending((p) => p.filter((x) => x !== j))
               }}
             >
@@ -351,6 +391,7 @@ export default function NewRepoPage(): JSX.Element {
             <Textarea id="repo-desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What is this repo for?" className="min-h-[64px]" maxLength={500} />
           </Field>
 
+          {forOrg ? null : (
           <fieldset>
             <legend className="mb-1 text-dense font-medium">Visibility</legend>
             <div role="radiogroup" aria-label="Visibility" onKeyDown={onRadioGroupKeyDown} className="grid gap-2 sm:grid-cols-2">
@@ -382,7 +423,8 @@ export default function NewRepoPage(): JSX.Element {
               ))}
             </div>
           </fieldset>
-          {!isPrivate ? (
+          )}
+          {!isPrivate && !forOrg ? (
             <div className="flex items-start gap-2.5 rounded-md border border-anvil-200 p-3 dark:border-anvil-750" data-testid="members-only-create">
               <input
                 id="repo-members-only"
@@ -515,6 +557,11 @@ export default function NewRepoPage(): JSX.Element {
             </p>
           ) : null}
 
+          {orgRecord ? (
+            <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="new-org-note">
+              This creates a request. The repository is created once {orgRecord.threshold} of {orgRecord.members.length} members of {orgRecord.label} sign; the organization pays the fee.
+            </p>
+          ) : (
           <div className="space-y-1.5">
             <CostPreview cost={cost} />
             <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -526,6 +573,7 @@ export default function NewRepoPage(): JSX.Element {
               </p>
             </details>
           </div>
+          )}
 
           {progress ? (
             <ol aria-label="Creation steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
@@ -548,7 +596,7 @@ export default function NewRepoPage(): JSX.Element {
             const blockedReason =
               nameError ??
               branchError ??
-              guard.disabledReason ??
+              (forOrg ? null : guard.disabledReason) ??
               privateBlocked ??
               (name.trim() === '' ? 'Enter a repository name to continue.' : null)
             return (
@@ -558,14 +606,18 @@ export default function NewRepoPage(): JSX.Element {
                   size="lg"
                   className="w-full"
                   disabled={blockedReason !== null}
-                  title={guard.disabledReason ?? privateBlocked ?? undefined}
+                  title={(forOrg ? null : guard.disabledReason) ?? privateBlocked ?? undefined}
                   aria-describedby={blockedReason !== null ? 'new-repo-blocked' : undefined}
                   onClick={() => {
+                    if (forOrg) {
+                      setConfirm(input())
+                      return
+                    }
                     // The members key's first share is a repoKey: forge-meta's on a four-contract set.
                     if (guard.check(cost, usesKey && forge ? ['core', writeContractKind(forge, DOC.repoKey)] : 'core', 'create a repository')) setConfirm(input())
                   }}
                 >
-                  Create repository
+                  {forOrg ? 'Create request' : 'Create repository'}
                 </Button>
                 {blockedReason !== null ? (
                   <p id="new-repo-blocked" data-testid="new-repo-blocked" className="text-center text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -583,16 +635,18 @@ export default function NewRepoPage(): JSX.Element {
         onClose={() => setConfirm(null)}
         title={confirm ? `Create ${confirm.name}?` : 'Create repository?'}
         description={
-          confirm?.visibility === 'private'
+          orgRecord
+            ? `${orgRecord.label} will own it and be its maintainer. ${confirm ? protectionNote(confirm) : ''}You sign first; it is created once ${orgRecord.threshold} of ${orgRecord.members.length} members sign. The name is permanent.`
+            : confirm?.visibility === 'private'
             ? `You'll be its maintainer. ${protectionNote(confirm)}${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name and visibility are permanent, and repos can be archived but not deleted.`
             : `You'll be its maintainer. ${confirm ? protectionNote(confirm) : ''}${confirm?.membersOnly === true ? 'Members-only content will be on: members can post things only members can read. ' : ''}The name is permanent, and repos can be archived but not deleted.`
         }
-        cost={confirm ? costOf(confirm) : cost}
-        confirmLabel="Sign & create"
-        successNote="Created — opening your repo"
-        toast={{ running: 'Creating the repository…', done: 'Repository created', failed: 'Repository creation stopped part-way' }}
+        cost={forOrg ? null : confirm ? costOf(confirm) : cost}
+        confirmLabel={forOrg ? 'Sign & ask co-signers' : 'Sign & create'}
+        {...(forOrg ? {} : { successNote: 'Created — opening your repo', toast: { running: 'Creating the repository…', done: 'Repository created', failed: 'Repository creation stopped part-way' } })}
         onConfirm={() => (confirm ? create(confirm) : Promise.resolve())}
       />
+      {org.dialog}
     </AppShell>
   )
 }

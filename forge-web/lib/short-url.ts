@@ -64,6 +64,8 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   // Web Push for the optional notification service (public/notify-sw.js).
   'notify-sw.js',
   'og.png',
+  // `/org/`: organizations (N-of-M multisig owners) and their requests.
+  'org',
   'private',
   'repo',
   'robots.txt',
