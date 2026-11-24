@@ -194,7 +194,7 @@ const DEVICE_OPENED_KEY = 'forge:device-opened-at'
 
 /** A key kept by this browser alone was stored or opened: later page loads may open it again. */
 export function markDeviceOpened(): void {
-  writeMarker(DEVICE_OPENED_KEY)
+  writeMarker(DEVICE_OPENED_KEY, lockMarker())
 }
 
 /**
@@ -262,11 +262,12 @@ function readLocal(key: string): string | null {
   }
 }
 
-function writeMarker(key: string): void {
+function writeMarker(key: string, after = 0): void {
   try {
     if (typeof window === 'undefined') return
-    // Strictly increasing, so two events in the same millisecond still fire a storage event.
-    const now = Math.max(Date.now(), readMarker(key) + 1)
+    // Strictly increasing, so two events in the same millisecond still fire a storage event,
+    // and an open right after a lock in the same millisecond still counts as later.
+    const now = Math.max(Date.now(), readMarker(key) + 1, after + 1)
     window.localStorage.setItem(key, String(now))
   } catch {
     /* storage disabled: the IndexedDB wipe still runs */
