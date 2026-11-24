@@ -394,16 +394,16 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
               testId="tile-get-dashpay"
               icon={Smartphone}
               title="Get DashPay, create your identity there, then sign in"
-              body="Install DashPay on your phone and create your Dash identity in it; your recovery phrase stays on the phone. Then come back and choose this to sign in with it."
+              body="Install DashPay (Android) or Dash Wallet (iPhone) and create your Dash identity in it; your recovery phrase stays on the phone. Then come back and choose this to sign in with it."
               onClick={() => onPick('wallet')}
               pausedReason={pausedReason}
             />
             <p data-testid="get-dashpay-links" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              DashPay for Android 11.9.2 or later (Google Play, or the{' '}
+              DashPay for Android 11.9.2 or later (see the{' '}
               <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
                 DashPay Wallet releases (opens in a new tab)
               </a>
-              ), or Dash Wallet for iOS 9.1.4 or later (App Store).
+              ), or Dash Wallet for iOS 9.1.4 or later.
             </p>
           </Fragment>
         )
