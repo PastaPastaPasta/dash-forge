@@ -1,0 +1,192 @@
+name: Forge sync
+
+# Mirrors master and every tag of this repository to its mainnet Dash Forge copy,
+# dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge (owner forge.dash).
+# GitHub is primary and the mirror is one-way: tools/forge-sync/mirror.sh never force-pushes,
+# and when Forge has a change GitHub lacks it pushes nothing, fails, and opens an issue.
+#
+# Secrets:
+#   FORGE_MAINNET_KEY   dfk1: limited key of forge.dash bound to forge-core only, with a budget
+#                       and an expiry (`dg auth export --new-key --scope core`). It cannot write
+#                       issues, PRs, stars or labels.
+#   FORGE_IPFS_SSH_KEY  ssh key whose only power on our IPFS host (build.thepasta.org) is a
+#                       forced command that imports one CAR into its kubo node and pins it.
+# Packs go to a kubo service container in the job, then each new CID is copied to that host as a
+# CAR and confirmed pinned, so nothing depends on a third-party pinning service. Platform keeps
+# only the manifest, the ref update and the history index (~0.004 DASH a push).
+
+on:
+  push:
+    branches: [master]
+    tags: ['**']
+  schedule:
+    - cron: '23 4 * * *' # daily reconcile: catches a run that failed or was skipped
+  pull_request:
+    paths:
+      - tools/forge-sync/**
+      - .github/workflows/forge-sync.yml
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Compare only, push nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One live sync at a time (a newer pending run replaces an older one, which is fine: each run
+# mirrors whatever master is by then). Pull request test runs never queue behind it.
+concurrency:
+  group: forge-sync-${{ github.event_name == 'pull_request' && github.ref || 'live' }}
+  cancel-in-progress: false
+
+env:
+  FORGE_REMOTE: dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge
+  FORGE_NETWORK: mainnet
+  IPFS_HOST: build.thepasta.org
+  IPFS_HOST_KEY: build.thepasta.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDvEY6zdgninySKvcbwmLeucxNH5sxfGkvKPCJSUBIXp
+
+jobs:
+  test:
+    name: shellcheck, tools/forge-sync/test.sh
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: shellcheck tools/forge-sync/*.sh
+      - run: bash tools/forge-sync/test.sh
+
+  sync:
+    if: github.event_name != 'pull_request' && github.repository == 'PastaPastaPasta/dash-forge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    services:
+      kubo:
+        image: ipfs/kubo:v0.43.1@sha256:b293923d66e490e70ced64df42ea7a6cf7eac2740e3fb29101df18070fa7be48
+        ports:
+          - 127.0.0.1:5001:5001
+          - 127.0.0.1:8080:8080
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch GitHub's master and tags
+        run: |
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          git fetch --tags --force origin
+
+      - name: Plan the Dash Forge build
+        id: install
+        env:
+          INPUT_INSTALL: source
+          INPUT_VERSION: ''
+        run: bash action/install-forge.sh plan
+
+      - name: Restore the Dash Forge build cache
+        id: build-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ runner.temp }}/dash-forge-build
+          key: ${{ steps.install.outputs.cache-key }}
+          restore-keys: |
+            dash-forge-build@${{ runner.os }}-${{ runner.arch }}@
+
+      - name: Build dg and git-remote-dash
+        env:
+          FORGE_BINARIES: dg git-remote-dash
+          FORGE_BIN_DIR: ${{ runner.temp }}/forge-bin
+          FORGE_TARGET_DIR: ${{ runner.temp }}/dash-forge-build
+          FORGE_TOOLS_DIR: ${{ runner.temp }}/forge-tools
+          DASH_FORGE_ACTION_REF: ${{ github.sha }}
+        run: |
+          bash action/install-forge.sh build
+          echo "$RUNNER_TEMP/forge-bin" >> "$GITHUB_PATH"
+
+      - name: Save the Dash Forge build cache
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ runner.temp }}/dash-forge-build
+          key: ${{ steps.install.outputs.cache-key }}
+
+      - name: Configure storage and the IPFS host
+        env:
+          FORGE_IPFS_SSH_KEY: ${{ secrets.FORGE_IPFS_SSH_KEY }}
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS -X POST http://127.0.0.1:5001/api/v0/id >/dev/null && break
+            [ "$i" -lt 30 ] || { echo "::error::the kubo service did not start"; exit 1; }
+            sleep 2
+          done
+          mkdir -p "$RUNNER_TEMP/forge-ssh" "$RUNNER_TEMP/forge-config"
+          chmod 700 "$RUNNER_TEMP/forge-ssh"
+          printf '%s\n' "$FORGE_IPFS_SSH_KEY" > "$RUNNER_TEMP/forge-ssh/id"
+          chmod 600 "$RUNNER_TEMP/forge-ssh/id"
+          printf '%s\n' "$IPFS_HOST_KEY" > "$RUNNER_TEMP/forge-ssh/known_hosts"
+          cat > "$RUNNER_TEMP/forge-config/storage.toml" <<'EOF'
+          [profiles.ci-kubo]
+          kind = "ipfs-kubo"
+          api = "http://127.0.0.1:5001"
+          gateway = "http://127.0.0.1:8080"
+          EOF
+          echo "DASH_FORGE_STORAGE_CONFIG=$RUNNER_TEMP/forge-config/storage.toml" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/forge-config" >> "$GITHUB_ENV"
+          dg --version
+
+      - name: Mirror master and tags to Forge
+        id: sync
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MAINNET_KEY }}
+          DASH_FORGE_NO_KEYCHAIN: '1'
+          DRY_RUN: ${{ inputs.dry-run && '1' || '' }}
+          CAR_DIR: ${{ runner.temp }}/forge-cars
+          PIN_CMD: >-
+            ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${{ runner.temp }}/forge-ssh/known_hosts
+            -o LogLevel=ERROR -i ${{ runner.temp }}/forge-ssh/id pasta@build.thepasta.org
+        run: bash tools/forge-sync/mirror.sh
+
+      - name: Keep the packs of a failed replication
+        if: failure() && steps.sync.outputs.pushed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: forge-sync-cars-${{ github.run_id }}
+          path: ${{ runner.temp }}/forge-cars
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Open an issue for the divergence
+        if: failure() && steps.sync.outputs.diverged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Forge mirror diverged from GitHub"
+          body="The Forge sync found a change on $FORGE_REMOTE that GitHub's master or tags do not have, so it pushed nothing (GitHub never overwrites Forge). See the job summary of $RUN_URL for the refs. Bring the change into GitHub, or remove it on Forge, then re-run the workflow."
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "Still diverged: $RUN_URL"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+      - name: Clean up the ssh key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/forge-ssh"
