@@ -6,8 +6,8 @@ on:
     branches: [master]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Per-push gate: the web app + the TS FORGE_RULES_V2 conformance suite (the
 # cross-client parity contract). The Rust workspace pulls in the Dash Platform SDK

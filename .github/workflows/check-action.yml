@@ -25,6 +25,10 @@ on:
     branches: [master]
     paths: *paths
 
+concurrency:
+  group: check-action-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
