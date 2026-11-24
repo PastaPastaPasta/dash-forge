@@ -9,6 +9,8 @@ Two facts decide most of the choices below:
 
 Readers never trust the NAS: a clone accepts only bytes that hash to the SHA-256 on chain, so a broken NAS costs availability, never integrity.
 
+Want IPFS instead, with no domain needed? [Run your own backend](self-host-backend.md) sets up a node on the same kind of machine with one command.
+
 1. [Choose a store](#choose-a-store)
 2. [Run the store](#run-the-store)
 3. [Give it a public https address](#give-it-a-public-https-address)
