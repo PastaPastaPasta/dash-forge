@@ -90,7 +90,7 @@ Severity: **blocker** = don't launch with this. **should-fix** = fix soon, launc
 | Defaults when nothing is set: CLI, Action, check-action, GitLab template, `pages.yml`, gateway compose | all default to testnet | should-fix (owner decision) |
 | Web origin `forge.dashhq.org` hardcoded for every network (CLI links, relay, gateway, passkey RP id, `dg ipfs`) | | should-fix (follows the runbook's hosting move) |
 | Security headers on forge.dashhq.org (HSTS, frame-ancestors, X-Frame-Options) | missing; DNS points straight at GitHub Pages, not through Cloudflare | should-fix, do before announcing (owner) |
-| Docs drift: `deploying-to-a-network.md` (sakura, rc.4, costs), `hosting.md` (says behind Cloudflare), `roadmap.md:38`, in-app quick-start points mainnet users at testnet faucets | | should-fix |
+| Docs drift: `deploying-to-a-network.md` (names the retired devnet, rc.4 pin, unmeasured costs), `hosting.md` (says behind Cloudflare), `roadmap.md:38`, in-app quick-start points mainnet users at testnet faucets | | should-fix |
 
 ## 2. PRs merged during this pass
 
