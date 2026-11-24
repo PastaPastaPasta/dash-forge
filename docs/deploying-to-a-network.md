@@ -4,7 +4,7 @@
 
 Registration is the one step in a Forge launch that cannot be undone. Contracts cannot be deleted or re-owned, and an update may only add types and optional properties or loosen a few bounds ([after registration](#7-after-registration-what-can-still-change)). Rehearse it on a scratch set first, and read this page to the end before you broadcast anything.
 
-**Status.** Forge is registered on devnet sakura only. A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; testnet's file holds only the network's DAPI addresses, its chain id and the `keyExchange` record (yappr's contract) until the registration commit lands, and mainnet's holds only DAPI addresses. Until then every client reports "not deployed" on that network ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
+**Status.** Forge is registered on testnet (since 2026-10-26) and mainnet (since 2026-11-24, contract group `<MAINNET_GROUP_ID>`). A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record. Until then every client reports "not deployed" on that network ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
 
 1. [What is registered](#1-what-is-registered)
 2. [Before you register](#2-before-you-register)
@@ -133,7 +133,7 @@ Flags used on this page, all in `forge-contracts/scripts/deploy-v2.mjs`: `--set`
 5. **Check with `dg doctor --network <network>`.** Its `forge-v2` rows print the core, collab and community ids and the group, and verify enrolment in the group. forge-meta is checked too, but is named only when its check fails; a dedicated meta row is not there yet (CLIE-19, when available).
 6. **Seed the labelled fixture and the showcase** with the QA identity, never a user's: `forge-contracts/deployments/fixtures/<network>.json` for the read tests, and `SHOWCASE` in `forge-web/lib/view/showcase.ts` for the landing page.
 
-**Key exchange.** Mobile-wallet sign-in reads a key-exchange contract. Testnet uses yappr's, which the shipped wallets pin (recorded in `testnet.json` as `keyExchange`, "not deployed by Forge"). Mainnet's record names none; sign-in there needs one, and registering Forge's own copy is an owner decision (`deploy-key-exchange.mjs` refuses testnet and mainnet).
+**Key exchange.** Mobile-wallet sign-in reads a key-exchange contract. Testnet uses yappr's, which the shipped wallets pin (recorded in `testnet.json` as `keyExchange`, "not deployed by Forge"). Mainnet needs no key-exchange contract: wallet sign-in there uses DashPay App Connect v2, whose answers live in the App Connect system contract `H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ`, so mainnet's record names none (`deploy-key-exchange.mjs` refuses testnet and mainnet).
 
 ### What the registration PR commits
 

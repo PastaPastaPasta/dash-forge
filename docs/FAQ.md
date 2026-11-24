@@ -56,12 +56,12 @@ Retired; everything on it is gone. See the [archived devnet move notes](archive/
 
 ## When is it on mainnet?
 
-After **Dash Platform v5** activates on mainnet and the project owner registers Forge's contracts there. Forge needs Platform v5 for its shared contracts, membership checks and limited keys. Until then:
+It is, since **2026-11-24**. Testnet stays live next to it:
 
 | Network | Status |
 |---|---|
-| **Testnet** | **Live** since 2026-10-26. forge.dashhq.org runs here, and it is the CLI's default network, so no flag is needed. Its DASH is free test money and the network can be reset. |
-| **Mainnet** | Not deployed yet. After Dash Platform v5 activates, the owner registers Forge's contracts ([runbook](deploying-to-a-network.md)). |
+| **Mainnet** | **Live** since 2026-11-24, at [forge.dashhq.org](https://forge.dashhq.org). Mainnet DASH is real money and there is no faucet: get credits from the [Dash bridge](https://bridge.thepasta.org/?network=mainnet) or the web app's identity flow. In `dg` and `git-remote-dash`, choose it with `--network mainnet`, `dg auth new` or `dg auth login` on mainnet (which records it as your default network), `DASH_FORGE_NETWORK=mainnet`, or git config `dash.network`. |
+| **Testnet** | **Live** since 2026-10-26, at [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). It is still the CLI's default network, so no flag is needed. Its DASH is free test money and the network can be reset. |
 
 Forge has left the devnets it ran on before testnet. [Networks](networks.md) has their history, and [Dash Forge moved to testnet](guides/devnet-move.md) says how to push again.
 
@@ -71,7 +71,7 @@ An earlier version of Forge (forge-v1, one contract per repository) ran on testn
 
 ## Can I have private repositories?
 
-Yes, on testnet: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
+Yes, on mainnet and testnet: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
 
 ## How does this relate to GitHub?
 

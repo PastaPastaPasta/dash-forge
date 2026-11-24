@@ -9,7 +9,7 @@
 
 ## Status
 
-**Live on testnet**, at [forge.dashhq.org](https://forge.dashhq.org): Forge's contracts were registered there on 2026-10-26. Testnet DASH is free test money and the network can be reset. Mainnet: not yet. See [Networks](docs/networks.md).
+**Live on mainnet** since 2026-11-24, at [forge.dashhq.org](https://forge.dashhq.org). Mainnet DASH is real money. **Testnet** stays live at [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org): its DASH is free test money and the network can be reset. `dg` and `git-remote-dash` default to testnet; pass `--network mainnet` (or sign in with `dg auth new --network mainnet`, which remembers it) for mainnet. See [Networks](docs/networks.md).
 
 ## Quick start (testnet)
 
@@ -114,9 +114,9 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app at **https://forge.dashhq.org** (GitHub Pages) runs on testnet (Dash Platform v5.0.0-rc.8, protocol 14); [Networks](docs/networks.md) has the earlier devnets. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against testnet ("Testnet Nightly", from master's workflow file) once its fixture identities are configured. See [e2e/README.md](e2e/README.md).
+The web app at **https://forge.dashhq.org** (GitHub Pages) runs on mainnet, and **https://testnet-forge.dashhq.org** on testnet (Dash Platform v5.0.0-rc.8, protocol 14); [Networks](docs/networks.md) has the earlier devnets. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against testnet ("Testnet Nightly", from master's workflow file) once its fixture identities are configured. See [e2e/README.md](e2e/README.md).
 
-Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [deploying-to-a-network.md](docs/deploying-to-a-network.md) for the testnet registration and the mainnet one to come.
+Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [deploying-to-a-network.md](docs/deploying-to-a-network.md) for how Forge was registered on testnet and mainnet.
 
 Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`.
 

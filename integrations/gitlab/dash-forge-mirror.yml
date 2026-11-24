@@ -43,7 +43,7 @@
 variables:
   # Required: the destination, dash://<owner identity id>/<name>.
   FORGE_REPO: ""
-  # The network: testnet (Forge's network today), mainnet, or devnet with FORGE_DEVNET_NAME.
+  # The network: testnet (the default), mainnet, or devnet with FORGE_DEVNET_NAME.
   FORGE_NETWORK: testnet
   FORGE_DEVNET_NAME: ""
   # What to install. One of the two is required:

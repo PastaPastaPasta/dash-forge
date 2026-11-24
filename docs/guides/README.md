@@ -48,6 +48,6 @@ Dash Wallet sign-in works on testnet with the testnet build of DashPay Wallet fo
 
 ## Which network
 
-The guides use **testnet**, a test network and the tools' default, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too. Testnet DASH is free from a faucet and has no value, and the network can be reset. Fees quoted as measured on a devnet are from the Platform v5 test networks Forge used before testnet. Mainnet has no Forge deployment yet. [Networks](../networks.md) has the details and the history.
+The guides use **testnet**, a test network and the tools' default, throughout; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Testnet DASH is free from a faucet and has no value, and the network can be reset. Fees quoted as measured on a devnet are from the Platform v5 test networks Forge used before testnet. Forge is also live on mainnet, at [forge.dashhq.org](https://forge.dashhq.org), where DASH is real money: pass `--network mainnet` to the tools. [Networks](../networks.md) has the details and the history.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

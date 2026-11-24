@@ -4,12 +4,12 @@
 # `version` below is the Dash Forge release this action version pins. It is defined once,
 # as the input's default, and the commit that cuts a release sets it to that release (a test
 # keeps it equal to the workspace version in Cargo.toml). At a release tag
-# (`uses: …/action@v0.2.0`), `install: 'true'` therefore downloads exactly the binaries built
+# (`uses: …/action@v0.3.0`), `install: 'true'` therefore downloads exactly the binaries built
 # from that tag. Between releases master still pins the latest release, so a workflow on
 # master's scripts that needs master's binaries sets `install: 'source'`.
 #
-# The network defaults to testnet, which the hosted site (forge.dashhq.org) targets: Forge's
-# contracts are registered there, and not on mainnet yet (forge-contracts/deployments/).
+# The network defaults to testnet, as dg's does. Forge's contracts are registered on testnet and
+# mainnet (forge-contracts/deployments/); set `network: mainnet` for a mainnet repository.
 name: Dash Forge mirror
 description: Mirror a GitHub repository into Dash Forge (Dash Platform), idempotently and under a per-run cost cap.
 author: PastaPastaPasta
@@ -22,7 +22,7 @@ inputs:
     description: "Destination Forge repository: dash://<owner>/<name>, <owner>/<name>, or a bare name (the signer's own; created if missing)."
     required: true
   network:
-    description: "mainnet, testnet or devnet. The default is testnet, which the hosted site targets; Forge is not deployed on mainnet yet."
+    description: "mainnet, testnet or devnet. The default is testnet, as for dg; Forge is deployed on both mainnet and testnet."
     default: testnet
   devnet-name:
     description: "Devnet name, required when network is devnet and ignored otherwise."
@@ -80,7 +80,7 @@ inputs:
     default: ""
   version:
     description: "Dash Forge release to install (the release this action version pins). Empty: install 'true' builds from source."
-    default: "0.2.0"
+    default: "0.3.0"
   install:
     description: "true: install release `version`, or build the Action's own source (the ref in uses:) when `version` is empty. source: always build the Action's own source. false: use dg, git-remote-dash and forge-import already on PATH."
     default: "true"

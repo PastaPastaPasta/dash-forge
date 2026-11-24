@@ -8,17 +8,28 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
+**Forge on Dash mainnet.** Forge's four contracts are registered on Dash mainnet, and [forge.dashhq.org](https://forge.dashhq.org) now serves mainnet. Testnet stays live, at [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). `dg` and `git-remote-dash` still default to testnet in this release. Mainnet DASH is real money and there is no faucet. See the [release notes](docs/releases/v0.3.0.md).
+
+### Added
+
+- **Forge on Dash mainnet.** The production four-contract set (forge-core, forge-collab, forge-community and forge-meta) is registered on mainnet in contract group `<MAINNET_GROUP_ID>`, from the same JSON as testnet. The record is `forge-contracts/deployments/mainnet.json`. forge.dashhq.org and the IPFS release build read mainnet; the testnet build moved to testnet-forge.dashhq.org. In `dg` and `git-remote-dash`, choose mainnet with `--network mainnet`, `dg auth new` or `dg auth login` on mainnet (which records it as your default), `DASH_FORGE_NETWORK=mainnet` or git config `dash.network`; a clone made by `dg clone` or `dg init` records its network. Mainnet wallet sign-in uses DashPay App Connect v2 and its system contract, so mainnet needs no key-exchange contract. Credits come from the [Dash bridge](https://bridge.thepasta.org/?network=mainnet) or the web app's identity flow. See [Networks](docs/networks.md).
+- **`dg auth login --wallet`**: sign in from the terminal with the DashPay wallet on your phone (App Connect). `dg` prints a QR code and a `dash-key:` link, the wallet adds a limited key (proposed: 0.25 DASH for 180 days; the wallet may change it), and `dg` reads the answer from Platform, shows the identity to confirm and stores the key like any limited key. `dg auth status` shows such a key as "from your wallet (App Connect)". Testnet needs DashPay's testnet build. See [Signing in from the terminal with DashPay](docs/guides/identity-and-keys.md#signing-in-from-the-terminal-with-dashpay).
+- **Where the signing key came from**, in `dg auth status` and the web app's Settings: a wallet (App Connect), an identity file, a recovery phrase or a pasted key ([#666](https://github.com/PastaPastaPasta/dash-forge/pull/666)).
+- **Signing with a wallet-granted `ECDSA_HASH160` key** in forge-core, and forge-notify accepts such keys on signed requests ([#658](https://github.com/PastaPastaPasta/dash-forge/pull/658), [#659](https://github.com/PastaPastaPasta/dash-forge/pull/659)). forge-core gained an App Connect v2 client library ([#656](https://github.com/PastaPastaPasta/dash-forge/pull/656)).
+- **The web app shows what a Platform write is doing** and recovers calmly when it is slow, and an empty repository walks its owner through the first push in three steps ([#649](https://github.com/PastaPastaPasta/dash-forge/pull/649), [#650](https://github.com/PastaPastaPasta/dash-forge/pull/650)).
+
 ### Changed
 
 - **On testnet, the web app renews every browser key in your DashPay wallet first** (Settings, the low-funds banner, the top-up sheet), with the identity file or recovery phrase beside it. For a key the wallet didn't grant to this browser, the wallet adds a new key and the old one stays live, held here never to sign so a renewal with the identity file or recovery phrase, or a revoke, disables it (as does a first wallet sign-in while that vault is unlocked). A wallet's older unlimited key is still replaced with the master key. Revoking a key the wallet granted leads with disconnecting Dash Forge in the wallet when no such held key is left; the recovery-phrase revoke stays below it. Mainnet routing is unchanged; its help text for a key a passkey restored now says the wallet leaves the old key live, as it always did.
 - **A bare `dg auth login` signs in with your DashPay wallet** (as `--wallet` does): it prints the QR code and the `dash-key:` link. `dg auth login <file>`, `--mnemonic`, `--full-key` and `--replace` sign in from the identity's master key as before. Without a terminal (stdin is not one, or `--json`) a bare `dg auth login` used to be a usage error (exit 2); it is now [E802](docs/errors.md#e802) (exit 8), and it shows and stores nothing: scripts pass an identity file, or `--wallet --yes`, or set a dfk1 key in `DASH_FORGE_KEY`. The no-key messages of `dg`, `git-remote-dash` and the Action, the docs and the web app's empty-repository steps name `dg auth login` first.
 
-### Added
-
-- **`dg auth login --wallet`**: sign in from the terminal with the DashPay wallet on your phone (App Connect). `dg` prints a QR code and a `dash-key:` link, the wallet adds a limited key (proposed: 0.25 DASH for 180 days; the wallet may change it), and `dg` reads the answer from Platform, shows the identity to confirm and stores the key like any limited key. `dg auth status` shows such a key as "from your wallet (App Connect)". Testnet needs DashPay's testnet build. See [Signing in from the terminal with DashPay](docs/guides/identity-and-keys.md#signing-in-from-the-terminal-with-dashpay).
-
 ### Fixed
 
+- **The web app's pull request and file pages:** a merged or closed PR drops the live approvals and checks cards, a commit with no checks says so in one line, and a file under a missing directory says it isn't on this ref ([#669](https://github.com/PastaPastaPasta/dash-forge/pull/669), [#671](https://github.com/PastaPastaPasta/dash-forge/pull/671), [#668](https://github.com/PastaPastaPasta/dash-forge/pull/668)).
+- **forge-notify refuses requests signed by an expired identity key** ([#662](https://github.com/PastaPastaPasta/dash-forge/pull/662)).
+- **Dependencies:** `url` 2.5.9 for RUSTSEC-2026-0592 ([#653](https://github.com/PastaPastaPasta/dash-forge/pull/653)), and Dependabot's cargo minor and patch group ([#660](https://github.com/PastaPastaPasta/dash-forge/pull/660)).
 - **`dg pr diff` of a merged pull request shows the changes it brought in** ([#670](https://github.com/PastaPastaPasta/dash-forge/issues/670)). It used to print nothing and exit 0: it diffed the base as it is now, which contains the head once the PR is merged. A merged PR is now compared from the base tip its merge built on (as the web's Files changed tab and `dg pr verify` do), against the head as it was merged, and says so on stderr. The base or head branch being deleted since does not matter: the commits come from the repository's packs. `--json` adds `comparedWith` (`base`, `tipBeforeMerge` or `baseNow`).
 - **`dg pr diff` works outside a clone**, as `gh pr diff` does: it fetches into a scratch repository and removes it afterwards. It used to fail with E101 ("report it") because git found no repository. Inside a clone it still fetches there, so the objects stay for next time. `dg pr checkout` outside a repository now says it needs one ([E206](docs/errors.md#e206)) instead of E101.
 
@@ -160,6 +171,7 @@ for networks, installation, verification and known limitations.
 
 See [Known limitations](docs/releases/v0.1.0.md#known-limitations) in the release notes.
 
-[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.1.0

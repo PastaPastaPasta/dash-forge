@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is waiting for the network to confirm your identity (or, if you build from source, the first build).
 
-> **Which network?** The commands target **testnet**, a test network and the tools' default, which forge.dashhq.org also uses. The fees below were measured on Platform v5 test networks before Forge reached testnet (2026-10-01), or on the retired devnet bonsia where they say so; [Costs](costs.md) has both. Mainnet has no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
+> **Which network?** The commands target **testnet**, a test network and the tools' default, whose web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** (since 2026-11-24), whose web app is [forge.dashhq.org](https://forge.dashhq.org): to use it, run `dg auth new --network mainnet` (or `dg auth login --network mainnet`), which records mainnet as your default network, or set `DASH_FORGE_NETWORK=mainnet` or git config `dash.network`. A clone made by `dg clone` or `dg init` remembers its network. Testnet DASH is free; mainnet DASH is real money. The fees below were measured on Platform v5 test networks before Forge reached testnet (2026-10-01), or on the retired devnet bonsia where they say so; [Costs](costs.md) has both. [Networks](../networks.md) has the details.
 
 ---
 
@@ -85,12 +85,12 @@ dg auth new
 
 `dg` proves the deposit with an InstantSend lock when it can, which takes seconds, and otherwise with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
 
-> **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
+> **Mainnet.** Mainnet DASH is real money, and there is no faucet. Fund the deposit from any Dash wallet, or get credits from the [Dash bridge](https://bridge.thepasta.org/?network=mainnet) or the web app's **Create a new identity** on [forge.dashhq.org](https://forge.dashhq.org).
 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
-- **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
-- **With the Dash bridge**: <https://bridge.thepasta.org>, on testnet, then **Download Key Backup**.
+- **In the web app**: on [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org) (or [forge.dashhq.org](https://forge.dashhq.org) for mainnet), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
+- **With the Dash bridge**: <https://bridge.thepasta.org> on testnet, or <https://bridge.thepasta.org/?network=mainnet> on mainnet, then **Download Key Backup**.
 
 To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with DashPay and approve once for all of Forge). On testnet that needs DashPay Wallet for Android's testnet build, 11.9.2 or later; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 

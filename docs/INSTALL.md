@@ -3,7 +3,7 @@
 > **Current release: [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0)**
 > ([release notes](releases/v0.2.0.md), [changelog](../CHANGELOG.md)), the first published
 > release. You can also [build from source](#build-from-source) from any commit. Forge runs
-> on testnet, the tools' default network; it is not on mainnet yet. The version policy is in [VERSIONING.md](VERSIONING.md).
+> on mainnet and testnet; testnet is the tools' default network ([Networks](networks.md)). The version policy is in [VERSIONING.md](VERSIONING.md).
 
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
 ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use
@@ -74,7 +74,7 @@ The script never runs `sudo`. You can control it with these environment variable
 
 | Variable | Default | Effect |
 |---|---|---|
-| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.2.0`; needed for a pre-release such as `0.2.0-rc.1`, which "latest" never picks |
+| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.3.0`; needed for a pre-release such as `0.3.0-rc.1`, which "latest" never picks |
 | `DASH_FORGE_INSTALL_DIR` | `~/.local/bin` | where the binaries go |
 | `DASH_FORGE_BINARIES` | `dg git-remote-dash` | add `forge-relay` / `forge-import` / `forge-runner` if you want them |
 | `DASH_FORGE_COMPLETIONS` | `0` | `1` installs bash, zsh and fish completions under `~/.local/share` and `~/.config/fish` |
@@ -91,7 +91,7 @@ curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/i
 Then check the install:
 
 ```sh
-dg --version      # dg 0.2.0 (<commit> <target>)
+dg --version      # dg 0.3.0 (<commit> <target>)
 dg doctor         # git, git-remote-dash (same version as dg), network, identity
 ```
 
