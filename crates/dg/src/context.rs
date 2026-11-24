@@ -250,6 +250,58 @@ fn stack(l: Layers) -> (NetworkSettings, NetworkSource) {
     (stacked, source)
 }
 
+/// The warning for an environment network that a higher layer overrode, or `None` when the
+/// environment names no network, agrees with `used`, or is the layer that chose it. `git push`
+/// reads the environment first, so a silent override would send `dg` and git to different
+/// networks.
+fn ignored_env_network(
+    env: &NetworkSettings,
+    source: NetworkSource,
+    used: &Network,
+) -> Option<String> {
+    if !matches!(
+        source,
+        NetworkSource::Flags | NetworkSource::Repository | NetworkSource::Config
+    ) {
+        return None;
+    }
+    let kind = env.network.as_deref().map(str::to_ascii_lowercase);
+    let (label, flag) = match (kind.as_deref(), env.devnet_name.as_deref()) {
+        (None, None) => return None,
+        (Some("devnet") | None, Some(name)) => (
+            format!("devnet-{name}"),
+            Some(format!("--network devnet --devnet-name {name}")),
+        ),
+        (Some("devnet"), None) => (
+            "devnet".to_string(),
+            Some("--network devnet --devnet-name <name>".to_string()),
+        ),
+        (Some(k @ ("testnet" | "mainnet")), _) => (k.to_string(), Some(format!("--network {k}"))),
+        (Some(other), _) => (other.to_string(), None),
+    };
+    let used_key = used.key();
+    let agrees = match label.as_str() {
+        "devnet" => matches!(used, Network::Devnet { .. }),
+        _ => label == used_key,
+    };
+    if agrees {
+        return None;
+    }
+    let var = match env.network {
+        Some(_) => format!("{}={label}", forge_core::network::ENV_NETWORK),
+        None => format!(
+            "{}={}",
+            forge_core::network::ENV_DEVNET_NAME,
+            env.devnet_name.as_deref().unwrap_or_default()
+        ),
+    };
+    let hint = match (source, flag) {
+        (NetworkSource::Flags, _) | (_, None) => String::new(),
+        (_, Some(flag)) => format!(" (pass {flag} to override)"),
+    };
+    Some(format!("{var} is ignored; using {used_key} {source}{hint}"))
+}
+
 /// The network the repository in the current directory pins in its own git config (`local`
 /// or `worktree` scope; `dg init` and `dg repo clone` write it). Global and system values do
 /// not count: they are not this repository's. Empty outside a repository, or with a git too
@@ -334,11 +386,12 @@ impl Ctx {
         } else {
             NetworkSettings::default()
         };
+        let env = NetworkSettings::from_env();
         let (layers, network_source) = stack(Layers {
             flags,
             repo,
             config: config.network_settings(),
-            env: NetworkSettings::from_env(),
+            env: env.clone(),
             key,
         });
         let network_is_default = network_source == NetworkSource::Default;
@@ -352,6 +405,10 @@ impl Ctx {
         // `dg doctor` shows this as a row of its own.
         if !matches!(cli.command, crate::Command::Doctor { .. }) {
             warn_if_retired(&target.network);
+        }
+        if let Some(warning) = ignored_env_network(&env, network_source, &target.network) {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| eprintln!("warning: {warning}"));
         }
 
         if cli
@@ -713,6 +770,130 @@ mod tests {
         let (s, src) = super::stack(layers(none(), none(), none(), none()));
         assert_eq!(src, NetworkSource::Default);
         assert!(s.is_unset());
+    }
+
+    /// The env layer as [`NetworkSettings::from_env`] builds it.
+    fn env(network: Option<&str>, devnet_name: Option<&str>) -> NetworkSettings {
+        NetworkSettings {
+            network: network.map(Into::into),
+            devnet_name: devnet_name.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    /// What `dg` warns about `env` with these higher layers.
+    fn env_warning(
+        flags: NetworkSettings,
+        repo: NetworkSettings,
+        config: NetworkSettings,
+        env: &NetworkSettings,
+    ) -> Option<String> {
+        let (s, source) = super::stack(Layers {
+            flags,
+            repo,
+            config,
+            env: env.clone(),
+            key: NetworkSettings::default(),
+        });
+        let used = s.resolve().unwrap().network;
+        ignored_env_network(env, source, &used)
+    }
+
+    /// QA: `DASH_FORGE_NETWORK=mainnet dg repo list` read testnet (from config.toml) silently,
+    /// while `git push` in the same shell went to mainnet.
+    #[test]
+    fn an_overridden_environment_network_is_named_in_a_warning() {
+        let none = NetworkSettings::default;
+        assert_eq!(
+            env_warning(none(), none(), net("testnet"), &env(Some("mainnet"), None)).as_deref(),
+            Some(
+                "DASH_FORGE_NETWORK=mainnet is ignored; using testnet from config.toml \
+                 (pass --network mainnet to override)"
+            )
+        );
+        assert_eq!(
+            env_warning(
+                none(),
+                net("devnet-sakura"),
+                net("mainnet"),
+                &env(Some("testnet"), None)
+            )
+            .as_deref(),
+            Some(
+                "DASH_FORGE_NETWORK=testnet is ignored; using devnet-sakura from this \
+                 repository's git config (pass --network testnet to override)"
+            )
+        );
+        // a flag is explicit: no hint to pass it
+        assert_eq!(
+            env_warning(net("mainnet"), none(), none(), &env(Some("testnet"), None)).as_deref(),
+            Some("DASH_FORGE_NETWORK=testnet is ignored; using mainnet from the command line")
+        );
+        assert_eq!(
+            env_warning(
+                none(),
+                none(),
+                net("devnet-sakura"),
+                &env(None, Some("paloma"))
+            )
+            .as_deref(),
+            Some(
+                "DASH_FORGE_DEVNET_NAME=paloma is ignored; using devnet-sakura from config.toml \
+                 (pass --network devnet --devnet-name paloma to override)"
+            )
+        );
+        assert_eq!(
+            env_warning(
+                none(),
+                none(),
+                net("mainnet"),
+                &env(Some("devnet"), Some("sakura"))
+            )
+            .as_deref(),
+            Some(
+                "DASH_FORGE_NETWORK=devnet-sakura is ignored; using mainnet from config.toml \
+                 (pass --network devnet --devnet-name sakura to override)"
+            )
+        );
+        assert!(
+            env_warning(none(), none(), net("mainnet"), &env(Some("devnet"), None))
+                .is_some_and(|w| w.contains("DASH_FORGE_NETWORK=devnet is ignored"))
+        );
+    }
+
+    #[test]
+    fn an_environment_network_that_agrees_or_decides_is_not_warned_about() {
+        let none = NetworkSettings::default;
+        // agrees, in any case
+        assert_eq!(
+            env_warning(none(), none(), net("mainnet"), &env(Some("Mainnet"), None)),
+            None
+        );
+        // a bare `devnet` takes the higher layer's name
+        assert_eq!(
+            env_warning(
+                none(),
+                none(),
+                net("devnet-sakura"),
+                &env(Some("devnet"), None)
+            ),
+            None
+        );
+        // the environment chose the network
+        assert_eq!(
+            env_warning(none(), none(), none(), &env(Some("mainnet"), None)),
+            None
+        );
+        // the key layer is below the environment; nothing set
+        assert_eq!(env_warning(none(), none(), net("testnet"), &none()), None);
+        assert_eq!(
+            ignored_env_network(
+                &env(Some("mainnet"), None),
+                NetworkSource::Key,
+                &Network::Testnet
+            ),
+            None
+        );
     }
 
     #[test]

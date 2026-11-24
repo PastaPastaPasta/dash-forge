@@ -218,7 +218,9 @@ which `dg init` and `dg repo clone` write; `dg auth`, `dg repo clone` and `dg re
 skip it), then `config.toml`, then the environment, then the
 network the key in use records (`dfk1:<network>:…`, an identity file's `network`, so a CI runner
 key needs no network setting), then the deployment file. `dg doctor` shows which one chose the
-network. For `git-remote-dash` it is the
+network. When `DASH_FORGE_NETWORK` or `DASH_FORGE_DEVNET_NAME` names a different network than
+the one a higher layer chose, `dg` prints a warning to stderr that names both, because
+`git-remote-dash` would use the environment's network. For `git-remote-dash` it is the
 environment, then git config, then the network `dg` recorded in `config.toml` (by `dg auth new`
 or `dg auth login`), then the deployment file. The environment comes first there because `dg`
 and `forge-import` pass their resolved network to the helper through it. `dg init` and
