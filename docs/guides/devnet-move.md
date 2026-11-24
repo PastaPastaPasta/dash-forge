@@ -1,6 +1,6 @@
 # Dash Forge moved to testnet
 
-Until October 2026, Dash Forge ran on development networks (devnets), which their operators replace from time to time. Its contracts were registered on **testnet** on 2026-10-26, and forge.dashhq.org, `dg` and the guides use testnet from then on. Nothing moved with it from the last devnet, which is down and is not coming back. This page says what that costs you, what you keep, and what to do. [Networks](../networks.md) has the history.
+Until October 2026, Dash Forge ran on development networks (devnets), which their operators replace from time to time. Its contracts were registered on **testnet** on 2026-10-26, and `dg` and the guides use testnet from then on. Forge has also been live on mainnet since 2026-11-24. Nothing moved with it from the last devnet, which is down and is not coming back. This page says what that costs you, what you keep, and what to do. [Networks](../networks.md) has the history.
 
 ## What is lost
 

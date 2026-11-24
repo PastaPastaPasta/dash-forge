@@ -48,7 +48,7 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-Measured on testnet: creating a repository costs about **0.0025 DASH**. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0012 DASH, and a fork of a small repository about 0.008 DASH. Storing packs on Platform costs up to about 0.39 DASH per MiB. Mainnet charges the same amounts in real Dash. The full table is in [Costs](guides/costs.md).
+Measured on testnet: creating a repository costs about **0.0024 DASH**. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0012 DASH, and a fork of a small repository about 0.008 DASH. Storing packs on Platform costs up to about 0.39 DASH per MiB. Mainnet charges the same amounts in real Dash. The full table is in [Costs](guides/costs.md).
 
 ## What happened to devnet bonsia?
 

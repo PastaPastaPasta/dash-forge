@@ -41,7 +41,7 @@ ipfs dag import forge-web-<version>.car      # pins the site; prints its root CI
 
 The build works from any gateway: by subdomain (`https://<cid>.ipfs.<gateway>/`), by path (`https://<gateway>/ipfs/<cid>/`), or from an ordinary static host. It finds its own base path when it loads.
 
-The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`, `RELEASE_DEVNET_NAME`): testnet today, mainnet once Forge is registered there. The network is part of the build, so it is fixed per commit.
+The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`, `RELEASE_DEVNET_NAME`): testnet for v0.2.0. The network is part of the build, so it is fixed per commit.
 
 ---
 
@@ -99,7 +99,7 @@ cmp forge-web-<version>.car ipfs-build/forge-web.car  # your rebuild: byte-ident
 
 ## Step 4: compare with the Forge release on chain
 
-Forge's own repository is mirrored on Forge, and each release is recorded there too, as a Forge `release` document for the same tag. It lists `forge-web-<version>.car` and `forge-web-<version>.cid` among its assets, each with its SHA-256, and its notes name the CID. The document is written with the maintainer's Platform identity and read back with a Platform proof, so it does not depend on GitHub at all.
+Forge's own repository is mirrored on Forge. A release recorded there is a Forge `release` document for the tag. It lists `forge-web-<version>.car` and `forge-web-<version>.cid` among its assets, each with its SHA-256, and its notes name the CID. The document is written with the maintainer's Platform identity and read back with a Platform proof, so it does not depend on GitHub at all.
 
 ```sh
 dg --json release list <owner>/dash-forge   # each asset's sha256
@@ -109,7 +109,7 @@ cat forge-release.cid
 sha256sum ipfs-build/forge-web.car                    # must equal the CAR's listed sha256
 ```
 
-`<owner>` is the maintainer identity that mirrors this repository on Forge (the README names it once the mirror is published). Add `--network mainnet` once Forge is on mainnet.
+The mainnet mirror is `forg3/dash-forge` (add `--network mainnet`). It mirrors code and tags only; release documents are not recorded there yet, so `dg release list` finds none and this step can't be done today. Use the GitHub checks above.
 
 - `dg release download` accepts only bytes that hash to the SHA-256 in the proof-checked release document ([`E504`](../errors.md#e504) otherwise), so `forge-release.cid` is the CID the maintainer recorded.
 - The web app shows the same on the repository's **Releases** page: each asset with the start of its SHA-256 (the whole digest on hover), downloaded and checked in the browser.

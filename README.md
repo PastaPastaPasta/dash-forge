@@ -72,7 +72,7 @@ You can replicate packs across several of these. [Bring your own storage](docs/g
 - **Verify:** every repository page has a Verification card ([what is checked](docs/guides/verify-forge.md)).
 - **Wire up CI:** `dg webhook add` plus a relay you run (`forge-relay`) turns on-chain activity into GitHub-style webhooks.
 
-This repository's home is GitHub. Every push to master, and every tag, is mirrored to Forge on mainnet by [forge-sync](tools/forge-sync/README.md): `git -c dash.network=mainnet clone dash://forg3/dash-forge` (`forg3` is the owner's username).
+This repository's home is GitHub. Every push to master, and every tag, is mirrored to Forge on mainnet by [forge-sync](tools/forge-sync/README.md): `git clone -c dash.network=mainnet dash://forg3/dash-forge` (`forg3` is the owner's username).
 
 ## Docs
 

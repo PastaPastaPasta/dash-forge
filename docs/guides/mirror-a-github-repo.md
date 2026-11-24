@@ -32,7 +32,7 @@ This guide covers:
 
 ## The setup wizard
 
-Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs.. forge.dashhq.org is mainnet; testnet-forge.dashhq.org is testnet ([Which network](README.md#which-network)).
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. forge.dashhq.org is mainnet; testnet-forge.dashhq.org is testnet ([Which network](README.md#which-network)).
 
 ### Automatic sync
 

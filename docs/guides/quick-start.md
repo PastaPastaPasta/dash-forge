@@ -75,7 +75,7 @@ dg auth new
 ```
 
 1. `dg` shows a **12-word recovery phrase**. Write the words down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on testnet use the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org). A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: whatever a faucet sends all becomes credits, where the sample below sent 0.05.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on testnet use the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org). A repository costs about 0.0024 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: whatever a faucet sends all becomes credits, where the sample below sent 0.05.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
@@ -202,12 +202,12 @@ dash: stored pack 6ce98e05facd (1.2 MiB, 312 objects)
 dash: pack 6ce98e05facd (1.2 MiB) stored on r2-main (1 verified)
 dash: updated main → 8f3e2a1
 dash: history index published (full, 42 paths, 1 commits)
-dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0418 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
 To dash://Exam…/my-project
  * [new branch]      main -> main
 branch 'main' set up to track 'origin/main'.
 ✓ main → 8f3e2a1   this push ~0.0052 DASH
-  total ~0.0076 DASH (create ~0.0024 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
+  total ~0.0076 DASH (create ~0.0024 DASH + push ~0.0052 DASH) · balance 0.0418 DASH
 Open it: https://testnet-forge.dashhq.org/Exam…/my-project
 ```
 
@@ -280,7 +280,7 @@ dash: storage      → r2-main · Platform stores manifest + refs only, est 0.00
 dash: r2-main      ████████████████ 245 B  verified   0.2 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0058 DASH
 dash: history index published (full, 3 paths, 2 commits)
-dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
+dash: done · Platform charged ≈0.0040 DASH · remaining 0.0378 DASH · https://testnet-forge.dashhq.org/Exam…/my-project
 ```
 
 (The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)

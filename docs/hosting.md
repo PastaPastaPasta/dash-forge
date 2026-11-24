@@ -145,7 +145,7 @@ CAA records name the certificate authorities allowed to issue a certificate for 
 | CAA | `forge` | 0 | Only allow specific hostnames (`issue`) | `letsencrypt.org` |
 | CAA | `forge` | 0 | Send violation reports to URL (`iodef`) | `mailto:` and the address that should get reports |
 
-- **`letsencrypt.org`** is the CA GitHub Pages uses for the origin's certificate. Without it, GitHub can't renew the certificate behind Cloudflare.
+- **`letsencrypt.org`** is the CA GitHub Pages uses for the origin's certificate. Without it, GitHub can't renew its certificate.
 - **Cloudflare's own CAs** (Let's Encrypt, Google Trust Services, SSL.com and Sectigo) are added for Universal SSL automatically, as soon as the zone has any CAA record. They don't appear in the dashboard, but `dig` shows them ([Cloudflare: Add CAA records](https://developers.cloudflare.com/ssl/edge-certificates/caa-records/)).
 
 To cover every subdomain instead, put the same records on `dashhq.org` itself (Name `@`), if that suits the zone's other hosts.
@@ -193,7 +193,7 @@ Check the live site afterwards: the banner shows (or is gone), and a write butto
 
 The switch covers this Pages build only. The IPFS release copies, `dg`, and CI or mirror runners ignore it.
 
-This switch is the lever for a bug in the client, not for a compromised site: a compromised build can ignore its own pause. If forge.dashhq.org itself serves wrong bytes, stop serving it at Cloudflare first (only the zone owner can; no maintenance rule is configured yet), then `gh workflow disable pages.yml`, investigate, fix, re-enable, check the result with `dg verify-app` and announce it. Unpublishing Pages without a replacement leaves nobody a copy to verify against, so do that last.
+This switch is the lever for a bug in the client, not for a compromised site: a compromised build can ignore its own pause. If forge.dashhq.org itself serves wrong bytes, point its DNS away from GitHub Pages first (only the zone owner can), then `gh workflow disable pages.yml`, investigate, fix, re-enable, check the result with `dg verify-app` and announce it. Unpublishing Pages without a replacement leaves nobody a copy to verify against, so do that last.
 
 ## Linking the mainnet and testnet sites
 
