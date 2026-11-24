@@ -9,6 +9,7 @@
  * spend ledger, a toast shows what it actually cost, and the balance is re-read.
  */
 
+import type { UnlockMethod } from '@/lib/auth/vault'
 import type { HandoffRequest } from '@/lib/auth/key-handoff'
 import type { WatchedKey } from '@/lib/auth/key-watch'
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
@@ -132,7 +133,7 @@ interface AuthContextValue {
   readonly grants: AuthSession['grants'] | null
   readonly unlimitedKey: boolean
   readonly unboundedKey: boolean
-  unlock: (identityId: string, method: { passphrase: string } | 'passkey') => Promise<void>
+  unlock: (identityId: string, method: UnlockMethod) => Promise<void>
   /** Advanced: a pasted key, for this tab only. */
   loginWithRawKey: (identityId: string, privateKey: string) => Promise<void>
   refreshBalance: () => Promise<void>

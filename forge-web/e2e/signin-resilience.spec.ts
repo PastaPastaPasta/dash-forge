@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { encodeWif } from '../lib/auth/wif'
-import { PASSPHRASE, shot, showOtherWays } from './helpers'
+import { PASSPHRASE, shot, showOtherWays, usePassword } from './helpers'
 import { E2E_NETWORK } from './network'
 
 /**
@@ -159,6 +159,7 @@ test('s3. Platform never answers: every sub-view reaches content or a named erro
   // Import: the form shows at once; submitting names the connect failure.
   await openSheet(page, 'import')
   await page.setInputFiles('input[type="file"]', identityFile())
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await dialog.getByRole('button', { name: /create this browser's key/i }).click()
@@ -197,6 +198,7 @@ test('s4. Import with an old tab blocking storage: a named error before any writ
   await page.goto('/new/', { waitUntil: 'domcontentloaded' })
   await openSheet(page, 'import')
   await page.setInputFiles('input[type="file"]', identityFile())
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByTestId('enable-private-repos').check()
@@ -239,6 +241,7 @@ test('s8. a remounted passphrase form never keeps a passphrase the screen does n
   await openSheet(page, 'import')
   const dialog = page.getByRole('dialog')
   await page.setInputFiles('input[type="file"]', identityFile())
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeEnabled()
@@ -288,6 +291,7 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
   await openSheet(page, 'create')
   const dialog = page.getByRole('dialog')
   await expect(page.getByTestId('create-resume')).toBeVisible({ timeout: WITHIN })
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   // Discard: it checks the deposit address first. Empty, it goes ahead; otherwise (or when

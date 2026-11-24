@@ -3,17 +3,16 @@
 /**
  * "Use my Dash wallet" with App Connect v2 (`lib/auth/app-connect-v2.ts`; docs/design/wallet-login.md).
  *
- * 1. Request: an App Connect v2 QR (and, on a phone, an "Open in DashPay (Dash Wallet)" link that
- *    carries a callback to `/connect/`), with a countdown. ONE request, one approval, one key bound
- *    to the whole Forge contract group with a budget and an expiry. The poll also runs when the tab
- *    regains focus and when that page reports the wallet came back (`lib/auth/connect-callback.ts`).
- * 2. Confirm: the identity that answered. The response does not prove who answered: anyone who
- *    saw the QR could. So the user compares the username and id with what the wallet's approval
- *    screen showed (the username and a shortened id), and is warned when the identity has no
- *    username, a brand-new one, or is not the one this device already holds.
- *
- * The QR step opens with {@link ScanOnlyHere}: the request does not say who shows it, so the
- * user is told to scan only a code on this site's own address (SECU-08).
+ * 1. Request: an App Connect v2 QR, "Copy link" and "Open in wallet" (on a phone the link leads and
+ *    the QR sits in a disclosure; the link carries a callback to `/connect/`), with a countdown. ONE
+ *    request, one approval, one key bound to the whole Forge contract group with a budget and an
+ *    expiry; those terms, the anti-phishing detail ({@link ScanSafety}) and the wallet versions are
+ *    under Details, with one line ({@link ScanOnlyHere}) saying where to scan (SECU-08). The poll
+ *    also runs when the tab regains focus and when that page reports the wallet came back.
+ * 2. Confirm: the identity that answered, shortened as the wallet's approval screen shows it (the
+ *    response does not prove who answered). "That's me, continue" or "Not me, start over".
+ * 3. Protect: "Add a passkey" leads; "Skip for now" keeps the spend-capped key in this browser
+ *    alone; a password is under a disclosure.
  *
  * Released wallets answer App Connect v2 on the `dashpay://connect` carrier (DashPay for Android
  * 11.9.2, Dash Wallet for iOS 9.1.4; `dash-key:` is refused on mainnet;
@@ -29,7 +28,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, RefreshCw, Smartphone } from 'lucide-react'
+import { Copy, Fingerprint, RefreshCw, Smartphone } from 'lucide-react'
 import { FiatNote } from '@/components/ui/fiat-note'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -40,7 +39,10 @@ import { Field, Input } from '@/components/ui/input'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { Waiting } from '@/components/auth/step-status'
-import { ScanOnlyHere } from '@/components/auth/scan-warning'
+import { ScanOnlyHere, ScanSafety } from '@/components/auth/scan-warning'
+import { enrollPasskey, passkeysAvailable, type Protection } from '@/lib/auth'
+import type { UnlockKind } from '@/lib/auth/vault'
+import { shortId } from '@/lib/utils'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { creditsToDash } from '@/lib/sdk/cost'
 import {
@@ -63,6 +65,7 @@ import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-pr
 import { isAbort } from '@/lib/sdk/facade'
 import { PHASE_TEXT, connectPlatform } from '@/lib/auth/connect'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
+import { useCopy } from '@/hooks/use-copy'
 import type { KeyLimits } from '@/lib/view/funds'
 import { errorMessage } from '@/lib/utils'
 
@@ -172,7 +175,7 @@ export function WalletConnectFlow({
    * Giving it up needs its key opened (kept so the next renewal or revoke disables it): its own
    * passphrase or passkey, when the one chosen here is not it.
    */
-  const [renewalLocked, setRenewalLocked] = useState<{ message: string; methods: readonly ('passkey' | 'passphrase')[] } | null>(null)
+  const [renewalLocked, setRenewalLocked] = useState<{ message: string; methods: readonly UnlockKind[] } | null>(null)
   // The renewal's passphrase lives only in the input's value property (an uncontrolled input):
   // React mirrors a controlled input's value into the `value` attribute, which puts it in the DOM.
   const renewalPassphraseRef = useRef<HTMLInputElement | null>(null)
@@ -188,6 +191,8 @@ export function WalletConnectFlow({
   const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
   const [confirmed, setConfirmed] = useState(false)
+  /** The protection picked on the protect step (after "That's me"). */
+  const picked = useRef<Protection | null>(null)
   /** The grant held for the confirm step. */
   const grant = useRef<V2Grant | null>(null)
   const dropGrant = useCallback(() => {
@@ -237,7 +242,7 @@ export function WalletConnectFlow({
   const finish = async (discard: boolean, renewalUnlock?: { passphrase: string } | 'passkey', drop = false): Promise<void> => {
     const g = grant.current
     // A renewal stores with the protection chosen before its code showed (its fields are gone).
-    const chosen = (mode === 'renew' ? renewProtection.current : null) ?? protection
+    const chosen = (mode === 'renew' ? renewProtection.current : null) ?? picked.current ?? protection
     if (!g) return
     if (!chosen) {
       setError('Choose how to protect the new key first.')
@@ -415,16 +420,20 @@ export function WalletConnectFlow({
     const defaults = defaultLimits()
     return (
       <div className="space-y-3" data-testid="wallet-renew-prepare">
-        <p className="text-dense">
-          {origin === 'app-connect'
-            ? 'Your wallet gave this browser its key. A new request goes to the same wallet: when you approve, it adds a new key and disables the current one.'
-            : origin === 'passkey'
-              ? 'A passkey brought this key here. If a wallet made it, approve a new request there: it adds a key, and this one stays live until Revoke on Platform or a renewal with your identity file disables it.'
-              : "Your wallet didn't make this browser's key, so approving adds a new key beside it: the current one stays live until Revoke on Platform or a renewal with your identity file disables it."}
-        </p>
-        <p className="text-dense" data-testid="approval-terms">
-          <ApprovalTerms budget={defaults.budgetCredits} expiresAt={defaults.expiresAt} />
-        </p>
+        <p className="text-dense">Approve a new key in your wallet.</p>
+        <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
+          <summary className="cursor-pointer coarse:py-2">Details</summary>
+          <div className="space-y-1 pt-1">
+            <p>
+              {origin === 'app-connect'
+                ? 'Approving adds a new key and disables the current one.'
+                : 'Approving adds a new key beside the current one, which stays live until you revoke it.'}
+            </p>
+            <p data-testid="approval-terms">
+              <ApprovalTerms budget={defaults.budgetCredits} expiresAt={defaults.expiresAt} />
+            </p>
+          </div>
+        </details>
         {fields}
         <Button
           variant="primary"
@@ -512,62 +521,54 @@ export function WalletConnectFlow({
   }
   if (step?.kind === 'confirm') {
     const { profile } = step
+    if (confirmed) {
+      return (
+        <div className="space-y-3" data-testid="wallet-protect">
+          <ProtectStep
+            busy={isLoading}
+            onPick={(p) => {
+              picked.current = p
+              void finish(false)
+            }}
+          />
+          {pendingRenewalUi}
+          {unlockFirst ? <UnlockMore title="Unlock this tab to finish signing in with your wallet" testId="wallet-unlock" then={unlockFirst} /> : null}
+          <ErrorBox error={error} />
+        </div>
+      )
+    }
     return (
       <div className="space-y-3" data-testid="wallet-confirm">
         <p className="text-dense">
-          A wallet answered for this identity.{' '}
-          <span className="font-medium">
-            Your wallet&apos;s approval screen showed your username and the start and end of your identity id: check they match the ones below.
-          </span>
+          Signed in as <span className="font-medium">{profile.name ?? 'an identity with no username'}</span>
         </p>
-        <div className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">
-          {profile.name ? (
-            <div className="text-dense font-medium">
-              {profile.name}
-              {profile.namedAt ? <span className="ml-2 text-[12px] font-normal text-anvil-500 dark:text-anvil-400">named {formatDate(profile.namedAt)}</span> : null}
-            </div>
-          ) : null}
-          <div data-testid="granted-identity" className="break-all font-mono text-dense">
-            {profile.identityId}
-          </div>
+        <div className="flex items-center gap-2">
+          <span data-testid="granted-identity" title={profile.identityId} className="font-mono text-dense">
+            {shortId(profile.identityId)}
+          </span>
+          <CopyId id={profile.identityId} />
         </div>
         {profile.warnings.map((w) => (
-          <div key={w} role="alert" data-testid="responder-warning" className="flex gap-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            <span>{w}</span>
-          </div>
+          <p key={w} role="note" data-testid="responder-warning" className="text-[12px] text-caution-700 dark:text-caution-400">
+            {w}
+          </p>
         ))}
         {step.limits?.total != null ? (
-          <p className="text-dense" data-testid="approval-terms">
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="approval-terms">
             <ApprovalTerms budget={step.limits.total} expiresAt={step.limits.expiresAt} granted />
           </p>
         ) : null}
         {step.notice ? (
-          <p role="note" data-testid="group-notice" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
+          <p role="note" data-testid="group-notice" className="text-[12px] text-anvil-500 dark:text-anvil-400">
             {step.notice}
           </p>
         ) : null}
-        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Anyone who saw your QR code could have answered first with their own identity; this wallet protocol cannot tell. Only you can, by comparing the
-          username and id above with what your wallet showed.
-        </p>
-        <label className="flex items-start gap-2 text-dense">
-          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-1" />
-          <span>This is my identity: it matches what my wallet showed. (If it does not, close this and start again.)</span>
-        </label>
-        {fields}
-        <Button
-          variant="primary"
-          className="w-full"
-          loading={isLoading}
-          disabled={!confirmed || protection === null || isLoading}
-          onClick={() => void finish(false)}
-        >
-          Finish signing in
+        <Button variant="primary" className="w-full" onClick={() => setConfirmed(true)} data-testid="wallet-confirm-me">
+          That&apos;s me, continue
         </Button>
-        {pendingRenewalUi}
-        {problem ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
-        {unlockFirst ? <UnlockMore title="Unlock this tab to finish signing in with your wallet" testId="wallet-unlock" then={unlockFirst} /> : null}
+        <button type="button" onClick={restart} className="hit-area mx-auto block text-[12px] text-anvil-500 underline dark:text-anvil-400" data-testid="wallet-not-me">
+          Not me, start over
+        </button>
         <ErrorBox error={error} />
       </div>
     )
@@ -586,67 +587,176 @@ export function WalletConnectFlow({
 
   const request = step?.kind === 'request' ? step : null
   const reportedCopy = request ? callbackStatusCopy(reported) : undefined
-  // Said where the QR is on screen: a phone's QR sits in a collapsed disclosure.
-  const qrPrivate = <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p>
+  const openLink = request ? (
+    <a
+      href={request.linkUri}
+      data-testid="wallet-deep-link"
+      className={mobile ? MOBILE_LINK : DESKTOP_LINK}
+    >
+      <Smartphone className="h-4 w-4" aria-hidden /> Open in wallet
+    </a>
+  ) : null
   return (
     <div className="space-y-3" data-testid="wallet-request">
       {request ? (
-        <p className="text-dense" data-testid="approval-terms">
-          {mode === 'renew'
-            ? origin === 'app-connect'
-              ? 'Approve the renewal in the wallet that gave this browser its key. '
-              : 'Approve in the wallet that holds this identity. '
-            : 'Approve in your wallet. '}
-          <ApprovalTerms budget={request.terms.budget} expiresAt={request.terms.expiresAt} />
-        </p>
+        <p className="text-center text-[15px] font-medium">{mode === 'renew' ? 'Approve in your wallet' : 'Scan with your Dash wallet'}</p>
       ) : null}
-      {request ? <ScanOnlyHere /> : null}
       {request ? (
         mobile ? (
           <>
-            <a
-              href={request.linkUri}
-              data-testid="wallet-deep-link"
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-forge-700 px-4 py-3 text-dense font-medium text-white hover:bg-forge-800"
-            >
-              <Smartphone className="h-4 w-4" aria-hidden /> Open in DashPay (Dash Wallet)
-            </a>
+            {openLink}
             <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
               <summary className="cursor-pointer coarse:py-3">Wallet on another device? Show the QR code</summary>
-              <div className="space-y-2 pt-2">
-                <Qr value={request.uri} label="Wallet login request" size={180} />
-                {qrPrivate}
+              <div className="pt-2">
+                <Qr value={request.uri} label="Wallet login request" size={180} caption={null} />
               </div>
             </details>
           </>
         ) : (
           <>
-            <Qr value={request.uri} label="Wallet login request" size={200} />
-            {qrPrivate}
+            <Qr value={request.uri} label="Wallet login request" size={220} caption={null} />
+            <p className="text-center text-dense text-anvil-600 dark:text-anvil-300">Open DashPay → Connections and scan.</p>
           </>
         )
       ) : error ? null : (
         <Waiting label={preparing} />
       )}
+      {request ? <Countdown until={request.expiresAt} /> : null}
+      {request && !mobile ? (
+        <div className="flex justify-center gap-2">
+          <CopyLink uri={request.uri} />
+          {openLink}
+        </div>
+      ) : null}
+      {request ? <ScanOnlyHere /> : null}
       {status === 'incomplete-read' && request ? (
-        <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="incomplete-read">
-          Couldn&apos;t read all answer sources — retrying. Forge won&apos;t accept an answer until it has read them all.
+        <p className="text-center text-[12px] text-caution-700 dark:text-caution-400" data-testid="incomplete-read">
+          Still checking for your wallet&apos;s answer…
         </p>
       ) : null}
-      {request ? <Countdown until={request.expiresAt} /> : null}
-      {mode === 'login' && request ? <WalletSupportNote /> : null}
       {reportedCopy ? (
         <p role="status" data-testid="wallet-reported" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
           {reportedCopy.title}. {reportedCopy.body}
         </p>
       ) : null}
+      {request ? (
+        <details className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="wallet-details">
+          <summary className="cursor-pointer text-center coarse:py-2">Details</summary>
+          <div className="space-y-2 pt-2">
+            <p data-testid="approval-terms">
+              {mode === 'renew' && origin !== 'app-connect' ? 'Approve in the wallet that holds this identity. ' : null}
+              <ApprovalTerms budget={request.terms.budget} expiresAt={request.terms.expiresAt} />
+            </p>
+            <ScanSafety />
+            {mode === 'login' ? <WalletSupportNote /> : null}
+          </div>
+        </details>
+      ) : null}
       <ErrorBox error={error} />
       {error ? (
-        <Button variant="outline" className="w-full" onClick={restart}>
+        <Button variant="primary" className="w-full" onClick={restart}>
           <RefreshCw className="h-4 w-4" aria-hidden /> Try again
         </Button>
       ) : null}
     </div>
+  )
+}
+
+function CopyId({ id }: { id: string }): JSX.Element {
+  const [copied, copy] = useCopy(id)
+  return (
+    <button
+      type="button"
+      className="hit-area text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100"
+      aria-label={copied ? 'Copied' : 'Copy identity id'}
+      onClick={() => void copy()}
+    >
+      <Copy className="h-3.5 w-3.5" aria-hidden />
+    </button>
+  )
+}
+
+const MOBILE_LINK = 'flex w-full items-center justify-center gap-2 rounded-md bg-forge-700 px-4 py-3 text-dense font-medium text-white hover:bg-forge-800'
+const DESKTOP_LINK = 'inline-flex items-center gap-1.5 rounded-md border border-anvil-300 px-3 py-1.5 text-[13px] hover:bg-anvil-50 dark:border-anvil-700 dark:hover:bg-anvil-850'
+
+/** Copies the request link (for a wallet on this device that did not open from the button). */
+function CopyLink({ uri }: { uri: string }): JSX.Element {
+  const [copied, copy] = useCopy(uri)
+  return (
+    <button
+      type="button"
+      data-testid="wallet-copy-link"
+      onClick={() => void copy()}
+      className="inline-flex items-center gap-1.5 rounded-md border border-anvil-300 px-3 py-1.5 text-[13px] hover:bg-anvil-50 dark:border-anvil-700 dark:hover:bg-anvil-850"
+    >
+      <Copy className="h-4 w-4" aria-hidden /> {copied ? 'Copied' : 'Copy link'}
+    </button>
+  )
+}
+
+/**
+ * After "That's me": the key is kept by this browser unless the user adds a passkey (the obvious
+ * next step) or a password. Without passkey support, Continue keeps it in this browser.
+ */
+function ProtectStep({ onPick, busy }: { onPick: (p: Protection) => void; busy: boolean }): JSX.Element {
+  const canPasskey = passkeysAvailable()
+  const [enrolling, setEnrolling] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+  const { fields, protection, problem: passwordProblem } = useProtection({ passwordOnly: true, onSubmit: () => savePassword() })
+  const savePassword = (): void => {
+    if (protection === null || protection.device) setProblem(passwordProblem ?? 'Enter a passphrase first.')
+    else onPick(protection)
+  }
+  const addPasskey = async (): Promise<void> => {
+    setEnrolling(true)
+    setProblem(null)
+    try {
+      const p = await enrollPasskey(`Dash Forge (${new Date().toISOString().slice(0, 10)})`)
+      if (p === null) setProblem("This passkey can't protect keys here. Skip for now, or use a password.")
+      else onPick({ passkey: p })
+    } catch (e) {
+      setProblem(`${errorMessage(e, 'Passkey setup was cancelled')}. Skip for now, or use a password.`)
+    } finally {
+      setEnrolling(false)
+    }
+  }
+  return (
+    <>
+      <p className="text-dense font-medium">{canPasskey ? 'Add a passkey?' : "You're almost in"}</p>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        {canPasskey ? 'Unlock Forge on this device with Touch ID, Windows Hello or a security key.' : 'Forge keeps your spend-capped key in this browser.'}
+      </p>
+      {canPasskey ? (
+        <Button variant="primary" className="w-full" loading={enrolling || busy} onClick={() => void addPasskey()} data-testid="protect-passkey">
+          <Fingerprint className="h-4 w-4" aria-hidden /> Add a passkey
+        </Button>
+      ) : (
+        <Button variant="primary" className="w-full" loading={busy} onClick={() => onPick({ device: true })} data-testid="protect-skip">
+          Continue
+        </Button>
+      )}
+      {canPasskey ? (
+        <button
+          type="button"
+          disabled={busy || enrolling}
+          onClick={() => onPick({ device: true })}
+          className="hit-area mx-auto block text-[12px] text-anvil-500 underline dark:text-anvil-400"
+          data-testid="protect-skip"
+        >
+          Skip for now
+        </button>
+      ) : null}
+      {problem ? <p className="text-[12px] text-caution-700 dark:text-caution-400">{problem}</p> : null}
+      <details className="text-dense" data-testid="protect-password">
+        <summary className="cursor-pointer text-[12px] text-anvil-600 dark:text-anvil-300 coarse:py-2">Use a password instead</summary>
+        <div className="space-y-2 pt-2">
+          {fields}
+          <Button variant="outline" size="sm" loading={busy} onClick={savePassword} data-testid="protect-password-save">
+            Save with password
+          </Button>
+        </div>
+      </details>
+    </>
   )
 }
 

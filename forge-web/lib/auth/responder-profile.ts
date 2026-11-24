@@ -14,9 +14,6 @@ import { NETWORKS, type Network } from '../constants'
 import { queryDocuments } from '../sdk'
 import { shortId } from '../utils'
 
-/** Named less than this long ago: "new". */
-export const NEW_IDENTITY_MS = 24 * 60 * 60 * 1000
-
 export interface ResponderProfile {
   readonly identityId: string
   /** `label.parent`, or null when the identity has no DPNS name (or the read failed). */
@@ -28,15 +25,13 @@ export interface ResponderProfile {
 }
 
 /**
- * The profile of `identityId`, with warnings: no DPNS name, a name registered in the last day,
- * or an identity other than the one this device already holds a key for (`storedIdentities`).
+ * The profile of `identityId`, with warnings: no DPNS name, or an identity other than the one this device already holds a key for (`storedIdentities`).
  */
 export async function responderProfile(
   sdk: EvoSDK,
   identityId: string,
   network: Network,
   storedIdentities: readonly string[],
-  now = Date.now(),
 ): Promise<ResponderProfile> {
   let name: string | null = null
   let namedAt: number | null = null
@@ -56,27 +51,19 @@ export async function responderProfile(
   } catch {
     /* no name shown; flagged below */
   }
-  return { identityId, name, namedAt, warnings: responderWarnings({ identityId, name, namedAt }, storedIdentities, now) }
+  return { identityId, name, namedAt, warnings: responderWarnings({ identityId, name }, storedIdentities) }
 }
 
 /** The warnings for a profile (pure; exported for tests). */
 export function responderWarnings(
-  p: { identityId: string; name: string | null; namedAt: number | null },
+  p: { identityId: string; name: string | null },
   storedIdentities: readonly string[],
-  now = Date.now(),
 ): string[] {
   const out: string[] = []
   const others = storedIdentities.filter((id) => id !== p.identityId)
   if (others.length > 0 && !storedIdentities.includes(p.identityId)) {
-    out.push(
-      `This is NOT the identity this device already holds a key for (${others.map(shortId).join(', ')}). If you meant to sign in as that one, someone else answered your QR code: close this and start again.`,
-    )
+    out.push(`Not the identity this browser already knows (${others.map(shortId).join(', ')}).`)
   }
-  if (p.name === null) {
-    out.push('This identity has no DPNS username. Make sure the start and end of the id above match what your wallet showed when you approved.')
-  }
-  else if (p.namedAt !== null && now - p.namedAt < NEW_IDENTITY_MS) {
-    out.push(`The username ${p.name} was registered less than a day ago. If your identity is older, someone else answered your QR code.`)
-  }
+  if (p.name === null) out.push('This identity has no username. Check the id matches your wallet.')
   return out
 }

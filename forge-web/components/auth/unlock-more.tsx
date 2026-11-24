@@ -15,6 +15,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
+import type { UnlockMethod } from '@/lib/auth/vault'
 
 /**
  * The prompt over members-only content this tab cannot read yet (DESIGN §4.8, §10):
@@ -54,7 +55,7 @@ export function UnlockMore({
   }, [])
   const [error, setError] = useState<string | null>(null)
   const methods = vaults.find((v) => v.identityId === identity)?.methods ?? []
-  const go = async (method: { passphrase: string } | 'passkey'): Promise<void> => {
+  const go = async (method: UnlockMethod): Promise<void> => {
     setError(null)
     try {
       await controller.unlockMore(method)
@@ -86,6 +87,11 @@ export function UnlockMore({
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         After a reload this browser keeps only its spend-capped signing key. Your encryption key, storage credentials and wallet grants open again for this tab.
       </p>
+      {methods.includes('device') ? (
+        <Button variant="primary" size="sm" onClick={() => void go('device')} loading={isLoading} disabled={isLoading} data-testid={`${testId}-device`}>
+          Unlock
+        </Button>
+      ) : null}
       {methods.includes('passkey') ? (
         <Button variant="primary" size="sm" onClick={() => void go('passkey')} loading={isLoading} disabled={isLoading}>
           <Fingerprint className="h-3.5 w-3.5" aria-hidden /> Unlock with passkey
@@ -125,7 +131,7 @@ export function UnlockMore({
       {/* The recovery route, as on the Unlock sheet (QW2-031). */}
       {forgot ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid={`${testId}-forgot`}>
-          {methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
+          {methods.includes('passphrase') ? 'Forgot the passphrase' : methods.includes('passkey') ? 'Lost the passkey' : 'Key not working'}?{' '}
           <button type="button" onClick={() => openLogin('import')} className="hit-area text-forge-700 underline dark:text-forge-400">
             Replace this key with your recovery phrase or identity file
           </button>

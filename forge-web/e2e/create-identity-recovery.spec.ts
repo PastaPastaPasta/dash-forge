@@ -2,7 +2,7 @@ import { test, expect, type Page, type Route } from '@playwright/test'
 import { existsSync, mkdirSync, rmdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, nodeSdk, shot, unlock, showOtherWays } from './helpers'
+import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, nodeSdk, shot, unlock, showOtherWays, usePassword } from './helpers'
 
 /**
  * L-06, live on a devnet (real spend: two 0.03 DASH deposits from the devnet funding key):
@@ -64,6 +64,7 @@ async function openDeposit(page: Page): Promise<string> {
     await input.fill(list[n] ?? '')
   }
   await page.getByRole('button', { name: /^continue$/i }).click()
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByRole('button', { name: /continue to funding/i }).click()

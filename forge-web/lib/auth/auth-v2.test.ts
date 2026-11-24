@@ -18,6 +18,7 @@ import {
   prfKey,
   sharedOriginProblem,
   storeInVault,
+  unlockWithDevice,
   unlockWithPassphrase,
   unlockedSecret,
 } from './vault'
@@ -72,7 +73,17 @@ describe('vault', () => {
 
   it('refuses short passphrases and an unprotected vault', async () => {
     await expect(storeInVault('devnet', SECRET, { passphrase: 'short' })).rejects.toThrow(/at least/)
-    await expect(storeInVault('devnet', SECRET, {})).rejects.toThrow(/passphrase or a passkey/)
+    await expect(storeInVault('devnet', SECRET, {})).rejects.toThrow(/a passphrase, a passkey or this browser/)
+  })
+
+  it('keeps a key for this browser alone: sealed at rest, opened without a prompt, never by a passphrase', async () => {
+    await storeInVault('devnet', SECRET, { device: true })
+    const [[, record]] = (await idbEntries<Record<string, unknown>>('vault')) as [[string, Record<string, unknown>]]
+    expect(JSON.stringify(record)).not.toContain(SECRET.wif)
+    expect((await listVaults('devnet'))[0]!.methods).toEqual(['device'])
+    lockVault()
+    await expect(unlockWithPassphrase('devnet', SECRET.identityId, 'correct horse battery')).rejects.toBeInstanceOf(VaultLockedError)
+    expect((await unlockWithDevice('devnet', SECRET.identityId)).wif).toBe(SECRET.wif)
   })
 
   it('binds a record to its network and identity (a copied record does not open)', async () => {

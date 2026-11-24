@@ -12,7 +12,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }))
 
-const { ScanOnlyHere } = await import('./scan-warning')
+const { ScanOnlyHere, ScanSafety } = await import('./scan-warning')
 const { SITE_HOST, siteUrl } = await import('@/lib/site')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -30,17 +30,27 @@ afterEach(() => {
 })
 
 describe('ScanOnlyHere', () => {
-  it("names this build's own address, what a scan grants and how to undo it", () => {
+  it("names this build's own address, in one line", () => {
     act(() => root.render(<ScanOnlyHere />))
     const note = host.querySelector('[data-testid="scan-warning"]')!
     expect(note.getAttribute('role')).toBe('note')
     expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toBe(SITE_HOST)
-    expect(note.textContent).toContain(`Scan only a code shown on ${SITE_HOST}.`)
-    expect(note.textContent).toContain('can sign as you on Forge')
-    expect(note.textContent).toContain('Forge never asks you to scan a code it didn’t show you here')
-    expect(note.textContent).toContain('Disable all other keys')
+    expect(note.textContent).toBe(`Only scan codes shown on ${SITE_HOST}`)
+  })
+
+  it('shows the host it is given (a self-hosted build)', () => {
+    act(() => root.render(<ScanOnlyHere host="forge.example.org" />))
+    expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toBe('forge.example.org')
+  })
+})
+
+describe('ScanSafety (under Details)', () => {
+  it('says what a lookalike can do, what a scan grants and how to undo it', () => {
+    act(() => root.render(<ScanSafety />))
+    expect(host.textContent).toContain('lookalike site')
+    expect(host.textContent).toContain('signs as you on Forge')
     expect(host.querySelector('a[href*="/docs/revoke-keys"]')).not.toBeNull()
-    expect(note.textContent).not.toContain('CID')
+    expect(host.textContent).not.toContain('CID')
     expect(host.querySelector('[data-testid="scan-warning-keys"]')!.getAttribute('href')).toBe('/settings/keys/')
   })
 
@@ -49,7 +59,7 @@ describe('ScanOnlyHere', () => {
     window.history.replaceState(null, '', '/')
     Object.defineProperty(window, 'location', { configurable: true, value: { ...window.location, protocol: 'https:', hostname: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.ipfs.dweb.link', host: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.ipfs.dweb.link', pathname: '/' } })
     try {
-      act(() => root.render(<ScanOnlyHere />))
+      act(() => root.render(<><ScanOnlyHere /><ScanSafety /></>))
       expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toContain('.ipfs.dweb.link')
       expect(host.textContent).toContain('CID against the release')
     } finally {
@@ -58,21 +68,16 @@ describe('ScanOnlyHere', () => {
   })
 
   it('does not contradict the limits the request proposes (F3), nor promise an encryption key it does not ask for', () => {
-    act(() => root.render(<ScanOnlyHere />))
+    act(() => root.render(<ScanSafety />))
     const limits = host.querySelector('[data-testid="scan-warning-limits"]')!.textContent
     expect(limits).toContain('within the limits above')
     expect(limits).not.toContain('no spending limit or expiry')
     expect(host.textContent).not.toContain('encryption key')
   })
 
-  it('shows the host it is given (a self-hosted build)', () => {
-    act(() => root.render(<ScanOnlyHere host="forge.example.org" />))
-    expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toBe('forge.example.org')
-  })
-
   it('closes the sign-in sheet when the way to disable the key is followed', () => {
     act(() => useUiStore.getState().openLogin('wallet'))
-    act(() => root.render(<ScanOnlyHere />))
+    act(() => root.render(<ScanSafety />))
     // jsdom cannot navigate; the click is only to reach the handler.
     document.addEventListener('click', (e) => e.preventDefault(), { once: true })
     act(() => host.querySelector<HTMLAnchorElement>('[data-testid="scan-warning-keys"]')!.click())

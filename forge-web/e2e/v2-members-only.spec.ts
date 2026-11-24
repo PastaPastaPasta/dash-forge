@@ -23,7 +23,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { expect, test, type Browser, type Page } from '@playwright/test'
-import { DAPI_METHOD, PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved, showOtherWays } from './helpers'
+import { DAPI_METHOD, PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved, showOtherWays, usePassword } from './helpers'
 
 const OWNER = process.env['E2E_MEMBERS_OWNER'] ?? ''
 const NAME = process.env['E2E_MEMBERS_NAME'] ?? ''
@@ -87,6 +87,7 @@ async function importWith(page: Page, name: string, encryption: boolean): Promis
   await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', idFile(name))
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   if (encryption) await page.getByTestId('enable-private-repos').check()

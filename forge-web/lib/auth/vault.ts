@@ -9,7 +9,11 @@
  *   256-bit data key. The data key is itself wrapped (AES-GCM) by one or both of:
  *     - a passkey: WebAuthn `prf` extension output (evaluated with a random 32-byte salt stored
  *       beside it), stretched with HKDF-SHA256 to a key-wrapping key;
- *     - a passphrase: Argon2id(passphrase, 16-byte salt, m = 64 MiB, t = 3, p = 1) → 32 bytes.
+ *     - a passphrase: Argon2id(passphrase, 16-byte salt, m = 64 MiB, t = 3, p = 1) → 32 bytes;
+ *     - this browser alone (`device`, the default when the user adds neither): a non-extractable
+ *       AES-GCM `CryptoKey` kept in the record. It opens without a prompt, so it protects only
+ *       against the record being read as plain bytes, not against a script on this site or a
+ *       copy of the browser profile. The key it guards is spend-capped and expires on chain.
  *   The AES-GCM additional data binds each ciphertext to its network, identity and slot, so a
  *   record cannot be replayed under another identity.
  * - In memory: the unlocked record lives only in this module (never React state, never
@@ -134,6 +138,12 @@ type Slot =
       readonly iv: Uint8Array
       readonly wrapped: Uint8Array
     }
+  | {
+      readonly kind: 'device'
+      readonly wrapKey: CryptoKey
+      readonly iv: Uint8Array
+      readonly wrapped: Uint8Array
+    }
 
 /** The stored (encrypted) vault record. */
 interface VaultRecord {
@@ -174,7 +184,7 @@ export interface VaultInfo {
   readonly identityId: string
   readonly keyId: number
   readonly createdAt: number
-  readonly methods: readonly ('passkey' | 'passphrase')[]
+  readonly methods: readonly UnlockKind[]
   /** Only a key whose registration was not finished is stored (unlocking finishes it). */
   readonly staged?: true
   /**
@@ -564,11 +574,18 @@ async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array, ki
 // Store / unlock / lock
 // ---------------------------------------------------------------------------
 
-/** How to protect a new vault: a passphrase, a passkey PRF output, or both. */
+/** How to protect a new vault: a passphrase, a passkey PRF output, or both; or this browser alone (`device`). */
 export interface Protection {
   readonly passphrase?: string
   readonly passkey?: { credentialId: Uint8Array; prfSalt: Uint8Array; output: Uint8Array }
+  readonly device?: true
 }
+
+/** The ways a stored key opens. */
+export type UnlockKind = 'passkey' | 'passphrase' | 'device'
+
+/** One unlock attempt: a passphrase, the enrolled passkey, or this browser's own key (no prompt). */
+export type UnlockMethod = { passphrase: string } | 'passkey' | 'device'
 
 /** What {@link storeInVault} did with storage settings sealed under the record it replaced. */
 export interface StoreOutcome {
@@ -595,7 +612,7 @@ export interface StoreOutcome {
 
 /** Refuse a protection the vault cannot seal with (before any work is done). */
 function assertProtection(protection: Protection): void {
-  if (!protection.passphrase && !protection.passkey) throw new Error('the vault needs a passphrase or a passkey')
+  if (!protection.passphrase && !protection.passkey && !protection.device) throw new Error('the vault needs a passphrase, a passkey or this browser')
   if (protection.passphrase !== undefined && protection.passphrase.length < MIN_PASSPHRASE) {
     throw new Error(`use a passphrase of at least ${MIN_PASSPHRASE} characters`)
   }
@@ -618,6 +635,13 @@ async function sealRecord(network: Network, main: Omit<VaultSecret, 'extra'>, pr
     const w = await seal(kek, dataKey, aad(network, identityId, 'passphrase'))
     kek.fill(0)
     slots.push({ kind: 'passphrase', salt, params: ARGON2_PARAMS, iv: w.iv, wrapped: w.ct })
+  }
+  if (protection.device && slots.length === 0) {
+    const wrapKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+    const iv = random(12)
+    const ad = aad(network, identityId, 'device')
+    const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(ad) }, wrapKey, buf(dataKey)))
+    slots.push({ kind: 'device', wrapKey, iv, wrapped })
   }
   return { version: 1, network, identityId, keyId: main.keyId, createdAt: Date.now(), iv: body.iv, ciphertext: body.ct, slots }
 }
@@ -716,10 +740,21 @@ export type StagedKeyState =
 async function openRecord(
   network: Network,
   record: VaultRecord,
-  method: { passphrase: string } | 'passkey',
+  method: UnlockMethod,
   withExtra: boolean,
   cachedOnly = false,
 ): Promise<{ secret: VaultSecret; blobKeys: BlobKeys } | null> {
+  if (method === 'device') {
+    const slot = record.slots.find((s) => s.kind === 'device')
+    if (slot?.kind !== 'device') return null
+    try {
+      const ad = aad(network, record.identityId, 'device')
+      const dataKey = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(slot.iv), additionalData: buf(ad) }, slot.wrapKey, buf(slot.wrapped)))
+      return await unwrapData(network, record, dataKey, withExtra)
+    } catch {
+      return null
+    }
+  }
   if (method === 'passkey') {
     const slot = passkeySlot(record)
     if (!slot) return null
@@ -780,7 +815,7 @@ export type RecoverResult =
 export async function recoverStaged(
   network: Network,
   identityId: string,
-  method: { passphrase: string } | 'passkey',
+  method: UnlockMethod,
   state: (secret: VaultSecret) => Promise<StagedKeyState>,
 ): Promise<RecoverResult> {
   assertDedicatedOrigin()
@@ -865,10 +900,13 @@ export async function abandonStaged(network: Network, identityId: string, keyId?
 async function openWith(
   network: Network,
   record: VaultRecord,
-  using: Protection | 'passkey',
+  using: Protection | 'passkey' | 'device',
   withExtra: boolean,
   noPrompt = false,
 ): Promise<{ secret: VaultSecret; blobKeys: BlobKeys } | null> {
+  // A browser-only slot opens without a prompt, whatever was asked for.
+  const device = await openRecord(network, record, 'device', withExtra)
+  if (device !== null || using === 'device') return device
   if (using === 'passkey') return openRecord(network, record, 'passkey', withExtra)
   if (using.passphrase !== undefined) {
     const opened = await openRecord(network, record, { passphrase: using.passphrase }, withExtra)
@@ -893,7 +931,7 @@ async function openWith(
 export async function openStaged(
   network: Network,
   identityId: string,
-  using: Protection | 'passkey',
+  using: Protection | UnlockMethod,
   explicit = using === 'passkey',
 ): Promise<VaultSecret | null> {
   assertDedicatedOrigin()
@@ -1122,7 +1160,15 @@ export async function listVaults(network: Network): Promise<VaultInfo[]> {
 }
 
 async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array, slot: Slot, withExtra = true): Promise<{ secret: VaultSecret; blobKeys: BlobKeys }> {
-  const dataKey = await open(kek, slot.iv, slot.wrapped, aad(network, record.identityId, slot.kind))
+  try {
+    return await unwrapData(network, record, await open(kek, slot.iv, slot.wrapped, aad(network, record.identityId, slot.kind)), withExtra)
+  } finally {
+    kek.fill(0)
+  }
+}
+
+/** Open a record's body and blob keys with its data key (wiped after). */
+async function unwrapData(network: Network, record: VaultRecord, dataKey: Uint8Array, withExtra: boolean): Promise<{ secret: VaultSecret; blobKeys: BlobKeys }> {
   try {
     const body = await open(dataKey, record.iv, record.ciphertext, aad(network, record.identityId, 'body'))
     const parsed = JSON.parse(new TextDecoder().decode(body)) as VaultSecret
@@ -1134,7 +1180,6 @@ async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array
     return { secret, blobKeys: { storage: storageKey, encryption: await deriveEncryptionKey(dataKey, network, record.identityId) } }
   } finally {
     dataKey.fill(0)
-    kek.fill(0)
   }
 }
 
@@ -1152,6 +1197,11 @@ export async function unlockWithPasskey(network: Network, identityId: string, no
   return unlockWith(network, identityId, 'passkey', note)
 }
 
+/** Unlock a key stored for this browser alone (no prompt). */
+export async function unlockWithDevice(network: Network, identityId: string): Promise<VaultSecret> {
+  return unlockWith(network, identityId, 'device')
+}
+
 /**
  * Open the main record with `method`; when that fails (or there is none) and a key whose
  * registration was not finished is staged here (D-016), try the staged record's own slots:
@@ -1159,12 +1209,12 @@ export async function unlockWithPasskey(network: Network, identityId: string, no
  * replaces. The controller then asks Platform and finishes or keeps the staged key. Each
  * record is only ever opened with its own slots; neither stands in for the other.
  */
-async function unlockWith(network: Network, identityId: string, method: { passphrase: string } | 'passkey', note?: PasskeyPromptNote): Promise<VaultSecret> {
+async function unlockWith(network: Network, identityId: string, method: UnlockMethod, note?: PasskeyPromptNote): Promise<VaultSecret> {
   assertDedicatedOrigin()
   const lockMarkerAt = lockMarker()
   const main = await idbGet<VaultRecord>('vault', key(network, identityId))
   const staged = await idbGet<VaultRecord>('vault', stagedKey(network, identityId))
-  const kind = method === 'passkey' ? 'passkey' : 'passphrase'
+  const kind: UnlockKind = method === 'passkey' || method === 'device' ? method : 'passphrase'
   if (!main?.slots.some((s) => s.kind === kind) && !staged?.slots.some((s) => s.kind === kind)) {
     throw new VaultLockedError(`no ${kind}-protected key for this identity here`)
   }
@@ -1184,7 +1234,9 @@ async function unlockWith(network: Network, identityId: string, method: { passph
       return opened.secret
     }
   }
-  throw new VaultLockedError(method === 'passkey' ? 'That passkey did not open the key stored here.' : 'Wrong passphrase.')
+  throw new VaultLockedError(
+    method === 'passkey' ? 'That passkey did not open the key stored here.' : method === 'device' ? "This browser's key could not be opened." : 'Wrong passphrase.',
+  )
 }
 
 /**

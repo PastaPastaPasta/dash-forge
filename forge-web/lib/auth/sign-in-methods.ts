@@ -3,7 +3,8 @@
  * that decides, so the sheet only renders (docs/design/wallet-primary.md). The wallet leads only
  * where a wallet a newcomer can install finishes sign-in (`walletSignInReady`); elsewhere it is
  * listed under "Other ways to sign in", saying why. On mainnet, where it leads, a newcomer is sent
- * to DashPay to create the identity (decision 3).
+ * to DashPay to create the identity (decision 3), and every way in that types a recovery phrase
+ * (import, create here) sits under Advanced.
  */
 
 import type { Network } from '@/lib/constants'
@@ -64,15 +65,17 @@ export function signInMethods(ctx: SignInContext): readonly SignInMethod[] {
   const dashpayFirst = leads && ctx.network === 'mainnet'
   const m = (id: SignInMethodId, group: SignInGroup, recommended = false): SignInMethod => ({ id, group, recommended })
   const wallet = (group: SignInGroup): SignInMethod[] => (ctx.walletAvailable ? [m('wallet', group, leads && !ctx.creating)] : [])
+  // Mainnet: typing a recovery phrase into a web page is a developer path, never a suggested one.
+  const phrase: SignInGroup = ctx.network === 'mainnet' ? 'advanced' : 'more'
   return [
     ...(ctx.creating ? [m('resume-create', 'primary')] : []),
     ...(leads ? wallet('primary') : [m('create', 'primary', !ctx.creating)]),
     m('passkey', 'primary'),
     ...(dashpayFirst ? [m('get-dashpay', 'more')] : []),
-    m('import', 'more'),
+    m('import', phrase),
     m('dg', 'more'),
     ...(leads ? [] : wallet('more')),
-    ...(leads ? [m('create', 'more')] : []),
+    ...(leads ? [m('create', phrase)] : []),
     m('raw-key', 'advanced'),
   ]
 }
