@@ -11,6 +11,7 @@
  * "is your username" step is still seen.
  */
 
+import { PhraseAdvanced, phraseIsAdvanced } from '@/components/auth/phrase-advanced'
 import Link from 'next/link'
 import { useState } from 'react'
 import { AtSign } from 'lucide-react'
@@ -31,10 +32,13 @@ export function UsernameHint({ show, className }: { show: boolean; className?: s
             No username yet. A DPNS username makes your addresses readable (<span className="font-mono">forge.dashhq.org/alice/project</span>,{' '}
             <span className="font-mono">@alice</span>).
           </p>
+          {phraseIsAdvanced() ? <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="username-in-dashpay">Choose one in your DashPay wallet.</p> : null}
           <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="username-choose">
-              <AtSign className="h-3.5 w-3.5" aria-hidden /> Choose a username
-            </Button>
+            <PhraseAdvanced label="Advanced: register it here with your recovery phrase" testId="username-advanced">
+              <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="username-choose">
+                <AtSign className="h-3.5 w-3.5" aria-hidden /> Choose a username
+              </Button>
+            </PhraseAdvanced>
             <Link prefetch={false} href={`${DOCS.identity}#what-an-identity-is`} target="_blank" rel="noreferrer noopener" className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400">
               How usernames work →
             </Link>

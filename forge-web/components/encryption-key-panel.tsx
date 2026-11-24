@@ -14,6 +14,7 @@
  * dropped after use.
  */
 
+import { PhraseAdvanced } from '@/components/auth/phrase-advanced'
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, Trash2 } from 'lucide-react'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -224,6 +225,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
       {/* Another key can always be added: one held here never blocks a newer one (DESIGN D27). */}
       {unlockScope !== 'signing' && keyIds !== undefined ? (
         <div className="mt-3 space-y-3">
+          <PhraseAdvanced label={keyIds === null ? 'Advanced: add your encryption key (recovery phrase, identity file or key)' : 'Advanced: add another encryption key'} testId="encryption-advanced">
           <p className="text-dense font-medium">{keyIds === null ? 'Read and write members-only and private content' : 'Add another encryption key'}</p>
           <div role="tablist" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
             {(
@@ -307,6 +309,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
               </Button>
             </div>
           ) : null}
+          </PhraseAdvanced>
         </div>
       ) : null}
       {note ? <p className="mt-2 text-[12px] text-verify-700 dark:text-verify-400">{note}</p> : null}

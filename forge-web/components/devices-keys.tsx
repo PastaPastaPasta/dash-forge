@@ -6,6 +6,7 @@
  * browser's storage is kept (TS-17).
  */
 
+import { PhraseAdvanced, phraseIsAdvanced } from '@/components/auth/phrase-advanced'
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, HardDrive, KeyRound, LifeBuoy, Pencil, ShieldOff } from 'lucide-react'
@@ -39,6 +40,8 @@ export function DevicesKeys(): JSX.Element {
   const [labels, setLabels] = useState<Record<number, string>>({})
   const [disabling, setDisabling] = useState<KeyRow | null>(null)
   const [disablingOthers, setDisablingOthers] = useState(false)
+  // Mainnet: disabling a key needs the master key, so the buttons show only once asked for.
+  const [masterActions, setMasterActions] = useState(!phraseIsAdvanced())
   const load = useCallback(() => {
     setError(null)
     controller.identityKeys().then(setRows, (e: unknown) => setError(errorMessage(e)))
@@ -65,25 +68,29 @@ export function DevicesKeys(): JSX.Element {
               label={labels[r.keyId] ?? ''}
               fresh={isNew(r.keyId)}
               onLabel={(text) => setLabels(writeKeyLabel(ACTIVE_NETWORK.network, identity, r.keyId, text))}
-              onDisable={() => setDisabling(r)}
+              onDisable={masterActions ? () => setDisabling(r) : null}
             />
           ))}
         </ul>
       ) : null}
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Labels stay in this browser. Platform doesn&apos;t record when a key was last used: a budget that went down was used, and this browser&apos;s last
-        write is below.
-      </p>
-      {others.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="disable-others">
-          <Button size="sm" variant="danger" onClick={() => setDisablingOthers(true)} data-testid="keys-disable-others">
-            <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable all other keys
-          </Button>
-          <span className="text-[12px] text-anvil-600 dark:text-anvil-300">
-            Disables {others.length === 1 ? 'the 1 signing key' : `the ${others.length} signing keys`} other than this browser&apos;s, wallet sign-ins and other apps&apos; keys included. Use it if Forge tells you to revoke keys.
-          </span>
-        </div>
+      {phraseIsAdvanced() ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="keys-wallet-hint">
+          To disconnect a wallet sign-in, open DashPay → Connections.
+        </p>
       ) : null}
+      <PhraseAdvanced label="Advanced: disable keys with your recovery phrase or identity file" testId="keys-master-actions" onToggle={setMasterActions}>
+        {others.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="disable-others">
+            <Button size="sm" variant="danger" onClick={() => setDisablingOthers(true)} data-testid="keys-disable-others">
+              <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable all other keys
+            </Button>
+            <span className="text-[12px] text-anvil-600 dark:text-anvil-300">
+              Disables {others.length === 1 ? 'the 1 signing key' : `the ${others.length} signing keys`} other than this browser&apos;s, wallet sign-ins and other apps&apos; keys included.
+            </span>
+          </div>
+        ) : null}
+        {phraseIsAdvanced() ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Each key above now has a Disable button.</p> : null}
+      </PhraseAdvanced>
       <PasskeysSection />
       <LostDevice />
       <ThisBrowser identity={identity} />
@@ -124,7 +131,8 @@ function KeyRowItem({
   label: string
   fresh: boolean
   onLabel: (text: string) => void
-  onDisable: () => void
+  /** Null while disabling is not on offer (mainnet, until asked for). */
+  onDisable: (() => void) | null
 }): JSX.Element {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(label)
@@ -181,7 +189,7 @@ function KeyRowItem({
           {row.expiresAt !== null ? `${expired ? 'expired' : 'expires'} ${formatDate(row.expiresAt)}` : 'never expires'}
         </p>
       ) : null}
-      {!disabled ? (
+      {!disabled && onDisable !== null ? (
         refusal === null ? (
           <Button size="sm" variant="outline" onClick={onDisable} data-testid="key-disable">
             <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable
