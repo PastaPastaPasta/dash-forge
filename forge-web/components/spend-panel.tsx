@@ -198,35 +198,35 @@ export function SpendPanel(): JSX.Element {
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> {plural(s.missed, 'estimate')} missed by more than 25 %.
         </p>
       ) : null}
+      {rec ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile" data-unexplained={rec.unexplained}>
+          Since the ledger began: <Dash credits={since?.allTime ?? 0} /> spent
+          {since !== null && since.credited > 0 ? (
+            <>
+              , <Dash credits={since.credited} signed balance /> topped up here
+            </>
+          ) : null}{' '}
+          · balance <Dash credits={rec.balanceChange} signed balance /> ·{' '}
+          {creditsAsDash(Math.abs(rec.unexplained)) === '0' ? (
+            'all of it in the ledger'
+          ) : (
+            <>
+              <Dash credits={rec.unexplained} signed balance /> not in the ledger ({rec.unexplained > 0 ? 'top-ups made elsewhere' : 'other apps or keys'})
+            </>
+          )}
+        </p>
+      ) : !settled && baseline !== null ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile-pending">
+          Ledger <Dash credits={s.allTime} /> · reading the balance to reconcile…
+        </p>
+      ) : null}
 
       <details className="text-dense">
         <summary className="w-fit cursor-pointer text-[12px] font-medium text-anvil-600 hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:text-anvil-300 dark:hover:text-anvil-100">
-          Spend history &amp; reconciliation
+          Spend history by repo &amp; write
         </summary>
         <div className="mt-3 space-y-4">
           {rate !== undefined ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Fiat amounts use today&apos;s price.</p> : null}
-          {rec ? (
-            <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile" data-unexplained={rec.unexplained}>
-              Since the ledger began: <Dash credits={since?.allTime ?? 0} /> spent
-              {since !== null && since.credited > 0 ? (
-                <>
-                  , <Dash credits={since.credited} signed balance /> topped up here
-                </>
-              ) : null}{' '}
-              · balance <Dash credits={rec.balanceChange} signed balance /> ·{' '}
-              {creditsAsDash(Math.abs(rec.unexplained)) === '0' ? (
-                'all of it in the ledger'
-              ) : (
-                <>
-                  <Dash credits={rec.unexplained} signed balance /> not in the ledger ({rec.unexplained > 0 ? 'top-ups made elsewhere' : 'other apps or keys'})
-                </>
-              )}
-            </p>
-          ) : !settled && baseline !== null ? (
-            <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile-pending">
-              Ledger <Dash credits={s.allTime} /> · reading the balance to reconcile…
-            </p>
-          ) : null}
 
           <section aria-labelledby="spend-by-repo">
             <h3 id="spend-by-repo" className="mb-1 text-[12px] font-medium text-anvil-500 dark:text-anvil-400">

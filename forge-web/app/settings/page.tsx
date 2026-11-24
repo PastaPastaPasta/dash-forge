@@ -31,6 +31,7 @@ import { TrendingPrefPanel } from '@/components/trending-pref-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash } from '@/lib/view/format'
 import { ACTIVE_NETWORK } from '@/lib/constants'
+import { NOTIFY_URL } from '@/lib/notify/config'
 import { FiatNote } from '@/components/ui/fiat-note'
 
 export default function SettingsPage(): JSX.Element {
@@ -150,7 +151,9 @@ export default function SettingsPage(): JSX.Element {
           <Link href="/settings/notifications/" className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-anvil-50 coarse:min-h-11 dark:hover:bg-anvil-900" data-testid="settings-notifications-link">
             <div>
               <div className="text-dense font-medium">Notifications</div>
-              <div className="text-[12px] text-anvil-500 dark:text-anvil-400">Browser inbox and optional delivery</div>
+              <div className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                {NOTIFY_URL ? 'Browser inbox, email and push' : 'Browser inbox'}
+              </div>
             </div>
             <ChevronRight className="h-4 w-4 shrink-0 text-anvil-400" aria-hidden />
           </Link>

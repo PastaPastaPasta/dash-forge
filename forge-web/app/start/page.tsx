@@ -61,7 +61,7 @@ export default function GettingStartedPage(): JSX.Element {
           <li className="space-y-1">
             <h2 className="text-prose font-semibold">1. Create or connect a Dash identity</h2>
             <p className="text-dense text-anvil-600 dark:text-anvil-300">
-              Your Dash Platform identity is your account (made from a 12-word recovery phrase, or connected via a wallet). Browsing needs none.
+              Your Dash Platform identity is your account (made from a 12-word recovery phrase, or connected via a wallet). Keep it offline. Nobody can reset it for you. Browsing needs none.
             </p>
           </li>
 

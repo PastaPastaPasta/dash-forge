@@ -21,7 +21,7 @@
  * On a network without forge-v2 the page shows "not deployed".
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Check, Globe, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
 import Link from 'next/link'
@@ -211,6 +211,14 @@ export default function NewRepoPage(): JSX.Element {
       return errorMessage(e, 'invalid branch name')
     }
   }, [defaultBranch, protect])
+  const branchDetailsRef = useRef<HTMLDetailsElement>(null)
+  const prevBranchError = useRef<string | null>(null)
+  useEffect(() => {
+    if (branchError !== null && prevBranchError.current === null && branchDetailsRef.current) {
+      branchDetailsRef.current.open = true
+    }
+    prevBranchError.current = branchError
+  }, [branchError])
   // An unfinished creation of this name resumes with the values it started with.
   const resuming = useMemo(() => {
     if (nameError !== null || repoName === null) return null
@@ -400,7 +408,7 @@ export default function NewRepoPage(): JSX.Element {
                       , or turn on later.
                     </>
                   ) : withMembers ? (
-                    'Members can post private comments, reviews and issues.'
+                    'Members can post comments, reviews and issues only members can read. Everyone can still see that something was posted, by whom and when.'
                   ) : (
                     'Off: can be turned on later in Settings.'
                   )}
@@ -453,7 +461,7 @@ export default function NewRepoPage(): JSX.Element {
             </div>
           ) : null}
 
-          <details open={branchError !== null} className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-750">
+          <details ref={branchDetailsRef} data-testid="new-branch-details" className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-750">
             <summary className="cursor-pointer text-dense font-medium text-anvil-700 coarse:flex coarse:min-h-11 coarse:items-center dark:text-anvil-200">
               Branch &amp; protection <span className="ml-1 font-normal text-anvil-500 dark:text-anvil-400">({branchShown}, {protect ? 'protected' : 'unprotected'})</span>
             </summary>
@@ -536,19 +544,37 @@ export default function NewRepoPage(): JSX.Element {
             </ol>
           ) : null}
 
-          <Button
-            variant="primary"
-            size="lg"
-            className="w-full"
-            disabled={name.trim() === '' || nameError !== null || branchError !== null || guard.disabledReason !== null || privateBlocked !== null}
-            title={guard.disabledReason ?? privateBlocked ?? undefined}
-            onClick={() => {
-              // The members key's first share is a repoKey: forge-meta's on a four-contract set.
-              if (guard.check(cost, usesKey && forge ? ['core', writeContractKind(forge, DOC.repoKey)] : 'core', 'create a repository')) setConfirm(input())
-            }}
-          >
-            Create repository
-          </Button>
+          {(() => {
+            const blockedReason =
+              nameError ??
+              branchError ??
+              guard.disabledReason ??
+              privateBlocked ??
+              (name.trim() === '' ? 'Enter a repository name to continue.' : null)
+            return (
+              <div className="space-y-1.5">
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className="w-full"
+                  disabled={blockedReason !== null}
+                  title={guard.disabledReason ?? privateBlocked ?? undefined}
+                  aria-describedby={blockedReason !== null ? 'new-repo-blocked' : undefined}
+                  onClick={() => {
+                    // The members key's first share is a repoKey: forge-meta's on a four-contract set.
+                    if (guard.check(cost, usesKey && forge ? ['core', writeContractKind(forge, DOC.repoKey)] : 'core', 'create a repository')) setConfirm(input())
+                  }}
+                >
+                  Create repository
+                </Button>
+                {blockedReason !== null ? (
+                  <p id="new-repo-blocked" data-testid="new-repo-blocked" className="text-center text-[12px] text-anvil-500 dark:text-anvil-400">
+                    {blockedReason}
+                  </p>
+                ) : null}
+              </div>
+            )
+          })()}
         </div>
       </div>
 

@@ -7,15 +7,32 @@
  * navigation. In `paused` mode the write guard says why on every write button.
  */
 
+import { useEffect, useRef, useState } from 'react'
 import { Info } from 'lucide-react'
 import { PAGES_NOTICE, pagesNoticeCopy, type PagesNotice } from '@/lib/pages-notice'
 import { cn } from '@/lib/utils'
 
 export function PagesNoticeBanner({ notice = PAGES_NOTICE }: { notice?: PagesNotice | null }): JSX.Element | null {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const bodyRef = useRef<HTMLParagraphElement>(null)
+  const bodyText = notice === null ? '' : pagesNoticeCopy(notice).body
+
+  useEffect(() => {
+    if (notice === null) return
+    const check = (): void => {
+      const el = bodyRef.current
+      if (!el) return
+      setOverflows(el.scrollHeight > el.clientHeight + 1)
+    }
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [notice, bodyText])
+
   if (notice === null) return null
   const copy = pagesNoticeCopy(notice)
   const paused = notice.mode === 'paused'
-  const longBody = copy.body.length > 90
   return (
     <div
       role="status"
@@ -29,9 +46,8 @@ export function PagesNoticeBanner({ notice = PAGES_NOTICE }: { notice?: PagesNot
           aria-hidden
         />
         <div className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span className="font-medium">{copy.lead}</span>
-            {longBody ? null : <span>{copy.body}</span>}
             <a
               href={notice.url}
               target="_blank"
@@ -41,13 +57,18 @@ export function PagesNoticeBanner({ notice = PAGES_NOTICE }: { notice?: PagesNot
               {copy.link}
             </a>
           </div>
-          {longBody ? (
-            <details className="mt-0.5 text-[12px] text-anvil-600 dark:text-anvil-300">
-              <summary className="w-fit cursor-pointer hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-100">
-                More
-              </summary>
-              <p className="mt-1">{copy.body}</p>
-            </details>
+          <p ref={bodyRef} data-testid="pages-notice-body" className={cn('mt-0.5 text-anvil-700 dark:text-anvil-200', !expanded && 'line-clamp-2')}>
+            {copy.body}
+          </p>
+          {overflows || expanded ? (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((v) => !v)}
+              className="mt-0.5 text-[12px] font-medium text-anvil-600 underline hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:text-anvil-300 dark:hover:text-anvil-100"
+            >
+              {expanded ? 'Show less' : 'Show full notice'}
+            </button>
           ) : null}
         </div>
       </div>

@@ -92,13 +92,6 @@ export function StorageWizardView({ storage, embedded = false }: { storage: Stor
         </p>
       ) : null}
 
-      {!embedded && config.profiles.length > 0 ? (
-        <>
-          <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
-          <DefaultPolicy config={config} storable={storable} save={save} />
-        </>
-      ) : null}
-
       <section aria-labelledby="providers-title" className="space-y-3">
         <h2 id="providers-title" className="text-dense font-medium text-anvil-500 dark:text-anvil-400">
           Add storage
@@ -158,9 +151,12 @@ export function StorageWizardView({ storage, embedded = false }: { storage: Stor
         />
       ) : null}
 
-      {!embedded && config.profiles.length === 0 ? (
-        <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
-      ) : null}
+      {embedded ? null : (
+        <>
+          <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
+          <DefaultPolicy config={config} storable={storable} save={save} />
+        </>
+      )}
 
       <details className="text-dense">
         <summary className="w-fit cursor-pointer font-medium text-anvil-600 hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:text-anvil-300 dark:hover:text-anvil-100">

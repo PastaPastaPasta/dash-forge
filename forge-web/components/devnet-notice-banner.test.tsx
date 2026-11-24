@@ -62,6 +62,7 @@ describe('DevnetNoticeBanner', () => {
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
     expect(b.textContent).toContain('bonsia is moving to a new devnet soon.')
+    expect(b.textContent).toContain('Data on this devnet will be wiped.')
     expect(b.querySelector('details')?.textContent).toContain(
       'Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
     )
@@ -92,8 +93,10 @@ describe('DevnetNoticeBanner', () => {
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
     expect(b.getAttribute('data-notice')).toBe('moving')
-    expect(b.textContent).toContain('Dash Forge moved to testnet (Platform v5); bonsia was retired.')
-    expect(b.textContent).toContain('Writing is paused')
+    const clone = b.cloneNode(true) as HTMLElement
+    clone.querySelector('details')?.remove()
+    expect(clone.textContent).toContain('Dash Forge moved to testnet (Platform v5); bonsia was retired.')
+    expect(clone.textContent).toContain('Writing is paused here.')
     expect(dismissButton()).toBeNull()
     expect(b.querySelector('a')!.getAttribute('href')).toBe(DEVNET_MOVE_DOC.replace(/\/$/, ''))
   })

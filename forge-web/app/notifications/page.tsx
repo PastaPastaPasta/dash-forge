@@ -218,12 +218,33 @@ export default function NotificationsPage(): JSX.Element {
               </label>
             </div>
           ) : null}
+          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="inbox-reach-note">
+            {inboxReachNote(NOTIFY_URL !== null)}
+          </p>
+          {subs && (subs.droppedRepos > 0 || subs.droppedThreads > 0 || (subs.incomplete && subs.incomplete.length > 0)) ? (
+            <ul className="mt-2 list-inside list-disc space-y-1 text-[12px] text-anvil-600 dark:text-anvil-300">
+              {subs.droppedRepos > 0 ? (
+                <li>
+                  Capped at {MAX_REPOS} repos: {subs.droppedRepos} more are not watched.
+                </li>
+              ) : null}
+              {subs.droppedThreads > 0 ? (
+                <li>
+                  Capped at the {MAX_THREADS} threads you joined most recently: {subs.droppedThreads} older ones are not watched.
+                </li>
+              ) : null}
+              {subs.incomplete && subs.incomplete.length > 0 ? (
+                <li className="text-caution-700 dark:text-caution-400" data-partial="true">
+                  Could not read all of: {subs.incomplete.join('; ')}.
+                </li>
+              ) : null}
+            </ul>
+          ) : null}
           <details className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
               Watched sources &amp; details
             </summary>
             <div className="mt-2 space-y-2">
-              <p data-testid="inbox-reach-note">{inboxReachNote(NOTIFY_URL !== null)}</p>
               {subs && counts !== null ? (
                 <ul className="list-inside list-disc space-y-1 text-anvil-600 dark:text-anvil-300">
                   <li>
@@ -255,21 +276,6 @@ export default function NotificationsPage(): JSX.Element {
                     </li>
                   )}
                   {prefs?.stars ? <li>{plural(counts.starred, 'starred repo')}: new issues and pull requests.</li> : null}
-                  {subs.droppedRepos > 0 ? (
-                    <li>
-                      Capped at {MAX_REPOS} repos: {subs.droppedRepos} more are not watched.
-                    </li>
-                  ) : null}
-                  {subs.droppedThreads > 0 ? (
-                    <li>
-                      Capped at the {MAX_THREADS} threads you joined most recently: {subs.droppedThreads} older ones are not watched.
-                    </li>
-                  ) : null}
-                  {subs.incomplete && subs.incomplete.length > 0 ? (
-                    <li className="text-caution-700 dark:text-caution-400" data-partial="true">
-                      Could not read all of: {subs.incomplete.join('; ')}.
-                    </li>
-                  ) : null}
                 </ul>
               ) : (
                 <p>Working out your repos and threads…</p>

@@ -172,7 +172,7 @@ export function GithubStep({ initial, way = 'action', prefill = null, settled = 
           <AlreadyMirrored github={found} />
           <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
             <summary className="w-fit cursor-pointer hover:text-anvil-700 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-200">
-              Notes (LFS &amp; permanence)
+              About Git LFS
             </summary>
             <p className="mt-1">{LFS_NOTE}</p>
           </details>
@@ -930,17 +930,30 @@ export function WaitStep({
 
 export function WayStep({ initial, onDone }: { initial: MirrorWay | null; onDone: (way: MirrorWay) => void }): JSX.Element {
   const [way, setWay] = useState<MirrorWay | null>(initial)
+  const [pickError, setPickError] = useState(false)
   return (
     <>
       <fieldset className="grid gap-3 sm:grid-cols-2">
         <legend className="sr-only">Do you maintain the repo on GitHub?</legend>
         {([
-          ['action', 'Yes, keep it in sync automatically', 'Needs GitHub write access', 'Adds a GitHub Action that mirrors every push.'],
-          ['cli', 'No, copy it from the command line', 'Anyone', 'Generates dg import commands to run on your computer.'],
+          ['action', 'Yes, keep it in sync automatically', 'Needs GitHub write access', 'A GitHub Action mirrors every push. Setup adds a workflow file and secrets to the GitHub repo.'],
+          ['cli', 'No, copy it from the command line', 'Anyone', 'Generates dg import commands to run on your computer. This page signs nothing; dg signs and pays.'],
         ] as const).map(([value, title, badge, body]) => (
           <label key={value} className={cn('flex cursor-pointer flex-col gap-2 rounded-md border p-3.5', way === value ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750')}>
             <span className="flex items-start gap-2 text-dense font-medium">
-              <input type="radio" name="mirror-way" aria-labelledby={`mirror-way-${value}-title`} aria-describedby={`mirror-way-${value}-badge mirror-way-${value}-body`} value={value} checked={way === value} onChange={() => setWay(value)} className="mt-1 accent-forge-700" />
+              <input
+                type="radio"
+                name="mirror-way"
+                aria-labelledby={`mirror-way-${value}-title`}
+                aria-describedby={`mirror-way-${value}-badge mirror-way-${value}-body`}
+                value={value}
+                checked={way === value}
+                onChange={() => {
+                  setWay(value)
+                  setPickError(false)
+                }}
+                className="mt-1 accent-forge-700"
+              />
               <span id={`mirror-way-${value}-title`}>{title}</span>
             </span>
             <span id={`mirror-way-${value}-badge`} className="w-fit rounded bg-surface-raised px-2 py-0.5 text-[12px] text-fg-muted">{badge}</span>
@@ -949,8 +962,23 @@ export function WayStep({ initial, onDone }: { initial: MirrorWay | null; onDone
         ))}
       </fieldset>
       <div className="flex flex-wrap items-center gap-3">
-        <Button variant="primary" disabled={way === null} onClick={() => way !== null && onDone(way)}>Continue</Button>
-        {way === null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Pick an option above to continue.</span> : null}
+        <Button
+          variant="primary"
+          onClick={() => {
+            if (way === null) {
+              setPickError(true)
+              return
+            }
+            onDone(way)
+          }}
+        >
+          Continue
+        </Button>
+        {pickError && way === null ? (
+          <span role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">
+            Pick an option above to continue.
+          </span>
+        ) : null}
       </div>
     </>
   )

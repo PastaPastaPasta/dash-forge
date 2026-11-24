@@ -18,7 +18,7 @@ export function BuildInfo(): JSX.Element {
   const commit = commitUrl()
   return (
     <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="build-info">
-      <span>Build</span>
+      <span>About this build:</span>
       {commit ? (
         <a href={commit} className={`${LINK} font-mono`} title={BUILD_COMMIT} rel="noreferrer">
           {BUILD_COMMIT.slice(0, 12)}

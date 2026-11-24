@@ -97,6 +97,7 @@ export function DevnetNoticeBanner({
         <div className="min-w-0 flex-1 text-anvil-800 dark:text-anvil-100">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span className="font-medium">{copy.lead}</span>
+            <span>{moving ? 'Writing is paused here.' : 'Data on this devnet will be wiped.'}</span>
             <Link prefetch={false}
               href={DEVNET_MOVE_DOC}
               target="_blank"
@@ -108,7 +109,7 @@ export function DevnetNoticeBanner({
           </div>
           <details className="mt-0.5 text-[12px] text-anvil-600 dark:text-anvil-300">
             <summary className="w-fit cursor-pointer hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-100">
-              More
+              More about the devnet move
             </summary>
             <p className="mt-1">{copy.body}</p>
           </details>

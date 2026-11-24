@@ -26,7 +26,7 @@ export function ClockSkewBanner(): JSX.Element | null {
           </p>
           <details className="mt-0.5 text-[12px] text-anvil-600 dark:text-anvil-300">
             <summary className="w-fit cursor-pointer hover:text-anvil-900 coarse:inline-flex coarse:min-h-11 coarse:items-center dark:hover:text-anvil-100">
-              More
+              More about clock skew
             </summary>
             <p className="mt-1">{copy.body}</p>
           </details>

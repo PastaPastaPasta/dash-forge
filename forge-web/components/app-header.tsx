@@ -717,7 +717,7 @@ function AccountMenu({
             <span>
               Lock
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
-                {pasted ? 'Signs you out and forgets this key.' : 'Signs you out of this tab.'}
+                {pasted ? 'Signs you out and forgets this key.' : 'Locks every tab; your key stays here until you forget it in Settings.'}
               </span>
             </span>
           </button>

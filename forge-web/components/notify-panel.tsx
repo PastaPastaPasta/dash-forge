@@ -153,10 +153,10 @@ export function NotifyService({ base }: { base: string }): JSX.Element {
         </summary>
         <div className="mt-1 space-y-1">
           <p>
-            Keeps your identity id, encrypted address/push subscriptions and preferences. Forge works the same without it.
+            It keeps your identity id, your address and push subscriptions (encrypted), your choices below and which repos it follows for you. Forge works the same without it.
           </p>
           <p>
-            Reads only public data: private repos only say “new activity”, never a title.
+            It reads only public data: for a private repo it can say “new activity”, never a title. Sign-in is a request signed by this browser&apos;s key, so there is no account or password.
             {privacyUrl ? (
               <>
                 {' '}
