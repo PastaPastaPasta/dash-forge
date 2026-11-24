@@ -133,6 +133,7 @@ vi.mock('@/contexts/auth-context', () => ({
     controller: {
       supportsLimitedKeys: () => false,
       checkGroup: async () => ({ notice: null }),
+      walletSignInBlocker: async () => null,
       checkFileNetwork: (key: string | null) => {
         if (key !== null && key !== 'devnet-sakura') throw new Error(`This identity file is for ${key}, but this site is on devnet-sakura.`)
       },

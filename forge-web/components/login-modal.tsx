@@ -394,7 +394,7 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
               testId="tile-get-dashpay"
               icon={Smartphone}
               title="Get DashPay, create your identity there, then sign in"
-              body="Install DashPay on your phone and create your Dash identity in it; your recovery phrase stays on the phone. Then tap here to sign in with it."
+              body="Install DashPay on your phone and create your Dash identity in it; your recovery phrase stays on the phone. Then come back and choose this to sign in with it."
               onClick={() => onPick('wallet')}
               pausedReason={pausedReason}
             />
