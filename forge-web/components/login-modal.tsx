@@ -692,8 +692,11 @@ function UnlockView({
   const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === (initial ?? lockedIdentityOf(vaults, lastIdentity)))))
   const [passphrase, setPassphrase] = useState('')
   const passphraseRef = useRef<HTMLInputElement>(null)
-  const [error, setError] = useState<string | null>(null)
+  // An error belongs to the key it came from: after a pick or a forget, another key shows none.
+  const [failure, setFailure] = useState<{ id: string; text: string } | null>(null)
   const v = vaults[pick] ?? vaults[0]
+  const error = failure !== null && failure.id === v?.identityId ? failure.text : null
+  const setError = (text: string | null): void => setFailure(text === null || !v ? null : { id: v.identityId, text })
   if (!v) {
     return (
       <div className="space-y-3">
@@ -715,7 +718,24 @@ function UnlockView({
       setError(errorMessage(e))
     }
   }
-  const expired = error !== null && /no longer usable|renew/i.test(error)
+  // A wallet's key (or one a passkey restored) the wallet disconnected: renewing can't bring it
+  // back, so the way on is to forget it and sign in again.
+  const disconnected = v.disconnected === true || (error !== null && /disconnected in your wallet/i.test(error))
+  const expired = !disconnected && error !== null && /no longer usable|renew/i.test(error)
+  const forgetIt = (then?: () => void): void => {
+    void forgetConfirm(v.identityId, { disabled: disconnected })
+      .then(confirm)
+      .then((ok) => {
+        if (ok)
+          forget(v.identityId).then(
+            () => {
+              setPick(0)
+              then?.()
+            },
+            (e: unknown) => setError(errorMessage(e)),
+          )
+      })
+  }
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-dense">
@@ -727,6 +747,8 @@ function UnlockView({
             value={pick}
             onChange={(e) => {
               setPick(Number(e.target.value))
+              // An error (a disconnected key above all) is about the key it came from.
+              setError(null)
               // Another key: its passphrase starts empty, in the field (if it stays mounted) and
               // in state (if it unmounts for a passkey-only key and comes back empty).
               if (passphraseRef.current) passphraseRef.current.value = ''
@@ -745,7 +767,7 @@ function UnlockView({
         )}
       </div>
       {v.methods.includes('passkey') ? (
-        <Button variant="primary" className="w-full" onClick={() => go('passkey')} loading={isLoading} disabled={isLoading}>
+        <Button variant={disconnected ? 'outline' : 'primary'} className="w-full" onClick={() => go('passkey')} loading={isLoading} disabled={isLoading}>
           <Fingerprint className="h-4 w-4" aria-hidden /> Unlock with passkey
         </Button>
       ) : null}
@@ -760,7 +782,7 @@ function UnlockView({
           <Field label="Passphrase" htmlFor="unlock-passphrase">
             <Input id="unlock-passphrase" ref={passphraseRef} type="password" autoComplete="current-password" onChange={(e) => setPassphrase(e.target.value)} autoFocus />
           </Field>
-          <Button type="submit" variant={v.methods.includes('passkey') ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === '' || isLoading}>
+          <Button type="submit" variant={v.methods.includes('passkey') || disconnected ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === '' || isLoading}>
             Unlock
           </Button>
         </form>
@@ -771,7 +793,21 @@ function UnlockView({
           {step}
         </p>
       ) : null}
-      <ErrorBox error={error} />
+      {disconnected ? (
+        <div role="alert" data-testid="unlock-disconnected" className="space-y-2 rounded-md border border-caution/40 bg-caution/10 p-3 text-dense">
+          <p>
+            {v.fromAppConnect === true || (error !== null && /^this key was disconnected in your wallet/i.test(error))
+              ? 'This key was disconnected in your wallet, so sign in again.'
+              : 'This key was disabled on Platform (disconnected in your wallet, or revoked from another device), so sign in again.'}{' '}
+            It can&apos;t sign anything now.
+          </p>
+          <Button variant="primary" className="w-full" onClick={() => forgetIt(onOther)}>
+            Forget this key and sign in again
+          </Button>
+        </div>
+      ) : null}
+      {/* Any other failure (a wrong passphrase, a forget that failed) still shows. */}
+      <ErrorBox error={disconnected && error !== null && /so sign in again/i.test(error) ? null : error} />
       {expired ? (
         <Button variant="outline" className="w-full" onClick={() => onRenew(v)}>
           Renew this browser&apos;s key
@@ -791,13 +827,7 @@ function UnlockView({
         </button>
         <button
           type="button"
-          onClick={() => {
-            void forgetConfirm(v.identityId)
-              .then(confirm)
-              .then((ok) => {
-                if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
-              })
-          }}
+          onClick={() => forgetIt()}
           className="hit-area text-danger-700 dark:text-danger-400 underline"
         >
           Forget this key
