@@ -1028,6 +1028,9 @@ export class AuthController {
         identityId = m.identityId
         masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
       } else {
+        const givenId = input.identityId.trim()
+        const idProblem = givenId === '' ? null : identityIdProblem(givenId)
+        if (idProblem !== null) throw new WriteAuthError(idProblem)
         this.step('Checking the recovery phrase')
         if (!(await isValidMnemonic(input.mnemonic))) throw new Error(await invalidMnemonicMessage(input.mnemonic))
         const master = await deriveMasterKey(input.mnemonic, this.network)
