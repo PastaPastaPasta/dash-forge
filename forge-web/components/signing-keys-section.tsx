@@ -135,7 +135,7 @@ export function SigningKeysSection({ identity, stored, onSaved }: { identity: st
         title={pending?.kind === 'remove' ? 'Remove this signing key?' : 'Publish this signing key?'}
         description={
           pending?.kind === 'remove'
-            ? `Removes ${pending.label} from your profile. Commits signed with it then show Unverified.`
+            ? `Removes ${pending.label} from your profile. Commits signed with it then no longer show Verified.`
             : `Adds ${pending?.label ?? 'the key'} to your public profile.`
         }
         cost={pending === null ? null : pubkeysCost(stored, pending.keys)}
