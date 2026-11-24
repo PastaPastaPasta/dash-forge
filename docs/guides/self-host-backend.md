@@ -27,7 +27,7 @@ Two containers, both on the host's network, so IPv4 and IPv6 both work:
 | | What it does | Required |
 |---|---|---|
 | **kubo** (IPFS, 0.43.1) | Stores your packs, pinned. It tells the IPFS network it has them, so the public gateways that Forge readers use can fetch them from your node. It gets a `libp2p.direct` certificate (AutoTLS), so browsers can dial it over secure WebSockets. Its own API and gateway listen on loopback only. | yes |
-| **Caddy** (2.11.7) | The only way in. Port 5001 is the push API and port 8080 is the read gateway. With `--domain`, Caddy also serves both at `https://<domain>` with a Let's Encrypt certificate. | yes |
+| **Caddy** (2.11.7) | The only HTTP way in. Port 5001 is the push API and port 8080 is the read gateway, both for clients on private networks. With `--domain`, Caddy also serves both at `https://<domain>` with a Let's Encrypt certificate. | yes |
 
 Why IPFS: a push records a content address (`ipfs://<cid>`) on Platform, not your machine's address. Any IPFS gateway can serve those bytes, and every reader checks them against the SHA-256 recorded on Platform. So a node with no domain name works. An https name (`--domain`) is optional: it lets the web app use the node, and gives readers your own gateway to try first.
 
@@ -47,7 +47,7 @@ The command does this, and is safe to run again:
    | `ipfs/`, `caddy/` | The node's data, and Caddy's certificates |
 
 3. Pulls the two images, pinned by digest, and starts them. They restart after a reboot.
-4. If `ufw` is active, opens the swarm port (TCP and UDP 4001), and ports 5001 and 8080 to private networks only.
+4. If `ufw` is active, opens the swarm port (TCP and UDP 4001) to everyone, ports 5001 and 8080 to private networks, and with `--domain` ports 80 and 443. `ufw` is the only firewall it configures: open the same ports in any other.
 5. Checks the node through its public ports. A call without the token must be refused, a non-Forge call must be refused, and a test file must go in, come back out of the gateway, and be unpinned.
 6. Prints the addresses, the peer id, whether it is reachable, and what to run next.
 
@@ -61,11 +61,12 @@ Pass options after `sh -s --`, for example `… | sudo sh -s -- --domain ipfs.ex
 |---|---|
 | `--domain <host>` | Also serve `https://<host>`. Its DNS must point at this machine, and ports 80 and 443 must reach it. `--domain none` removes it. |
 | `--email <addr>` | Contact address for Let's Encrypt. |
-| `--origin <https://host>` | Allow another Forge web app to use the node. `https://forge.dashhq.org` and `https://testnet-forge.dashhq.org` are always allowed. Repeat it for more. |
+| `--origin <https://host>` | Allow another Forge web app to use the node. `https://forge.dashhq.org` and `https://testnet-forge.dashhq.org` are always allowed. Repeat it for more; `--origin none` forgets the extra ones. |
 | `--api-port`, `--gateway-port`, `--swarm-port` | Change 5001, 8080 or 4001. |
-| `--listen all\|local` | Ports 5001 and 8080 on every interface, or on this machine only. The default is `all`, except on a machine with a public IPv4 address. There the token would cross the internet in clear text, so the default is `local` (use `--domain` instead). |
+| `--listen all\|local` | Who may use the plain-http ports 5001 and 8080: clients with private addresses (`all`, the default), or this machine only (`local`). A client with a public address gets 403, so the token never crosses the internet in clear text. From outside your network, use `--domain`. |
 | `--rotate-token` | Replace the Forge token. Connect `dg` again afterwards. |
-| `--dir <path>` | Keep everything somewhere else. |
+| `--dir <path>` | Keep everything somewhere else: a new or empty directory. |
+| `--no-start` | Write the files, start nothing. |
 
 ## Connect dg
 
@@ -84,7 +85,7 @@ dg storage test forge-backend && dg storage use forge-backend --global
   [ OK ] shared gateway https://ipfs.filebase.io fetched the probe from this node (no public_gateway is set)
 ```
 
-`FORGE_BACKEND_AUTH` must be set wherever you push. To keep the token in your keychain instead, run `dg storage add` with no arguments, choose IPFS (kubo), and paste the contents of `forge-auth` when it asks.
+`FORGE_BACKEND_AUTH` must be set wherever you push: the profile stores only its name, never the token.
 
 Your next `git push` or `dg init` stores its packs on the node:
 
@@ -137,7 +138,7 @@ shows the containers, the addresses, reachability, the bytes stored, and the con
 | *(none)* | Set up, update or repair. Safe to run again. |
 | `status` | What runs and how to connect. |
 | `down` | Stop both containers. Data, tokens and settings stay. Run the script again to start them. |
-| `--rotate-token` | A new Forge token. Update `FORGE_BACKEND_AUTH` (or the keychain entry, or the web profile) afterwards. |
+| `--rotate-token` | A new Forge token. Update `FORGE_BACKEND_AUTH` and the web profile afterwards. |
 
 Run your own kubo commands with the owner token, inside the container: `cd ~/forge-backend && sudo docker compose exec kubo sh -c 'ipfs --api-auth "bearer:$OWNER_TOKEN" repo stat'`.
 
@@ -145,10 +146,11 @@ To upgrade, run the command again: a newer script pins newer images. To remove e
 
 ## What it lets in
 
-- **The push API (5001)** passes only the six calls Forge makes: `add`, `pin/add`, `pin/ls`, `pin/rm`, `id` and `version`. Everything else is 404. kubo checks the token, which allows only those calls. A request without it is refused. The owner token, which can do everything, never leaves the machine.
-- **The gateway (8080)** answers `GET` and `HEAD` for `/ipfs/<cid>`, only for content this node stores. It won't fetch other people's content through your connection.
+- **Plain http (5001 and 8080)** answers clients with private addresses only (loopback, 10/8, 172.16/12, 192.168/16, 100.64/10, link-local, and IPv6 ULA and link-local). Everyone else gets 403. The https name has no such limit.
+- **The push API (5001)** passes only the six calls Forge makes: `add`, `pin/add`, `pin/ls`, `pin/rm`, `id` and `version`, plus the browser's preflight (`OPTIONS`) from an allowed Forge address. Everything else is 404. kubo checks the token, which allows only those calls. A request without it is refused. The owner token, which can do everything, never leaves the machine.
+- **The gateway (8080)** answers `GET`, `HEAD` and `OPTIONS` for `/ipfs/<cid>`, only for content this node stores. It won't fetch other people's content through your connection.
 - **Browsers** may call the API only from the allowed Forge addresses.
-- **Tokens** are in `secrets.env` and `forge-auth`, mode 0600, never printed. The containers get them as environment variables, which `docker inspect` shows to anyone who can run Docker.
+- **Tokens** are in `secrets.env` and `forge-auth`, mode 0600, never printed. The containers get them as environment variables, which `docker inspect` shows to anyone who can run Docker, and kubo's start-up and `status` pass them to `ipfs` commands inside the container, where root on the host can see them in the process list.
 
 ## Troubleshooting
 
@@ -156,6 +158,7 @@ To upgrade, run the command again: a newer script pins newer images. To remove e
 |---|---|
 | `this user cannot use Docker` | Run the same command with `sudo`. |
 | `Docker Compose is missing` | Install the Docker Compose plugin, then run the script again. |
+| `only private networks may use plain http here` (403) | You are calling the plain-http port from a public address. Use the https name (`--domain`), or an SSH tunnel. |
 | `TCP port 5001 is already in use` (or another port) | Stop what uses it, or choose other ports with `--api-port`, `--gateway-port` or `--swarm-port`. |
 | `--domain needs ports 80 and 443` | Free them, or run without `--domain`. |
 | `https://… did not answer from this machine` | Check that the name's DNS points at this machine and that ports 80 and 443 reach it. Read `sudo docker compose -p forge-backend logs caddy` in the directory. |

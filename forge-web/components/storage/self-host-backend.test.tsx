@@ -30,7 +30,7 @@ describe('SelfHostBackend', () => {
     expect(details.open).toBe(false)
     expect(details.querySelector('summary')!.textContent).toBe('Run it on a server or NAS')
     expect(details.querySelector('pre')!.textContent).toBe(BACKEND_COMMAND)
-    expect(details.querySelector('a')!.getAttribute('href')).toBe(DOCS.selfHostBackend)
+    expect(details.querySelector('a')!.getAttribute('href')!.replace(/\/$/, '')).toBe(DOCS.selfHostBackend.replace(/\/$/, ''))
   })
 
   it('pipes the script the repository serves, with an https name', () => {

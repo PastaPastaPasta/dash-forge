@@ -40,6 +40,7 @@ check "only the six Forge RPC calls pass" 'grep -q "path /api/v0/add /api/v0/pin
 check "kubo listens on loopback only" 'grep -q "Addresses.API /ip4/127.0.0.1/tcp/5101" "$D/init.d/001-forge.sh" && grep -q "Addresses.Gateway /ip4/127.0.0.1/tcp/8180" "$D/init.d/001-forge.sh"'
 check "swarm is dual stack with WSS" 'grep -q "/ip6/::/tcp/4001/tls/sni/\*.libp2p.direct/ws" "$D/init.d/001-forge.sh" && grep -q "/ip4/0.0.0.0/udp/4001/quic-v1" "$D/init.d/001-forge.sh"'
 check "gateway serves only local content" 'grep -q "Gateway.NoFetch true" "$D/init.d/001-forge.sh"'
+check "plain-http ports refuse public clients" '[ "$(grep -c "@outside not remote_ip 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 ::1/128 fc00::/7 fe80::/10" "$D/Caddyfile")" = 2 ]'
 check "images are pinned by digest" '[ "$(grep -c "image: .*@sha256:" "$D/compose.yaml")" = 2 ]'
 
 run
@@ -49,19 +50,25 @@ run --rotate-token
 check "--rotate-token replaces only the Forge token" '[ "$(token OWNER_TOKEN)" = "$owner1" ] && [ "$(token FORGE_TOKEN)" != "$forge1" ]'
 check "rotated forge-auth matches" '[ "$(cat "$D/forge-auth")" = "Bearer $(token FORGE_TOKEN)" ]'
 
-run --domain ipfs.example.org --email ops@example.org --origin https://forge.example.org --api-port 5002 --swarm-port 4002 --listen local
-check "domain gets its own site block" 'grep -q "^ipfs.example.org {" "$D/Caddyfile"'
-check "email reaches Caddy" 'grep -q "email ops@example.org" "$D/Caddyfile"'
+run --domain ipfs.forge-test.net --email ops@forge-test.net --origin https://forge.example.org --api-port 5002 --swarm-port 4002 --listen local
+check "domain gets its own site block" 'grep -q "^ipfs.forge-test.net {" "$D/Caddyfile"'
+check "email reaches Caddy" 'grep -q "email ops@forge-test.net" "$D/Caddyfile"'
 check "extra origin is allowed by Caddy and kubo" 'grep -q "header Origin https://forge.example.org" "$D/Caddyfile" && grep -q "https://forge.example.org" "$D/init.d/001-forge.sh"'
-check "--listen local binds loopback" 'grep -q "bind 127.0.0.1 \[::1\]" "$D/Caddyfile"'
+check "--listen local binds loopback" 'grep -q "bind 127.0.0.1 \[::1\]" "$D/Caddyfile" && ! grep -q "remote_ip" "$D/Caddyfile"'
 check "new ports are used" 'grep -q "^http://:5002 {" "$D/Caddyfile" && grep -q "/tcp/4002" "$D/init.d/001-forge.sh"'
 
 run
-check "a re-run without options keeps the saved settings" 'grep -q "^ipfs.example.org {" "$D/Caddyfile" && grep -q "^http://:5002 {" "$D/Caddyfile" && grep -q "^LISTEN=local$" "$D/settings.env"'
+check "a re-run without options keeps the saved settings" 'grep -q "^ipfs.forge-test.net {" "$D/Caddyfile" && grep -q "^http://:5002 {" "$D/Caddyfile" && grep -q "^LISTEN=local$" "$D/settings.env"'
 
-run --domain none --listen all
-check "--domain none removes the site" '! grep -q "example.org {" "$D/Caddyfile"'
+run --domain none --listen all --origin none
+check "--domain none removes the site" '! grep -q "forge-test.net {" "$D/Caddyfile"'
 check "--listen all drops the bind" '! grep -q "bind 127.0.0.1" "$D/Caddyfile"'
+check "--origin none forgets the extra origins" '! grep -q "forge.example.org" "$D/Caddyfile" && grep -q "^ORIGINS=$" "$D/settings.env" && grep -q "header Origin https://forge.dashhq.org" "$D/Caddyfile"'
+
+mkdir -p "$WORK/shared" && : >"$WORK/shared/unrelated"
+if sh "$SCRIPT" --no-start --dir "$WORK/shared" >/dev/null 2>&1; then bad "refuses a directory with other files"; else ok "refuses a directory with other files"; fi
+mkdir -p "$WORK/linked" && ln -s /etc/passwd "$WORK/linked/forge-auth" && : >"$WORK/linked/settings.env"
+if sh "$SCRIPT" --no-start --dir "$WORK/linked" >/dev/null 2>&1; then bad "refuses to write through a symlink"; else ok "refuses to write through a symlink"; fi
 
 refused() {
     if sh "$SCRIPT" --no-start --dir "$WORK/refused" "$@" >/dev/null 2>&1; then bad "refuses $*"; else ok "refuses $*"; fi
@@ -70,6 +77,9 @@ refused --origin http://forge.example.org
 refused --origin https://forge.example.org/path
 refused --domain 'bad name'
 refused --api-port 0
+refused --api-port 05001
+refused --swarm-port 443
+refused --domain ipfs.example.org
 refused --api-port 8080
 refused --api-port 5101
 refused --email 'x; rm'
@@ -77,7 +87,7 @@ refused --listen everywhere
 refused --bogus
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    run --domain ipfs.example.org
+    run --domain ipfs.forge-test.net
     image=$(sed -n 's/^ *image: \(caddy:.*\)$/\1/p' "$D/compose.yaml")
     check "Caddy accepts the generated Caddyfile" 'docker run --rm -v "$D/Caddyfile:/etc/caddy/Caddyfile:ro" "$image" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1'
 else

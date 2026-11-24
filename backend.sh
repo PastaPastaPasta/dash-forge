@@ -1,18 +1,18 @@
 #!/bin/sh
 # Dash Forge backend: one command that runs an IPFS storage node your repositories push to.
 #
-#   curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/backend.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/backend.sh | sudo sh
 #
 # With a public https name for it (needs ports 80 and 443 reachable from the internet):
 #
 #   curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/backend.sh \
-#     | sh -s -- --domain ipfs.example.org
+#     | sudo sh -s -- --domain ipfs.example.org
 #
 # What it runs, with Docker (host networking, so IPv4 and IPv6 both work):
 #   kubo   an IPFS node (kubo 0.43.1). It keeps your packs, announces them to the IPFS network,
 #          and gets a libp2p.direct certificate (AutoTLS) so browsers can dial it over WSS.
 #          Its own API and gateway listen on loopback only.
-#   caddy  the only way in. Port 5001 passes the six RPC calls Forge uses (add, pin add/ls/rm,
+#   caddy  the only HTTP way in. Port 5001 passes the six RPC calls Forge uses (add, pin add/ls/rm,
 #          id, version) to kubo, which checks the token; every other path is 404. Port 8080 is
 #          a read-only gateway for content this node stores. With --domain, Caddy also serves
 #          both on https://<domain> with a Let's Encrypt certificate.
@@ -31,13 +31,14 @@
 #   --domain <host>         also serve https://<host> (Let's Encrypt); "none" removes it
 #   --email <addr>          contact address for Let's Encrypt (optional)
 #   --origin <https://host> another Forge web app allowed to use the node (repeatable;
-#                           forge.dashhq.org and testnet-forge.dashhq.org are always allowed)
+#                           forge.dashhq.org and testnet-forge.dashhq.org are always allowed;
+#                           "none" forgets the extra ones)
 #   --api-port <port>       push API port (default 5001)
 #   --gateway-port <port>   read gateway port (default 8080)
 #   --swarm-port <port>     IPFS TCP+UDP port (default 4001); forward it on your router
-#   --listen all|local      who can reach the plain-http ports: every interface (the LAN), or
-#                           this machine only. Default: all, except on a machine with a public
-#                           IPv4 address, where the token would cross the internet in clear
+#   --listen all|local      who can reach the plain-http ports: clients on private networks
+#                           (default; Caddy refuses public addresses, so the token never
+#                           crosses the internet in clear), or this machine only
 #   --rotate-token          replace the Forge token (connect dg and the web app again)
 #   --no-start              write the files only
 #
@@ -56,6 +57,8 @@ DOCS_URL="https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/
 INSTALL_DG_URL="https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/INSTALL.md"
 DEFAULT_ORIGINS="https://forge.dashhq.org https://testnet-forge.dashhq.org"
 RPC_PATHS="/api/v0/add /api/v0/pin/add /api/v0/pin/ls /api/v0/pin/rm /api/v0/id /api/v0/version"
+PRIVATE_NETS="127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 ::1/128 fc00::/7 fe80::/10"
+PROBE="--connect-timeout 5 --max-time 30"
 INTERNAL_API=5101
 INTERNAL_GATEWAY=8180
 
@@ -76,14 +79,14 @@ Usage: backend.sh [up|status|down] [options]
   down           stop it (data, tokens and settings stay)
 
 Options for up (a re-run without them keeps the saved values):
-  --dir <path>             where everything lives (default ~/forge-backend; /opt/forge-backend as root)
+  --dir <path>             where everything lives (default ~/forge-backend; /opt/forge-backend as plain root)
   --domain <host>          also serve https://<host> with Let's Encrypt ("none" removes it)
   --email <addr>           contact address for Let's Encrypt
-  --origin <https://host>  another Forge web app allowed to use the node (repeatable)
+  --origin <https://host>  another Forge web app allowed to use the node (repeatable; "none" forgets them)
   --api-port <port>        push API port (default 5001)
   --gateway-port <port>    read gateway port (default 8080)
   --swarm-port <port>      IPFS TCP+UDP port (default 4001)
-  --listen all|local       plain-http ports on every interface, or this machine only
+  --listen all|local       plain-http ports for private networks (default), or this machine only
   --rotate-token           replace the Forge token
   --no-start               write the files only
 
@@ -92,8 +95,8 @@ EOF
 }
 
 valid_port() {
-    case "$1" in '' | *[!0-9]*) return 1 ;; esac
-    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+    case "$1" in '' | 0* | *[!0-9]*) return 1 ;; esac
+    [ "${#1}" -le 5 ] && [ "$1" -le 65535 ]
 }
 
 valid_host() {
@@ -121,10 +124,10 @@ new_token() {
     od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
 }
 
-# write_file <path> <mode>: stdin to a temporary file beside <path>, then rename it into place.
+# write_file <path> <mode>: stdin to a new temporary file beside <path>, then rename it into place.
 write_file() {
-    tmp="$1.tmp.$$"
-    (umask 077 && cat >"$tmp")
+    tmp=$(mktemp "$1.XXXXXX")
+    cat >"$tmp"
     chmod "$2" "$tmp"
     mv -f "$tmp" "$1"
 }
@@ -136,42 +139,26 @@ route_src() {
     fi
 }
 
-is_private_v4() {
-    case "$1" in
-        10.* | 192.168.* | 127.* | 169.254.*) return 0 ;;
-        172.1[6-9].* | 172.2[0-9].* | 172.3[01].*) return 0 ;;
-        100.6[4-9].* | 100.[7-9][0-9].* | 100.1[01][0-9].* | 100.12[0-7].*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# port_busy <tcp|udp> <port>: someone already listens there (unknown without ss: not busy).
+# port_busy <tcp|udp> <port>: something on this machine already listens there (read from
+# /proc/net, which every Linux has, so no ss or netstat is needed).
 port_busy() {
-    have ss || return 1
-    if [ "$1" = udp ]; then flags=-Hlun; else flags=-Hltn; fi
-    ss "$flags" 2>/dev/null | awk -v p=":$2" '{ n = split($0, f, " "); for (i = 1; i <= n; i++) if (substr(f[i], length(f[i]) - length(p) + 1) == p) { found = 1 } } END { exit found ? 0 : 1 }'
+    hex=$(printf '%04X' "$2")
+    if [ "$1" = udp ]; then files="/proc/net/udp /proc/net/udp6"; else files="/proc/net/tcp /proc/net/tcp6"; fi
+    # shellcheck disable=SC2086 # two file names
+    cat $files 2>/dev/null | awk -v hex=":$hex" -v proto="$1" '
+        NR > 1 && substr($2, length($2) - 4) == hex && (proto == "udp" || $4 == "0A") { found = 1 }
+        END { exit found ? 0 : 1 }'
 }
 
-find_compose() {
-    if [ -n "${FORGE_BACKEND_COMPOSE:-}" ]; then
-        COMPOSE=$FORGE_BACKEND_COMPOSE
-    elif docker compose version >/dev/null 2>&1; then
-        COMPOSE="docker compose"
-    elif have docker-compose; then
-        COMPOSE=docker-compose
-    else
-        COMPOSE=
-    fi
-}
+COMPOSE="docker compose"
 
 compose() {
-    # shellcheck disable=SC2086 # COMPOSE is one or two words
-    (cd "$DIR" && $COMPOSE -p forge-backend -f compose.yaml "$@")
+    (cd "$DIR" && docker compose -p forge-backend -f compose.yaml "$@")
 }
 
 # Docker installed and usable by this user, or a clear way to get there.
 need_docker() {
-    if ! have docker && [ -z "${FORGE_BACKEND_COMPOSE:-}" ]; then
+    if ! have docker; then
         if [ "$(id -u)" -eq 0 ] && [ "$(uname -s)" = Linux ] && [ "${FORGE_BACKEND_INSTALL_DOCKER:-1}" = 1 ]; then
             say "Docker is not installed. Installing it with Docker's script (get.docker.com)…"
             have curl || die "curl is needed to install Docker"
@@ -180,14 +167,13 @@ need_docker() {
             die "Docker is not installed. Install Docker Engine with the compose plugin (https://docs.docker.com/engine/install/), or run this script as root to have it install Docker, then run it again"
         fi
     fi
-    if [ -z "${FORGE_BACKEND_COMPOSE:-}" ] && ! docker info >/dev/null 2>&1; then
+    if ! docker info >/dev/null 2>&1; then
         if [ "$(id -u)" -ne 0 ]; then
             die "this user cannot use Docker. Run the same command with sudo (… | sudo sh), or add yourself to the docker group"
         fi
-        die "the Docker daemon is not running. Start it (systemctl start docker, or your NAS's Container Manager) and run this again"
+        die "the Docker daemon is not running. Start it (systemctl start docker) and run this again"
     fi
-    find_compose
-    [ -n "$COMPOSE" ] || die "Docker Compose is missing. Install the compose plugin (https://docs.docker.com/compose/install/linux/); on Unraid, the Docker Compose Manager plugin"
+    docker compose version >/dev/null 2>&1 || die "Docker Compose is missing. Install the Docker Compose plugin (https://docs.docker.com/compose/install/linux/) and run this again"
 }
 
 load_settings() {
@@ -284,7 +270,14 @@ EOF
 }
 
 write_caddyfile() {
-    if [ "$LISTEN" = local ]; then bind="	bind 127.0.0.1 [::1]"; else bind=; fi
+    if [ "$LISTEN" = local ]; then
+        bind="	bind 127.0.0.1 [::1]"
+    else
+        bind="	@outside not remote_ip $PRIVATE_NETS
+	handle @outside {
+		respond \"only private networks may use plain http here; use https\" 403
+	}"
+    fi
     if [ -n "$EMAIL" ]; then email_line="	email $EMAIL"; else email_line=; fi
     origin_lines=$(for o in $ALL_ORIGINS; do printf "\t\theader Origin %s\n" "$o"; done)
     domain_block=
@@ -382,13 +375,15 @@ lan_host() {
 curl_auth() {
     url=$1
     shift
-    printf 'header = "Authorization: Bearer %s"\n' "$FORGE_TOKEN" | curl -sS -K - -X POST "$@" "$url"
+    # shellcheck disable=SC2086 # PROBE is a list of options
+    printf 'header = "Authorization: Bearer %s"\n' "$FORGE_TOKEN" | curl $PROBE -sS -K - -X POST "$@" "$url"
 }
 
 wait_ready() {
     i=0
     while [ $i -lt 90 ]; do
-        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$API_PORT/api/v0/version" 2>/dev/null || true)
+        # shellcheck disable=SC2086
+        code=$(curl $PROBE -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$API_PORT/api/v0/version" 2>/dev/null || true)
         case "$code" in 401 | 403) return 0 ;; esac
         i=$((i + 1))
         sleep 2
@@ -401,23 +396,26 @@ wait_ready() {
 self_test() {
     api="http://127.0.0.1:$API_PORT"
     gw="http://127.0.0.1:$GATEWAY_PORT"
-    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$api/api/v0/version")
+    # shellcheck disable=SC2086
+    code=$(curl $PROBE -s -o /dev/null -w '%{http_code}' -X POST "$api/api/v0/version" || true)
     case "$code" in 401 | 403) ;; *) die "the API answered $code without a token; expected a refusal" ;; esac
-    code=$(curl_auth "$api/api/v0/config/show" -o /dev/null -w '%{http_code}')
+    code=$(curl_auth "$api/api/v0/config/show" -o /dev/null -w '%{http_code}' || true)
     [ "$code" = 404 ] || die "the API let a non-Forge call through ($code)"
     probe=$(new_token)
     printf 'forge-backend self test %s\n' "$probe" | write_file "$DIR/.self-test" 600
     cid=$(curl_auth "$api/api/v0/add?cid-version=1&raw-leaves=true&pin=true&quieter=true" -F "file=@$DIR/.self-test" | sed -n 's/.*"Hash":"\([^"]*\)".*/\1/p')
     rm -f -- "$DIR/.self-test"
     [ -n "$cid" ] || die "adding a test file through the API failed"
-    got=$(curl -fsS "$gw/ipfs/$cid" || true)
+    # shellcheck disable=SC2086
+    got=$(curl $PROBE -fsS "$gw/ipfs/$cid" || true)
     [ "$got" = "forge-backend self test $probe" ] || die "the gateway did not return the test file"
     https_ok=
     if [ -n "$DOMAIN" ]; then
         # Caddy gets the certificate on first start; give it two minutes.
         i=0
         while [ $i -lt 24 ]; do
-            got=$(curl -fsS "https://$DOMAIN/ipfs/$cid" 2>/dev/null || true)
+            # shellcheck disable=SC2086
+            got=$(curl $PROBE -fsS "https://$DOMAIN/ipfs/$cid" 2>/dev/null || true)
             if [ "$got" = "forge-backend self test $probe" ]; then https_ok=1; break; fi
             i=$((i + 1))
             sleep 5
@@ -465,7 +463,7 @@ print_next() {
         public_flag=" --public-gateway https://$DOMAIN"
     fi
     me=${OWNER_USER:-$(id -un 2>/dev/null || echo you)}
-    where=$(lan_host)
+    where=$(lan_host | tr -d '[]')
     [ "$where" = 127.0.0.1 ] && where="<this machine>"
     say ""
     say "Next, on the computer you push from (needs dg: $INSTALL_DG_URL):"
@@ -474,8 +472,7 @@ print_next() {
     say "  dg storage add forge-backend --kind ipfs-kubo --api $api --gateway $gw$public_flag --api-auth env:FORGE_BACKEND_AUTH"
     say "  dg storage test forge-backend && dg storage use forge-backend --global"
     say ""
-    say "  Keep FORGE_BACKEND_AUTH set where you push, or run \`dg storage add\` with no arguments"
-    say "  and paste the contents of $DIR/forge-auth to keep it in your keychain instead."
+    say "  FORGE_BACKEND_AUTH must be set wherever you push."
     if [ "$LISTEN" = local ] && [ -z "$DOMAIN" ]; then
         say "  The API listens on this machine only. From elsewhere, first: ssh -N -L $API_PORT:127.0.0.1:$API_PORT -L $GATEWAY_PORT:127.0.0.1:$GATEWAY_PORT $me@<this machine>"
     fi
@@ -501,10 +498,24 @@ cmd_up() {
     have curl || die "curl is needed"
     [ -n "$ARG_NO_START" ] || need_docker
 
+    if [ -d "$DIR" ] && [ ! -f "$DIR/settings.env" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
+        die "$DIR already holds other files; choose an empty or new directory with --dir"
+    fi
+    for f in "$DIR" "$DIR/init.d" "$DIR/settings.env" "$DIR/secrets.env" "$DIR/forge-auth" "$DIR/compose.yaml" "$DIR/Caddyfile"; do
+        [ ! -L "$f" ] || die "$f is a symbolic link; refusing to write through it"
+    done
     mkdir -p "$DIR"
-    chmod 700 "$DIR" 2>/dev/null || true
+    chmod 700 "$DIR"
     load_settings
     load_secrets
+    OLD_API_PORT=$API_PORT OLD_GATEWAY_PORT=$GATEWAY_PORT OLD_SWARM_PORT=$SWARM_PORT OLD_DOMAIN=$DOMAIN
+    case " $ARG_ORIGINS " in
+        *" none "*)
+            ORIGINS=
+            # shellcheck disable=SC2086 # word list by design
+            ARG_ORIGINS=$(printf '%s\n' $ARG_ORIGINS | grep -vx none | tr '\n' ' ' || true)
+            ;;
+    esac
     [ -n "$ARG_DOMAIN" ] && DOMAIN=$ARG_DOMAIN
     [ "$DOMAIN" = none ] && DOMAIN=
     [ -n "$ARG_EMAIL" ] && EMAIL=$ARG_EMAIL
@@ -516,6 +527,7 @@ cmd_up() {
     [ -n "$ARG_LISTEN" ] && LISTEN=$ARG_LISTEN
 
     [ -z "$DOMAIN" ] || valid_host "$DOMAIN" || die "--domain must be a host name such as ipfs.example.org"
+    case "$DOMAIN" in example.org | *.example.org | example.com | *.example.com) die "replace $DOMAIN with a name whose DNS points at this machine" ;; esac
     case "$EMAIL" in '' | *@*.*) ;; *) die "--email must be an email address" ;; esac
     case "$EMAIL" in *[!A-Za-z0-9@._+-]*) die "--email must be an email address" ;; esac
     for p in "$API_PORT" "$GATEWAY_PORT" "$SWARM_PORT"; do valid_port "$p" || die "bad port: $p"; done
@@ -523,33 +535,39 @@ cmd_up() {
     if [ "$API_PORT" = "$GATEWAY_PORT" ] || [ "$API_PORT" = "$SWARM_PORT" ] || [ "$GATEWAY_PORT" = "$SWARM_PORT" ]; then
         die "the API, gateway and swarm ports must differ"
     fi
-    for p in "$API_PORT" "$GATEWAY_PORT"; do
+    for p in "$API_PORT" "$GATEWAY_PORT" "$SWARM_PORT"; do
         case "$p" in "$INTERNAL_API" | "$INTERNAL_GATEWAY" | 80 | 443) die "port $p is used inside the stack; choose another" ;; esac
     done
 
     host_addresses
-    if [ -z "$LISTEN" ]; then
-        LISTEN=all
-        if [ -n "$V4" ] && ! is_private_v4 "$V4"; then
-            LISTEN=local
-            warn "this machine has a public IPv4 address ($V4), so the plain-http API listens on this machine only. Use --domain for https from anywhere, or --listen all for a trusted network"
-        fi
-    fi
+    [ -n "$LISTEN" ] || LISTEN=all
     case "$LISTEN" in all | local) ;; *) die "--listen must be all or local" ;; esac
 
     # shellcheck disable=SC2086
     ALL_ORIGINS=$(printf '%s\n' $DEFAULT_ORIGINS $ORIGINS | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')
 
-    # Ports: refuse a clash with something that isn't this stack.
+    # Ports: refuse a clash with something that isn't this stack. While it runs, only the
+    # ports it doesn't hold yet are checked.
     running=
     if [ -z "$ARG_NO_START" ] && [ -n "$(compose ps -q 2>/dev/null || true)" ]; then running=1; fi
-    if [ -z "$running" ] && [ -z "$ARG_NO_START" ]; then
-        for p in "$API_PORT" "$GATEWAY_PORT" "$SWARM_PORT" "$INTERNAL_API" "$INTERNAL_GATEWAY"; do
+    if [ -z "$ARG_NO_START" ]; then
+        tcp_ports="$API_PORT $GATEWAY_PORT $SWARM_PORT $INTERNAL_API $INTERNAL_GATEWAY"
+        udp_port=$SWARM_PORT
+        web_ports="80 443"
+        if [ -n "$running" ]; then
+            tcp_ports=
+            [ "$API_PORT" = "$OLD_API_PORT" ] || tcp_ports="$tcp_ports $API_PORT"
+            [ "$GATEWAY_PORT" = "$OLD_GATEWAY_PORT" ] || tcp_ports="$tcp_ports $GATEWAY_PORT"
+            [ "$SWARM_PORT" = "$OLD_SWARM_PORT" ] || tcp_ports="$tcp_ports $SWARM_PORT"
+            [ "$SWARM_PORT" = "$OLD_SWARM_PORT" ] && udp_port=
+            [ -z "$OLD_DOMAIN" ] || web_ports=
+        fi
+        for p in $tcp_ports; do
             ! port_busy tcp "$p" || die "TCP port $p is already in use. Stop what uses it, or pick other ports (--api-port, --gateway-port, --swarm-port)"
         done
-        ! port_busy udp "$SWARM_PORT" || die "UDP port $SWARM_PORT is already in use; pick another with --swarm-port"
+        [ -z "$udp_port" ] || ! port_busy udp "$udp_port" || die "UDP port $udp_port is already in use; pick another with --swarm-port"
         if [ -n "$DOMAIN" ]; then
-            for p in 80 443; do
+            for p in $web_ports; do
                 ! port_busy tcp "$p" || die "--domain needs ports 80 and 443, and $p is in use. Free them, or run without --domain"
             done
         fi
@@ -577,10 +595,7 @@ cmd_up() {
     write_compose
     write_init
     write_caddyfile
-    if [ -n "$OWNER_USER" ]; then
-        chown "$OWNER_USER" "$DIR" "$DIR/settings.env" "$DIR/secrets.env" "$DIR/forge-auth" \
-            "$DIR/compose.yaml" "$DIR/Caddyfile" "$DIR/init.d" "$DIR/init.d/001-forge.sh" || true
-    fi
+    [ -z "$OWNER_USER" ] || chown -h "$OWNER_USER" "$DIR" "$DIR/forge-auth"
 
     if [ -n "$ARG_NO_START" ]; then
         say "Wrote the backend files to $DIR (not started)."
@@ -591,17 +606,17 @@ cmd_up() {
     compose pull -q
     stamp=$(cat "$DIR/compose.yaml" "$DIR/Caddyfile" "$DIR/init.d/001-forge.sh" "$DIR/secrets.env" | cksum | awk '{ print $1 }')
     old_stamp=$(cat "$DIR/.applied" 2>/dev/null || true)
-    compose up -d --remove-orphans
     if [ -n "$running" ] && [ "$stamp" != "$old_stamp" ]; then
-        compose restart
+        compose up -d --remove-orphans --force-recreate
+    else
+        compose up -d --remove-orphans
     fi
     printf '%s\n' "$stamp" | write_file "$DIR/.applied" 600
-    [ -z "$OWNER_USER" ] || chown "$OWNER_USER" "$DIR/.applied" || true
 
     open_firewall
     wait_ready
     self_test
-    [ -z "$rotated" ] || warn "the Forge token changed: update FORGE_BACKEND_AUTH (or the keychain entry) and the web app's profile"
+    [ -z "$rotated" ] || warn "the Forge token changed: update FORGE_BACKEND_AUTH where you push, and the web app profile"
     say ""
     say "Forge backend is running (IPv4 + IPv6)."
     print_status_lines
@@ -619,7 +634,7 @@ open_firewall() {
     [ -z "$DOMAIN" ] || rules="$rules 80/tcp 443/tcp"
     lan=
     if [ "$LISTEN" = all ]; then
-        for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7 fe80::/10; do
+        for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10; do
             for p in "$API_PORT" "$GATEWAY_PORT"; do lan="$lan $net,$p"; done
         done
     fi
