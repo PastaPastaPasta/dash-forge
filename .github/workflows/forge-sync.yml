@@ -4,13 +4,13 @@ name: Forge sync
 # dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge (owner forge.dash).
 # GitHub is primary and the mirror is one-way: tools/forge-sync/mirror.sh never force-pushes,
 # and when Forge has a change GitHub lacks it pushes nothing, fails, and opens an issue.
+# tools/forge-sync/README.md has the operator notes.
 #
-# Secrets:
+# Secrets, in the `forge-mainnet` environment (deployments from master only):
 #   FORGE_MAINNET_KEY   dfk1: limited key of forge.dash bound to forge-core only, with a budget
-#                       and an expiry (`dg auth export --new-key --scope core`). It cannot write
-#                       issues, PRs, stars or labels.
-#   FORGE_IPFS_SSH_KEY  ssh key whose only power on our IPFS host (build.thepasta.org) is a
-#                       forced command that imports one CAR into its kubo node and pins it.
+#                       and an expiry (`dg auth export --new-key --scope core`).
+#   FORGE_IPFS_SSH_KEY  ssh key whose only power on our IPFS host is a forced command that
+#                       imports one CAR into its kubo node and pins it.
 # Packs go to a kubo service container in the job, then each new CID is copied to that host as a
 # CAR and confirmed pinned, so nothing depends on a third-party pinning service. Platform keeps
 # only the manifest, the ref update and the history index (~0.004 DASH a push).
@@ -35,10 +35,10 @@ on:
 permissions:
   contents: read
 
-# One live sync at a time (a newer pending run replaces an older one, which is fine: each run
-# mirrors whatever master is by then). Pull request test runs never queue behind it.
+# One live sync at a time; a newer pending run replaces an older one, which is fine since each
+# run mirrors whatever master is by then. Pull request tests and dry runs never displace it.
 concurrency:
-  group: forge-sync-${{ github.event_name == 'pull_request' && github.ref || 'live' }}
+  group: forge-sync-${{ github.event_name == 'pull_request' && github.ref || (inputs.dry-run && 'dry-run' || 'live') }}
   cancel-in-progress: false
 
 env:
@@ -60,10 +60,24 @@ jobs:
       - run: shellcheck tools/forge-sync/*.sh
       - run: bash tools/forge-sync/test.sh
 
+  # A tag push runs this workflow as it is at the tag's commit. Rather than let that code near
+  # the key, it asks for a run on master, which pushes every tag Forge lacks.
+  tag:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'PastaPastaPasta/dash-forge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run forge-sync.yml -R "$GITHUB_REPOSITORY" --ref master
+
   sync:
-    if: github.event_name != 'pull_request' && github.repository == 'PastaPastaPasta/dash-forge'
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && github.repository == 'PastaPastaPasta/dash-forge'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    environment: forge-mainnet
     permissions:
       contents: read
       issues: write
@@ -84,26 +98,8 @@ jobs:
           git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
           git fetch --tags --force origin
 
-      - name: Plan the Dash Forge build
-        id: install
-        env:
-          INPUT_INSTALL: source
-          INPUT_VERSION: ''
-        run: bash action/install-forge.sh plan
-
-      - name: Restore the Dash Forge build cache
-        id: build-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ${{ runner.temp }}/dash-forge-build
-          key: ${{ steps.install.outputs.cache-key }}
-          restore-keys: |
-            dash-forge-build@${{ runner.os }}-${{ runner.arch }}@
-
+      # Built from this commit with no build cache: any workflow on master can write the
+      # repository's caches, and these binaries hold a mainnet key.
       - name: Build dg and git-remote-dash
         env:
           FORGE_BINARIES: dg git-remote-dash
@@ -114,17 +110,6 @@ jobs:
         run: |
           bash action/install-forge.sh build
           echo "$RUNNER_TEMP/forge-bin" >> "$GITHUB_PATH"
-
-      - name: Save the Dash Forge build cache
-        if: steps.build-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ${{ runner.temp }}/dash-forge-build
-          key: ${{ steps.install.outputs.cache-key }}
 
       - name: Configure storage and the IPFS host
         env:
@@ -160,29 +145,37 @@ jobs:
           PIN_CMD: >-
             ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${{ runner.temp }}/forge-ssh/known_hosts
-            -o LogLevel=ERROR -i ${{ runner.temp }}/forge-ssh/id pasta@build.thepasta.org
+            -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
+            -o LogLevel=ERROR -i ${{ runner.temp }}/forge-ssh/id pasta@${{ env.IPFS_HOST }}
         run: bash tools/forge-sync/mirror.sh
 
-      - name: Keep the packs of a failed replication
-        if: failure() && steps.sync.outputs.pushed == 'true'
+      # mirror.sh removes the CARs it replicated, so anything left reached no durable node.
+      - name: Keep unreplicated packs
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: forge-sync-cars-${{ github.run_id }}
+          name: forge-sync-cars-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/forge-cars
           retention-days: 90
           if-no-files-found: ignore
 
-      - name: Open an issue for the divergence
-        if: failure() && steps.sync.outputs.diverged == 'true'
+      - name: Open an issue
+        if: failure() && (steps.sync.outputs.diverged == 'true' || steps.sync.outputs.pushed == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
+          DIVERGED: ${{ steps.sync.outputs.diverged }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Forge mirror diverged from GitHub"
-          body="The Forge sync found a change on $FORGE_REMOTE that GitHub's master or tags do not have, so it pushed nothing (GitHub never overwrites Forge). See the job summary of $RUN_URL for the refs. Bring the change into GitHub, or remove it on Forge, then re-run the workflow."
+          if [ "$DIVERGED" = true ]; then
+            title="Forge mirror diverged from GitHub"
+            body="The Forge sync found a change on $FORGE_REMOTE that GitHub's master or tags do not have, so it pushed nothing (GitHub never overwrites Forge). The job summary of $RUN_URL lists the refs. Bring the change into GitHub, or remove it on Forge, then re-run the workflow."
+          else
+            title="Forge mirror push or replication failed"
+            body="The Forge sync pushed to $FORGE_REMOTE, but the push or the copy of its packs to the IPFS host failed, so Forge may name packs no durable node holds. A later run will not notice. The job summary of $RUN_URL says what failed; any unreplicated CARs are in the run's artifact. Import them on the IPFS host (tools/forge-sync/README.md), then close this issue."
+          fi
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "Still diverged: $RUN_URL"
+            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "Again: $RUN_URL"
           else
             gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           fi
