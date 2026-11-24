@@ -119,7 +119,6 @@ valid_origin() {
     if [ "$host" != "$rest" ]; then valid_port "${rest#*:}" || return 1; fi
 }
 
-# A random 48-character hex token from the kernel's CSPRNG.
 new_token() {
     od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
 }
@@ -149,8 +148,6 @@ port_busy() {
         NR > 1 && substr($2, length($2) - 4) == hex && (proto == "udp" || $4 == "0A") { found = 1 }
         END { exit found ? 0 : 1 }'
 }
-
-COMPOSE="docker compose"
 
 compose() {
     (cd "$DIR" && docker compose -p forge-backend -f compose.yaml "$@")
@@ -204,6 +201,10 @@ load_secrets() {
             esac
         done <"$DIR/secrets.env"
     fi
+}
+
+unique_words() {
+    printf '%s\n' "$@" | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//'
 }
 
 json_list() {
@@ -389,7 +390,7 @@ wait_ready() {
         sleep 2
     done
     compose logs --tail 40 >&2 || true
-    die "the node did not answer within 3 minutes (logs above; also: $COMPOSE -p forge-backend logs)"
+    die "the node did not answer within 3 minutes (logs above; also: docker compose -p forge-backend logs)"
 }
 
 # The same checks as `dg storage test`, through the public ports.
@@ -401,14 +402,14 @@ self_test() {
     case "$code" in 401 | 403) ;; *) die "the API answered $code without a token; expected a refusal" ;; esac
     code=$(curl_auth "$api/api/v0/config/show" -o /dev/null -w '%{http_code}' || true)
     [ "$code" = 404 ] || die "the API let a non-Forge call through ($code)"
-    probe=$(new_token)
-    printf 'forge-backend self test %s\n' "$probe" | write_file "$DIR/.self-test" 600
+    want="forge-backend self test $(new_token)"
+    printf '%s\n' "$want" | write_file "$DIR/.self-test" 600
     cid=$(curl_auth "$api/api/v0/add?cid-version=1&raw-leaves=true&pin=true&quieter=true" -F "file=@$DIR/.self-test" | sed -n 's/.*"Hash":"\([^"]*\)".*/\1/p')
     rm -f -- "$DIR/.self-test"
     [ -n "$cid" ] || die "adding a test file through the API failed"
     # shellcheck disable=SC2086
     got=$(curl $PROBE -fsS "$gw/ipfs/$cid" || true)
-    [ "$got" = "forge-backend self test $probe" ] || die "the gateway did not return the test file"
+    [ "$got" = "$want" ] || die "the gateway did not return the test file"
     https_ok=
     if [ -n "$DOMAIN" ]; then
         # Caddy gets the certificate on first start; give it two minutes.
@@ -416,7 +417,7 @@ self_test() {
         while [ $i -lt 24 ]; do
             # shellcheck disable=SC2086
             got=$(curl $PROBE -fsS "https://$DOMAIN/ipfs/$cid" 2>/dev/null || true)
-            if [ "$got" = "forge-backend self test $probe" ]; then https_ok=1; break; fi
+            if [ "$got" = "$want" ]; then https_ok=1; break; fi
             i=$((i + 1))
             sleep 5
         done
@@ -426,7 +427,7 @@ self_test() {
     if [ -n "$https_ok" ]; then
         say "  [ OK ] https://$DOMAIN serves it with a valid certificate"
     elif [ -n "$DOMAIN" ]; then
-        warn "https://$DOMAIN did not answer from this machine. Check that its DNS points here and ports 80 and 443 reach it ($COMPOSE -p forge-backend logs caddy)"
+        warn "https://$DOMAIN did not answer from this machine. Check that its DNS points here and ports 80 and 443 reach it (docker compose -p forge-backend logs caddy)"
     fi
 }
 
@@ -520,7 +521,7 @@ cmd_up() {
     [ "$DOMAIN" = none ] && DOMAIN=
     [ -n "$ARG_EMAIL" ] && EMAIL=$ARG_EMAIL
     # shellcheck disable=SC2086 # word lists by design
-    [ -n "$ARG_ORIGINS" ] && ORIGINS=$(printf '%s\n' $ORIGINS $ARG_ORIGINS | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')
+    [ -n "$ARG_ORIGINS" ] && ORIGINS=$(unique_words $ORIGINS $ARG_ORIGINS)
     [ -n "$ARG_API_PORT" ] && API_PORT=$ARG_API_PORT
     [ -n "$ARG_GATEWAY_PORT" ] && GATEWAY_PORT=$ARG_GATEWAY_PORT
     [ -n "$ARG_SWARM_PORT" ] && SWARM_PORT=$ARG_SWARM_PORT
@@ -544,13 +545,13 @@ cmd_up() {
     case "$LISTEN" in all | local) ;; *) die "--listen must be all or local" ;; esac
 
     # shellcheck disable=SC2086
-    ALL_ORIGINS=$(printf '%s\n' $DEFAULT_ORIGINS $ORIGINS | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')
+    ALL_ORIGINS=$(unique_words $DEFAULT_ORIGINS $ORIGINS)
 
     # Ports: refuse a clash with something that isn't this stack. While it runs, only the
     # ports it doesn't hold yet are checked.
     running=
-    if [ -z "$ARG_NO_START" ] && [ -n "$(compose ps -q 2>/dev/null || true)" ]; then running=1; fi
     if [ -z "$ARG_NO_START" ]; then
+        [ -z "$(compose ps -q 2>/dev/null || true)" ] || running=1
         tcp_ports="$API_PORT $GATEWAY_PORT $SWARM_PORT $INTERNAL_API $INTERNAL_GATEWAY"
         udp_port=$SWARM_PORT
         web_ports="80 443"
