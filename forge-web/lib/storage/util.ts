@@ -33,7 +33,8 @@ export class TimeoutError extends Error {
 /** A response whose body is read with an idle deadline re-armed on every chunk. */
 export interface TimedResponse {
   readonly resp: Response
-  bytes(): Promise<Uint8Array>
+  /** The body; past `maxBytes` the read stops and throws. */
+  bytes(maxBytes?: number): Promise<Uint8Array>
   text(): Promise<string>
   /** Done without the body (a HEAD, a status-only answer): clear the deadline, drop the body. */
   discard(): void
@@ -78,9 +79,18 @@ export async function timedFetch(
     if (timedOut !== null) throw new TimeoutError(timedOut)
     throw e
   }
-  const bytes = async (): Promise<Uint8Array> => {
+  const bytes = async (maxBytes = Number.POSITIVE_INFINITY): Promise<Uint8Array> => {
+    const tooLong = (): Error => new Error(`the answer is longer than ${maxBytes} bytes`)
     try {
-      if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
+      if (Number(resp.headers.get('content-length') ?? 0) > maxBytes) {
+        resp.body?.cancel().catch(() => undefined)
+        throw tooLong()
+      }
+      if (resp.body === null) {
+        const all = new Uint8Array(await resp.arrayBuffer())
+        if (all.length > maxBytes) throw tooLong()
+        return all
+      }
       const reader = resp.body.getReader()
       const parts: Uint8Array[] = []
       let total = 0
@@ -90,6 +100,10 @@ export async function timedFetch(
         if (end) break
         parts.push(value)
         total += value.length
+        if (total > maxBytes) {
+          reader.cancel().catch(() => undefined)
+          throw tooLong()
+        }
       }
       const out = new Uint8Array(total)
       let at = 0

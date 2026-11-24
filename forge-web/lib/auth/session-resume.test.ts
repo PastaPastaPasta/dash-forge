@@ -34,7 +34,7 @@ import {
   writeStorageBlob,
   readStorageBlob,
 } from './vault'
-import { KEPT_IDLE_MS, LOCKED_AT_KEY, SAVED_AT_KEY, openResume, type ResumeRecord } from './session-resume'
+import { KEPT_IDLE_MS, LOCKED_AT_KEY, SAVED_AT_KEY, deviceResumeAllowed, markDeviceOpened, markLocked, openResume, type ResumeRecord } from './session-resume'
 import { AuthController, KeyNotUsableError, UnlockNeededError, keyDisconnected } from './controller'
 import { encodeWif } from './wif'
 
@@ -804,4 +804,19 @@ describe('the controller', () => {
     expect(await kept()).toBeDefined()
     reads = 'ok'
   }, 30_000)
+})
+
+describe('browser-only resume markers within one millisecond', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('an open after a lock allows resume, and a lock after opens blocks it', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_800_000_000_000)
+    markLocked()
+    markDeviceOpened()
+    expect(deviceResumeAllowed()).toBe(true)
+    markDeviceOpened()
+    markLocked()
+    expect(deviceResumeAllowed()).toBe(false)
+  })
 })

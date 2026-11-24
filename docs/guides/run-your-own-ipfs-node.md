@@ -269,11 +269,13 @@ pins now and adds the repository to `follow.toml`. Your node's service pins agai
 
 ### From the web app
 
-On a repository's page, **Pin** opens a dialog with the number of files, their size and `cost 0 DASH (uses your disk)`. Pick your node and press **Pin**. The dialog shows the same progress rows as `dg`, and a copyable `dg ipfs pin owner/name --follow` line, because a web page can't keep a node up to date. The button shows when you are signed in (for a private repository, only to members). With no node connected, the dialog shows `dg ipfs up`.
+On a **public** repository's page, **Pin** copies each of its files to your storage (your node, or an S3 bucket with a public URL) and records one `packMirror` per file on Platform, so readers find your copy if the repository's own storage goes away. The dialog shows the number of files, their size, the storage they go to and the price of the records. Once every file is covered the button reads **Pinned**; when new files land it reads **Update pin (N new)**, and one click copies just those. **Unpin** deletes your records; the files stay on your node. The dialog's details hold a copyable `dg repo pin owner/name --follow` line, because a web page can't keep a copy up to date.
 
-The web app refuses a single file over 512 MiB and says to use `dg ipfs pin` instead.
+On a **private** repository's page (members only), **Pin** keeps a copy on your node without writing anything to Platform: the dialog shows the number of files, their size and `cost 0 DASH (uses your disk)`. Pick your node and press **Pin**. With no node connected, the dialog shows `dg ipfs up`.
 
-When you fork a repository in the web app, the dialog has a box, **Also pin its files on my IPFS node**, with the size. It is ticked by default when the total is under 256 MiB. In `dg`, use `dg repo fork owner/name --pin`.
+The web app refuses a single file over 512 MiB and says to use `dg` instead.
+
+When you fork a repository in the web app and your default storage policy names a node or a public bucket, each of the parent's files is copied there before the fork records it. With no such storage, the fork points at the parent's files, and the dialog says so.
 
 ### Privacy
 

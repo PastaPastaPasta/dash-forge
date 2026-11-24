@@ -30,7 +30,7 @@ const MIRROR_CREDITS: u64 = 75_000_000;
 
 /// The self-host guide, for a user with no storage of their own yet.
 pub const SELF_HOST_GUIDE: &str =
-    "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/self-host.md";
+    "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/self-host-backend.md";
 
 /// `dg repo pin` arguments.
 #[derive(Debug, Clone, Default, clap::Args)]

@@ -141,8 +141,8 @@ function statusHint(status: number): string {
  * An anonymous GET of `key` through the bucket's public URL (what every reader uses), whole or
  * a `Range`: the check that a copy is readable by anyone, not just by the credential holder.
  */
-export async function getPublic(s: S3Settings, key: string, range?: string): Promise<{ status: number; bytes: Uint8Array; contentRange: string | null }> {
-  const r = await timedFetch(publicObjectUrl(s, key), { credentials: 'omit', cache: 'no-store', ...(range ? { headers: { Range: range } } : {}) })
+export async function getPublic(s: S3Settings, key: string, range?: string, signal?: AbortSignal): Promise<{ status: number; bytes: Uint8Array; contentRange: string | null }> {
+  const r = await timedFetch(publicObjectUrl(s, key), { credentials: 'omit', cache: 'no-store', ...(range ? { headers: { Range: range } } : {}) }, signal ? { signal } : {})
   return { status: r.resp.status, contentRange: r.resp.headers.get('content-range'), bytes: await r.bytes() }
 }
 
@@ -168,8 +168,8 @@ export async function getObject(s: S3Settings, secrets: ProfileSecrets, key: str
 }
 
 /** Signed HEAD: the object's size, or null when it does not exist. */
-export async function headObject(s: S3Settings, secrets: ProfileSecrets, key: string): Promise<number | null> {
-  const r = await send(s, secrets, 'signed HEAD', 'HEAD', key)
+export async function headObject(s: S3Settings, secrets: ProfileSecrets, key: string, signal?: AbortSignal): Promise<number | null> {
+  const r = await send(s, secrets, 'signed HEAD', 'HEAD', key, { signal })
   if (!r.resp.ok && r.resp.status !== 404) throw await failed('signed HEAD', r)
   r.discard()
   if (r.resp.status === 404) return null
