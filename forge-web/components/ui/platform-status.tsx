@@ -10,6 +10,7 @@
  *     With `cached`, it heads cached content rather than replacing the page.
  */
 
+import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 
@@ -18,6 +19,7 @@ import type { SdkStatus } from '@/lib/sdk'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { DEFAULT_NETWORK } from '@/lib/constants'
 import { connectFailureCopy } from '@/lib/view/platform-failure'
+import { isQuorumServiceError } from '@/lib/sdk/unreachable'
 
 function mb(bytes: number): string {
   return `${(bytes / 1_000_000).toFixed(1)} MB`
@@ -93,6 +95,7 @@ export function UnreachableBanner({
   const seconds = useCountdown(status.retryAt)
   // Names the part that failed: the quorum key service is not Platform (QW-056).
   const copy = connectFailureCopy(status.message, { network: DEFAULT_NETWORK, cached })
+  const quorumService = isQuorumServiceError(status.message)
   // The sign-in sheet has its own "Try again" for the same connection: one at a time (L-30).
   const sheetOpen = useUiStore((s) => s.loginOpen)
   return (
@@ -108,7 +111,24 @@ export function UnreachableBanner({
             <p className="mt-0.5 text-dense text-anvil-700 dark:text-anvil-200">{copy.body}</p>
           </div>
           <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="platform-retry-countdown">
-            {seconds !== null ? `Trying again in ${seconds} s.` : 'This page will try again when it is visible.'}
+            {status.stopped === true ? (
+              <>
+                It stopped retrying on its own. Check your connection, then choose Try again
+                {quorumService ? (
+                  <>
+                    , or pick another quorum service in{' '}
+                    <Link href="/settings/" className="underline underline-offset-2">
+                      Settings
+                    </Link>
+                  </>
+                ) : null}
+                .
+              </>
+            ) : seconds !== null ? (
+              `Trying again in ${seconds} s.`
+            ) : (
+              'This page will try again when it is visible.'
+            )}
           </p>
           <details className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
             <summary className="w-fit cursor-pointer coarse:-mx-2 coarse:flex coarse:min-h-11 coarse:min-w-11 coarse:items-center coarse:px-2">Details</summary>

@@ -841,6 +841,33 @@ describe('EvoSdkService: an outage after a connect keeps retrying', () => {
   })
 })
 
+describe('EvoSdkService: automatic connect retries are capped', () => {
+  it('stops after CONNECT_BACKOFF_MS runs out (no endless spinner); Try again still tries once', async () => {
+    const clock = manualClock()
+    const good = fakeSdk('good', async () => 'ok')
+    const prefetch = new Error('Failed to prefetch quorums: fetching quorum keys timed out after 20 s')
+    const connector = vi.fn().mockRejectedValue(prefetch)
+    const svc = new EvoSdkService(connector, clock)
+    await expect(svc.initialize(CONFIG)).rejects.toBe(prefetch)
+    for (const wait of CONNECT_BACKOFF_MS) await clock.advance(wait)
+    expect(connector).toHaveBeenCalledTimes(CONNECT_BACKOFF_MS.length + 1)
+    const status = svc.getStatus()
+    expect(status).toMatchObject({ phase: 'error', retryAt: null, stopped: true })
+    // Nothing more on a timer, however long the page stays open.
+    await clock.advance(60 * 60_000)
+    expect(connector).toHaveBeenCalledTimes(CONNECT_BACKOFF_MS.length + 1)
+    // Try again: one attempt; a failure stops again without a countdown.
+    svc.retryNow()
+    await flush()
+    expect(connector).toHaveBeenCalledTimes(CONNECT_BACKOFF_MS.length + 2)
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: null, stopped: true })
+    connector.mockResolvedValueOnce(connection(good.sdk))
+    svc.retryNow()
+    await flush()
+    expect(svc.getStatus().phase).toBe('ready')
+  })
+})
+
 describe('EvoSdkService: freeing a replaced connection', () => {
   it('waits for a call still running on it (an explicit free of a borrowed wasm object traps)', async () => {
     const clock = manualClock()
