@@ -298,7 +298,13 @@ fn requests_group_by_forge_note() {
             &v["approvals"]["m3"],
         ],
     );
-    let reqs = request::requests(&state);
+    let members = state.ceremonies[cid(&v)]
+        .config
+        .participants
+        .iter()
+        .map(|p| p.auth_pub.clone())
+        .collect();
+    let reqs = request::requests(&state, cid(&v), &members);
     assert_eq!(reqs.len(), 1);
     assert!(
         !reqs[0].forge,

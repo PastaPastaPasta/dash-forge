@@ -8,6 +8,7 @@ import type { Proposal, RoomState } from './state'
 const CID = 'c'.repeat(64)
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
+const MEMBERS = new Set([A, B])
 
 function proposal(id: string, note: string | undefined, over: Partial<Proposal> = {}): Proposal {
   return {
@@ -44,7 +45,7 @@ describe('notes', () => {
 
 describe('grouping', () => {
   it('groups proposals by note.group in seq order; others stand alone', () => {
-    const reqs = groupRequests(state([proposal('p2', note(1, 2)), proposal('p1', note(0, 2)), proposal('solo', 'made elsewhere')]), CID)
+    const reqs = groupRequests(state([proposal('p2', note(1, 2)), proposal('p1', note(0, 2)), proposal('solo', 'made elsewhere')]), CID, MEMBERS)
     const forge = reqs.find((r) => r.forge)!
     expect(forge.id).toBe('0123456789abcdef')
     expect(forge.proposals.map((p) => p.id)).toEqual(['p1', 'p2'])
@@ -55,28 +56,36 @@ describe('grouping', () => {
   })
 
   it('someone reusing a group gets a request of their own and leaves the original whole', () => {
-    const reqs = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2026-11-25T00:00:00.000Z' })]), CID)
+    const reqs = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2026-11-25T00:00:00.000Z' })]), CID, MEMBERS)
     expect(reqs).toHaveLength(2)
     expect(reqs.every((r) => !r.malformed)).toBe(true)
     expect(reqs.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
     expect(reqs.find((r) => r.from === B)!.id).toBe(`0123456789abcdef-${B.slice(0, 16)}`)
-    const backdated = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2000-01-01T00:00:00.000Z', status: 'invalid' })]), CID)
+    const backdated = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2000-01-01T00:00:00.000Z', status: 'invalid' })]), CID, MEMBERS)
     expect(backdated.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
+    const C = 'd'.repeat(64)
+    const base = proposal('p2', undefined).body
+    const outsider = proposal('p2', note(0, 1), { from: C, at: '2000-01-01T00:00:00.000Z', body: { ...base, note: note(0, 1), requirements: [...base.requirements, { cid: 'e'.repeat(64), slot: 'high' }] } })
+    const taken = groupRequests(state([proposal('p1', note(0, 1)), outsider]), CID, MEMBERS)
+    expect(taken.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
+    expect(taken.find((r) => r.from === C)!.id).toBe(`0123456789abcdef-${C.slice(0, 16)}`)
+    const twoKeys = proposal('p2', note(0, 1), { from: B, at: '2000-01-01T00:00:00.000Z', body: outsider.body })
+    expect(groupRequests(state([proposal('p1', note(0, 1)), twoKeys]), CID, MEMBERS).find((r) => r.from === A)!.id).toBe('0123456789abcdef')
   })
 
   it('a group with a missing part or a duplicate seq is malformed', () => {
-    expect(groupRequests(state([proposal('p1', note(0, 2))]), CID)[0]!.malformed).toBe(true)
-    expect(groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(0, 2))]), CID)[0]!.malformed).toBe(true)
+    expect(groupRequests(state([proposal('p1', note(0, 2))]), CID, MEMBERS)[0]!.malformed).toBe(true)
+    expect(groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(0, 2))]), CID, MEMBERS)[0]!.malformed).toBe(true)
   })
 
   it('ignores proposals for another ceremony', () => {
     const other = proposal('x', note(0, 1), { body: { ...proposal('x', undefined).body, requirements: [{ cid: 'd'.repeat(64), slot: 'high' }] } })
-    expect(groupRequests(state([other]), CID)).toEqual([])
+    expect(groupRequests(state([other]), CID, MEMBERS)).toEqual([])
   })
 })
 
 describe('request status', () => {
-  const [req] = groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(1, 2))]), CID)
+  const [req] = groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(1, 2))]), CID, MEMBERS)
   const nonces = { p1: facts(5n), p2: facts(6n) } as Record<string, ProposalFacts>
   const at = (n: bigint) => () => n
 

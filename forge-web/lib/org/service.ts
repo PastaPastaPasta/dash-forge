@@ -208,7 +208,7 @@ async function writtenOnChain(sdk: EvoSDK, d: DecodedTransition): Promise<boolea
 export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions): Promise<OrgView> {
   const state = await syncRoom(record.relay, record.room)
   const identity = await orgIdentityOf(sdk, record, state)
-  const requests = groupRequests(state, identity.ceremony.cid)
+  const requests = groupRequests(state, identity.ceremony.cid, ceremonyMembers(identity.ceremony))
   const decoded = new Map<string, DecodedTransition | null>()
   await Promise.all(requests.flatMap((r) => r.proposals.map(async (p) => decoded.set(p.id, await decodeCached(p.body.unsigned)))))
   const currentNonce = await nonceReader(
@@ -311,13 +311,14 @@ export function requestLink(orgId: string, requestId: string): string {
 /**
  * The nonces per contract that the organization's requests hold: every proposal a member made
  * that the room accepted and that writes as the organization, whatever its request's status (a
- * landed or overtaken nonce is at or below the tip, below anything handed out). A request still
- * collecting that enough members declined, without approving, holds none. dg holds by the same
- * rule (`Org::open_nonces`).
+ * landed nonce is at or below the tip, below anything handed out; a later part of an overtaken
+ * request keeps its nonce until the tip passes it). Members are the participants of the ceremony
+ * whose key the identity holds. A request still collecting that enough members declined, without
+ * approving, holds none. dg holds by the same rule (`Org::open_nonces`).
  */
 function openNonces(view: OrgView): Map<string, Set<bigint>> {
   const held = new Map<string, Set<bigint>>()
-  const members = new Set(view.record.members.map((m) => m.authPub))
+  const members = ceremonyMembers(view.identity.ceremony)
   for (const r of view.requests) {
     if (unreachable(r.request, members, view.identity.ceremony.config.threshold)) continue
     for (const [i, p] of r.request.proposals.entries()) {
@@ -330,6 +331,8 @@ function openNonces(view: OrgView): Map<string, Set<bigint>> {
   }
   return held
 }
+
+const ceremonyMembers = (c: OrgIdentity['ceremony']): Set<string> => new Set(c.config.participants.map((p) => p.authPub))
 
 /** Still collecting, and so many members declined it without approving that the rest cannot reach the threshold. */
 function unreachable(req: OrgRequest, members: ReadonlySet<string>, threshold: number): boolean {

@@ -85,18 +85,26 @@ pub struct Request {
     pub problem: Option<String>,
 }
 
-/// Every request in the room, oldest first. A request is one proposer's proposals sharing a
-/// group, so nobody else can break a member's request by reusing its group: the earliest
-/// proposer keeps the group as the request id, a later one gets `<group>-<first 16 hex of its key>`.
-pub fn requests(state: &RoomState) -> Vec<Request> {
+/// Every request of the ceremony `cid` in the room, oldest first. A request is one proposer's
+/// proposals sharing a group, so nobody else can break a member's request by reusing its group.
+/// The plain group id goes to the earliest proposal by one of `members` (the ceremony's
+/// participants) that the room accepted and that asks for `cid`'s key alone; any other
+/// proposer's request gets `<group>-<first 16 hex of its key>`. Web groups the same way.
+pub fn requests(state: &RoomState, cid: &str, members: &BTreeSet<String>) -> Vec<Request> {
     let mut groups: BTreeMap<(String, String), Vec<(Note, &Proposal)>> = BTreeMap::new();
     let mut first: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut out = Vec::new();
     for p in state.proposals.values() {
+        let asks = p.posted_requirements();
+        if !asks.iter().any(|(c, _)| c == cid) {
+            continue;
+        }
         match p.note().and_then(Note::parse) {
             Some(note) => {
-                // Only a proposal the room accepted (a member's) can claim the plain id.
-                if p.status != ProposalStatus::Invalid {
+                let may_claim = p.status != ProposalStatus::Invalid
+                    && members.contains(&p.from)
+                    && asks.len() == 1;
+                if may_claim {
                     let seen = (p.at.clone(), p.from.clone());
                     first
                         .entry(note.group.clone())
@@ -315,8 +323,15 @@ mod tests {
         st
     }
 
+    fn members() -> BTreeSet<String> {
+        ["a", "zz", "bbbbbbbbbb"]
+            .iter()
+            .map(|m| (*m).to_string())
+            .collect()
+    }
+
     fn problem(parts: &[(&str, &str, usize, usize)]) -> bool {
-        let reqs = requests(&state(parts));
+        let reqs = requests(&state(parts), "c", &members());
         assert_eq!(reqs.len(), 1);
         assert_eq!(
             status(&state(parts), &reqs[0], None) == RequestStatus::Invalid,
@@ -337,7 +352,7 @@ mod tests {
     #[test]
     fn someone_reusing_a_group_does_not_break_the_request() {
         let st = state(&[("a", G, 0, 1), ("bbbbbbbbbb", G, 0, 1)]);
-        let reqs = requests(&st);
+        let reqs = requests(&st, "c", &members());
         assert_eq!(reqs.len(), 2);
         let mine = reqs.iter().find(|r| r.proposer == "a").unwrap();
         assert_eq!(mine.id, G);
@@ -349,8 +364,24 @@ mod tests {
         let outsider = st.proposals.get_mut("p1").unwrap();
         outsider.at = "2000-01-01T00:00:00.000Z".into();
         outsider.status = ProposalStatus::Invalid;
-        let reqs = requests(&st);
+        let reqs = requests(&st, "c", &members());
         assert_eq!(reqs.iter().find(|r| r.proposer == "zz").unwrap().id, G);
+
+        // Accepted by the room through a ceremony of its own, but not a member and asking for
+        // a second key: it can't take the id either.
+        let mut st = state(&[("zz", G, 0, 1), ("outsider", G, 0, 1)]);
+        let outsider = st.proposals.get_mut("p1").unwrap();
+        outsider.at = "2000-01-01T00:00:00.000Z".into();
+        outsider.body["requirements"] = serde_json::json!([
+            { "cid": "c", "slot": "high" },
+            { "cid": "e", "slot": "high" }
+        ]);
+        let reqs = requests(&st, "c", &members());
+        assert_eq!(reqs.iter().find(|r| r.proposer == "zz").unwrap().id, G);
+        assert_eq!(
+            reqs.iter().find(|r| r.proposer == "outsider").unwrap().id,
+            format!("{G}-outsider")
+        );
     }
 
     #[test]

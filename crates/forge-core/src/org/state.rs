@@ -147,7 +147,7 @@ impl Proposal {
             id: id.into(),
             from: from.into(),
             at: String::new(),
-            body: serde_json::json!({ "note": note }),
+            body: serde_json::json!({ "note": note, "requirements": [{ "cid": "c", "slot": "high" }] }),
             approvals: BTreeMap::new(),
             approval_order: Vec::new(),
             rejections: BTreeMap::new(),

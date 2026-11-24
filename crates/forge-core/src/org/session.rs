@@ -204,7 +204,7 @@ impl Org {
     }
 
     pub fn requests(&self) -> Vec<Request> {
-        request::requests(&self.state)
+        request::requests(&self.state, &self.cid, &self.members())
     }
 
     pub fn find(&self, id: &str) -> Result<Request> {
@@ -250,7 +250,9 @@ impl Org {
 
     /// The nonces per contract that the organization's requests hold: every proposal a member
     /// made that the room accepted and that writes as the organization, whatever its request's
-    /// status (a landed or overtaken nonce is at or below the tip, below anything handed out).
+    /// status: a landed nonce is at or below the tip, below anything handed out, and a later
+    /// part of an overtaken request keeps its nonce until the tip passes it (it can no longer be
+    /// finished through Forge, so that nonce is simply skipped).
     /// A request still collecting that enough members declined, without approving, holds none.
     /// Web holds by the same rule.
     pub fn open_nonces(&self) -> BTreeMap<String, BTreeSet<u64>> {
@@ -278,8 +280,26 @@ impl Org {
         out
     }
 
+    /// The participants of the ceremony this member signs with.
+    fn members(&self) -> BTreeSet<String> {
+        self.ceremony()
+            .map(|c| {
+                c.config
+                    .participants
+                    .iter()
+                    .map(|p| p.auth_pub.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn ceremony(&self) -> Option<&Ceremony> {
+        self.state.ceremonies.get(&self.cid)
+    }
+
     fn is_member(&self, auth_pub: &str) -> bool {
-        self.record.members.iter().any(|m| m.auth_pub == auth_pub)
+        self.ceremony()
+            .is_some_and(|c| c.config.index_of(auth_pub).is_some())
     }
 
     /// Whether `req` is still collecting and so many members declined it, without approving,
@@ -306,12 +326,10 @@ impl Org {
             .filter(|k| self.is_member(k) && !approved.contains(k))
             .collect::<BTreeSet<_>>()
             .len();
-        declined
-            > self
-                .record
-                .members
-                .len()
-                .saturating_sub(self.record.threshold)
+        let (size, threshold) = self.ceremony().map_or((0, 0), |c| {
+            (c.config.participants.len(), c.config.threshold)
+        });
+        declined > size.saturating_sub(threshold)
     }
 
     pub fn decoded(&self, proposal_id: &str) -> Option<DecodedWrite> {

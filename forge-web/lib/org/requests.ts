@@ -46,11 +46,13 @@ export interface OrgRequest {
 }
 
 /**
- * A request is one proposer's proposals sharing a group, so nobody else can break a member's
- * request by reusing its group: the earliest proposer keeps the group as the request id, a later
- * one gets `<group>-<first 16 hex of its key>`.
+ * Every request of the ceremony `cid`. A request is one proposer's proposals sharing a group, so
+ * nobody else can break a member's request by reusing its group. The plain group id goes to the
+ * earliest proposal by one of `members` (the ceremony's participants) that the room accepted and
+ * that asks for `cid`'s key alone; any other proposer's request gets
+ * `<group>-<first 16 hex of its key>`. dg groups the same way (`request::requests`).
  */
-export function groupRequests(state: RoomState, cid: string): OrgRequest[] {
+export function groupRequests(state: RoomState, cid: string, members: ReadonlySet<string>): OrgRequest[] {
   const groups = new Map<string, { note: ForgeNote; p: Proposal }[]>()
   const first = new Map<string, { at: string; from: string }>()
   const out: OrgRequest[] = []
@@ -65,9 +67,9 @@ export function groupRequests(state: RoomState, cid: string): OrgRequest[] {
     const list = groups.get(key) ?? []
     list.push({ note, p })
     groups.set(key, list)
-    // Only a proposal the room accepted (a member's) can claim the plain id.
     const seen = first.get(note.group)
-    if (p.status !== 'invalid' && (!seen || p.at < seen.at || (p.at === seen.at && p.from < seen.from))) first.set(note.group, { at: p.at, from: p.from })
+    const mayClaim = p.status !== 'invalid' && members.has(p.from) && p.body.requirements.length === 1
+    if (mayClaim && (!seen || p.at < seen.at || (p.at === seen.at && p.from < seen.from))) first.set(note.group, { at: p.at, from: p.from })
   }
   for (const list of groups.values()) {
     list.sort((a, b) => a.note.seq - b.note.seq || a.p.id.localeCompare(b.p.id))
