@@ -165,9 +165,14 @@ export function KeysPanel(): JSX.Element {
             <Wallet className="h-3.5 w-3.5" aria-hidden /> Replace with a limited key
           </Button>
         ) : null}
+        {!inWallet && !replace && !pasted && phraseIsAdvanced() && low ? (
+          <Button variant="primary" size="sm" onClick={() => openLogin('wallet')} data-testid="key-sign-in-with-wallet">
+            <Wallet className="h-3.5 w-3.5" aria-hidden /> Sign in again with your wallet
+          </Button>
+        ) : null}
         {pasted ? (
           <>
-            <Button variant="primary" size="sm" onClick={() => openLogin('import')}>
+            <Button variant="primary" size="sm" onClick={() => openLogin(phraseIsAdvanced() ? 'wallet' : 'import')}>
               <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Use a limited key instead
             </Button>
             <Button variant="danger" size="sm" onClick={() => logout()}>
@@ -180,7 +185,7 @@ export function KeysPanel(): JSX.Element {
               <Lock className="h-3.5 w-3.5" aria-hidden /> Lock
             </Button>
             <Button
-              variant="outline"
+              variant="danger"
               size="sm"
               onClick={() => {
                 if (identity) void forgetConfirm(identity).then(confirm).then((ok) => (ok ? forget(identity) : undefined))

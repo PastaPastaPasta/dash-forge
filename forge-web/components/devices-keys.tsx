@@ -41,7 +41,9 @@ export function DevicesKeys(): JSX.Element {
   const [disabling, setDisabling] = useState<KeyRow | null>(null)
   const [disablingOthers, setDisablingOthers] = useState(false)
   // Mainnet: disabling a key needs the master key, so the buttons show only once asked for.
-  const [masterActions, setMasterActions] = useState(!phraseIsAdvanced())
+  // Opened at once when the page was reached to disable a key (the new-key alert, a scan warning).
+  const [arrivedToDisable] = useState(() => typeof window !== 'undefined' && window.location.hash === '#disable')
+  const [masterActions, setMasterActions] = useState(!phraseIsAdvanced() || arrivedToDisable)
   const load = useCallback(() => {
     setError(null)
     controller.identityKeys().then(setRows, (e: unknown) => setError(errorMessage(e)))
@@ -75,10 +77,15 @@ export function DevicesKeys(): JSX.Element {
       ) : null}
       {phraseIsAdvanced() ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="keys-wallet-hint">
-          To disconnect a wallet sign-in, open DashPay → Connections.
+          To disconnect a wallet sign-in, use Connections in DashPay or Dash Wallet. Any other key needs your recovery phrase or identity file to disable.
         </p>
       ) : null}
-      <PhraseAdvanced label="Advanced: disable keys with your recovery phrase or identity file" testId="keys-master-actions" onToggle={setMasterActions}>
+      <PhraseAdvanced
+        label="Disable keys (needs your recovery phrase or identity file)"
+        testId="keys-master-actions"
+        onToggle={setMasterActions}
+        defaultOpen={arrivedToDisable || newKeys.length > 0}
+      >
         {others.length > 0 ? (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="disable-others">
             <Button size="sm" variant="danger" onClick={() => setDisablingOthers(true)} data-testid="keys-disable-others">
@@ -369,7 +376,7 @@ function LostDevice(): JSX.Element {
         <LifeBuoy className="h-4 w-4" aria-hidden /> Lost a device?
       </h2>
       <ol className="list-decimal space-y-1.5 pl-5 text-anvil-700 dark:text-anvil-200">
-        <li>Disable its key above. It can no longer write as you.</li>
+        <li>{phraseIsAdvanced() ? 'Disable its key above, under “Disable keys”.' : 'Disable its key above.'} It can no longer write as you.</li>
         <li>
           If it could open your private repos, it also held your encryption key. Replace that key in a terminal, with your recovery phrase:{' '}
           <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 font-mono text-anvil-800 dark:bg-anvil-800 dark:text-anvil-100">
@@ -435,7 +442,7 @@ function ThisBrowser({ identity }: { identity: string }): JSX.Element {
           <Button size="sm" variant="outline" onClick={() => void requestPersistence().then(setPersistence)} data-testid="storage-persist">
             Ask the browser to keep it
           </Button>
-          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">If it is cleared, sign in again with dg, your identity file or your recovery phrase.</span>
+          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{phraseIsAdvanced() ? 'If it is cleared, sign in again with your wallet.' : 'If it is cleared, sign in again with dg, your identity file or your recovery phrase.'}</span>
         </div>
       ) : null}
     </section>

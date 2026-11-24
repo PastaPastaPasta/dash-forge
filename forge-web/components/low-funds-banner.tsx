@@ -8,6 +8,7 @@
  * room for the icon-sized funds cue, still says what is wrong and how to fix it.
  */
 
+import { phraseIsAdvanced } from '@/components/auth/phrase-advanced'
 import { useEffect, useState } from 'react'
 import { AlertTriangle, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -51,6 +52,8 @@ export function LowFundsBanner(): JSX.Element | null {
   // a passkey restored may be either's: both are offered.
   const either = notice.fix === 'renew-either'
   const inWallet = notice.fix === 'renew-in-wallet' || either
+  // Mainnet: no phrase in a normal flow. A key the wallet didn't grant is replaced by signing in again with it.
+  const viaWallet = !topUp && !inWallet && phraseIsAdvanced()
   const dismiss = (): void => {
     const keys = [...dismissed.keys, notice.key]
     try {
@@ -77,11 +80,11 @@ export function LowFundsBanner(): JSX.Element | null {
           <Button
             size="sm"
             variant="primary"
-            onClick={() => (topUp ? openTopUp({ blocker: 'balance', proactive: true }) : openLogin(inWallet ? 'wallet-renew' : 'import'))}
+            onClick={() => (topUp ? openTopUp({ blocker: 'balance', proactive: true }) : openLogin(inWallet ? 'wallet-renew' : viaWallet ? 'wallet' : 'import'))}
           >
-            {topUp ? 'Top up' : inWallet ? 'Renew in your wallet' : 'Renew key'}
+            {topUp ? 'Top up' : inWallet ? 'Renew in your wallet' : viaWallet ? 'Sign in again with your wallet' : 'Renew key'}
           </Button>
-          {either ? (
+          {either && !phraseIsAdvanced() ? (
             <Button size="sm" variant="outline" onClick={() => openLogin('import')} data-testid="low-funds-renew-with-file">
               Renew with identity file
             </Button>

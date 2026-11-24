@@ -30,7 +30,7 @@ export function NewKeyAlert(): JSX.Element | null {
             : `If you didn't add ${one ? 'it' : 'them'} yourself, with dg or in another browser, disable ${one ? 'it' : 'them'} now.`}
         </p>
         <div className="flex items-center gap-1">
-          <Link href="/settings/keys/" className={buttonClass({ size: 'sm', variant: 'danger' })} data-testid="new-key-review">
+          <Link href="/settings/keys/#disable" className={buttonClass({ size: 'sm', variant: 'danger' })} data-testid="new-key-review">
             Review keys
           </Link>
           <Button size="sm" variant="ghost" onClick={() => controller.acknowledgeNewKeys()} data-testid="new-key-mine">

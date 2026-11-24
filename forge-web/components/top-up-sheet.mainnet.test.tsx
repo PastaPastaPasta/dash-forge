@@ -56,13 +56,24 @@ afterEach(() => {
 })
 
 describe('the top-up sheet on mainnet', () => {
-  it('a low balance: buy credits in DashPay and check again; the phrase top-up is collapsed', async () => {
+  it("a wallet's identity with a low balance: buy credits in the wallet and check again; the phrase top-up is collapsed", async () => {
+    session.origin = 'app-connect'
+    act(() => root.render(<TopUpSheet />))
     act(() => useUiStore.getState().openTopUp())
-    expect(q('[data-testid="top-up-in-dashpay"]')!.textContent).toMatch(/DashPay/)
+    expect(q('[data-testid="top-up-in-dashpay"]')!.textContent).toMatch(/DashPay or Dash Wallet/)
     await act(async () => q('[data-testid="top-up-check-again"]')!.click())
     expect(session.refreshed).toBe(1)
+    expect(q('[data-testid="top-up-checked"]')!.textContent).toMatch(/Your balance is 0\.193124 DASH/)
     expect(closedDisclosure('top-up-other-ways')).toBe(true)
     expect(q('[data-testid="top-up-phrase"] [data-testid="identity-top-up"]')).not.toBeNull()
+  })
+
+  it('an identity no wallet holds: leads with its ID to top up from, never the phrase', () => {
+    act(() => useUiStore.getState().openTopUp())
+    expect(q('[data-testid="top-up-in-dashpay"]')).toBeNull()
+    expect(q('[data-testid="top-up-by-id"]')).not.toBeNull()
+    expect(document.body.textContent).toContain(ID)
+    expect(closedDisclosure('top-up-other-ways')).toBe(true)
   })
 
   it("a wallet's key: Renew in your wallet leads; top-up and the identity file are collapsed", () => {
@@ -75,6 +86,8 @@ describe('the top-up sheet on mainnet', () => {
 
   it('any other key: signing in again with the wallet leads, never the phrase', () => {
     act(() => useUiStore.getState().openTopUp({ blocker: 'key-expiry' }))
+    expect(q('[data-testid="renew-stays-live"]')).not.toBeNull()
+    expect(closedDisclosure('top-up-master-actions')).toBe(true)
     act(() => q('[data-testid="sign-in-with-wallet"]')!.click())
     expect(useUiStore.getState().loginView).toBe('wallet')
     expect(useUiStore.getState().topUp).toBeNull()

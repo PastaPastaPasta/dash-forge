@@ -19,8 +19,11 @@ export function PhraseAdvanced({
   label = 'Advanced: use your recovery phrase or identity file',
   testId = 'phrase-advanced',
   onToggle,
+  defaultOpen = false,
 }: {
   children: ReactNode
+  /** Start open (the page was reached to do one of these, or one is unfinished). */
+  defaultOpen?: boolean
   label?: string
   testId?: string
   /** Told when the disclosure opens or closes (an action elsewhere on the page may depend on it). */
@@ -28,8 +31,8 @@ export function PhraseAdvanced({
 }): JSX.Element {
   if (!phraseIsAdvanced()) return <>{children}</>
   return (
-    <details data-testid={testId} className="text-dense" onToggle={(e) => onToggle?.(e.currentTarget.open)}>
-      <summary className="cursor-pointer text-[12px] text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100 coarse:py-2">{label}</summary>
+    <details data-testid={testId} className="text-dense" open={defaultOpen || undefined} onToggle={(e) => onToggle?.(e.currentTarget.open)}>
+      <summary className="cursor-pointer text-[12px] text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100 coarse:flex coarse:min-h-11 coarse:items-center">{label}</summary>
       <div className="mt-2 space-y-2">{children}</div>
     </details>
   )

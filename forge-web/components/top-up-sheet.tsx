@@ -17,7 +17,7 @@
  *   sit behind Advanced.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type TopUpReason } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
@@ -34,6 +34,8 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
+import { readTopUpJournal } from '@/lib/auth/identity-top-up'
+import { errorMessage } from '@/lib/utils'
 
 /** The first place this network gets test DASH (`lib/faucets.ts`: testnet and devnet have one, mainnet none). */
 export function faucetUrl(): string | null {
@@ -82,14 +84,32 @@ export function TopUpSheet(): JSX.Element | null {
   const { identity, storage, keyLimits, balance, funds, origin, unlimitedKey, refreshBalance } = useAuth()
   const [other, setOther] = useState(false)
   const [checking, setChecking] = useState(false)
+  const [checked, setChecked] = useState<{ ok: true } | { ok: false; error: string } | null>(null)
   const checkAgain = async (): Promise<void> => {
     setChecking(true)
+    setChecked(null)
     try {
       await refreshBalance()
+      setChecked({ ok: true })
+    } catch (e) {
+      setChecked({ ok: false, error: errorMessage(e) })
     } finally {
       setChecking(false)
     }
   }
+  // A top-up from this browser that was paid but not finished: its step is opened, not buried.
+  const [unfinishedTopUp, setUnfinishedTopUp] = useState(false)
+  useEffect(() => {
+    if (identity === null || !phraseIsAdvanced()) return
+    let live = true
+    readTopUpJournal(ACTIVE_NETWORK.network, identity).then(
+      (j) => live && setUnfinishedTopUp(j !== undefined && j !== null),
+      () => undefined,
+    )
+    return () => {
+      live = false
+    }
+  }, [identity])
   const [topUpKey, setTopUpKey] = useState(false)
   if (identity === null) return null
   if (topUpKey) return <KeyTopUpDialog onClose={() => setTopUpKey(false)} />
@@ -101,6 +121,8 @@ export function TopUpSheet(): JSX.Element | null {
   // A key a wallet granted through App Connect is renewed in that wallet; the identity file or
   // recovery phrase still works (the master key can renew any Forge browser key).
   const inWallet = renewsInWallet(origin, ACTIVE_NETWORK.network, unlimitedKey) && storage === 'vault'
+  // DashPay or Dash Wallet holds this identity (it granted the key, or may have): buy credits there.
+  const walletIdentity = origin === 'app-connect' || origin === 'passkey'
   const renewVia = (view: 'import' | 'wallet-renew' | 'wallet'): void => {
     close()
     openLogin(view)
@@ -132,9 +154,14 @@ export function TopUpSheet(): JSX.Element | null {
                 )}
               </>
             ) : phraseIsAdvanced() ? (
-              <Button variant="primary" className="w-full" onClick={() => renewVia('wallet')} data-testid="sign-in-with-wallet">
-                Sign in again with your wallet
-              </Button>
+              <>
+                <Button variant="primary" className="w-full" onClick={() => renewVia('wallet')} data-testid="sign-in-with-wallet">
+                  Sign in again with your wallet
+                </Button>
+                <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="renew-stays-live">
+                  Your wallet gives this browser a new key; the current one stays live until you revoke it.
+                </p>
+              </>
             ) : null}
             <PhraseAdvanced testId="top-up-master-actions">
               <div className="flex flex-wrap gap-2">
@@ -161,19 +188,39 @@ export function TopUpSheet(): JSX.Element | null {
           </>
         ) : phraseIsAdvanced() ? (
           <>
-            <p data-testid="top-up-in-dashpay">Buy credits in your DashPay wallet, then check again.</p>
+            {walletIdentity ? (
+              <p data-testid="top-up-in-dashpay">Buy credits in DashPay or Dash Wallet, then check again.</p>
+            ) : (
+              <>
+                <p data-testid="top-up-by-id">Top up this identity from any wallet that supports identity top-ups, with its ID:</p>
+                <CopyRow text={identity} label="Copy identity id" />
+              </>
+            )}
             <Button variant="primary" className="w-full" loading={checking} onClick={() => void checkAgain()} data-testid="top-up-check-again">
               Check again
             </Button>
+            {checked !== null ? (
+              <p role="status" data-testid="top-up-checked" className={checked.ok ? 'text-[12px] text-anvil-600 dark:text-anvil-300' : 'text-[12px] text-danger-700 dark:text-danger-400'}>
+                {checked.ok ? (
+                  <>Your balance is {balance !== null ? <>{creditsAsDash(Number(balance))} DASH<FiatNote dash={creditsToDash(Number(balance))} balance /></> : 'being read'}.</>
+                ) : (
+                  <>Couldn&apos;t read your balance: {checked.error}</>
+                )}
+              </p>
+            ) : null}
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="top-up-coverage">
               {coverage.before}{creditsAsDash(coverage.credits)} DASH<FiatNote dash={creditsToDash(coverage.credits)} />{coverage.after}
             </p>
-            <details className="text-dense" data-testid="top-up-other-ways">
-              <summary className="cursor-pointer text-[12px] text-anvil-500 dark:text-anvil-400 coarse:py-2">Other ways to add credits</summary>
+            <details className="text-dense" data-testid="top-up-other-ways" open={unfinishedTopUp || undefined}>
+              <summary className="cursor-pointer text-[12px] text-anvil-500 dark:text-anvil-400 coarse:flex coarse:min-h-11 coarse:items-center">Other ways to add credits</summary>
               <div className="mt-2 space-y-2">
-                <p className="text-[12px] text-anvil-600 dark:text-anvil-300">Anyone with credits, or a wallet with identity support, can top up this identity with its ID:</p>
-                <CopyRow text={identity} label="Copy identity id" />
-                <PhraseAdvanced label="Top up from this browser with your recovery phrase" testId="top-up-phrase">
+                {walletIdentity ? (
+                  <>
+                    <p className="text-[12px] text-anvil-600 dark:text-anvil-300">Anyone with credits, or a wallet with identity support, can top up this identity with its ID:</p>
+                    <CopyRow text={identity} label="Copy identity id" />
+                  </>
+                ) : null}
+                <PhraseAdvanced label="Top up from this browser with your recovery phrase" testId="top-up-phrase" defaultOpen={unfinishedTopUp}>
                   <IdentityTopUpFlow faucets={faucetUrls()} />
                 </PhraseAdvanced>
               </div>
