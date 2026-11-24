@@ -348,15 +348,37 @@ describe('QW-051: forgetting a key asks in the app', () => {
 
 describe('a key the wallet disconnected', () => {
   it('a flagged key says to sign in again and offers forgetting it, not a renewal', async () => {
-    auth.vaults = [{ ...auth.vaults[0]!, disconnected: true }]
+    auth.vaults = [{ ...auth.vaults[0]!, disconnected: true, fromAppConnect: true }]
     act(() => useUiStore.getState().openLogin())
     await flush()
     const box = q('[data-testid="unlock-disconnected"]')!
     expect(box.textContent).toMatch(/This key was disconnected in your wallet, so sign in again/)
     expect(byText("Renew this browser's key")).toBeNull()
     await click(byText('Forget this key and sign in again'))
+    expect(host.ownerDocument.body.textContent).toMatch(/Forget this disabled key\?/)
+    expect(host.ownerDocument.body.textContent).toMatch(/disabled on Platform and can't sign/)
+    expect(host.ownerDocument.body.textContent).not.toMatch(/stays valid until it expires/)
     await click(q('[data-testid="confirm-action"]'))
     expect(auth.forget).toHaveBeenCalledWith(ID)
+  })
+
+  it("picking another key clears the first key's disconnected message (Forget can't hit the wrong key)", async () => {
+    auth.vaults = [...auth.vaults, { identityId: OTHER, keyId: 3, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
+    auth.unlock.mockRejectedValueOnce(new Error('this key was disconnected in your wallet, so sign in again'))
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    act(() => type(q<HTMLInputElement>('#unlock-passphrase')!, 'pw'))
+    await flush()
+    await click(byText('Unlock'))
+    expect(q('[data-testid="unlock-disconnected"]')).not.toBeNull()
+    const select = q<HTMLSelectElement>('select[aria-label="Identity"]')!
+    const other = select.value === '0' ? '1' : '0'
+    act(() => {
+      select.value = other
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(q('[data-testid="unlock-disconnected"]')).toBeNull()
   })
 
   it('an unlock that finds it disconnected shows the same, in place of the raw error', async () => {

@@ -653,7 +653,25 @@ export class AuthController {
    * (`docs/design/service-auth.md`). Those signatures cover a domain-separated digest that can
    * never be a state transition, so this is not a way around the vault's contract scoping: the
    * key still signs no write outside Forge. Throws a {@link WriteAuthError} when signed out or
-   * locked.
+   * locked. The key is read on chain first: one disabled or expired since the session opened (a
+   * wallet disconnect) signs nothing, and the session ends.
+   */
+  async checkedServiceKey(): Promise<ReturnType<AuthController['serviceKey']>> {
+    const key = this.serviceKey()
+    const origin = this.state.session?.origin ?? null
+    const identity = await authSdk(await this.getSdk()).identities.fetch(key.identityId)
+    if (identity && !(await findSigningKey(identity, key.wif, this.network, SECURITY_LEVEL.HIGH))) {
+      const failure = keyFailure(identity, key.keyId, origin)
+      // Disabled or expired on chain: the session ends as a balance read would end it.
+      if (failure.definite) await this.refreshBalance()
+      throw failure
+    }
+    return key
+  }
+
+  /**
+   * {@link serviceKey} without the chain check: callers that sign a service request use
+   * {@link checkedServiceKey}, which refuses a key disabled since the session opened.
    */
   serviceKey(): { readonly identityId: string; readonly keyId: number; readonly wif: string; readonly keyType?: number } {
     const session = this.state.session
@@ -2819,8 +2837,14 @@ export class KeyNotUsableError extends WriteAuthError {
  * ({@link markKeyDisconnected}) so the unlock view says so before another try.
  */
 export class KeyDisconnectedError extends KeyNotUsableError {
-  constructor() {
-    super('this key was disconnected in your wallet, so sign in again', true)
+  constructor(origin: KeyOrigin | null) {
+    // A passkey can hold a key another device registered with the recovery phrase: no wallet.
+    super(
+      origin === 'app-connect'
+        ? 'this key was disconnected in your wallet, so sign in again'
+        : 'this key was disabled on Platform (disconnected in your wallet, or revoked from another device), so sign in again',
+      true,
+    )
     this.name = 'KeyDisconnectedError'
   }
 }
@@ -2832,7 +2856,7 @@ export class KeyDisconnectedError extends KeyNotUsableError {
 function keyFailure(identity: WasmIdentity, keyId: number, origin: KeyOrigin | null = null): KeyNotUsableError {
   const k = identity.publicKeys.find((x) => x.keyId === keyId)
   if (k === undefined) return new KeyNotUsableError("this browser's key does not show on the identity yet — try again in a moment", false)
-  if (k.disabledAt !== undefined && renewableInWallet(origin)) return new KeyDisconnectedError()
+  if (k.disabledAt !== undefined && renewableInWallet(origin)) return new KeyDisconnectedError(origin)
   const expired = k.expiresAt !== undefined && k.expiresAt <= BigInt(Date.now())
   return new KeyNotUsableError(undefined, k.disabledAt !== undefined || expired)
 }

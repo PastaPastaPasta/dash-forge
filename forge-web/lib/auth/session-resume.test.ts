@@ -532,7 +532,7 @@ describe('the controller', () => {
       lockVault()
       keys[0]!.disabledAt = 1n
       const c = make()
-      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/disconnected in your wallet, so sign in again/)
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/disabled on Platform \(disconnected in your wallet, or revoked from another device\), so sign in again/)
       expect(c.getState().session).toBeNull()
       expect(c.writeAuth).toBeNull()
       expect(unlockedSecret(NET, ID)).toBeNull()
@@ -551,7 +551,7 @@ describe('the controller', () => {
       const next = make()
       await next.resume()
       await vi.waitFor(() => expect(next.getState().session).toBeNull(), WAIT)
-      expect(next.getState().notice).toMatch(/disconnected in your wallet, so sign in again/)
+      expect(next.getState().notice).toMatch(/disconnected in your wallet, or revoked from another device\), so sign in again/)
       expect(await kept()).toBeUndefined()
       expect(keyDisconnected(NET, ID)).toBe(5)
     }, 30_000)
@@ -565,6 +565,27 @@ describe('the controller', () => {
       await c.refreshBalance()
       expect(c.getState().session).toBeNull()
       expect(c.getState().notice).toMatch(/disconnected in your wallet/)
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('a wallet\'s own App Connect key says plainly that the wallet disconnected it', async () => {
+      await signIn()
+      await storeInVault(NET, SECRET, PASSKEY, { origin: 'app-connect' })
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/^this key was disconnected in your wallet, so sign in again$/)
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('a service request (notifications) from a session that predates the disable signs nothing', async () => {
+      const c = await restoredByPasskey()
+      lockVault()
+      await c.unlock(ID, 'passkey')
+      expect((await c.checkedServiceKey()).keyId).toBe(5)
+      keys[0]!.disabledAt = 1n
+      await expect(c.checkedServiceKey()).rejects.toThrow(/so sign in again/)
+      expect(c.getState().session).toBeNull()
       expect(keyDisconnected(NET, ID)).toBe(5)
     }, 30_000)
 
