@@ -296,6 +296,7 @@ function UpdateBranch({
   const [intent] = useState(newIntent)
   const plan = useAsync(() => readSyncManifests(sdk!, home.repo, parent), [ready, repoKey(home.repo), repoKey(parent)], { enabled: ready && sdk !== null })
   const cost = plan.data === null ? null : syncCost(plan.data)
+  const newPacks = plural(plan.data?.manifests.length ?? 0, `new pack of ${parent.name}`, `new packs of ${parent.name}`)
   const unreferenceable = plan.data?.unreferenceable.length ?? 0
   const off = block ?? guard.disabledReason ?? (unreferenceable > 0 ? `${plural(unreferenceable, 'pack')} of ${parent.name} have no copy a fork can name: push the branch from a full clone instead.` : null)
 
@@ -330,8 +331,8 @@ function UpdateBranch({
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           {plan.data.manifests.length > 0
             ? target
-              ? `Copies ${plural(plan.data.manifests.length, `new pack of ${parent.name}`, `new packs of ${parent.name}`)} to ${target.name}, then moves ${home.defaultBranch}.`
-              : `Records ${plural(plan.data.manifests.length, `new pack of ${parent.name}`, `new packs of ${parent.name}`)} by reference: files stay on ${parent.name}'s storage. Then moves ${home.defaultBranch}.`
+              ? `Copies ${newPacks} to ${target.name}, then moves ${home.defaultBranch}.`
+              : `Records ${newPacks} by reference: files stay on ${parent.name}'s storage. Then moves ${home.defaultBranch}.`
             : `Moves ${home.defaultBranch}: this fork already records every pack it needs.`}
         </p>
       ) : plan.error !== null ? (
@@ -341,7 +342,7 @@ function UpdateBranch({
       ) : null}
       {cost !== null ? <CostPreview cost={cost} /> : null}
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" size="sm" onClick={update} loading={pending} disabled={off !== null || cost === null || done} title={off ?? undefined} data-testid="fork-sync-update">
+        <Button variant="primary" size="sm" onClick={update} loading={pending || storage.loading} disabled={off !== null || cost === null || done} title={off ?? undefined} data-testid="fork-sync-update">
           {done ? 'Updated' : 'Update branch'}
         </Button>
         {off !== null ? <span className="text-[12px] text-caution-700 dark:text-caution-400">{off}</span> : null}

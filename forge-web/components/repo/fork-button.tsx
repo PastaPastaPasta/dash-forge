@@ -15,13 +15,13 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
-import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
+import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, onPlatform, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
 import { forkCopier, forkCopyProfile, type CopyState } from '@/lib/storage/pin-copies'
 import { withoutMirrorMarker } from '@/lib/view/mirror-source'
 import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
-import { plural } from '@/lib/view/format'
+import { formatBytes, plural } from '@/lib/view/format'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -99,6 +99,8 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const router = useRouter()
   const storage = useStorageConfig()
   const target = forkCopyProfile(storage.config)
+  const [byReference, setByReference] = useState(false)
+  const copyTo = byReference ? null : target
   const [copies, setCopies] = useState<Record<string, { state: CopyState; why?: string }>>({})
   const [forkedHref, setForkedHref] = useState<string | null>(null)
 
@@ -176,8 +178,8 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
     setProgress({})
     setCopies({})
     let keptAny = false
-    const copy = target
-      ? forkCopier(sdk, parent, target, (hash, state, why) => {
+    const copy = copyTo
+      ? forkCopier(sdk, parent, copyTo, (hash, state, why) => {
           if (state === 'failed' || state === 'skipped') keptAny = true
           setCopies((prev) => ({ ...prev, [hash]: { state, ...(why ? { why } : {}) } }))
         })
@@ -219,19 +221,20 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   }
 
   const p = plan.data
+  const toCopy = copyTo ? (p?.manifests ?? []).filter((m) => !onPlatform(m)) : []
   const kept = Object.values(copies).filter((c) => c.state === 'failed' || c.state === 'skipped').length
   return (
     <Dialog
       open
       onClose={pending ? () => undefined : onClose}
       title={`Fork ${parent.name}`}
-      description={target ? "A new repository of yours, with its own copy of this one's files." : "A new repository of yours that points at this one's packs."}
+      description={copyTo ? "A new repository of yours, with its own copy of this one's files." : "A new repository of yours that points at this one's packs."}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          {forkedHref ? <Button variant="primary" onClick={() => router.push(forkedHref)}>View fork</Button> : <Button variant="primary" onClick={run} loading={pending} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
+          {forkedHref ? <Button variant="primary" onClick={() => router.push(forkedHref)}>View fork</Button> : <Button variant="primary" onClick={run} loading={pending || storage.loading} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
             {check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork'}
           </Button>}
         </>
@@ -291,7 +294,8 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
               </label>
             ) : null}
             <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="fork-plan">
-              Repository, maintainer and config, {plural(p.manifests.length, 'pack manifest')} {target ? `copied to ${target.name}` : 'by reference'}, and {copiedRefs(refs)} copied:{' '}
+              Repository, maintainer and config, {plural(p.manifests.length, 'pack manifest')}{' '}
+              {copyTo && toCopy.length > 0 ? `(${toCopy.length} copied to ${copyTo.name}, ${formatBytes(toCopy.reduce((n, m) => n + m.sizeBytes, 0))})` : 'by reference'}, and {copiedRefs(refs)} copied:{' '}
               {plural(3 + p.manifests.length + refs.length, 'signed write')}, {forkDuration(3 + p.manifests.length + refs.length)}.
             </p>
             {defaultOnly && refs.length === 0 && p.refs.length > 0 && p.unreferenceable.length === 0 ? (
@@ -308,7 +312,15 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           </>
         )}
 
-        {target ? null : storage.needsUnlock ? (
+        {target ? (
+          <details className="text-dense">
+            <summary className="cursor-pointer">Storage</summary>
+            <label className="mt-1 flex items-start gap-2">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700" checked={byReference} disabled={pending} onChange={(e) => setByReference(e.target.checked)} data-testid="fork-by-reference" />
+              Don&apos;t copy to {target.name}: keep the files on {parent.name}&apos;s storage.
+            </label>
+          </details>
+        ) : storage.loading ? null : storage.needsUnlock ? (
           <UnlockMore title="Unlock this tab to copy the files to your storage" />
         ) : (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="fork-storage">
@@ -326,7 +338,7 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
         ) : null}
         {Object.keys(copies).length > 0 ? (
           <details className="text-dense">
-            <summary className="cursor-pointer">Copies to {target?.name}</summary>
+            <summary className="cursor-pointer">Copies to {copyTo?.name}</summary>
             <ol aria-label="Copy progress" className="mt-1 max-h-48 space-y-1 overflow-auto">
               {Object.entries(copies).map(([hash, c]) => (
                 <li key={hash}>

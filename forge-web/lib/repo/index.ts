@@ -409,6 +409,8 @@ export {
   forkableRef,
   forkRepoV2,
   withOwnCopy,
+  onPlatform,
+  type CopyPack,
   planFork,
   planManifests,
   planRefs,

@@ -34,7 +34,7 @@ vi.mock('./members', async (orig) => ({
 }))
 
 import { ConsensusRefusal, DUPLICATE_UNIQUE_CODE } from '../sdk'
-import { deleteMirror, mirrorCopy, mirrorRecordOf, mirrorsBy, mirrorUrisOf, mirrorUrisProblem, recordMirror, resetMirrorUris } from './pack-mirrors'
+import { deleteMirror, forgetMirrorsBy, mirrorCopy, mirrorRecordOf, mirrorsBy, mirrorUrisOf, mirrorUrisProblem, recordMirror, resetMirrorUris } from './pack-mirrors'
 import type { ForgeIds } from '../deployments'
 import type { RepoRef } from './contract'
 import type { PackManifest } from './packs'
@@ -121,6 +121,16 @@ describe('pack mirrors (web writer)', () => {
     ]
     expect(await mirrorsBy({} as never, repo, 'me')).toEqual([{ id: 'a', repoId: REPO_ID, packHash: H, kind: 1, uris: ['https://m.example/a'] }])
     expect(served.queries[0]).toMatchObject({ dataContractId: 'CORE', documentTypeName: 'packMirror', where: [['$ownerId', '==', 'me']], orderBy: [['$createdAt', 'asc']] })
+  })
+
+  it("reads the signer's records once per session, again after a pin or unpin", async () => {
+    served.docs = [{ ...record('me', 1, ['https://m.example/a']), $id: 'a', repoId: REPO_ID }]
+    await mirrorsBy({} as never, repo, 'me')
+    await mirrorsBy({} as never, { ...repo, repoId: 'OTHER' } as RepoRef, 'me')
+    expect(served.queries).toHaveLength(1)
+    forgetMirrorsBy('me')
+    await mirrorsBy({} as never, repo, 'me')
+    expect(served.queries).toHaveLength(2)
   })
 
   it('records one address with its kind, in forge-meta on a four-contract set', async () => {

@@ -50,7 +50,6 @@ import { readRefs, resolveRefByHash, type ResolvedRef } from './refs'
 import { readRepoById, toRepoDoc, repoRefOf, type RepoDoc } from './resolveRepo'
 import { createRepo, normalizeRepoName } from './writes'
 import { fitManifestUris } from '../storage/upload'
-import type { CopyPack } from '../storage/pin-copies'
 
 /** One copy of a parent pack, as the plan needs it (a `PackManifest` fits). */
 export type ForkCopy = Pick<
@@ -126,6 +125,17 @@ export function forkManifest(forge: ForgeIds, parentRepoId: string, copies: read
     uris,
     supersedes: first.supersedes,
   }
+}
+
+/**
+ * A fork's copy of one parent pack: its URIs on the forker's storage, or null to keep the pack by
+ * reference. `source` is the pack with its copies in reader order, when the caller has it.
+ */
+export type CopyPack = (packHash: string, source?: PackManifest) => Promise<readonly string[] | null>
+
+/** Whether the parent holds `planned` on Platform: permanent, so a fork never copies it. */
+export function onPlatform(planned: Pick<PackManifestInput, 'uris'>): boolean {
+  return planned.uris.some((u) => u.startsWith('platform://'))
 }
 
 /**
@@ -275,7 +285,7 @@ export async function syncFork(
   const total = input.plan.manifests.length + 1
   let done = 0
   for (const planned of input.plan.manifests) {
-    const own = input.copy ? await input.copy(planned.packHash) : null
+    const own = input.copy && !onPlatform(planned) ? await input.copy(planned.packHash) : null
     const m = own ? withOwnCopy(planned, own) : planned
     await writePackManifest(sdk, auth, fork, m, `${input.intent}:manifest:${m.packHash}`)
     onProgress?.(++done, total)
@@ -424,7 +434,7 @@ export async function forkRepoV2(
       unreferenceable.push((copies[0] as PackManifest).packHash)
       continue
     }
-    const own = input.copy ? await input.copy(planned.packHash, { ...(copies[0] as PackManifest), copies }) : null
+    const own = input.copy && !onPlatform(planned) ? await input.copy(planned.packHash, { ...(copies[0] as PackManifest), copies }) : null
     const manifest = own ? withOwnCopy(planned, own) : planned
     await writePackManifest(sdk, auth, fork, manifest, `fork:${fork.repoId}:manifest:${manifest.packHash}`)
     written += 1

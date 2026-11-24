@@ -9,7 +9,11 @@ const state = vi.hoisted(() => ({ fork: vi.fn(), push: vi.fn(), storage: null as
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'me', signer: { identityId: 'me' } }) }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, disabledReason: null, failed: () => 'fork failed' }) }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true }) }))
-vi.mock('@/hooks/use-async', () => ({ useAsync: () => ({ data: { manifests: [], refs: [], unreferenceable: [] }, error: null }) }))
+const MANIFESTS = [
+  { packHash: 'aa'.repeat(32), kind: 0, sizeBytes: 3 * 1048576, objectCount: 1, chunkCount: 0, storage: 1, uris: ['https://parent.example/a'] },
+  { packHash: 'bb'.repeat(32), kind: 0, sizeBytes: 1048576, objectCount: 1, chunkCount: 0, storage: 1, uris: ['platform://core/r/owner/bb'] },
+]
+vi.mock('@/hooks/use-async', () => ({ useAsync: () => ({ data: { manifests: MANIFESTS, refs: [], unreferenceable: [] }, error: null }) }))
 vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: state.storage, needsUnlock: state.needsUnlock }) }))
 vi.mock('@/lib/storage/pin-copies', async (load) => ({
   ...await load<object>(),
@@ -57,10 +61,21 @@ describe('a fork and storage', () => {
     state.storage = { profiles: [R2], defaultPolicy: { targets: ['r2'], replicas: 1, platformFallback: false } }
     await render()
     expect(host.querySelector('[data-testid="fork-storage"]')).toBeNull()
-    expect(host.querySelector('[data-testid="fork-plan"]')?.textContent).toContain('copied to r2')
+    expect(host.querySelector('[data-testid="fork-plan"]')?.textContent).toContain('2 pack manifests (1 copied to r2, 3.0 MB)')
     await act(async () => button('Sign & fork').click())
     expect(state.fork.mock.calls[0]![3]).toMatchObject({ copy: expect.objectContaining({ profile: 'r2' }) })
     expect(state.push).toHaveBeenCalled()
+  })
+
+  it('keeps the files by reference when asked, from a collapsed option', async () => {
+    state.storage = { profiles: [R2], defaultPolicy: { targets: ['r2'], replicas: 1, platformFallback: false } }
+    await render()
+    const option = host.querySelector<HTMLInputElement>('[data-testid="fork-by-reference"]')!
+    expect(option.closest('details')?.open).toBe(false)
+    await act(async () => option.click())
+    expect(host.querySelector('[data-testid="fork-plan"]')?.textContent).toContain('2 pack manifests by reference')
+    await act(async () => button('Sign & fork').click())
+    expect(state.fork.mock.calls[0]![3]).not.toHaveProperty('copy')
   })
 
   it('stays on the dialog when some packs could not be copied', async () => {
@@ -73,7 +88,7 @@ describe('a fork and storage', () => {
     await act(async () => button('Sign & fork').click())
     expect(state.push).not.toHaveBeenCalled()
     expect(host.textContent).toContain("Your fork is ready. 1 file could not be copied and stays on repo's storage.")
-    expect(host.querySelector('details')?.textContent).toContain('failed: bucket unreachable')
+    expect(host.querySelector('ol[aria-label="Copy progress"]')?.closest('details')?.textContent).toContain('failed: bucket unreachable')
     await act(async () => button('View fork').click())
     expect(state.push).toHaveBeenCalledWith('/repo/?owner=me&name=repo&created=1')
   })

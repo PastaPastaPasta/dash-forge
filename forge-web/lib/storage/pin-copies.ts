@@ -6,11 +6,10 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { bytesToHex } from '@noble/hashes/utils.js'
-import { sha256 } from '@noble/hashes/sha2.js'
 
 import { PACK_KIND } from '../constants'
 import type { RepoRef } from '../repo/contract'
+import type { CopyPack } from '../repo/fork'
 import { packsOfKind, readBrowseManifests, readRepoPackManifests, type PackManifest } from '../repo/packs'
 import { DOC_PACK_MIRROR, mirrorsBy, mirrorUrisProblem, recordMirror, type OwnMirror } from '../repo/pack-mirrors'
 import { EXISTING, previewCreate, sumPreviews, type CostPreview, type WriteAuth } from '../sdk'
@@ -22,7 +21,7 @@ import { externalTargets, storeFile } from './upload'
 import { errText } from './util'
 
 /** The pack kinds a pin copies: a public repo's git packs and the indexes and bodies readers fetch. */
-export const PIN_KINDS: readonly number[] = [
+const PIN_KINDS: readonly number[] = [
   PACK_KIND.GIT_PACK,
   PACK_KIND.OBJECT_LOCATOR,
   PACK_KIND.FLAT_INDEX,
@@ -35,7 +34,7 @@ export const PIN_KINDS: readonly number[] = [
 export const COPY_MAX_BYTES = 512 * 1024 * 1024
 
 /** One pack a pin covers. */
-export interface RepoPack {
+interface RepoPack {
   readonly packHash: string
   readonly sizeBytes: number
   /** The pack with every copy in reader order, for the verified read. */
@@ -111,30 +110,34 @@ export async function readPinStatus(sdk: EvoSDK, repo: RepoRef, me: string): Pro
 }
 
 /** An address of the length `profile` records, for the price. */
-function sampleAddress(profile: StorageProfile | null): string {
+function sampleAddress(profile: StorageProfile): string {
   const cid = `bafkrei${'a'.repeat(52)}`
-  const s = profile?.settings
-  if (s?.kind === 's3') return publicObjectUrl(s, artifactKey(s, 'a'.repeat(64)))
-  if ((s?.kind === 'ipfs-kubo' || s?.kind === 'ipfs-pinning-service') && s.publicGateway !== '') return gatewayUrl(s.publicGateway, cid)
+  const s = profile.settings
+  if (s.kind === 's3') return publicObjectUrl(s, artifactKey(s, 'a'.repeat(64)))
+  if (s.kind !== 'platform' && s.publicGateway !== '') return gatewayUrl(s.publicGateway, cid)
   return `ipfs://${cid}`
 }
 
 /** One `packMirror` per pack; the first builds the repo's subtree when the signer has none yet. */
-export function pinCost(count: number, profile: StorageProfile | null, firstInRepo: boolean): CostPreview {
+export function pinCost(count: number, profile: StorageProfile, firstInRepo: boolean): CostPreview {
   const uris = [sampleAddress(profile)]
   return sumPreviews(Array.from({ length: count }, (_, i) => previewCreate(DOC_PACK_MIRROR, { uris }, i === 0 && firstInRepo ? { repo: true } : EXISTING)))
 }
 
-export type FetchBytes = (pack: RepoPack, signal?: AbortSignal) => Promise<Uint8Array>
+/** The storage refused or failed a copy: every later copy to it would fail the same way. */
+export class StoreFailed extends Error {}
 
-/** Read `pack` (verified) from `repo` and store it on `profile`; the stored copy's URIs. */
-export async function copyPack(sdk: EvoSDK, repo: RepoRef, pack: RepoPack, profile: StorageProfile, opts: { readonly signal?: AbortSignal; readonly fetchBytes?: FetchBytes } = {}): Promise<string[]> {
+/** Read `pack` (verified against its hash) from `repo` and store it on `profile`; the stored copy's URIs. */
+async function copyPack(sdk: EvoSDK, repo: RepoRef, pack: RepoPack, profile: StorageProfile, signal?: AbortSignal): Promise<string[]> {
   if (pack.sizeBytes > COPY_MAX_BYTES) throw new Error(`over 512 MiB: use dg repo pin ${repo.ownerId}/${repo.name}`)
-  const bytes = await (opts.fetchBytes ? opts.fetchBytes(pack, opts.signal) : loadArtifactBytesProgress(sdk, repo, pack.source, undefined, opts.signal, true))
-  if (bytesToHex(sha256(bytes)) !== pack.packHash) throw new Error('the downloaded bytes do not match the pack')
-  if (opts.signal?.aborted) throw new Error('Cancelled')
-  const stored = await storeFile(bytes, { policy: { targets: [profile.name], replicas: 1, platformFallback: false }, profiles: [profile], sha256Hex: pack.packHash })
-  return [...stored.uris]
+  const bytes = await loadArtifactBytesProgress(sdk, repo, pack.source, undefined, signal, true)
+  if (signal?.aborted) throw new Error('Cancelled')
+  try {
+    const stored = await storeFile(bytes, { policy: { targets: [profile.name], replicas: 1, platformFallback: false }, profiles: [profile], sha256Hex: pack.packHash })
+    return [...stored.uris]
+  } catch (e) {
+    throw new StoreFailed(`${profile.name}: ${errText(e)}`)
+  }
 }
 
 export type CopyState = 'copying' | 'done' | 'skipped' | 'failed'
@@ -153,8 +156,9 @@ export interface CopySummary {
 }
 
 /**
- * Copy each pack to `profile` and record it, one at a time. A pack that cannot be read or stored
- * is reported and skipped; a record Platform refuses stops the run (the next would be refused too).
+ * Copy each pack to `profile` and record it, one at a time. A pack that cannot be read is
+ * reported and skipped; a storage failure or a record Platform refuses stops the run (the next
+ * would fail the same way).
  */
 export async function pinPacks(
   sdk: EvoSDK,
@@ -162,7 +166,7 @@ export async function pinPacks(
   repo: RepoRef,
   profile: StorageProfile,
   packs: readonly RepoPack[],
-  opts: { readonly signal?: AbortSignal; readonly onProgress?: (row: CopyRow) => void; readonly fetchBytes?: FetchBytes; readonly intent?: string } = {},
+  opts: { readonly signal?: AbortSignal; readonly onProgress?: (row: CopyRow) => void; readonly intent?: string } = {},
 ): Promise<CopySummary> {
   if (repo.visibility !== 'public') throw new Error('only a public repository can be pinned to your storage')
   let recorded = 0
@@ -175,10 +179,12 @@ export async function pinPacks(
     report('copying')
     let uris: string[]
     try {
-      uris = mirrorAddress(await copyPack(sdk, repo, pack, profile, opts))
+      uris = mirrorAddress(await copyPack(sdk, repo, pack, profile, opts.signal))
     } catch (e) {
-      failed++
       report('failed', opts.signal?.aborted ? 'Cancelled; press Pin to resume.' : errText(e))
+      if (opts.signal?.aborted) break
+      if (e instanceof StoreFailed) throw e
+      failed++
       continue
     }
     try {
@@ -194,24 +200,29 @@ export async function pinPacks(
   return { recorded, failed, sizeBytes }
 }
 
-/** A fork's copy of one parent pack: its URIs on the forker's storage, or null to keep it by reference. */
-export type CopyPack = (packHash: string, source?: PackManifest) => Promise<readonly string[] | null>
-
 /**
  * The copier a fork (and a fork's sync) uses: each parent pack read from `parent` and stored on
- * `profile`. A pack it cannot copy stays by reference, as before, and is reported.
+ * `profile`. A pack it cannot read stays by reference, as before; after a storage failure every
+ * later pack does too, without being downloaded.
  */
 export function forkCopier(sdk: EvoSDK, parent: RepoRef, profile: StorageProfile, onCopy?: (packHash: string, state: CopyState, why?: string) => void): CopyPack {
   let packs: Promise<Map<string, PackManifest>> | null = null
+  let storeFailed: string | null = null
+  const sourceOf = async (hash: string): Promise<PackManifest | undefined> => {
+    packs ??= readRepoPackManifests(sdk, parent).then((ms) => new Map(packsOfKind(ms, PACK_KIND.GIT_PACK).map((p) => [p.packHash.toLowerCase(), p])))
+    try {
+      return (await packs).get(hash)
+    } catch {
+      packs = null
+      return undefined
+    }
+  }
   return async (packHash, source) => {
     const hash = packHash.toLowerCase()
-    let src = source
-    if (src === undefined) {
-      packs ??= readRepoPackManifests(sdk, parent).then((ms) => new Map(packsOfKind(ms, PACK_KIND.GIT_PACK).map((p) => [p.packHash.toLowerCase(), p])))
-      src = (await packs).get(hash)
-    }
-    if (src === undefined || src.sizeBytes > COPY_MAX_BYTES) {
-      onCopy?.(hash, 'skipped', src === undefined ? 'not found' : 'over 512 MiB')
+    const src = source ?? (await sourceOf(hash))
+    const skip = storeFailed ?? (src === undefined ? 'not found' : src.sizeBytes > COPY_MAX_BYTES ? 'over 512 MiB' : null)
+    if (skip !== null || src === undefined) {
+      onCopy?.(hash, 'skipped', skip ?? undefined)
       return null
     }
     onCopy?.(hash, 'copying')
@@ -220,6 +231,7 @@ export function forkCopier(sdk: EvoSDK, parent: RepoRef, profile: StorageProfile
       onCopy?.(hash, 'done')
       return uris
     } catch (e) {
+      if (e instanceof StoreFailed) storeFailed = errText(e)
       onCopy?.(hash, 'failed', errText(e))
       return null
     }

@@ -186,9 +186,13 @@ describe('sync fork (P1-4)', () => {
     expect(written).toEqual([{ ref: { refName: 'refs/heads/main', newOid: B }, options: { intent: `i:ref:${B}` } }])
   })
 
-  it("records the forker's copy first when one is made, and by reference when not", async () => {
-    const plan = planSyncManifests(parentRepo as never, [manifest('a', 2, 0, 5, []), manifest('b', 3, 1, 6, ['https://parent.example/p3'])] as never, [])
-    const copy = vi.fn(async (hash: string) => (hash === '02'.repeat(32) ? ['https://mine.example/p2'] : null))
+  it("records the forker's copy first when one is made; never copies a pack the parent holds on Platform", async () => {
+    const plan = planSyncManifests(
+      parentRepo as never,
+      [manifest('a', 2, 0, 5, []), manifest('b', 3, 1, 6, ['https://parent.example/p3']), manifest('c', 4, 1, 7, ['https://parent.example/p4'])] as never,
+      [],
+    )
+    const copy = vi.fn(async (hash: string) => (hash === '03'.repeat(32) ? ['https://mine.example/p3'] : null))
     const seen: unknown[] = []
     const push = await import('./push')
     vi.mocked(push.writePackManifest).mockImplementation(async (_s, _a, _r, m) => {
@@ -196,10 +200,11 @@ describe('sync fork (P1-4)', () => {
       return { documentId: 'm' } as never
     })
     await syncFork({} as never, {} as never, forkRepo as never, { refName: 'refs/heads/main', forkTip: null, parentTip: 'b'.repeat(40), plan, intent: 'i', copy })
-    expect(copy).toHaveBeenCalledTimes(2)
+    expect(copy.mock.calls.map((c) => c[0])).toEqual(['03'.repeat(32), '04'.repeat(32)])
     expect(seen).toEqual([
-      ['https://mine.example/p2', `platform://CORE/${PARENT}/${UPLOADER}/${'02'.repeat(32)}`],
-      ['https://parent.example/p3'],
+      [`platform://CORE/${PARENT}/${UPLOADER}/${'02'.repeat(32)}`],
+      ['https://mine.example/p3', 'https://parent.example/p3'],
+      ['https://parent.example/p4'],
     ])
   })
 

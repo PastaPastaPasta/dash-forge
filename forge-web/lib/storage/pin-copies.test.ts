@@ -16,7 +16,11 @@ const io = vi.hoisted(() => ({
   parent: [] as PackManifest[],
 }))
 vi.mock('../view/browse-source', () => ({
-  loadArtifactBytesProgress: async (_sdk: unknown, _repo: unknown, m: PackManifest) => io.bytes.get(m.packHash) ?? new Uint8Array([9]),
+  loadArtifactBytesProgress: async (_sdk: unknown, _repo: unknown, m: PackManifest) => {
+    const bytes = io.bytes.get(m.packHash)
+    if (bytes === undefined) throw new Error('no copy served the pack')
+    return bytes
+  },
 }))
 vi.mock('./upload', async (orig) => ({
   ...(await orig<typeof import('./upload')>()),
@@ -126,7 +130,7 @@ describe('pinned state', () => {
   })
 
   it('prices one record per pack', () => {
-    expect(pinCost(0, null, true).credits).toBe(0)
+    expect(pinCost(0, s3('r2'), true).credits).toBe(0)
     const one = pinCost(1, s3('r2'), false).credits
     expect(pinCost(3, s3('r2'), false).credits).toBe(3 * one)
     expect(pinCost(1, s3('r2'), true).credits).toBeGreaterThan(one)
@@ -149,13 +153,19 @@ describe('pinning', () => {
     expect(rows).toEqual(['1/2 copying', '1/2 done', '2/2 copying', '2/2 done'])
   })
 
-  it('records nothing for a pack whose bytes do not verify, and goes on', async () => {
-    io.bytes.set(a.packHash, new Uint8Array([0]))
+  it('records nothing for a pack no copy serves, and goes on', async () => {
+    io.bytes.delete(a.packHash)
     const rows: string[] = []
     const done = await pinPacks({} as never, {} as never, REPO, kubo('node'), repoPacks([a, b]), { onProgress: (r) => rows.push(`${r.state}${r.why ? `: ${r.why}` : ''}`) })
     expect(done.recorded).toBe(1)
     expect(done.failed).toBe(1)
-    expect(rows).toContain('failed: the downloaded bytes do not match the pack')
+    expect(rows).toContain('failed: no copy served the pack')
+  })
+
+  it('stops at the first storage failure rather than downloading every pack', async () => {
+    io.storeFail = new Error('403 Forbidden')
+    await expect(pinPacks({} as never, {} as never, REPO, s3('r2'), repoPacks([a, b]))).rejects.toThrow('r2: 403 Forbidden')
+    expect(io.recorded).toEqual([])
   })
 
   it('stops when Platform refuses a record', async () => {
@@ -185,9 +195,10 @@ describe("a fork's copies", () => {
     io.storeFail = new Error('bucket unreachable')
     const seen: string[] = []
     const copy = forkCopier({} as never, REPO, s3('r2'), (h, state, why) => seen.push(`${state}${why ? `: ${why}` : ''}`))
-    expect(await copy(a.packHash, a)).toBeNull()
     expect(await copy('ff'.repeat(32))).toBeNull()
     expect(await copy(a.packHash, { ...a, sizeBytes: COPY_MAX_BYTES + 1 })).toBeNull()
-    expect(seen).toEqual(['copying', 'failed: bucket unreachable', 'skipped: not found', 'skipped: over 512 MiB'])
+    expect(await copy(a.packHash, a)).toBeNull()
+    expect(await copy(a.packHash, a)).toBeNull()
+    expect(seen).toEqual(['skipped: not found', 'skipped: over 512 MiB', 'copying', 'failed: r2: bucket unreachable', 'skipped: r2: bucket unreachable'])
   })
 })

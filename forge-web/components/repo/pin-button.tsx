@@ -9,12 +9,9 @@ import type { RepoRef } from '@/lib/repo/contract'
 import { kuboUpCommand } from '@/lib/storage/kubo-connect'
 import type { PinProgress, PinSummary } from '@/lib/storage/pin'
 import { pinCost, pinLabel, type CopyRow } from '@/lib/storage/pin-copies'
-import { DOC_PACK_MIRROR } from '@/lib/repo/pack-mirrors'
-import { writeContractKind } from '@/lib/layout'
 import { DOCS } from '@/lib/docs-links'
 import { useRepoPin } from '@/hooks/use-repo-pin'
 import { usePublicPin } from '@/hooks/use-public-pin'
-import { useWriteGuard } from '@/hooks/use-write-guard'
 import { plural } from '@/lib/view/format'
 import { Button, buttonClass } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -57,27 +54,27 @@ function PublicPinButton({ repo }: { repo: RepoRef }): JSX.Element {
 }
 
 function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnType<typeof usePublicPin>; onClose: () => void }): JSX.Element {
-  const guard = useWriteGuard()
   const s = pin.status.data
   const missing = s?.missing.length ?? 0
-  const cost = s && pin.profile && missing > 0 ? pinCost(missing, pin.profile, s.mine.length === 0) : null
+  const tooLarge = s?.tooLarge.length ?? 0
+  const hasPin = (s?.mine.length ?? 0) > 0
+  const cost = s && pin.profile && missing > 0 ? pinCost(missing, pin.profile, !hasPin) : null
   const busy = pin.running !== null
   const close = (): void => { if (pin.running !== 'unpin') { pin.cancel(); onClose() } }
   const noStorage = !pin.storage.needsUnlock && !pin.storage.loading && pin.profiles.length === 0
-  const pinned = s !== null && s.mine.length > 0 && missing === 0
-  const action = s !== null && s.mine.length > 0 ? `Update pin (${missing} new)` : 'Pin'
-  const go = (): void => { if (cost && guard.check(cost, writeContractKind(repo.forge, DOC_PACK_MIRROR), 'pin this repo')) void pin.start() }
+  const pinned = hasPin && missing === 0
   const current = pin.rows.findLast((r) => r.state === 'copying')
+  const follow = `dg repo pin ${repo.ownerId}/${repo.name} --follow`
 
   let primary: JSX.Element | null = null
   if (pin.running === 'pin') primary = <Button onClick={pin.cancel}>Cancel</Button>
   else if (noStorage) primary = <Link href="/settings/storage/" className={buttonClass({ variant: 'primary', size: 'md' })}>Set up storage</Link>
+  else if (cost) primary = <Button variant="primary" loading={busy} onClick={() => void pin.start(cost)}>{pinLabel(s)}</Button>
   else if (pinned) primary = <Button variant="primary" onClick={close}>Done</Button>
-  else if (cost) primary = <Button variant="primary" loading={pin.running !== null} onClick={go}>{action}</Button>
 
   return <Dialog open onClose={close} title={`Pin ${repo.name}`} description="Keep a copy of this repository's files on your own storage, so it stays available." footer={<>
-    {s !== null && s.mine.length > 0 && !busy ? <Button variant="ghost" onClick={() => void pin.unpin()} data-testid="pin-unpin">Unpin</Button> : null}
-    <Button variant="ghost" onClick={close} disabled={pin.running === 'unpin'}>Close</Button>
+    {hasPin && !busy ? <Button variant="ghost" onClick={() => void pin.unpin()} data-testid="pin-unpin">Unpin</Button> : null}
+    {pinned && !busy ? null : <Button variant="ghost" onClick={close} disabled={pin.running === 'unpin'}>Close</Button>}
     {primary}
   </>}>
     <div className="space-y-3 text-dense">
@@ -86,7 +83,11 @@ function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnTyp
         : noStorage ? <p>Pinning needs storage of your own that others can read: an S3 or R2 bucket with a public URL, or an IPFS node. <a className="underline" href={DOCS.selfHost} target="_blank" rel="noreferrer noopener">Self-host guide</a></p>
         : s === null ? <p>{pin.status.error ?? 'Reading this repository’s files…'}</p>
         : s.packs.length === 0 ? <p>This repository has no files to pin yet.</p>
-        : pinned ? <p data-testid="pin-state">Pinned: all {plural(s.mine.length, 'file')} have a copy on your storage.</p>
+        : missing === 0 && tooLarge > 0 ? <>
+          <p data-testid="pin-state">{pinned ? `Pinned: ${plural(s.mine.length, 'file')} ${s.mine.length === 1 ? 'has' : 'have'} a copy on your storage. ` : ''}{plural(tooLarge, 'file')} over 512 MiB {tooLarge === 1 ? 'is' : 'are'} too large for the browser; pin {tooLarge === 1 ? 'it' : 'them'} with:</p>
+          <CopyBlock text={follow} label="Copy the pin command" />
+        </>
+        : pinned ? <p data-testid="pin-state">Pinned: every file has a copy on your storage.</p>
         : <>
           <p data-testid="pin-plan">{plural(missing, 'file')} · {pinMib(s.missing.reduce((n, p) => n + p.sizeBytes, 0))} MiB → {pin.profile?.name}</p>
           {pin.profiles.length > 1 ? <label className="block">Storage<select aria-label="Storage" className="ml-2 rounded border bg-transparent p-1" value={pin.profile?.name ?? ''} disabled={busy} onChange={(e) => pin.setChosen(e.target.value)}>{pin.profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}</select></label> : null}
@@ -100,11 +101,11 @@ function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnTyp
         <summary className="cursor-pointer">Details</summary>
         <div className="mt-2 space-y-2">
           <CopyProgressList rows={pin.rows} />
-          {s && s.tooLarge.length > 0 ? <p>{plural(s.tooLarge.length, 'file')} over 512 MiB {s.tooLarge.length === 1 ? 'needs' : 'need'} the command below.</p> : null}
+          {missing > 0 && tooLarge > 0 ? <p>{plural(tooLarge, 'file')} over 512 MiB {tooLarge === 1 ? 'needs' : 'need'} the command below.</p> : null}
           <p>Each file is recorded on Dash Platform so readers can find your copy. Unpin removes the records; the files stay on your storage.</p>
           {pin.profile && pin.profile.settings.kind !== 's3' ? <p>Your node will tell the IPFS network it holds these files.</p> : null}
           <p>Keep it in sync automatically:</p>
-          <CopyBlock text={`dg repo pin ${repo.ownerId}/${repo.name} --follow`} label="Copy the follow command" />
+          <CopyBlock text={follow} label="Copy the follow command" />
         </div>
       </details>
     </div>

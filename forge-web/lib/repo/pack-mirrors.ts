@@ -24,7 +24,7 @@ import {
   type WhereClause,
   type WriteAuth,
 } from '../sdk'
-import { checkMirrorUris, mirrorReadOrder, type MirrorRecord } from '../rules/pack-mirror'
+import { checkMirrorUris, mirrorReadOrder, type MirrorRecord, type UriCheck } from '../rules/pack-mirror'
 import { asIdentifierString, num, str, stringArray, type RepoRef } from './contract'
 import { readRoleOracle } from './members'
 import { packHashHex, packHashOperand } from './pack-hash'
@@ -51,6 +51,7 @@ const memo = new Map<string, Promise<string[]>>()
 /** Forget every pack's mirror addresses (a new session; tests). */
 export function resetMirrorUris(): void {
   memo.clear()
+  byOwner.clear()
 }
 
 /**
@@ -117,10 +118,7 @@ export interface OwnMirror {
   readonly uris: readonly string[]
 }
 
-/** Why a record of `uris` would be refused, in words, or null. Parity: forge-core `uri_problem_words`. */
-export function mirrorUrisProblem(uris: readonly string[]): string | null {
-  const check = checkMirrorUris(uris)
-  if ('kind' in check) return null
+function problemWords(check: Exclude<UriCheck, { readonly kind: number }>): string {
   const which = check.index === undefined ? '' : `address ${check.index + 1}: `
   switch (check.problem) {
     case 'none': return 'give at least one address'
@@ -133,22 +131,42 @@ export function mirrorUrisProblem(uris: readonly string[]): string | null {
   }
 }
 
+/** Why a record of `uris` would be refused, in words, or null. Parity: forge-core `uri_problem_words`. */
+export function mirrorUrisProblem(uris: readonly string[]): string | null {
+  const check = checkMirrorUris(uris)
+  return 'kind' in check ? null : problemWords(check)
+}
+
+/** Each owner's records in a forge, read once per session (`contract:owner`) until a pin or unpin changes them. */
+const byOwner = new Map<string, Promise<OwnMirror[]>>()
+
+/** Forget `owner`'s records (after they pin or unpin). */
+export function forgetMirrorsBy(owner: string): void {
+  for (const key of byOwner.keys()) if (key.endsWith(`:${owner}`)) byOwner.delete(key)
+}
+
 /**
  * Every mirror `owner` recorded in `repo`'s forge (the `byOwner` index), oldest first, kept to
  * `repo`. Parity: forge-core `pack_mirror::mirrors_by`.
  */
 export async function mirrorsBy(sdk: EvoSDK, repo: RepoRef, owner: string): Promise<OwnMirror[]> {
-  const docs = await queryAllDocuments(sdk, {
-    dataContractId: contractOf(repo.forge, DOC_PACK_MIRROR),
-    documentTypeName: DOC_PACK_MIRROR,
-    where: [['$ownerId', '==', owner]],
-    orderBy: [['$createdAt', 'asc']],
-  })
-  return docs.flatMap((d) => {
-    const r = mirrorRecordOf(d)
-    const repoId = asIdentifierString(d['repoId'])
-    return r === null || repoId !== repo.repoId ? [] : [{ id: r.id, repoId, packHash: r.packHash, kind: r.kind, uris: r.uris }]
-  })
+  const contract = contractOf(repo.forge, DOC_PACK_MIRROR)
+  const key = `${contract}:${owner}`
+  let all = byOwner.get(key)
+  if (all === undefined) {
+    const read = queryAllDocuments(sdk, { dataContractId: contract, documentTypeName: DOC_PACK_MIRROR, where: [['$ownerId', '==', owner]], orderBy: [['$createdAt', 'asc']] }).then((docs) =>
+      docs.flatMap((d) => {
+        const r = mirrorRecordOf(d)
+        return r === null ? [] : [{ id: r.id, repoId: asIdentifierString(d['repoId']), packHash: r.packHash, kind: r.kind, uris: r.uris }]
+      }),
+    )
+    read.catch(() => {
+      if (byOwner.get(key) === read) byOwner.delete(key)
+    })
+    byOwner.set(key, read)
+    all = read
+  }
+  return (await all).filter((m) => m.repoId === repo.repoId)
 }
 
 /**
@@ -158,9 +176,8 @@ export async function mirrorsBy(sdk: EvoSDK, repo: RepoRef, owner: string): Prom
  */
 export async function recordMirror(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, packHash: string, uris: readonly string[], intent?: string): Promise<void> {
   if (repo.visibility !== 'public') throw new Error("a private repository's packs are sealed to its members: mirrors are for public repositories")
-  const problem = mirrorUrisProblem(uris)
-  if (problem !== null) throw new Error(problem)
-  const check = checkMirrorUris(uris) as { kind: number }
+  const check = checkMirrorUris(uris)
+  if (!('kind' in check)) throw new Error(problemWords(check))
   try {
     await createDocumentIdempotent(sdk, auth, {
       contractId: contractOf(repo.forge, DOC_PACK_MIRROR),

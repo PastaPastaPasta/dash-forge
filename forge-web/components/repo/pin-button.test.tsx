@@ -7,10 +7,9 @@ import type { RepoRef } from '@/lib/repo/contract'
 const pack = (n: number, size = 1048576) => ({ packHash: String(n).repeat(64).slice(0, 64), sizeBytes: size, source: {} })
 const state = vi.hoisted(() => ({
   identity: 'me' as string | null, start: vi.fn(), cancel: vi.fn(), requiresConsent: false, profile: true, unavailable: 0, invalid: 0,
-  pub: {} as Record<string, unknown>, check: vi.fn(() => true),
+  pub: {} as Record<string, unknown>,
 }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: state.identity }) }))
-vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: state.check, disabledReason: null, failed: () => 'failed' }) }))
 vi.mock('@/hooks/use-repo-pin', () => ({ useRepoPin: () => ({
   storage: { needsUnlock: false, loading: false, error: null },
   plan: { data: { targets: [{ size: 1048576 }], needsConsent: state.requiresConsent, notOnIpfs: 0, membersOnlySkipped: 0, unreadableSkipped: state.unavailable, invalidCidsSkipped: state.invalid }, error: null },
@@ -35,7 +34,7 @@ function publicPin(over: Record<string, unknown> = {}, status: unknown = { packs
 }
 let host: HTMLDivElement; let root: Root
 beforeEach(() => {
-  state.identity = 'me'; state.requiresConsent = false; state.profile = true; state.unavailable = 0; state.invalid = 0; state.start.mockReset(); state.cancel.mockReset(); state.check.mockReset().mockReturnValue(true)
+  state.identity = 'me'; state.requiresConsent = false; state.profile = true; state.unavailable = 0; state.invalid = 0; state.start.mockReset(); state.cancel.mockReset()
   publicPin()
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
@@ -64,8 +63,7 @@ describe('Pin on a public repo', () => {
     expect(Number(host.querySelector('[data-testid="cost"]')?.textContent)).toBeGreaterThan(0)
     expect(host.querySelector('select')).toBeNull()
     await act(async () => buttons('Pin')[1]!.click())
-    expect(state.check).toHaveBeenCalledWith(expect.objectContaining({ credits: expect.any(Number) }), 'core', 'pin this repo')
-    expect(state.pub['start']).toHaveBeenCalledOnce()
+    expect(state.pub['start']).toHaveBeenCalledWith(expect.objectContaining({ credits: expect.any(Number) }))
   })
 
   it('offers a storage picker only with more than one profile', async () => {
@@ -83,12 +81,21 @@ describe('Pin on a public repo', () => {
     expect(state.pub['unpin']).toHaveBeenCalledOnce()
   })
 
-  it('says Pinned with Done as the primary action', async () => {
+  it('says Pinned with Done as the one closing action', async () => {
     publicPin({}, { packs: [pack(1)], mine: [mine(1)], missing: [], tooLarge: [] })
     await render(); await open()
-    expect(host.querySelector('[data-testid="pin-state"]')?.textContent).toBe('Pinned: all 1 file have a copy on your storage.')
+    expect(host.querySelector('[data-testid="pin-state"]')?.textContent).toBe('Pinned: every file has a copy on your storage.')
     expect(buttons('Done')).toHaveLength(1)
+    expect(buttons('Close')).toHaveLength(0)
     expect(host.querySelector('[data-testid="cost"]')).toBeNull()
+  })
+
+  it('names the command in the main text when every file left is too large for the browser', async () => {
+    publicPin({}, { packs: [pack(1), pack(2, 600 * 1048576)], mine: [mine(1)], missing: [], tooLarge: [pack(2, 600 * 1048576)] })
+    await render(); await open()
+    expect(host.querySelector('[data-testid="pin-state"]')?.textContent).toBe('Pinned: 1 file has a copy on your storage. 1 file over 512 MiB is too large for the browser; pin it with:')
+    expect(host.querySelector('[role="dialog"]')?.querySelector(':scope details')?.contains(host.querySelector('[data-testid="pin-state"]'))).toBeFalsy()
+    expect(host.textContent).toContain('dg repo pin owner/repo --follow')
   })
 
   it('leads to storage setup and the self-host guide when there is no usable storage', async () => {
