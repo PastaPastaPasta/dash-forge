@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
 
-import { groupProblems, options, parseArgs, plan } from './launch-network.mjs';
+import { groupProblems, options, parseArgs, plan, warningLines } from './launch-network.mjs';
 
 const opts = (...argv) => options(parseArgs(argv));
 const labels = (o) => plan(o).map(([l]) => l);
@@ -21,7 +22,7 @@ test('--execute registers once, then runs the read-only checks', () => {
   const o = opts(...MAINNET, '--execute', '--deployer-created-height', '2400000');
   assert.deepEqual(labels(o), ['self-test', 'sums', 'dapi', 'dry-run', 'register', 'c1', 'group', 'freeze', 'snapshot']);
   const register = plan(o).find(([l]) => l === 'register');
-  assert.deepEqual(register[2], ['--network', 'mainnet', '--set', 'mainnet', '--identity', 'd.json', '--deployer-created-height', '2400000', '--expect-sha256', 's.txt']);
+  assert.deepEqual(register[2], ['--network', 'mainnet', '--set', 'mainnet', '--identity', resolve('d.json'), '--deployer-created-height', '2400000', '--expect-sha256', resolve('s.txt')]);
   assert.equal(register[3].confirm, true);
   assert.ok(o.record.endsWith('deployments/mainnet.json'));
 });
@@ -36,8 +37,18 @@ test('a re-run after the registration commit does not re-freeze', () => {
   assert.deepEqual(plan(o, { frozen: true }).map(([l]) => l), ['c1', 'group', 'snapshot']);
 });
 
-test('the live record needs the signed sums to register', () => {
+test('the live record needs the signed sums, in a dry run too', () => {
   assert.throws(() => opts('--network', 'mainnet', '--identity', 'd.json', '--execute'), /--expect-sha256/);
+  assert.throws(() => opts('--network', 'mainnet', '--identity', 'd.json'), /--expect-sha256/);
+});
+
+test('the dry run fails on any WARNING line', () => {
+  const dry = plan(opts(...MAINNET)).find(([l]) => l === 'dry-run');
+  assert.equal(dry[3].failOnWarning, true);
+  const scratchDry = plan(opts('--network', 'testnet', '--identity', 's', '--record', '/w/r.json', '--scratch-on', 'testnet', '--out', '/w/o')).find(([l]) => l === 'dry-run');
+  assert.equal(scratchDry[3].failOnWarning, false);
+  assert.deepEqual(warningLines('ok\n06:00:00 WARNING --expect-sha256: x\nfine'), ['06:00:00 WARNING --expect-sha256: x']);
+  assert.deepEqual(warningLines('no warnings here\n'), []);
 });
 
 test('a scratch rehearsal writes only its own record and output', () => {
