@@ -25,8 +25,10 @@ use dash_sdk::dpp::state_transition::batch_transition::batched_transition::docum
 };
 use dash_sdk::dpp::state_transition::batch_transition::batched_transition::BatchedTransitionRef;
 use dash_sdk::dpp::state_transition::batch_transition::methods::v0::DocumentsBatchTransitionMethodsV0;
+use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::batch_transition::BatchTransition;
 use dash_sdk::dpp::state_transition::StateTransition;
+use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::types::identity::PublicKeyHash;
@@ -39,6 +41,21 @@ use super::{
     LoadedIdentity, PlatformClient, SignedTransition, NONCE_MASK,
 };
 use crate::error::{Error, Result};
+
+/// Document transitions with base version 1, as evo-sdk builds them, so forge-web, dg and
+/// multisig.dashhq.org's rebuild agree byte for byte (version 2 only adds action fees, which no
+/// Forge document charges).
+const BASE_V1: StateTransitionCreationOptions = StateTransitionCreationOptions {
+    signing_options: StateTransitionSigningOptions {
+        allow_signing_with_any_security_level: false,
+        allow_signing_with_any_purpose: false,
+    },
+    batch_feature_version: None,
+    method_feature_version: None,
+    base_feature_version: Some(1),
+    action_fee_agreement: None,
+    contest_fund: None,
+};
 
 /// Signs nothing: building a transition through it leaves the signature empty and sets the
 /// signing key's id, which is exactly the unsigned form a proposal carries.
@@ -219,7 +236,7 @@ impl Build<'_> {
             None,
             &Unsigned,
             self.version,
-            None,
+            Some(BASE_V1),
         )
         .await
         .map_err(|e| Error::Platform(format!("building the create transition: {e}")))?;
@@ -244,7 +261,7 @@ impl Build<'_> {
             None,
             &Unsigned,
             self.version,
-            None,
+            Some(BASE_V1),
         )
         .await
         .map_err(|e| Error::Platform(format!("building the delete transition: {e}")))?;
@@ -287,7 +304,7 @@ impl Build<'_> {
             None,
             &Unsigned,
             self.version,
-            None,
+            Some(BASE_V1),
         )
         .await
         .map_err(|e| Error::Platform(format!("building the replace transition: {e}")))?;
@@ -350,13 +367,15 @@ fn org_key(identity: &LoadedIdentity, key_id: u32) -> Result<IdentityPublicKey> 
     Ok(key.clone())
 }
 
-/// Document properties as an organization's transition carries them (§9): identifiers and other
-/// byte values are plain byte arrays, as forge-web's `Uint8Array`s encode, so both clients build
-/// the same bytes for the same write.
+/// Document properties as an organization's transition carries them (§9), as evo-sdk encodes
+/// forge-web's values: identifiers and other byte values are plain byte arrays and integers are
+/// 64-bit, so both clients build the same bytes for the same write.
 fn plain_values(properties: BTreeMap<String, FieldValue>) -> BTreeMap<String, Value> {
     fn one(v: FieldValue) -> Value {
         match v {
             FieldValue::Identifier(b) | FieldValue::Bytes32(b) => Value::Bytes(b.to_vec()),
+            FieldValue::Integer(n) | FieldValue::Uint64(n) => Value::U64(n),
+            FieldValue::Signed(n) => Value::I64(n),
             FieldValue::Object(m) => Value::Map(
                 m.into_iter()
                     .map(|(k, v)| (Value::Text(k), one(v)))
@@ -771,6 +790,72 @@ mod tests {
         assert!(decoded_problems(&expect(&forge, &org), &d, &w.signable)
             .iter()
             .any(|p| p.contains("re-encode")));
+    }
+
+    fn field_of(key: &str, v: &Json) -> FieldValue {
+        match v {
+            Json::String(h) if matches!(key, "repoId" | "memberId") => {
+                FieldValue::Identifier(hex::decode(h).unwrap().try_into().unwrap())
+            }
+            Json::String(t) => FieldValue::text(t),
+            Json::Number(n) => FieldValue::Integer(n.as_u64().unwrap()),
+            Json::Bool(b) => FieldValue::Bool(*b),
+            Json::Array(items) => FieldValue::List(items.iter().map(|i| field_of("", i)).collect()),
+            Json::Object(m) => {
+                FieldValue::Object(m.iter().map(|(k, v)| (k.clone(), field_of(k, v))).collect())
+            }
+            Json::Null => panic!("null property"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuilds_forge_web_transitions_byte_for_byte() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts/fixtures/org/web-built.json"
+        ))
+        .unwrap();
+        let fixture: Json = serde_json::from_str(&text).unwrap();
+        let key = key();
+        for p in fixture["proposals"].as_array().unwrap() {
+            let intent = &p["intent"];
+            let doc = &intent["document"];
+            let mut dc = (*rc1::loaded(ForgeContract::Core).0).clone();
+            dc.set_id(parse_id(intent["contractId"].as_str().unwrap(), "contract").unwrap());
+            let owner = parse_id(intent["ownerId"].as_str().unwrap(), "owner").unwrap();
+            let props = doc["properties"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), field_of(k, v)))
+                .collect();
+            let entropy: [u8; 32] = hex::decode(doc["entropy"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let nonce: u64 = intent["identityContractNonce"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let w = Build {
+                dc: Arc::new(dc),
+                owner,
+                key: &key,
+                version: version(),
+            }
+            .create(doc["documentType"].as_str().unwrap(), props, nonce, entropy)
+            .await
+            .unwrap();
+            assert_eq!(
+                hex::encode(&w.unsigned),
+                p["unsigned"].as_str().unwrap(),
+                "{} differs from forge-web's",
+                doc["documentType"]
+            );
+            assert_eq!(w.intent["document"]["properties"], doc["properties"]);
+        }
     }
 
     #[test]

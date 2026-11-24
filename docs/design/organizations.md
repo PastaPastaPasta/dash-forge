@@ -126,4 +126,8 @@ Protocol reference: `dash-threshold-identity` `docs/PROTOCOL.md` and `src/{util,
 
 **Creating a request** also signs it with the creator's share, so a new request starts at "1 of N".
 
+**Same bytes from both clients.** A transition is built the way evo-sdk builds it: document base transition version 1, identifier and byte properties as plain byte arrays, integers as 64-bit. forge-web and dg then produce identical bytes for the same write; `forge-contracts/fixtures/org/web-built.json` holds transitions forge-web built on testnet, and dg's tests rebuild them byte for byte.
+
+**multisig.dashhq.org's own review.** `dti review` rebuilds each proposal from its intent and requires identical bytes. Checked on testnet (2026-11-24): it passes a repository create, a `maintainer` or `writer` delete and other writes whose properties are text and numbers, whether forge-web or dg made them. It refuses writes that carry an identifier property (`maintainer`/`writer`/`config` create): a `dti` intent has no byte type, so its rebuild turns `repoId` and `memberId` into text. Members sign those in Forge; making them reviewable in multisig.dashhq.org needs a byte encoding for `dti` intents.
+
 Shared test vector: `forge-contracts/fixtures/org/dti-2of3.json` (three members with their test phrases, the ceremony messages, proposals, approvals, the expected states and the combined signature).
