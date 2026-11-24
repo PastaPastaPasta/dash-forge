@@ -202,6 +202,22 @@ The switch covers this Pages build only. The IPFS release copies, `dg`, and CI o
 
 This switch is the lever for a bug in the client, not for a compromised site: a compromised build can ignore its own pause. If forge.dashhq.org itself serves wrong bytes, stop serving it at Cloudflare first (only the zone owner can; no maintenance rule is configured yet), then `gh workflow disable pages.yml`, investigate, fix, re-enable, check the result with `dg verify-app` and announce it. Unpublishing Pages without a replacement leaves nobody a copy to verify against, so do that last.
 
+## Linking the mainnet and testnet sites
+
+Each build reads and writes one network, so the hosted mainnet and testnet builds are two sites: `forge.dashhq.org` (mainnet) and `testnet-forge.dashhq.org` (testnet). Two repository variables, read by `pages.yml` into `NEXT_PUBLIC_MAINNET_SITE_URL` and `NEXT_PUBLIC_TESTNET_SITE_URL` (`forge-web/lib/network-sites.ts`), let each site point at the other:
+
+| Variable | What it adds |
+|---|---|
+| `PAGES_MAINNET_SITE_URL` | On a test network's build: an "Open Forge on Mainnet" link on the Networks page and a dismissible "Forge is live on mainnet" banner on every page, both only once the bundled `forge-contracts/deployments/mainnet.json` has Forge's contracts. |
+| `PAGES_TESTNET_SITE_URL` | On the mainnet build: an "Open Forge on Testnet" link on the Networks page and a "Testnet" link in the footer. |
+
+Each value is an `https://` origin with no path, such as `https://forge.dashhq.org`; anything else is ignored and the link stays hidden. Set both on every site's build, since a build never links to itself:
+
+```sh
+gh variable set PAGES_MAINNET_SITE_URL --body https://forge.dashhq.org
+gh variable set PAGES_TESTNET_SITE_URL --body https://testnet-forge.dashhq.org
+```
+
 ## Other static hosts (IPFS gateways, S3, nginx)
 
 The same rules apply:
