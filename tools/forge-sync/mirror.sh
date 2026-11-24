@@ -8,12 +8,13 @@
 #      an ancestor of GitHub's master, or a Forge tag that names another object is a divergence.
 #      Then nothing is pushed, the run fails, and `diverged=true` goes to $GITHUB_OUTPUT. GitHub
 #      never overwrites Forge: pushes are never forced.
-#   2. Push master (fast-forward only) and the tags Forge lacks, packs to $FORGE_STORAGE.
-#   3. Replicate: every CID the push pinned on the job's own kubo node ($KUBO_API) is exported
-#      as a CAR, then each is piped to $PIN_CMD (a forced-command ssh to our IPFS host), which
-#      must answer `confirmed<TAB><cid>`. This runs even when the push failed, because the helper
-#      writes refs one by one and some may have landed. Any CAR not confirmed fails the run and
-#      stays in $CAR_DIR; on success $CAR_DIR is removed.
+#   2. Preflight: with $PIN_CMD set, the IPFS host must answer an empty CAR with `ready`, so a
+#      push never lands while its packs have nowhere durable to go.
+#   3. Push master (fast-forward only) and the tags Forge lacks, packs to $FORGE_STORAGE. Just
+#      before, $STATE_DIR gets the job kubo's pins (`pins-before`) and a `pushed` marker naming
+#      the refspecs, for replicate.sh, which copies the new packs to the IPFS host and must run
+#      after this script whatever its outcome (the helper writes refs one by one, so even a
+#      failed or cancelled push may have moved some).
 #   4. Verify: list the Forge refs again; they must equal GitHub's.
 #
 # Environment:
@@ -22,10 +23,10 @@
 #   DASH_FORGE_KEY the dfk1: signing key                  (required to push)
 #   FORGE_STORAGE  storage profile name for packs         (default: ci-kubo)
 #   FORGE_COST_CAP DASH a single push may cost            (default: 0.05)
-#   KUBO_API       the job's kubo RPC API, for step 3     (default: http://127.0.0.1:5001)
-#   PIN_CMD        command reading one CAR on stdin       (empty: step 3 is skipped)
-#   CAR_DIR        where step 3 keeps the CARs it exports (default: a temporary directory), so
-#                  a failed replication can still be uploaded and imported by hand
+#   KUBO_API       the job's kubo RPC API                 (default: http://127.0.0.1:5001)
+#   PIN_CMD        command that reads one CAR on stdin and pins it on the IPFS host (empty: no
+#                  preflight, and replicate.sh does nothing)
+#   STATE_DIR      where steps 3 and replicate.sh share state (required with PIN_CMD)
 #   DRY_RUN=1      compare only
 set -euo pipefail
 
@@ -129,44 +130,23 @@ if [ "${DRY_RUN:-}" = 1 ]; then
 fi
 : "${DASH_FORGE_KEY:?DASH_FORGE_KEY is required to push}"
 
-kubo_pins() {
-    curl -fsS -m 60 -X POST "$KUBO_API/api/v0/pin/ls?type=recursive&quiet=true" | jq -r '.Keys // {} | keys[]' | sort
-}
-[ -z "$PIN_CMD" ] || kubo_pins >"$work/pins-before" || fail "could not list the job's kubo pins"
+if [ -n "$PIN_CMD" ]; then
+    : "${STATE_DIR:?STATE_DIR is required with PIN_CMD}"
+    ready=$(env -u DASH_FORGE_KEY bash -c "$PIN_CMD" </dev/null 2>&1) || true
+    [ "$ready" = ready ] || fail "the IPFS host is not ready to take packs, so nothing was pushed: $ready"
+    mkdir -p "$STATE_DIR"
+    curl -fsS -m 60 -X POST "$KUBO_API/api/v0/pin/ls?type=recursive&quiet=true" |
+        jq -r '.Keys // {} | keys[]' | sort >"$STATE_DIR/pins-before" ||
+        fail "could not list the job's kubo pins"
+    printf '%s\n' "${refspecs[@]}" >"$STATE_DIR/pushed"
+fi
+echo "pushed=true" >>"$OUTPUT"
 
 # Never forced (no leading +): git and the helper refuse anything but a fast-forward of master
 # and a tag that is new, should Forge have moved since the comparison above.
-push_rc=0
 git -c dash.storage="$FORGE_STORAGE" -c dash.confirm=refuse -c dash.costWarnThreshold="$FORGE_COST_CAP" \
-    push forge "${refspecs[@]}" </dev/null || push_rc=$?
-echo "pushed=true" >>"$OUTPUT"
-
-if [ -n "$PIN_CMD" ]; then
-    kubo_pins >"$work/pins-after" || fail "could not list the job's kubo pins after the push"
-    car_dir=${CAR_DIR:-$work/cars}
-    mkdir -p "$car_dir"
-    comm -13 "$work/pins-before" "$work/pins-after" >"$work/new-pins"
-    while read -r cid; do
-        curl -fsS -m 600 -X POST "$KUBO_API/api/v0/dag/export?arg=$cid" -o "$car_dir/$cid.car" ||
-            fail "could not export $cid from the job's kubo (the CARs exported so far are in $car_dir)"
-    done <"$work/new-pins"
-    unconfirmed=()
-    while read -r cid; do
-        if answer=$(env -u DASH_FORGE_KEY bash -c "$PIN_CMD" <"$car_dir/$cid.car" 2>&1) &&
-            printf '%s\n' "$answer" | grep -qxF "$(printf 'confirmed\t%s' "$cid")"; then
-            say "- replicated \`$cid\`"
-            rm -f "$car_dir/$cid.car"
-        else
-            printf '::warning title=Forge sync::the IPFS host did not confirm %s: %s\n' "$cid" "$answer"
-            unconfirmed+=("$cid")
-        fi
-    done <"$work/new-pins"
-    say "Replicated $(($(wc -l <"$work/new-pins") - ${#unconfirmed[@]})) of $(wc -l <"$work/new-pins" | tr -d ' ') new CID(s) to the IPFS host."
-    [ ${#unconfirmed[@]} -eq 0 ] ||
-        fail "${#unconfirmed[@]} CID(s) reached no durable node: ${unconfirmed[*]}. Their CARs are in $car_dir; import them on the IPFS host with ipfs dag import --pin-roots"
-    rmdir "$car_dir" 2>/dev/null || true
-fi
-[ "$push_rc" = 0 ] || fail "git push to Forge failed (exit $push_rc; the log above has the helper's error)"
+    push forge "${refspecs[@]}" </dev/null ||
+    fail "git push to Forge failed (the log above has the helper's error); replication still runs"
 
 forge_refs "$work/after"
 after_master=$(lookup "$work/after" refs/heads/master)

@@ -11,7 +11,15 @@ export FORGE_NETWORK=testnet DASH_FORGE_KEY=unused
 passed=0
 
 commit() { git -C "$1" commit -q --allow-empty -m "$2"; }
-run_mirror() { (cd "$root/github" && FORGE_REMOTE="$root/forge.git" GITHUB_OUTPUT="$root/out" bash "$here/mirror.sh") >"$root/log" 2>&1; }
+# mirror.sh, then replicate.sh whatever mirror.sh did (as the workflow runs them); fails if either does.
+run_mirror() {
+    local rc=0
+    rm -rf "$root/state"
+    (cd "$root/github" && FORGE_REMOTE="$root/forge.git" GITHUB_OUTPUT="$root/out" STATE_DIR="$root/state" \
+        bash "$here/mirror.sh") >"$root/log" 2>&1 || rc=$?
+    STATE_DIR="$root/state" bash "$here/replicate.sh" >>"$root/log" 2>&1 || rc=$?
+    return "$rc"
+}
 expect() {
     local want=$1 name=$2 got=0
     : >"$root/out"
@@ -127,7 +135,12 @@ exit \${HOOK_RC:-0}
 SH
 chmod +x "$root/forge.git/hooks/pre-receive"
 cat >"$root/pin.sh" <<'SH'
+[ -z "${DASH_FORGE_KEY:-}" ] || { echo "the pin command must not see DASH_FORGE_KEY"; exit 1; }
 car=$(cat)
+if [ -z "$car" ]; then
+    [ -n "${NOT_READY:-}" ] || echo ready
+    exit 0
+fi
 cid=${car#CAR:}
 echo "$cid" >>"$ROOT/received"
 [ "$cid" != "${FAIL_CID:-}" ] || exit 1
@@ -135,6 +148,12 @@ printf 'confirmed\t%s\n' "$cid"
 SH
 port=$(cat "$root/port")
 export KUBO_API="http://127.0.0.1:$port" PIN_CMD="bash $root/pin.sh" ROOT="$root" CAR_DIR="$root/cars"
+
+commit "$root/github" not-ready
+before=$(forge_ref refs/heads/master)
+NOT_READY=1 expect fail "IPFS host not ready"
+check "$(forge_ref refs/heads/master)" "$before" "nothing is pushed while the IPFS host is not ready"
+grep -qx "pushed=true" "$root/out" && { echo "FAIL: no push without a ready IPFS host"; exit 1; }
 
 printf 'bafy-a\nbafy-b\n' >"$root/pins-add"
 expect ok "replicates what the push pinned"

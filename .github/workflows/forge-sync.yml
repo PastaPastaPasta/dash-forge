@@ -36,9 +36,10 @@ permissions:
   contents: read
 
 # One live sync at a time; a newer pending run replaces an older one, which is fine since each
-# run mirrors whatever master is by then. Pull request tests and dry runs never displace it.
+# run mirrors whatever master is by then. Runs on any other ref (pull requests, tags, dispatches
+# elsewhere) and dry runs never displace it.
 concurrency:
-  group: forge-sync-${{ github.event_name == 'pull_request' && github.ref || (inputs.dry-run && 'dry-run' || 'live') }}
+  group: forge-sync-${{ github.ref != 'refs/heads/master' && github.ref || (inputs.dry-run && 'dry-run' || 'live') }}
   cancel-in-progress: false
 
 env:
@@ -112,6 +113,7 @@ jobs:
           echo "$RUNNER_TEMP/forge-bin" >> "$GITHUB_PATH"
 
       - name: Configure storage and the IPFS host
+        id: configure
         env:
           FORGE_IPFS_SSH_KEY: ${{ secrets.FORGE_IPFS_SSH_KEY }}
         run: |
@@ -122,6 +124,7 @@ jobs:
           done
           mkdir -p "$RUNNER_TEMP/forge-ssh" "$RUNNER_TEMP/forge-config"
           chmod 700 "$RUNNER_TEMP/forge-ssh"
+          [ -n "$FORGE_IPFS_SSH_KEY" ] || { echo "::error::FORGE_IPFS_SSH_KEY is not set"; exit 1; }
           printf '%s\n' "$FORGE_IPFS_SSH_KEY" > "$RUNNER_TEMP/forge-ssh/id"
           chmod 600 "$RUNNER_TEMP/forge-ssh/id"
           printf '%s\n' "$IPFS_HOST_KEY" > "$RUNNER_TEMP/forge-ssh/known_hosts"
@@ -131,8 +134,14 @@ jobs:
           api = "http://127.0.0.1:5001"
           gateway = "http://127.0.0.1:8080"
           EOF
-          echo "DASH_FORGE_STORAGE_CONFIG=$RUNNER_TEMP/forge-config/storage.toml" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/forge-config" >> "$GITHUB_ENV"
+          # timeout bounds a hung import on the host; the job's 60 minutes would otherwise.
+          {
+            echo "DASH_FORGE_STORAGE_CONFIG=$RUNNER_TEMP/forge-config/storage.toml"
+            echo "XDG_CONFIG_HOME=$RUNNER_TEMP/forge-config"
+            echo "STATE_DIR=$RUNNER_TEMP/forge-state"
+            echo "CAR_DIR=$RUNNER_TEMP/forge-cars"
+            echo "PIN_CMD=timeout 900 ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/forge-ssh/known_hosts -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o LogLevel=ERROR -i $RUNNER_TEMP/forge-ssh/id pasta@$IPFS_HOST"
+          } >> "$GITHUB_ENV"
           dg --version
 
       - name: Mirror master and tags to Forge
@@ -141,15 +150,35 @@ jobs:
           DASH_FORGE_KEY: ${{ secrets.FORGE_MAINNET_KEY }}
           DASH_FORGE_NO_KEYCHAIN: '1'
           DRY_RUN: ${{ inputs.dry-run && '1' || '' }}
-          CAR_DIR: ${{ runner.temp }}/forge-cars
-          PIN_CMD: >-
-            ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${{ runner.temp }}/forge-ssh/known_hosts
-            -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
-            -o LogLevel=ERROR -i ${{ runner.temp }}/forge-ssh/id pasta@${{ env.IPFS_HOST }}
         run: bash tools/forge-sync/mirror.sh
 
-      # mirror.sh removes the CARs it replicated, so anything left reached no durable node.
+      # Also after a failed or cancelled push: the helper writes refs one by one, so some may
+      # have landed, and their packs are only on this job's kubo until they are copied.
+      - name: Copy the new packs to the IPFS host
+        if: always() && steps.configure.outcome == 'success'
+        timeout-minutes: 30
+        run: bash tools/forge-sync/replicate.sh
+
+      - name: Check the key's budget
+        if: success()
+        continue-on-error: true
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MAINNET_KEY }}
+          DASH_FORGE_NO_KEYCHAIN: '1'
+        run: |
+          s=$(dg auth status --network "$FORGE_NETWORK" --json </dev/null)
+          left=$(jq -r '.budgetRemainingCredits // empty' <<<"$s")
+          total=$(jq -r '.budgetCredits // empty' <<<"$s")
+          expires=$(jq -r '.expiresAt // empty' <<<"$s")
+          [ -n "$left" ] && [ -n "$total" ] && [ -n "$expires" ] || { echo "::warning::could not read the key's budget"; exit 0; }
+          days=$(( (expires / 1000 - $(date +%s)) / 86400 ))
+          line="Key budget: $(awk -v l="$left" 'BEGIN { printf "%.4f", l / 1e11 }') of $(awk -v t="$total" 'BEGIN { printf "%.4f", t / 1e11 }') DASH left, expires in $days days."
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          if [ $((left * 5)) -lt "$total" ] || [ "$days" -lt 14 ]; then
+            echo "::warning title=Forge sync::$line Rotate FORGE_MAINNET_KEY (tools/forge-sync/README.md)."
+          fi
+
+      # replicate.sh removes the CARs it copied, so anything left reached no durable node.
       - name: Keep unreplicated packs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -160,7 +189,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Open an issue
-        if: failure() && (steps.sync.outputs.diverged == 'true' || steps.sync.outputs.pushed == 'true')
+        if: (failure() || cancelled()) && github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
           DIVERGED: ${{ steps.sync.outputs.diverged }}
@@ -169,9 +198,12 @@ jobs:
           if [ "$DIVERGED" = true ]; then
             title="Forge mirror diverged from GitHub"
             body="The Forge sync found a change on $FORGE_REMOTE that GitHub's master or tags do not have, so it pushed nothing (GitHub never overwrites Forge). The job summary of $RUN_URL lists the refs. Bring the change into GitHub, or remove it on Forge, then re-run the workflow."
-          else
+          elif [ -e "${STATE_DIR:-/nonexistent}/pushed" ]; then
             title="Forge mirror push or replication failed"
-            body="The Forge sync pushed to $FORGE_REMOTE, but the push or the copy of its packs to the IPFS host failed, so Forge may name packs no durable node holds. A later run will not notice. The job summary of $RUN_URL says what failed; any unreplicated CARs are in the run's artifact. Import them on the IPFS host (tools/forge-sync/README.md), then close this issue."
+            body="The Forge sync pushed to $FORGE_REMOTE, but the push or the copy of its packs to the IPFS host failed or was cancelled, so Forge may name packs no durable node holds. A later run will not notice. The job summary of $RUN_URL says what failed; any unreplicated CARs are in the run's artifact. Import them on the IPFS host (tools/forge-sync/README.md), then close this issue."
+          else
+            title="Forge sync failing"
+            body="The Forge sync failed before pushing anything, so $FORGE_REMOTE is behind GitHub until a run passes. See $RUN_URL."
           fi
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
