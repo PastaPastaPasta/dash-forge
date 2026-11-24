@@ -84,7 +84,7 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 | `git-remote-dash` | The same | `DASH_FORGE_KEY`, else `~/.config/dash-forge/identities/<owner>.identity.json` if that file exists, else the default `dg auth` recorded |
 | `forge-import` | The same | `--identity <source>` > `DASH_FORGE_KEY` |
 | Mirror Action | A CI secret: an inline runner key, or a CI-only identity file | the `DASH_FORGE_KEY` secret ([mirror guide](mirror-a-github-repo.md#the-ci-secret)) |
-| Web app | A **limited key** (or a key your wallet granted, with the budget and expiry you approved there; the older code's keys have no limits, see below), encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
+| Web app | A **limited key** (or a key your wallet granted, with the budget and expiry you approved there; keys from the wallet's older code have no limits, see below), encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
 
 A key *source* (`--identity`, `DASH_FORGE_KEY`, the recorded default) is any of:
 
@@ -182,7 +182,7 @@ It runs the rekey of [private-repos.md §5.2](../security/private-repos.md#52-en
 
 The key `dg` stores beside your limited key (`dg auth login`) gets the new key too. A repository counts as moved only when a fresh read shows your wrap for its current epoch on the new key. If one is not, every old key stays enabled and nothing is lost. Run the command again: each run adds a fresh key and treats every enabled encryption key as old, since a lost device may have held an earlier run's key too. Other computers and browsers need the new key: sign in again with the words, or in the web app add it from **Settings → Members-only and private content**.
 
-**In the web app**, **Settings → Members-only and private content** stores your encryption key in this browser's vault: from your recovery phrase, your identity file or the key itself, checked against your identity first, or **Register a new key** for an identity that has none. A wallet sign-in with the older code stores it for you; the current one (App Connect v2) does not ([below](#signing-in-with-the-dash-wallet-app-what-works-today)). The vault keeps every encryption key you give it, and **Add another encryption key** adds one more.
+**In the web app**, **Settings → Members-only and private content** stores your encryption key in this browser's vault: from your recovery phrase, your identity file or the key itself, checked against your identity first, or **Register a new key** for an identity that has none. A wallet sign-in (App Connect v2) does not bring it ([below](#signing-in-with-the-dash-wallet-app-what-works-today)); one the wallet's older code stored earlier stays in the vault. The vault keeps every encryption key you give it, and **Add another encryption key** adds one more.
 
 ---
 
@@ -277,7 +277,7 @@ The header shows your balance and the key's remaining budget. It turns amber whe
 - **Revoke on Platform** disables this browser's key (about 0.00002 DASH). It needs your identity file or recovery phrase once. After a reload it first asks you to unlock this tab, so it can disable every key the browser holds.
 - **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires. If you topped the identity up in this browser, a note of where its next top-up starts (or an unfinished top-up) stays, with no keys or words in it; Forget and Revoke say so before you confirm.
 
-For a key a wallet granted without limits, **Renew key** reads **Replace with a limited key**, **Revoke on Platform** reads **Disable key on Platform**, and **Top up key budget** is not offered (Platform cannot add limits to such a key).
+For a key a wallet's older code granted (no limits, and maybe only part of Forge), **Renew key** reads **Replace with a limited key**: it opens one approval in your wallet first, with **Use your identity file or recovery phrase instead** under it. **Revoke on Platform** reads **Disable key on Platform**, and **Top up key budget** is not offered (Platform cannot add limits to such a key).
 
 Losing a device costs nothing beyond that key's remaining budget. Register a new key and disable the old one.
 
@@ -304,15 +304,16 @@ What to expect:
 - **Check the identity yourself.** The answer does not prove who sent it: anyone who saw the QR code could answer. Forge refuses if two identities answer. When one does, Forge shows which: compare the username and identity id with the wallet's approval screen. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 10 minutes; keep the QR code private.
 - **A freshly restored wallet may not answer until it has synced.** If the wallet says its connection records can't be read, let it finish syncing, then open or scan the code again.
 
-#### The older code (DashConnect)
+#### The older code (DashConnect) is gone
 
-Behind **Show the older code**, the sheet still offers the older key exchange (DashConnect, one key per Forge contract, with no spending limit or expiry). DashPay for Android 11.9.2 and later refuse it, and Dash Wallet for iOS has dropped it on its development branch; only iOS 9.1.4 still answers it, on testnet. What it means if you use it:
+The sheet used to offer, behind **Show the older code**, the older key exchange (DashConnect: one key per Forge contract, with no spending limit or expiry, and a guided "Step 2 of 3" for the other contracts). It was removed in November 2026: every released wallet that answered it also answers App Connect v2, and DashPay for Android 11.9.2 already refused it.
 
-- **One approval per Forge contract**, each first one with a second code that adds the key to your identity; right after the first sign-in the web app walks through the rest ("Step 2 of 3: approve Forge collaboration").
-- **No spending limit or expiry**, which Platform cannot add later. The app warns about it and offers **Replace with a limited key** (your identity file or 12 words, once), which disables the wallet's keys in the same update.
-- **A disabled wallet key cannot be replaced by the wallet**: it derives the same key every time, so Forge refuses that sign-in; use Import instead.
-- **Disconnect in the iOS wallet doesn't disable the key.** Use **Settings → This browser's key → Disable key on Platform**, or **Settings → Devices & keys → Disable all other keys**.
-- **It also registers an encryption key**, which Forge keeps in this browser's vault; replace it if you scanned a code you didn't trust ([above](#replacing-it-after-a-lost-device)).
+If this browser still holds a key from it:
+
+- **It keeps working.** Nothing was deleted from your browser: the key unlocks and signs as before, where its bounds allow.
+- **Replace it with a limited key.** **Settings → This browser's key** warns that it has no spending limit, and **Replace with a limited key** asks your wallet for one approval for all of Forge first (or uses your identity file or 12 words, which also disables the old keys in the same update). A write the old key does not cover (it was bound to one Forge contract) opens the same replacement.
+- **A wallet replacement leaves the old key live**, held here never to sign, so it no longer counts as "no spending limit". **Renew with identity file** disables it and keeps you signed in with a fresh key; **Revoke on Platform** disables it together with the new key and signs this browser out. Disconnect in the iOS wallet doesn't disable it either; **Settings → Devices & keys → Disable all other keys** does.
+- **Its encryption key stays in this browser's vault**; replace it if you scanned a code you didn't trust ([above](#replacing-it-after-a-lost-device)).
 
 [wallet-login.md](../design/wallet-login.md) has the protocol details, and [wallet-primary.md](../design/wallet-primary.md) the plan to make the wallet the primary sign-in.
 

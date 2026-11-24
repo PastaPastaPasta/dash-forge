@@ -6,16 +6,18 @@
  * expiry in place (`IdentityKeyLimitsUpdate`; same key). **Renew** registers a fresh limited key
  * and disables this one. Both need the master key once (identity file or phrase), which is not
  * stored. Also: lock now, and sign out + forget.
+ *
+ * A key from a wallet's older code (DashConnect, removed) still signs where its bounds allow, but
+ * has no limits and may cover only part of Forge: "Replace with a limited key" offers one approval
+ * in the wallet (App Connect v2) first, and the identity file or recovery phrase beside it.
  */
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { GRANT_COPY, nextGrant } from '@/lib/auth/key-registration'
-import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
+import { AlertTriangle, BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { KeyBudgetText } from '@/components/funds-summary'
 import { FiatNote } from '@/components/ui/fiat-note'
-import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
@@ -61,7 +63,7 @@ export function KeysPanel(): JSX.Element {
   const [revokeOpen, setRevokeOpen] = useState(false)
   const [confirm, confirmDialog] = useConfirmAction()
   const openLogin = useUiStore((s) => s.openLogin)
-  const missingGrant = nextGrant(grants)
+  const partial = grants != null && !(grants.core && grants.collab && grants.community && grants.meta)
   const low = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
   const [topUpOpen, setTopUpOpen] = useState(false)
   // Only a stored Forge browser key (a budget on a group-bound key) can be topped up here.
@@ -74,6 +76,7 @@ export function KeysPanel(): JSX.Element {
   const inWallet = storage === 'vault' && renewsInWallet(origin, ACTIVE_NETWORK.network, unlimitedKey)
   const walletDisablesIt = origin === 'app-connect'
   const from = keyOriginLabel(storage, origin, unlimitedKey && !keyLimits)
+  const replace = storage === 'vault' && (unlimitedKey || partial)
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
@@ -137,17 +140,14 @@ export function KeysPanel(): JSX.Element {
         <div className="space-y-2">
           <UnlimitedKeyWarning unbounded={unboundedKey} />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Limits can&apos;t be added to this key. Replace it with a limited key using your identity file or recovery phrase, or disable it.
+            Limits can&apos;t be added to this key. Replace it with a limited key: one approval in your wallet, or your identity file or recovery phrase. Or disable it.
           </p>
         </div>
       ) : null}
-      {storage === 'vault' && missingGrant !== null ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="grant-collab">
-          <span>This sign-in covers repositories and pushes. {GRANT_COPY[missingGrant].what} need one more wallet approval.</span>
-          <Button variant="outline" size="sm" onClick={() => openLogin('grant', missingGrant)}>
-            <Wallet className="h-3.5 w-3.5" aria-hidden /> Approve in wallet
-          </Button>
-        </div>
+      {storage === 'vault' && partial ? (
+        <p className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="key-partial">
+          This key covers only part of Forge. Replace it with a limited key: one approval in your wallet covers all of Forge.
+        </p>
       ) : null}
       {low ? (
         <p className="text-caution-700 dark:text-caution-400">
@@ -168,10 +168,15 @@ export function KeysPanel(): JSX.Element {
             <Wallet className="h-3.5 w-3.5" aria-hidden /> Renew in your wallet
           </Button>
         ) : null}
-        <Button variant={!inWallet && (unlimitedKey || pasted) ? 'primary' : 'outline'} size="sm" onClick={() => openLogin(pasted ? 'import' : 'renew')}>
-          <RefreshCw className="h-3.5 w-3.5" aria-hidden />{' '}
-          {pasted ? 'Use a limited key instead' : unlimitedKey ? 'Replace with a limited key' : inWallet ? 'Renew with identity file' : 'Renew key'}
-        </Button>
+        {replace ? (
+          <Button variant="primary" size="sm" onClick={() => openLogin('wallet-replace')} data-testid="key-replace">
+            <Wallet className="h-3.5 w-3.5" aria-hidden /> Replace with a limited key
+          </Button>
+        ) : (
+          <Button variant={pasted ? 'primary' : 'outline'} size="sm" onClick={() => openLogin(pasted ? 'import' : 'renew')}>
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden /> {pasted ? 'Use a limited key instead' : inWallet ? 'Renew with identity file' : 'Renew key'}
+          </Button>
+        )}
         {pasted ? (
           <Button variant="danger" size="sm" onClick={() => logout()}>
             <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
@@ -233,6 +238,19 @@ export function KeysPanel(): JSX.Element {
       {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
       {revokeOpen ? <KeyRevokeDialog unlimited={unlimitedKey} onClose={() => setRevokeOpen(false)} /> : null}
       {confirmDialog}
+    </div>
+  )
+}
+
+/** "This key has no spending limit" (a key from a wallet's older code): what it means, what to do. */
+function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.Element {
+  return (
+    <div role="note" data-testid="unlimited-key-warning" className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
+      <span>
+        This wallet key has no spending limit or expiry. Anyone who copies it from this browser can spend your balance
+        {unbounded ? ' on any Platform app' : ' on Forge'}. Replace it with a limited key soon.
+      </span>
     </div>
   )
 }

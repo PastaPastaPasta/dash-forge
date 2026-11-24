@@ -1,7 +1,5 @@
 /**
- * "Use my Dash wallet" with App Connect v2 (`APP_CONNECT_PROFILE.md`; docs/design/wallet-login.md,
- * "Upgrade path"), beside the v1 flow in {@link ./app-connect}, which stays as it is: a wallet that
- * speaks only v1 refuses a `v=2` request, so the two never share a QR code.
+ * "Use my Dash wallet" with App Connect v2 (`APP_CONNECT_PROFILE.md`; docs/design/wallet-login.md).
  *
  * One request asks for ONE key: AUTHENTICATION / HIGH, bound to the dash-forge contract group, with
  * Forge's default budget and expiry ({@link defaultLimits}, from chain time). It covers every Forge
@@ -47,13 +45,31 @@ import {
   type AppConnectRejectReason,
   type AppConnectRequest,
 } from '../vendor/platform-auth/app-connect'
-import { AmbiguousWalletLogin, RequestExpired, type PollStatus } from './app-connect'
 import { appConnectPort } from './app-connect-port'
 import { decodeIdentifier } from './base58'
 import { PLATFORM_READ_MS } from './connect'
-import { findWalletKey, isUnlimited, RevokedWalletKey, UnusableWalletKey, type WalletKey } from './key-registration'
+import { findWalletKey, isUnlimited, RevokedWalletKey, UnusableWalletKey, type WalletKey } from './wallet-key'
 import { defaultLimits } from './limited-key'
 import { encodeWif } from './wif'
+
+/** More than one identity answered the request: refuse (someone else saw the QR). */
+export class AmbiguousWalletLogin extends Error {
+  constructor(readonly identityIds: readonly string[]) {
+    super(`More than one identity answered this sign-in request (${identityIds.join(', ')}). Someone else saw the QR code. Start again and keep the QR code private.`)
+    this.name = 'AmbiguousWalletLogin'
+  }
+}
+
+/** The request ran out before a wallet answered. */
+export class RequestExpired extends Error {
+  constructor() {
+    super('This sign-in request expired. Start a new one.')
+    this.name = 'RequestExpired'
+  }
+}
+
+/** Why the poll is waiting, for the UI. */
+export type PollStatus = 'waiting' | 'answered' | 'incomplete-read'
 
 /** The name a wallet shows for Forge. */
 export const APP_CONNECT_LABEL = 'Dash Forge'
@@ -181,13 +197,13 @@ export async function readChainClock(sdk: EvoSDK): Promise<{ readonly timeMs: nu
 
 /**
  * Whether a v2 request can be offered here: Forge is deployed on the network (its contract group
- * exists) and the chain runs protocol 14 or later. The caller also runs the group check
- * (`AuthController.checkGroup`) before showing a code.
+ * exists) and the chain runs protocol 14 or later; null when Platform could not be read. The
+ * caller also runs the group check (`AuthController.checkGroup`) before showing a code.
  */
-export async function appConnectV2Available(sdk: EvoSDK, network: Network): Promise<boolean> {
+export async function appConnectV2Available(sdk: EvoSDK, network: Network): Promise<boolean | null> {
   if (NETWORKS[network].v2 === null) return false
   const { protocolVersion } = await readChainClock(sdk)
-  return protocolVersion !== null && protocolVersion >= APP_CONNECT_MIN_PROTOCOL
+  return protocolVersion === null ? null : protocolVersion >= APP_CONNECT_MIN_PROTOCOL
 }
 
 /** Why Forge refused a wallet's v2 answer, in a user's words. */
@@ -287,7 +303,7 @@ async function grantOf(sdk: EvoSDK, grant: AppConnectGrant, p: { readonly networ
     try {
       key = await findWalletKey(sdk, { identityId: grant.identityId, wif: encodeWif(main.privateKey, p.network), forge: p.forge, network: p.network })
     } catch (e) {
-      // Disabled since the verifier read it: v1's wording (a key derived the same every time) is wrong here.
+      // Disabled since the verifier read it: said in the verifier's words.
       throw e instanceof RevokedWalletKey ? new WalletGrantRefused('key-disabled') : e
     }
     if (key === null) return null

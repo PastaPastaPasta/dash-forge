@@ -71,7 +71,7 @@ export function parseConnectCallback(search: string): ConnectCallback | null {
 export const CALLBACK_STATUS_COPY: Readonly<Record<string, { readonly title: string; readonly body: string }>> = {
   declined: { title: 'Sign-in declined', body: 'You declined it in your wallet. Nothing was changed.' },
   stale: { title: 'That code expired', body: 'Go back to Forge and start again for a fresh code.' },
-  unsupported: { title: "Your wallet can't answer this yet", body: 'Update your Dash wallet, then try again, or use the older code.' },
+  unsupported: { title: "Your wallet can't answer this yet", body: 'Update your Dash wallet, then try again, or sign in another way.' },
   invalid: { title: "Your wallet couldn't use this request", body: 'Go back to Forge and start again for a fresh code.' },
   failed: { title: "Your wallet couldn't finish", body: 'It approved, but adding the key failed. Go back to Forge and start again.' },
 }

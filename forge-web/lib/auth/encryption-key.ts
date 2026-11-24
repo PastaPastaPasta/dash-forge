@@ -6,8 +6,8 @@
  *   ECDSA_SECP256K1, and unbound or bound to forge-core. Writers wrap to the recipient's
  *   highest-id usable key and record its id ({@link usableEncryptionKey}).
  * - Getting it into the vault: from an identity file (its ENCRYPTION key, or derived from its
- *   mnemonic), a recovery phrase, a pasted WIF/hex key, or a wallet login (the key its login
- *   key stands for, {@link adoptWalletEncryptionKey}). Every route checks that the public key
+ *   mnemonic), a recovery phrase, or a pasted WIF/hex key (a key a wallet's older code sealed
+ *   at sign-in stays in the vault). Every route checks that the public key
  *   matches an enabled ENCRYPTION key on the identity before anything is stored.
  * - Registering one (Settings → Members-only and private content): an `IdentityUpdate` signed once by
  *   the master key, adding the next key id, derived from the recovery phrase at
@@ -165,18 +165,18 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
 
 /**
  * The identity's usable encryption key (the one writers wrap to) is not one this browser holds,
- * and no approval of the wallet registered it (a key from `dg`, say). Shown at sign-in.
+ * and no approval of the wallet registered it (a key from `dg`, say). Shown on the repo.
  */
 export const ENCRYPTION_KEY_ELSEWHERE = 'Your encryption key is held elsewhere. Import it under Settings → Members-only and private content.'
 
 /**
  * A repo was wrapped only to keys this browser does not hold, and the one it was wrapped to last
- * came with another of the wallet's approvals: each first approval for another Forge contract
- * registers its own (QR #2 adds exactly an auth and an encryption key). Approving that contract
- * here again brings it. Shown on the repo.
+ * came with another approval of a wallet's older code (each first approval for a Forge contract
+ * registered an auth and an encryption key). That key is derived from the approval, so no
+ * import here can bring it back. Shown on the repo.
  */
 export const ENCRYPTION_KEY_OTHER_APPROVAL =
-  "Your encryption key came with another approval in your wallet. Approve it again under Settings → This browser's key to read private repos."
+  "Your encryption key came with another approval in your wallet's older code, and this browser can't bring it back. Read this repo in the browser that holds it, or ask a maintainer to hand you its key with Repair."
 
 /** AUTHENTICATION, and ECDSA_HASH160: the auth key a wallet registers (DPP enums). */
 const PURPOSE_AUTHENTICATION = 0
@@ -188,62 +188,6 @@ const KEY_TYPE_ECDSA_HASH160 = 2
  */
 export function walletRegistered(keys: readonly Pick<EncKeyLike, 'keyId' | 'purposeNumber' | 'keyTypeNumber'>[], keyId: number): boolean {
   return keys.some((k) => k.keyId === keyId - 1 && k.purposeNumber === PURPOSE_AUTHENTICATION && k.keyTypeNumber === KEY_TYPE_ECDSA_HASH160)
-}
-
-/** What became of the encryption keys a wallet answer stands for ({@link adoptWalletEncryptionKey}). */
-export interface WalletEncryptionOutcome {
-  /** The key ids of the wallet's keys now sealed in the vault (each a usable ENCRYPTION key of the identity). */
-  readonly stored: readonly number[]
-  /**
-   * The identity's usable key (the one writers wrap to) when this browser holds none by that id
-   * (null: held, or the identity has none). `otherApproval`: an approval of the wallet registered it.
-   */
-  readonly missing: { readonly keyId: number; readonly otherApproval: boolean } | null
-}
-
-/**
- * Keep the encryption keys a wallet answer stands for (DESIGN D27): the wallet derives
- * `HKDF(loginKey, identityId, "encryption")` for each login key and registers it beside the auth
- * key the first time it approves a contract; a returning login derives the same one. `candidates`
- * are those private keys. Each whose public key is an enabled, usable ENCRYPTION key of the
- * identity is ADDED to the vault's keys (beside the wallet key, under the same protection); no key
- * already there is replaced, so wraps made to an older key still open. Anything else is a key no
- * wrap could be sealed to, and is not stored. `attempts` re-reads the identity while none of the
- * candidates is on it yet (a node a block behind the wallet's registration). Copies are taken:
- * the caller still wipes `candidates`.
- */
-export async function adoptWalletEncryptionKey(
-  sdk: EvoSDK,
-  network: Network,
-  identityId: string,
-  coreId: string,
-  candidates: readonly Uint8Array[],
-  options: { readonly attempts?: number; readonly intervalMs?: number } = {},
-): Promise<WalletEncryptionOutcome> {
-  const secrets = candidates.filter((c) => c.length === 32).map((c) => new Uint8Array(c))
-  try {
-    const pubs = secrets.map((s) => bytesToHex(secp.getPublicKey(s, true)))
-    for (let attempt = 1; ; attempt++) {
-      const keys = await timed(PRIVATE_REPOS_FLOW, 'read identity keys (wallet)', () => requireIdentityKeys(sdk, identityId))
-      const onChain = keys.some((k) => k.purposeNumber === PURPOSE_ENCRYPTION && pubs.includes(k.data.toLowerCase()))
-      if (!onChain && attempt < (options.attempts ?? 1)) {
-        await sleep(options.intervalMs ?? 1500)
-        continue
-      }
-      const stored: number[] = []
-      for (const k of keys) {
-        const at = pubs.indexOf(k.data.toLowerCase())
-        if (at < 0 || !isUsableEncryptionKey(k, coreId)) continue
-        await timed(PRIVATE_REPOS_FLOW, 'seal into the vault', () => storeEncryptionKey(network, identityId, k.keyId, secrets[at] as Uint8Array))
-        stored.push(k.keyId)
-      }
-      const usable = usableEncryptionKey(keys, coreId)
-      const held = usable === null || (await storedEncryptionKeyIds(network, identityId)).includes(usable.keyId)
-      return { stored, missing: held ? null : { keyId: usable.keyId, otherApproval: walletRegistered(keys, usable.keyId) } }
-    }
-  } finally {
-    for (const s of secrets) s.fill(0)
-  }
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
  * Limited-key sign-in, offline: the vault's encryption and unlock rules, the asset-lock
- * transaction, and the identity-file master-key extraction. (The wallet protocol has its own
- * suite: wallet-protocol.test.ts.)
+ * transaction, and the identity-file master-key extraction. (Wallet sign-in has its own suite:
+ * app-connect-v2.test.ts.)
  */
 
 import * as secp from '@noble/secp256k1'

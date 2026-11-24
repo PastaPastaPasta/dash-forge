@@ -8,7 +8,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
 import type { WasmKey } from '../sdk/facade'
-import { APP_CONNECT_CONTRACT_ID } from './app-connect'
+import { APP_CONNECT_CONTRACT_ID } from './app-connect-port'
 import { appConnectPort, candidateOf, compareIds, toAppConnectKey, toAppConnectKeys } from './app-connect-port'
 import { base58Encode } from './base58'
 

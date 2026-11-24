@@ -98,9 +98,9 @@ export interface VaultSecret {
   /** The limited key's private key, WIF. */
   readonly wif: string
   /**
-   * More keys of the same identity, each for one contract: a shipped Dash wallet grants a key
-   * bound to ONE contract, so a forge-core key and a later forge-collab key are two grants.
-   * Absent for a group-bound key (it covers both contracts).
+   * More keys of the same identity, each for one contract: a wallet's older code (DashConnect,
+   * removed) granted a key bound to ONE contract, so a forge-core key and a later forge-collab key
+   * are two grants; and keys held only to be disabled later. Absent for a group-bound key alone.
    */
   readonly extra?: readonly ExtraKey[]
 }

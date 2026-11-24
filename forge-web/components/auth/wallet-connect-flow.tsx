@@ -1,47 +1,30 @@
 'use client'
 
 /**
- * "Use my Dash wallet" (`ux-dx-spec.md` §2.2 tile 1; docs/design/wallet-login.md).
+ * "Use my Dash wallet" with App Connect v2 (`lib/auth/app-connect-v2.ts`; docs/design/wallet-login.md).
  *
- * 1. Request: a `dash-key:` QR (and, on a phone, an "Open in DashPay (Dash Wallet)" link: both wallets
- *    register the scheme) asking for a key bound to one Forge contract, with a countdown.
- * 2. Key registration, first time only: a legacy wallet answers with a key that is not on its
- *    identity yet, so a second QR/link (`dash-st:`) asks it to register the key.
- * 3. Confirm: the identity that answered. The response does not prove who answered: anyone who
- *    saw the QR could, and on the legacy contract the FIRST answer is the only one Forge can see.
- *    So the user compares the username and id with what the wallet's approval screen showed (the
- *    username and a shortened id), and is warned when the identity has no username, a brand-new
- *    one, or is not the one this device already holds. A key without a budget or expiry is
- *    flagged, and a passkey is the default protection.
+ * 1. Request: an App Connect v2 QR (and, on a phone, an "Open in DashPay (Dash Wallet)" link that
+ *    carries a callback to `/connect/`), with a countdown. ONE request, one approval, one key bound
+ *    to the whole Forge contract group with a budget and an expiry. The poll also runs when the tab
+ *    regains focus and when that page reports the wallet came back (`lib/auth/connect-callback.ts`).
+ * 2. Confirm: the identity that answered. The response does not prove who answered: anyone who
+ *    saw the QR could. So the user compares the username and id with what the wallet's approval
+ *    screen showed (the username and a shortened id), and is warned when the identity has no
+ *    username, a brand-new one, or is not the one this device already holds.
  *
  * The QR step opens with {@link ScanOnlyHere}: the request does not say who shows it, so the
  * user is told to scan only a code on this site's own address (SECU-08).
  *
  * Released wallets answer App Connect v2 (DashPay for Android 11.9.2, Dash Wallet for iOS 9.1.4;
- * on testnet, Android's testnet build is the one verified). The older code is testnet-only
- * (`walletSignInSupported`). Elsewhere the sheet says so.
- *
- * App Connect v2 (`lib/auth/app-connect-v2.ts`) comes first where the network and the chain allow
- * it: ONE request, one approval, one key bound to the whole Forge contract group with a budget
- * and an expiry, so no guided grants follow. A link switches to the v1 flow above for wallets
- * that do not speak v2 (the two never share a QR: a v1-only wallet refuses `v=2`). The phone's
- * deep link carries a callback to `/connect/`; the poll also runs when the tab regains focus and
- * when that page reports the wallet came back (`lib/auth/connect-callback.ts`). Without an
- * identity hint the confirm step stays ("A wallet answered for this identity").
+ * on testnet, Android's testnet build is the one verified). Where v2 cannot be offered, the flow
+ * says so and points at the other ways to sign in.
  *
  * `mode="renew"` renews the signed-in session's key in the wallet that granted it (origin
  * `app-connect`; on testnet any browser key, which the wallet then leaves live): the protection
  * for the new key is chosen BEFORE the code shows (the wallet disables the old key when it
  * approves), the request names the identity, and the new key is stored without a confirm step.
  *
- * `mode="grant"` asks the signed-in identity's wallet for a key on another contract (a shipped
- * wallet grants one contract per approval) and adds it to the session: no confirmation step,
- * since only answers from the signed-in identity are read.
- *
- * Granted keys are held in refs, never React state, and dropped when the sheet closes. So is the
- * encryption key the wallet's login key stands for: signing in (or a grant) seals it into the vault
- * beside the wallet key when it is the identity's (DESIGN D27), and the bytes are wiped once the
- * sheet is done.
+ * Granted keys are held in refs, never React state, and dropped when the sheet closes.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -60,46 +43,27 @@ import { ScanOnlyHere } from '@/components/auth/scan-warning'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { creditsToDash } from '@/lib/sdk/cost'
 import {
-  REQUEST_TTL_MS,
-  RequestExpired,
-  awaitRegisteredKey,
-  awaitWalletAnswer,
-  newLoginRequest,
-  responseSources,
-  walletSignInSupported,
-  wipeAnswer,
-  type PollStatus,
-  type WalletAnswer,
-} from '@/lib/auth/app-connect'
-import {
   PollTrigger,
+  RequestExpired,
   appConnectV2Available,
   awaitV2Grant,
   disposeV2Request,
   newV2LoginRequest,
   readChainClock,
+  type PollStatus,
   type V2Grant,
   type V2LoginRequest,
 } from '@/lib/auth/app-connect-v2'
 import { connectionId } from '@/lib/auth/connection-id'
 import { callbackStatusCopy, connectCallbackUrl, listenForCallback } from '@/lib/auth/connect-callback'
 import { defaultLimits } from '@/lib/auth/limited-key'
-import { GRANT_COPY, isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
-import { contractKind, type ForgeIds } from '@/lib/deployments'
+import type { ForgeIds } from '@/lib/deployments'
 import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-profile'
 import { isAbort } from '@/lib/sdk/facade'
-import { PHASE_TEXT, connectPlatform, withPlatformRead } from '@/lib/auth/connect'
+import { PHASE_TEXT, connectPlatform } from '@/lib/auth/connect'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import type { KeyLimits } from '@/lib/view/funds'
-import { cn, errorMessage } from '@/lib/utils'
-
-/** The wallet link where a wallet can answer (the main action), and where none can (secondary). */
-const DEEP_LINK_PRIMARY = 'bg-forge-700 text-white hover:bg-forge-800'
-const DEEP_LINK_SECONDARY =
-  'border border-anvil-300 text-anvil-800 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-100 dark:hover:bg-anvil-800'
-
-/** A small underlined text button under the code (the older/newer code links). */
-const TEXT_BUTTON = 'hit-area block text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100'
+import { errorMessage } from '@/lib/utils'
 
 type Sdk = Awaited<ReturnType<typeof connectPlatform>>
 
@@ -110,16 +74,14 @@ interface V2Terms {
 }
 
 type Step =
-  /** `linkUri`: the phone's deep link (v2: it carries the callback); `v2`: the App Connect v2 request. */
-  | { readonly kind: 'request'; readonly uri: string; readonly linkUri?: string; readonly expiresAt: number; readonly v2?: V2Terms }
-  | { readonly kind: 'register'; readonly uri: string; readonly expiresAt: number }
+  /** `linkUri`: the phone's deep link (it carries the callback); `terms`: what the request asks for. */
+  | { readonly kind: 'request'; readonly uri: string; readonly linkUri: string; readonly expiresAt: number; readonly terms: V2Terms }
   | {
       readonly kind: 'confirm'
       readonly profile: ResponderProfile
-      readonly unlimited: boolean
-      readonly unbounded: boolean
-      /** A v2 grant's limits (as the chain records them), and the group check's notice. */
-      readonly v2?: { readonly limits: KeyLimits | null; readonly notice: string | null }
+      /** The grant's limits (as the chain records them), and the group check's notice. */
+      readonly limits: KeyLimits | null
+      readonly notice: string | null
     }
   /** A locked vault holds a wallet key that a new approval would disable: unlock it first. */
   | { readonly kind: 'blocked'; readonly message: string }
@@ -131,10 +93,11 @@ type Step =
   | { readonly kind: 'renew-store' }
   | { readonly kind: 'expired' }
 
-/** The request's primary binding as {@link V2Terms}. */
-function termsOf(req: V2LoginRequest): V2Terms {
+/** The QR step for a request, with its primary binding's terms. */
+function requestStep(req: V2LoginRequest): Step {
   const binding = req.request.authBindings[0]
-  return { budget: binding?.totalBudget ?? null, expiresAt: binding?.expiresAt ?? null }
+  const terms: V2Terms = { budget: binding?.totalBudget ?? null, expiresAt: binding?.expiresAt ?? null }
+  return { kind: 'request', uri: req.qrUri, linkUri: req.linkUri, expiresAt: req.expiresAt, terms }
 }
 
 /**
@@ -142,7 +105,7 @@ function termsOf(req: V2LoginRequest): V2Terms {
  * (the user comes back from the wallet) or the `/connect/` page reports the wallet returned
  * (`onReturn` gets the status it carries). The request is spent however this ends.
  */
-export function awaitGrantWithWake(
+function awaitGrantWithWake(
   sdk: Parameters<typeof awaitV2Grant>[0],
   req: V2LoginRequest,
   p: Omit<Parameters<typeof awaitV2Grant>[2], 'trigger'> & { readonly onReturn?: (status: string | null) => void },
@@ -187,23 +150,18 @@ function onMobile(): boolean {
 export function WalletConnectFlow({
   onDone,
   mode = 'login',
-  contractId,
   onUnlock,
 }: {
   onDone: () => void
-  mode?: 'login' | 'grant' | 'renew'
-  contractId?: string
+  mode?: 'login' | 'renew'
   /** Open the sheet's Unlock view (a v2 sign-in that must wait for a locked wallet key to be opened). */
   onUnlock?: () => void
 }): JSX.Element {
-  const { adoptWalletKeys, addWalletGrant, identity, isLoading, vaults, unlockScope, controller, origin } = useAuth()
+  const { adoptWalletKeys, isLoading, vaults, unlockScope, controller, origin } = useAuth()
   // Read when the request starts (a scope change must not restart a running request).
   const scopeRef = useRef(unlockScope)
   scopeRef.current = unlockScope
   const forge = ACTIVE_NETWORK.v2
-  const target = contractId ?? forge?.core ?? ''
-  /** What a grant for `target` covers, for the copy (a grant is for one Forge contract). */
-  const grantWhat = GRANT_COPY[(forge && contractKind(forge, target)) || 'collab'].what
   const [step, setStep] = useState<Step | null>(null)
   const [status, setStatus] = useState<PollStatus>('waiting')
   const [error, setError] = useState<string | null>(null)
@@ -229,22 +187,13 @@ export function WalletConnectFlow({
   const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
   const [confirmed, setConfirmed] = useState(false)
-  /** The answer held for the confirm step: a v1 answer (its key bytes are wiped) or a v2 grant (`answer: null`). */
-  const grant = useRef<{ identityId: string; keys: readonly WalletKey[]; answer: WalletAnswer | null } | null>(null)
-  /** Wipe the held answer's private key bytes and drop the grant. */
+  /** The grant held for the confirm step. */
+  const grant = useRef<V2Grant | null>(null)
   const dropGrant = useCallback(() => {
-    if (grant.current?.answer) wipeAnswer(grant.current.answer)
     grant.current = null
   }, [])
   const mobile = onMobile()
-  const unlimited = step?.kind === 'confirm' && step.unlimited
-  const { fields, protection, problem } = useProtection({ preferPasskey: unlimited })
-  /**
-   * The wallet-login version the user asked for with "Show the older code" (v1), and whether a v2
-   * request was on offer here at all (then the v1 code links back to it).
-   */
-  const [olderCode, setOlderCode] = useState(false)
-  const [v2Offered, setV2Offered] = useState(false)
+  const { fields, protection, problem } = useProtection()
   /**
    * Renewal: the protection for the new key is chosen first (the wallet disables the old key when
    * it approves), then the code shows. `renewGo` flips on that choice; the protection is kept for
@@ -259,10 +208,8 @@ export function WalletConnectFlow({
   const [reported, setReported] = useState<string | null>(null)
   // Read at request time, not effect deps: a change must not restart a request mid-flow (the
   // identity changes from null to the new one inside the login itself).
-  const latest = useRef({ addWalletGrant, adoptWalletKeys, onDone, controller, stored: vaults.map((v) => v.identityId) })
-  latest.current = { addWalletGrant, adoptWalletKeys, onDone, controller, stored: vaults.map((v) => v.identityId) }
-  // A grant is for the signed-in identity: a different one (or signing out) starts over.
-  const grantFor = mode === 'grant' ? identity : null
+  const latest = useRef({ adoptWalletKeys, controller, stored: vaults.map((v) => v.identityId) })
+  latest.current = { adoptWalletKeys, controller, stored: vaults.map((v) => v.identityId) }
   // The sign-in sheet: unlocking there finishes an unfinished renewal with its passphrase.
   const openLogin = useUiStore((s) => s.openLogin)
   // The sheet closes with a renewal's new key unstored (the old one is already disabled): no key
@@ -298,12 +245,11 @@ export function WalletConnectFlow({
     setError(null)
     storing.current = renewalReq.current !== null
     try {
-      await adoptWalletKeys(g.identityId, g.keys, chosen, {
+      await adoptWalletKeys(g.identityId, [g.key], chosen, {
+        origin: 'app-connect',
         discardPendingRenewal: discard,
         ...(renewalUnlock ? { renewalUnlock } : {}),
         ...(drop ? { dropUnopened: true } : {}),
-        // A v1 answer brings the wallet's encryption key; a v2 grant has none and is stored as App Connect's.
-        ...(g.answer ? { encryptionKeys: g.answer.encryptionKeys, justRegistered: g.answer.kind === 'register' } : { origin: 'app-connect' as const }),
       })
       dropGrant()
       // Stored: the controller already ended a wallet renewal's mark.
@@ -345,101 +291,40 @@ export function WalletConnectFlow({
     void (async () => {
       try {
         if (!forge) throw new Error('Dash Forge is not deployed here')
-        if (mode === 'grant' && !grantFor) throw new Error('Sign in (or unlock) first: the approval is added to the signed-in identity.')
-        // A grant is sealed with the vault: a reloaded (signing-only) tab unlocks first (below).
-        if (mode === 'grant' && scopeRef.current === 'signing') return
         // A renewal waits for its protection (chosen before the code shows) and for a full unlock.
         if (mode === 'renew' && (!renewGo || scopeRef.current === 'signing')) return
         const sdk = await connectPlatform(ACTIVE_NETWORK.network, (p) => !signal.aborted && setPreparing(PHASE_TEXT[p]))
         if (signal.aborted) return
         if (mode === 'renew') {
-          await runRenewal(sdk, forge, signal)
+          await runRenewal(sdk, forge)
           return
         }
-        // App Connect v2 first where the network and the chain allow it, unless the user asked
-        // for the older code (a wallet without v2 refuses a v2 request).
-        if (mode === 'login' && !olderCode) {
-          setPreparing('Checking what your wallet can answer')
-          const v2 = await v2Offer(sdk)
-          if (signal.aborted) return
-          if (v2.available) {
-            await runV2Login(sdk, forge, signal, v2.notice)
-            return
-          }
-        }
-        setPreparing('Finding the wallet login contract')
-        const sources = await withPlatformRead(responseSources(sdk, ACTIVE_NETWORK.key), 'Finding the wallet login contract')
+        setPreparing('Checking what your wallet can answer')
+        const notice = await groupNotice(sdk)
         if (signal.aborted) return
-        if (sources.length === 0) throw new Error(`No wallet login contract is available on ${ACTIVE_NETWORK.key}.`)
-        const req = newLoginRequest(ACTIVE_NETWORK.network, target)
-        setStep({ kind: 'request', uri: req.uri, expiresAt: req.expiresAt })
-        const answer = await awaitWalletAnswer(sdk, req, {
-          network: ACTIVE_NETWORK.network,
-          forge,
-          sources,
-          signal,
-          onStatus: setStatus,
-          ...(mode === 'grant' && grantFor ? { identityId: grantFor } : {}),
-        })
-        let keys: readonly WalletKey[]
-        // Its private key bytes are wiped here unless the confirm step holds them (`grant`).
-        let held = false
-        try {
-          if (answer.kind === 'register') {
-            // First login from this wallet: QR #2 registers the key, then wait for it on chain.
-            const until = Date.now() + REQUEST_TTL_MS
-            const uri = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId: target, network: ACTIVE_NETWORK.network })
-            if (signal.aborted) return
-            setStep({ kind: 'register', uri, expiresAt: until })
-            keys = [await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network: ACTIVE_NETWORK.network, forge, until, signal })]
-          } else {
-            keys = answer.keys
-          }
-          if (signal.aborted) return
-          if (mode === 'grant') {
-            // The key that covers what was asked for (a wallet may grant several, or the wrong one).
-            const key = keys.find((k) => scopeCovers(k.scope, forge, target))
-            if (!key) throw new Error(`The wallet's answer does not cover ${grantWhat.toLowerCase()}. Try again, or sign in with your identity file.`)
-            // Its first approval registered an encryption key too: the sign-in keeps it.
-            await latest.current.addWalletGrant(answer.identityId, key, target, { encryptionKeys: answer.encryptionKeys, justRegistered: answer.kind === 'register' })
-            if (signal.aborted) return
-            latest.current.onDone()
-            return
-          }
-          grant.current = { identityId: answer.identityId, keys, answer }
-          held = true
-        } finally {
-          if (!held) wipeAnswer(answer)
-        }
-        const profile = await responderProfile(sdk, answer.identityId, ACTIVE_NETWORK.network, latest.current.stored)
-        if (signal.aborted) return
-        setStep({ kind: 'confirm', profile, unlimited: keys.some(isUnlimited), unbounded: keys.some((k) => k.scope.unbounded) })
+        await runV2Login(sdk, forge, notice)
       } catch (e) {
         if (signal.aborted || isAbort(e)) return
         if (e instanceof RequestExpired) setStep({ kind: 'expired' })
         else {
-          // A v2 request that failed is spent (its key is gone): it must not stay up to be scanned.
-          setStep((cur) => (cur?.kind === 'request' && cur.v2 ? null : cur))
+          // A request that failed is spent (its key is gone): it must not stay up to be scanned.
+          setStep((cur) => (cur?.kind === 'request' ? null : cur))
           setError(errorMessage(e))
         }
       }
     })()
 
-    /** Whether a v2 request can be offered here, and the group check's notice for the confirm step. */
-    async function v2Offer(sdk: Sdk): Promise<{ available: boolean; notice: string | null }> {
-      if (!(await appConnectV2Available(sdk, ACTIVE_NETWORK.network))) return { available: false, notice: null }
-      // On offer here from now on: if what follows fails, the older code is still one click away.
-      if (!signal.aborted) setV2Offered(true)
+    /** The group check's notice for the confirm step; throws {@link NOT_OFFERED} where v2 can't be offered. */
+    async function groupNotice(sdk: Sdk): Promise<string | null> {
+      const available = await appConnectV2Available(sdk, ACTIVE_NETWORK.network)
+      if (available === null) throw new Error(UNREAD)
+      if (!available) throw new Error(NOT_OFFERED)
       try {
         // Forge's own group check, before any code shows.
-        const check = await latest.current.controller.checkGroup()
-        return { available: true, notice: check.notice }
+        return (await latest.current.controller.checkGroup()).notice
       } catch (e) {
         // Only Forge's refusal of the group means "no v2 here"; a failed read is shown, with Try again.
-        if (errorMessage(e).startsWith('refusing to bind')) {
-          if (!signal.aborted) setV2Offered(false)
-          return { available: false, notice: null }
-        }
+        if (errorMessage(e).startsWith('refusing to bind')) throw new Error(NOT_OFFERED)
         throw e
       }
     }
@@ -458,44 +343,44 @@ export function WalletConnectFlow({
     })
 
     /** v2 sign-in: one request, then the confirm step (nobody is named, so anyone could answer). */
-    async function runV2Login(sdk: Sdk, forge: ForgeIds, aborted: AbortSignal, notice: string | null): Promise<void> {
+    async function runV2Login(sdk: Sdk, forge: ForgeIds, notice: string | null): Promise<void> {
       // Any approval disables the key of this browser's previous grant: a locked vault that holds
       // one is opened first, while it still can be.
       const blocker = await latest.current.controller.walletSignInBlocker()
-      if (aborted.aborted) return
+      if (signal.aborted) return
       if (blocker !== null) {
         setStep({ kind: 'blocked', message: blocker })
         return
       }
       const { timeMs } = await readChainClock(sdk)
-      if (aborted.aborted) return
+      if (signal.aborted) return
       const req = newV2LoginRequest(ACTIVE_NETWORK.network, forge, {
         connectionId: connectionId(ACTIVE_NETWORK.key),
         chainNow: timeMs,
         callbackUrl: connectCallbackUrl,
       })
-      setStep({ kind: 'request', uri: req.qrUri, linkUri: req.linkUri, expiresAt: req.expiresAt, v2: termsOf(req) })
+      setStep(requestStep(req))
       const granted = await awaitGrantWithWake(sdk, req, pollOptions(forge))
-      if (aborted.aborted) return
-      grant.current = { identityId: granted.identityId, keys: [granted.key], answer: null }
+      if (signal.aborted) return
+      grant.current = granted
       const profile = await responderProfile(sdk, granted.identityId, ACTIVE_NETWORK.network, latest.current.stored)
-      if (aborted.aborted) return
-      setStep({ kind: 'confirm', profile, unlimited: false, unbounded: false, v2: { limits: granted.key.limits, notice } })
+      if (signal.aborted) return
+      setStep({ kind: 'confirm', profile, limits: granted.key.limits, notice })
     }
 
     /** Renewal: the wallet that granted this browser's key grants a new one (no confirm: the identity is known). */
-    async function runRenewal(sdk: Sdk, forge: ForgeIds, aborted: AbortSignal): Promise<void> {
+    async function runRenewal(sdk: Sdk, forge: ForgeIds): Promise<void> {
       if (!renewProtection.current) throw new Error('Choose how to protect the new key first.')
       const auth = latest.current.controller
       const req = await auth.walletRenewalRequest({ callbackUrl: connectCallbackUrl })
       let granted: V2Grant
       try {
-        if (aborted.aborted) {
+        if (signal.aborted) {
           disposeV2Request(req)
           auth.endWalletRenewal(req)
           return
         }
-        setStep({ kind: 'request', uri: req.qrUri, linkUri: req.linkUri, expiresAt: req.expiresAt, v2: termsOf(req) })
+        setStep(requestStep(req))
         granted = await awaitGrantWithWake(sdk, req, pollOptions(forge))
       } catch (e) {
         // Cancelled, expired or refused: the old key is not being replaced after all.
@@ -505,7 +390,7 @@ export function WalletConnectFlow({
       // The wallet has answered, so it has disabled the old key: store the new one now, even if
       // the sheet is closing. When that needs a decision or an unlock, the grant is held for it.
       renewalReq.current = req
-      grant.current = { identityId: granted.identityId, keys: [granted.key], answer: null }
+      grant.current = granted
       setStep({ kind: 'renew-store' })
       await finishRef.current(false)
     }
@@ -514,23 +399,14 @@ export function WalletConnectFlow({
       dropGrant()
     }
     // `attempt` restarts the whole request (a new ephemeral key and QR).
-  }, [attempt, forge, target, mode, grantFor, dropGrant, grantWhat, olderCode, renewGo, needsUnlock])
+  }, [attempt, forge, mode, dropGrant, renewGo, needsUnlock])
 
   const restart = useCallback(() => {
     // The spent request goes off screen; the next one replaces it.
     setStep(null)
     setAttempt((a) => a + 1)
   }, [])
-  /** Switch between the v2 and the older code: the old request goes off screen at once (its key is spent). */
-  const switchCode = (older: boolean): void => {
-    setStep(null)
-    setOlderCode(older)
-  }
 
-  // A reloaded tab holds the signing key only; an approval is stored with the rest of the vault.
-  if (mode === 'grant' && unlockScope === 'signing') {
-    return <UnlockMore title="Unlock this tab to add the approval" testId="grant-unlock" />
-  }
   if (needsUnlock) return <UnlockMore title="Unlock this tab to renew in your wallet" testId="renew-unlock" />
   // A renewal asks how to protect the new key before its code shows: the wallet disables the old
   // key as it approves, so the new one must be storable the moment the answer arrives.
@@ -574,9 +450,6 @@ export function WalletConnectFlow({
               Unlock
             </Button>
           ) : null}
-          <Button variant="outline" onClick={() => switchCode(true)}>
-            Show the older code instead
-          </Button>
         </div>
       </div>
     )
@@ -663,20 +536,15 @@ export function WalletConnectFlow({
             <span>{w}</span>
           </div>
         ))}
-        {step.unlimited ? <UnlimitedKeyWarning unbounded={step.unbounded} /> : null}
-        {step.v2 ? (
-          <>
-            {step.v2.limits?.total != null ? (
-              <p className="text-dense" data-testid="approval-terms">
-                <ApprovalTerms budget={step.v2.limits.total} expiresAt={step.v2.limits.expiresAt} granted />
-              </p>
-            ) : null}
-            {step.v2.notice ? (
-              <p role="note" data-testid="group-notice" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
-                {step.v2.notice}
-              </p>
-            ) : null}
-          </>
+        {step.limits?.total != null ? (
+          <p className="text-dense" data-testid="approval-terms">
+            <ApprovalTerms budget={step.limits.total} expiresAt={step.limits.expiresAt} granted />
+          </p>
+        ) : null}
+        {step.notice ? (
+          <p role="note" data-testid="group-notice" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
+            {step.notice}
+          </p>
         ) : null}
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           Anyone who saw your QR code could have answered first with their own identity; this wallet protocol cannot tell. Only you can, by comparing the
@@ -715,96 +583,61 @@ export function WalletConnectFlow({
     )
   }
 
-  const uri = step?.kind === 'request' || step?.kind === 'register' ? step.uri : null
-  const isRegister = step?.kind === 'register'
-  const qrLabel = isRegister ? 'Wallet key registration request' : 'Wallet login request'
-  // Where no released wallet can answer (a devnet, mainnet), that comes first and the wallet
-  // link is secondary: a big primary button that cannot work is a dead end (QW2-029).
-  const v2 = step?.kind === 'request' ? step.v2 : undefined
-  const reportedCopy = step?.kind === 'request' ? callbackStatusCopy(reported) : undefined
-  // The phone's deep link may carry the callback the QR leaves out.
-  const linkUri = step?.kind === 'request' && step.linkUri ? step.linkUri : uri
-  // A v2 request is the one on offer where it shows, so its link leads even where no released
-  // wallet answers yet; a v1 request keeps the dead-end rule above.
-  const supported = walletSignInSupported(ACTIVE_NETWORK.network) || v2 !== undefined
-  const supportNote = mode === 'login' && step?.kind === 'request' ? <WalletSupportNote protocol={v2 ? 'v2' : 'v1'} /> : null
+  const request = step?.kind === 'request' ? step : null
+  const reportedCopy = request ? callbackStatusCopy(reported) : undefined
   // Said where the QR is on screen: a phone's QR sits in a collapsed disclosure.
-  const qrPrivate = step?.kind === 'request' ? <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p> : null
+  const qrPrivate = <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p>
   return (
-    <div className="space-y-3" data-testid={isRegister ? 'wallet-register' : 'wallet-request'}>
-      {supported ? null : supportNote}
-      {mode === 'grant' && !isRegister ? (
-        <p className="text-dense">Approve {grantWhat.toLowerCase()} for this identity in your wallet.</p>
-      ) : null}
-      {v2 ? (
+    <div className="space-y-3" data-testid="wallet-request">
+      {request ? (
         <p className="text-dense" data-testid="approval-terms">
           {mode === 'renew'
             ? origin === 'app-connect'
               ? 'Approve the renewal in the wallet that gave this browser its key. '
               : 'Approve in the wallet that holds this identity. '
             : 'Approve in your wallet. '}
-          <ApprovalTerms budget={v2.budget} expiresAt={v2.expiresAt} />
+          <ApprovalTerms budget={request.terms.budget} expiresAt={request.terms.expiresAt} />
         </p>
       ) : null}
-      {isRegister ? (
-        <p className="text-dense">
-          <span className="font-medium">One more step, first time only.</span> Your wallet approved, and now it has to add Forge&apos;s key to your identity.{' '}
-          {mobile ? 'Open it in the wallet again.' : 'Scan this second code with the wallet.'}
-        </p>
-      ) : null}
-      {step?.kind === 'request' || isRegister ? <ScanOnlyHere capped={v2 !== undefined && (v2.budget !== null || v2.expiresAt !== null)} withEncryption={v2 === undefined} /> : null}
-      {uri ? (
+      {request ? <ScanOnlyHere /> : null}
+      {request ? (
         mobile ? (
           <>
             <a
-              href={linkUri ?? uri}
+              href={request.linkUri}
               data-testid="wallet-deep-link"
-              data-primary={supported || undefined}
-              className={cn(
-                'flex w-full items-center justify-center gap-2 rounded-md px-4 py-3 text-dense font-medium',
-                supported ? DEEP_LINK_PRIMARY : DEEP_LINK_SECONDARY,
-              )}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-forge-700 px-4 py-3 text-dense font-medium text-white hover:bg-forge-800"
             >
-              <Smartphone className="h-4 w-4" aria-hidden /> {isRegister ? 'Add the key in DashPay (Dash Wallet)' : 'Open in DashPay (Dash Wallet)'}
+              <Smartphone className="h-4 w-4" aria-hidden /> Open in DashPay (Dash Wallet)
             </a>
             <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
               <summary className="cursor-pointer coarse:py-3">Wallet on another device? Show the QR code</summary>
               <div className="space-y-2 pt-2">
-                <Qr value={uri} label={qrLabel} size={180} />
+                <Qr value={request.uri} label="Wallet login request" size={180} />
                 {qrPrivate}
               </div>
             </details>
           </>
         ) : (
           <>
-            <Qr value={uri} label={qrLabel} size={200} />
+            <Qr value={request.uri} label="Wallet login request" size={200} />
             {qrPrivate}
           </>
         )
       ) : error ? null : (
         <Waiting label={preparing} />
       )}
-      {status === 'incomplete-read' && step?.kind === 'request' ? (
+      {status === 'incomplete-read' && request ? (
         <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="incomplete-read">
           Couldn&apos;t read all answer sources — retrying. Forge won&apos;t accept an answer until it has read them all.
         </p>
       ) : null}
-      {step?.kind === 'request' || step?.kind === 'register' ? <Countdown until={step.expiresAt} /> : null}
-      {supported ? supportNote : null}
+      {request ? <Countdown until={request.expiresAt} /> : null}
+      {mode === 'login' && request ? <WalletSupportNote /> : null}
       {reportedCopy ? (
         <p role="status" data-testid="wallet-reported" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
           {reportedCopy.title}. {reportedCopy.body}
         </p>
-      ) : null}
-      {mode === 'login' && v2 ? (
-        <button type="button" data-testid="older-code" onClick={() => switchCode(true)} className={TEXT_BUTTON}>
-          Using a Dash Wallet build without App Connect v2? Show the older code
-        </button>
-      ) : null}
-      {mode === 'login' && step?.kind === 'request' && !v2 && v2Offered ? (
-        <button type="button" data-testid="newer-code" onClick={() => switchCode(false)} className={TEXT_BUTTON}>
-          Wallet supports App Connect v2? Show the newer code
-        </button>
       ) : null}
       <ErrorBox error={error} />
       {error ? (
@@ -812,14 +645,15 @@ export function WalletConnectFlow({
           <RefreshCw className="h-4 w-4" aria-hidden /> Try again
         </Button>
       ) : null}
-      {mode === 'login' && error && v2Offered && !olderCode ? (
-        <button type="button" data-testid="older-code-error" onClick={() => switchCode(true)} className={TEXT_BUTTON}>
-          Show the older code instead
-        </button>
-      ) : null}
     </div>
   )
 }
+
+/** Why the wallet flow cannot start here: App Connect v2 is not on offer. */
+const NOT_OFFERED = `Wallet sign-in needs App Connect v2, which can't be offered on ${ACTIVE_NETWORK.key} right now. Sign in with your recovery phrase or identity file, or create an identity in the browser.`
+
+/** Platform did not answer the protocol check in time. */
+const UNREAD = "Couldn't read Platform to check what your wallet can answer. Try again."
 
 export const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/releases/latest'
 
@@ -828,40 +662,21 @@ export const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/
  * v2 in DashPay for Android 11.9.2 and Dash Wallet for iOS 9.1.4. On testnet only Android's
  * testnet build (an APK on the GitHub release) is verified, so only it is named there.
  */
-export function WalletSupportNote({ protocol = 'v1' }: { protocol?: 'v1' | 'v2' } = {}): JSX.Element {
-  const { network, key } = ACTIVE_NETWORK
-  if (protocol === 'v2') {
-    return (
-      <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        {network === 'testnet' ? (
-          <>
-            Works with DashPay for Android 11.9.2 or later, which speaks App Connect v2. On testnet, use its testnet build (More → Tools → Connections): the{' '}
-            <code>-testnet.apk</code> on the{' '}
-            <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
-              DashPay Wallet releases (opens in a new tab)
-            </a>
-            .
-          </>
-        ) : (
-          'Works with DashPay for Android 11.9.2 or later and Dash Wallet for iOS 9.1.4 or later (More → Tools → Connections), which speak App Connect v2.'
-        )}
-      </p>
-    )
-  }
-  if (!walletSignInSupported(network)) {
-    return (
-      <p role="note" data-testid="wallet-support" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
-        {network === 'devnet'
-          ? `Dash Wallet sign-in (DashConnect) works on testnet only, and no released wallet has it yet. On ${key}, only an internal iOS build can answer.`
-          : `No Dash Wallet build supports sign-in on ${key} yet: its sign-in feature (DashConnect) works on testnet only.`}{' '}
-        Here, sign in with your identity file or recovery phrase, or create an identity in the browser.
-      </p>
-    )
-  }
+function WalletSupportNote(): JSX.Element {
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      DashPay for Android 11.9.2 and later refuse this older code and answer only the newer one. A wallet that still answers it (More → Tools →
-      Connections → Scan QR) approves each Forge contract separately.
+      {ACTIVE_NETWORK.network === 'testnet' ? (
+        <>
+          Works with DashPay for Android 11.9.2 or later, which speaks App Connect v2. On testnet, use its testnet build (More → Tools → Connections): the{' '}
+          <code>-testnet.apk</code> on the{' '}
+          <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
+            DashPay Wallet releases (opens in a new tab)
+          </a>
+          .
+        </>
+      ) : (
+        'Works with DashPay for Android 11.9.2 or later and Dash Wallet for iOS 9.1.4 or later (More → Tools → Connections), which speak App Connect v2.'
+      )}
     </p>
   )
 }
@@ -884,20 +699,6 @@ function ApprovalTerms({ budget, expiresAt, granted = false }: { budget: bigint 
       ) : null}
       {expiresAt !== null ? <> until {formatDate(expiresAt)}</> : null}.{granted ? '' : ' Your wallet may offer other limits.'}
     </>
-  )
-}
-
-/** "This key has no spending limit" (a shipped wallet's key): what it means, what to do. */
-export function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.Element {
-  return (
-    <div role="note" data-testid="unlimited-key-warning" className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
-      <span>
-        This wallet key has no spending limit or expiry. Anyone who copies it from this browser can spend your balance
-        {unbounded ? ' on any Platform app' : ' on Forge'}. Protect it with a passkey and replace it with a limited key soon, in
-        Settings → This browser&apos;s key.
-      </span>
-    </div>
   )
 }
 

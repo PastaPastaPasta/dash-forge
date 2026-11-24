@@ -16,10 +16,10 @@ import { approveV2, disableGrants, newV2Wallet } from './wallet-responder-v2'
  *   E2E_DEVNET=sakura pnpm exec playwright test wallet-login-v2.spec.ts
  *
  * r1. Desktop: the wallet tile comes first; the request is v2 (`v=2`, one approval for all of
- *     Forge, with the budget and the date), the support note names App Connect v2, and "Show the
- *     older code" switches to the v1 request (`v=1`) and "Show the newer code" back.
+ *     Forge, with the budget and the date), the support note names App Connect v2, and there is no
+ *     older code to switch to (v1 DashConnect was removed).
  * r2. Phone: "Open in DashPay (Dash Wallet)" is the v2 link (no callback on a local http build:
- *     `cb` needs the canonical https site), and the older code is one tap away.
+ *     `cb` needs the canonical https site).
  * r3. `/connect/`, where a wallet returns: a malformed link goes home, a declined approval says
  *     so, a tab that shows a code answers the page (which then steps aside), and with no such
  *     tab the page sends the user back to the Forge tab where they started.
@@ -42,7 +42,6 @@ test.skip(E2E_NETWORK === 'testnet', 'devnet spec (n=d requests, the scripted wa
 
 /** A v2 request's URI: `n=d` on a devnet, `v=2`. */
 const V2_URI = /^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=2$/
-const V1_URI = /^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=1$/
 const REQUEST_HASH = 'ab'.repeat(20)
 
 /** Whether the first DAPI node of the devnet under test accepts a TCP connection (5 s). */
@@ -87,7 +86,7 @@ test.describe('v2 request (read-only)', () => {
     test.skip(!(await devnetReachable()), 'the devnet nodes are not reachable from this machine (the request needs Platform reads)')
   })
 
-  test('r1. desktop: the wallet tile is first, the request is v2, and the older code is one click away', async ({ browser }) => {
+  test('r1. desktop: the wallet tile is first, and the request is v2 with no older code beside it', async ({ browser }) => {
     const page = await (await browser.newContext()).newPage()
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
@@ -105,17 +104,8 @@ test.describe('v2 request (read-only)', () => {
     await expect(page.getByTestId('approval-terms')).toContainText(/until /)
     await expect(page.getByTestId('wallet-support')).toContainText(/app connect v2/i)
     await expect(page.getByTestId('wallet-deep-link')).toHaveCount(0)
+    await expect(page.getByText(/older code/i)).toHaveCount(0)
     await shot(page, 'wallet-login-v2-01-request')
-
-    // The older code: today's v1 request, and a way back.
-    await page.getByTestId('older-code').click()
-    await expect(page.getByTestId('newer-code')).toBeVisible({ timeout: 60_000 })
-    expect(await shownUri(page)).toMatch(V1_URI)
-    await expect(page.getByTestId('approval-terms')).toHaveCount(0)
-    await shot(page, 'wallet-login-v2-02-older-code')
-    await page.getByTestId('newer-code').click()
-    await expect(page.getByTestId('older-code')).toBeVisible({ timeout: 60_000 })
-    expect(await shownUri(page)).toMatch(V2_URI)
   })
 
   test('r2. phone: "Open in DashPay (Dash Wallet)" is the v2 link, with the QR behind a disclosure', async ({ browser }) => {
@@ -129,10 +119,6 @@ test.describe('v2 request (read-only)', () => {
     // would not reach the tab either).
     expect(href).not.toContain('cb=')
     await expect(link).toHaveText(/open in dashpay \(dash wallet\)/i)
-    await expect(page.getByTestId('older-code')).toBeVisible()
-    await page.getByTestId('older-code').click()
-    await expect(page.getByTestId('newer-code')).toBeVisible({ timeout: 60_000 })
-    expect(await link.getAttribute('href')).toMatch(V1_URI)
     await shot(page, 'wallet-login-v2-03-phone')
   })
 })
@@ -207,7 +193,7 @@ test.describe('v2 sign-in and renewal (live, real spend)', () => {
       await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
       await unlock(page)
       await expect(page.getByTestId('keys-panel')).toBeVisible({ timeout: 30_000 })
-      await expect(page.getByTestId('grant-collab')).toHaveCount(0)
+      await expect(page.getByTestId('key-partial')).toHaveCount(0)
       await expect(page.getByTestId('keys-panel').getByTestId('unlimited-key-warning')).toHaveCount(0)
       await expect(page.getByTestId('key-id')).toHaveAttribute('data-key-id', String(first.keyId))
       await expect(page.getByTestId('key-budget')).toContainText('0.05')

@@ -6,8 +6,6 @@
  */
 
 import { create } from 'zustand'
-import type { ForgeContractKind } from '@/lib/deployments'
-
 import type { TopUpReason } from '@/lib/view/write-errors'
 
 /** Why the top-up sheet opened: which budget blocks, and by how much (credits). */
@@ -16,10 +14,10 @@ export type { TopUpReason }
 /**
  * A sign-in sheet view to open on directly (`renew`: Settings → Renew key, the import form worded
  * as a renewal of the signed-in identity's key, QW3-031; `wallet-renew` renews it in the wallet
- * that granted it (App Connect); `grant` asks the signed-in identity's wallet for a key on the
- * contract named with it, when the session lacks one).
+ * that granted it (App Connect); `wallet-replace` replaces a key from a wallet's older code
+ * (unlimited, or covering part of Forge) with one wallet approval, the identity file beside it).
  */
-export type LoginView = 'import' | 'renew' | 'wallet-renew' | 'create' | 'wallet' | 'grant' | 'unlock' | 'dg'
+export type LoginView = 'import' | 'renew' | 'wallet-renew' | 'wallet-replace' | 'create' | 'wallet' | 'unlock' | 'dg'
 
 /**
  * What a signed-out click asked to do (L-62): the sheet says "Sign in to star this repo" and what
@@ -40,11 +38,9 @@ interface UiState {
   readonly loginOpen: boolean
   /** The view the sheet should open on, or null for its default (Unlock / the tiles). */
   readonly loginView: LoginView | null
-  /** With `grant`: which Forge contract to ask the wallet for (captured when the sheet opens). */
-  readonly loginGrantFor: ForgeContractKind | null
   /** Why the sheet opened, when a write asked for it. */
   readonly loginIntent: SignInIntent | null
-  openLogin: (view?: LoginView, grantFor?: ForgeContractKind, intent?: SignInIntent) => void
+  openLogin: (view?: LoginView, intent?: SignInIntent) => void
   closeLogin: () => void
   /**
    * "Sign in" was asked for while it was not yet known whether this browser's session resumes
@@ -72,11 +68,9 @@ export function signInRequestOutcome(i: { pending: boolean; settled: boolean; si
 export const useUiStore = create<UiState>((set) => ({
   loginOpen: false,
   loginView: null,
-  loginGrantFor: null,
   loginIntent: null,
-  openLogin: (view, grantFor, intent) =>
-    set({ loginOpen: true, loginView: view ?? null, loginGrantFor: grantFor ?? null, loginIntent: intent ?? null }),
-  closeLogin: () => set({ loginOpen: false, loginView: null, loginGrantFor: null, loginIntent: null }),
+  openLogin: (view, intent) => set({ loginOpen: true, loginView: view ?? null, loginIntent: intent ?? null }),
+  closeLogin: () => set({ loginOpen: false, loginView: null, loginIntent: null }),
   signInPending: false,
   requestSignIn: () => set({ signInPending: true }),
   clearSignInRequest: () => set({ signInPending: false }),

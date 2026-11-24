@@ -32,7 +32,7 @@ import { fakePasskeyAdapter, type FakePasskeyAdapter } from '../vendor/platform-
 import { MemoryVaultPort } from '../vendor/platform-auth/passkey-vault/__fixtures__/memory-port'
 import { decodeIdentifier } from './base58'
 import { AuthController } from './controller'
-import type { WalletKey } from './key-registration'
+import type { WalletKey } from './wallet-key'
 import { readMarkers, readPending } from './passkey-vault/markers'
 import { FORGE_BUNDLE_CODEC, FORGE_BUNDLE_FORMAT, FORGE_VAULT_PROFILE } from './passkey-vault/profile'
 import { credentialName, onChainKeyOf } from './passkey-vault/port'
@@ -570,8 +570,9 @@ describe('passkeys that hold a key on Platform', () => {
     // A v1 wallet's one-contract grant: no budget, no expiry (its entry ciphertext would be public for good).
     const v1: FakeKey = { ...groupKey(6), contractBounds: { toJSON: () => ({ $type: 'singleContract', id: FORGE.collab }) }, totalBudget: undefined, expiresAt: undefined }
     keys.push(v1)
-    const c = await signIn(keys[1]!)
-    await c.addWalletGrant(ID, { keyId: 6, wif: v1.wif, scope: { core: false, collab: true, community: false, meta: false, unbounded: false }, limits: null }, FORGE.collab)
+    // A vault an older wallet sign-in left: the group key, and that grant beside it.
+    const c = make()
+    await c.adoptWalletKeys(ID, [grantOf(keys[1]!), { keyId: 6, wif: v1.wif, scope: { core: false, collab: true, community: false, meta: false, unbounded: false }, limits: null }], PASSKEY)
     expect(await c.platformPasskeyLeftOut()).toBe(1)
     await c.addPlatformPasskey()
     expect(port.entries).toHaveLength(1)
