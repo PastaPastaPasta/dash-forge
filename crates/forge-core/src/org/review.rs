@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::network::ForgeIds;
-use crate::platform::org::{decode_unsigned, DecodedWrite};
+use crate::platform::org::{decode_unsigned, DecodedWrite, NonceState};
 use crate::platform::{FieldValue, PlatformClient};
 use crate::rules::v2::Role;
 
@@ -122,9 +122,15 @@ pub fn decoded_problems(expect: &Expect<'_>, d: &DecodedWrite, signable: &[u8]) 
     problems
 }
 
-/// Step 4: the nonce must be above the identity's current one.
-pub fn nonce_problem(d: &DecodedWrite, current: u64) -> Option<String> {
-    (d.nonce <= current).then(|| "it was overtaken: its nonce is already used".to_string())
+/// Step 4: the nonce must still be usable, and not further ahead than Platform accepts.
+pub fn nonce_problem(d: &DecodedWrite, current: NonceState) -> Option<String> {
+    if current.spent(d.nonce) {
+        Some("it was overtaken: its nonce is already used".to_string())
+    } else if current.too_far(d.nonce) {
+        Some("its nonce is further ahead than Platform accepts".to_string())
+    } else {
+        None
+    }
 }
 
 fn ident(d: &DecodedWrite, field: &str) -> Option<String> {
@@ -186,8 +192,9 @@ pub fn describe(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) 
             names.repo(Some(d.document_id.clone()))
         ),
         ("repo", "replace") => format!(
-            "Edit the listing of {}",
-            names.repo(Some(d.document_id.clone()))
+            "Edit the listing of {}{}",
+            names.repo(Some(d.document_id.clone())),
+            changes(d, stored, names)
         ),
         ("maintainer" | "writer", "create") => {
             format!("Give {who} {} access to {repo}", role_of(d).label())
@@ -203,7 +210,10 @@ pub fn describe(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) 
             text(d, "defaultBranch").unwrap_or_else(|| "main".into())
         ),
         ("profile", "create") => "Create the organization's profile".into(),
-        ("profile", "replace") => "Update the organization's profile".into(),
+        ("profile", "replace") => format!(
+            "Update the organization's profile{}",
+            changes(d, stored, names)
+        ),
         ("topic", "create") => format!(
             "Add the topic {} to {repo}",
             text(d, "name").unwrap_or_default()
@@ -218,20 +228,74 @@ pub fn describe(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) 
     }
 }
 
+fn shown(key: &str, v: &FieldValue, names: &Names) -> String {
+    match v {
+        FieldValue::Text(t) => format!("“{t}”"),
+        FieldValue::Identifier(b) | FieldValue::Bytes32(b) => {
+            let id = crate::platform::encode_identifier(*b);
+            if key == "renamedTo" {
+                names.repo(Some(id))
+            } else {
+                id
+            }
+        }
+        FieldValue::Bytes(b) => match <[u8; 32]>::try_from(b.as_slice()) {
+            Ok(a) => shown(key, &FieldValue::Identifier(a), names),
+            Err(_) => hex::encode(b),
+        },
+        FieldValue::Integer(n) | FieldValue::Uint64(n) => n.to_string(),
+        FieldValue::Signed(n) => n.to_string(),
+        FieldValue::Bool(b) => b.to_string(),
+        FieldValue::List(items) => items
+            .iter()
+            .map(|i| shown(key, i, names))
+            .collect::<Vec<_>>()
+            .join(", "),
+        FieldValue::Object(_) => "(a nested value)".into(),
+    }
+}
+
+/// `: set description to “…”; remove website` — what a replace changes against `stored`.
+fn changes(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) -> String {
+    let Some(before) = stored else {
+        return " (its current version could not be read)".into();
+    };
+    let mut out = Vec::new();
+    for (k, v) in &d.properties {
+        if before.properties.get(k) != Some(v) {
+            out.push(format!("set {k} to {}", shown(k, v, names)));
+        }
+    }
+    for k in before.properties.keys() {
+        if !d.properties.contains_key(k) {
+            out.push(format!("remove {k}"));
+        }
+    }
+    if out.is_empty() {
+        " (no change)".into()
+    } else {
+        format!(": {}", out.join("; "))
+    }
+}
+
 /// The ids a description names: repositories and identities.
 pub fn referenced_ids(d: &DecodedWrite) -> (Vec<String>, Vec<String>) {
     (
-        ident(d, "repoId").into_iter().collect(),
+        ident(d, "repoId")
+            .into_iter()
+            .chain(ident(d, "renamedTo"))
+            .collect(),
         ident(d, "memberId").into_iter().collect(),
     )
 }
 
-/// The stored document a delete removes, as a [`DecodedWrite`]-shaped view (its properties).
+/// The stored document a delete removes or a replace changes, as a [`DecodedWrite`]-shaped
+/// view (its properties).
 pub async fn stored_target(
     client: &PlatformClient,
     d: &DecodedWrite,
 ) -> crate::Result<Option<DecodedWrite>> {
-    if d.action != "delete" {
+    if d.action != "delete" && d.action != "replace" {
         return Ok(None);
     }
     let contract = client.fetch_contract(&d.contract_id).await?;
@@ -242,4 +306,65 @@ pub async fn stored_target(
         properties: doc.fields,
         ..d.clone()
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(action: &str, props: &[(&str, FieldValue)]) -> DecodedWrite {
+        DecodedWrite {
+            batch: true,
+            canonical: true,
+            owner_id: String::new(),
+            signature_key_id: None,
+            user_fee_increase: 0,
+            signature_empty: true,
+            document_transitions: 1,
+            transitions: 1,
+            contract_id: String::new(),
+            document_type: "repo".into(),
+            action: action.into(),
+            document_id: "R".into(),
+            nonce: 1,
+            revision: Some(2),
+            properties: props
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+            signable: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_listing_edit_says_what_it_changes() {
+        let mut names = Names::default();
+        names.repos.insert("R".into(), "acme/widgets".into());
+        let other = [7u8; 32];
+        names.repos.insert(
+            crate::platform::encode_identifier(other),
+            "mallory/trap".into(),
+        );
+        let before = write(
+            "replace",
+            &[
+                ("name", FieldValue::text("widgets")),
+                ("description", FieldValue::text("old")),
+                ("website", FieldValue::text("https://a")),
+            ],
+        );
+        let after = write(
+            "replace",
+            &[
+                ("name", FieldValue::text("widgets")),
+                ("description", FieldValue::text("new")),
+                ("renamedTo", FieldValue::Bytes(other.to_vec())),
+            ],
+        );
+        assert_eq!(
+            describe(&after, Some(&before), &names),
+            "Edit the listing of acme/widgets: set description to “new”; set renamedTo to mallory/trap; remove website"
+        );
+        assert!(describe(&after, None, &names).ends_with("could not be read)"));
+    }
 }

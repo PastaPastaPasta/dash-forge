@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::error::{Error, Result};
 use crate::network::ForgeIds;
 use crate::platform::org::{
-    attach_signature, decode_unsigned, holds_group_key, DecodedWrite, UnsignedWrite,
+    attach_signature, decode_unsigned, holds_group_key, DecodedWrite, NonceState, UnsignedWrite,
 };
 use crate::platform::{BroadcastOutcome, LoadedIdentity, PlatformClient};
 
@@ -217,6 +217,19 @@ impl Org {
         })
     }
 
+    /// Refuse a request whose parts do not form a whole one, or that is no longer open.
+    fn require_open(&self, req: &Request, what: &str) -> Result<()> {
+        if let Some(problem) = &req.problem {
+            return Err(refused(what, std::slice::from_ref(problem)));
+        }
+        let status = request::status(&self.state, req, None);
+        if status.is_open() {
+            Ok(())
+        } else {
+            Err(refused(what, &[format!("it is {}", status.label())]))
+        }
+    }
+
     /// Whether every proposal of `req` writes as this organization (checked offline).
     pub fn writes_as_org(&self, req: &Request) -> bool {
         req.proposals.iter().all(|id| {
@@ -266,7 +279,7 @@ impl Org {
     ) -> Result<Vec<Reviewed>> {
         let network = client.network().key();
         let expect = self.expect(&network, forge);
-        let mut nonces: BTreeMap<String, u64> = BTreeMap::new();
+        let mut nonces: BTreeMap<String, NonceState> = BTreeMap::new();
         let mut out = Vec::new();
         for id in &req.proposals {
             let p = &self.state.proposals[id];
@@ -281,11 +294,12 @@ impl Org {
                     nonces.insert(d.contract_id.clone(), n);
                     n
                 };
-                if p.status != ProposalStatus::Executed
-                    && d.nonce <= current
-                    && !landed(client, d).await.unwrap_or(false)
-                {
-                    r.problems.extend(review::nonce_problem(d, current));
+                if p.status != ProposalStatus::Executed {
+                    if let Some(problem) = review::nonce_problem(d, current) {
+                        if !landed(client, d).await.unwrap_or(false) {
+                            r.problems.push(problem);
+                        }
+                    }
                 }
             }
             out.push(r);
@@ -306,7 +320,7 @@ impl Org {
             let current = client
                 .proved_contract_nonce(&self.record.org_id, &d.contract_id)
                 .await?;
-            if d.nonce <= current {
+            if current.spent(d.nonce) {
                 view.spent.insert(id.clone());
                 if landed(client, &d).await? {
                     view.landed.insert(id.clone());
@@ -338,7 +352,12 @@ impl Org {
         }
         for d in &decoded {
             let stored = review::stored_target(client, d).await.ok().flatten();
-            let (repos, people) = review::referenced_ids(stored.as_ref().unwrap_or(d));
+            let (mut repos, mut people) = review::referenced_ids(d);
+            if let Some(s) = &stored {
+                let (r, p) = review::referenced_ids(s);
+                repos.extend(r);
+                people.extend(p);
+            }
             for id in repos {
                 if names.repos.contains_key(&id) {
                     continue;
@@ -450,6 +469,7 @@ impl Org {
         keys: &MemberKeys,
         req: &Request,
     ) -> Result<Signed> {
+        self.require_open(req, "sign this request")?;
         self.bind(client).await?;
         let problems: Vec<String> = self
             .review(client, forge, req)
@@ -501,6 +521,12 @@ impl Org {
         keys: &MemberKeys,
         req: &Request,
     ) -> Result<Finished> {
+        if let Some(problem) = &req.problem {
+            return Err(refused(
+                "broadcast this request",
+                std::slice::from_ref(problem),
+            ));
+        }
         self.bind(client).await?;
         let network = client.network().key();
         let mut broadcast = 0;
@@ -619,7 +645,7 @@ async fn landed(client: &PlatformClient, d: &DecodedWrite) -> Result<bool> {
                 && client
                     .proved_contract_nonce(&d.owner_id, &d.contract_id)
                     .await?
-                    >= d.nonce
+                    .spent(d.nonce)
         }
         _ => false,
     })

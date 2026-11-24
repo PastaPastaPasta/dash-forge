@@ -17,7 +17,9 @@ use crate::rules::v2::{Role, Visibility};
 use crate::scope::{DocScope, RepoRef};
 
 /// Hands out identity-contract nonces: above the identity's current one and above every nonce
-/// an open request of the organization already holds, consecutive within one request.
+/// an open request of the organization already holds, consecutive within one request. An open
+/// nonce further ahead than Platform accepts is ignored (it can never land), and a nonce that
+/// would be is refused.
 pub struct Nonces<'a> {
     writer: &'a OrgWriter<'a>,
     floor: BTreeMap<String, u64>,
@@ -38,7 +40,20 @@ impl<'a> Nonces<'a> {
             *n
         } else {
             let current = self.writer.current_nonce(contract_id).await?;
-            current.max(self.floor.get(contract_id).copied().unwrap_or(0)) + 1
+            let floor = self
+                .floor
+                .get(contract_id)
+                .copied()
+                .filter(|n| !current.too_far(*n))
+                .unwrap_or(0);
+            let next = current.tip().max(floor) + 1;
+            if current.too_far(next) {
+                return Err(Error::Config(
+                    "the organization has too many open requests: finish or decline some first"
+                        .into(),
+                ));
+            }
+            next
         };
         self.next.insert(contract_id.to_string(), next + 1);
         Ok(next)

@@ -120,8 +120,8 @@ impl<'a> OrgWriter<'a> {
         })
     }
 
-    /// The identity's current identity-contract nonce for `contract_id` (proved, masked).
-    pub async fn current_nonce(&self, contract_id: &str) -> Result<u64> {
+    /// The identity's identity-contract nonce for `contract_id` (proved).
+    pub async fn current_nonce(&self, contract_id: &str) -> Result<NonceState> {
         self.client
             .proved_contract_nonce(&encode_identifier(self.owner.to_buffer()), contract_id)
             .await
@@ -537,8 +537,12 @@ impl PlatformClient {
         Ok(found.map(LoadedIdentity))
     }
 
-    /// The identity-contract nonce from a proved read (never the SDK's cache), DIP-30 masked.
-    pub async fn proved_contract_nonce(&self, identity_id: &str, contract_id: &str) -> Result<u64> {
+    /// The identity-contract nonce from a proved read (never the SDK's cache).
+    pub async fn proved_contract_nonce(
+        &self,
+        identity_id: &str,
+        contract_id: &str,
+    ) -> Result<NonceState> {
         use drive_proof_verifier::types::IdentityContractNonceFetcher;
         let owner = parse_id(identity_id, "identity id")?;
         let contract = parse_id(contract_id, "contract id")?;
@@ -547,9 +551,33 @@ impl PlatformClient {
         })
         .await
         .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
-        Ok(current.map_or(0, |f| f.0) & NONCE_MASK)
+        Ok(NonceState(current.map_or(0, |f| f.0)))
     }
 }
+
+/// Platform's raw identity-contract nonce: the low 40 bits are the tip, the high 24 a bitmap
+/// of skipped nonces still free (DIP-30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NonceState(pub u64);
+
+impl NonceState {
+    pub fn tip(self) -> u64 {
+        self.0 & NONCE_MASK
+    }
+
+    /// Whether `nonce` can no longer be used, as Drive decides it (a skipped one is free).
+    pub fn spent(self, nonce: u64) -> bool {
+        super::nonce_is_spent(self.0, nonce, Identifier::default())
+    }
+
+    /// Whether `nonce` is further ahead than Platform accepts.
+    pub fn too_far(self, nonce: u64) -> bool {
+        nonce > self.tip().saturating_add(MAX_NONCE_AHEAD)
+    }
+}
+
+/// How far above the tip Platform accepts a nonce (rs-dpp `MAX_MISSING_IDENTITY_REVISIONS`).
+pub const MAX_NONCE_AHEAD: u64 = 24;
 
 /// Whether `identity`'s key `key_id` is `group_public_key` (48-byte hex): an enabled BLS12-381
 /// key (§9 "Which identity a group controls").
@@ -856,6 +884,20 @@ mod tests {
             );
             assert_eq!(w.intent["document"]["properties"], doc["properties"]);
         }
+    }
+
+    #[tokio::test]
+    async fn a_skipped_nonce_is_free_and_a_far_one_is_refused() {
+        let n = NonceState(10);
+        assert!(n.spent(10) && n.spent(9) && !n.spent(11));
+        let skipped_one_behind = NonceState((1u64 << 40) + 10);
+        assert!(!skipped_one_behind.spent(9));
+        assert!(!n.too_far(34) && n.too_far(35));
+        let w = build("repo", repo_props(), ORG).await;
+        let mut d = decode_unsigned(&w.unsigned).unwrap();
+        d.nonce = 9;
+        assert!(crate::org::review::nonce_problem(&d, n).is_some());
+        assert!(crate::org::review::nonce_problem(&d, skipped_one_behind).is_none());
     }
 
     #[test]

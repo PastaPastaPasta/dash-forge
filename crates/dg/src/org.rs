@@ -566,6 +566,12 @@ async fn sign(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
     let (seed, keys) = unlock_for(ctx, phrase, &org.record)?;
     let client = ctx.connect().await?;
     let forge = ctx.target.require_v2()?.clone();
+    if !ctx.json {
+        println!("Signing for {}:", line(&org.record.label));
+        for (i, d) in org.describe(&client, &req).await.iter().enumerate() {
+            println!("  {}. {}", i + 1, line(d));
+        }
+    }
     let signed = org.sign(&client, &forge, &seed, &keys, &req).await?;
     let req = org.find(&req.id)?;
     let (collected, threshold) = org.progress(&req);

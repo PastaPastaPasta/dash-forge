@@ -3201,7 +3201,7 @@ fn same_field(stored: Option<&FieldValue>, wanted: Option<&FieldValue>) -> bool 
 /// nonce Platform holds: Drive's own `validate_identity_nonce_update`, for nonces at or below
 /// the tip (the tip, one more than 24 behind it, or a skipped one since filled). A nonce above
 /// the tip is free. Parity: forge-web `isNonceSpent` (same cases in both test suites).
-fn nonce_is_spent(current: u64, nonce: u64, owner: Identifier) -> bool {
+pub(crate) fn nonce_is_spent(current: u64, nonce: u64, owner: Identifier) -> bool {
     use dash_sdk::dpp::identity::identity_nonce::validate_identity_nonce_update;
     nonce <= current & NONCE_MASK
         && !validate_identity_nonce_update(current, nonce, owner).is_valid()
