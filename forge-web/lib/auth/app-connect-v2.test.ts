@@ -14,8 +14,10 @@ import { describe, expect, it } from 'vitest'
 import type { ForgeIds } from '../deployments'
 import { CREDITS_PER_DASH } from '../sdk/cost'
 import { bytesToBase64 } from '../sdk/query'
-import { AppConnectTlv, KeySecurityLevel, parseAppConnectUri } from '../vendor/platform-auth/app-connect'
+import { APP_CONNECT_MAX_REQUEST_SKEW_MS, AppConnectTlv, KeySecurityLevel, parseAppConnectUri } from '../vendor/platform-auth/app-connect'
 import {
+  APP_CONNECT_CREATED_AT_LEAD_MS,
+  requestCreatedAt,
   AmbiguousWalletLogin,
   APP_CONNECT_LABEL,
   PollTrigger,
@@ -90,6 +92,16 @@ describe('the request Forge makes', () => {
     // Answers are stored under hash160 of the request's ephemeral key.
     expect(bytesToHex(req.requestHash)).toBe(bytesToHex(ripemd160(sha256(request.appEphemeralPubKey))))
     expect(req.expiresAt - req.createdAt).toBe(10 * 60 * 1000)
+  })
+
+  it('dates CREATED_AT within 90 s of the chain time it read, so a wallet judging by block time accepts it', () => {
+    const chain = 1_800_000_000_000
+    expect(requestCreatedAt(chain + 5_000, chain)).toBe(chain + 5_000)
+    // Mainnet blocks can be minutes apart: the device's clock is then ahead of the latest block.
+    expect(requestCreatedAt(chain + 6 * 60_000, chain)).toBe(chain + 90_000)
+    // A device clock behind the chain would read as stale: chain time instead.
+    expect(requestCreatedAt(chain - 20 * 60_000, chain)).toBe(chain)
+    expect(APP_CONNECT_CREATED_AT_LEAD_MS).toBeLessThan(APP_CONNECT_MAX_REQUEST_SKEW_MS)
   })
 
   it('puts the callback on the deep link only', () => {
