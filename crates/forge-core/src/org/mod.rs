@@ -11,6 +11,7 @@ pub mod ceremony;
 pub mod derive;
 pub mod envelope;
 pub mod member;
+pub mod owner;
 pub mod relay;
 pub mod request;
 pub mod review;

@@ -7,13 +7,14 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::address_funds::AddressWitness;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::Document;
+use dash_sdk::dpp::document::{Document, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::BinaryData;
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::serialization::{
     PlatformDeserializableUntrusted, PlatformSerializable, Signable,
 };
@@ -149,6 +150,34 @@ impl<'a> OrgWriter<'a> {
         };
         b.delete(document_type, document_id, nonce).await
     }
+
+    /// An unsigned replace of the stored `document_type` document `document_id`, which is at
+    /// `stored_revision`, with `properties` (the whole new property set), at `nonce`.
+    pub async fn replace(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        stored_revision: u64,
+        properties: BTreeMap<String, FieldValue>,
+        nonce: u64,
+    ) -> Result<UnsignedWrite> {
+        let (dc, version) = self.build(contract);
+        let b = Build {
+            dc: &dc,
+            owner: self.owner,
+            key: &self.key,
+            version,
+        };
+        b.replace(
+            document_type,
+            document_id,
+            stored_revision,
+            properties,
+            nonce,
+        )
+        .await
+    }
 }
 
 /// Building one unsigned write: no network involved.
@@ -186,15 +215,7 @@ impl Build<'_> {
             "properties": properties_json(&properties),
             "entropy": hex::encode(entropy),
         });
-        let document = client_document(
-            id,
-            self.owner,
-            properties
-                .into_iter()
-                .map(|(k, v)| (k, v.into_value()))
-                .collect(),
-            None,
-        );
+        let document = client_document(id, self.owner, plain_values(properties), None);
         let st = BatchTransition::new_document_creation_transition_from_document(
             document,
             doc_type,
@@ -242,6 +263,47 @@ impl Build<'_> {
             "documentType": document_type,
             "id": document_id,
         });
+        self.finish(&st, document_type, id, nonce, intent_doc)
+    }
+
+    async fn replace(
+        &self,
+        document_type: &str,
+        document_id: &str,
+        stored_revision: u64,
+        properties: BTreeMap<String, FieldValue>,
+        nonce: u64,
+    ) -> Result<UnsignedWrite> {
+        let doc_type = self
+            .dc
+            .document_type_for_name(document_type)
+            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
+        let id = parse_id(document_id, "document id")?;
+        let next = stored_revision
+            .checked_add(1)
+            .ok_or_else(|| Error::Platform("document revision overflow".into()))?;
+        let intent_doc = json!({
+            "action": "replace",
+            "documentType": document_type,
+            "properties": properties_json(&properties),
+            "id": document_id,
+            "revision": stored_revision.to_string(),
+        });
+        let mut document = client_document(id, self.owner, plain_values(properties), None);
+        document.set_revision(Some(next));
+        let st = BatchTransition::new_document_replacement_transition_from_document(
+            document,
+            doc_type,
+            self.key,
+            nonce,
+            0,
+            None,
+            &Unsigned,
+            self.version,
+            None,
+        )
+        .await
+        .map_err(|e| Error::Platform(format!("building the replace transition: {e}")))?;
         self.finish(&st, document_type, id, nonce, intent_doc)
     }
 
@@ -301,13 +363,31 @@ fn org_key(identity: &LoadedIdentity, key_id: u32) -> Result<IdentityPublicKey> 
     Ok(key.clone())
 }
 
-/// `FieldValue`s as intent JSON: bytes as hex strings, identifiers as base58.
+/// Document properties as an organization's transition carries them (§9): identifiers and other
+/// byte values are plain byte arrays, as forge-web's `Uint8Array`s encode, so both clients build
+/// the same bytes for the same write.
+fn plain_values(properties: BTreeMap<String, FieldValue>) -> BTreeMap<String, Value> {
+    fn one(v: FieldValue) -> Value {
+        match v {
+            FieldValue::Identifier(b) | FieldValue::Bytes32(b) => Value::Bytes(b.to_vec()),
+            FieldValue::Object(m) => Value::Map(
+                m.into_iter()
+                    .map(|(k, v)| (Value::Text(k), one(v)))
+                    .collect(),
+            ),
+            FieldValue::List(items) => Value::Array(items.into_iter().map(one).collect()),
+            other => other.into_value(),
+        }
+    }
+    properties.into_iter().map(|(k, v)| (k, one(v))).collect()
+}
+
+/// `FieldValue`s as intent JSON: identifiers and bytes as hex strings (§9).
 pub fn properties_json(properties: &BTreeMap<String, FieldValue>) -> Json {
     fn one(v: &FieldValue) -> Json {
         match v {
             FieldValue::Bytes(b) => Json::String(hex::encode(b)),
-            FieldValue::Bytes32(b) => Json::String(hex::encode(b)),
-            FieldValue::Identifier(b) => Json::String(encode_identifier(*b)),
+            FieldValue::Bytes32(b) | FieldValue::Identifier(b) => Json::String(hex::encode(b)),
             FieldValue::Integer(n) | FieldValue::Uint64(n) => json!(n),
             FieldValue::Signed(n) => json!(n),
             FieldValue::Text(s) => Json::String(s.clone()),
@@ -333,6 +413,8 @@ pub fn properties_json(properties: &BTreeMap<String, FieldValue>) -> Json {
 pub struct DecodedWrite {
     /// Whether it is a documents batch at all.
     pub batch: bool,
+    /// Whether the bytes re-encode to themselves (nothing appended, nothing non-canonical).
+    pub canonical: bool,
     pub owner_id: String,
     pub signature_key_id: Option<u32>,
     pub user_fee_increase: u16,
@@ -358,8 +440,12 @@ pub fn decode_unsigned(bytes: &[u8]) -> Result<DecodedWrite> {
     let signable = st
         .signable_bytes()
         .map_err(|e| Error::InvalidInput(format!("the transition's signable bytes: {e}")))?;
+    let canonical = st
+        .serialize_to_bytes()
+        .is_ok_and(|again| again.as_slice() == bytes);
     let mut out = DecodedWrite {
         batch: false,
+        canonical,
         owner_id: st
             .owner_id()
             .map(|o| o.to_string(Encoding::Base58))
@@ -622,6 +708,82 @@ mod tests {
         assert!(!d.signature_empty);
         assert_eq!(d.signable, w.signable);
         assert_eq!(signed.nonce, 5);
+    }
+
+    #[tokio::test]
+    async fn identifiers_travel_as_plain_bytes_and_hex_in_the_intent() {
+        let core = rc1::loaded(ForgeContract::Core);
+        let scope = crate::scope::DocScope {
+            contract_id: core.id(),
+            repo_id: [4u8; 32],
+        };
+        let props = crate::create::owner_maintainer_props(
+            &scope,
+            ORG,
+            crate::rules::v2::Visibility::Public,
+        );
+        let w = build("maintainer", props, ORG).await;
+        let st = StateTransition::deserialize_from_bytes_untrusted(&w.unsigned).unwrap();
+        let StateTransition::Batch(batch) = &st else {
+            panic!("not a batch")
+        };
+        let Some(BatchedTransitionRef::Document(dt)) = batch.first_transition() else {
+            panic!("no document transition")
+        };
+        let data = dt.data().unwrap();
+        assert_eq!(data.get("repoId"), Some(&Value::Bytes(vec![4u8; 32])));
+        assert_eq!(data.get("memberId"), Some(&Value::Bytes(ORG.to_vec())));
+        assert_eq!(
+            w.intent["document"]["properties"]["repoId"],
+            hex::encode([4u8; 32])
+        );
+        let d = decode_unsigned(&w.unsigned).unwrap();
+        let (repos, people) = crate::org::review::referenced_ids(&d);
+        assert_eq!(repos, vec![encode_identifier([4u8; 32])]);
+        assert_eq!(people, vec![encode_identifier(ORG)]);
+    }
+
+    #[tokio::test]
+    async fn a_replace_carries_the_stored_revision_in_its_intent() {
+        let core = rc1::loaded(ForgeContract::Core);
+        let key = key();
+        let id = encode_identifier([6u8; 32]);
+        let w = Build {
+            dc: &core.0,
+            owner: Identifier::from(ORG),
+            key: &key,
+            version: version(),
+        }
+        .replace("repo", &id, 2, repo_props(), 7)
+        .await
+        .unwrap();
+        assert_eq!(w.intent["document"]["revision"], "2");
+        assert_eq!(w.intent["document"]["id"], id.as_str());
+        let d = decode_unsigned(&w.unsigned).unwrap();
+        assert_eq!(
+            (d.action.as_str(), d.revision, d.nonce),
+            ("replace", Some(3), 7)
+        );
+        assert_eq!(d.document_id, id);
+        let forge = forge();
+        let org = encode_identifier(ORG);
+        assert!(decoded_problems(&expect(&forge, &org), &d, &w.signable).is_empty());
+    }
+
+    #[tokio::test]
+    async fn bytes_that_do_not_re_encode_are_refused() {
+        let w = build("repo", repo_props(), ORG).await;
+        let mut padded = w.unsigned.clone();
+        padded.push(0);
+        let Ok(d) = decode_unsigned(&padded) else {
+            return;
+        };
+        assert!(!d.canonical);
+        let forge = forge();
+        let org = encode_identifier(ORG);
+        assert!(decoded_problems(&expect(&forge, &org), &d, &w.signable)
+            .iter()
+            .any(|p| p.contains("re-encode")));
     }
 
     #[test]

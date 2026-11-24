@@ -92,6 +92,9 @@ pub fn decoded_problems(expect: &Expect<'_>, d: &DecodedWrite, signable: &[u8]) 
         problems.push("it is not exactly one document write".into());
         return problems;
     }
+    if !d.canonical {
+        problems.push("its bytes do not re-encode to themselves".into());
+    }
     if d.owner_id != expect.org_id {
         problems.push("it writes as another identity, not the organization".into());
     }

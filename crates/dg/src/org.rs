@@ -13,6 +13,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
+use forge_core::org::owner::OwnerKind;
 use forge_core::org::request::{self, Request, RequestStatus};
 use forge_core::org::{self as core_org, MemberKeys, Org, OrgRecord, Seed};
 use forge_core::platform::PlatformClient;
@@ -700,7 +701,7 @@ async fn owner_refusal(client: &PlatformClient, owner: &str) -> anyhow::Error {
     let multisig = client
         .fetch_identity(owner)
         .await
-        .is_ok_and(|i| is_multisig(&i));
+        .is_ok_and(|i| core_org::owner::all_bls_auth_keys(&i.public_keys()));
     if multisig {
         UserError::new(
             codes::NOT_FOUND,
@@ -716,16 +717,6 @@ async fn owner_refusal(client: &PlatformClient, owner: &str) -> anyhow::Error {
         .fix("`dg org list` lists them; leave out --owner to create the repository as yourself")
         .into()
     }
-}
-
-/// An identity whose enabled authentication keys are all BLS12-381: a multisig (§3 "Detected").
-pub fn is_multisig(identity: &forge_core::platform::LoadedIdentity) -> bool {
-    let auth: Vec<_> = identity
-        .public_keys()
-        .into_iter()
-        .filter(|k| k.purpose == "AUTHENTICATION" && !k.disabled)
-        .collect();
-    !auth.is_empty() && auth.iter().all(|k| k.key_type == "BLS12_381")
 }
 
 /// `dg repo create --owner <org>`: a request for the repository, its owner's maintainer document
@@ -845,15 +836,23 @@ pub async fn org_owner_refusal(
     if !core_org::enabled(client.network()) {
         return None;
     }
-    let owner = client.fetch_identity(handle.owner_id()).await.ok()?;
-    is_multisig(&owner).then(|| {
+    let forge = client.target().require_v2().ok()?;
+    let kind = core_org::owner::owner_kind(client, forge, handle.owner_id())
+        .await
+        .ok()?;
+    let owner = match kind {
+        OwnerKind::Person => return None,
+        OwnerKind::Org { threshold, size } => format!("an organization ({threshold} of {size})"),
+        OwnerKind::Multisig => "a multisig identity".to_string(),
+    };
+    Some(
         UserError::new(
             codes::NOT_A_WRITER,
-            format!("{} is owned by an organization: its members must {what}", handle.display()),
+            format!("{} is owned by {owner}: its members must {what}", handle.display()),
         )
         .fix("a member connects it with `dg org connect <group id>`, then runs this command; the others sign with `dg org sign`")
-        .into()
-    })
+        .into(),
+    )
 }
 
 /// The `dg auth status` line: how many requests wait for this member's signature, or `None`
