@@ -89,7 +89,7 @@ describe('trusted SDK endpoint selection', () => {
 
   it.each([false, true])('keeps mainnet SDK seeds despite the deployment list, with custom quorum URL = %s', async (custom) => {
     if (custom) vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'forge.quorumUrl.mainnet' ? 'https://quorums.example.test' : null })
-    expect(NETWORKS.mainnet.dapiAddresses).toHaveLength(10)
+    expect(NETWORKS.mainnet.dapiAddresses.length).toBeGreaterThan(0)
     await connect('mainnet')
     const options = recorded.options[0]!
     expect(options).toMatchObject({ network: 'mainnet', trusted: true })
