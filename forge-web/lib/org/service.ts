@@ -302,7 +302,7 @@ async function describe(
 }
 
 export function requestLink(orgId: string, requestId: string): string {
-  return `/org?id=${encodeURIComponent(orgId)}&request=${encodeURIComponent(requestId)}`
+  return `/org/?id=${encodeURIComponent(orgId)}&request=${encodeURIComponent(requestId)}`
 }
 
 function openNonces(view: OrgView | null): Map<string, bigint> {
@@ -317,10 +317,17 @@ function openNonces(view: OrgView | null): Map<string, bigint> {
   return max
 }
 
+export interface LaterSpec {
+  readonly contractId: string
+  readonly after: (documentIds: readonly string[]) => WriteSpec
+}
+
 export interface CreateRequestInput {
   readonly title: string
-  readonly specs: readonly WriteSpec[]
+  readonly specs: readonly (WriteSpec | LaterSpec)[]
 }
+
+const specOf = (s: WriteSpec | LaterSpec, ids: readonly string[]): WriteSpec => ('after' in s ? s.after(ids) : s)
 
 export async function createRequest(
   sdk: EvoSDK,
@@ -333,12 +340,6 @@ export async function createRequest(
   assert(input.specs.length > 0, 'nothing to request')
   const view = await loadOrg(sdk, record, { ...opts, describe: false })
   const { identity, state } = view
-  for (const s of input.specs) {
-    if (s.action === 'create') {
-      const problem = rc1WriteProblem(opts.forge, s.contractId, s.documentType, s.data)
-      if (problem !== null) throw new Error(`refusing this write: ${problem}`)
-    }
-  }
   const current = await nonceReader(sdk, record.orgId, input.specs.map((s) => s.contractId))
   const taken = openNonces(view)
   const next = new Map<string, bigint>()
@@ -354,10 +355,17 @@ export async function createRequest(
   const platformVersion = sdk.version()
   const proposals: Envelope[] = []
   const approvals: Envelope[] = []
-  for (const [seq, spec] of input.specs.entries()) {
+  const ids: string[] = []
+  for (const [seq, later] of input.specs.entries()) {
+    const spec = specOf(later, ids)
+    if (spec.action === 'create') {
+      const problem = rc1WriteProblem(opts.forge, spec.contractId, spec.documentType, spec.data)
+      if (problem !== null) throw new Error(`refusing this write: ${problem}`)
+    }
     const nonce = next.get(spec.contractId) as bigint
     next.set(spec.contractId, nonce + 1n)
     const built = await buildUnsigned(spec, { ownerId: record.orgId, keyId: identity.keyId, nonce, platformVersion })
+    ids.push(built.documentId)
     const body: ProposalBody = {
       network: record.network,
       unsigned: built.unsigned,

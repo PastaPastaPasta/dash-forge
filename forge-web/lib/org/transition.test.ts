@@ -110,6 +110,6 @@ describe('organization transitions', () => {
 
     const transfer = m.IdentityCreditTransfer.fromObject({ $formatVersion: '0', identityId: ORG, recipientId: ALICE, amount: 5n, nonce: 1n, userFeeIncrease: 0, signaturePublicKeyId: 2, signature: new Uint8Array() } as never).toStateTransition()
     const t = await decodeUnsigned(hex(transfer.toBytes()))
-    expect(reviewDecoded(t, { signable: '' }, review)).toEqual(['this is not a document write'])
+    expect(reviewDecoded(t, { signable: '' }, review)).toEqual(['this is not a write Forge makes'])
   })
 })

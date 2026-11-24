@@ -1705,6 +1705,38 @@ export async function planMemberRevoke(sdk: EvoSDK, repo: RepoRef, memberId: str
   return existing === null ? null : { documentType: memberDocOf(role), documentId: existing.id }
 }
 
+/**
+ * The two documents a role change of a public repo member writes (a delete of the `from`
+ * membership, then the `to` one), after the checks {@link changeMemberRole} makes before its
+ * delete. For an owner that signs both at once (an organization).
+ */
+export async function planRoleChange(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  memberId: string,
+  from: Role,
+  to: Role,
+): Promise<{ readonly revoke: { readonly documentType: string; readonly documentId: string }; readonly grant: { readonly documentType: string; readonly data: Record<string, unknown> } }> {
+  if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
+  if (from === to) throw new Error(`they are already a ${to}`)
+  await assertGrantable(sdk, repo, to)
+  const roleData = await writerRoleData(sdk, repo, to)
+  if (memberDocOf(from) !== memberDocOf(to)) {
+    const other = await findMembership(sdk, repo, to, memberId)
+    if (other !== null) throw new MemberRoleTakenError(memberId, other.role)
+  }
+  if ((await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
+  const current = await findMembership(sdk, repo, from, memberId)
+  if (current === null || current.role !== from) {
+    throw new Error(`they are no longer a ${from} here (their role changed meanwhile); reload the members and try again`)
+  }
+  return {
+    revoke: { documentType: memberDocOf(from), documentId: current.id },
+    grant: { documentType: memberDocOf(to), data: membershipData(repo, memberId, roleData) },
+  }
+}
+
 /** Why the owner's own maintainer document stays (mainnet R-08 `ownerRowStays` refuses its delete, 40147). */
 export const OWNER_ROW_STAYS = "The owner's own Maintain access can't be removed."
 

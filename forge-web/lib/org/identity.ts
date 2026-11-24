@@ -67,11 +67,12 @@ export type OwnerKind =
   | { readonly kind: 'multisig' }
 
 export async function detectOwnerKind(sdk: EvoSDK, forge: ForgeIds, identityId: string, network: string): Promise<OwnerKind> {
-  const [profile, identity] = await Promise.all([readProfile(sdk, forge, identityId).catch(() => null), authSdk(sdk).identities.fetch(identityId).catch(() => undefined)])
-  const multisig = identity !== undefined && allBlsAuthKeys(identity.publicKeys)
+  const identity = await authSdk(sdk).identities.fetch(identityId)
+  if (identity === undefined || !allBlsAuthKeys(identity.publicKeys)) return { kind: 'person' }
+  const profile = await readProfile(sdk, forge, identityId).catch(() => null)
   for (const link of profile?.fields.links ?? []) {
     const declared = parseDeclaredOrg(link, network)
-    if (declared && multisig) return { kind: 'org', ...declared }
+    if (declared) return { kind: 'org', ...declared }
   }
-  return multisig ? { kind: 'multisig' } : { kind: 'person' }
+  return { kind: 'multisig' }
 }

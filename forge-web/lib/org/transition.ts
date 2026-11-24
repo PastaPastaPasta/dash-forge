@@ -51,7 +51,7 @@ export async function buildUnsigned(
     const base = new m.Document({ properties: {}, documentTypeName: spec.documentType, dataContractId: spec.contractId, ownerId, revision: 1n, id: documentId, entropy })
     const document = m.Document.fromObject({ ...base.toObject(), ...spec.data } as Parameters<typeof m.Document.fromObject>[0], platformVersion)
     transition = new m.DocumentCreateTransition({ document, identityContractNonce: nonce, platformVersion } as ConstructorParameters<typeof m.DocumentCreateTransition>[0])
-    if (document.id.toBase58() !== documentId) throw new Error('document id drifted while building the create transition')
+    if (document.id.toBase58() !== documentId) throw new Error('the new id drifted while building the create transition')
   } else if (spec.action === 'replace') {
     documentId = spec.documentId
     const base = new m.Document({ properties: {}, documentTypeName: spec.documentType, dataContractId: spec.contractId, ownerId, revision: spec.revision, id: documentId })
@@ -136,9 +136,9 @@ export interface ReviewContext {
 
 export function reviewDecoded(d: DecodedTransition, body: { readonly signable: string }, ctx: ReviewContext): string[] {
   const problems: string[] = []
-  if (!d.kind.startsWith('DocumentsBatch')) return ['this is not a document write']
+  if (!d.kind.startsWith('DocumentsBatch')) return ['this is not a write Forge makes']
   if (!d.canonical) problems.push('the transition bytes do not re-encode to themselves')
-  if (d.count !== 1) problems.push('the transition does not carry exactly one document write')
+  if (d.count !== 1) problems.push('the transition does not carry exactly one write')
   if (d.ownerId !== ctx.orgId) problems.push('the transition is not written by this organization')
   if (d.signaturePublicKeyId !== ctx.keyId) problems.push("the transition is not signed with the organization's group key")
   if (d.userFeeIncrease !== 0) problems.push('the transition raises the fee')
