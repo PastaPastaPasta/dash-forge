@@ -145,7 +145,7 @@ pub struct LoginArgs {
     /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
-    /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dash-key:` link,
+    /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dashpay://connect` link,
     /// the wallet adds a limited key (proposed: 0.25 DASH for 180 days, or --budget/--expires;
     /// the wallet may change them) and dg stores it. Testnet needs DashPay's testnet build.
     /// The default in a terminal; without one (or with --json) it must be asked for.

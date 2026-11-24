@@ -7,7 +7,7 @@
 //!
 //! 1. [`forge::LoginRequest::new`] draws an ephemeral key and builds Forge's request: one
 //!    AUTHENTICATION / HIGH key bound to the dash-forge contract group, with a budget and an
-//!    expiry ([`request`] has the codec, [`request::build_uri`] the `dash-key:` link a QR code
+//!    expiry ([`request`] has the codec, [`request::build_uri`] the `dashpay://connect` link a QR code
 //!    shows).
 //! 2. The wallet registers the key on the user's identity and publishes a `loginKeyResponse`
 //!    in the App Connect system contract ([`APP_CONNECT_CONTRACT_ID`]), keyed by

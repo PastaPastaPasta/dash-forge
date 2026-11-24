@@ -104,7 +104,7 @@ To sign the *browser* in with an identity you already have, the web app also off
 dg auth login
 ```
 
-It prints a QR code (and the same request as a `dash-key:` link). Scan it in DashPay (**More → Tools → Connections → Scan QR**; on testnet, DashPay's testnet build) and approve: the wallet adds a limited key to your identity, and `dg` shows the identity and asks you to confirm it before storing the key. The recovery phrase and the master key stay on the phone. [Signing in from the terminal with DashPay](identity-and-keys.md#signing-in-from-the-terminal-with-dashpay) has the details.
+It prints a QR code (and the same request as a `dashpay://connect` link). Scan it in DashPay (**More → Tools → Connections → Scan QR**; on testnet, DashPay's testnet build) and approve: the wallet adds a limited key to your identity, and `dg` shows the identity and asks you to confirm it before storing the key. The recovery phrase and the master key stay on the phone. [Signing in from the terminal with DashPay](identity-and-keys.md#signing-in-from-the-terminal-with-dashpay) has the details.
 
 No wallet? Sign in with a bridge `dash-identity-<id>.json` or the 12 words instead:
 
