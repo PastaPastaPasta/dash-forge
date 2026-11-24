@@ -618,7 +618,7 @@ describe('App Connect v2 in the sheet', () => {
     expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
   })
 
-  it('on mainnet with v2 on offer, newcomers get DashPay and sign in with it; in-page create is under Other ways', async () => {
+  it('on mainnet with v2 on offer, newcomers get DashPay and sign in with it; recovery-phrase paths are under Advanced', async () => {
     network.override = 'mainnet'
     auth.vaults = []
     platformUp = true
@@ -626,7 +626,7 @@ describe('App Connect v2 in the sheet', () => {
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
     expect(shownTiles()).toEqual(['tile-wallet'])
-    expect(tileOrder()).toEqual(['tile-wallet', 'tile-get-dashpay', 'tile-import', 'tile-dg', 'tile-create'])
+    expect(tileOrder()).toEqual(['tile-wallet', 'tile-get-dashpay', 'tile-dg'])
     expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-badge"]')).toBeNull()
     expect(q('[data-testid="tile-get-dashpay"]')!.textContent).toMatch(/Get DashPay, create your identity there, then sign in/)
@@ -634,7 +634,7 @@ describe('App Connect v2 in the sheet', () => {
     expect(q('[data-testid="signin-more"]')!.textContent).toBe('Other ways to sign in')
     await click(q('[data-testid="tile-get-dashpay"]'))
     expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
-    expect(host.ownerDocument.body.textContent).toMatch(/Your wallet gives this browser a key for Dash Forge/)
+    expect(q('[data-testid="wallet-request"]')).not.toBeNull()
   })
 
   it('on mainnet without v2, creating stays first: there is no wallet to finish in yet', async () => {
@@ -642,7 +642,7 @@ describe('App Connect v2 in the sheet', () => {
     auth.vaults = []
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
-    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(tileOrder()).toEqual(['tile-create', 'tile-dg', 'tile-wallet'])
     expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
     expect(byText('Other ways to sign in', 'h3')).toBeNull()
   })

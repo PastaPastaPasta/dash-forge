@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, PASSPHRASE, deployment, idFile, importIdentity, nodeSdk, shot, unlock, hasRegistration, skipWithoutRegistration, showOtherWays } from './helpers'
+import { E2E_DEVNET, PASSPHRASE, deployment, idFile, importIdentity, nodeSdk, shot, unlock, hasRegistration, skipWithoutRegistration, showOtherWays, usePassword } from './helpers'
 
 // needs the forge-v2 registration recorded for this network (e2e/network.ts)
 skipWithoutRegistration()
@@ -103,6 +103,7 @@ test('a2. create an identity in the browser, funded from the devnet key', async 
     await input.fill(list[n] ?? '')
   }
   await page.getByRole('button', { name: /^continue$/i }).click()
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByRole('button', { name: /continue to funding/i }).click()

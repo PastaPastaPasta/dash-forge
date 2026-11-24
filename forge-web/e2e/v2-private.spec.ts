@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
-import { deployment, dgEnv, idFile, idOrEmpty, nodeSdk, PASSPHRASE, stateFile, unlock, waitForRepoResolved, skipWithoutRegistration, showOtherWays } from './helpers'
+import { deployment, dgEnv, idFile, idOrEmpty, nodeSdk, PASSPHRASE, stateFile, unlock, waitForRepoResolved, skipWithoutRegistration, showOtherWays, usePassword } from './helpers'
 
 // needs the forge-v2 registration recorded for this network (e2e/network.ts)
 skipWithoutRegistration()
@@ -72,6 +72,7 @@ async function member(
     await showOtherWays(page)
     await page.getByTestId('tile-import').click()
     await page.setInputFiles('input[type="file"]', idFile(name))
+    await usePassword(page)
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
     await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
     await page.getByTestId('enable-private-repos').check()

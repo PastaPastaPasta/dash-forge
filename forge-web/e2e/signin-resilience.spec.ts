@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { encodeWif } from '../lib/auth/wif'
-import { PASSPHRASE, shot, showOtherWays } from './helpers'
+import { PASSPHRASE, shot, showOtherWays, usePassword } from './helpers'
 import { E2E_NETWORK } from './network'
 
 /**
@@ -159,6 +159,7 @@ test('s3. Platform never answers: every sub-view reaches content or a named erro
   // Import: the form shows at once; submitting names the connect failure.
   await openSheet(page, 'import')
   await page.setInputFiles('input[type="file"]', identityFile())
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await dialog.getByRole('button', { name: /create this browser's key/i }).click()
@@ -197,6 +198,7 @@ test('s4. Import with an old tab blocking storage: a named error before any writ
   await page.goto('/new/', { waitUntil: 'domcontentloaded' })
   await openSheet(page, 'import')
   await page.setInputFiles('input[type="file"]', identityFile())
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByTestId('enable-private-repos').check()
@@ -239,17 +241,17 @@ test('s8. a remounted passphrase form never keeps a passphrase the screen does n
   await openSheet(page, 'import')
   const dialog = page.getByRole('dialog')
   await page.setInputFiles('input[type="file"]', identityFile())
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeEnabled()
-  // Away to the tile list and back: a fresh form, empty, and nothing to submit with.
+  // Away to the tile list and back: a fresh form, empty (submitting keeps the key in this browser alone, never an old passphrase).
   await dialog.getByRole('button', { name: 'All options' }).click()
   await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', identityFile())
   await expect(page.getByLabel('Passphrase', { exact: true })).toHaveValue('')
   await expect(page.getByLabel('Repeat passphrase')).toHaveCount(0)
-  await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeDisabled()
 })
 
 test('s9. Create: a passphrase typed on Resume does not carry into the new words after Discard', async ({ page, baseURL }) => {
@@ -288,6 +290,7 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
   await openSheet(page, 'create')
   const dialog = page.getByRole('dialog')
   await expect(page.getByTestId('create-resume')).toBeVisible({ timeout: WITHIN })
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   // Discard: it checks the deposit address first. Empty, it goes ahead; otherwise (or when
@@ -307,7 +310,7 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
   }
   await dialog.getByRole('button', { name: /^continue$/i }).click()
   await expect(page.getByLabel('Passphrase', { exact: true })).toHaveValue('')
-  await expect(dialog.getByRole('button', { name: /continue to funding/i })).toBeDisabled()
+  await expect(page.getByLabel('Repeat passphrase')).toHaveCount(0)
 })
 
 test('s6. a newer tab upgrading storage: this tab lets go at once and offers a reload', async ({ browser, baseURL }) => {
