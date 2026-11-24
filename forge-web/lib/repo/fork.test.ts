@@ -192,7 +192,7 @@ describe('sync fork (P1-4)', () => {
       [manifest('a', 2, 0, 5, []), manifest('b', 3, 1, 6, ['https://parent.example/p3']), manifest('c', 4, 1, 7, ['https://parent.example/p4'])] as never,
       [],
     )
-    const copy = vi.fn(async (hash: string) => (hash === '03'.repeat(32) ? ['https://mine.example/p3'] : null))
+    const copy = vi.fn(async (hash: string) => [`https://mine.example/p${hash.slice(1, 2)}`])
     const seen: unknown[] = []
     const push = await import('./push')
     vi.mocked(push.writePackManifest).mockImplementation(async (_s, _a, _r, m) => {
@@ -204,8 +204,21 @@ describe('sync fork (P1-4)', () => {
     expect(seen).toEqual([
       [`platform://CORE/${PARENT}/${UPLOADER}/${'02'.repeat(32)}`],
       ['https://mine.example/p3', 'https://parent.example/p3'],
-      ['https://parent.example/p4'],
+      ['https://mine.example/p4', 'https://parent.example/p4'],
     ])
+  })
+
+  it('makes every copy before writing anything, and writes nothing when one fails', async () => {
+    const plan = planSyncManifests(parentRepo as never, [manifest('b', 3, 1, 6, ['https://parent.example/p3']), manifest('c', 4, 1, 7, ['https://parent.example/p4'])] as never, [])
+    const copy = vi.fn(async (hash: string) => {
+      if (hash === '04'.repeat(32)) throw new Error('could not be copied')
+      return ['https://mine.example/p3']
+    })
+    await expect(syncFork({} as never, {} as never, forkRepo as never, { refName: 'refs/heads/main', forkTip: null, parentTip: 'b'.repeat(40), plan, intent: 'i', copy })).rejects.toThrow(
+      'could not be copied',
+    )
+    expect(copy).toHaveBeenCalledTimes(2)
+    expect(written).toEqual([])
   })
 
   it('writes nothing when a pack has no copy a fork could name', async () => {

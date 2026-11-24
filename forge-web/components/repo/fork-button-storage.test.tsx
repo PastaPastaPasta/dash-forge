@@ -17,8 +17,8 @@ vi.mock('@/hooks/use-async', () => ({ useAsync: () => ({ data: { manifests: MANI
 vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: state.storage, needsUnlock: state.needsUnlock }) }))
 vi.mock('@/lib/storage/pin-copies', async (load) => ({
   ...await load<object>(),
-  forkCopier: (_sdk: unknown, _parent: unknown, profile: { name: string }, onCopy: (hash: string, state: string, why?: string) => void) => {
-    state.onCopy = onCopy
+  forkCopier: (_sdk: unknown, _parent: unknown, profile: { name: string }, opts: { onCopy: (hash: string, state: string, why?: string) => void }) => {
+    state.onCopy = opts.onCopy
     return Object.assign(async () => null, { profile: profile.name })
   },
 }))
@@ -78,19 +78,21 @@ describe('a fork and storage', () => {
     expect(state.fork.mock.calls[0]![3]).not.toHaveProperty('copy')
   })
 
-  it('stays on the dialog when some packs could not be copied', async () => {
+  it('stops with one plain message when a pack could not be copied', async () => {
     state.storage = { profiles: [R2], defaultPolicy: { targets: ['r2'], replicas: 1, platformFallback: false } }
+    const { CopyFailed } = await import('@/lib/storage/pin-copies')
+    const message = 'A file could not be copied to r2. Press Sign & fork again to finish, or tick "Don\'t copy" under Storage.'
     state.fork.mockImplementation(async () => {
       state.onCopy!('aa'.repeat(32), 'failed', 'bucket unreachable')
-      return { name: 'repo', unreferenceable: [] }
+      throw new CopyFailed(message, 'bucket unreachable')
     })
     await render()
     await act(async () => button('Sign & fork').click())
     expect(state.push).not.toHaveBeenCalled()
-    expect(host.textContent).toContain("Your fork is ready. 1 file could not be copied and stays on repo's storage.")
-    expect(host.querySelector('ol[aria-label="Copy progress"]')?.closest('details')?.textContent).toContain('failed: bucket unreachable')
-    await act(async () => button('View fork').click())
-    expect(state.push).toHaveBeenCalledWith('/repo/?owner=me&name=repo&created=1')
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(message)
+    expect(host.querySelector('ol[aria-label="Copy progress"]')?.closest('details')?.open).toBe(false)
+    expect(host.querySelector('ol[aria-label="Copy progress"]')?.textContent).toContain('failed: bucket unreachable')
+    expect(button('Sign & fork')).toBeTruthy()
   })
 
   it('asks for the unlock when stored settings are sealed', async () => {

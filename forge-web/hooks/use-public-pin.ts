@@ -8,6 +8,7 @@ import { DOC_PACK_MIRROR, deleteMirror, forgetMirrorsBy } from '@/lib/repo/pack-
 import { writeContractKind } from '@/lib/layout'
 import { newIntent, type CostPreview } from '@/lib/sdk'
 import { spendAction } from '@/lib/spend-toast'
+import { redactSecrets } from '@/lib/redact'
 import { copyableProfiles, pinPacks, readPinStatus, type CopyRow, type CopySummary } from '@/lib/storage/pin-copies'
 import { useAsync } from './use-async'
 import { useSdk } from './use-sdk'
@@ -54,7 +55,7 @@ export function usePublicPin(repo: RepoRef) {
       })
       setSummary(result)
     } catch (e) {
-      setError(guard.failed(e))
+      setError(redactSecrets(guard.failed(e)))
     } finally {
       controller.current = null
       setRunning(null)
@@ -71,7 +72,7 @@ export function usePublicPin(repo: RepoRef) {
         for (const m of s.mine) await deleteMirror(sdk, tag(signer), repo, m.id)
       })
     } catch (e) {
-      setError(guard.failed(e))
+      setError(redactSecrets(guard.failed(e)))
     } finally {
       setRunning(null)
       done()

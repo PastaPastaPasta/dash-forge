@@ -123,6 +123,22 @@ describe('the fork bar', () => {
     expect(s.synced[0]).toMatchObject({ copy: expect.any(Function) })
   })
 
+  it('keeps the files by reference when asked, from a collapsed option', async () => {
+    s.storage = {
+      profiles: [{ name: 'r2', settings: { kind: 's3', provider: 'r2', endpoint: 'https://a.r2.cloudflarestorage.com', region: 'auto', bucket: 'forge', pathStyle: true, publicUrl: 'https://cdn.example', prefix: '' }, secrets: { accessKeyId: 'k', secretAccessKey: 's' } }],
+      defaultPolicy: { targets: ['r2'], replicas: 1, platformFallback: false },
+    }
+    await render()
+    await open()
+    const option = q('fork-sync-by-reference') as HTMLInputElement
+    expect(option.closest('details')?.open).toBe(false)
+    await act(async () => option.click())
+    expect(host.textContent).toMatch(/Records 1 new pack of proj by reference/)
+    await act(async () => q('fork-sync-update')?.click())
+    await settle()
+    expect(s.synced[0]).not.toHaveProperty('copy')
+  })
+
   it('lets anyone compare, but only the fork’s maintainers and writers update', async () => {
     s.role = null
     await render()

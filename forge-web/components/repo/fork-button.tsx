@@ -7,7 +7,8 @@
  * have some, else by reference), and the parent's branches and tags. As on GitHub, "Copy the <default> branch only" is ticked to start
  * with (QW3-010: forking dash copied 604 refs, one signed write each). The dialog prices all of
  * it, says roughly how long the writes take, and lists the steps as they run; an interrupted
- * fork is finished by forking again under the same name.
+ * fork, or one that stopped because a pack could not be copied, is finished by forking again
+ * under the same name.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -16,7 +17,8 @@ import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
 import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, onPlatform, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
-import { forkCopier, forkCopyProfile, type CopyState } from '@/lib/storage/pin-copies'
+import { CopyFailed, forkCopier, forkCopyProfile, type CopyState } from '@/lib/storage/pin-copies'
+import { redactSecrets } from '@/lib/redact'
 import { withoutMirrorMarker } from '@/lib/view/mirror-source'
 import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
@@ -102,7 +104,6 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const [byReference, setByReference] = useState(false)
   const copyTo = byReference ? null : target
   const [copies, setCopies] = useState<Record<string, { state: CopyState; why?: string }>>({})
-  const [forkedHref, setForkedHref] = useState<string | null>(null)
 
   const [name, setName] = useState(parent.name)
   // The parent's description, less a mirror's "(mirror of …)" marker: a fork is no mirror (QW3-011).
@@ -171,17 +172,17 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   }, [plan.data, refs, normalized, parent.name, description, defaults.defaultBranch])
 
   const run = async (): Promise<void> => {
-    if (!sdk || !signer || pending || forkedHref || nameError !== null || descriptionError !== null || check?.kind === 'taken') return
+    if (!sdk || !signer || pending || nameError !== null || descriptionError !== null || check?.kind === 'taken') return
     if (!guard.check(cost)) return
     setPending(true)
     setError(null)
     setProgress({})
     setCopies({})
-    let keptAny = false
     const copy = copyTo
-      ? forkCopier(sdk, parent, copyTo, (hash, state, why) => {
-          if (state === 'failed' || state === 'skipped') keptAny = true
-          setCopies((prev) => ({ ...prev, [hash]: { state, ...(why ? { why } : {}) } }))
+      ? forkCopier(sdk, parent, copyTo, {
+          again: check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork',
+          cli: 'dg repo fork',
+          onCopy: (hash, state, why) => setCopies((prev) => ({ ...prev, [hash]: { state, ...(why ? { why } : {}) } })),
         })
       : undefined
     try {
@@ -205,16 +206,14 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           return r
         },
       )
-      const href = `/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`
-      if (keptAny) {
-        setForkedHref(href)
-        setPending(false)
-      } else router.push(href)
+      router.push(`/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`)
     } catch (e) {
       setError(
         e instanceof IncompleteFork
           ? `Forked, but ${e.packs} of the parent's packs have no copy a fork can point at, so no branches were copied. Push your branches to the fork.`
-          : guard.failed(e),
+          : e instanceof CopyFailed
+            ? e.message
+            : redactSecrets(guard.failed(e)),
       )
       setPending(false)
     }
@@ -222,7 +221,6 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
 
   const p = plan.data
   const toCopy = copyTo ? (p?.manifests ?? []).filter((m) => !onPlatform(m)) : []
-  const kept = Object.values(copies).filter((c) => c.state === 'failed' || c.state === 'skipped').length
   return (
     <Dialog
       open
@@ -234,9 +232,9 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           <Button variant="ghost" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          {forkedHref ? <Button variant="primary" onClick={() => router.push(forkedHref)}>View fork</Button> : <Button variant="primary" onClick={run} loading={pending || storage.loading} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
+          <Button variant="primary" onClick={run} loading={pending || storage.loading} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
             {check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork'}
-          </Button>}
+          </Button>
         </>
       }
     >
@@ -331,11 +329,6 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
             to keep your own copy.
           </p>
         )}
-        {forkedHref ? (
-          <p role="status">
-            Your fork is ready. {plural(kept, 'file')} could not be copied and {kept === 1 ? 'stays' : 'stay'} on {parent.name}&apos;s storage.
-          </p>
-        ) : null}
         {Object.keys(copies).length > 0 ? (
           <details className="text-dense">
             <summary className="cursor-pointer">Copies to {copyTo?.name}</summary>

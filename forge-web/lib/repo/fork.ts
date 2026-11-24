@@ -31,7 +31,8 @@
  * **Sync fork** (P1-4, parity with forge-core `fork::sync_fork` and `dg repo sync`): one of the
  * fork's branches is fast-forwarded to its parent's. The parent's packs the fork does not record
  * yet are recorded the same way, by reference ({@link planSyncManifests}), then one ref update
- * moves the branch from its tip (named as `prevOid`) to the parent's. Only a fast-forward is
+ * moves the branch from its tip (named as `prevOid`) to the parent's. With a copier, every pack is
+ * copied to the forker's storage before anything is written. Only a fast-forward is
  * written ({@link syncDecision}): a branch with commits of its own is never moved.
  */
 
@@ -128,10 +129,11 @@ export function forkManifest(forge: ForgeIds, parentRepoId: string, copies: read
 }
 
 /**
- * A fork's copy of one parent pack: its URIs on the forker's storage, or null to keep the pack by
- * reference. `source` is the pack with its copies in reader order, when the caller has it.
+ * A fork's copy of one parent pack: its URIs on the forker's storage that other readers can use.
+ * Throws when the pack could not be copied, before anything of it is written. `source` is the
+ * pack with its copies in reader order, when the caller has it.
  */
-export type CopyPack = (packHash: string, source?: PackManifest) => Promise<readonly string[] | null>
+export type CopyPack = (packHash: string, source?: PackManifest) => Promise<readonly string[]>
 
 /** Whether the parent holds `planned` on Platform: permanent, so a fork never copies it. */
 export function onPlatform(planned: Pick<PackManifestInput, 'uris'>): boolean {
@@ -282,11 +284,13 @@ export async function syncFork(
   if (input.plan.unreferenceable.length > 0) {
     throw new Error(`${input.plan.unreferenceable.length} of the parent's packs have no copy a fork can reference: push the branch from a full clone instead`)
   }
-  const total = input.plan.manifests.length + 1
-  let done = 0
+  const manifests: PackManifestInput[] = []
   for (const planned of input.plan.manifests) {
-    const own = input.copy && !onPlatform(planned) ? await input.copy(planned.packHash) : null
-    const m = own ? withOwnCopy(planned, own) : planned
+    manifests.push(input.copy && !onPlatform(planned) ? withOwnCopy(planned, await input.copy(planned.packHash)) : planned)
+  }
+  const total = manifests.length + 1
+  let done = 0
+  for (const m of manifests) {
     await writePackManifest(sdk, auth, fork, m, `${input.intent}:manifest:${m.packHash}`)
     onProgress?.(++done, total)
   }
@@ -434,8 +438,7 @@ export async function forkRepoV2(
       unreferenceable.push((copies[0] as PackManifest).packHash)
       continue
     }
-    const own = input.copy && !onPlatform(planned) ? await input.copy(planned.packHash, { ...(copies[0] as PackManifest), copies }) : null
-    const manifest = own ? withOwnCopy(planned, own) : planned
+    const manifest = input.copy && !onPlatform(planned) ? withOwnCopy(planned, await input.copy(planned.packHash, { ...(copies[0] as PackManifest), copies })) : planned
     await writePackManifest(sdk, auth, fork, manifest, `fork:${fork.repoId}:manifest:${manifest.packHash}`)
     written += 1
     onProgress?.({ step: 'manifests', state: 'start', done: written, total: plan.length })

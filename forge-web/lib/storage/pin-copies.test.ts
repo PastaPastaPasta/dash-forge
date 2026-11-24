@@ -7,7 +7,9 @@ import type { RepoRef } from '../repo/contract'
 import type { StorageProfile } from './profiles'
 
 const io = vi.hoisted(() => ({
-  stored: [] as { bytes: number; targets: readonly string[] }[],
+  stored: [] as { bytes: number; targets: readonly string[]; publicGateway?: string }[],
+  gateway: null as Uint8Array | null,
+  fetched: [] as string[],
   storeUris: ['https://cdn.example/forge/x'] as string[],
   storeFail: null as Error | null,
   recorded: [] as { packHash: string; uris: readonly string[]; intent?: string }[],
@@ -24,10 +26,18 @@ vi.mock('../view/browse-source', () => ({
 }))
 vi.mock('./upload', async (orig) => ({
   ...(await orig<typeof import('./upload')>()),
-  storeFile: async (bytes: Uint8Array, opts: { policy: { targets: readonly string[] } }) => {
+  storeFile: async (bytes: Uint8Array, opts: { policy: { targets: readonly string[] }; profiles: readonly StorageProfile[] }) => {
     if (io.storeFail) throw io.storeFail
-    io.stored.push({ bytes: bytes.length, targets: opts.policy.targets })
+    const s = opts.profiles[0]?.settings
+    io.stored.push({ bytes: bytes.length, targets: opts.policy.targets, ...(s && 'publicGateway' in s ? { publicGateway: s.publicGateway } : {}) })
     return { uris: io.storeUris }
+  },
+}))
+vi.mock('./util', async (orig) => ({
+  ...(await orig<typeof import('./util')>()),
+  timedFetch: async (url: string) => {
+    io.fetched.push(url)
+    return { resp: { ok: io.gateway !== null }, bytes: async () => io.gateway ?? new Uint8Array(), discard: () => undefined }
   },
 }))
 vi.mock('../repo/pack-mirrors', async (orig) => ({
@@ -42,7 +52,7 @@ vi.mock('../repo/packs', async (orig) => ({
   readRepoPackManifests: async () => io.parent,
 }))
 
-const { COPY_MAX_BYTES, copyableProfiles, forkCopier, forkCopyProfile, mirrorAddress, pinCost, pinLabel, pinPacks, pinStatus, repoPacks } = await import('./pin-copies')
+const { COPY_MAX_BYTES, CopyFailed, copyableProfiles, forkCopier, forkCopyProfile, mirrorAddress, pinCost, pinLabel, pinPacks, pinStatus, readableByOthers, repoPacks, shareable } = await import('./pin-copies')
 
 const REPO = { forge: { core: 'CORE', collab: 'C', community: 'M' }, repoId: 'R', ownerId: 'O', name: 'proj', visibility: 'public' } as unknown as RepoRef
 const s3 = (name: string, publicUrl = 'https://cdn.example'): StorageProfile => ({
@@ -66,6 +76,8 @@ function packOf(bytes: Uint8Array, at: number, extra: Partial<PackManifest> = {}
 
 beforeEach(() => {
   io.stored = []
+  io.gateway = null
+  io.fetched = []
   io.recorded = []
   io.storeUris = ['https://cdn.example/forge/x']
   io.storeFail = null
@@ -78,6 +90,11 @@ describe('which storage a copy can use', () => {
   it('offers S3 with a public URL and IPFS nodes, never Platform or an address only you can reach', () => {
     const usable = copyableProfiles([s3('r2'), s3('lan', 'http://192.168.1.4:9000'), kubo('node'), kubo('lan-gw', 'http://192.168.1.4:8080'), platform])
     expect(usable.map((p) => p.name)).toEqual(['r2', 'node'])
+  })
+
+  it('refuses a public address on a temporary tunnel, and takes an r2.dev URL as the CLI does', () => {
+    const usable = copyableProfiles([s3('tunnel', 'https://abc.trycloudflare.com'), kubo('funnel', 'https://box.tail1.ts.net'), s3('dev', 'https://pub-1.r2.dev')])
+    expect(usable.map((p) => p.name)).toEqual(['dev'])
   })
 
   it("forks to the default policy's first external target others can read", () => {
@@ -99,6 +116,13 @@ describe('the address a pin records', () => {
   it('refuses a copy with no address others can read', () => {
     expect(() => mirrorAddress(['s3://forge/ab'])).toThrow(/give at least one address/)
   })
+
+  it('records only addresses other readers can use', () => {
+    expect(mirrorAddress(['https://127.0.0.1:8080/ipfs/bafyq', 'ipfs://bafyq'])).toEqual(['ipfs://bafyq'])
+    expect(mirrorAddress(['https://x.trycloudflare.com/ipfs/bafyq', 'ipfs://bafyq'])).toEqual(['ipfs://bafyq'])
+    expect(shareable(['https://cdn.example/a', 's3://forge/a', 'https://10.0.0.2/a', 'https://pub-1.r2.dev/a', 'ipfs://bafyq'])).toEqual(['https://cdn.example/a', 'https://pub-1.r2.dev/a', 'ipfs://bafyq'])
+    expect(readableByOthers('http://cdn.example/a')).toBe(false)
+  })
 })
 
 describe('pinned state', () => {
@@ -112,6 +136,13 @@ describe('pinned state', () => {
     const packs = repoPacks([a, writerCopy, b, superseding])
     expect(packs.map((p) => p.packHash).sort()).toEqual([a.packHash, b.packHash, superseding.packHash].sort())
     expect(packs.find((p) => p.packHash === a.packHash)?.source.copies).toHaveLength(2)
+  })
+
+  it('leaves out a pack no current maintainer or writer lists', () => {
+    const stranger = packOf(new Uint8Array([8]), 6, { uploader: 'S', ownerRole: null })
+    const former = packOf(new Uint8Array([9]), 7, { uploader: 'F', ownerRole: null })
+    const bot = packOf(new Uint8Array([10]), 8, { uploader: 'B', ownerRole: 'bot' })
+    expect(repoPacks([a, stranger, former, bot]).map((p) => p.packHash)).toEqual([a.packHash])
   })
 
   it('labels the button Pin, Pinned, or Update pin (N new)', () => {
@@ -174,6 +205,23 @@ describe('pinning', () => {
     expect(io.stored).toHaveLength(1)
   })
 
+  it("records an IPFS public gateway URL only once it serves the pack, else the CID", async () => {
+    io.storeUris = ['ipfs://bafyq']
+    io.gateway = new Uint8Array([1, 2, 3])
+    await pinPacks({} as never, {} as never, REPO, kubo('node', 'https://gw.example'), repoPacks([a, b]))
+    expect(io.stored.map((x) => x.publicGateway)).toEqual(['', ''])
+    expect(io.fetched).toEqual(['https://gw.example/ipfs/bafyq', 'https://gw.example/ipfs/bafyq'])
+    expect(io.recorded.map((r) => r.uris)).toEqual([['https://gw.example/ipfs/bafyq'], ['ipfs://bafyq']])
+  })
+
+  it('keeps credentials out of what it reports', async () => {
+    io.storeFail = new Error('PUT https://key:hunter2@s3.example/x?X-Amz-Signature=abcdef failed')
+    const rows: string[] = []
+    const err = await pinPacks({} as never, {} as never, REPO, s3('r2'), repoPacks([a]), { onProgress: (r) => rows.push(r.why ?? '') }).catch((e: Error) => e)
+    expect(String(err)).not.toMatch(/hunter2|abcdef/)
+    expect(rows.join(' ')).not.toMatch(/hunter2|abcdef/)
+  })
+
   it('never pins a private repository to storage', async () => {
     await expect(pinPacks({} as never, {} as never, { ...REPO, visibility: 'private' } as RepoRef, s3('r2'), [])).rejects.toThrow(/public repository/)
   })
@@ -185,20 +233,29 @@ describe("a fork's copies", () => {
   it("copies a pack from the parent's copies, reading the parent once when none are given", async () => {
     io.parent = [a]
     const seen: string[] = []
-    const copy = forkCopier({} as never, REPO, s3('r2'), (h, state) => seen.push(state))
+    const copy = forkCopier({} as never, REPO, s3('r2'), { again: 'Sign & fork', cli: 'dg repo fork', onCopy: (h, state) => seen.push(state) })
     expect(await copy(a.packHash.toUpperCase())).toEqual(['https://cdn.example/forge/x'])
     expect(await copy(a.packHash, a)).toEqual(['https://cdn.example/forge/x'])
     expect(seen).toEqual(['copying', 'done', 'copying', 'done'])
   })
 
-  it('keeps a pack by reference when it cannot be copied', async () => {
-    io.storeFail = new Error('bucket unreachable')
+  it('stops at a pack it cannot copy, with one plain message, never falling back to by-reference', async () => {
+    io.parent = [a]
+    const words = { again: 'Sign & fork', cli: 'dg repo fork' }
+    const resume = /could not be copied to r2\. Press Sign & fork again to finish, or tick "Don't copy" under Storage\./
+    await expect(forkCopier({} as never, REPO, s3('r2'), words)('ff'.repeat(32))).rejects.toThrow(resume)
+    await expect(forkCopier({} as never, REPO, s3('r2'), words)(a.packHash, { ...a, sizeBytes: COPY_MAX_BYTES + 1 })).rejects.toThrow(/too large to copy in a browser: use dg repo fork/)
+    io.storeFail = new Error('bucket unreachable token=s3cr3t')
     const seen: string[] = []
-    const copy = forkCopier({} as never, REPO, s3('r2'), (h, state, why) => seen.push(`${state}${why ? `: ${why}` : ''}`))
-    expect(await copy('ff'.repeat(32))).toBeNull()
-    expect(await copy(a.packHash, { ...a, sizeBytes: COPY_MAX_BYTES + 1 })).toBeNull()
-    expect(await copy(a.packHash, a)).toBeNull()
-    expect(await copy(a.packHash, a)).toBeNull()
-    expect(seen).toEqual(['skipped: not found', 'skipped: over 512 MiB', 'copying', 'failed: r2: bucket unreachable', 'skipped: r2: bucket unreachable'])
+    const copy = forkCopier({} as never, REPO, s3('r2'), { ...words, onCopy: (h, state, why) => seen.push(`${state}${why ? `: ${why}` : ''}`) })
+    const err = await copy(a.packHash, a).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(CopyFailed)
+    expect((err as Error).message).toMatch(resume)
+    expect(seen).toEqual(['copying', 'failed: r2: bucket unreachable token=[redacted]'])
+  })
+
+  it('stops when the copy has no address other readers can use', async () => {
+    io.storeUris = ['https://192.168.1.4/forge/x', 's3://forge/x']
+    await expect(forkCopier({} as never, REPO, s3('r2'), { again: 'Update branch', cli: 'dg repo sync' })(a.packHash, a)).rejects.toThrow(/Press Update branch again/)
   })
 })

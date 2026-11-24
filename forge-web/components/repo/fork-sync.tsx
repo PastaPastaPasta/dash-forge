@@ -10,8 +10,8 @@
  * fork's reader and the parent's, then each side's own commits counted.
  *
  * Only a fast-forward is written (`syncFork`, parity with `dg repo sync`): the parent's packs the
- * fork does not record yet (copied to the viewer's storage first when they have some, else by
- * reference), then one ref update. A branch with commits of its own
+ * fork does not record yet (all copied to the viewer's storage before anything is written when they
+ * have some, else by reference), then one ref update. A branch with commits of its own
  * is never moved: the bar offers a pull request into the fork that merges the parent's branch,
  * or, when the fork is only ahead, the parent's New pull request form.
  */
@@ -31,7 +31,8 @@ import { ARCHIVED_REASON, formatBytes, plural, type RepoHome } from '@/lib/view'
 import { historyWalker } from '@/lib/view/pull-diff'
 import { syncAncestry, SYNC_COUNT_CAP } from '@/lib/view/fork-sync'
 import { shortId } from '@/lib/utils'
-import { forkCopier, forkCopyProfile } from '@/lib/storage/pin-copies'
+import { CopyFailed, forkCopier, forkCopyProfile } from '@/lib/storage/pin-copies'
+import { redactSecrets } from '@/lib/redact'
 import { useAsync } from '@/hooks/use-async'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { useSdk } from '@/hooks/use-sdk'
@@ -289,6 +290,8 @@ function UpdateBranch({
   const guard = useWriteGuard()
   const storage = useStorageConfig()
   const target = forkCopyProfile(storage.config)
+  const [byReference, setByReference] = useState(false)
+  const copyTo = byReference ? null : target
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
@@ -313,13 +316,13 @@ function UpdateBranch({
           parentTip,
           plan: data,
           intent: `fork-sync:${home.repo.repoId}:${intent}`,
-          ...(target ? { copy: forkCopier(sdk, parent, target) } : {}),
+          ...(copyTo ? { copy: forkCopier(sdk, parent, copyTo, { again: 'Update branch', cli: 'dg repo sync' }) } : {}),
         }),
       )
       setDone(true)
       reload?.()
     } catch (e) {
-      setError(guard.failed(e))
+      setError(e instanceof CopyFailed ? e.message : redactSecrets(guard.failed(e)))
     } finally {
       setPending(false)
     }
@@ -330,8 +333,8 @@ function UpdateBranch({
       {plan.data !== null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           {plan.data.manifests.length > 0
-            ? target
-              ? `Copies ${newPacks} to ${target.name}, then moves ${home.defaultBranch}.`
+            ? copyTo
+              ? `Copies ${newPacks} to ${copyTo.name}, then moves ${home.defaultBranch}.`
               : `Records ${newPacks} by reference: files stay on ${parent.name}'s storage. Then moves ${home.defaultBranch}.`
             : `Moves ${home.defaultBranch}: this fork already records every pack it needs.`}
         </p>
@@ -341,6 +344,15 @@ function UpdateBranch({
         </p>
       ) : null}
       {cost !== null ? <CostPreview cost={cost} /> : null}
+      {target && (plan.data?.manifests.length ?? 0) > 0 ? (
+        <details className="text-[12px]">
+          <summary className="cursor-pointer">Storage</summary>
+          <label className="mt-1 flex items-start gap-2">
+            <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700" checked={byReference} disabled={pending} onChange={(e) => setByReference(e.target.checked)} data-testid="fork-sync-by-reference" />
+            Don&apos;t copy to {target.name}: keep the files on {parent.name}&apos;s storage.
+          </label>
+        </details>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="primary" size="sm" onClick={update} loading={pending || storage.loading} disabled={off !== null || cost === null || done} title={off ?? undefined} data-testid="fork-sync-update">
           {done ? 'Updated' : 'Update branch'}
