@@ -67,8 +67,9 @@ case=cap-exceeded
 run_summary cap-exceeded.json
 expect md 'stopped: cost cap reached'
 expect md '**Error:** estimate 0.09 DASH exceeds --max-spend 0.05 \| nothing written'
-expect ann '::warning title=Runner key nearly used up::0.05 of 0.5 DASH left. Make a new runner key at forge.dashhq.org/mirror/ (or dg auth export --new-key) and replace the DASH_FORGE_KEY secret.'
+expect ann '::warning title=Runner key nearly used up::0.05 of 0.5 DASH left. Make a new runner key at forge.dashhq.org/mirror/ (or dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1, then gh secret set DASH_FORGE_KEY < runner.dfk1) and replace the DASH_FORGE_KEY secret.'
 reject ann 'settings/mirror'
+reject ann 'new-key) and'
 expect ann '::warning title=Runner key expires soon::The runner key expires in 23 days.'
 expect ann '::warning title=Forge mirror::line one ::error::injected'
 expect ann '::error title=Forge mirror cap_exceeded::estimate 0.09 DASH exceeds'

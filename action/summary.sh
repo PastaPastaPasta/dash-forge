@@ -76,7 +76,7 @@ expires=$(num .key.expiresAt '')
 [ -z "$expires" ] || [ "$expires" -lt 253402300800000 ] || expires=''
 pack_bytes=$(num .counts.packBytes 0)
 skipped=$(num .counts.skipped 0)
-renew="Make a new runner key at forge.dashhq.org/mirror/ (or dg auth export --new-key) and replace the DASH_FORGE_KEY secret."
+renew="Make a new runner key at forge.dashhq.org/mirror/ (or dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1, then gh secret set DASH_FORGE_KEY < runner.dfk1) and replace the DASH_FORGE_KEY secret."
 
 case "$status" in
     ok) heading="Forge mirror updated" ;;
