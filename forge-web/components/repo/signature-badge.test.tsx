@@ -57,4 +57,29 @@ describe('SignatureBadge', () => {
     expect(q('signature-panel')?.textContent).toContain('does not match this commit')
     expect(q('signature-panel')?.textContent).toContain('GPG key ID: C209DB5A73261B84')
   })
+
+  it('reads "Signed", neutral, for a key on nobody\'s profile', () => {
+    act(() => root.render(<SignatureBadge state={{ status: 'unverified', reason: 'unknown_key', format: 'ssh', key: 'SHA256:abc', signer: null }} />))
+    const button = host.querySelector('button') as HTMLButtonElement
+    expect(button.textContent).toBe('Signed signature: details')
+    expect(button.className).not.toContain('danger')
+    act(() => button.click())
+    expect(q('signature-panel')?.textContent).toContain("can't say who signed it")
+    expect(q('signature-panel')?.textContent).toContain('Add your signing key')
+  })
+
+  it('reads "Signed by GitHub" for a signature that checks against its web-flow key', () => {
+    act(() =>
+      root.render(
+        <SignatureBadge state={{ status: 'unverified', reason: 'unknown_key', format: 'openpgp', key: '968479A1AFF927E37D1A566BB5690EEEBB952194', signer: null, service: 'github' }} />,
+      ),
+    )
+    expect(q('signature-badge')?.getAttribute('data-service')).toBe('github')
+    const button = host.querySelector('button') as HTMLButtonElement
+    expect(button.textContent).toBe('Signed by GitHub signature: details')
+    act(() => button.click())
+    expect(q('signature-panel')?.textContent).toContain('web-flow key')
+    expect(q('signature-panel')?.textContent).toContain('GPG key fingerprint: 968479A1AFF927E37D1A566BB5690EEEBB952194')
+    expect(q('signature-panel')?.textContent).not.toContain('Add your signing key')
+  })
 })

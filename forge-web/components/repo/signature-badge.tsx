@@ -1,26 +1,28 @@
 'use client'
 
 /**
- * SignatureBadge — GitHub's Verified / Unverified label on a signed commit (P1-7), from its
- * verdict (`lib/rules/signature.ts`). The label opens a panel saying who signed with which key,
- * or why the signature could not be verified. An unsigned commit shows nothing, as on GitHub.
+ * SignatureBadge — the Verified label on a signed commit (P1-7), from its verdict
+ * (`lib/rules/signature.ts`). The label opens a panel saying who signed with which key, or why the
+ * signature could not be verified. An unsigned commit shows nothing, as on GitHub.
  *
  * Verified means the signature checks against a key that exactly one of this repository's owner
  * and members lists on their (public) profile. Forge checks it in this browser; no server is
- * asked.
+ * asked. A signature that checks against GitHub's web-flow key reads "Signed by GitHub"; one by a
+ * key on nobody's profile (history signed elsewhere) reads "Signed", neutral; anything else that
+ * does not verify reads "Unverified".
  */
 
 import Link from 'next/link'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Author } from '@/components/author'
 import { useDismiss } from '@/components/repo/target-rail'
-import type { SignatureState } from '@/hooks/use-commit-signatures'
+import type { SignatureState, SignedVerdict } from '@/hooks/use-commit-signatures'
 import type { SignatureVerdict } from '@/lib/rules/signature'
 import { cn } from '@/lib/utils'
 
 /** Why a signature is unverified, in a sentence. */
 const REASON: Readonly<Record<NonNullable<SignatureVerdict['reason']>, string>> = {
-  unknown_key: "The key isn't on the profile of this repository's owner or any of its members.",
+  unknown_key: "Signed with a key that isn't on the profile of this repository's owner or any of its members, so Forge can't say who signed it. History signed on another host often reads this way.",
   ambiguous_key: 'More than one identity lists this key on its profile, so it names nobody.',
   bad_signature: 'The signature does not match this {subject}: the {subject} was changed after it was signed, or the signature is not git’s.',
   unsupported: 'Forge checks Ed25519 and ECDSA (P-256/384/521) OpenPGP keys and Ed25519 SSH keys, with SHA-256 or stronger. This signature uses something else.',
@@ -31,6 +33,13 @@ function keyLine(v: SignatureVerdict): string | null {
   if (v.key === null) return null
   if (v.format === 'ssh') return `SSH key fingerprint: ${v.key}`
   return v.key.length > 16 ? `GPG key fingerprint: ${v.key}` : `GPG key ID: ${v.key}`
+}
+
+/** The badge's label. */
+function labelOf(v: SignedVerdict): string {
+  if (v.status === 'verified') return 'Verified'
+  if (v.service === 'github') return 'Signed by GitHub'
+  return v.reason === 'unknown_key' ? 'Signed' : 'Unverified'
 }
 
 /** The panel's width (px), and its margin from the viewport's edges. */
@@ -93,9 +102,17 @@ export function SignatureBadge({
   }
   const verified = state !== 'error' && state.status === 'verified'
   const bad = state !== 'error' && state.reason === 'bad_signature'
-  const label = verified ? 'Verified' : 'Unverified'
+  const github = state !== 'error' && state.service === 'github'
+  const label = state === 'error' ? 'Unverified' : labelOf(state)
   return (
-    <span ref={root} className={cn('relative inline-flex', className)} data-testid="signature-badge" data-status={state === 'error' ? 'error' : state.status} data-reason={state === 'error' ? undefined : state.reason ?? undefined}>
+    <span
+      ref={root}
+      className={cn('relative inline-flex', className)}
+      data-testid="signature-badge"
+      data-status={state === 'error' ? 'error' : state.status}
+      data-reason={state === 'error' ? undefined : state.reason ?? undefined}
+      data-service={github ? 'github' : undefined}
+    >
       <button
         ref={button}
         type="button"
@@ -125,6 +142,14 @@ export function SignatureBadge({
         >
           {state === 'error' ? (
             <span className="block">Couldn&apos;t read the signing keys of this repository&apos;s members from Platform, so this signature was not checked.</span>
+          ) : github ? (
+            <>
+              <span className="block font-medium text-anvil-900 dark:text-anvil-50">
+                GitHub signed this {subject} with its web-flow key, as it signs merges and edits made on github.com.
+              </span>
+              <span className="mt-2 block">The signature checks against the key GitHub publishes. It shows the {subject} was made on GitHub, not which member of this repository made it.</span>
+              {keyLine(state) ? <span className="mt-2 block break-all font-mono text-[11px] text-anvil-600 dark:text-anvil-300">{keyLine(state)}</span> : null}
+            </>
           ) : (
             <>
               <span className="block font-medium text-anvil-900 dark:text-anvil-50">
