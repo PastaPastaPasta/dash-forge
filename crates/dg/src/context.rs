@@ -287,19 +287,34 @@ fn ignored_env_network(
     if agrees {
         return None;
     }
-    let var = match env.network {
-        Some(_) => format!("{}={label}", forge_core::network::ENV_NETWORK),
-        None => format!(
-            "{}={}",
-            forge_core::network::ENV_DEVNET_NAME,
-            env.devnet_name.as_deref().unwrap_or_default()
-        ),
-    };
+    let set: Vec<(&str, &str)> = [
+        (forge_core::network::ENV_NETWORK, env.network.as_deref()),
+        (forge_core::network::ENV_DEVNET_NAME, env.devnet_name.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| value.map(|v| (name, v)))
+    .collect();
+    let vars = set
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let verb = if set.len() > 1 { "are" } else { "is" };
+    let unset = format!(
+        "unset {}",
+        set.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(" ")
+    );
     let hint = match (source, flag) {
-        (NetworkSource::Flags, _) | (_, None) => String::new(),
-        (_, Some(flag)) => format!(" (pass {flag} to override)"),
+        (NetworkSource::Flags, _) => String::new(),
+        (NetworkSource::Repository, _) => {
+            format!(", but git push here would use {label} ({unset})")
+        }
+        (_, Some(flag)) => format!(" (pass {flag} to use {label}, or {unset})"),
+        (_, None) => format!(" ({unset})"),
     };
-    Some(format!("{var} is ignored; using {used_key} {source}{hint}"))
+    Some(format!(
+        "{vars} {verb} ignored; using {used_key} {source}{hint}"
+    ))
 }
 
 /// The network the repository in the current directory pins in its own git config (`local`
@@ -406,7 +421,10 @@ impl Ctx {
         if !matches!(cli.command, crate::Command::Doctor { .. }) {
             warn_if_retired(&target.network);
         }
-        if let Some(warning) = ignored_env_network(&env, network_source, &target.network) {
+        // `dg doctor` has its own row for an environment that overrides git.
+        if let Some(warning) = ignored_env_network(&env, network_source, &target.network)
+            .filter(|_| !matches!(cli.command, crate::Command::Doctor { .. }))
+        {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| eprintln!("warning: {warning}"));
         }
@@ -808,7 +826,7 @@ mod tests {
             env_warning(none(), none(), net("testnet"), &env(Some("mainnet"), None)).as_deref(),
             Some(
                 "DASH_FORGE_NETWORK=mainnet is ignored; using testnet from config.toml \
-                 (pass --network mainnet to override)"
+                 (pass --network mainnet to use mainnet, or unset DASH_FORGE_NETWORK)"
             )
         );
         assert_eq!(
@@ -821,7 +839,8 @@ mod tests {
             .as_deref(),
             Some(
                 "DASH_FORGE_NETWORK=testnet is ignored; using devnet-sakura from this \
-                 repository's git config (pass --network testnet to override)"
+                 repository's git config, but git push here would use testnet (unset \
+                 DASH_FORGE_NETWORK)"
             )
         );
         // a flag is explicit: no hint to pass it
@@ -839,7 +858,8 @@ mod tests {
             .as_deref(),
             Some(
                 "DASH_FORGE_DEVNET_NAME=paloma is ignored; using devnet-sakura from config.toml \
-                 (pass --network devnet --devnet-name paloma to override)"
+                 (pass --network devnet --devnet-name paloma to use devnet-paloma, or unset \
+                 DASH_FORGE_DEVNET_NAME)"
             )
         );
         assert_eq!(
@@ -851,13 +871,25 @@ mod tests {
             )
             .as_deref(),
             Some(
-                "DASH_FORGE_NETWORK=devnet-sakura is ignored; using mainnet from config.toml \
-                 (pass --network devnet --devnet-name sakura to override)"
+                "DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=sakura are ignored; using \
+                 mainnet from config.toml (pass --network devnet --devnet-name sakura to use \
+                 devnet-sakura, or unset DASH_FORGE_NETWORK DASH_FORGE_DEVNET_NAME)"
             )
         );
         assert!(
             env_warning(none(), none(), net("mainnet"), &env(Some("devnet"), None))
                 .is_some_and(|w| w.contains("DASH_FORGE_NETWORK=devnet is ignored"))
+        );
+        assert!(
+            env_warning(none(), none(), net("mainnet"), &env(Some("TESTNET"), None))
+                .is_some_and(|w| w.starts_with("DASH_FORGE_NETWORK=TESTNET is ignored"))
+        );
+        assert_eq!(
+            env_warning(none(), none(), net("mainnet"), &env(Some("tesnet"), None)).as_deref(),
+            Some(
+                "DASH_FORGE_NETWORK=tesnet is ignored; using mainnet from config.toml (unset \
+                 DASH_FORGE_NETWORK)"
+            )
         );
     }
 
