@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { PASSPHRASE, SESSION_UNLOCK, expectLocked, expectSignedIn, nodeSdk, readKeptSession, shot } from './helpers'
+import { PASSPHRASE, SESSION_UNLOCK, expectLocked, expectSignedIn, nodeSdk, readKeptSession, shot, showOtherWays } from './helpers'
 
 /**
  * L-07: signing in on a new device from the 12 words alone. Import → Recovery phrase, no
@@ -41,6 +41,7 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
 
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: /^sign in$/i }).first().click({ timeout: 60_000 })
+  await showOtherWays(page)
   await page.getByTestId('tile-import').click({ timeout: 60_000 })
   await page.getByRole('tab', { name: 'Recovery phrase' }).click()
   await page.getByLabel('Recovery phrase (12 or 24 words)').fill(mnemonic)
@@ -99,6 +100,7 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
     if (/broadcastStateTransition/.test(r.url())) writes.push(r.url())
   })
   await page.getByRole('button', { name: /other sign-in options/i }).click()
+  await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.getByRole('tab', { name: 'Recovery phrase' }).click()
   await page.getByLabel('Recovery phrase (12 or 24 words)').fill(mnemonic)

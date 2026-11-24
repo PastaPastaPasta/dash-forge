@@ -1,6 +1,6 @@
 import { test, expect, type Browser, type BrowserContext, type Page, type Route } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { E2E_NETWORK, PASSPHRASE, idFile, importIdentity, shot, unlock } from './helpers'
+import { E2E_NETWORK, PASSPHRASE, idFile, importIdentity, shot, unlock, showOtherWays } from './helpers'
 
 /**
  * Passkeys that hold a key on Platform (docs/security/passkey-vault.md): the sign-in sheet's
@@ -101,6 +101,7 @@ async function platformHasNoContracts(context: BrowserContext): Promise<{ reques
 
 async function openSheet(page: Page): Promise<void> {
   await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
+  await showOtherWays(page)
   await expect(page.getByTestId('tile-create')).toBeVisible({ timeout: 60_000 })
 }
 
@@ -109,6 +110,7 @@ test.describe('hermetic: the sheet hides passkeys where they cannot work', () =>
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     await openSheet(page)
     // The other options are there: only the passkey tile is not.
+    await showOtherWays(page)
     await expect(page.getByTestId('tile-import')).toBeVisible()
     await page.waitForTimeout(1_500)
     await expect(page.getByTestId('tile-passkey')).toHaveCount(0)
@@ -126,6 +128,7 @@ test.describe('hermetic: the sheet hides passkeys where they cannot work', () =>
     await expect.poll(() => stats.requests, { timeout: 60_000 }).toBeGreaterThan(0)
     await page.waitForTimeout(3_000)
     await expect(page.getByTestId('tile-passkey')).toHaveCount(0)
+    await showOtherWays(page)
     await expect(page.getByTestId('tile-import')).toBeVisible()
     await context.close()
   })
