@@ -121,6 +121,34 @@ describe('renderNotices', () => {
     expect(() => renderNotices(list)).toThrow(/no-file@1\.0\.0: ships no license file/)
   })
 
+  it('takes the pinned texts of a js-libp2p repository for its packages that ship none', () => {
+    const { root, list } = fixture()
+    const repo = (url: string) => ({ repository: { type: 'git', url } })
+    list['Apache-2.0 OR MIT'] = [
+      entry('libp2p', '3.5.1', pkg(root, 'libp2p', '3.5.1', {}, repo('git+https://github.com/libp2p/js-libp2p.git'))),
+      entry('it-all', '3.0.9', pkg(root, 'it-all', '3.0.9', {}, repo('git+https://github.com/achingbrain/it.git'))),
+    ]
+    const text = renderNotices(list)
+    expect(text).toContain('libp2p 3.5.1 (Apache-2.0 OR MIT)')
+    expect(text).toContain('[LICENSE-APACHE of https://github.com/libp2p/js-libp2p]')
+    expect(text).toContain('TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION')
+    expect(text).toContain('[LICENSE-APACHE of https://github.com/achingbrain/it]')
+    expect(text).toContain('Licensed under the Apache License, Version 2.0 (the "License")')
+    expect(text).toContain('[LICENSE-MIT of https://github.com/achingbrain/it]')
+  })
+
+  it('does not clarify a package from another repository, by another name, or under another license, by its repository', () => {
+    const { root, list } = fixture()
+    list['Apache-2.0 OR MIT'] = [entry('lookalike', '1.0.0', pkg(root, 'lookalike', '1.0.0', {}, { repository: 'https://github.com/someone/js-libp2p' }))]
+    expect(() => renderNotices(list)).toThrow(/lookalike@1\.0\.0: ships no license file/)
+    const named = fixture()
+    named.list['Apache-2.0 OR MIT'] = [entry('claims-libp2p', '1.0.0', pkg(named.root, 'claims-libp2p', '1.0.0', {}, { repository: 'git+https://github.com/libp2p/js-libp2p.git' }))]
+    expect(() => renderNotices(named.list)).toThrow(/claims-libp2p@1\.0\.0: ships no license file/)
+    const other = fixture()
+    other.list.MIT!.push(entry('mit-libp2p', '1.0.0', pkg(other.root, 'mit-libp2p', '1.0.0', {}, { repository: 'git+https://github.com/libp2p/js-libp2p.git' })))
+    expect(() => renderNotices(other.list)).toThrow(/mit-libp2p@1\.0\.0: ships no license file/)
+  })
+
   it('refuses a clarified text whose file changed', () => {
     const { list } = fixture()
     const dir = mkdtempSync(join(tmpdir(), 'third-party-'))
