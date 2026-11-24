@@ -78,6 +78,20 @@
     "securityPolicyChecked": {
       "type": "boolean",
       "description": "Whether the default branch's files were looked at. False for a private repo, a repo too large to download for this and a failed look; then a null securityPolicy means unknown."
+    },
+    "securityPolicyNote": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Why the security policy was not looked at, in plain words, when the viewer can do something about it; else null."
+    },
+    "securityPolicyError": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "A failed look's cause as git or git-remote-dash reported it (for scripts and bug reports); else null."
     }
   },
   "required": [

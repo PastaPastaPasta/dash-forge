@@ -278,6 +278,8 @@ cmd('repo view', 'A repository: its refs, packs and members.', {
     'defaultBranch': nl(S), 'refs': A(O({'name': S, 'state': ANY}, ['name'])), 'packCount': I, 'packBytes': I, 'members': ANY, 'remoteUrl': S,
     'securityPolicy': D('Where the default branch keeps its security policy (`.github/SECURITY.md`, `SECURITY.md` or `docs/SECURITY.md`, in that order); null when it has none or was not looked at (see securityPolicyChecked).', nl(S)),
     'securityPolicyChecked': D('Whether the default branch\'s files were looked at. False for a private repo, a repo too large to download for this and a failed look; then a null securityPolicy means unknown.', B),
+    'securityPolicyNote': D('Why the security policy was not looked at, in plain words, when the viewer can do something about it; else null.', nl(S)),
+    'securityPolicyError': D('A failed look\'s cause as git or git-remote-dash reported it (for scripts and bug reports); else null.', nl(S)),
 }, ['repoId', 'ownerId', 'name', 'visibility'])
 cmd('repo list', 'An identity\'s repositories.', {
     'ownerId': S, 'count': I, 'repos': A(O({'name': S, 'repoId': S, 'description': nl(S)}, ['name', 'repoId'])),
