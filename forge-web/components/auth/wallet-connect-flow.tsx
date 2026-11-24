@@ -712,6 +712,7 @@ function ProtectStep({ onPick, busy }: { onPick: (p: Protection) => void; busy: 
   const [problem, setProblem] = useState<string | null>(null)
   const { fields, protection, problem: passwordProblem } = useProtection({ passwordOnly: true, onSubmit: () => savePassword() })
   const savePassword = (): void => {
+    if (busy) return
     if (protection === null || protection.device) setProblem(passwordProblem ?? 'Enter a passphrase first.')
     else onPick(protection)
   }

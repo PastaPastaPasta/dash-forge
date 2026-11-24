@@ -1335,6 +1335,11 @@ export class AuthController {
     /** The key id of the record found for this identity before the answer (null: none). */
     previousKeyId: number | null = null,
   ): Promise<AuthSession> {
+    // A key without a budget or an expiry is never kept by this browser alone.
+    const unlimited = [main, ...rest].some((k) => k.limits === null || k.limits.total == null || k.limits.expiresAt == null)
+    if (unlimited && protection.device && !protection.passphrase && !protection.passkey) {
+      throw new Error('This key has no spending limit: add a passkey or a password.')
+    }
     const appConnect = options.origin === 'app-connect'
     const pending = await stagedInfo(this.network, identityId)
     let given: ExtraKey | null = null
