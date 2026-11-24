@@ -1,22 +1,18 @@
 # Hosting the web app
 
-The web app is a static export (`forge-web/out`). forge.dashhq.org is deployed by `.github/workflows/pages.yml` to GitHub Pages, behind Cloudflare. GitHub Pages sets its own headers and cannot be configured. Cloudflare in front of it can override them. These are the settings to apply there, and what each fixes: caching and compression (sections 1 to 4), and the security headers and CAA records that protect the keys people unlock in the app (sections 7 and 8).
+The web app is a static export (`forge-web/out`). forge.dashhq.org (mainnet) and testnet-forge.dashhq.org (testnet) are deployed by `.github/workflows/pages.yml` and `pages-testnet.yml` to GitHub Pages. Their DNS points straight at GitHub Pages, with no Cloudflare proxy in front. GitHub Pages sets its own headers, which can't be configured, and redirects plain http to https.
 
-## What is served today (measured 2026-09-29)
+## What is served today
 
 | Asset | Encoding | Cache-Control |
 |---|---|---|
-| HTML (`/repo/` …) | br | `max-age=600` |
-| `/_next/static/chunks/*.js` | br or gzip | `max-age=14400` (4 h) or `max-age=600` |
-| `/_next/static/wasm/wasm_sdk_bg.<hash>.wasm` (23.4 MB) | br 7.19 MB / gzip 8.18 MB | `max-age=600`, `cf-cache-status: DYNAMIC` |
+| HTML (`/`, `/repo/` …) | gzip | `max-age=600` |
+| `/_next/static/chunks/*.js` | gzip | `max-age=600` |
+| `/_next/static/wasm/wasm_sdk_bg.<hash>.wasm` (26.5 MB) | gzip 9.0 MB | `max-age=600` |
 
-Two consequences:
-- **The wasm is not cached at the edge.** `DYNAMIC` means Cloudflare does not cache `.wasm` by default, so every cold visitor pulls it from GitHub Pages.
-- **Browsers revalidate after 10 minutes** everything under `/_next/static/`. Those files have content hashes in their names and never change.
+So browsers revalidate everything after 10 minutes, including files under `/_next/static/` whose names carry content hashes and never change, and the site sends none of the security headers in section 7. Putting Cloudflare's proxy in front, with the settings below, fixes both.
 
-On a slow link (400 ms, 50 KB/s) that is over 90 s before the app is usable (L-54).
-
-## Settings for the Cloudflare zone of forge.dashhq.org
+## Settings for a Cloudflare proxy in front of forge.dashhq.org
 
 ### 1. Cache the hashed build output forever
 
@@ -48,7 +44,7 @@ Expect `cf-cache-status: HIT` on a second request, `content-encoding: br`, and t
 
 ### 3. Compression
 
-Cloudflare compresses what it serves by default (Brotli, falling back to gzip), and `application/wasm` is among the types it compresses: the measurements above show `br` served. To choose the algorithms explicitly, use **Rules → Compression Rules** (the older Speed → Optimization toggle is superseded by them):
+Cloudflare compresses what it serves by default (Brotli, falling back to gzip), and `application/wasm` is among the types it compresses. To choose the algorithms explicitly, use **Rules → Compression Rules** (the older Speed → Optimization toggle is superseded by them):
 - **When:** URI Path starts with `/_next/static/`
 - **Then:** Custom, in this order: Zstandard, Brotli, Auto. `Auto` must be last: a list with no algorithm the browser accepts sends the response uncompressed.
 
@@ -60,8 +56,6 @@ curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip, deflate, br, zstd' https://
 
 Cloudflare asks the origin for gzip or Brotli only and recompresses at the edge, so zstd needs no origin support.
 
-- **Brotli sizes:** Cloudflare's on-the-fly brotli gives 7.19 MB for the wasm. A precompressed brotli-11 file is 5.2 MB, but Cloudflare does not serve precompressed files from a GitHub Pages origin.
-- **To go below 7.19 MB,** host the static assets somewhere that serves `.br` files, for example Cloudflare Pages or R2 with `Content-Encoding: br` set on upload. That is a hosting change, not a setting.
 
 ### 4. HTML stays short-lived
 

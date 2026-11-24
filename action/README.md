@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge is live on **mainnet** (since 2026-11-24, [forge.dashhq.org](https://forge.dashhq.org)) and on **testnet** ([testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)). The Action's default network is still testnet. The v0.2.0 release predates mainnet, so its binaries work on testnet only. To mirror to mainnet, set `network: mainnet` and use `install: 'source'` with a commit you have reviewed. Pin a release tag: at `@v0.2.0` the Action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
+> **Status.** Forge is live on **mainnet** (since 2026-11-24, [forge.dashhq.org](https://forge.dashhq.org)) and on **testnet** ([testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)). The Action's default network is still testnet. The v0.2.0 release predates mainnet, so its binaries work on testnet only. To mirror to mainnet, set `network: mainnet`, pin `uses:` to a reviewed commit from after the mainnet registration (`44691a33c` or later), and set `install: 'source'`. Pin a release tag: at `@v0.2.0` the Action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ jobs:
       - uses: PastaPastaPasta/dash-forge/action@v0.2.0
         with:
           repo: dash://<owner identity id>/project
-          network: testnet               # the default; mainnet needs install: 'source' (see Status)
+          network: testnet               # the default; for mainnet see Status
           sync: code,releases
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com

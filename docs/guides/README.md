@@ -8,7 +8,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [Mirror a GitHub repository](mirror-a-github-repo.md) | keep a copy of a GitHub repository that nobody can take down: set it up from the browser with the `/mirror` wizard, or by hand with the Mirror Action or `forge-import` |
 | [Mirror a GitLab project](mirror-a-gitlab-project.md) | the same for a project on gitlab.com or your own GitLab, with a GitLab CI template |
 | [Moving from GitHub or GitLab](moving-from-github.md) | move a project over end to end: storage, identity, import, the Mirror Action, cut-over, collaborators, CI and costs |
-| [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own R2, B2, S3, Storj, self-hosted S3 or IPFS instead of on Platform, from the CLI or the browser |
+| [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own S3-compatible bucket or IPFS node instead of on Platform, from the CLI or the browser |
 | [Storage on your home NAS](home-nas-storage.md) | run RustFS or Garage (or kubo) on a Synology, TrueNAS or Linux box, publish it safely with a Cloudflare Tunnel, and keep a second copy |
 | [Run your own IPFS node](run-your-own-ipfs-node.md) | set up a node with one command (`dg ipfs up`), connect it to the web app, push to it, and keep a copy of someone else's repository with `dg ipfs pin` |
 | [Collaborating](collaborating.md) | add members, work with issues, pull requests, reviews, merges, releases and webhooks |
@@ -48,6 +48,6 @@ Dash Wallet sign-in works on testnet with the testnet build of DashPay Wallet fo
 
 ## Which network
 
-The guides use **testnet**, a test network and the tools' default, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too. Testnet DASH is free from a faucet and has no value, and the network can be reset. Fees quoted as measured on a devnet are from the Platform v5 test networks Forge used before testnet. Mainnet has no Forge deployment yet. [Networks](../networks.md) has the details and the history.
+The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. [Networks](../networks.md) has the details.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

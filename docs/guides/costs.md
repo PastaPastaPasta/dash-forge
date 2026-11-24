@@ -23,7 +23,7 @@ Rates come from [CTX](https://rates.ctx.com/rates?source=ctx), with [CoinGecko](
 
 Platform fees are paid in **credits**, from your identity's balance. **1 DASH = 100,000,000,000 credits.**
 
-You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Testnet Dash, where Forge runs today, is free test money, from the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org); the web app links both. Code stored on Platform adds about 0.39 DASH per MiB (permanent), so before a first push either add your own storage or deposit about 0.4 DASH per MiB.
+You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Testnet Dash is free test money, from the [Dash testnet faucet](https://faucet.testnet.networks.dash.org) or [faucet.thepasta.org](https://faucet.thepasta.org); the web app links both. Code stored on Platform adds up to about 0.39 DASH per MiB (permanent), so before a first push either add your own storage or deposit about 0.4 DASH per MiB.
 
 ```sh
 dg auth balance
@@ -275,7 +275,7 @@ Pack bytes are almost all of a repository's size, so where you keep them decides
 
 | Where packs live | You pay | For a 50 MiB repository with 10 pushes a month |
 |---|---|---|
-| **Your bucket** (R2, B2, S3, MinIO) or IPFS | Platform: manifests + refs per push. Provider: storage and egress, at their prices. | ~0.04 DASH a month on Platform (~0.004 DASH a push to the default branch on bonsia, its history index included), plus cents to your provider (R2 has no egress fees) |
+| **Your bucket** (any S3-compatible store) or IPFS | Platform: manifests + refs per push. Provider: storage and egress, at their prices. | ~0.04 DASH a month on Platform (~0.004–0.0055 DASH a push to the default branch, its history index included), plus your provider's prices, if any |
 | **Dash Platform** | ~0.33 DASH per MiB pushed (quoted up to 0.39), plus ~0.004–0.011 DASH per push | ~17 DASH for the first upload, then ~0.33 DASH per MiB pushed |
 
 Platform storage buys you something: it is stored by the network, and it can never be deleted, even by you. Your bucket is cheap, but it is only as available as your account with the provider. You can have both: `dg storage use r2-main,platform` keeps a copy in each place. See [Bring your own storage](bring-your-own-storage.md).

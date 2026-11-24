@@ -24,7 +24,7 @@ Or `make dev-web` from the repository root. The first page load takes a while: t
 
 Contract ids always come from `forge-contracts/deployments/`, so a network with no file there has nothing to read.
 
-To sign in locally, use **Sign in** and scan the QR code with DashPay. Use DashPay's testnet build on testnet. Test DASH comes from the [testnet faucet](https://faucet.testnet.networks.dash.org).
+To sign in locally, use **Sign in** and scan the QR code with DashPay. On testnet, use DashPay for Android's testnet build. Test DASH comes from the [testnet faucet](https://faucet.testnet.networks.dash.org).
 
 ## Build
 
@@ -51,11 +51,7 @@ pnpm test                    # vitest: unit, component and conformance tests, no
 
 `pnpm test` includes the client-rule conformance suite, which runs every case in `forge-contracts/vectors/` against the TypeScript rules in `lib/rules/`. The Rust rules run the same cases, so a rule change updates both (see [CONTRIBUTING.md](../CONTRIBUTING.md#rules-that-both-clients-share)).
 
-Files named `*.live.test.ts` talk to a real network. They are skipped unless you ask for them:
-
-```sh
-FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura pnpm vitest run lib/sdk/sakura.live.test.ts
-```
+Files named `*.live.test.ts` talk to a real network and are skipped unless `FORGE_LIVE=1` is set. Each file's header says which network it needs. Most still target devnet sakura, which is gone, so they skip.
 
 ### Browser tests (Playwright)
 

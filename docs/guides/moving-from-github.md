@@ -53,10 +53,9 @@ Forge hosts nothing. Pack bytes (the git objects) go to storage you choose, and 
 
 | Option | Good for | Guide |
 |---|---|---|
-| Cloudflare R2 | most projects: no egress fees, a free tier | [R2](bring-your-own-storage.md#cloudflare-r2) |
-| Backblaze B2, AWS S3, Storj | an account you already have | [B2](bring-your-own-storage.md#backblaze-b2), [S3](bring-your-own-storage.md#aws-s3), [Storj](bring-your-own-storage.md#storj) |
+| An S3-compatible bucket | most projects | [S3-compatible bucket](bring-your-own-storage.md#an-s3-compatible-bucket) |
 | A NAS at home | no storage bill; needs a second copy for when it's off | [Home NAS](home-nas-storage.md) |
-| IPFS (kubo, a pinning service) | content addressing, many readers | [IPFS](bring-your-own-storage.md#ipfs-your-own-kubo-node) |
+| IPFS (your kubo node) | content addressing, many readers | [IPFS](bring-your-own-storage.md#ipfs-your-own-kubo-node) |
 | Dash Platform | tiny repositories; no account needed | nothing to set up |
 
 Set it up and make it your global default:

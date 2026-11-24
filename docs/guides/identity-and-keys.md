@@ -240,7 +240,7 @@ The code is valid for 10 minutes; in a terminal `dg` offers a new one when it ex
 
 `dg auth status` shows each key's origin (`Origin:`: your DashPay wallet, registered with your recovery phrase, an identity file, a dfk1 key, or the OS keychain for a key an earlier `dg` stored), its budget left and its expiry, and for a wallet key "Renew in your wallet". `--json` has the same as `keyOrigin` (`wallet`, `phrase`, `file`, `dfk1`, `keychain`). To renew it, run `dg auth login` again: the request names the identity, and the wallet disables the previous key it gave this computer in the same update (dg sends the same connection id, kept in `app-connect.toml` beside `config.toml`; a damaged file or id is reported, not replaced). Signing in again as the same identity keeps the encryption key the old key had beside it, when `dg` can open the stored copy (not a sealed file you replace without its passphrase); a wallet sign-in does not bring one of its own, so private repositories otherwise need `dg auth login <file>` or `--mnemonic` once. To disable the key, disconnect Dash Forge in the wallet (Connections), or `dg auth keys disable <id>` with your master key.
 
-Wallets: DashPay for Android 11.9.2 or later. On testnet, where Forge runs today, use DashPay's testnet build: the `-testnet.apk` on the [latest dash-wallet release](https://github.com/dashpay/dash-wallet/releases/latest), installed beside the store app. Dash Wallet for iOS speaks the same protocol, but no testnet build of it is available to download.
+Wallets: DashPay for Android 11.9.2 or later. On testnet, use DashPay's testnet build: the `-testnet.apk` on the [latest dash-wallet release](https://github.com/dashpay/dash-wallet/releases/latest), installed beside the store app. On mainnet, `dg`'s code is not accepted yet ([#714](https://github.com/PastaPastaPasta/dash-forge/issues/714)): sign in with your identity file there, or in the browser.
 
 ### A browser key from dg
 
@@ -283,13 +283,13 @@ Losing a device costs nothing beyond that key's remaining budget. Register a new
 
 ### Signing in with the Dash Wallet app: what works today
 
-The **Use my Dash wallet** tile asks your wallet for one key for all of Forge through **App Connect v2** (Dash Platform's App Connect contract, protocol 14). The key it grants is limited: bound to Forge's contracts, with a spending limit and an expiry you confirm in the wallet. Released wallets answer it (checked 2026-11-22):
+The **Use my Dash wallet** tile asks your wallet for one key for all of Forge through **App Connect v2** (Dash Platform's App Connect contract, protocol 14). The key it grants is limited: bound to Forge's contracts, with a spending limit and an expiry you confirm in the wallet. Released wallets answer it:
 
 | Wallet | Network | Works today |
 |---|---|---|
-| DashPay Wallet for Android 11.9.2 or later, testnet build (`dashpay-wallet-…-testnet.apk` on the [DashPay Wallet releases](https://github.com/dashpay/dash-wallet/releases/latest)) | testnet | **Yes.** Checked end to end on 2026-11-22: approval, sign-in and a write with the granted key. The testnet build installs next to the store app. |
-| Dash Wallet for iOS 9.1.4 or later | testnet | Speaks App Connect v2, but there is no verified way to put a store build on testnet. |
-| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | Both answer App Connect v2 on mainnet. Forge is not deployed on mainnet yet. |
+| DashPay Wallet for Android 11.9.2 or later, testnet build (`dashpay-wallet-…-testnet.apk` on the [DashPay Wallet releases](https://github.com/dashpay/dash-wallet/releases/latest)) | testnet | **Yes.** The testnet build installs next to the store app. |
+| Dash Wallet for iOS 9.1.4 or later | testnet | No: there is no testnet build of the iOS app to install. |
+| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | **Yes**, in the web app at forge.dashhq.org, which shows a `dashpay://connect` code. |
 | Any released wallet | devnets | No: released wallets carry no devnet's settings. |
 
 On testnet the sheet lists the wallet first; creating an identity in the browser stays the recommended start for newcomers, since the testnet wallet is a sideloaded app. In the wallet the feature is under More → Tools → Connections.

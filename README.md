@@ -15,7 +15,7 @@
 ## Use it in the browser
 
 1. Open [forge.dashhq.org](https://forge.dashhq.org) and choose **Sign in**.
-2. Scan the QR code with **DashPay** (Android 11.9.2+, iOS 9.1.4+). The wallet adds a *limited key* for Forge: a budget, an expiry, and usable only on Forge's contracts. No recovery phrase touches the browser. New to Dash? DashPay creates your identity and username.
+2. Scan the QR code with **DashPay** for Android (11.9.2+) or **Dash Wallet** for iOS (9.1.4+). The wallet adds a *limited key* for Forge: a budget, an expiry, and usable only on Forge's contracts. No recovery phrase touches the browser. New to Dash? DashPay creates your identity and username.
 3. Already signed in on another device? **Sign in with a passkey** you added there (Settings → Devices & keys).
 
 Then **New → Repository**, and **Settings → Storage** to choose where code is kept.
@@ -30,19 +30,19 @@ cargo install --locked --path crates/dg
 cargo install --locked --path crates/git-remote-dash
 ```
 
-Sign in with your DashPay wallet, then publish a repository:
+Sign in with your wallet, then publish a repository:
 
 ```sh
-dg auth login --network mainnet --wallet   # prints a QR code: scan it in DashPay; mainnet becomes your default
-dg storage add                             # where packs go: your S3/R2 bucket, your IPFS node, or Platform
-dg init                                    # creates the repository, adds `origin`, pushes this branch
+dg auth login --wallet   # prints a QR code: scan it in DashPay (More → Tools → Connections)
+dg storage add           # where packs go: your S3 bucket, your IPFS node, or Platform
+dg init                  # creates the repository, adds `origin`, pushes this branch
 ```
-
-> **Mainnet caveat:** DashPay doesn't accept `dg`'s wallet QR on mainnet yet ([#714](https://github.com/PastaPastaPasta/dash-forge/issues/714)). Until that's fixed, terminal wallet sign-in works on testnet only.
 
 Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push`. Every push prints its cost first ([costs](docs/guides/costs.md)).
 
-The tools default to **testnet** until `dg auth login` records a network. Pass `--network mainnet` (or set `DASH_FORGE_NETWORK=mainnet`) to pick mainnet explicitly. On testnet, the [v0.2.0 binaries](docs/INSTALL.md) also work: `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh`.
+- **Network:** the tools use testnet until you pick one. `--network mainnet` on `dg auth login` (or `dg auth new`) makes mainnet your default for `dg` and `git`.
+- **Mainnet:** DashPay doesn't accept `dg`'s QR code on mainnet yet ([#714](https://github.com/PastaPastaPasta/dash-forge/issues/714)). Until that's fixed, sign in to mainnet from the terminal with an identity file (below), or use the browser.
+- **v0.2.0 binaries:** `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh` installs them ([INSTALL.md](docs/INSTALL.md)). They work on testnet only and have no `--wallet`, so sign in with an identity file there.
 
 <details>
 <summary>Other ways to sign in (CI, scripts, developers)</summary>
@@ -58,9 +58,9 @@ The tools default to **testnet** until `dg auth login` records a network. Pass `
 
 Platform holds only the small signed records. Git packs go where you choose:
 
-- **IPFS:** your own node (`dg ipfs up` sets one up). Readers fetch from Forge's gateway, [ipfs.dashhq.org](https://ipfs.dashhq.org), first, then public gateways. Every byte is hash-checked, so a gateway can't change your code.
-- **S3-compatible bucket:** Cloudflare R2, Backblaze B2, AWS S3, MinIO.
-- **Platform:** packs stored on chain, with no extra account (about 0.39 DASH per MiB, quoted before each push).
+- **IPFS:** your own node (`dg ipfs up` sets one up). Readers try the repository's own gateway, then [ipfs.dashhq.org](https://ipfs.dashhq.org), then public gateways. Every byte is hash-checked, so no gateway can change your code.
+- **S3-compatible bucket:** a hosted bucket or a store you run, such as RustFS or Garage on a NAS ([how](docs/guides/home-nas-storage.md)).
+- **Platform:** packs stored on chain, with no extra account (up to about 0.39 DASH per MiB, quoted before each push).
 
 You can replicate packs across several of these. [Bring your own storage](docs/guides/bring-your-own-storage.md) has the setup.
 
@@ -100,6 +100,6 @@ Build with `cargo build --workspace` (with `protoc` on `PATH`) and `pnpm install
 ## Contributing, security and license
 
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md).
-- **Security:** report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
+- **Security:** report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes, not in a public issue. Fixes are published as [security advisories](https://github.com/PastaPastaPasta/dash-forge/security/advisories).
 - **Releases** are announced in [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases).
 - **License:** [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.

@@ -1,79 +1,37 @@
 # Storage on your home NAS
 
-A NAS you already own can hold your pack bytes, so a push costs only the small Platform writes (the manifest and the ref updates) and nobody bills you for storage. This guide runs an S3-compatible store in Docker on a Synology, a TrueNAS SCALE or any Linux box, puts it on a public https address with a Cloudflare Tunnel, and connects it to `dg`. It also covers a kubo (IPFS) node on the NAS.
+A NAS or server you already own can hold your pack bytes, so a push costs only the small Platform writes (the manifest and the ref updates) and nobody bills you for storage. This guide runs an S3-compatible store, [RustFS](https://github.com/rustfs/rustfs) or [Garage](https://garagehq.deuxfleurs.fr/), in Docker Compose on any Linux machine that runs Docker, amd64 or arm64, and connects it to `dg`.
 
 Two facts decide most of the choices below:
 
-- **Every push records the store's public URL on chain, forever**, and everyone who clones or browses reads from it. It must be a public https hostname on a domain you own. LAN addresses, plain http, quick tunnels and Tailscale Funnel names are refused ([Public addresses](bring-your-own-storage.md#public-addresses)).
+- **Every push records the store's public URL on chain, forever**, and everyone who clones or browses reads from it. It must be a public https hostname on a domain you own. LAN addresses, plain http and temporary tunnel names (`*.trycloudflare.com`, `*.ts.net`) are refused ([Public addresses](bring-your-own-storage.md#public-addresses)).
 - **A repository is only as available as its copies.** When the NAS is off, a pack stored only there can't be read. Keep a second copy somewhere else ([below](#when-the-nas-is-offline)).
 
 Readers never trust the NAS: a clone accepts only bytes that hash to the SHA-256 on chain, so a broken NAS costs availability, never integrity.
 
-> **What was tested.** On 2026-09-28 this guide was run with Docker on a developer Mac: RustFS behind a Cloudflare quick tunnel (standing in for a named one) with real pushes and clones; Garage, an existing MinIO and kubo, which passed `dg storage test`; and a clone from the Garage copy while the RustFS "NAS" was stopped. **Not yet verified live:** the Synology and TrueNAS SCALE steps, the Cloudflare dashboard steps for a named tunnel, Tailscale Funnel and the reverse-proxy setup. They follow the vendors' documentation, linked in each step. The kubo section's Caddy preflight proxy was tested live against kubo 0.43.1 with Caddy 2.11.7; its `init.d` token lines follow the web app's recipe and have not been run in Docker.
+1. [Choose a store](#choose-a-store)
+2. [Run the store](#run-the-store)
+3. [Give it a public https address](#give-it-a-public-https-address)
+4. [A bucket, a key for that bucket only, public reads and CORS](#a-bucket-a-key-for-that-bucket-only-public-reads-and-cors)
+5. [Connect it to `dg`](#connect-it-to-dg)
+6. [When the NAS is offline](#when-the-nas-is-offline)
+7. [Backups](#backups)
+8. [Troubleshooting](#troubleshooting)
 
-1. [What you will build](#what-you-will-build)
-2. [Choose a store](#choose-a-store)
-3. [Create the tunnel](#create-the-tunnel)
-4. [Run the store](#run-the-store): [RustFS](#rustfs), [Garage](#garage); on [Synology](#on-a-synology), [TrueNAS SCALE](#on-truenas-scale) or [Linux](#on-a-linux-box)
-5. [A bucket, a key for that bucket only, public reads and CORS](#a-bucket-a-key-for-that-bucket-only-public-reads-and-cors)
-6. [Connect it to `dg`](#connect-it-to-dg)
-7. [When the NAS is offline](#when-the-nas-is-offline)
-8. [Backups](#backups)
-9. [IPFS: kubo on the NAS](#ipfs-kubo-on-the-nas)
-10. [Troubleshooting](#troubleshooting)
-
-Replace every `<…>` placeholder, and `example.org`, with your own values.
+Replace every `<…>` placeholder, and `example.org`, with your own values. For an IPFS node instead, see [Run your own IPFS node](run-your-own-ipfs-node.md).
 
 ---
 
-## What you will build
-
-```
-                        ┌──────────────────────── your NAS ────────────────────────┐
- git push ──(LAN or ───▶│  S3 store (RustFS or Garage)  ◀── cloudflared (outbound) │
-  tunnel)               └──────────────────────────────────────────┬───────────────┘
-                                                                   │  no open ports
- git clone / web app ──▶ https://s3.example.org ──── Cloudflare ───┘
-                        (the public URL recorded on chain)
-```
-
-- The store keeps packs in one bucket, `forge`.
-- `cloudflared` runs next to it and makes an **outbound** connection to Cloudflare, so you open no port on your router. Cloudflare serves your hostname with a valid certificate and forwards it to the store.
-- `dg` signs uploads with a key that can write only that bucket. Anyone can read objects anonymously; nobody can list, write or delete without the key.
-
 ## Choose a store
 
-| Store | Use it when | Hostnames | Profile values |
+| Store | Use it when | Public hostnames | Profile values |
 |---|---|---|---|
-| [**RustFS**](https://github.com/rustfs/rustfs) (Apache-2.0) | the simplest setup: one container, one hostname | `s3.example.org` → port 9000 | endpoint `https://s3.example.org`, region `us-east-1`, public URL `https://s3.example.org/forge` |
-| [**Garage**](https://garagehq.deuxfleurs.fr/) (AGPL) | a mature, small store that can grow to several nodes | `s3.example.org` → port 3900 (the S3 API, for writes); `files.example.org` → port 3902 (the web endpoint, for anonymous reads) | endpoint `https://s3.example.org`, region `garage`, public URL `https://files.example.org` (no `/forge`: Garage picks the bucket from the hostname) |
-| **MinIO** | you already run it | as RustFS | as RustFS |
-
-The MinIO community edition is archived, and its images (`minio/minio`, `minio/mc`) no longer pull from Docker Hub ([minio/minio](https://github.com/minio/minio)). Don't start a new server on it.
-
-## Create the tunnel
-
-Do this first: the compose files below start the tunnel connector, and it needs the tunnel's token. You need a domain whose DNS is on Cloudflare (a free plan is enough).
-
-1. In the Cloudflare dashboard, open **Networking → Tunnels → Create a tunnel**, choose **Cloudflared**, and name it (`nas`). The install command it shows ends in `--token <long value>`: copy that value. Don't run the command itself, because the `cloudflared` container is the connector ([Cloudflare: create a tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/)).
-2. Add a **published application** route for each hostname in the table above. The service is the container's name on the compose network, over plain http (Cloudflare adds TLS at its edge):
-
-   | Store | Hostname | Service |
-   |---|---|---|
-   | RustFS | `s3.example.org` | `http://rustfs:9000` |
-   | Garage | `s3.example.org` | `http://garage:3900` |
-   | Garage | `files.example.org` | `http://garage:3902` |
-
-The tunnel shows **Healthy** once the store's stack is running (next section).
-
-- **Don't put Cloudflare Access (Zero Trust login) in front of the read hostname.** Access denies anonymous requests and CORS preflights, and every clone and browser read is anonymous.
-- **Upload size.** Cloudflare limits a proxied request body to 100 MB on the Free and Pro plans ([Cloudflare: 413](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/)). Forge uploads each pack in a single PUT. Reads have no such limit. If a large first push fails with `413`, push over the LAN ([Pushing from home](#pushing-from-home)).
-- **Tailscale Funnel** names (`*.ts.net`) can't be the public URL, but Funnel works for the **endpoint** you push to when away from home: the endpoint is never recorded on chain.
-- **Without a tunnel,** a reverse proxy with a certificate on port 443 works too. On a Synology: a Let's Encrypt certificate (**Control Panel → Security → Certificate**) and a rule at **Control Panel → Login Portal → Advanced → Reverse Proxy** from `https://s3.example.org:443` to `http://localhost:9000` ([Synology: reverse proxy](https://kb.synology.com/en-global/DSM/help/DSM/AdminCenter/system_login_portal_advanced?version=7)). On Linux: Caddy, `s3.example.org { reverse_proxy 127.0.0.1:9000 }`. This needs a public IP address (many home connections are behind CGNAT) and, if it changes, a dynamic DNS name.
+| **RustFS** (Apache-2.0) | the simplest setup: one container, one hostname | `s3.example.org` → port 9000 | region `us-east-1`, public URL `https://s3.example.org/forge` |
+| **Garage** (AGPL) | a small store that can grow to several nodes | `files.example.org` → port 3902 (the web endpoint, for anonymous reads) | region `garage`, public URL `https://files.example.org` |
 
 ## Run the store
 
-Make a directory for the stack on a data volume. It holds `compose.yaml`, a `.env` file with the secrets (`chmod 600 .env`), and the data.
+Make a directory for the stack on a data volume. It holds `compose.yaml`, any secrets (`chmod 600` them), and the data. Then run `docker compose up -d`. `restart: unless-stopped` brings the stack back after a reboot.
 
 ### RustFS
 
@@ -81,7 +39,6 @@ Make a directory for the stack on a data volume. It holds `compose.yaml`, a `.en
 
 ```sh
 RUSTFS_ROOT_SECRET=<a long random string, e.g. the output of: openssl rand -hex 20>
-TUNNEL_TOKEN=<the token from "Create the tunnel">
 ```
 
 `compose.yaml`:
@@ -97,22 +54,14 @@ services:
     volumes:
       - ./data:/data
     ports:
-      - "9000:9000"            # S3 API on your LAN (for setup, and for pushing from home)
+      - "9000:9000"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/health/ready"]
       interval: 10s
       retries: 12
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
-    depends_on:
-      rustfs:
-        condition: service_healthy
 ```
 
-**The RustFS container runs as user `10001`, so its data directory must belong to that user** ([RustFS docs](https://docs.rustfs.com/en/installation/container/docker)): `mkdir -p data && sudo chown -R 10001:10001 data`, before the first start. The platform sections below show where to run it.
+**The RustFS container runs as user `10001`, so its data directory must belong to that user.** Before the first start: `mkdir -p data && sudo chown -R 10001:10001 data`. `docker compose up -d --wait` returns once it is healthy.
 
 Never leave the admin secret at RustFS's default (`rustfsadmin`). The admin key is only for the setup commands below; `dg` gets its own key.
 
@@ -140,7 +89,7 @@ root_domain = ".web.garage.localhost"
 index = "index.html"
 ```
 
-Create the RPC secret once: `openssl rand -hex 32 > rpc_secret && chmod 600 rpc_secret`. `.env` holds only `TUNNEL_TOKEN`.
+Create the RPC secret once: `openssl rand -hex 32 > rpc_secret && chmod 600 rpc_secret`.
 
 `compose.yaml`:
 
@@ -155,11 +104,8 @@ services:
       - ./meta:/var/lib/garage/meta
       - ./data:/var/lib/garage/data
     ports:
-      - "3900:3900"            # S3 API on your LAN
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+      - "3900:3900"            # S3 API, for writes
+      - "3902:3902"            # web endpoint, for anonymous reads
 ```
 
 Once it is running, give the node its storage role (the capacity is how much of the disk Garage may use):
@@ -170,52 +116,30 @@ docker compose exec garage /garage layout assign -z home -c 500G <node id>
 docker compose exec garage /garage layout apply --version 1
 ```
 
-### On a Synology
+## Give it a public https address
 
-> **Not yet verified live.** These steps follow Synology's documentation. They have not been run on a Synology.
+Put a reverse proxy with a certificate, or a tunnel you control, in front of the store, and route your hostname to it:
 
-DSM 7.2 and later, with **Container Manager** installed from Package Center.
+| Store | Hostname | Route to |
+|---|---|---|
+| RustFS | `s3.example.org` | port 9000 |
+| Garage | `files.example.org` | port 3902 |
 
-1. In File Station, create `docker/forge-storage` on your data volume (for example `/volume1/docker/forge-storage`), and put the files from above in it.
-2. For RustFS, create `data` and give it to user `10001`. Turn on SSH (**Control Panel → Terminal & SNMP → Enable SSH service**), log in, and run the `chown` above in `/volume1/docker/forge-storage`. Turn SSH off again afterwards if you don't use it.
-3. **Container Manager → Project → Create**. Name it `forge-storage`, set the path to `/volume1/docker/forge-storage`, choose "Use existing docker-compose.yml", and finish. The project starts both containers ([Synology: Project](https://kb.synology.com/en-global/DSM/help/ContainerManager/docker_project?version=7)). If a container complains that a variable is not set, the project did not read `.env`: write the values into `compose.yaml` directly, and keep the file readable only by administrators.
+The proxy must pass the `Host` header through (Garage picks the bucket by it), allow anonymous requests, and answer CORS preflights from the store. Don't put a login page (such as Cloudflare Access) in front of it: every clone and browser read is anonymous.
 
-### On TrueNAS SCALE
-
-> **Not yet verified live.** These steps follow the TrueNAS documentation. They have not been run on TrueNAS.
-
-TrueNAS SCALE 24.10 and later run apps on Docker.
-
-1. Create a dataset for the store, for example `tank/apps/forge-storage` (mounted at `/mnt/tank/apps/forge-storage`). For RustFS, run the `chown` above on its `data` directory from the TrueNAS shell.
-2. **Apps → Discover Apps → ⋮ → Install via YAML** ([TrueNAS docs](https://www.truenas.com/docs/scale/25.10/scaleuireference/apps/installcustomappscreens/)). Name it `forge-storage` and paste the compose file with **absolute** paths (`/mnt/tank/apps/forge-storage/data:/data`, and the same for Garage's files). There is no `.env` beside it, so write the secret and the tunnel token into the YAML.
-3. TrueNAS's community catalog also carries RustFS, Garage and cloudflared apps ([truenas/apps](https://github.com/truenas/apps/tree/master/ix-dev/community)); the settings are the same, entered in the app forms.
-
-### On a Linux box
-
-Any machine with Docker Engine and the compose plugin:
+Check it from anywhere:
 
 ```sh
-mkdir -p ~/forge-storage && cd ~/forge-storage
-# write compose.yaml and .env (and garage.toml + rpc_secret for Garage); chown data for RustFS
-docker compose up -d
-docker compose ps                                    # both containers running (rustfs "healthy")
-```
-
-`restart: unless-stopped` brings the stack back after a reboot.
-
-**Check it from anywhere** once the tunnel shows Healthy:
-
-```sh
-curl -s -o /dev/null -w '%{http_code}\n' https://s3.example.org/forge/nothing-here   # 403 or 404, not a Cloudflare error page
+curl -s -o /dev/null -w '%{http_code}\n' https://s3.example.org/forge/nothing-here   # 404 from the store, not a proxy error page
 ```
 
 ---
 
 ## A bucket, a key for that bucket only, public reads and CORS
 
-Run these from your computer against the NAS's LAN address (`http://nas.local:9000` below), or on the NAS itself.
+Run these on the NAS, or from your computer against its LAN address (`http://nas.local:9000` below). You need the AWS CLI for the bucket policy and CORS.
 
-Save the CORS document once as `cors.json`. It is the one [Bring your own storage](bring-your-own-storage.md#aws-s3) uses, with lowercase header names ([why](bring-your-own-storage.md#cors-header-names)):
+Save the CORS document as `cors.json`. It is the one in [Bring your own storage](bring-your-own-storage.md#an-s3-compatible-bucket), with lowercase header names ([why](bring-your-own-storage.md#cors-header-names)):
 
 ```json
 {
@@ -238,18 +162,18 @@ Save the CORS document once as `cors.json`. It is the one [Bring your own storag
 }
 ```
 
-The first rule lets any browser read packs. The second lets the web app at `https://forge.dashhq.org` upload with your key (release assets, browser merges); leave it out if you only push from the CLI. That is the mainnet web app: on testnet, put `https://testnet-forge.dashhq.org` there, or both ([which origin](bring-your-own-storage.md#cors-origins-mainnet-and-testnet)).
+The first rule lets any browser read packs. The second lets the web app at `https://forge.dashhq.org` upload with your key (release assets, browser merges); leave it out if you only push from the CLI. On testnet, use `https://testnet-forge.dashhq.org` there instead.
 
 ### RustFS
 
-Use RustFS's own CLI, [`rc`](https://github.com/rustfs/cli/releases) (download the archive for your system and check it against the `.sha256` file beside it), plus the AWS CLI for the bucket policy and CORS:
+Use RustFS's own CLI, [`rc`](https://github.com/rustfs/cli/releases) (download the archive for your system and check it against the `.sha256` file beside it):
 
 ```sh
 rc alias set nas http://nas.local:9000 forge-admin <RUSTFS_ROOT_SECRET>
 rc mb nas/forge
 ```
 
-A policy that can write, read and delete objects in `forge`, and nothing else (no listing, no other bucket, no bucket settings). Save it as `forge-rw.json`:
+A policy that can write, read and delete objects in `forge`, and nothing else. Save it as `forge-rw.json`:
 
 ```json
 {
@@ -289,7 +213,7 @@ aws --endpoint-url http://nas.local:9000 s3api put-bucket-cors --bucket forge --
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 ```
 
-Prefer this policy to `rc anonymous set download` (or MinIO's `mc anonymous set download`): that preset also lets anyone list the bucket. `rc bucket cors set` expects its own document format, not the S3 one above, so set CORS through the S3 API as shown.
+Use this policy rather than `rc anonymous set download`, which also lets anyone list the bucket.
 
 ### Garage
 
@@ -302,7 +226,7 @@ g bucket website --allow forge                 # anonymous reads on the web endp
 g bucket alias forge files.example.org         # the web endpoint serves this bucket for that hostname
 ```
 
-`forge-key` can read and write objects in `forge` only. It isn't the bucket's owner, so it can't change the bucket's settings, CORS included. Make a separate owner key for that, use it once, then delete it:
+`forge-key` can read and write objects in `forge` only, so it can't change the bucket's CORS. Make a separate owner key for that, use it once, then delete it:
 
 ```sh
 g key create forge-admin
@@ -312,37 +236,22 @@ AWS_ACCESS_KEY_ID=<forge-admin key id> AWS_SECRET_ACCESS_KEY=<forge-admin secret
 g key delete --yes forge-admin
 ```
 
-Garage applies the bucket's CORS on the web endpoint too. It has no bucket policies: anonymous reads come only from the web endpoint, and the S3 API refuses them.
-
-### MinIO (an existing server)
-
-```sh
-mc alias set nas http://nas.local:9000 <root user> <root password>
-mc mb nas/forge
-mc admin policy create nas forge-rw forge-rw.json         # the policy from the RustFS section
-mc admin user add nas forge <a new long random secret>
-mc admin policy attach nas forge-rw --user forge
-mc anonymous set download nas/forge                       # public reads (this preset also allows listing)
-```
-
-MinIO has no per-bucket CORS. It answers every origin unless `MINIO_API_CORS_ALLOW_ORIGIN` (or `mc admin config set nas api cors_allow_origin=…`) restricts it.
-
 ---
 
 ## Connect it to `dg`
 
-Add the profile with the key that can only touch the bucket, using the values from [the table](#choose-a-store) (`dg storage add` with no arguments asks for the same values), then test it:
+Add the profile with the key that can only touch the bucket, then test it. The endpoint, where `dg` writes, is never recorded on chain, so it can be the NAS's LAN address; only the public URL is recorded:
 
 ```sh
-security add-generic-password -s dash-forge -a nas -w      # macOS: paste the forge key's secret
+export NAS_SECRET=<the forge key's secret>     # or store it in your OS keychain and use keychain:dash-forge/nas
 dg storage add nas --kind s3 \
-  --endpoint https://s3.example.org --region us-east-1 \
+  --endpoint http://nas.local:9000 --region us-east-1 \
   --bucket forge --public-url https://s3.example.org/forge \
-  --access-key-id forge --secret-access-key keychain:dash-forge/nas
+  --access-key-id forge --secret-access-key env:NAS_SECRET
 dg storage test nas
 ```
 
-On Linux, store the secret with `secret-tool store --label nas service dash-forge account nas`, or use an `env:` reference.
+For Garage: `--endpoint http://nas.local:3900 --region garage --public-url https://files.example.org`, and the Key ID from `g key create` as `--access-key-id`.
 
 ```
 Testing storage profile "nas" (s3):
@@ -367,26 +276,13 @@ dg init --storage nas           # a new repository: create, configure and push i
 The push prints where the pack went and what Platform charged:
 
 ```
-dash: 5NGj…/nas-demo ← main (864183b, 5 objects, 448 B)
-dash: storage      → nas · Platform stores manifest + refs only, est 0.0032 DASH
-dash: nas          ████████████████ 448 B  verified   0.7 s
-dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
-dash: done · Platform charged ≈0.0028 DASH · remaining 0.9938 DASH · https://forge.dashhq.org/5NGj…/nas-demo
+dash: stored pack 7b246a46c436 (201.0 KiB, 4 objects)
+dash: pack 7b246a46c436 (201.0 KiB) stored on nas (1 verified)
+dash: updated main → 2ca4b79
+dash: done · Platform charged ≈0.0054 DASH · remaining 0.9900 DASH · https://forge.dashhq.org/<owner>/nas-demo
 ```
 
-**The same profile also takes CI logs.** `dg ci report <owner>/<repo> --sha <commit> --name build --status completed --conclusion success --log build.log --storage nas` (see [CI and check runs](ci.md)) uploads a run's log to this bucket and records its `https://s3.example.org/forge/...` URL on chain. Nothing extra to set up: the tunnel or reverse-proxy TLS you put in front of the store for pushes is exactly what a self-hosted CI runner needs too, since the web app (served over https) refuses to fetch a plain-http log.
-
-### Pushing from home
-
-The endpoint, where `dg` writes, is never recorded on chain; only the public URL is. So a profile can write to the NAS over your LAN, which is faster and avoids the tunnel's upload limit, while readers use the public hostname:
-
-```sh
-dg storage add nas-lan --kind s3 --endpoint http://nas.local:9000 --region us-east-1 \
-  --bucket forge --public-url https://s3.example.org/forge \
-  --access-key-id forge --secret-access-key keychain:dash-forge/nas
-```
-
-Both profiles store the same objects under the same keys, so a repository can switch between them with `dg storage use` at any time. Only a machine on your LAN can use `nas-lan`.
+**The same profile also takes CI logs.** `dg ci report <owner>/<repo> --sha <commit> --name build --status completed --conclusion success --log build.log --storage nas` (see [CI and check runs](ci.md)) uploads a run's log to this bucket.
 
 ---
 
@@ -394,20 +290,17 @@ Both profiles store the same objects under the same keys, so a repository can sw
 
 **With the NAS as the only copy**, every pack stored only there is unreadable until it is back:
 
-- `git clone` fails with `fatal: remote did not send all necessary objects`.
-- The web app shows what other copies it can read, and warns: *"2 packs could not be fetched from their storage; some objects may be missing"*.
+- `git clone` stops with [E503](../errors.md#e503) and names the copies it tried.
 - `dg storage status <owner>/<repo>` marks each copy `[DOWN]`.
-- Your own pushes stop before anything is paid for ([E502](../errors.md#e502)).
+- Your own pushes stop before anything is paid for ([E502](../errors.md#e502)): no manifest, no ref.
 
 Nothing is lost: when the NAS comes back, every clone works again.
 
-**With a second copy**, readers don't notice. Add a second profile and list both:
+**With a second copy**, readers don't notice: a clone reads the other copy and warns that one is unavailable. Add a second profile (another store, or `platform`) and list both:
 
 ```sh
-dg storage use nas,r2-main
+dg storage use nas,second
 ```
-
-[Cloudflare R2](bring-your-own-storage.md#cloudflare-r2) has no egress fees and a free tier; [Backblaze B2](bring-your-own-storage.md#backblaze-b2), [Storj](bring-your-own-storage.md#storj) or [an IPFS pinning service](bring-your-own-storage.md#ipfs-kubo--a-pinning-service) work too. By default a push needs both copies to confirm; `--replicas 1` lets a push through while the NAS is off, with one copy. A new policy applies only to packs pushed after you set it, so copy the older ones over once with `dg repack <owner>/<repo> --profile nas,r2-main`. [Choosing where a repo pushes](bring-your-own-storage.md#choosing-where-a-repo-pushes) covers both.
 
 Run `dg storage status <owner>/<repo>` after any change: it probes every recorded copy of every pack.
 
@@ -415,129 +308,10 @@ Run `dg storage status <owner>/<repo>` after any change: it probes every recorde
 
 The second copy keeps the repository **readable**. A backup of the NAS protects the **bytes**:
 
-- **RAID is not a backup.** Snapshot the dataset or shared folder the store lives on (a Btrfs snapshot on Synology, a ZFS snapshot task on TrueNAS), and copy it off the machine (Hyper Backup, a replication task, or `rclone sync`).
-- **A copy made outside `dg` is a backup, not a replica.** Readers try only the URLs each pack's manifest recorded at push time. A bucket you fill with `rclone` or another tool is invisible to them until you restore from it.
+- **RAID is not a backup.** Snapshot the volume the store lives on and copy it off the machine.
+- **A copy made outside `dg` is a backup, not a replica.** Readers try only the URLs each pack's manifest recorded at push time. A bucket you fill with another tool is invisible to them until you restore from it.
 - **Restoring is copying the objects back.** Object keys are content-addressed (`packs/<sha256>.pack`), so putting the same bytes back under the same key makes every recorded URL work again. You can also restore from any clone with `dg reseed <owner>/<repo> --from-local` ([Restoring a lost copy](bring-your-own-storage.md#restoring-a-lost-copy)).
 - Also back up `storage.toml` (`~/.config/dash-forge/`) and the store's config (`.env`, `garage.toml`, `rpc_secret`), and keep the secrets in a password manager.
-
----
-
-## IPFS: kubo on the NAS
-
-A kubo node on the NAS stores packs by CID, and a public gateway serves them.
-
-> **Only one computer?** [`dg ipfs up`](run-your-own-ipfs-node.md) is simpler. It installs kubo, starts it at login, and connects the web app and `dg` in one command. Use the recipe below for a NAS or server, where kubo runs in Docker and you want a public gateway.
-
-Three cautions:
-
-- **kubo's RPC API (port 5001) is its admin interface.** Never publish it beyond the machine. Only its gateway (port 8080) goes on the public hostname.
-- **A browser can't talk to kubo directly once it has tokens.** With `API.Authorizations` set, kubo answers the browser's CORS preflight with 403. The recipe puts a small Caddy proxy in front: kubo's RPC is no longer published, and Caddy publishes `127.0.0.1:5001` and answers the preflight for your Forge address.
-- **A home node is usually behind NAT**, so the shared public gateways can't find your content ([the NAT caveat](bring-your-own-storage.md#ipfs-your-own-kubo-node)). Give the profile your **own** public gateway, which every reader tries first, and keep a second copy with a pinning service.
-
-Make two tokens and put them in `.env` next to `TUNNEL_TOKEN`. The owner token is for your own `ipfs` commands, and the Forge token is for `dg` and the web app:
-
-```sh
-printf 'OWNER_TOKEN=%s\nFORGE_TOKEN=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" >> .env
-```
-
-`init.d/001-forge.sh` (`chmod +x` it) does three things. It makes the public gateway serve only what this node stores, so it can't be used to fetch arbitrary content through your connection. It lets your Forge address call the RPC. And it limits the Forge token to adding, pinning, unpinning and identifying. `https://forge.dashhq.org` is the mainnet web app. On testnet use `https://testnet-forge.dashhq.org` here and in the Caddyfile below ([which origin](bring-your-own-storage.md#cors-origins-mainnet-and-testnet)). Replace it with your own Forge address if you run one:
-
-```sh
-#!/bin/sh
-ipfs config --json Gateway.NoFetch true
-ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["https://forge.dashhq.org"]'
-ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["POST"]'
-ipfs config --json API.HTTPHeaders.Access-Control-Allow-Headers '["Authorization"]'
-ipfs config --json API.Authorizations "{\"owner\": {\"AuthSecret\": \"bearer:${OWNER_TOKEN}\", \"AllowedPaths\": [\"/api/v0\"]}, \"dash-forge\": {\"AuthSecret\": \"bearer:${FORGE_TOKEN}\", \"AllowedPaths\": [\"/api/v0/add\", \"/api/v0/pin/add\", \"/api/v0/pin/ls\", \"/api/v0/pin/rm\", \"/api/v0/id\", \"/api/v0/version\"]}}"
-```
-
-`Caddyfile`, next to `compose.yaml`. It answers the preflight for your Forge address and passes everything else to kubo, which checks the token:
-
-```
-{
-  admin off
-  auto_https off
-}
-
-:5001 {
-  @preflight {
-    method OPTIONS
-    header Origin https://forge.dashhq.org
-  }
-  handle @preflight {
-    header Access-Control-Allow-Origin {http.request.header.Origin}
-    header Access-Control-Allow-Methods POST
-    header Access-Control-Allow-Headers "Authorization, Content-Type"
-    header Access-Control-Allow-Private-Network true
-    header Access-Control-Max-Age 600
-    header Vary Origin
-    respond 204
-  }
-  handle {
-    reverse_proxy kubo:5001 {
-      flush_interval -1
-    }
-  }
-}
-```
-
-`compose.yaml` (route `ipfs.example.org` to `http://kubo:8080` in the tunnel). Kubo publishes no RPC port; Caddy is the only way in, and only from this machine:
-
-```yaml
-services:
-  kubo:
-    image: ipfs/kubo:v0.43.1
-    restart: unless-stopped
-    environment:
-      IPFS_PROFILE: server
-      OWNER_TOKEN: ${OWNER_TOKEN:?set OWNER_TOKEN in .env}
-      FORGE_TOKEN: ${FORGE_TOKEN:?set FORGE_TOKEN in .env}
-    volumes:
-      - ./ipfs:/data/ipfs
-      - ./init.d:/container-init.d:ro
-    ports:
-      - "4001:4001"             # swarm: forward it on your router so other nodes can dial you
-      - "4001:4001/udp"
-      - "127.0.0.1:8080:8080"   # gateway: this machine (the tunnel publishes it)
-      # no RPC port here: kubo's RPC (5001) is reachable only by caddy, on the compose network
-  caddy:
-    image: caddy:2.11.7
-    restart: unless-stopped
-    depends_on:
-      - kubo
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-    ports:
-      - "127.0.0.1:5001:5001"   # RPC through the preflight proxy: this machine only
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
-```
-
-Then, on the NAS (the RPC API listens only there). The profile needs the Forge token as the full header value:
-
-```sh
-export KUBO_AUTH="Bearer $(grep '^FORGE_TOKEN=' .env | cut -d= -f2)"
-dg storage add kubo --kind ipfs-kubo \
-  --api http://127.0.0.1:5001 --gateway http://127.0.0.1:8080 \
-  --api-auth env:KUBO_AUTH \
-  --public-gateway https://ipfs.example.org
-dg storage test kubo
-```
-
-```
-  [ OK ] kubo api       kubo 0.43.1 at http://127.0.0.1:5001
-  [ OK ] add + pin      ipfs://bafkrei… (CIDv1 raw-leaves, matches the local derivation, pinned)
-  [ OK ] gateway        GET http://127.0.0.1:8080/ipfs/bafkrei… OK
-  [ OK ] public gateway anonymous GET https://ipfs.example.org/ipfs/bafkrei… OK
-  [ OK ] browser CORS   GET + Range preflight allowed, Content-Range exposed
-  [ OK ] cleanup        probe unpinned
-```
-
-Kubo now refuses every RPC call without a token, so run your own commands with the owner token: `docker compose exec kubo ipfs --api-auth bearer:<owner token> repo stat`.
-
-To push from another computer, reach the RPC API through an SSH tunnel (`ssh -L 5001:127.0.0.1:5001 nas`) rather than publishing it, or put it behind auth and use `--api-auth` ([IPFS: your own kubo node](bring-your-own-storage.md#ipfs-your-own-kubo-node)).
 
 ---
 
@@ -545,13 +319,10 @@ To push from another computer, reach the RPC API through an SSH tunnel (`ssh -L 
 
 | Symptom | Cause / fix |
 |---|---|
-| `docker compose up` stops with `set TUNNEL_TOKEN in .env` | [Create the tunnel](#create-the-tunnel) first and put its token in `.env`. |
 | The RustFS container restarts with a permission error on `/data` | The data directory isn't owned by uid `10001`: `sudo chown -R 10001:10001 data`. |
-| `push not started: … would record a non-public public_url on chain [E501]` | The public URL is a LAN address, plain http, a quick tunnel or a `ts.net` name. Use your own hostname through a named tunnel or a reverse proxy. |
-| `dg storage test`: `public read` FAIL | RustFS: the `public-read.json` policy is missing. Garage: `bucket website --allow` or the alias to the public hostname is missing, or the public URL has a `/forge` path it shouldn't have. Or the tunnel has no route for that hostname. |
+| `push not started: … would record a non-public public_url on chain [E501]` | The public URL is a LAN address, plain http, or a temporary tunnel name. Use your own hostname. |
+| `dg storage test`: `public read` FAIL | RustFS: the `public-read.json` policy is missing. Garage: `bucket website --allow` or the alias to the public hostname is missing, or the public URL has a `/forge` path it shouldn't have. Or the proxy has no route for the hostname. |
 | `dg storage test`: `browser CORS` FAIL | `cors.json` was not applied. On Garage only an owner key can set it (the read-write key gets `AccessDenied … Operation is not allowed for this key`). |
-| `dg storage test`: `put` fails with `failed to lookup address information` | The hostname doesn't resolve yet. A new tunnel route can take a minute to appear in DNS. |
-| A large push fails with HTTP `413` | Cloudflare's upload limit on proxied requests (100 MB on Free and Pro). Push over the LAN with a [`nas-lan` profile](#pushing-from-home). |
-| Clones fail with `remote did not send all necessary objects` while the NAS is off | A pack whose only copy is on the NAS. Bring it back, and [add a second copy](#when-the-nas-is-offline). |
-| The web app can't reach the kubo node on the NAS (a browser CORS error, or a 403 on the preflight) | Raw kubo answers the preflight with 403 once tokens are set. Check that the `caddy` service is up, that `dg storage add` uses `--api http://127.0.0.1:5001` (Caddy's port), and that the `header Origin` line in the `Caddyfile` is the exact address of the page (`https://host`, no trailing slash). |
-| A Cloudflare login page instead of the object | Cloudflare Access protects the hostname. Remove it from the read hostname. |
+| `dg storage test`: `put` fails with `failed to lookup address information` | The endpoint's hostname doesn't resolve. |
+| `git clone` fails with E503 while the NAS is off | A pack whose only copy is on the NAS. Bring it back, and [add a second copy](#when-the-nas-is-offline). |
+| A login page instead of the object | An access gate protects the hostname. Remove it from the read hostname. |

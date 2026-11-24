@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is waiting for the network to confirm your identity (or, if you build from source, the first build).
 
-> **Which network?** The commands target **testnet**, a test network and the tools' default, which forge.dashhq.org also uses. The fees below were measured on Platform v5 test networks before Forge reached testnet (2026-10-01), or on the retired devnet bonsia where they say so; [Costs](costs.md) has both. Mainnet has no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
+> **Which network?** The commands use **testnet**, the tools' default, where DASH is free test money ([testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)). For real repositories, add `--network mainnet` to `dg auth new` or `dg auth login`; it becomes your default, and the web app is [forge.dashhq.org](https://forge.dashhq.org). [Networks](../networks.md) has the details.
 
 ---
 
@@ -49,7 +49,7 @@ This one line installs the latest release's checksum-verified binaries into `~/.
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
 ```
 
-[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads (Windows included), `cargo binstall`, and pinning a version.
+[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads, Windows (WSL), `cargo binstall`, and pinning a version.
 
 ### Check the install
 
@@ -157,8 +157,8 @@ Forge hosts nothing, so you decide where the pack bytes (the git objects) live. 
 
 | Option | Cost | |
 |---|---|---|
-| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.004–0.0055 DASH per push on Platform (measured on bonsia), plus your provider's bill | recommended; R2 has no egress fees |
-| Your IPFS node (kubo) or a pinning service | the same on Platform | |
+| Your S3-compatible bucket ([how](bring-your-own-storage.md#an-s3-compatible-bucket)), for example a store on [your own NAS](home-nas-storage.md) | about 0.004–0.0055 DASH per push on Platform, plus your provider's bill, if any | recommended |
+| Your IPFS node (kubo) | the same on Platform | |
 | Dash Platform | about **0.004–0.011 DASH** for a small push (the top of the range when it moves the default branch), plus about **0.33 DASH per MiB** (the tools quote up to 0.39), permanently | no account needed; fine for tiny repositories |
 
 **From the terminal**, `dg storage add` with no arguments asks for each value and tests the storage as it goes, printing the fix for anything that fails (usually CORS). For the secret access key it offers to paste it, hidden, into your OS keychain. Where there is no keychain (`DASH_FORGE_NO_KEYCHAIN=1`, which is what you want over SSH, or a container) it says so and leaves two choices: an environment variable that holds the secret (`env:R2_SECRET_ACCESS_KEY`; export it where `dg` and `git push` run), or a keychain entry that already exists. A scripted `--secret-access-key` takes one of those two references, never the secret itself ([E501](../errors.md#e501)):
@@ -205,13 +205,13 @@ To dash://Exam…/my-project
  * [new branch]      main -> main
 branch 'main' set up to track 'origin/main'.
 ✓ main → 8f3e2a1   this push ~0.0052 DASH
-  total ~0.0068 DASH (create ~0.0016 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
+  total ~0.0076 DASH (create ~0.0024 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
 Open it: https://forge.dashhq.org/Exam…/my-project
 ```
 
-(The charges are the ones measured on a Platform v5 test network on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On testnet, DASH is test money; when `dg` can fetch a price it adds what the same charge would cost on mainnet (`≈ $… on mainnet`). See [Costs](costs.md).)
+(A first push to your own bucket; the size and paths are illustrative. On testnet, DASH is test money; when `dg` can fetch a price it adds what the same charge would cost on mainnet (`≈ $… on mainnet`). See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH**, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0025 DASH**, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
 
 What it does, in order:
 
@@ -294,24 +294,19 @@ Everything else is plain git: branches, tags, force-push, `git fetch`, `git clon
 
 ### jj
 
-jj pushes and fetches through `git-remote-dash` like git does (tested on testnet in October 2026 with jj 0.46, in
-a repository that is not colocated). One step differs: `jj git clone` and `jj git remote add` store the URL with
-its owner in lower case, and an identity id is case-sensitive, so `dash://<identity id>/<name>` then fails with
-[E102](../errors.md#e102). Add the remote with git instead, then fetch with jj:
+jj pushes and fetches through `git-remote-dash` like git does, in colocated and non-colocated repositories. With an owner given as a DPNS name, `jj git clone dash://alice/project` just works.
+
+An identity id is different: `jj git clone` and `jj git remote add` store the URL with its owner in lower case, and an identity id is case-sensitive, so they fail with [E102](../errors.md#e102). Add the remote with git instead, then fetch with jj:
 
 ```sh
-jj git init --no-colocate
-git --git-dir=.jj/repo/store/git remote add origin dash://<identity id>/<name>
+jj git init                                   # colocated: the git directory is .git
+git remote add origin dash://<identity id>/<name>
 jj git fetch
 jj bookmark track main@origin
 jj new main
 ```
 
-In a colocated repository (what `jj git init` makes by default) the git directory is `.git`, so a plain
-`git remote add origin dash://<identity id>/<name>` does it; that setup has not been tested with jj yet.
-`jj git remote list` still shows the owner in lower case; jj passes git the URL as stored, so pushes and fetches
-work. An owner given as a DPNS name (`dash://alice/project`) is lower case already and is not affected (not yet
-tested with jj). Report problems in the [issue tracker](https://github.com/PastaPastaPasta/dash-forge/issues).
+In a non-colocated repository (`jj git init --no-colocate`), add the remote with `git --git-dir=.jj/repo/store/git remote add origin …`. `jj git remote list` then shows the owner in lower case, but jj passes git the URL as stored, so pushes and fetches work.
 
 ### Secrets in a push
 
