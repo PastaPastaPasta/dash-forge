@@ -31,7 +31,7 @@ export function connectFailureCopy(message: string, { network, cached }: { netwo
   if (isQuorumServiceError(message)) {
     return {
       title: "Can't reach the quorum key service right now",
-      body: `This app checks every Platform answer against quorum keys from ${keyHost(network)}, and that service isn't answering. Dash Platform itself may be up, but without the keys nothing it returns can be checked. ${keep}`,
+      body: `This app checks every Platform answer against quorum keys from ${keyHost(network)}, and that service isn't answering in time. Dash Platform itself may be up, but without the keys nothing it returns can be checked. ${keep}`,
     }
   }
   return { title: "Can't reach Dash Platform right now", body: keep }
