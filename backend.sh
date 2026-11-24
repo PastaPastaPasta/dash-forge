@@ -445,7 +445,7 @@ print_reachability() {
     else
         say "  Browser dialing  not yet: AutoTLS needs the swarm port reachable from the internet"
     fi
-    public=$(printf '%s\n' "$addrs" | grep -vE '/ip4/(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)|/ip6/(::1|f[cd]|fe80)|/p2p-circuit' | grep -E '^/ip[46]/' || true)
+    public=$(printf '%s\n' "$addrs" | grep -vE '/ip4/(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)|/ip6/(::1|f[cd]|fe[89a-f])|/p2p-circuit' | grep -E '^/ip[46]/' || true)
     if [ -n "$public" ]; then
         say "  Public addresses $(printf '%s\n' "$public" | sed -n 's#^/\(ip[46]\)/\([^/]*\)/.*#\1 \2#p' | sort -u | tr '\n' ' ')"
     else
@@ -486,7 +486,8 @@ print_next() {
         say "The web app needs an https address for the node: re-run with --domain <name> to get one."
     fi
     say ""
-    say "Status: curl -fsSL $SCRIPT_URL | sh -s -- status${ARG_DIR:+ --dir $DIR}"
+    if [ "$(id -u)" -eq 0 ]; then shell="sudo sh"; else shell="sh"; fi
+    say "Status: curl -fsSL $SCRIPT_URL | $shell -s -- status${ARG_DIR:+ --dir $DIR}"
     say "Docs:   $DOCS_URL"
 }
 
@@ -619,7 +620,7 @@ cmd_up() {
     self_test
     [ -z "$rotated" ] || warn "the Forge token changed: update FORGE_BACKEND_AUTH where you push, and the web app profile"
     say ""
-    say "Forge backend is running (IPv4 + IPv6)."
+    say "Forge backend is running."
     print_status_lines
     print_next
 }
