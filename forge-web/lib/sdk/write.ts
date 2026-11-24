@@ -39,6 +39,7 @@ import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, t
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite, refreshStaleContract, retryOnStaleContract, staleContractCause } from './query'
 import { currentSpendAction } from './spend-scope'
 import { setWritePhase, trackWrite } from './write-progress'
+import { isNonceSpent, nonceTip } from './nonce'
 
 export type { CostPreview } from './cost'
 
@@ -747,24 +748,7 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, contractId: string
   }
 }
 
-const SEQUENCE_MASK = (1n << 40n) - 1n
-const MAX_MISSING_REVISIONS = 24n
-
-/**
- * Whether `nonce` can no longer be used, given the identity-contract nonce Platform holds
- * (`current`, raw: the low 40 bits are the sequence, the high 24 a bitmap of skipped ones).
- * Mirrors Drive's `validate_identity_nonce_update`: the tip itself, anything more than 24
- * behind it, and a skipped one that was since filled are spent.
- */
-export function isNonceSpent(current: bigint, nonce: bigint): boolean {
-  const tip = current & SEQUENCE_MASK
-  if (nonce > tip) return false
-  if (nonce === tip) return true
-  const behind = tip - nonce
-  if (behind > MAX_MISSING_REVISIONS) return true
-  // Bit 40 + (behind - 1) marks a skipped nonce that is still free.
-  return (current & (1n << (behind + 39n))) === 0n
-}
+export { isNonceSpent }
 
 /** Whether Platform's nonce says `nonce` is spent; `false` when the read fails. */
 async function nonceSpent(sdk: EvoSDK, identityId: string, contractId: string, nonce: bigint): Promise<boolean> {
@@ -1152,7 +1136,7 @@ const lastUsedNonce = new Map<string, bigint>()
 
 async function nextContractNonce(sdk: EvoSDK, identityId: string, contractId: string): Promise<bigint> {
   const raw = (await facades(sdk).identities.contractNonce(identityId, contractId)) ?? 0n
-  const platform = raw & SEQUENCE_MASK
+  const platform = nonceTip(raw)
   const used = lastUsedNonce.get(`${identityId}:${contractId}`) ?? 0n
   return (platform > used ? platform : used) + 1n
 }

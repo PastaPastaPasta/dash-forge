@@ -46,6 +46,8 @@ function Sentences({ request }: { request: RequestView }): JSX.Element {
 
 type Pending = 'sign' | 'decline' | 'finish'
 
+const proposalIds = (r: RequestView): string => r.request.proposals.map((p) => p.id).join(',')
+
 export function RequestCard({ view, request, highlight = false }: { view: OrgView; request: RequestView; highlight?: boolean }): JSX.Element {
   const { record } = view
   const unlocked = useUnlocked(record.authPub)
@@ -64,6 +66,9 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
       const opts = { network: DEFAULT_NETWORK, forge }
       const fresh = useOrgsStore.getState().views[record.orgId] ?? view
       const current = fresh.requests.find((r) => r.request.id === request.request.id) ?? request
+      if (what !== 'decline' && proposalIds(current) !== proposalIds(request)) {
+        throw new Error('this request changed while you were reading it; review it again before signing')
+      }
       if (what === 'sign') await signRequest(sdk, fresh, current, u, opts)
       else if (what === 'finish') await finishRequest(sdk, fresh, current, u, opts)
       else await declineRequest(fresh, current, u)

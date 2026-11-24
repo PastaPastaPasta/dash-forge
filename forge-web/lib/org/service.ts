@@ -5,6 +5,7 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { rc1WriteProblem } from '../layout'
 import { DOC } from '../repo/contract'
+import { isNonceSpent, isNonceTooFar, nonceTip } from '../sdk/nonce'
 import { broadcastPresigned } from '../sdk/write'
 import { resolveDpnsName } from '../view/dpns'
 import { shortIdentity } from '../view/format'
@@ -35,7 +36,6 @@ import { saveOrg, type OrgMember, type OrgRecord, type Unlocked } from './store'
 import { buildUnsigned, decodeUnsigned, intentFor, reviewDecoded, signedTransition, type DecodedTransition, type WriteSpec } from './transition'
 import { assert } from './util'
 
-const SEQUENCE_MASK = (1n << 40n) - 1n
 
 interface Facades {
   identities: { contractNonce(identityId: string, contractId: string): Promise<bigint | undefined> }
@@ -178,7 +178,7 @@ async function nonceReader(sdk: EvoSDK, orgId: string, contractIds: Iterable<str
   await Promise.all(
     [...new Set(contractIds)].map(async (c) => {
       try {
-        map.set(c, ((await facades(sdk).identities.contractNonce(orgId, c)) ?? 0n) & SEQUENCE_MASK)
+        map.set(c, (await facades(sdk).identities.contractNonce(orgId, c)) ?? 0n)
       } catch {
         /* unread: reviews refuse until it reads */
       }
@@ -220,7 +220,7 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
     for (const p of r.proposals) {
       const d = decoded.get(p.id) ?? null
       const current = d ? currentNonce(d.contractId) : undefined
-      const onChain = p.status !== 'executed' && d !== null && current !== undefined && d.nonce <= current ? await writtenOnChain(sdk, d) : false
+      const onChain = p.status !== 'executed' && d !== null && current !== undefined && isNonceSpent(current, d.nonce) ? await writtenOnChain(sdk, d) : false
       const settled = onChain || p.status === 'executed'
       const problems = settled ? [] : d === null ? ['the transition does not decode'] : reviewDecoded(d, p.body, ctx)
       facts.set(p.id, { reviewProblems: problems, nonce: d?.nonce ?? null, contractId: d?.contractId ?? null, onChain })
@@ -305,13 +305,15 @@ export function requestLink(orgId: string, requestId: string): string {
   return `/org/?id=${encodeURIComponent(orgId)}&request=${encodeURIComponent(requestId)}`
 }
 
-function openNonces(view: OrgView | null): Map<string, bigint> {
+function openNonces(view: OrgView | null, current: (contractId: string) => bigint | undefined): Map<string, bigint> {
   const max = new Map<string, bigint>()
   for (const r of view?.requests ?? []) {
     if (r.status !== 'collecting' && r.status !== 'ready') continue
     for (const p of r.proposals) {
       const d = p.decoded
-      if (d && (max.get(d.contractId) ?? 0n) < d.nonce) max.set(d.contractId, d.nonce)
+      const c = d ? current(d.contractId) : undefined
+      if (!d || c === undefined || isNonceTooFar(c, d.nonce)) continue
+      if ((max.get(d.contractId) ?? 0n) < d.nonce) max.set(d.contractId, d.nonce)
     }
   }
   return max
@@ -341,14 +343,18 @@ export async function createRequest(
   const view = await loadOrg(sdk, record, { ...opts, describe: false })
   const { identity, state } = view
   const current = await nonceReader(sdk, record.orgId, input.specs.map((s) => s.contractId))
-  const taken = openNonces(view)
+  const taken = openNonces(view, current)
   const next = new Map<string, bigint>()
+  const last = new Map<string, bigint>()
   for (const s of input.specs) {
-    if (next.has(s.contractId)) continue
     const c = current(s.contractId)
     if (c === undefined) throw new Error("the organization's nonce could not be read; try again")
+    const tip = nonceTip(c)
     const t = taken.get(s.contractId) ?? 0n
-    next.set(s.contractId, (c > t ? c : t) + 1n)
+    const n = (last.get(s.contractId) ?? (tip > t ? tip : t)) + 1n
+    if (isNonceTooFar(c, n)) throw new Error('the organization has too many open requests: finish or decline some first')
+    if (!next.has(s.contractId)) next.set(s.contractId, n)
+    last.set(s.contractId, n)
   }
   const signer = { keyId: identity.keyId, cid: identity.ceremony.cid, slot: identity.slot }
   const group = newGroupId()
@@ -393,6 +399,8 @@ function sealApprove(unlocked: Unlocked, room: string, state: RoomState, proposa
 export async function signRequest(sdk: EvoSDK, view: OrgView, request: RequestView, unlocked: Unlocked, opts: LoadOptions): Promise<RequestView | null> {
   const { record, state } = view
   assert(unlocked.keys.authPub === record.authPub, 'unlock with your multisig seed phrase first')
+  if (request.request.malformed) throw new Error('The parts of this request do not fit together.')
+  if (request.status !== 'collecting' && request.status !== 'ready') throw new Error('this request is no longer open for signatures')
   const problems = request.proposals.flatMap((p) => p.problems)
   if (problems.length > 0) throw new Error(problems[0])
   const pending = request.request.proposals.filter((p) => p.status !== 'executed' && !Object.hasOwn(p.approvals, unlocked.keys.authPub))

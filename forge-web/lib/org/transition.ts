@@ -2,6 +2,7 @@ import type { StateTransition } from '@dashevo/evo-sdk'
 
 import { base58Encode } from '../auth/base58'
 import { forgeContractIds, type ForgeIds } from '../deployments'
+import { isNonceSpent, isNonceTooFar } from '../sdk/nonce'
 import { hex, isObject, unhex } from './util'
 
 export type DocAction = 'create' | 'replace' | 'delete'
@@ -147,7 +148,8 @@ export function reviewDecoded(d: DecodedTransition, body: { readonly signable: s
   if (!forgeContractIds(ctx.forge).includes(d.contractId)) problems.push("the transition writes to a contract that is not one of this network's Forge contracts")
   const current = ctx.currentNonce(d.contractId)
   if (current === undefined) problems.push("the organization's nonce could not be read")
-  else if (d.nonce <= current) problems.push('the nonce was already used')
+  else if (isNonceSpent(current, d.nonce)) problems.push('the nonce was already used')
+  else if (isNonceTooFar(current, d.nonce)) problems.push('the nonce is further ahead than Platform accepts')
   if (!isAllowed(d.documentType, d.action)) problems.push(`Forge does not recognise this action (${d.action || 'unknown'} ${d.documentType || 'document'})`)
   return problems
 }

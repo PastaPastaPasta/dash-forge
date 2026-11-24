@@ -82,6 +82,12 @@ describe('organization transitions', () => {
     expect(reviewDecoded(d, built, { ...review, orgId: ALICE }).join()).toMatch(/not written by this organization/)
     expect(reviewDecoded(d, built, { ...review, keyId: 1 }).join()).toMatch(/group key/)
     expect(reviewDecoded(d, built, { ...review, currentNonce: () => 5n }).join()).toMatch(/nonce was already used/)
+    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 6n | (1n << 40n) })).toEqual([])
+    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 6n }).join()).toMatch(/nonce was already used/)
+    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 0n }).join()).not.toMatch(/nonce/)
+    const far = await decodeUnsigned((await buildUnsigned(grant, ctx(26n))).unsigned)
+    expect(reviewDecoded(far, { signable: far.signable }, { ...review, currentNonce: () => 2n })).toEqual([])
+    expect(reviewDecoded(far, { signable: far.signable }, { ...review, currentNonce: () => 1n }).join()).toMatch(/further ahead than Platform accepts/)
     expect(reviewDecoded(d, { signable: '00' }, review).join()).toMatch(/bytes to sign/)
 
     const foreign = await buildUnsigned({ ...grant, contractId: base58Encode(new Uint8Array(32).fill(8)) } as WriteSpec, ctx(5n))

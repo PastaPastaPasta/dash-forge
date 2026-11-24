@@ -78,6 +78,7 @@ describe('request status', () => {
     const done = { ...req!, proposals: req!.proposals.map((p) => ({ ...p, status: 'executed' as const })) }
     expect(requestStatus(done, (id) => nonces[id], at(9n))).toBe('done')
     expect(requestStatus(req!, (id) => nonces[id], at(5n))).toBe('expired')
+    expect(requestStatus(req!, (id) => nonces[id], at(7n | (3n << 40n)))).toBe('collecting')
     expect(requestStatus(req!, (id) => ({ ...nonces[id]!, onChain: id === 'p1' }), at(5n))).toBe('collecting')
     expect(requestStatus(req!, (id) => ({ ...nonces[id]!, onChain: true }), at(6n))).toBe('done')
     expect(requestStatus(req!, (id) => ({ ...nonces[id]!, reviewProblems: id === 'p2' ? ['bad'] : [] }), at(4n))).toBe('invalid')

@@ -1,4 +1,5 @@
 import type { Proposal, RoomState } from './state'
+import { isNonceSpent } from '../sdk/nonce'
 import { isObject } from './util'
 
 export interface ForgeNote {
@@ -94,7 +95,7 @@ export function requestStatus(
     const f = facts(p.id)
     if (proposalDone(p, f) || !f || f.nonce === null || f.contractId === null) continue
     const current = currentNonce(f.contractId)
-    if (current !== undefined && f.nonce <= current) return 'expired'
+    if (current !== undefined && isNonceSpent(current, f.nonce)) return 'expired'
   }
   if (req.proposals.some((p) => (facts(p.id)?.reviewProblems.length ?? 0) > 0)) return 'invalid'
   if (req.proposals.some((p) => p.status === 'collecting' && !proposalDone(p, facts(p.id)))) return 'collecting'
