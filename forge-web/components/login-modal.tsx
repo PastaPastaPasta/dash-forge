@@ -715,7 +715,24 @@ function UnlockView({
       setError(errorMessage(e))
     }
   }
-  const expired = error !== null && /no longer usable|renew/i.test(error)
+  // A wallet's key (or one a passkey restored) the wallet disconnected: renewing can't bring it
+  // back, so the way on is to forget it and sign in again.
+  const disconnected = v.disconnected === true || (error !== null && /disconnected in your wallet/i.test(error))
+  const expired = !disconnected && error !== null && /no longer usable|renew/i.test(error)
+  const forgetIt = (then?: () => void): void => {
+    void forgetConfirm(v.identityId)
+      .then(confirm)
+      .then((ok) => {
+        if (ok)
+          forget(v.identityId).then(
+            () => {
+              setPick(0)
+              then?.()
+            },
+            (e: unknown) => setError(errorMessage(e)),
+          )
+      })
+  }
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-dense">
@@ -771,7 +788,16 @@ function UnlockView({
           {step}
         </p>
       ) : null}
-      <ErrorBox error={error} />
+      {disconnected ? (
+        <div role="alert" data-testid="unlock-disconnected" className="space-y-2 rounded-md border border-caution/40 bg-caution/10 p-3 text-dense">
+          <p>This key was disconnected in your wallet, so sign in again. It can&apos;t sign anything now.</p>
+          <Button variant="primary" className="w-full" onClick={() => forgetIt(onOther)}>
+            Forget this key and sign in again
+          </Button>
+        </div>
+      ) : (
+        <ErrorBox error={error} />
+      )}
       {expired ? (
         <Button variant="outline" className="w-full" onClick={() => onRenew(v)}>
           Renew this browser&apos;s key
@@ -791,13 +817,7 @@ function UnlockView({
         </button>
         <button
           type="button"
-          onClick={() => {
-            void forgetConfirm(v.identityId)
-              .then(confirm)
-              .then((ok) => {
-                if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
-              })
-          }}
+          onClick={() => forgetIt()}
           className="hit-area text-danger-700 dark:text-danger-400 underline"
         >
           Forget this key

@@ -35,7 +35,7 @@ import {
   readStorageBlob,
 } from './vault'
 import { KEPT_IDLE_MS, LOCKED_AT_KEY, SAVED_AT_KEY, openResume, type ResumeRecord } from './session-resume'
-import { AuthController, KeyNotUsableError, UnlockNeededError } from './controller'
+import { AuthController, KeyNotUsableError, UnlockNeededError, keyDisconnected } from './controller'
 import { encodeWif } from './wif'
 
 vi.mock('../sdk/write', async (orig) => {
@@ -514,6 +514,81 @@ describe('the controller', () => {
     expect(next.getState().notice).toMatch(/no longer usable/)
     expect(await kept()).toBeUndefined()
   }, 30_000)
+
+  /**
+   * A key a passkey restored here (or a wallet's App Connect key) that the wallet then
+   * disconnected: no unlock, reload or balance read lets it sign, and the vault entry is flagged
+   * with the way on (sign in again), not "renew it".
+   */
+  describe('a passkey-restored key disconnected in the wallet', () => {
+    async function restoredByPasskey(): Promise<AuthController> {
+      const c = await signIn()
+      await storeInVault(NET, SECRET, PASSKEY, { origin: 'passkey' })
+      return c
+    }
+
+    it('an unlock refuses it with "sign in again", locks, and flags the vault entry', async () => {
+      await restoredByPasskey()
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/disconnected in your wallet, so sign in again/)
+      expect(c.getState().session).toBeNull()
+      expect(c.writeAuth).toBeNull()
+      expect(unlockedSecret(NET, ID)).toBeNull()
+      expect(await kept()).toBeUndefined()
+      expect((await c.storedVaults()).find((v) => v.identityId === ID)?.disconnected).toBe(true)
+      // Forgetting it clears the flag with the entry.
+      await c.forget(ID)
+      expect(await c.storedVaults()).toEqual([])
+      expect(keyDisconnected(NET, ID)).toBeNull()
+    }, 30_000)
+
+    it('a reload resumes nothing: the background check signs out with the same words', async () => {
+      await restoredByPasskey()
+      releaseUnlocked()
+      keys[0]!.disabledAt = 1n
+      const next = make()
+      await next.resume()
+      await vi.waitFor(() => expect(next.getState().session).toBeNull(), WAIT)
+      expect(next.getState().notice).toMatch(/disconnected in your wallet, so sign in again/)
+      expect(await kept()).toBeUndefined()
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('while signed in: the next balance read signs out and flags it', async () => {
+      const c = await restoredByPasskey()
+      // The session reads its origin at unlock: open it again as the restored key.
+      lockVault()
+      await c.unlock(ID, 'passkey')
+      keys[0]!.disabledAt = 1n
+      await c.refreshBalance()
+      expect(c.getState().session).toBeNull()
+      expect(c.getState().notice).toMatch(/disconnected in your wallet/)
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('a key that is live again (a lagging read) clears the flag on the next unlock', async () => {
+      await restoredByPasskey()
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/disconnected/)
+      delete keys[0]!.disabledAt
+      await c.unlock(ID, 'passkey')
+      expect(c.getState().session?.keyId).toBe(5)
+      expect((await c.storedVaults()).find((v) => v.identityId === ID)?.disconnected).toBeUndefined()
+    }, 30_000)
+
+    it('a key this browser registered itself still says "renew it" (it is not the wallet\'s)', async () => {
+      await signIn()
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/no longer usable/)
+      expect(keyDisconnected(NET, ID)).toBeNull()
+    }, 30_000)
+  })
 
   it('a key revoked elsewhere while signed in: the next balance read signs out', async () => {
     const c = await signIn()

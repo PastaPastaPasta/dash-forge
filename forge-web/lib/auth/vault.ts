@@ -186,6 +186,11 @@ export interface VaultInfo {
   readonly fromDg?: true
   /** The key came from a wallet's App Connect grant: Renew offers the wallet first. */
   readonly fromAppConnect?: true
+  /**
+   * The last unlock found this key (a wallet's, or one a passkey restored) disabled on chain: the
+   * wallet disconnected it. Set by the controller, not stored in the vault record.
+   */
+  readonly disconnected?: true
 }
 
 const enc = new TextEncoder()

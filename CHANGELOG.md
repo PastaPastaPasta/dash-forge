@@ -19,6 +19,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Fixed
 
+- **A wallet's key, or one a passkey restored, that the wallet disconnected now says so.** Unlocking it, a page load that resumes it, or the next balance read signs out with "This key was disconnected in your wallet, so sign in again", flags the stored key, and offers **Forget this key and sign in again**. Before, it said "no longer usable … renew it" and offered a renewal that needs the recovery phrase. The disabled key never signed: every write checks the key on chain first.
 - **`dg pr diff` works outside a clone**, as `gh pr diff` does: it fetches into a scratch repository and removes it afterwards. It used to fail with E101 ("report it") because git found no repository. Inside a clone it still fetches there, so the objects stay for next time. `dg pr checkout` outside a repository now says it needs one ([E206](docs/errors.md#e206)) instead of E101.
 
 ## [0.2.0] - 2026-11-22
