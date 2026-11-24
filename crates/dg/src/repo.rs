@@ -112,6 +112,9 @@ fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
             dest.display()
         )));
     }
+    if !helper_installed() {
+        return Err(helper_missing(format!("could not clone {url}")).into());
+    }
     let (_report_dir, report) = Report::new()?;
     let mut cmd = crate::git::dash_env(ctx).git_command()?;
     cmd.arg("clone")
@@ -971,9 +974,17 @@ fn lookup_failed(
     }
 }
 
+/// E206 before git runs: without the helper, git only says "'remote-dash' is not a git command".
+pub(crate) fn helper_missing(headline: String) -> UserError {
+    UserError::new(codes::GIT_REPO, headline)
+        .cause("git-remote-dash is not installed: git runs it for dash:// URLs, and it is not on PATH or in git's exec-path")
+        .fix("install git-remote-dash next to dg and put its directory on PATH (docs/INSTALL.md); `dg doctor` checks it")
+        .note("nothing was written")
+}
+
 /// Whether git can run `git-remote-dash` for a `dash://` URL: it looks on PATH and in its
 /// exec-path.
-fn helper_installed() -> bool {
+pub(crate) fn helper_installed() -> bool {
     let name = format!("git-remote-dash{}", std::env::consts::EXE_SUFFIX);
     let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
