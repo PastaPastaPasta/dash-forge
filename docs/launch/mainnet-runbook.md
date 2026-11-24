@@ -19,7 +19,7 @@ Contract registration is the only step that cannot be undone. Everything after i
 |---|---|---|
 | Which contracts | The committed four-contract `mainnet` set, `forge-contracts/contracts/mainnet/`: forge-core, forge-collab, forge-community, forge-meta (refs, packs, members, ACL and config in core; issues, PRs, reviews and comments in collab; events, stars, checks and webhooks in community; boards, labels, profiles and the passkey vault in meta), in one contract group with **no admins**. | It is the same JSON testnet runs, including forge-meta's later `vaultEntry`, `board` and `card` types. On mainnet they are all version 1. |
 | From which identity | A **fresh, dedicated deployer** created by Pasta today. It is never the testnet deployer and never a personal identity. | It owns the contracts forever, and only it can update them. Its mnemonic and asset-lock txid are the only way to restore the same ids after a Platform reset. |
-| Cost | About **2.0 to 2.1 DASH** for the four registrations: testnet's creates came to 1.87 DASH with a smaller forge-meta, and mainnet creates forge-meta at its full 10.9 KB in one go ([§8](#8-testnet-rehearsal)). Fund the deployer with **3 DASH**, plus **0.5 DASH** for a mainnet smoke identity. | Same fee schedule as testnet (Platform 5.0, protocol 14). |
+| Cost | About **2.0 DASH** for the four registrations: the rehearsal of this exact set measured 1.9746 ([§8](#8-testnet-rehearsal)). Fund the deployer with **3 DASH**, plus **0.5 DASH** for a mainnet smoke identity. | Same fee schedule as testnet (Platform 5.0, protocol 14). |
 | Key exchange for wallet sign-in | **None needed.** | Mainnet wallet sign-in is DashPay App Connect v2. It uses the App Connect system contract `H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ`, which has the same id on every protocol-14 network, and DashPay Android pins exactly that id. |
 | Domains | **Mainnet at `forge.dashhq.org`. Testnet moves to `testnet-forge.dashhq.org`.** | `forge.dashhq.org` is the product. Testnet users today are mostly QA and demos, so this is the cheapest moment to move them. The testnet host is a **sibling, not `testnet.forge.dashhq.org`**: a page on a child host may ask the browser for `forge.dashhq.org`'s passkeys, so a compromised testnet site could unlock mainnet passkey-vault entries. A one-level name also matches `git-forge.dashhq.org`. |
 | Hosting | Both sites are GitHub Pages behind a DNS-only (grey-cloud) CNAME, so GitHub issues their certificates. `forge.dashhq.org` stays this repo's Pages site (`pages.yml`). Testnet is a second site, `PastaPastaPasta/dash-forge-testnet-site` (`pages-testnet.yml`). | Pages serves one custom domain per repository. Both deploy from `master`, and both manifests are attested by this repo's CI. |
@@ -35,7 +35,7 @@ Nothing below needs Pasta to share a key, phrase or WIF with an agent. Run the k
 |---|---|---|---|
 | P1 | Now (any time before the flip) | **DNS for the testnet site** | Cloudflare → dashhq.org → DNS → add `CNAME testnet-forge → pastapastapasta.github.io`, **DNS only (grey cloud)**. Then reply "dns done". The agent claims the custom domain on the site repo right away (step 1); until it does, a CNAME to `github.io` could be claimed by another GitHub account unless `dashhq.org` is a verified domain on the account. |
 | P2 | T-60 min | **Say go** | One message on the launch thread: "go mainnet". Nothing touches mainnet before it. |
-| P3 | T-55 | **Create the deployer** | Open `https://bridge.thepasta.org/?network=mainnet`. Create a new identity funded with **3 DASH** from your wallet, keeping the bridge's default key set (its CRITICAL authentication key, id 2, is the one deploy-v2 signs with). Wait for the completion screen, then click **Download Key Backup** (a file downloaded earlier says the identity is not yet confirmed). Move it, don't copy it: `mkdir -p ~/forge-secrets/mainnet/deployer && install -m 600 ~/Downloads/dash-identity-<id>.json ~/forge-secrets/mainnet/deployer/FORGE_MAINNET_DEPLOYER.identity.json && rm ~/Downloads/dash-identity-<id>.json`. Keep `~/forge-secrets` out of iCloud or Dropbox sync. The file holds the 12 words and every key. Note the identity id, the asset-lock **txid** and, once Insight shows it mined, its **block height** (`https://insight.dash.org/insight/tx/<txid>`; InstantSend completes before the block). Escrow the file, or at least its 12 words plus the txid, **offline in two places** before going on. Never send it to an agent. |
+| P3 | T-55 | **Create the deployer** | Open `https://bridge.thepasta.org/?network=mainnet`. Create a new identity funded with **3 DASH** from your wallet, keeping the bridge's default key set (its CRITICAL authentication key, id 2, is the one deploy-v2 signs with). Wait for the completion screen, then click **Download Key Backup** (a file downloaded earlier says the identity is not yet confirmed). Move it, don't copy it: `mkdir -p ~/forge-secrets/mainnet/deployer && install -m 600 ~/Downloads/dash-identity-<id>.json ~/forge-secrets/mainnet/deployer/FORGE_MAINNET_DEPLOYER.identity.json && rm ~/Downloads/dash-identity-<id>.json`. Keep `~/forge-secrets` out of iCloud or Dropbox sync. The file holds the 12 words and every key. Note the identity id, the asset-lock **txid** and, once Insight shows it mined, its Core **block height** (the value for `--deployer-created-height`) (`https://insight.dash.org/insight/tx/<txid>`; InstantSend completes before the block). Escrow the file, or at least its 12 words plus the txid, **offline in two places** before going on. Never send it to an agent. |
 | P4 | T-50 | **Sign the sums** | In the checkout: `node forge-contracts/scripts/deploy-v2.mjs --print-sha256 --set mainnet > ~/forge-secrets/mainnet/forge-mainnet.sha256`. Compare the four lines with the sums the agent posts on the launch thread (they come from the same commit). Your file is the signed input. |
 | P5 | T-45 | **Dry run** | `node forge-contracts/scripts/launch-network.mjs --network mainnet --identity ~/forge-secrets/mainnet/deployer/FORGE_MAINNET_DEPLOYER.identity.json --deployer-created-height <height> --expect-sha256 ~/forge-secrets/mainnet/forge-mainnet.sha256`. It must end with `dry run clean`. Any `WARNING` line fails it: paste the output (it has no secrets) on the thread and stop. |
 | P6 | T-40 | **Register** | The same command plus `--execute`. Type `mainnet` at the prompt. About 2 minutes. If it stops **before** its `step freeze` line, run the same command again: it completes what landed and never registers twice. If it got to `step freeze` or later, run it again with `--post-only` in place of `--execute` (the freeze wrote `contracts/registered/mainnet/`, after which a re-run's preflight warns and stops). If it says `deployments/mainnet.json.lock` exists, make sure no other run is going, then delete the lock (a killed run leaves it). Then send the agent `forge-contracts/deployments/mainnet.json`, `forge-contracts/contracts/registered/mainnet/`, `forge-contracts/deployments/contracts/mainnet.json` and `launch-evidence-mainnet/` (none of these hold secrets), or push them to a branch. |
@@ -46,7 +46,7 @@ Nothing below needs Pasta to share a key, phrase or WIF with an agent. Run the k
 | P10 | After the smoke tests | **Approve the release** | The v0.3.0 `release` environment asks for your approval twice (attest+publish, then the image pushes). Tagging is by you, or by the agent under an explicit "tag v0.3.0". |
 | P11 | After the release | **Announce** | Only after C1, the smoke tests and the release are green. |
 
-Funds summary: **3 DASH** to the deployer (about 2.0 to 2.1 is spent) and **about 0.5 DASH** to a smoke identity. Nothing else needs mainnet funds. Access summary: Cloudflare DNS for one CNAME, and the R730 for one gateway setting (P8b). Everything else on GitHub is done by this box's login, which has repo admin.
+Funds summary: **3 DASH** to the deployer (about 2.0 is spent) and **about 0.5 DASH** to a smoke identity. Nothing else needs mainnet funds. Access summary: Cloudflare DNS for one CNAME, and the R730 for one gateway setting (P8b). Everything else on GitHub is done by this box's login, which has repo admin.
 
 ## 3. Ready before the go
 
@@ -57,7 +57,7 @@ Prepared overnight. The launch thread checks each item again at T-60.
 - [ ] `pages.yml` passes `PAGES_MAINNET_SITE_URL` and `PAGES_TESTNET_SITE_URL` to the build (#685). Without it the step 9 variable does nothing.
 - [ ] The Rust clients use a per-network web origin (links, the storage CORS probe and `dg ipfs up`'s origin) and a per-network top-up link. Until that PR merges and ships in v0.3.0, a testnet user's `dg ipfs up` and storage check use `https://forge.dashhq.org`.
 - [ ] `build.py --check`, `contract-validate` and the deploy script tests are green on that `master` commit (the `contracts` workflow).
-- [ ] The testnet rehearsal of these exact steps passed ([§8](#8-testnet-rehearsal)).
+- [x] The testnet rehearsal of these exact steps passed ([§8](#8-testnet-rehearsal)): 2026-11-24 06:15 to 07:05Z.
 - [ ] The testnet site serves the testnet build at `https://testnet-forge.dashhq.org` (after P1), and its `/forge-manifest.json` says `"network": "testnet"`.
 - [ ] The launch-day docs PR (mainnet live, v0.3.0 bumps, `RELEASE_NETWORK='mainnet'`) is open as a draft.
 - [ ] No other PR is about to merge: **freeze merges to `master` from step 7 until the flip is live** (step 9). The Pages guard reads the live manifest, which GitHub's CDN caches for up to 10 minutes, and `cancel-in-progress` would let a merge cancel the flip run.
@@ -131,7 +131,7 @@ The dry run in step 4 refuses a key that is missing, different from the file, or
 On a branch from `master`:
 1. Commit `forge-contracts/deployments/mainnet.json` (the `v2` record).
 2. Commit `forge-contracts/contracts/registered/mainnet/`.
-3. Add the printed `NETWORK_REGISTRATIONS` line in `forge-contracts/schema/build.py`.
+3. Add the printed `NETWORK_REGISTRATIONS` line in `forge-contracts/schema/build.py`, with `'since': ()` (nothing updated yet).
 4. Commit `forge-contracts/deployments/contracts/mainnet.json`.
 5. Add `mainnet` to `SNAPSHOTS` in `forge-web/lib/sdk/contract-seed.ts` (`contract-seed.test.ts` fails without it).
 6. Copy `launch-evidence-mainnet/{c1.json,group.json,sha256sums.txt}` and Pasta's signed `forge-mainnet.sha256` (as `signed-sums.sha256`) into `forge-contracts/evidence/mainnet/`, with a README like `forge-contracts/evidence/testnet/README.md`.
@@ -247,7 +247,7 @@ The fastest full rollback to "testnet-only" is **R1**: three variables, two disp
 |---|---|---|---|
 | **DashPay App Connect v2 on mainnet.** Verified end to end only on testnet with Android 11.9.2. iOS is unverified, and the iOS wallet's mainnet build may not ship App Connect v2 or may pin a different contract. | medium | Wallet sign-in fails on mainnet. The identity-file and recovery-phrase sign-in, and the in-app identity creation, still work. | P9 tests Android on mainnet before the announcement. The announcement names Android as the verified wallet. If v2 can't read the chain clock, the tile says "DashConnect works on testnet only", which misleads (follow-up: say "can't reach the wallet sign-in service right now"). |
 | **Quorum and DAPI endpoints.** Mainnet DAPI nodes vary. Of 220 nodes on the quorum list, 189 passed the protocol-14 probe at 06:09Z. The rest timed out or failed to answer. | medium | Slow or failed reads and writes, and a "quorum not found" hit on some writes (about 1 in 30 writes on an earlier devnet). | Clients use SDK discovery on mainnet. `refresh-dapi --write` in the registration PR keeps the recorded seeds (web identity creation and quorum cross-check) to protocol-14 nodes at the tip. deploy-v2 resumes after a failed write. |
-| **Cost** | low | About 2.0 to 2.1 DASH for the registration, about the same again for a re-registration (R3), and about 0.02 DASH per smoke run. User costs are as on testnet: about 0.004 DASH for a small push, about 0.31 DASH per MiB on Platform storage. | Fund 3 DASH. A dry run costs nothing. |
+| **Cost** | low | About 2.0 DASH for the registration, about the same again for a re-registration (R3), and about 0.02 DASH per smoke run. User costs are as on testnet: about 0.004 DASH for a small push, about 0.31 DASH per MiB on Platform storage. | Fund 3 DASH. A dry run costs nothing. |
 | **The registration is permanent.** A schema defect found later can't be rolled back. | low (same JSON as testnet since 10-26, plus forge-meta v3) | R3/R4 | C1 before anything else, and an announcement only after the smoke tests |
 | **Testnet users are disrupted** by the move to a new origin (signed out, BYO-storage CORS, passkeys) | certain, small group | Testnet users must sign in again and add a CORS origin. | The testnet site is up before the flip. The banner and announcement say what to redo. Clones and the gateway are unaffected. |
 | **v0.2.0 binaries on mainnet** say "not deployed" until v0.3.0 | certain, until step 11 | The CLI can't reach mainnet for a few hours. | Release the same day. The web `/mirror` wizard pins the Action to the deployed commit with a source install, so mirrors set up from the mainnet site work without the release. |
@@ -259,4 +259,37 @@ The fastest full rollback to "testnet-only" is **R1**: three variables, two disp
 
 On 2026-11-24, overnight, the steps of [§4](#4-the-steps-in-order) were run on testnet with a throwaway scratch deployer (`SCRATCH_DEPLOYER`, `CCFcNqhK…`) and the same committed JSON, through the scratch path of the same command (`--record <file> --scratch-on testnet --out <dir>`). The scratch contracts are permanent on testnet, but no client reads them.
 
-_Results are filled in by the rehearsal (ids, per-contract cost, sizes, idempotent re-run, C1, `dg doctor`, CLI and web smoke)._
+Run 06:15 to 07:05Z from `master` b5917e64. **Every step passed.**
+
+| Step | Result |
+|---|---|
+| Self-test, sums, `refresh-dapi --check` | pass. 29/29 testnet seeds, chain `dash-testnet-51` |
+| Dry run (`--scratch-on testnet --expect-sha256 …`) | clean |
+| Register | 4 contracts in 30 s. Deployer `CCFcNqhK…`, group `9P6sbYpXKLsCGYCnQn1EifqXJtE9aeYeQq4mtUx18cHP`; core `3SuHNnD6…`, collab `3uDn7Ney…`, community `9uYW7G2W…`, meta `Hnrdt8r4…` |
+| Same command again | nothing broadcast; all four "already registered" |
+| C1 | 44/44 |
+| Group | owner = deployer, no admins, exactly 4 members |
+| freeze-registered, snapshot | pass |
+| Client wiring (the record merged into a local `testnet.json`, `build.py --check` with the frozen files) | pass |
+| `dg doctor` built from that tree | the scratch ids, "proof-verified and enrolled in group", 0 errors |
+| CLI smoke as a QA identity | repo created (0.0028), push via git-remote-dash (0.0076), issue, clone back with the same HEAD. `e2e/cli/run.sh 01 09` 2/2, including a stranger's event refused at consensus (40120) |
+| Web build on that tree | `contract-seed` 4/4 (and it fails against a stale snapshot, as it should). The deployments bundle test 19/19. Playwright 12/12 with no console errors |
+
+Measured cost (tDASH, the same fee schedule as mainnet):
+
+| Contract | Cost | Signed create | Room left |
+|---|---|---|---|
+| forge-core | 0.5968 | 16,362 B | 4,118 B |
+| forge-collab | 0.3964 | 17,291 B | 3,189 B |
+| forge-community | 0.5163 | 15,651 B | 4,829 B |
+| forge-meta | 0.4650 | 10,948 B | 9,532 B |
+| **Total** | **1.9746** | | |
+
+`launch-network.mjs` itself was run on testnet in its dry-run and `--post-only` modes: a scratch dry run with the same transition sizes, and a post-only run on the live testnet record with C1 44/44, the group check and a byte-identical snapshot. The register step it wraps is the `deploy-v2.mjs` command rehearsed above. Evidence (logs, record, C1, group check, screenshots) is kept off the repo, on agentbox in `/work/scratch/forge-rehearsal/evidence/`.
+
+**What the rehearsal changed in this runbook:**
+- **Cost:** 2.0 DASH, not 1.9.
+- **`--deployer-created-height`:** the **Core block height** of the asset-lock transaction.
+- **`NETWORK_REGISTRATIONS`:** a fresh registration's entry has `'since': ()`. Testnet's entry lists later updates; mainnet's doesn't.
+- **CLI smoke without a terminal:** use `DASH_FORGE_KEY=<identity file>` rather than `dg auth login` (E201, with no keychain), and `dg repo create --storage platform` (else E508).
+- **Serving a local web build:** use `e2e/static-server.mjs`, not `python3 -m http.server`, because the app needs COOP/COEP headers.
