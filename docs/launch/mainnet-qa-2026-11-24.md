@@ -88,8 +88,8 @@ Severity: **blocker** = don't launch with this. **should-fix** = fix soon, launc
 | Mainnet protocol version | 14, from a proof-verified response | PASS |
 | Pages build with `PAGES_NETWORK=mainnet` but the testnet gateway URL | would ship a mainnet site whose clone and share links resolve on testnet | **blocker → fixed, #679** |
 | Defaults when nothing is set: CLI, Action, check-action, GitLab template, `pages.yml`, gateway compose | all default to testnet | should-fix (owner decision) |
-| Web origin `forge.dashhq.org` hardcoded for every network (CLI links, relay, gateway, passkey RP id, `dg ipfs`) | | should-fix (depends on hosting decision) |
-| Security headers on forge.dashhq.org (HSTS, frame-ancestors, X-Frame-Options) | missing; DNS points straight at GitHub Pages, not through Cloudflare | should-fix, high (owner) |
+| Web origin `forge.dashhq.org` hardcoded for every network (CLI links, relay, gateway, passkey RP id, `dg ipfs`) | | should-fix (follows the runbook's hosting move) |
+| Security headers on forge.dashhq.org (HSTS, frame-ancestors, X-Frame-Options) | missing; DNS points straight at GitHub Pages, not through Cloudflare | should-fix, do before announcing (owner) |
 | Docs drift: `deploying-to-a-network.md` (sakura, rc.4, costs), `hosting.md` (says behind Cloudflare), `roadmap.md:38`, in-app quick-start points mainnet users at testnet faucets | | should-fix |
 
 ## 2. PRs merged during this pass
@@ -102,11 +102,11 @@ All were reviewed independently (a COMMENT review starting "Verdict: approve") a
 | #687 | Malformed Identity ID next to a recovery phrase gets a plain message | 01:29 |
 | #684 | Mirror Action renewal hint points at `/mirror/` and the dfk1 export the Action accepts, names the repo, deletes the key file | 01:35 |
 | #686 | Out-of-range issue/PR `number=` shows "No PR addressed" with no read | 04:00 |
-| #692 | `/new` Private with no stored encryption key doesn't ask for an unlock that can't help | 04:00 |
-| #693 | Profile of a nonexistent identity says "No such identity", with no paid Follow | 04:00 |
-| #694 | Offline hint no longer blames `--devnet-name testnet` | 04:00 |
-| #695 | `dg ipfs up` no longer hangs on Linux; keychain-less hint says `Bearer <token>` | 04:00 |
-| #696 | `dg repo clone` / `dg init` stop with E206 before anything is spent when git-remote-dash is missing | 04:00 |
+| #692 | `/new` Private with no stored encryption key doesn't ask for an unlock that can't help | 04:01 |
+| #693 | Profile of a nonexistent identity says "No such identity", with no paid Follow | 04:01 |
+| #694 | Offline hint no longer blames `--devnet-name testnet` | 04:01 |
+| #695 | `dg ipfs up` no longer hangs on Linux; keychain-less hint says `Bearer <token>` | 04:01 |
+| #696 | `dg repo clone` / `dg init` stop with E206 before anything is spent when git-remote-dash is missing | 04:01 |
 | #698 | `dg` warns when `DASH_FORGE_NETWORK` names a different network than the one it uses | approved; merging once CI is green |
 
 
@@ -115,8 +115,8 @@ All were reviewed independently (a COMMENT review starting "Verdict: approve") a
 **No launch blockers remain.**
 
 Should-fix, can follow the launch:
-- Security headers on the web host (owner, §5 step 12).
-- Network defaults and the single web origin, which depend on the hosting decision (owner, §5 steps 1–2).
+- Security headers on the web host (owner, §5 step 1).
+- Network defaults (owner, §5 step 2).
 - Docs drift listed in §1.
 - Explore layout shift, offline banner, Brotli or a split for the 9 MB verifier.
 - Check that the Cloudflare beacon records visits.
@@ -132,28 +132,20 @@ Not exercised:
 
 ## 4. Spend and cleanup
 
-About 0.28 tDASH was spent across the lanes (cli ~0.10, web-B ~0.09, relay/import ~0.07, web-A ~0.002). RELAY, DEPLOYER and MAINTAINER received faucet top-ups. Every boat sandbox was deleted. Limited keys registered by the CLI lane are disabled on chain. Testnet artifacts left behind:
+About 0.27 tDASH was spent across the lanes (cli ~0.10, web-B ~0.09, relay/import ~0.07, web-A ~0.002). RELAY, DEPLOYER and MAINTAINER received faucet top-ups. Every boat sandbox was deleted. Limited keys registered by the CLI lane are disabled on chain. Testnet artifacts left behind:
 - the `mnqa-web-0017` and `mnqa-web-priv-0105` repos (MAINTAINER)
 - the `mnqa-cli-{plat,ipfs,s3}` repos (DEPLOYER) and FROZEN's fork
 - `RELAY/dash-faucet` (import)
 
 The web-A lane tried the BIP-39 example phrase as an "unknown" phrase. It turned out to be a real public testnet identity, and one browser key was registered on it (~0.0003 tDASH).
 
-## 5. Mainnet launch checklist (★ = owner only)
+## 5. Mainnet launch checklist
 
-1. ★ Decide hosting: does mainnet replace forge.dashhq.org, or get a new host while testnet stays? This sets the web-origin constants, the passkey RP ids and `NEXT_PUBLIC_SITE_URL`.
+Follow [the mainnet runbook](mainnet-runbook.md) (§2 owner steps, §4 order). It already settles hosting: mainnet takes forge.dashhq.org and testnet moves to testnet-forge.dashhq.org. It also covers the deployer, registration, the client release and rollback. This QA adds (★ = owner only):
+
+1. ★ Security headers on forge.dashhq.org: the Cloudflare proxy plus the hosting.md §7 rule, or a host that sends them.
 2. ★ Decide whether the mainnet release makes mainnet the default network (CLI `network.rs`, Action, check-action, GitLab template, `pages.yml`, gateway compose, docs).
-3. ★ Create a dedicated mainnet deployer from a fresh mnemonic, funded with ~2.5 DASH through the bridge (`mint-identity` doesn't support mainnet). Escrow the mnemonic offline.
-4. ★ Scratch rehearsal on mainnet with a different deployer, ~1.9 DASH (`deploy-v2.mjs --network mainnet --set mainnet --scratch-on mainnet`).
-5. ★ Sign the `--print-sha256 --set mainnet` lines; forge-meta includes `vaultEntry`, `board` and `card` from the start.
-6. `refresh-dapi.mjs --network mainnet`, then `deploy-v2.mjs --dry-run`.
-7. ★ Register (`deploy-v2.mjs --network mainnet --set mainnet --expect-sha256 …`), then run the C1 check and verify the group owner and memberships by hand.
-8. Registration PR: `deployments/mainnet.json` v2, `contracts/registered/mainnet/*`, the `build.py` registration entry, the `deployments/contracts/mainnet.json` snapshot and its `contract-seed.ts` entry, `deployments/fixtures/mainnet.json`, `SHOWCASE.mainnet`.
-9. Release clients: tag, `dg`/helper binaries, Action/GitLab `FORGE_VERSION`.
-10. ★ Mainnet gateway (`DASH_FORGE_NETWORK=mainnet`, `GATEWAY_WEB_URL`), or unset `PAGES_GATEWAY_URL`. #679 now refuses a mismatched pair.
-11. ★ Repository variables `PAGES_NETWORK=mainnet`, `PAGES_GATEWAY_URL`, `PAGES_NOTIFY_URL`; deploy Pages.
-12. ★ Security headers: Cloudflare proxy plus the hosting.md §7 rule, or a host that sends them.
-13. Mainnet smoke tests with a labelled QA identity (CLI e2e + Playwright). ★ A real DashPay App Connect v2 sign-in and one write on a phone. This can't be tested before registration.
-14. ★ Remove the deployer's CRITICAL key from the signing machine; update docs (networks, FAQ, README, in-app guides, CHANGELOG); announce.
+3. Merge #698 before the release tag.
+4. ★ At smoke-test time (runbook P9): a real DashPay App Connect v2 sign-in and one write on a phone.
 
 Lane evidence (screenshots and logs) was collected on the QA host under `/work/scratch/mnqa/` and is not committed.
