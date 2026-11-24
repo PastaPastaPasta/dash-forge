@@ -168,7 +168,7 @@ Each run adds a table to the job summary:
 
 With `dry-run: 'true'` the same table says *Would write*, and its cost row is labelled *Estimated cost*. The run also adds warning annotations:
 
-- when less than 20% of the runner key's budget is left, or the key expires within 30 days: *"Renew at forge.dashhq.org/&lt;owner&gt;/&lt;name&gt;/settings/mirror."*;
+- when less than 20% of the runner key's budget is left, or the key expires within 30 days: *"Make a new runner key at forge.dashhq.org/mirror/ (or dg auth export --new-key) and replace the DASH_FORGE_KEY secret."*;
 - when `DASH_FORGE_KEY` is not a limited key (it has no budget), recommending a limited runner key;
 - for anything the importer flags, such as a release asset without a digest.
 
