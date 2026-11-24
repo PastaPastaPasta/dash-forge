@@ -7,9 +7,10 @@
  *
  * Verified means the signature checks against a key that exactly one of this repository's owner
  * and members lists on their (public) profile. Forge checks it in this browser; no server is
- * asked. A signature that checks against GitHub's web-flow key reads "Signed by GitHub"; one by a
- * key on nobody's profile (history signed elsewhere) reads "Signed", neutral; anything else that
- * does not verify reads "Unverified".
+ * asked. A signature that checks against GitHub's web-flow key reads "Signed by GitHub". A key on
+ * nobody's profile (history signed elsewhere) reads neutral: "Signed" for SSH, whose signature is
+ * checked against the key it carries, and "Unknown key" for OpenPGP, which cannot be checked
+ * without the key. Anything else that does not verify reads "Unverified".
  */
 
 import Link from 'next/link'
@@ -22,7 +23,7 @@ import { cn } from '@/lib/utils'
 
 /** Why a signature is unverified, in a sentence. */
 const REASON: Readonly<Record<NonNullable<SignatureVerdict['reason']>, string>> = {
-  unknown_key: "Signed with a key that isn't on the profile of this repository's owner or any of its members, so Forge can't say who signed it. History signed on another host often reads this way.",
+  unknown_key: "The key isn't on the profile of this repository's owner or any of its members, so Forge can't say who signed it. History signed on another host often reads this way.",
   ambiguous_key: 'More than one identity lists this key on its profile, so it names nobody.',
   bad_signature: 'The signature does not match this {subject}: the {subject} was changed after it was signed, or the signature is not git’s.',
   unsupported: 'Forge checks Ed25519 and ECDSA (P-256/384/521) OpenPGP keys and Ed25519 SSH keys, with SHA-256 or stronger. This signature uses something else.',
@@ -39,7 +40,9 @@ function keyLine(v: SignatureVerdict): string | null {
 function labelOf(v: SignedVerdict): string {
   if (v.status === 'verified') return 'Verified'
   if (v.service === 'github') return 'Signed by GitHub'
-  return v.reason === 'unknown_key' ? 'Signed' : 'Unverified'
+  if (v.reason !== 'unknown_key') return 'Unverified'
+  // An SSH signature carries its key and is checked against it; an OpenPGP one needs the key.
+  return v.format === 'ssh' ? 'Signed' : 'Unknown key'
 }
 
 /** The panel's width (px), and its margin from the viewport's edges. */
@@ -147,7 +150,7 @@ export function SignatureBadge({
               <span className="block font-medium text-anvil-900 dark:text-anvil-50">
                 GitHub signed this {subject} with its web-flow key, as it signs merges and edits made on github.com.
               </span>
-              <span className="mt-2 block">The signature checks against the key GitHub publishes. It shows the {subject} was made on GitHub, not which member of this repository made it.</span>
+              <span className="mt-2 block">The signature checks against the key GitHub publishes. It shows the {subject} was made on GitHub, not which member of this repository made it: GitHub does not vouch for the author shown.</span>
               {keyLine(state) ? <span className="mt-2 block break-all font-mono text-[11px] text-anvil-600 dark:text-anvil-300">{keyLine(state)}</span> : null}
             </>
           ) : (

@@ -68,6 +68,13 @@ describe('SignatureBadge', () => {
     expect(q('signature-panel')?.textContent).toContain('Add your signing key')
   })
 
+  it('reads "Unknown key", neutral, for an OpenPGP key on nobody\'s profile (its signature is unchecked)', () => {
+    act(() => root.render(<SignatureBadge state={{ status: 'unverified', reason: 'unknown_key', format: 'openpgp', key: 'C209DB5A73261B84', signer: null }} />))
+    const button = host.querySelector('button') as HTMLButtonElement
+    expect(button.textContent).toBe('Unknown key signature: details')
+    expect(button.className).not.toContain('danger')
+  })
+
   it('reads "Signed by GitHub" for a signature that checks against its web-flow key', () => {
     act(() =>
       root.render(

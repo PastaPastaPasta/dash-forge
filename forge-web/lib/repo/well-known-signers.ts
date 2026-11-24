@@ -8,18 +8,21 @@
  */
 
 import { splitSignedCommit, type SignatureVerdict } from '../rules/signature'
-import { GITHUB_WEB_FLOW_KEYS } from './github-web-flow-keys'
+import { GITHUB_WEB_FLOW_KEY } from './github-web-flow-keys'
 
 /** A service that signs commits for its users. */
 export type SigningService = 'github'
 
-/** The fingerprints of GitHub's web-flow keys (`GITHUB_WEB_FLOW_KEYS`). */
-const GITHUB_FINGERPRINTS = ['5DE3E0509C47EA3CF04A42D34AEE18F83AFDEB23', '968479A1AFF927E37D1A566BB5690EEEBB952194']
+/** The fingerprint of GitHub's web-flow key (`GITHUB_WEB_FLOW_KEY`). */
+const GITHUB_FINGERPRINT = '968479A1AFF927E37D1A566BB5690EEEBB952194'
 
-const namesGitHub = (key: string): boolean => GITHUB_FINGERPRINTS.some((fp) => fp === key || (key.length === 16 && fp.endsWith(key)))
+const namesGitHub = (key: string): boolean => key === GITHUB_FINGERPRINT || (key.length === 16 && GITHUB_FINGERPRINT.endsWith(key))
+
+/** OpenPGP hash algorithms accepted, as `lib/rules/signature.ts` accepts them: SHA2-256/384/512, SHA3-256/512. */
+const PGP_HASHES: ReadonlySet<number> = new Set([8, 9, 10, 12, 14])
 
 type OpenPgp = typeof import('openpgp')
-let githubKeys: Promise<Awaited<ReturnType<OpenPgp['readKeys']>>> | null = null
+let githubKey: ReturnType<OpenPgp['readKey']> | null = null
 
 /**
  * What a service says of a commit whose signing key is on nobody's profile: `github` when the
@@ -31,12 +34,16 @@ export async function serviceSignature(bytes: Uint8Array, verdict: SignatureVerd
   const split = splitSignedCommit(bytes, sha256Repo)
   if (split === null) return null
   const pgp = await import('openpgp')
-  githubKeys ??= pgp.readKeys({ armoredKeys: GITHUB_WEB_FLOW_KEYS })
+  githubKey ??= pgp.readKey({ armoredKey: GITHUB_WEB_FLOW_KEY })
   try {
+    const signature = await pgp.readSignature({ armoredSignature: split.signature })
+    const [packet, ...others] = signature.packets
+    if (packet === undefined || others.length > 0) return 'bad'
+    if (packet.signatureType !== pgp.enums.signature.binary || packet.hashAlgorithm === null || !PGP_HASHES.has(packet.hashAlgorithm)) return 'bad'
     const { signatures } = await pgp.verify({
       message: await pgp.createMessage({ binary: split.payload }),
-      signature: await pgp.readSignature({ armoredSignature: split.signature }),
-      verificationKeys: await githubKeys,
+      signature,
+      verificationKeys: await githubKey,
       format: 'binary',
     })
     const [only, ...rest] = signatures
