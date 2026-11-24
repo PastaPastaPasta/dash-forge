@@ -70,6 +70,7 @@ import {
   resetRepoGateways,
 } from './storage-status'
 import { mapPooled, trimOldest } from './pool'
+import { ipfsCidOf, PEER_SOURCE, peerFirst, peerReadRange, peerReadsOn, prefetchPackRoots } from '../storage/p2p'
 import { openBranchArtifact, openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded, type PrivateSession } from '../repo/private-session'
 import { branchRingFor } from '../repo/branch-ring'
@@ -904,16 +905,41 @@ async function fetchExactRange(
   gateways: readonly string[],
   onServed?: OnServed,
 ): Promise<Uint8Array> {
+  const cid = peerReadsOn() ? ipfsCidOf(manifest.uris) : null
+  if (cid === null || end > manifest.sizeBytes) return fetchMirrorRange(manifest, start, end, gateways, onServed)
+  return peerFirst(
+    async (control) => {
+      const bytes = await peerReadRange(cid, start, end, control)
+      // A gateway that won the same tick names itself; the peer does not.
+      if (!control.signal.aborted) onServed?.(PEER_SOURCE, [])
+      return bytes
+    },
+    (signal) => fetchMirrorRange(manifest, start, end, gateways, onServed, signal),
+    { what: `${cid.slice(-6)} ${start}-${end}`, bytes: end - start },
+  )
+}
+
+/** {@link fetchExactRange} from the HTTP mirrors alone; `cancel` stops it (an IPFS peer served the range). */
+async function fetchMirrorRange(
+  manifest: PackManifest,
+  start: number,
+  end: number,
+  gateways: readonly string[],
+  onServed?: OnServed,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
   const { urls, live, down } = await mirrorUrls(manifest, gateways, true)
   const failed = [...down]
   for (const url of live) {
+    if (cancel?.aborted) throw new Error('an IPFS peer served it first')
     try {
-      const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
-      onServed?.(url, preferredFailures(urls, new Set(manifest.uris), url, failed))
+      const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } }, { cancel })
+      if (!cancel?.aborted) onServed?.(url, preferredFailures(urls, new Set(manifest.uris), url, failed))
       // Some hosts ignore Range and return the whole body — slice defensively.
       // (`slice`, not `subarray`: a span cache must not keep a whole pack alive behind a range.)
       return buf.length > end - start ? buf.slice(start, end) : buf
     } catch (e) {
+      if (cancel?.aborted) throw e
       if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
       else if (e instanceof FetchFailure && e.timedOut) timedOutUrls.set(url, { why: errorText(e), at: Date.now() })
       failed.push(failureAt(url, errorText(e)))
@@ -946,6 +972,27 @@ function errorText(e: unknown): string {
  * CID is often slow once and fast after. `cancel` aborts everything (the clone gave up).
  */
 async function fetchExternalWhole(
+  manifest: PackManifest,
+  gateways: readonly string[],
+  onServed?: OnServed,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
+  const cid = peerReadsOn() && manifest.sizeBytes > 0 ? ipfsCidOf(manifest.uris) : null
+  if (cid === null) return fetchMirrorWhole(manifest, gateways, onServed, cancel)
+  return peerFirst(
+    async (control) => {
+      const bytes = await peerReadRange(cid, 0, manifest.sizeBytes, control)
+      if (bytesToHex(sha256(bytes)) !== manifest.packHash.toLowerCase()) throw new Error('IPFS peers served bytes that do not match the manifest sha256')
+      if (!control.signal.aborted) onServed?.(PEER_SOURCE, [])
+      return bytes
+    },
+    (signal) => fetchMirrorWhole(manifest, gateways, onServed, signal),
+    { what: `${cid.slice(-6)} whole`, cancel, bytes: manifest.sizeBytes },
+  )
+}
+
+/** {@link fetchExternalWhole} from the HTTP mirrors alone. */
+async function fetchMirrorWhole(
   manifest: PackManifest,
   gateways: readonly string[],
   onServed?: OnServed,
@@ -1005,7 +1052,7 @@ async function fetchExternalWhole(
     if (got !== null) {
       winner.abort()
       // The winner's own earlier timeout (it served on its retry) is not a failure: dropped.
-      onServed?.(got.url, preferredFailures(urls, new Set(manifest.uris), got.url, failures))
+      if (!cancel?.aborted) onServed?.(got.url, preferredFailures(urls, new Set(manifest.uris), got.url, failures))
       return got.bytes
     }
     if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
@@ -1957,6 +2004,9 @@ export async function loadBrowseContext(
   // exists to prevent, reintroduced through the back door. A public repo's list comes from the
   // repo chrome store: the home's own read of a moment ago (zero requests), else its delta.
   const manifests = await readBrowseManifests(sdk, repo, { after, network: ACTIVE_NETWORK.network })
+  // Dial the IPFS peers (if the repo page has not) and ask for the packs' root nodes while the
+  // index is located: a pack's first range read is then one round trip.
+  prefetchPackRoots(manifests.map((m) => ipfsCidOf(m.uris)).filter((c): c is string => c !== null))
   // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
   // first. A past writer's, a bot's or a stranger's manifest cannot steer every read.
   noteRepoGateways(

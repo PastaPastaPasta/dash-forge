@@ -6,7 +6,7 @@
  * each route only supplies its own body via a render prop.
  */
 
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { GitBranch } from 'lucide-react'
 import Link from 'next/link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -35,6 +35,7 @@ import { SignedOutView } from '@/contexts/auth-context'
 import { usePublicView } from '@/hooks/use-public-view'
 import { MembersOnlyCreateNotice, PublicViewBanner, ViewAsPublicButton } from '@/components/repo/audience'
 import { ConversionStalledBanner } from '@/components/repo/conversion-status'
+import { warmPeer } from '@/lib/storage/p2p'
 
 export function RepoScaffold({
   addr,
@@ -71,6 +72,13 @@ export function RepoScaffold({
   refs?: RepoHomeRefs
 }): JSX.Element {
   const repoHome = useRepoHome(addr, { browse, refs })
+  // A page that reads code dials the IPFS peers at once, so the connection is up by the time its
+  // first pack is read (the dial costs about two round trips more than a gateway request); not when
+  // the repo is already known to store its packs elsewhere.
+  const backendKind = repoHome.data?.backend.kind
+  useEffect(() => {
+    if (browse && backendKind !== 'platform' && backendKind !== 's3' && backendKind !== 'https') void warmPeer()
+  }, [browse, backendKind])
   // "View as public" (DESIGN §10): the whole page, the repo's own state included, read signed out.
   const [publicView, setPublicView] = usePublicView(repoHome.data?.repo.repoId ?? '')
   const body = <ScaffoldBody {...{ addr, children, rail, verification, refParam, sealedOk, repoHome }} />
