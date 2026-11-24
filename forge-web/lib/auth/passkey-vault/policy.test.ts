@@ -1,4 +1,4 @@
-/** Where a passkey that holds a key on Platform may be made: exactly two hosts, never a parent domain. */
+/** Where a passkey that holds a key on Platform may be made: exactly three hosts, never a parent domain. */
 
 import { describe, expect, it } from 'vitest'
 
@@ -9,8 +9,9 @@ const META = { meta: 'meta' }
 const yes = () => true
 
 describe('the passkey vault’s relying party', () => {
-  it('is the page’s host, for forge.dashhq.org and localhost only', () => {
+  it('is the page’s host, for forge.dashhq.org, testnet-forge.dashhq.org and localhost only', () => {
     expect(passkeyVaultRpId(at('forge.dashhq.org'))).toBe('forge.dashhq.org')
+    expect(passkeyVaultRpId(at('testnet-forge.dashhq.org'))).toBe('testnet-forge.dashhq.org')
     expect(passkeyVaultRpId(at('FORGE.dashhq.org'))).toBe('forge.dashhq.org')
     expect(passkeyVaultRpId(at('localhost'))).toBe('localhost')
   })
@@ -19,6 +20,7 @@ describe('the passkey vault’s relying party', () => {
     ['the parent domain', at('dashhq.org')],
     ['another subdomain', at('evil.dashhq.org')],
     ['a deeper subdomain', at('x.forge.dashhq.org')],
+    ['a child of forge.dashhq.org', at('testnet.forge.dashhq.org')],
     ['an IPFS subdomain gateway', at('bafybeigdyrzt.ipfs.dweb.link')],
     ['an IPNS subdomain gateway', at('forge-dashhq-org.ipns.localhost')],
     ['a path gateway', at('localhost', '/ipfs/bafy/')],
