@@ -591,7 +591,11 @@ export function WalletConnectFlow({
     <div className="space-y-3" data-testid="wallet-request">
       {request ? (
         <p className="text-dense" data-testid="approval-terms">
-          {mode === 'renew' ? 'Approve the renewal in the wallet that gave this browser its key. ' : 'Approve in your wallet. '}
+          {mode === 'renew'
+            ? origin === 'app-connect'
+              ? 'Approve the renewal in the wallet that gave this browser its key. '
+              : 'Approve in the wallet that holds this identity. '
+            : 'Approve in your wallet. '}
           <ApprovalTerms budget={request.terms.budget} expiresAt={request.terms.expiresAt} />
         </p>
       ) : null}

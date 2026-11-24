@@ -33,6 +33,8 @@ const { ID, FORGE, v2, auth } = vi.hoisted(() => ({
   auth: {
     identity: null as string | null,
     unlockScope: null as 'full' | 'signing' | null,
+    /** Where the signed-in key came from (a renewal's copy names the wallet only for its own key). */
+    origin: 'app-connect' as 'dg' | 'app-connect' | 'passkey' | null,
     controller: {} as Record<string, unknown>,
   },
 }))
@@ -78,6 +80,7 @@ vi.mock('@/contexts/auth-context', () => ({
     isLoading: false,
     vaults: [],
     unlockScope: auth.unlockScope,
+    origin: auth.origin,
     controller: auth.controller,
   }),
 }))
@@ -130,6 +133,7 @@ beforeEach(() => {
   v2.renewalPriv = null
   auth.identity = null
   auth.unlockScope = null
+  auth.origin = 'app-connect'
   checkGroup.mockReset().mockImplementation(async () => {
     v2.calls.push('group')
     return { unknown: [], unchecked: [], notice: null }
@@ -396,6 +400,19 @@ describe('WalletConnectFlow: renew in the wallet that granted the key', () => {
     expect(onDone).toHaveBeenCalled()
     // Stored: the controller already cleared the mark.
     expect(endWalletRenewal).not.toHaveBeenCalled()
+  })
+
+  it("a key this browser registered itself: the copy doesn't claim a wallet gave it", async () => {
+    auth.identity = ID
+    auth.origin = null
+    act(() => root.render(<WalletConnectFlow mode="renew" onDone={vi.fn()} />))
+    await flush()
+    fillProtection()
+    await act(async () => byText('Continue to your wallet').click())
+    await flush()
+    const terms = q('approval-terms')!.textContent
+    expect(terms).toMatch(/Approve in the wallet that holds this identity/)
+    expect(terms).not.toMatch(/gave this browser its key/)
   })
 
   it('ends the renewal when the sheet closes before the wallet answers', async () => {
