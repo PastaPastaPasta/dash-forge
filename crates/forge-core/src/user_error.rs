@@ -1882,8 +1882,11 @@ fn unresolved_quorum_devnet(detail: &str) -> Option<&str> {
     let at = lower.find("quorums.")? + "quorums.".len();
     let rest = detail.get(at..)?;
     let name = rest.split_once(".networks.")?.0;
-    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-        .then_some(name)
+    // testnet and mainnet are not devnet names: offline there, the lookup fails the same way.
+    (!name.is_empty()
+        && !matches!(name, "testnet" | "mainnet")
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    .then_some(name)
 }
 
 /// E301 for a read of private `repo` (its `owner/name`) with no identity: its content is
@@ -3812,6 +3815,25 @@ mod tests {
             unresolved_quorum_devnet("Failed to resolve domain 'quorums..networks.x'"),
             None
         );
+    }
+
+    /// Offline on testnet or mainnet, the quorum host lookup fails the same way, but there is
+    /// no devnet name to blame.
+    #[test]
+    fn an_offline_testnet_or_mainnet_names_no_devnet() {
+        for network in ["testnet", "mainnet"] {
+            let text = format!(
+                "connecting to Dash Platform ({network}): platform error: building context provider for {network}: Network error: Failed to resolve domain 'quorums.{network}.networks.dash.org': failed to lookup address information: Name or service not known"
+            );
+            assert_eq!(unresolved_quorum_devnet(&text), None);
+            let u = unreachable(&ErrorContext::default(), &text);
+            assert_eq!(u.code, "E701");
+            assert!(
+                !u.fix.iter().any(|f| f.contains("--devnet-name")),
+                "{:?}",
+                u.fix
+            );
+        }
     }
 
     #[derive(Debug)]
