@@ -57,7 +57,7 @@ Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push`. Ev
 
 Platform holds only the small signed records. Git packs go where you choose:
 
-- **IPFS:** your own node (`dg ipfs up` sets one up). Readers try the repository's own gateway, then [ipfs.dashhq.org](https://ipfs.dashhq.org), then public gateways. Every byte is hash-checked, so no gateway can change your code.
+- **IPFS:** your own node. `dg ipfs up` sets one up on your computer; on a Linux server, PC or NAS with Docker, one command does it ([Run your own backend](docs/guides/self-host-backend.md)). Readers try the repository's own gateway, then [ipfs.dashhq.org](https://ipfs.dashhq.org), then public gateways. Every byte is hash-checked, so no gateway can change your code.
 - **S3-compatible bucket:** a hosted bucket or a store you run, such as RustFS or Garage on a NAS ([how](docs/guides/home-nas-storage.md)).
 - **Platform:** packs stored on chain, with no extra account (up to about 0.39 DASH per MiB, quoted before each push).
 
