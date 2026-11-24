@@ -55,6 +55,7 @@ export const DOC_SECTIONS: readonly DocSection[] = [
       guide('bring-your-own-storage', 'Bring your own storage'),
       guide('home-nas-storage', 'Storage on your home NAS'),
       guide('run-your-own-ipfs-node', 'Run your own IPFS node'),
+      guide('self-host-backend', 'Run your own backend'),
     ],
   },
   {

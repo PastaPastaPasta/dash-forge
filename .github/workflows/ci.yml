@@ -40,6 +40,25 @@ jobs:
         if: runner.os == 'Linux'
         run: dash tests/install/test-install.sh
 
+  # backend.sh is piped to a shell on servers and NAS boxes: lint it and check the files it
+  # generates (the Caddyfile is validated by Caddy itself in the test).
+  backend-sh:
+    name: backend.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck -s sh backend.sh tests/backend/test-backend.sh
+      - name: test (sh)
+        run: sh tests/backend/test-backend.sh
+      - name: test (dash)
+        run: dash tests/backend/test-backend.sh
+
   # The Platform SDK version is pinned in six manifests and four lockfiles; a bump that misses
   # one builds clients at different rs-dpp versions (HYGI-18).
   sdk-pins:
