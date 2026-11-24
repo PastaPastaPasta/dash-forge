@@ -33,14 +33,14 @@ cargo install --locked --path crates/git-remote-dash
 Sign in with your wallet, then publish a repository:
 
 ```sh
-dg auth login --wallet   # prints a QR code: scan it in DashPay (More → Tools → Connections)
-dg storage add           # where packs go: your S3 bucket, your IPFS node, or Platform
-dg init                  # creates the repository, adds `origin`, pushes this branch
+dg auth login --network mainnet --wallet   # prints a QR code: scan it in DashPay (More → Tools → Connections)
+dg storage add                             # where packs go: your S3 bucket, your IPFS node, or Platform
+dg init                                    # creates the repository, adds `origin`, pushes this branch
 ```
 
 Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push`. Every push prints its cost first ([costs](docs/guides/costs.md)).
 
-- **Network:** the tools use testnet until you pick one. `dg auth login --network mainnet --wallet` signs in on mainnet and makes it your default for `dg` and `git`.
+- **Network:** `--network mainnet` on the first sign-in makes mainnet your default for `dg` and `git`. Without it the tools use testnet (free test DASH; DashPay's testnet build).
 - **v0.2.0 binaries:** `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh` installs them ([INSTALL.md](docs/INSTALL.md)). They work on testnet only and have no `--wallet`, so sign in with an identity file there.
 
 <details>
@@ -72,7 +72,7 @@ You can replicate packs across several of these. [Bring your own storage](docs/g
 - **Verify:** every repository page has a Verification card ([what is checked](docs/guides/verify-forge.md)).
 - **Wire up CI:** `dg webhook add` plus a relay you run (`forge-relay`) turns on-chain activity into GitHub-style webhooks.
 
-This repository's home is GitHub. Every push to master, and every tag, is mirrored to Forge on mainnet by [forge-sync](tools/forge-sync/README.md): `git -c dash.network=mainnet clone dash://forg3/dash-forge`.
+This repository's home is GitHub. Every push to master, and every tag, is mirrored to Forge on mainnet by [forge-sync](tools/forge-sync/README.md): `git -c dash.network=mainnet clone dash://forg3/dash-forge` (`forg3` is the owner's username).
 
 ## Docs
 
