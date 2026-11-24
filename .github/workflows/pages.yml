@@ -33,6 +33,12 @@ name: Deploy forge-web to Pages
 # PAGES_GATEWAY_LABEL) adds the HTTPS clone row of a forge-gateway, and PAGES_NOTIFY_URL adds
 # Settings → Notifications → Email and push for a forge-notify. A value that is not a usable URL
 # leaves the feature hidden.
+#
+# The hosted mainnet and testnet builds are separate sites. PAGES_MAINNET_SITE_URL and
+# PAGES_TESTNET_SITE_URL (https origins, such as https://forge.dashhq.org) let each point at the
+# other: the Networks page links a live network's site, a test network's build shows a dismissible
+# "Forge is live on mainnet" banner once the bundled mainnet record has Forge's contracts, and the
+# mainnet build's footer links the testnet site. A value that is not an https origin is ignored.
 
 on:
   push:
@@ -106,6 +112,9 @@ jobs:
           NEXT_PUBLIC_GATEWAY_URL: ${{ vars.PAGES_GATEWAY_URL }}
           NEXT_PUBLIC_GATEWAY_LABEL: ${{ vars.PAGES_GATEWAY_LABEL }}
           NEXT_PUBLIC_NOTIFY_URL: ${{ vars.PAGES_NOTIFY_URL }}
+          # Unset (below) when the variable is: no link to the other network's site.
+          NEXT_PUBLIC_MAINNET_SITE_URL: ${{ vars.PAGES_MAINNET_SITE_URL }}
+          NEXT_PUBLIC_TESTNET_SITE_URL: ${{ vars.PAGES_TESTNET_SITE_URL }}
           # Cloudflare Web Analytics (forge-web/lib/cf-beacon.ts, docs/hosting.md §6): the page
           # carries the beacon so the zone's automatic injection stays off. The site token is
           # public (it is in every page). A fork's deploy gets none unless it sets the variable.
@@ -117,7 +126,7 @@ jobs:
         # (docs/guides/verify-the-app.md). That includes NEXT_PUBLIC_DEVNET_NAME, empty on every
         # network but a devnet.
         run: |
-          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL NEXT_PUBLIC_CF_BEACON_TOKEN; do
+          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL NEXT_PUBLIC_MAINNET_SITE_URL NEXT_PUBLIC_TESTNET_SITE_URL NEXT_PUBLIC_CF_BEACON_TOKEN; do
             [ -n "${!v}" ] || unset "$v"
           done
           # A gateway on another network would hand out clone lines for that network's repos.

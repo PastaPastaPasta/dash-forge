@@ -16,6 +16,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Added
 
+- **The mainnet and testnet web apps link to each other.** With the new Pages variables `PAGES_MAINNET_SITE_URL` and `PAGES_TESTNET_SITE_URL` set, the Networks page has an "Open Forge on Mainnet" or "Open Forge on Testnet" link for the other live network, a testnet build shows a dismissible "Forge is live on mainnet" banner once mainnet has Forge's contracts, and the mainnet footer links the testnet site. Rebuilding a hosted build to verify it now needs both values (see [Verify the app](docs/guides/verify-the-app.md)). See [Linking the mainnet and testnet sites](docs/hosting.md#linking-the-mainnet-and-testnet-sites).
 - **`dg auth login --wallet`**: sign in from the terminal with the DashPay wallet on your phone (App Connect). `dg` prints a QR code and a `dash-key:` link, the wallet adds a limited key (proposed: 0.25 DASH for 180 days; the wallet may change it), and `dg` reads the answer from Platform, shows the identity to confirm and stores the key like any limited key. `dg auth status` shows such a key as "from your wallet (App Connect)". Testnet needs DashPay's testnet build. See [Signing in from the terminal with DashPay](docs/guides/identity-and-keys.md#signing-in-from-the-terminal-with-dashpay).
 
 ### Fixed
