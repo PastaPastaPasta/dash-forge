@@ -384,7 +384,6 @@ fn create_steps_and_forks_match() {
         refs_written: vec!["refs/heads/main".into(), "refs/tags/v1".into()],
         cost_credits: 45_300_000,
         copied: 1,
-        copy_failed: Vec::new(),
     };
     assert_valid(
         "repo fork",

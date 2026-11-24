@@ -11,13 +11,17 @@
     "status": {
       "type": "string",
       "enum": [
-        "unpinned"
+        "unpinned",
+        "partial"
       ]
     },
     "repo": {
       "type": "string"
     },
     "recordsRemoved": {
+      "type": "integer"
+    },
+    "recordsLeft": {
       "type": "integer"
     }
   },

@@ -12,7 +12,8 @@ use crate::platform::LoadedContract;
 use crate::repo::{PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2};
 use crate::rules::pack_mirror::{check_mirror_uris, UriCheck, MAX_URIS};
 use crate::scope::RepoRef;
-use crate::storage::publish::publish_problem;
+use crate::storage::egress::{may_fetch, Trusted};
+use crate::storage::publish::{profile_problems, publish_problem};
 use crate::storage::targets::{ExternalTarget, StorageTarget as _};
 use crate::storage::{PackReader, Profile};
 
@@ -26,8 +27,17 @@ pub fn pin_profile_problem(profile: &Profile) -> Option<&'static str> {
         Profile::S3(p) if p.public_url.is_none() => Some(
             "this bucket has no public URL, so nobody else could read your copy; set its public URL first",
         ),
+        _ if !profile_problems(profile).iter().all(|p| !p.problem.refused() && readable_by_others(&p.url)) => Some(
+            "its public address is on this machine or a private network (or a temporary tunnel), so nobody else could read your copy",
+        ),
         _ => None,
     }
+}
+
+/// Whether other readers fetch `url`: their egress guard (with none of this machine's trusted
+/// origins) lets it through, and a push would record it.
+fn readable_by_others(url: &str) -> bool {
+    may_fetch(url, &Trusted::default()) && publish_problem(url).is_none_or(|p| !p.refused())
 }
 
 /// The addresses a `packMirror` records for a copy stored at `stored`: its public `https://`
@@ -37,7 +47,7 @@ pub fn pin_profile_problem(profile: &Profile) -> Option<&'static str> {
 pub fn mirror_uris(stored: &[String]) -> Option<Vec<String>> {
     let https: Vec<String> = stored
         .iter()
-        .filter(|u| u.starts_with("https://") && publish_problem(u).is_none())
+        .filter(|u| u.starts_with("https://") && readable_by_others(u))
         .take(MAX_URIS)
         .cloned()
         .collect();
@@ -50,6 +60,19 @@ pub fn mirror_uris(stored: &[String]) -> Option<Vec<String>> {
         https
     };
     matches!(check_mirror_uris(&pick), UriCheck::Ok { .. }).then_some(pick)
+}
+
+/// The addresses of `stored` other readers can use in a manifest: the public https ones and the
+/// `ipfs://` CID (never a private bucket's `s3://` locator or a private host).
+#[must_use]
+pub fn shareable(stored: &[String]) -> Vec<String> {
+    stored
+        .iter()
+        .filter(|u| {
+            u.starts_with("ipfs://") || (u.starts_with("https://") && readable_by_others(u))
+        })
+        .cloned()
+        .collect()
 }
 
 /// `input` with `own` addresses first and its own after them, each once, cut to the manifest's
@@ -86,8 +109,8 @@ pub const PIN_KINDS: [u8; 6] = [
     crate::pack::KIND_LONG_BODY,
 ];
 
-/// The copies of each pinnable pack in `manifests` ([`PIN_KINDS`]), grouped by pack hash in the
-/// order a reader tries them, oldest pack first.
+/// The copies of each pinnable pack in `manifests` ([`PIN_KINDS`]) that a current maintainer or
+/// writer lists, grouped by pack hash in the order a reader tries them, oldest pack first.
 #[must_use]
 pub fn pin_groups<'m>(
     manifests: &'m [PackManifestInfo],
@@ -100,8 +123,17 @@ pub fn pin_groups<'m>(
             by_hash.entry(m.pack_hash).or_default().push(m);
         }
     }
+    let listed_by_member = |copies: &Vec<&PackManifestInfo>| {
+        copies.iter().any(|m| {
+            matches!(
+                roles.get(&m.owner_id),
+                Some(crate::rules::v2::Role::Maintainer | crate::rules::v2::Role::Writer)
+            )
+        })
+    };
     let mut out: Vec<Vec<&PackManifestInfo>> = by_hash
         .into_values()
+        .filter(listed_by_member)
         .map(|copies| crate::repo::order_copies(&copies, roles))
         .collect();
     out.sort_by_key(|g| {
@@ -125,21 +157,55 @@ pub struct OwnCopy<'a> {
 
 impl<'a> OwnCopy<'a> {
     /// A copier of `source`'s packs onto `target`.
+    /// `manifests` are `source`'s: its own advertised gateways join the reader, as for a clone.
     pub async fn new(
         svc: &'a RepoService<'a>,
         source: &'a RepoRef,
+        manifests: &[PackManifestInfo],
         roles: RoleMap,
         target: ExternalTarget,
     ) -> Result<Self> {
         let contract = svc.repo_contract(source).await?;
+        let reader = svc.repo_reader(source, manifests, &roles).await;
         Ok(Self {
             svc,
             source,
             contract,
             roles,
-            reader: PackReader::from_user_config(),
+            reader,
             target,
         })
+    }
+
+    /// [`mirror_uris`] of `stored`, with an advertised https address checked to serve the pack
+    /// first: when none does, the `ipfs://` CID the upload verified is recorded instead.
+    pub async fn recordable(
+        &self,
+        stored: &[String],
+        pack_hash: &str,
+        size: u64,
+    ) -> Option<Vec<String>> {
+        let pick = mirror_uris(stored)?;
+        if !pick[0].starts_with("https://") {
+            return Some(pick);
+        }
+        let served = crate::pack_mirror::check_serves(
+            &PackReader::from_user_config(),
+            &pick,
+            pack_hash,
+            (size > 0).then_some(size),
+        )
+        .await;
+        if served == crate::pack_mirror::ServeCheck::Serves {
+            return Some(pick);
+        }
+        let cid: Vec<String> = stored
+            .iter()
+            .filter(|u| u.starts_with("ipfs://"))
+            .take(1)
+            .cloned()
+            .collect();
+        (!cid.is_empty()).then_some(cid)
     }
 
     /// The target's profile name.

@@ -11,7 +11,7 @@ use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use forge_core::own_copy::{mirror_uris, pin_profile_problem, OwnCopy};
+use forge_core::own_copy::{pin_profile_problem, OwnCopy};
 use forge_core::pack_mirror::{
     delete_mirror, mirrors_by, record_mirror, require_support, DOC_PACK_MIRROR,
 };
@@ -57,7 +57,7 @@ pub struct RepoPinArgs {
 /// Dispatch `dg repo pin`.
 pub async fn pin(ctx: &Ctx, args: &RepoPinArgs) -> Result<()> {
     if args.all {
-        return Box::pin(refresh_all(ctx)).await;
+        return Box::pin(refresh_all(ctx, args.dry_run)).await;
     }
     let repo = args.repo.as_deref().context("repository required")?;
     let done = Box::pin(pin_one(
@@ -71,6 +71,7 @@ pub async fn pin(ctx: &Ctx, args: &RepoPinArgs) -> Result<()> {
     if args.follow && !args.dry_run {
         let entry = Followed {
             network: ctx.network_label(),
+            signer: done.signer.clone(),
             repo_id: done.repo_id.clone(),
             repo: done.display.clone(),
             storage: done.storage.clone(),
@@ -99,6 +100,7 @@ pub async fn pin(ctx: &Ctx, args: &RepoPinArgs) -> Result<()> {
 
 /// What one pin did.
 struct Pinned {
+    signer: String,
     repo_id: String,
     display: String,
     storage: String,
@@ -108,6 +110,8 @@ struct Pinned {
     spent: u64,
     failed: Vec<String>,
     dry_run: bool,
+    planned: usize,
+    estimate: u64,
     price: crate::fmt::Price,
 }
 
@@ -115,6 +119,8 @@ impl Pinned {
     fn json(&self) -> Value {
         json!({
             "status": if self.dry_run { "planned" } else if self.failed.is_empty() { "pinned" } else { "partial" },
+            "packsPlanned": self.planned,
+            "estimate": cost_json(self.estimate, self.price),
             "repo": self.display,
             "repoId": self.repo_id,
             "storage": self.storage,
@@ -272,7 +278,10 @@ async fn pin_one(
     let me = s.identity.id();
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let manifests = svc.read_pack_manifests(&s.repo).await?;
-    let roles = svc.copy_roles(&s.repo).await.unwrap_or_default();
+    let roles = svc
+        .copy_roles(&s.repo)
+        .await
+        .context("reading the repository's members")?;
     let mine: std::collections::BTreeSet<String> = mirrors_by(&s.client, &mirrors, &me)
         .await?
         .into_iter()
@@ -288,6 +297,7 @@ async fn pin_one(
     let price = ctx.fiat_price();
     let display = s.repo.display();
     let mut out = Pinned {
+        signer: me.clone(),
         repo_id: s.repo.id().to_string(),
         display: display.clone(),
         storage: storage.clone(),
@@ -297,6 +307,8 @@ async fn pin_one(
         spent: 0,
         failed: Vec::new(),
         dry_run,
+        planned: todo.len(),
+        estimate,
         price,
     };
     if !ctx.json && (!unattended || !todo.is_empty()) {
@@ -315,7 +327,14 @@ async fn pin_one(
     if !unattended {
         ctx.confirm_or_cancel(&format!("Pin {display}?"))?;
     }
-    let copier = OwnCopy::new(&svc, &s.repo, roles, target(&storage, &profile)?).await?;
+    let copier = OwnCopy::new(
+        &svc,
+        &s.repo,
+        &manifests,
+        roles,
+        target(&storage, &profile)?,
+    )
+    .await?;
     let engine = forge_core::profile::engine(&s.client, &s.identity, &s.bridge)?;
     let before = s.balance().await;
     for (i, copies) in todo.iter().enumerate() {
@@ -323,7 +342,9 @@ async fn pin_one(
         let short = &hash[..12];
         let step = async {
             let (stored, from) = copier.copy(copies).await?;
-            let uris = mirror_uris(&stored)
+            let uris = copier
+                .recordable(&stored, &hash, copies[0].size_bytes)
+                .await
                 .ok_or_else(|| anyhow::anyhow!("{storage} returned no address others can read"))?;
             record_mirror(&engine, &mirrors, &s.repo, &hash, &uris).await?;
             anyhow::Ok((from, uris))
@@ -343,7 +364,7 @@ async fn pin_one(
                 }
             }
             Err(e) => {
-                let why = forge_core::user_error::one_line(&e.to_string());
+                let why = said(&e);
                 if !ctx.json {
                     eprintln!("  [{}/{}] {short} failed: {why}", i + 1, todo.len());
                 }
@@ -363,23 +384,45 @@ async fn pin_one(
     Ok(out)
 }
 
-/// `dg repo pin --all`: every followed repository on this network, unattended.
-async fn refresh_all(ctx: &Ctx) -> Result<()> {
+/// An error in one line with anything secret-shaped redacted, for the terminal and `pins.toml`.
+fn said(e: &anyhow::Error) -> String {
+    forge_core::user_error::redact(&forge_core::user_error::one_line(&format!("{e:#}")))
+}
+
+/// The signing identity's id, without opening a session.
+fn signer_id(ctx: &Ctx) -> Result<String> {
+    Ok(match ctx.identity_id_hint() {
+        Some(id) => id,
+        None => ctx.load_bridge()?.identity_id,
+    })
+}
+
+/// `dg repo pin --all`: every repository this identity follows on this network, unattended
+/// (or, with `dry_run`, what that would copy and cost).
+async fn refresh_all(ctx: &Ctx, dry_run: bool) -> Result<()> {
     let path = pins_path()?;
     let network = ctx.network_label();
-    let followed: Vec<Followed> = read_pins(&path)?
+    let me = signer_id(ctx)?;
+    let (followed, others): (Vec<Followed>, Vec<Followed>) = read_pins(&path)?
         .repo
         .into_iter()
         .filter(|r| r.network == network)
-        .collect();
+        .partition(|r| r.signer == me);
+    if !others.is_empty() && !ctx.json {
+        eprintln!(
+            "note: {} followed by another identity (or before followers were recorded) {} skipped; `dg repo pin <repo> --follow` as this identity follows them here",
+            plural(others.len(), "repository"),
+            if others.len() == 1 { "is" } else { "are" }
+        );
+    }
     let mut repos = Vec::new();
     let mut failed = 0;
     for f in followed {
-        let result = Box::pin(pin_one(ctx, &f.repo_id, Some(&f.storage), false, true)).await;
+        let result = Box::pin(pin_one(ctx, &f.repo_id, Some(&f.storage), dry_run, true)).await;
         let (error, body) = match result {
             Ok(done) => (done.failed.first().cloned(), done.json()),
             Err(e) => {
-                let why = forge_core::user_error::one_line(&e.to_string());
+                let why = said(&e);
                 if !ctx.json {
                     eprintln!("{}: {why}", safe(&f.repo));
                 }
@@ -390,19 +433,17 @@ async fn refresh_all(ctx: &Ctx) -> Result<()> {
             }
         };
         failed += usize::from(error.is_some());
-        update_pins(&path, |file| {
-            if let Some(r) = file
-                .repo
-                .iter_mut()
-                .find(|r| r.network == network && r.repo_id == f.repo_id)
-            {
-                r.last_run = now();
-                r.last_error.clone_from(&error);
-            }
-        })?;
+        if !dry_run {
+            update_pins(&path, |file| {
+                if let Some(r) = file.repo.iter_mut().find(|r| r.same(&f)) {
+                    r.last_run = now();
+                    r.last_error.clone_from(&error);
+                }
+            })?;
+        }
         repos.push(body);
     }
-    let body = json!({"status": "refreshed", "repos": repos, "failed": failed});
+    let body = json!({"status": if dry_run { "planned" } else { "refreshed" }, "repos": repos, "failed": failed});
     if failed > 0 {
         return Err(crate::errors::reported(
             UserError::new(
@@ -413,10 +454,12 @@ async fn refresh_all(ctx: &Ctx) -> Result<()> {
         ));
     }
     ctx.emit(body, || {
-        println!(
-            "✓ {} up to date",
-            plural(repos.len(), "followed repository")
-        );
+        if !dry_run {
+            println!(
+                "✓ {} up to date",
+                plural(repos.len(), "followed repository")
+            );
+        }
     });
     Ok(())
 }
@@ -441,16 +484,31 @@ pub async fn unpin(ctx: &Ctx, repo: &str) -> Result<()> {
             plural(mine.len(), "pin record")
         ))?;
     }
-    let engine = forge_core::profile::engine(&s.client, &s.identity, &s.bridge)?;
-    for m in &mine {
-        delete_mirror(&engine, &mirrors, &m.id).await?;
-    }
+    // Stop following first, so a refresh cannot pay to put back a record deleted here.
     let network = ctx.network_label();
+    let me = s.identity.id();
     let id = s.repo.id().to_string();
     update_pins(&pins_path()?, |file| {
         file.repo
-            .retain(|r| r.network != network || r.repo_id != id);
+            .retain(|r| r.network != network || r.repo_id != id || r.signer != me);
     })?;
+    let engine = forge_core::profile::engine(&s.client, &s.identity, &s.bridge)?;
+    for (i, m) in mine.iter().enumerate() {
+        if let Err(e) = delete_mirror(&engine, &mirrors, &m.id).await {
+            return Err(crate::errors::reported(
+                UserError::new(
+                    codes::PARTIAL,
+                    format!("unpinned partly: {} of {} records removed", i, mine.len()),
+                )
+                .cause(said(&e.into()))
+                .fix(format!(
+                    "run `dg repo unpin {display}` again to remove the rest"
+                ))
+                .note("the repository is no longer followed"),
+                json!({"status": "partial", "repo": display, "recordsRemoved": i, "recordsLeft": mine.len() - i}),
+            ));
+        }
+    }
     ctx.emit(
         json!({"status": "unpinned", "repo": display, "recordsRemoved": mine.len()}),
         || {
@@ -469,12 +527,65 @@ pub async fn unpin(ctx: &Ctx, repo: &str) -> Result<()> {
 pub struct PinsFile {
     #[serde(default)]
     pub repo: Vec<Followed>,
+    /// The storage each fork copies its parent's packs to (`dg repo fork --storage`).
+    #[serde(default)]
+    pub fork: Vec<ForkStorage>,
+}
+
+/// Where one fork's copies go.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForkStorage {
+    pub network: String,
+    pub signer: String,
+    pub repo_id: String,
+    pub storage: String,
+}
+
+/// The profile `signer` copied the fork `repo_id`'s packs to, when it still exists and others
+/// can read it.
+pub fn fork_storage_recorded(
+    network: &str,
+    signer: &str,
+    repo_id: &str,
+) -> Option<(String, Profile)> {
+    let name = read_pins(&pins_path().ok()?)
+        .ok()?
+        .fork
+        .into_iter()
+        .find(|f| f.network == network && f.signer == signer && f.repo_id == repo_id)?
+        .storage;
+    let profile = StorageProfiles::load().ok()?.get(&name)?;
+    pin_profile_problem(&profile)
+        .is_none()
+        .then_some((name, profile))
+}
+
+/// Remember that `signer` copies the fork `repo_id`'s packs to `storage`.
+pub fn record_fork_storage(
+    network: &str,
+    signer: &str,
+    repo_id: &str,
+    storage: &str,
+) -> Result<()> {
+    update_pins(&pins_path()?, |file| {
+        file.fork
+            .retain(|f| !(f.network == network && f.signer == signer && f.repo_id == repo_id));
+        file.fork.push(ForkStorage {
+            network: network.into(),
+            signer: signer.into(),
+            repo_id: repo_id.into(),
+            storage: storage.into(),
+        });
+    })
 }
 
 /// One followed repository.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Followed {
     pub network: String,
+    /// The identity that followed it, and pays for its refreshes.
+    #[serde(default)]
+    pub signer: String,
     pub repo_id: String,
     /// `owner/name` when it was followed (for messages).
     pub repo: String,
@@ -485,13 +596,17 @@ pub struct Followed {
     pub last_error: Option<String>,
 }
 
+impl Followed {
+    fn same(&self, other: &Self) -> bool {
+        self.network == other.network
+            && self.repo_id == other.repo_id
+            && self.signer == other.signer
+    }
+}
+
 impl PinsFile {
     fn upsert(&mut self, entry: Followed) {
-        match self
-            .repo
-            .iter_mut()
-            .find(|r| r.network == entry.network && r.repo_id == entry.repo_id)
-        {
+        match self.repo.iter_mut().find(|r| r.same(&entry)) {
             Some(r) => *r = entry,
             None => self.repo.push(entry),
         }
@@ -542,6 +657,7 @@ mod tests {
     fn entry(repo_id: &str, storage: &str) -> Followed {
         Followed {
             network: "testnet".into(),
+            signer: "me".into(),
             repo_id: repo_id.into(),
             repo: "o/r".into(),
             storage: storage.into(),

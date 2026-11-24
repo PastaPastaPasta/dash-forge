@@ -470,8 +470,31 @@ pub struct ForkResult {
     pub cost_credits: u64,
     /// Packs copied to the forker's own storage (listed first in their manifests).
     pub copied: usize,
-    /// Packs that could not be copied and are recorded by reference only (pack hash, why).
-    pub copy_failed: Vec<(String, String)>,
+}
+
+/// The addresses of `copies`' pack stored on `own_copy`'s target that other readers can use. A
+/// failure stops the fork before that pack's manifest (and any ref) is written, so running it
+/// again copies the pack rather than leaving the fork on the parent's storage for good.
+pub async fn own_copy_of(
+    own_copy: &OwnCopy<'_>,
+    copies: &[&PackManifestInfo],
+) -> Result<Vec<String>> {
+    let short = hex::encode(&copies[0].pack_hash[..6]);
+    let stored = own_copy.copy(copies).await.map_err(|e| {
+        Error::Io(format!(
+            "pack {short} could not be copied to {}: {}; run the same command again to resume, or pass --no-copy to record it by reference",
+            own_copy.target_name(),
+            crate::user_error::redact(&crate::user_error::one_line(&e.to_string()))
+        ))
+    })?;
+    let own = crate::own_copy::shareable(&stored.0);
+    if own.is_empty() {
+        return Err(Error::Config(format!(
+            "{} stored pack {short} at no address other readers can use",
+            own_copy.target_name()
+        )));
+    }
+    Ok(own)
 }
 
 /// Fork `parent` as `opts.name` (with `opts.fork_of` set to the parent) under the signer.
@@ -548,33 +571,27 @@ pub async fn fork_repo(
     let skip: BTreeSet<[u8; 32]> = fork_has.union(&sealed).copied().collect();
     let plan = plan_manifests(&parent_manifests, &roles, &skip);
     let own_copy = match copy_to {
-        Some(target) => Some(OwnCopy::new(&svc, parent, roles.clone(), target).await?),
+        Some(target) => {
+            Some(OwnCopy::new(&svc, parent, &parent_manifests, roles.clone(), target).await?)
+        }
         None => None,
     };
     let mut written = 0;
     let mut platform_referenced = 0;
     let mut unreferenceable = Vec::new();
     let mut copied = 0;
-    let mut copy_failed = Vec::new();
     for copies in plan {
         let Some(mut input) = fork_manifest(parent, &copies)? else {
             unreferenceable.push(copies[0].pack_hash);
             continue;
         };
-        if let Some(own_copy) = &own_copy {
-            match own_copy.copy(&copies).await {
-                Ok((own, _)) => {
-                    input = with_own_first(input, &own);
-                    copied += 1;
-                }
-                Err(e) => copy_failed.push((
-                    hex::encode(copies[0].pack_hash),
-                    crate::user_error::one_line(&e.to_string()),
-                )),
-            }
+        let on_platform = copies.iter().any(|m| m.storage == 0);
+        // A Platform copy is permanent: it is recorded as the parent's chunk locator, never copied.
+        if let Some(own_copy) = own_copy.as_ref().filter(|_| !on_platform) {
+            input = with_own_first(input, &own_copy_of(own_copy, &copies).await?);
+            copied += 1;
         }
-        // A Platform copy is recorded as the parent's chunk locator.
-        if copies.iter().any(|m| m.storage == 0) {
+        if on_platform {
             platform_referenced += 1;
         }
         svc.write_pack_manifest(&fork, &input).await?;
@@ -608,7 +625,6 @@ pub async fn fork_repo(
         refs_written,
         cost_credits: before.saturating_sub(after),
         copied,
-        copy_failed,
     })
 }
 

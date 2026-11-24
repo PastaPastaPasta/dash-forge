@@ -59,13 +59,6 @@
       "type": "integer",
       "description": "Parent packs copied to your own storage and listed first in their manifests."
     },
-    "packsNotCopied": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Pack hashes that could not be copied and are recorded by reference only."
-    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     },

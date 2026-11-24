@@ -32,10 +32,17 @@
     "packsAlready": {
       "type": "integer"
     },
+    "packsPlanned": {
+      "type": "integer"
+    },
     "bytes": {
       "type": "integer"
     },
     "failed": {},
+    "estimate": {
+      "$ref": "common.schema.json#/$defs/cost",
+      "description": "What recording the planned packs costs, before it is paid."
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     },

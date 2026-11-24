@@ -285,7 +285,20 @@ async fn fork(
                     .flatten()
             })
             .collect();
-    let manifest_uris: Vec<u64> = planned.iter().map(|m| m.uris.len() as u64).collect();
+    // A copy adds its own addresses (a public URL or gateway, and a locator or CID) to each
+    // manifest that is not on Platform.
+    let own_uris = if copy_to.is_some() { OWN_COPY_URIS } else { 0 };
+    let manifest_uris: Vec<u64> = planned
+        .iter()
+        .map(|m| {
+            let own = if m.storage == 1 && !m.uris.iter().any(|u| u.starts_with("platform://")) {
+                own_uris
+            } else {
+                0
+            };
+            (m.uris.len() as u64 + own).min(8)
+        })
+        .collect();
     let packs = manifest_uris.len();
     warn_unreadable_packs(&parent, &planned);
     // As on GitHub, the fork takes the parent's default branch (QW2-013) and description
@@ -326,6 +339,7 @@ async fn fork(
             );
         }
     }
+    let copy_name = copy_to.as_ref().map(|(name, _)| name.clone());
     let copy_to = copy_to
         .map(|(name, profile)| crate::repo_pin::target(&name, &profile))
         .transpose()?;
@@ -342,11 +356,13 @@ async fn fork(
     )
     .await
     .context("forking the repository")?;
-    for (hash, why) in &result.copy_failed {
-        eprintln!(
-            "warning: pack {} was not copied to your storage ({why}); the fork reads it from the parent's",
-            &hash[..hash.len().min(12)]
-        );
+    if let Some(name) = copy_name {
+        crate::repo_pin::record_fork_storage(
+            &ctx.network_label(),
+            &identity.id(),
+            result.created.repo.id(),
+            &name,
+        )?;
     }
     let pinned = if pin && result.unreferenceable.is_empty() {
         Some(
@@ -398,6 +414,9 @@ fn fork_opts(slug: String, default_branch: Option<String>, description: &str) ->
         ..base
     }
 }
+
+/// The addresses one copy to the forker's storage adds to a manifest, at most.
+pub(crate) const OWN_COPY_URIS: u64 = 2;
 
 /// The pre-sign quote for a fork writing one manifest per entry of `manifest_uris` (each
 /// recording that many URIs) and copying `refs` refs (QW2-020: it priced each manifest and ref
@@ -453,7 +472,6 @@ pub(crate) fn fork_body(
         "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
         "refsWritten": result.refs_written,
         "packsCopied": result.copied,
-        "packsNotCopied": result.copy_failed.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(),
         "cost": cost_json(result.cost_credits, price),
     })
 }
