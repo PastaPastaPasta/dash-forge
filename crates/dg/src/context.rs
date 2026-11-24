@@ -253,12 +253,13 @@ fn stack(l: Layers) -> (NetworkSettings, NetworkSource) {
 /// The warning for an environment network that a higher layer overrode, or `None` when the
 /// environment names no network, agrees with `used`, or is the layer that chose it. `git push`
 /// reads the environment first, so a silent override would send `dg` and git to different
-/// networks.
+/// networks. `raw` holds the two variables as set, before `devnet-<name>` is split.
 fn ignored_env_network(
-    env: &NetworkSettings,
+    raw: &NetworkSettings,
     source: NetworkSource,
     used: &Network,
 ) -> Option<String> {
+    let env = &raw.clone().normalized();
     if !matches!(
         source,
         NetworkSource::Flags | NetworkSource::Repository | NetworkSource::Config
@@ -288,8 +289,11 @@ fn ignored_env_network(
         return None;
     }
     let set: Vec<(&str, &str)> = [
-        (forge_core::network::ENV_NETWORK, env.network.as_deref()),
-        (forge_core::network::ENV_DEVNET_NAME, env.devnet_name.as_deref()),
+        (forge_core::network::ENV_NETWORK, raw.network.as_deref()),
+        (
+            forge_core::network::ENV_DEVNET_NAME,
+            raw.devnet_name.as_deref(),
+        ),
     ]
     .into_iter()
     .filter_map(|(name, value)| value.map(|v| (name, v)))
@@ -302,12 +306,15 @@ fn ignored_env_network(
     let verb = if set.len() > 1 { "are" } else { "is" };
     let unset = format!(
         "unset {}",
-        set.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(" ")
+        set.iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     let hint = match (source, flag) {
         (NetworkSource::Flags, _) => String::new(),
         (NetworkSource::Repository, _) => {
-            format!(", but git push here would use {label} ({unset})")
+            format!(", but git push here reads {label} ({unset})")
         }
         (_, Some(flag)) => format!(" (pass {flag} to use {label}, or {unset})"),
         (_, None) => format!(" ({unset})"),
@@ -406,7 +413,7 @@ impl Ctx {
             flags,
             repo,
             config: config.network_settings(),
-            env: env.clone(),
+            env,
             key,
         });
         let network_is_default = network_source == NetworkSource::Default;
@@ -417,16 +424,24 @@ impl Ctx {
             )
         })?;
 
-        // `dg doctor` shows this as a row of its own.
+        // `dg doctor` shows both of these as rows of its own.
         if !matches!(cli.command, crate::Command::Doctor { .. }) {
             warn_if_retired(&target.network);
-        }
-        // `dg doctor` has its own row for an environment that overrides git.
-        if let Some(warning) = ignored_env_network(&env, network_source, &target.network)
-            .filter(|_| !matches!(cli.command, crate::Command::Doctor { .. }))
-        {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| eprintln!("warning: {warning}"));
+            let raw_env = |key| {
+                std::env::var(key)
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            let raw = NetworkSettings {
+                network: raw_env(forge_core::network::ENV_NETWORK),
+                devnet_name: raw_env(forge_core::network::ENV_DEVNET_NAME),
+                ..Default::default()
+            };
+            if let Some(warning) = ignored_env_network(&raw, network_source, &target.network) {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| eprintln!("warning: {warning}"));
+            }
         }
 
         if cli
@@ -790,7 +805,7 @@ mod tests {
         assert!(s.is_unset());
     }
 
-    /// The env layer as [`NetworkSettings::from_env`] builds it.
+    /// The two environment variables as set (not yet split).
     fn env(network: Option<&str>, devnet_name: Option<&str>) -> NetworkSettings {
         NetworkSettings {
             network: network.map(Into::into),
@@ -810,7 +825,7 @@ mod tests {
             flags,
             repo,
             config,
-            env: env.clone(),
+            env: env.clone().normalized(),
             key: NetworkSettings::default(),
         });
         let used = s.resolve().unwrap().network;
@@ -839,7 +854,7 @@ mod tests {
             .as_deref(),
             Some(
                 "DASH_FORGE_NETWORK=testnet is ignored; using devnet-sakura from this \
-                 repository's git config, but git push here would use testnet (unset \
+                 repository's git config, but git push here reads testnet (unset \
                  DASH_FORGE_NETWORK)"
             )
         );
@@ -879,6 +894,20 @@ mod tests {
         assert!(
             env_warning(none(), none(), net("mainnet"), &env(Some("devnet"), None))
                 .is_some_and(|w| w.contains("DASH_FORGE_NETWORK=devnet is ignored"))
+        );
+        assert_eq!(
+            env_warning(
+                none(),
+                none(),
+                net("mainnet"),
+                &env(Some("devnet-sakura"), None)
+            )
+            .as_deref(),
+            Some(
+                "DASH_FORGE_NETWORK=devnet-sakura is ignored; using mainnet from config.toml \
+                 (pass --network devnet --devnet-name sakura to use devnet-sakura, or unset \
+                 DASH_FORGE_NETWORK)"
+            )
         );
         assert!(
             env_warning(none(), none(), net("mainnet"), &env(Some("TESTNET"), None))
