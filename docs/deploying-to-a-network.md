@@ -45,7 +45,7 @@ A group-bound key can sign for every member of the group ([Contract group trust]
 
 All of these come first. `deploy-v2.mjs` enforces the ones it can; the rest are on you.
 
-1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.0.0-rc.4 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
+1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.0.0-rc.8 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
 2. **Freeze the schema.** Rules, indexes and config freeze at registration ([§7](#7-after-registration-what-can-still-change)). Decide `config.readonly` (it can only be set at registration; Forge registers writable so later additive updates can land) and every other now-or-never choice, and merge the schema to `master`. The script refuses to register files that differ from git `HEAD`, a `HEAD` that is not on a branch of `origin`, or a committed set that `build.py --check` rejects.
 3. **Rehearse on a scratch set.** Register the same committed JSON under a throwaway deployer and run the live suites against it, on the same network and the same Platform release. A scratch registration is permanent too, so use a different deployer from the real one:
 
@@ -77,13 +77,13 @@ Fees are credits (1 DASH = 10^11 credits) and are the same on every network of t
 
 | Contract | Signed create | Cost |
 |---|---|---|
-| forge-core | 16,355 B | 0.5968 |
-| forge-collab | 17,213 B | 0.3963 |
-| forge-community | 15,425 B | 0.5063 |
-| forge-meta | 6,890 B | 0.3636 |
-| **The four** | | **about 1.86** |
+| forge-core | 16,362 B | 0.5968 |
+| forge-collab | 17,291 B | 0.3964 |
+| forge-community | 15,651 B | 0.5163 |
+| forge-meta | 10,948 B | 0.4650 |
+| **The four** | | **1.9746** |
 
-Measured on devnet sakura, on Platform 5.0.0-beta.6, with the committed four-contract set (measured during the release rehearsal). The three-contract devnet set cost about 1.73 (sakura's `costCredits` record). Fees did not change between beta.6 and the testnet's rc.3 release, and testnet's fee multiplier is 1 as on sakura, so expect the same on testnet; **to be re-measured on testnet** by the rehearsal, which prints each step's cost. Fund the deployer with about 2.5 DASH on testnet to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
+Measured on testnet on 2026-11-24 by the mainnet rehearsal (a scratch registration of the committed four-contract set, Platform 5.0, protocol 14). Mainnet uses the same fee schedule. Fund the deployer with 3 DASH to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
 
 On mainnet the same set costs the same number of DASH, in real money. A dry run costs nothing.
 
