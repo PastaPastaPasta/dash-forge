@@ -181,7 +181,7 @@ export async function wipeResume(): Promise<void> {
 
 /** Record a lock before anything async runs (a reload right after still sees it). */
 export function markLocked(): void {
-  writeMarker(LOCKED_AT_KEY)
+  writeMarker(LOCKED_AT_KEY, readMarker(DEVICE_OPENED_KEY))
 }
 
 /** The last lock's marker (0 when none, or when storage is disabled). */
