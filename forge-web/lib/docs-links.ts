@@ -16,6 +16,8 @@ export const DOCS = {
   costs: '/docs/costs/',
   movingFromGithub: '/docs/moving-from-github/',
   storage: '/docs/bring-your-own-storage/',
+  /** backend.sh: IPFS + Caddy on a Linux server or NAS (the kubo tile's "Run it on a server or NAS"). */
+  selfHostBackend: '/docs/self-host-backend/',
   mirror: '/docs/mirror-a-github-repo/',
   mirrorKeepInSync: '/docs/mirror-a-github-repo/#3-keep-it-in-sync-without-the-action',
   mirrorPrivate: '/docs/mirror-a-github-repo/#into-a-private-repository',
