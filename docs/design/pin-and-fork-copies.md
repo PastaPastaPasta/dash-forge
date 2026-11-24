@@ -47,8 +47,8 @@ A pin of a **public** repository:
    - **dg:** `dg repo pin <repo> --follow` adds the repo to the follow list in
      `~/.config/dash-forge/pins.toml`. `dg repo pin --all` refreshes every followed repo: it
      copies and records only packs that have no record of yours yet, so a refresh with nothing
-     new is reads only. Run it from cron or a systemd timer; a self-hosted backend runs it on
-     a timer.
+     new is reads only. Run it from cron or a systemd timer on any machine with `dg` and the
+     storage profile (the one-command self-hosted backend runs kubo only, not `dg`).
    - **Web:** the Pin button reads your `packMirror` records for the repo. Once every pack is
      covered it shows **Pinned**. When new packs land it shows **Update pin (N new)**, and one
      click copies just those.
