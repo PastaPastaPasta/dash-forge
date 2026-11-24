@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-sign.schema.json",
+  "title": "dg org sign --json",
+  "description": "A request signed (and put on Platform when this signature completed it).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "signed",
+        "alreadySigned",
+        "done"
+      ]
+    },
+    "org": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "collected": {
+      "type": "integer"
+    },
+    "threshold": {
+      "type": "integer"
+    },
+    "broadcast": {
+      "type": "integer",
+      "description": "Parts of the request this run put on Platform."
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "id",
+    "collected",
+    "threshold"
+  ],
+  "additionalProperties": true
+}

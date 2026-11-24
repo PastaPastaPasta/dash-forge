@@ -53,6 +53,16 @@ pub async fn connect(
     if mine.is_empty() {
         return Err(OrgError::NotAMember.into());
     }
+    if let Some(other) = mine
+        .iter()
+        .map(|c| c.config.network.as_str())
+        .find(|n| *n != network)
+        .filter(|_| mine.iter().all(|c| c.config.network != network))
+    {
+        return Err(Error::Config(format!(
+            "this group's organization is on {other}, not {network}"
+        )));
+    }
     for c in mine {
         if c.config.network != network {
             continue;

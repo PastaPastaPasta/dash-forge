@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-show.schema.json",
+  "title": "dg org show --json",
+  "description": "One request: what it writes, who signed and declined, and what is next.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "org": {
+      "type": "string"
+    },
+    "orgId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "forge": {
+      "type": "boolean",
+      "description": "Made by Forge; false for a proposal made elsewhere (in multisig.dashhq.org)."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "collecting",
+        "ready",
+        "done",
+        "expired",
+        "invalid"
+      ]
+    },
+    "collected": {
+      "type": "integer",
+      "description": "Valid signatures (the fewest any part of the request has)."
+    },
+    "threshold": {
+      "type": "integer"
+    },
+    "signedByYou": {
+      "type": "boolean"
+    },
+    "declinedByYou": {
+      "type": "boolean"
+    },
+    "writes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "signers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "declined": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "by",
+          "reason"
+        ]
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Why Forge refuses to sign it; empty when it passes review."
+    },
+    "next": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The command to run next, or null."
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "org",
+    "orgId",
+    "id",
+    "title",
+    "status",
+    "collected",
+    "threshold",
+    "writes",
+    "signers",
+    "declined",
+    "problems",
+    "next"
+  ],
+  "additionalProperties": true
+}

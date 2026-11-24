@@ -162,6 +162,14 @@ def write_result(extra, req=('status',)):
     return {'status': S, 'cost': COST, **extra}, req
 
 
+# An owner action on an organization's repository made a request instead of writing (`dg repo create
+# --owner`, `dg collab add|remove` on an organization's repository; docs/design/organizations.md).
+ORG_REQUESTED = {
+    'org': S, 'orgId': S,
+    'requestId': D('The request the members sign with `dg org sign <requestId>`.', S),
+    'title': S, 'collected': I, 'threshold': I, 'signCommand': S,
+}
+
 # -- auth -------------------------------------------------------------------------------------
 # The Forge contract group's members this dg does not know, and the ones it could not check.
 GROUP = {'unknownGroupMembers': SA, 'uncheckedGroupMembers': SA}
@@ -196,6 +204,8 @@ cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', 
                    'earlier dg stored without recording its origin, or no key.',
                    nl(E('wallet', 'phrase', 'file', 'dfk1', 'keychain'))),
     'renew': D('The command that renews a wallet-granted key, else null.', nl(S)),
+    'orgRequestsWaiting': D('Requests in the organizations connected here that wait for your signature; null when '
+                            'none is connected (or on mainnet).', nl(I)),
 }, ['network', 'authenticated'])
 cmd('auth balance', 'An identity\'s proved balance.', {
     'identityId': S, 'network': S, 'balanceCredits': I, 'balanceDash': F,
@@ -243,7 +253,8 @@ PUBLISH = {
     'push': nl(O({'remote': S, 'branch': S, 'oid': S, 'tracking': B, 'cost': COST, 'indexSkipped': ANY})),
     'balanceCredits': nl(I),
 }
-cmd('repo create', 'A new repository.', PUBLISH, ['status', 'repoId', 'ownerId', 'name'])
+cmd('repo create', 'A new repository, or (with --owner) the request an organization\'s members sign to create it.',
+    {**PUBLISH, 'status': E('created', 'exists', 'requested'), **ORG_REQUESTED}, ['status', 'repoId', 'ownerId', 'name'])
 cmd('init', 'The current git repository published as a new repository.', PUBLISH, ['status', 'repoId', 'ownerId', 'name'])
 cmd('repo clone', 'Where the repository was cloned.', {
     'remoteUrl': S, 'directory': S, 'network': S, 'gitConfig': ANY,
@@ -662,8 +673,8 @@ cmd('verify-app', 'A deployed copy of the web app checked against a published bu
     'cfBeaconRemoved': D('Of `matched`, the pages that matched once the Cloudflare Web Analytics beacon Cloudflare injects '
                          'was removed (docs/hosting.md section 6).', I),
 }, ['url', 'ok'])
-cmd('collab add', 'A member added, or their role changed.', {
-    'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,
+cmd('collab add', 'A member added, or their role changed (on an organization\'s repository: the request for it).', {
+    **ORG_REQUESTED, 'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,
     'environmentsSavedAgain': ANY, 'environmentPlan': ANY, 'documentId': S, 'id': S,
     'repo': S, 'cost': COST, 'keyShared': B, 'keyPending': ANY, 'postKeySent': B, 'rotation': nl(R('rotation')),
     'branchesShared': D('Branches for fewer people whose key the change sent (to anyone who joined) or renewed '
@@ -673,8 +684,8 @@ cmd('collab add', 'A member added, or their role changed.', {
 cmd('collab accept', 'An invitation accepted (or withdrawn).', {
     'status': S, 'repo': S, 'identityId': S, 'documentId': S, 'id': S, 'cost': COST,
 }, ['status', 'repo'])
-cmd('collab remove', 'A member removed.', {
-    'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
+cmd('collab remove', 'A member removed (on an organization\'s repository: the request for it).', {
+    **ORG_REQUESTED, 'status': E('removed', 'not_a_member', 'requested'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
     'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
     'branchesShared': D('Branches for fewer people the removal renewed the key of, as for `collab add`.', ANY),
 }, ['status', 'member'])
@@ -688,6 +699,46 @@ cmd('make-public', 'Members-only posts made public: your own each edited to Publ
 cmd('collab list', 'The repository\'s members and their roles.', {
     'count': I, 'members': A(OBJ), 'ownerId': S, 'roles': {'const': True},
 }, ['count', 'members', 'ownerId', 'roles'])
+
+# -- organizations (docs/design/organizations.md) ---------------------------------------------
+ORG_MEMBER = O({'index': I, 'name': S, 'authPub': S}, ['index', 'name', 'authPub'])
+ORG_REQUEST = {
+    'org': S, 'orgId': S, 'id': S, 'title': S,
+    'forge': D('Made by Forge; false for a proposal made elsewhere (in multisig.dashhq.org).', B),
+    'status': E('collecting', 'ready', 'done', 'expired', 'invalid'),
+    'collected': D('Valid signatures (the fewest any part of the request has).', I),
+    'threshold': I, 'signedByYou': B, 'declinedByYou': B,
+}
+ORG_REQUEST_REQ = ['org', 'orgId', 'id', 'title', 'status', 'collected', 'threshold']
+cmd('org connect', 'An organization connected on this computer.', {
+    'status': E('connected'), 'orgId': S, 'label': S, 'threshold': I,
+    'members': A(O({'index': I, 'name': S, 'authPub': S, 'you': B}, ['index', 'name', 'authPub', 'you'])),
+    'network': S, 'room': S, 'relay': S,
+}, ['status', 'orgId', 'label', 'threshold', 'members'])
+cmd('org list', 'The organizations connected on this computer for the network (public values only).', {
+    'network': S,
+    'orgs': A(O({'network': S, 'orgId': S, 'room': S, 'relay': S, 'authPub': S, 'label': S, 'threshold': I,
+                 'members': A(ORG_MEMBER)},
+                ['network', 'orgId', 'room', 'relay', 'authPub', 'label', 'threshold', 'members'])),
+}, ['network', 'orgs'])
+cmd('org requests', 'Every request in the connected organizations.', {
+    'requests': A(O(ORG_REQUEST, ORG_REQUEST_REQ)),
+}, ['requests'])
+cmd('org show', 'One request: what it writes, who signed and declined, and what is next.', {
+    **ORG_REQUEST, 'writes': SA, 'signers': SA, 'declined': A(O({'by': S, 'reason': S}, ['by', 'reason'])),
+    'problems': D('Why Forge refuses to sign it; empty when it passes review.', SA),
+    'next': D('The command to run next, or null.', nl(S)),
+}, ORG_REQUEST_REQ + ['writes', 'signers', 'declined', 'problems', 'next'])
+cmd('org sign', 'A request signed (and put on Platform when this signature completed it).', {
+    'status': E('signed', 'alreadySigned', 'done'), 'org': S, 'id': S, 'collected': I, 'threshold': I,
+    'broadcast': D('Parts of the request this run put on Platform.', I),
+}, ['status', 'id', 'collected', 'threshold'])
+cmd('org decline', 'A request declined.', {
+    'status': E('declined'), 'org': S, 'id': S, 'posted': I,
+}, ['status', 'id'])
+cmd('org finish', 'A fully signed request put on Platform, or why it is not ready.', {
+    'status': E('done', 'collecting'), 'org': S, 'id': S, 'broadcast': I, 'collected': I, 'threshold': I,
+}, ['status', 'id'])
 
 # -- branches and publishing ------------------------------------------------------------------
 BRANCH_ROW = O({'branch': S, 'tip': S, 'publishedAs': S, 'onto': S}, ['branch', 'tip', 'publishedAs', 'onto'])

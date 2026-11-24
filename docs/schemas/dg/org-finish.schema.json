@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-finish.schema.json",
+  "title": "dg org finish --json",
+  "description": "A fully signed request put on Platform, or why it is not ready.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "done",
+        "collecting"
+      ]
+    },
+    "org": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "broadcast": {
+      "type": "integer"
+    },
+    "collected": {
+      "type": "integer"
+    },
+    "threshold": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "id"
+  ],
+  "additionalProperties": true
+}

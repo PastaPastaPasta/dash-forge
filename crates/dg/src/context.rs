@@ -58,6 +58,7 @@ fn follows_repo_network(cmd: &crate::Command) -> bool {
     !matches!(
         cmd,
         Command::Auth(_)
+            | Command::Org(_)
             | Command::Repo(RepoCommand::Clone { .. } | RepoCommand::Create(_))
             | Command::Completions { .. }
     )

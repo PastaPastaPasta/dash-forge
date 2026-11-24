@@ -45,14 +45,46 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
             member,
             role,
             wait,
-        } => Box::pin(add(ctx, repo, member, *role, *wait)).await,
+            phrase,
+        } => {
+            if Box::pin(crate::org::route_member_change(
+                ctx,
+                repo,
+                member,
+                role.to_core(),
+                true,
+                phrase,
+            ))
+            .await?
+            .is_none()
+            {
+                Box::pin(add(ctx, repo, member, *role, *wait)).await?;
+            }
+            Ok(())
+        }
         CollabCommand::Accept { repo, withdraw } => accept(ctx, repo, *withdraw).await,
         CollabCommand::Remove {
             repo,
             member,
             role,
             no_resave,
-        } => Box::pin(remove(ctx, repo, member, *role, *no_resave)).await,
+            phrase,
+        } => {
+            if Box::pin(crate::org::route_member_change(
+                ctx,
+                repo,
+                member,
+                role.to_core(),
+                false,
+                phrase,
+            ))
+            .await?
+            .is_none()
+            {
+                Box::pin(remove(ctx, repo, member, *role, *no_resave)).await?;
+            }
+            Ok(())
+        }
         CollabCommand::List { repo } => list(ctx, repo).await,
     }
 }
@@ -174,6 +206,14 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
+    if handle.owner_id() != s.identity.id() {
+        if let Some(e) =
+            crate::org::org_owner_refusal(client, handle, "sign a request to change who has access")
+                .await
+        {
+            return Err(e);
+        }
+    }
     // `member` is an identity id or a DPNS name; resolve it once so every check and write
     // below sees a plain identity id.
     let member: &str = &resolve_identity(client, member, "member").await?;
@@ -474,6 +514,12 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
         role,
     );
     if handle.owner_id() != s.identity.id() {
+        if let Some(e) =
+            crate::org::org_owner_refusal(client, handle, "sign a request to change who has access")
+                .await
+        {
+            return Err(e);
+        }
         return Err(forge_core::Error::NotPermitted {
             action: format!("remove a member of {repo}"),
             reason: "only the repository's owner can change its members".into(),

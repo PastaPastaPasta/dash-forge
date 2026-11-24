@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-create.schema.json",
   "title": "dg repo create --json",
-  "description": "A new repository.",
+  "description": "A new repository, or (with --owner) the request an organization's members sign to create it.",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -12,7 +12,8 @@
       "type": "string",
       "enum": [
         "created",
-        "exists"
+        "exists",
+        "requested"
       ]
     },
     "generation": {},
@@ -144,6 +145,28 @@
         "integer",
         "null"
       ]
+    },
+    "org": {
+      "type": "string"
+    },
+    "orgId": {
+      "type": "string"
+    },
+    "requestId": {
+      "type": "string",
+      "description": "The request the members sign with `dg org sign <requestId>`."
+    },
+    "title": {
+      "type": "string"
+    },
+    "collected": {
+      "type": "integer"
+    },
+    "threshold": {
+      "type": "integer"
+    },
+    "signCommand": {
+      "type": "string"
     }
   },
   "required": [
