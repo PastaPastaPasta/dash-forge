@@ -157,9 +157,6 @@ pub struct Storer {
     /// Never use the keychain (a full identity with its master key).
     pub no_keychain: bool,
     pass: Option<Secret>,
-    /// Where the keys this storer replaced in a main slot were kept ([`keep_file`],
-    /// [`keep_keychain_entry`]).
-    pub kept: Vec<String>,
 }
 
 impl Storer {
@@ -192,32 +189,33 @@ impl Storer {
     ) -> Result<Stored> {
         if !self.no_keychain && keychain::available() {
             let acct = account(network, identity_id, slot);
-            if slot == Slot::Main {
-                if let Some(kept) = keep_keychain_entry(&acct, &backup_stamp())? {
-                    self.kept_one(format!(
-                        "{} entry {}/{kept}",
-                        keychain::store_name(),
-                        keychain::SERVICE
-                    ));
+            // An entry that can't be read is left as it is (it can't be copied first), and the
+            // key goes to a file instead.
+            match keep_keychain_entry(&acct, &backup_stamp()) {
+                Err(e) => eprintln!(
+                    "note: the keychain entry could not be read ({e:#}), so it is left as it is; using a file"
+                ),
+                Ok(kept) => {
+                    if let Some(kept) = kept {
+                        kept_one(keychain_source(&kept));
+                    }
+                    // keychain::set reads the value back before it reports success.
+                    match keychain::set(keychain::SERVICE, &acct, text.expose()) {
+                        Ok(()) => {
+                            return Ok(Stored::Keychain {
+                                source: keychain_source(&acct),
+                            })
+                        }
+                        Err(e) => {
+                            eprintln!("note: the keychain refused the key ({e}); using a file");
+                        }
+                    }
                 }
-            }
-            // keychain::set reads the value back before it reports success.
-            match keychain::set(keychain::SERVICE, &acct, text.expose()) {
-                Ok(()) => {
-                    return Ok(Stored::Keychain {
-                        source: format!(
-                            "{}{}/{acct}",
-                            keystore::KEYCHAIN_PREFIX,
-                            keychain::SERVICE
-                        ),
-                    })
-                }
-                Err(e) => eprintln!("note: the keychain refused the key ({e}); using a file"),
             }
         }
         let path = slot_file(network, identity_id, slot)?;
         if self.insecure_plaintext && !self.no_keychain {
-            self.keep_main_file(&path, slot)?;
+            keep_replaced_file(&path)?;
             keystore::write_private_file(&path, text.expose().as_bytes())?;
             return Ok(Stored::Plaintext(path));
         }
@@ -249,25 +247,39 @@ impl Storer {
         }
         let pass = self.pass.as_ref().context("no passphrase")?;
         let sealed_text = sealed::seal(text.expose().as_bytes(), pass.expose())?;
-        self.keep_main_file(&path, slot)?;
+        keep_replaced_file(&path)?;
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
         Ok(Stored::Sealed(path))
     }
+}
 
-    /// Before the main slot's key file is replaced, keep a copy of it ([`keep_file`]).
-    fn keep_main_file(&mut self, path: &std::path::Path, slot: Slot) -> Result<()> {
-        if slot == Slot::Main {
-            if let Some(kept) = keep_file(path, &backup_stamp())? {
-                self.kept_one(kept.display().to_string());
-            }
-        }
-        Ok(())
-    }
+/// The `keychain:` key source of dg's entry `acct`, which `--identity` and `DASH_FORGE_KEY`
+/// take.
+fn keychain_source(acct: &str) -> String {
+    format!("{}{}/{acct}", keystore::KEYCHAIN_PREFIX, keychain::SERVICE)
+}
 
-    fn kept_one(&mut self, at: String) {
-        eprintln!("The key this computer held is kept at {at}");
-        self.kept.push(at);
+/// Where this run kept the keys it replaced, for `--json` ([`kept_this_run`]).
+static KEPT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The key sources of the copies this run kept of keys it replaced (`previousKeyKeptAt`).
+pub fn kept_this_run() -> Vec<String> {
+    KEPT.lock().map(|k| k.clone()).unwrap_or_default()
+}
+
+fn kept_one(at: String) {
+    eprintln!("The key this computer held is kept at {at} (`--identity {at}` uses it)");
+    if let Ok(mut k) = KEPT.lock() {
+        k.push(at);
     }
+}
+
+/// Before a key file is replaced, keep a copy of it ([`keep_file`]).
+fn keep_replaced_file(path: &std::path::Path) -> Result<()> {
+    if let Some(kept) = keep_file(path, &backup_stamp())? {
+        kept_one(kept.display().to_string());
+    }
+    Ok(())
 }
 
 /// The UTC time a backup is named after: `20261125T120000Z`.
@@ -564,10 +576,10 @@ mod tests {
         found
     }
 
-    /// A master key, a limited key and a file that opens as no key are each kept byte for byte,
+    /// A master key, a limited key and a file that opens as no key are each copied byte for byte,
     /// 0600, beside the file, before anything replaces it.
     #[test]
-    fn a_replaced_key_file_is_kept_byte_for_byte() {
+    fn a_key_file_is_copied_byte_for_byte() {
         let master = br#"{"identityId":"X","identityKeys":[{"id":0,"purpose":"AUTHENTICATION","securityLevel":"MASTER","privateKeyWif":"cMASTER"}]}"#.to_vec();
         let limited = b"dfk1:testnet:X:5:cLIMITED".to_vec();
         let unreadable = vec![0xff, 0x00, 0xfe, b'\n', 0x80];

@@ -128,7 +128,7 @@
       "items": {
         "type": "string"
       },
-      "description": "With `--wallet`: where the key this computer held before is kept (a `.bak-<UTC time>` copy of the key file, or a keychain entry); empty when nothing was replaced."
+      "description": "Where the keys this sign-in replaced were kept, as key sources `--identity` takes: a `.bak-<UTC time>` copy of the key file, or a `keychain:` entry of that name. Empty when nothing was replaced."
     }
   },
   "required": [
