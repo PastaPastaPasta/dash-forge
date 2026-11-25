@@ -119,6 +119,32 @@ impl<'a> UserSync<'a> {
             .await
     }
 
+    /// The slot as read back after writing `written`, once it holds every entry of it (a node may
+    /// be a block behind: read again a few times).
+    async fn read_back(&self, slot: &str, written: &SlotDoc) -> Result<SlotDoc> {
+        let mut missing = String::new();
+        for attempt in 0..4u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1500 * attempt)).await;
+            }
+            let Some(back) = self.read_slot(slot).await? else {
+                missing = "the slot".into();
+                continue;
+            };
+            match written
+                .entries
+                .iter()
+                .find(|(k, e)| back.doc.entries.get(*k).is_none_or(|b| b.at < e.at))
+            {
+                Some((k, _)) => missing.clone_from(k),
+                None => return Ok(back.doc),
+            }
+        }
+        Err(Error::Platform(format!(
+            "the synced settings read back without {missing}"
+        )))
+    }
+
     /// Merge `changes` into the stored slot and write the result when it differs, then read it
     /// back and check every entry of `changes` that won is there as written. Returns the merged
     /// document. A write that lost a race is merged and written once more.
@@ -141,18 +167,7 @@ impl<'a> UserSync<'a> {
                 last = Some(e);
                 continue;
             }
-            let back = self
-                .read_slot(slot)
-                .await?
-                .ok_or_else(|| Error::Platform("the synced settings did not read back".into()))?;
-            for (k, e) in &merged.entries {
-                if back.doc.entries.get(k).is_none_or(|b| b.at < e.at) {
-                    return Err(Error::Platform(format!(
-                        "the synced settings read back without {k}"
-                    )));
-                }
-            }
-            return Ok(back.doc);
+            return self.read_back(slot, &merged).await;
         }
         Err(last.unwrap_or(Error::Nonce))
     }
@@ -396,21 +411,43 @@ impl std::fmt::Debug for ShareContent {
 
 impl ShareContent {
     /// The share for `policy` over `profiles` (the effective set): the non-Platform profiles it
-    /// names. `None` when it names none, or one that is not there or does not resolve.
+    /// names, and the policy with any Platform-kind name as `platform`. `None` when it names no
+    /// other profile, or one that is not there or does not resolve.
     pub fn for_policy(policy: &StoragePolicy, profiles: &StorageProfiles) -> Option<Self> {
         let mut out = BTreeMap::new();
+        let mut targets = Vec::new();
         for name in &policy.targets {
             let p = profiles.get(name)?;
             if p.is_platform() {
+                targets.push(crate::storage::PLATFORM_PROFILE.to_string());
                 continue;
             }
             out.insert(name.clone(), storage::profile_to_synced(&p).ok()?);
+            targets.push(name.clone());
         }
+        let policy = StoragePolicy {
+            targets,
+            ..policy.clone()
+        };
         (!out.is_empty()).then(|| Self {
             profiles: out,
-            policy: storage::policy_to_synced(policy),
+            policy: storage::policy_to_synced(&policy),
             extra: Map::new(),
         })
+    }
+
+    /// Nothing shared: what a share holds once its owner stops sharing.
+    fn nothing() -> Self {
+        Self {
+            profiles: BTreeMap::new(),
+            policy: Value::Null,
+            extra: Map::new(),
+        }
+    }
+
+    /// Whether `self` holds what `other` holds (the fields dg writes; others are carried along).
+    fn same_as(&self, other: &Self) -> bool {
+        self.profiles == other.profiles && self.policy == other.policy
     }
 
     fn to_json(&self) -> Vec<u8> {
@@ -449,39 +486,52 @@ impl ShareContent {
         })
     }
 
-    /// The shared profiles under `share.<owner8>.<name>` names, and the policy over those names,
-    /// so they never collide with the maintainer's own.
+    /// The shared profiles under `share.<owner8>.<name>` names (a name that would not be a valid
+    /// profile name is left out), and the policy over those names, so they never collide with the
+    /// maintainer's own. The owner's word does not reach the maintainer's own network: a shared
+    /// profile never records a non-public address (`allow_private_uri` is off).
     pub fn as_profiles(
         &self,
         owner_id: &str,
     ) -> (BTreeMap<String, Profile>, Option<StoragePolicy>) {
         let tag: String = owner_id.chars().take(8).collect();
-        let rename = |n: &str| {
-            let mut s = format!("share.{tag}.{n}");
-            s.truncate(64);
-            s
-        };
+        let rename = |n: &str| Some(format!("share.{tag}.{n}")).filter(|s| valid_profile_name(s));
         let profiles = self
             .profiles
             .iter()
-            .filter_map(|(n, v)| Some((rename(n), storage::profile_from_synced(v).ok()??)))
+            .filter_map(|(n, v)| {
+                let mut p = storage::profile_from_synced(v).ok()??;
+                p.forbid_private_uri();
+                Some((rename(n)?, p))
+            })
             .collect::<BTreeMap<_, _>>();
-        let policy = storage::policy_from_synced(&self.policy).map(|mut p| {
+        let policy = storage::policy_from_synced(&self.policy).and_then(|mut p| {
             p.targets = p
                 .targets
                 .iter()
                 .map(|t| {
                     if t == crate::storage::PLATFORM_PROFILE {
-                        t.clone()
+                        Some(t.clone())
                     } else {
                         rename(t)
                     }
                 })
-                .collect();
-            p
+                .collect::<Option<_>>()?;
+            Some(p)
         });
         (profiles, policy)
     }
+}
+
+/// What an owner's reconcile makes the share hold.
+#[derive(Debug, Clone, Copy)]
+pub enum Wanted<'a> {
+    /// What it holds now (the caller does not know the repository's policy).
+    Keep,
+    /// These profiles and policy.
+    Content(&'a ShareContent),
+    /// Nothing: the policy names no storage to share, so sharing stops.
+    Nothing,
 }
 
 /// What an owner's reconcile did.
@@ -495,9 +545,10 @@ pub struct Reconciled {
     pub granted: Vec<String>,
     /// Maintainers with no forge-user key yet: access once they sign in with a wallet.
     pub waiting: Vec<String>,
-    /// Members whose grant was deleted (no longer maintainers).
+    /// Members whose grant was deleted: no longer maintainers, their key no longer live, or the
+    /// owner stopped sharing.
     pub revoked: Vec<String>,
-    /// Whether the repository has a share now.
+    /// Whether the repository shares storage now.
     pub shared: bool,
 }
 
@@ -589,36 +640,103 @@ impl UserSync<'_> {
             .await
     }
 
-    /// [`Self::reconcile_repo`]'s writes: the share holding `content` at `out.epoch`, then a
-    /// grant to every maintainer with a forge-user key that lacks a current one.
-    #[allow(clippy::too_many_arguments)]
-    async fn share_and_grant(
+    /// The grants of `repo_id` to revoke: anyone who is no longer one of `maintainers` (or is
+    /// the owner), or whose recipient key is no longer a live forge-user key; everyone when
+    /// sharing stops.
+    async fn to_revoke(
         &self,
-        repo_id: &str,
-        existing: Option<&ShareDoc>,
-        current: Option<&ShareContent>,
-        content: &ShareContent,
         grants: &[GrantDoc],
         maintainers: &BTreeSet<String>,
-        out: &mut Reconciled,
-    ) -> Result<()> {
+        stop: bool,
+    ) -> Result<Vec<GrantDoc>> {
+        let mut out = Vec::new();
+        for g in grants {
+            let gone = stop
+                || g.member_id == self.key.identity_id
+                || !maintainers.contains(&g.member_id)
+                || self
+                    .store
+                    .encryption_key(&g.member_id, Some(g.recipient_key_id))
+                    .await?
+                    .is_none();
+            if gone {
+                out.push(g.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// As the owner of `repo_id`: make its share hold what `wanted` says, grant it to every one
+    /// of `maintainers` that has a live forge-user key, and revoke every other grant, moving to
+    /// a new epoch when one is revoked (the removed key can still open the old one). Revoked
+    /// grants go first, so a share that cannot be written or read never keeps one. Writes nothing
+    /// that is already so.
+    pub async fn reconcile_repo(
+        &self,
+        repo_id: &str,
+        wanted: Wanted<'_>,
+        maintainers: &BTreeSet<String>,
+    ) -> Result<Reconciled> {
         let me = &self.key.identity_id;
-        out.shared = true;
-        let rsk = self.rsk(&crate::platform::decode_identifier(repo_id)?, out.epoch);
-        let share_current = existing.is_some_and(|s| {
-            s.epoch == out.epoch && s.key_id == self.key.key_id && current == Some(content)
+        let repo = crate::platform::decode_identifier(repo_id)?;
+        let existing = self.store.share(me, repo_id).await?;
+        let all = self.store.grants_of_repo(me, repo_id).await?;
+        let stop = matches!(wanted, Wanted::Nothing);
+        let revoked = self.to_revoke(&all, maintainers, stop).await?;
+        let mut out = Reconciled {
+            epoch: existing.as_ref().map_or(0, |s| s.epoch),
+            ..Reconciled::default()
+        };
+        if !revoked.is_empty() && existing.is_some() {
+            out.epoch = out.epoch.checked_add(1).ok_or(Error::Integrity)?;
+        }
+        for g in &revoked {
+            self.store.delete_grant(g).await?;
+            out.revoked.push(g.member_id.clone());
+        }
+        let current = match &existing {
+            Some(s) => Some(self.open_share(s, &self.rsk(&repo, s.epoch))?),
+            None => None,
+        };
+        let mut content = match wanted {
+            Wanted::Content(c) => c.clone(),
+            Wanted::Nothing if existing.is_some() => ShareContent::nothing(),
+            Wanted::Keep => match &current {
+                Some(c) => c.clone(),
+                None => return Ok(out),
+            },
+            Wanted::Nothing => return Ok(out),
+        };
+        if let Some(c) = &current {
+            for (k, v) in &c.extra {
+                content.extra.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        let rsk = self.rsk(&repo, out.epoch);
+        let unchanged = existing.as_ref().is_some_and(|s| {
+            s.epoch == out.epoch
+                && s.key_id == self.key.key_id
+                && current.as_ref().is_some_and(|c| c.same_as(&content))
         });
-        if !share_current {
-            self.put_share(existing, repo_id, out.epoch, &rsk, content)
+        if !unchanged {
+            self.put_share(existing.as_ref(), repo_id, out.epoch, &rsk, &content)
                 .await?;
             out.share_written = true;
         }
+        if stop {
+            return Ok(out);
+        }
+        out.shared = true;
+        let kept: Vec<&GrantDoc> = all
+            .iter()
+            .filter(|g| !revoked.iter().any(|r| r.id == g.id))
+            .collect();
         for member in maintainers.iter().filter(|m| *m != me) {
             let Some(their) = self.store.encryption_key(member, None).await? else {
                 out.waiting.push(member.clone());
                 continue;
             };
-            let old = grants.iter().find(|g| g.member_id == *member);
+            let old = kept.iter().copied().find(|g| g.member_id == *member);
             if old.is_some_and(|g| {
                 g.epoch == out.epoch
                     && g.recipient_key_id == their.id
@@ -630,61 +748,11 @@ impl UserSync<'_> {
                 .await?;
             out.granted.push(member.clone());
         }
-        Ok(())
-    }
-
-    /// As the owner of `repo_id`: make its share hold `wanted` (keeping what is there when
-    /// `None`), grant it to every one of `maintainers` that has a forge-user key, and revoke
-    /// the grants of anyone else, moving to a new epoch when someone is revoked. Writes nothing
-    /// that is already so.
-    pub async fn reconcile_repo(
-        &self,
-        repo_id: &str,
-        wanted: Option<&ShareContent>,
-        maintainers: &BTreeSet<String>,
-    ) -> Result<Reconciled> {
-        let me = &self.key.identity_id;
-        let repo = crate::platform::decode_identifier(repo_id)?;
-        let existing = self.store.share(me, repo_id).await?;
-        let current = match &existing {
-            Some(s) => Some(self.open_share(s, &self.rsk(&repo, s.epoch))?),
-            None => None,
-        };
-        let grants = self.store.grants_of_repo(me, repo_id).await?;
-        let revoked: Vec<GrantDoc> = grants
-            .iter()
-            .filter(|g| !maintainers.contains(&g.member_id) || g.member_id == *me)
-            .cloned()
-            .collect();
-        let mut epoch = existing.as_ref().map_or(0, |s| s.epoch);
-        if !revoked.is_empty() && existing.is_some() {
-            epoch = epoch.checked_add(1).ok_or(Error::Integrity)?;
-        }
-        let mut out = Reconciled {
-            epoch,
-            ..Reconciled::default()
-        };
-        if let Some(content) = wanted.or(current.as_ref()) {
-            self.share_and_grant(
-                repo_id,
-                existing.as_ref(),
-                current.as_ref(),
-                content,
-                &grants,
-                maintainers,
-                &mut out,
-            )
-            .await?;
-        }
-        for g in &revoked {
-            self.store.delete_grant(g).await?;
-            out.revoked.push(g.member_id.clone());
-        }
         Ok(out)
     }
 
     /// As a maintainer of `repo_id`, owned by `owner_id`: the storage its owner shared with this
-    /// identity, when there is a grant from the owner at the share's epoch. The caller checks
+    /// identity, when the owner's grant to this key is at the share's epoch. The caller checks
     /// that this identity is a current maintainer.
     pub async fn granted_share(
         &self,
@@ -698,21 +766,17 @@ impl UserSync<'_> {
         let Some(share) = self.store.share(owner_id, repo_id).await? else {
             return Ok(None);
         };
-        if share.owner_id != owner_id {
+        let Some(grant) = self.store.grant(owner_id, repo_id, me).await? else {
+            return Ok(None);
+        };
+        if share.owner_id != owner_id
+            || grant.owner_id != owner_id
+            || grant.member_id != *me
+            || grant.epoch != share.epoch
+            || grant.recipient_key_id != self.key.key_id
+        {
             return Ok(None);
         }
-        let grant = self
-            .store
-            .grants_for_member(me, repo_id)
-            .await?
-            .into_iter()
-            .find(|g| {
-                g.owner_id == owner_id
-                    && g.member_id == *me
-                    && g.epoch == share.epoch
-                    && g.recipient_key_id == self.key.key_id
-            });
-        let Some(grant) = grant else { return Ok(None) };
         let Some(owner_key) = self
             .store
             .encryption_key(owner_id, Some(grant.sender_key_id))

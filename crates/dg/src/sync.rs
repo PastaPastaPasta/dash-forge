@@ -245,9 +245,9 @@ pub async fn ensure_first_sync(ctx: &Ctx, writer: &Writer<'_>, key: &SyncKey, co
 /// Run the first sync if it has not passed here yet, else record one `dg storage` change: entry
 /// `entry` set to `value`, or tombstoned (`None`, only when the synced copy holds it). A no-op
 /// when sync is off; a failure is a note: the local change stands.
-async fn record_change(ctx: &Ctx, entry: String, value: Option<serde_json::Value>) {
+async fn record_change(ctx: &Ctx, entry: String, value: Option<serde_json::Value>) -> bool {
     let SyncState::On { key, contract } = state(ctx) else {
-        return;
+        return false;
     };
     let run = async {
         let (client, bridge, identity) = ctx.connect_with_identity().await?;
@@ -259,31 +259,44 @@ async fn record_change(ctx: &Ctx, entry: String, value: Option<serde_json::Value
                 let current = sync.read_slot(SLOT_STORAGE).await?;
                 let held = current.as_ref().and_then(|r| r.doc.get(&entry));
                 if held == value.as_ref() {
-                    return Ok(());
+                    return Ok(true);
                 }
                 let mut changes = SlotDoc::new(SLOT_STORAGE);
                 match &value {
                     Some(v) => changes.set(&entry, user_sync::now_ms(), v.clone()),
                     None => changes.remove(&entry, user_sync::now_ms()),
                 };
-                sync.merge_into(SLOT_STORAGE, &changes).await?;
-                Ok(())
+                let back = sync.merge_into(SLOT_STORAGE, &changes).await?;
+                Ok(back.get(&entry) == value.as_ref())
             })
             .await
     };
-    if let Err(e) = run.await {
-        if !ctx.json {
-            eprintln!("note: the change was saved here but not synced to your identity ({e:#}); it syncs on the next `dg storage` change");
+    match run.await {
+        Ok(true) => true,
+        Ok(false) => {
+            if !ctx.json {
+                eprintln!(
+                    "note: another device changed {entry} later; its change is the one that syncs"
+                );
+            }
+            false
+        }
+        Err(e) => {
+            if !ctx.json {
+                eprintln!("note: the change was saved here but not synced to your identity ({e:#}); it syncs on the next `dg storage` change");
+            }
+            false
         }
     }
 }
 
-/// Record that profile `name` was added or edited (`Some`) or removed (`None`).
+/// Record that profile `name` was added or edited (`Some`) or removed (`None`). Whether the
+/// synced copy now says so.
 pub async fn after_profile_change(
     ctx: &Ctx,
     name: &str,
     profile: Option<&forge_core::storage::Profile>,
-) {
+) -> bool {
     let value = match profile.map(user_sync::storage::profile_to_synced) {
         None => None,
         Some(Ok(v)) => Some(v),
@@ -291,15 +304,15 @@ pub async fn after_profile_change(
             if !ctx.json && !matches!(state(ctx), SyncState::Unavailable | SyncState::Off) {
                 eprintln!("note: {name} stays on this computer only ({e})");
             }
-            return;
+            return false;
         }
     };
-    record_change(ctx, user_sync::storage::profile_key(name), value).await;
+    record_change(ctx, user_sync::storage::profile_key(name), value).await
 }
 
 /// Record a new global default policy.
 pub async fn after_default_policy(ctx: &Ctx, policy: &StoragePolicy) {
-    record_change(
+    let _ = record_change(
         ctx,
         user_sync::storage::DEFAULT_KEY.to_string(),
         Some(user_sync::storage::policy_to_synced(policy)),
@@ -338,8 +351,8 @@ pub fn rotate_line(member: &str) -> String {
 
 /// As the owner of the session's repository, after its members changed: lend its shared
 /// storage to the current maintainers that have a forge-user key and revoke anyone else
-/// (`identity-synced-state.md` §5). With no share yet, one is made from the owner's synced
-/// policy for the repository. `None` when sync is off, the signer is not the owner, or it failed
+/// (`identity-synced-state.md` §5). The share holds what the owner's synced policy for the
+/// repository names when there is one, else what it holds now. `None` when sync is off, the signer is not the owner, or it failed
 /// (a note says so).
 pub async fn after_membership_change(
     ctx: &Ctx,
@@ -357,21 +370,20 @@ pub async fn after_membership_change(
         Writer::new(&s.client, &s.bridge, &s.identity)
             .with_store(&contract, async |store| {
                 let sync = UserSync::new(&key, store);
-                let wanted = if store.share(&me, s.repo.id()).await?.is_some() {
-                    None
-                } else {
-                    let own = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
-                    let local = StorageProfiles::load().unwrap_or_default();
-                    own.as_ref().and_then(|doc| {
-                        let policy = user_sync::synced_policy(doc, Some(s.repo.id()))?;
-                        user_sync::ShareContent::for_policy(
-                            &policy,
-                            &user_sync::effective(&local, Some(doc)).profiles,
-                        )
-                    })
-                };
+                let own = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
+                let local = StorageProfiles::load().unwrap_or_default();
+                let content = own.as_ref().and_then(|doc| {
+                    let policy = user_sync::synced_policy(doc, Some(s.repo.id()))?;
+                    user_sync::ShareContent::for_policy(
+                        &policy,
+                        &user_sync::effective(&local, Some(doc)).profiles,
+                    )
+                });
+                let wanted = content
+                    .as_ref()
+                    .map_or(user_sync::Wanted::Keep, user_sync::Wanted::Content);
                 Ok(sync
-                    .reconcile_repo(s.repo.id(), wanted.as_ref(), &maintainers)
+                    .reconcile_repo(s.repo.id(), wanted, &maintainers)
                     .await?)
             })
             .await

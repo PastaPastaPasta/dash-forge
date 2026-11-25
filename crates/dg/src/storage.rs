@@ -182,7 +182,7 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
             )
             .await?;
             let saved = StorageProfiles::load()?.profiles.get(&added.name).cloned();
-            crate::sync::after_profile_change(ctx, &added.name, saved.as_ref()).await;
+            let _ = crate::sync::after_profile_change(ctx, &added.name, saved.as_ref()).await;
             return Ok(());
         }
         return Err(UserError::new(codes::USAGE, "storage profile not added: no profile name")
@@ -196,7 +196,7 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
             .into());
     };
     let (profile, path, replaced) = save_profile(name, args)?;
-    crate::sync::after_profile_change(ctx, name, Some(&profile)).await;
+    let _ = crate::sync::after_profile_change(ctx, name, Some(&profile)).await;
     let unresolved: Vec<String> = profile
         .secret_refs()
         .iter()
@@ -424,7 +424,17 @@ async fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     let Some(removed) = profiles.profiles.remove(name) else {
         let effective = crate::sync::merged(ctx, &profiles).await;
         if effective.origin.get(name) == Some(&forge_core::user_sync::Origin::Synced) {
-            crate::sync::after_profile_change(ctx, name, None).await;
+            if !crate::sync::after_profile_change(ctx, name, None).await {
+                return Err(UserError::new(
+                    codes::UNEXPECTED,
+                    format!("synced storage profile {name:?} was not removed"),
+                )
+                .cause(
+                    "the change did not reach your identity's synced settings (see the note above)",
+                )
+                .fix(format!("run `dg storage remove {name}` again"))
+                .into());
+            }
             ctx.emit(
                 json!({ "status": "removed", "profile": name, "synced": true }),
                 || println!("Removed synced storage profile {name:?} from your identity (every device stops using it)."),
@@ -439,7 +449,7 @@ async fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     profiles.save_to(&path)?;
     // The profile is gone first: a keychain that cannot be reached must not keep it.
     let secrets = remove_owned_secrets(name, &removed, &profiles, forge_core::keychain::delete);
-    crate::sync::after_profile_change(ctx, name, None).await;
+    let _ = crate::sync::after_profile_change(ctx, name, None).await;
     ctx.emit(
         json!({ "status": "removed", "profile": name, "keychain": secrets.to_json() }),
         || {

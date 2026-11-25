@@ -177,6 +177,8 @@ pub struct Helper {
     /// (`identity-synced-state.md` §5), and what its policy lends the maintainers.
     reconcile_after_push: bool,
     share_plan: Option<forge_core::user_sync::ShareContent>,
+    /// The push's policy is set and names no storage to share: sharing stops.
+    share_stop: bool,
 }
 
 /// What a clone's first fetch of members-only or shared branches does before anything else,
@@ -565,6 +567,7 @@ impl Helper {
             first_members_fetch: None,
             reconcile_after_push: false,
             share_plan: None,
+            share_stop: false,
         })
     }
 
@@ -1626,6 +1629,11 @@ impl Helper {
     async fn reconcile_share(&mut self) {
         use forge_core::user_sync::{key, platform::PlatformUserStore, repo, UserSync};
         let plan = self.share_plan.take();
+        let wanted = match (&plan, std::mem::take(&mut self.share_stop)) {
+            (Some(c), _) => forge_core::user_sync::Wanted::Content(c),
+            (None, true) => forge_core::user_sync::Wanted::Nothing,
+            (None, false) => forge_core::user_sync::Wanted::Keep,
+        };
         let Some(contract) = self.target.v2.as_ref().and_then(|f| f.user.clone()) else {
             return;
         };
@@ -1652,7 +1660,7 @@ impl Helper {
             )?;
             let store = PlatformUserStore::open(&conn.client, &contract, Some(&engine)).await?;
             UserSync::new(&key, &store)
-                .reconcile_repo(conn.repo.id(), plan.as_ref(), &maintainers)
+                .reconcile_repo(conn.repo.id(), wanted, &maintainers)
                 .await
         };
         match run.await {
@@ -1708,6 +1716,7 @@ impl Helper {
                 self.reconcile_after_push = true;
                 self.share_plan =
                     forge_core::user_sync::ShareContent::for_resolved(&policy.resolved);
+                self.share_stop = policy.resolved.external.is_empty() && policy.storage_configured;
             }
             policy
         } else {

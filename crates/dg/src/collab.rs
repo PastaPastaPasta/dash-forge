@@ -449,13 +449,15 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         s.spent_since(before).await
     };
     let key_pending = (keyed || post_key) && !can_receive;
-    let shared = if role == Role::Maintainer {
+    let shared = if role == Role::Maintainer || change_from == Some(Role::Maintainer) {
         crate::sync::after_membership_change(ctx, &s).await
     } else {
         None
     };
     let storage_shared = shared.as_ref().map(|d| {
-        if d.waiting.iter().any(|m| m == member) {
+        if d.revoked.iter().any(|m| m == member) {
+            "revoked"
+        } else if d.waiting.iter().any(|m| m == member) {
             "after-wallet-sign-in"
         } else if d.shared {
             "shared"
@@ -512,6 +514,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             match storage_shared {
                 Some("shared") => println!("  {member} pushes to your storage for this repository (Platform fees stay theirs)"),
                 Some("after-wallet-sign-in") => println!("  {member} gets your storage for this repository after signing in with a wallet once"),
+                Some("revoked") => println!("  {}", crate::sync::rotate_line(member)),
                 _ => {}
             }
         },

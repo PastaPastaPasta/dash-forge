@@ -115,8 +115,8 @@ pub trait UserStore: Send + Sync {
     async fn put_share(&self, doc: &ShareDoc) -> Result<()>;
     /// Every `grant` `owner` wrote for `repo`.
     async fn grants_of_repo(&self, owner: &str, repo: &str) -> Result<Vec<GrantDoc>>;
-    /// Every `grant` naming `member` for `repo`, whoever wrote it.
-    async fn grants_for_member(&self, member: &str, repo: &str) -> Result<Vec<GrantDoc>>;
+    /// `owner`'s `grant` to `member` for `repo` (the unique `byMember` index).
+    async fn grant(&self, owner: &str, repo: &str, member: &str) -> Result<Option<GrantDoc>>;
     /// Create or replace the signer's `grant`.
     async fn put_grant(&self, doc: &GrantDoc) -> Result<()>;
     /// Delete the signer's `grant`.
@@ -171,6 +171,19 @@ impl MemoryStore {
             .entry(identity.to_string())
             .or_default()
             .push(EncKeyInfo { id, public_key });
+    }
+
+    /// Disable `identity`'s key `id` (it no longer counts as live).
+    pub fn disable_key(&self, identity: &str, id: u32) {
+        if let Some(keys) = self
+            .inner
+            .lock()
+            .expect("store lock")
+            .keys
+            .get_mut(identity)
+        {
+            keys.retain(|k| k.id != id);
+        }
     }
 
     /// How many documents were written (created, replaced or deleted).
@@ -303,13 +316,12 @@ impl UserStore for MemoryStore {
             .collect())
     }
 
-    async fn grants_for_member(&self, member: &str, repo: &str) -> Result<Vec<GrantDoc>> {
+    async fn grant(&self, owner: &str, repo: &str, member: &str) -> Result<Option<GrantDoc>> {
         let m = self.inner.lock().expect("store lock");
         Ok(m.grants
             .values()
-            .filter(|d| d.member_id == member && d.repo_id == repo)
-            .cloned()
-            .collect())
+            .find(|d| d.owner_id == owner && d.repo_id == repo && d.member_id == member)
+            .cloned())
     }
 
     async fn put_grant(&self, doc: &GrantDoc) -> Result<()> {

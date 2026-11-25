@@ -242,19 +242,21 @@ impl UserStore for PlatformUserStore<'_> {
         .collect()
     }
 
-    async fn grants_for_member(&self, member: &str, repo: &str) -> Result<Vec<GrantDoc>> {
+    async fn grant(&self, owner: &str, repo: &str, member: &str) -> Result<Option<GrantDoc>> {
         self.query(
             DOC_GRANT,
             &[
-                QueryFilter::eq("memberId", id_field(member)?),
+                QueryFilter::eq("$ownerId", id_field(owner)?),
                 QueryFilter::eq("repoId", id_field(repo)?),
+                QueryFilter::eq("memberId", id_field(member)?),
             ],
-            MAX_GRANTS,
+            1,
         )
         .await?
         .iter()
+        .find(|d| d.owner_id == owner)
         .map(grant_from)
-        .collect()
+        .transpose()
     }
 
     async fn put_grant(&self, doc: &GrantDoc) -> Result<()> {

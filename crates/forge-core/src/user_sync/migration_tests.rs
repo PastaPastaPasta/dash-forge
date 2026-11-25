@@ -304,7 +304,7 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
     store.as_signer(&owner);
     let owner_sync = UserSync::new(&e_owner, &store);
     let r = owner_sync
-        .reconcile_repo(&repo, Some(&content), &maintainers)
+        .reconcile_repo(&repo, Wanted::Content(&content), &maintainers)
         .await
         .unwrap();
     assert!(r.share_written && r.shared);
@@ -313,14 +313,14 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
     // After a wallet sign-in the member has one; the next reconcile grants it, once.
     store.add_key(&member, 9, e_member.public_key().to_vec());
     let r = owner_sync
-        .reconcile_repo(&repo, Some(&content), &maintainers)
+        .reconcile_repo(&repo, Wanted::Content(&content), &maintainers)
         .await
         .unwrap();
     assert!(!r.share_written);
     assert_eq!(r.granted, vec![member.clone()]);
     let writes = store.writes();
     let r = owner_sync
-        .reconcile_repo(&repo, Some(&content), &maintainers)
+        .reconcile_repo(&repo, Wanted::Content(&content), &maintainers)
         .await
         .unwrap();
     assert!(r.granted.is_empty() && !r.share_written);
@@ -376,7 +376,7 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
     };
     for r in [&repo, &other_repo] {
         UserSync::new(&e_mallory, &store)
-            .reconcile_repo(r, Some(&lure), &maintainers)
+            .reconcile_repo(r, Wanted::Content(&lure), &maintainers)
             .await
             .unwrap();
     }
@@ -394,7 +394,7 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
     // Removal: a new epoch, the share re-encrypted, the member's grant deleted.
     store.as_signer(&owner);
     let r = owner_sync
-        .reconcile_repo(&repo, None, &BTreeSet::new())
+        .reconcile_repo(&repo, Wanted::Keep, &BTreeSet::new())
         .await
         .unwrap();
     assert_eq!(r.revoked, vec![member.clone()]);
@@ -420,4 +420,215 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
         )
         .unwrap();
     assert_eq!(back, content);
+}
+
+struct Shared {
+    owner: String,
+    member: String,
+    repo: String,
+    e_owner: SyncKey,
+    e_member: SyncKey,
+    store: MemoryStore,
+    content: ShareContent,
+}
+
+fn repo_with_one_maintainer() -> Shared {
+    set_secrets();
+    let owner = id("owner2");
+    let member = id("member2");
+    let e_owner = key(&owner, 7, "owner2 E");
+    let e_member = key(&member, 9, "member2 E");
+    let store = MemoryStore::new();
+    store.add_key(&owner, 7, e_owner.public_key().to_vec());
+    store.add_key(&member, 9, e_member.public_key().to_vec());
+    let profiles = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
+    let policy = StoragePolicy::from_git_values(Some("r2-main"), None, None).unwrap();
+    let content = ShareContent::for_resolved(&policy.resolve(&profiles).unwrap()).unwrap();
+    Shared {
+        owner,
+        member,
+        repo: id("repo2"),
+        e_owner,
+        e_member,
+        store,
+        content,
+    }
+}
+
+#[tokio::test]
+async fn a_disabled_member_key_loses_its_grant_and_the_epoch_moves() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let first = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!((first.epoch, first.granted.len()), (0, 1));
+    r.store.disable_key(&r.member, 9);
+    let after = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(after.revoked, vec![r.member.clone()]);
+    assert_eq!(after.waiting, vec![r.member.clone()]);
+    assert_eq!(after.epoch, 1);
+    assert!(r.store.all_grants().is_empty());
+    // A new key gets a grant at the new epoch; the old key's epoch is never reused.
+    let e_new = key(&r.member, 10, "member2 new E");
+    r.store.add_key(&r.member, 10, e_new.public_key().to_vec());
+    let again = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!((again.epoch, again.granted.len()), (1, 1));
+    r.store.as_signer(&r.member);
+    assert!(UserSync::new(&e_new, &r.store)
+        .granted_share(&r.repo, &r.owner)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(UserSync::new(&r.e_member, &r.store)
+        .granted_share(&r.repo, &r.owner)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn stopping_and_resuming_sharing_never_reuses_an_epoch() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    let stopped = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(stopped.revoked, vec![r.member.clone()]);
+    assert!(!stopped.shared && stopped.share_written);
+    assert_eq!(stopped.epoch, 1);
+    // A maintainer key that opened epoch 0 learns nothing from epoch 1's empty share.
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    let empty = owner.open_share(&share, &owner.rsk(&repo, 1)).unwrap();
+    assert!(empty.profiles.is_empty());
+    assert!(owner.open_share(&share, &owner.rsk(&repo, 0)).is_err());
+    let resumed = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!((resumed.epoch, resumed.granted.len()), (1, 1));
+    // Without a share there is nothing to stop.
+    let fresh = id("repo never shared");
+    let none = owner
+        .reconcile_repo(&fresh, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert!(!none.share_written && none.granted.is_empty());
+}
+
+#[tokio::test]
+async fn unknown_share_fields_survive_and_an_unchanged_share_is_not_rewritten() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let mut newer = r.content.clone();
+    newer.extra.insert("future".into(), json!({"a": 1}));
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&newer), &maintainers)
+        .await
+        .unwrap();
+    let writes = r.store.writes();
+    let same = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert!(!same.share_written);
+    assert_eq!(r.store.writes(), writes);
+    // A removal re-encrypts it, keeping the field.
+    let gone = owner
+        .reconcile_repo(&r.repo, Wanted::Keep, &BTreeSet::new())
+        .await
+        .unwrap();
+    assert!(gone.share_written);
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    let back = owner
+        .open_share(&share, &owner.rsk(&repo, gone.epoch))
+        .unwrap();
+    assert_eq!(back.extra.get("future"), Some(&json!({"a": 1})));
+}
+
+#[test]
+fn a_shared_profile_never_records_a_private_address_and_bad_names_are_dropped() {
+    let content = ShareContent {
+        profiles: [
+            (
+                "lan".to_string(),
+                json!({"settings": {"kind": "ipfs-kubo", "provider": "kubo", "api": "http://192.168.1.5:5001", "gateway": "", "publicGateway": "", "pinningEndpoint": ""}, "secrets": {}, "dg": {"allowPrivateUri": true}}),
+            ),
+            (
+                format!("{}é", "a".repeat(48)),
+                json!({"settings": {"kind": "platform", "provider": "platform"}, "secrets": {}}),
+            ),
+        ]
+        .into(),
+        policy: json!({"targets": ["lan"], "replicas": 1, "platformFallback": false}),
+        extra: serde_json::Map::new(),
+    };
+    let owner = id("owner3");
+    let (profiles, policy) = content.as_profiles(&owner);
+    assert_eq!(profiles.len(), 1);
+    let (name, lan) = profiles.iter().next().unwrap();
+    assert_eq!(name, &format!("share.{}.lan", &owner[..8]));
+    assert!(!lan.allow_private_uri());
+    assert_eq!(policy.unwrap().targets, vec![name.clone()]);
+}
+
+#[tokio::test]
+async fn a_synced_policy_naming_a_profile_that_is_gone_is_skipped() {
+    set_secrets();
+    let erin = id("erin");
+    let store = MemoryStore::new();
+    store.as_signer(&erin);
+    let e = key(&erin, 1, "erin E");
+    let sync = UserSync::new(&e, &store);
+    let mut doc = SlotDoc::new(SLOT_STORAGE);
+    doc.set(
+        storage::DEFAULT_KEY,
+        1,
+        json!({"targets": ["removed-elsewhere"], "replicas": 1, "platformFallback": false}),
+    );
+    sync.merge_into(SLOT_STORAGE, &doc).await.unwrap();
+    let view = repo::push_storage(
+        &sync,
+        &id("repo4"),
+        &erin,
+        false,
+        &StorageProfiles::default(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        view.policy.is_none(),
+        "falls back to git config, as before sync"
+    );
+    // A Platform-kind name in an owner's policy becomes `platform` in the share.
+    let local = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
+    let p = StoragePolicy::from_git_values(Some("r2-main,chain"), None, None).unwrap();
+    let share = ShareContent::for_policy(&p, &local).unwrap();
+    assert_eq!(share.policy["targets"], json!(["r2-main", "platform"]));
+    let (profiles, policy) = share.as_profiles(&erin);
+    let set = StorageProfiles {
+        profiles,
+        ..StorageProfiles::default()
+    };
+    assert!(policy.unwrap().resolve(&set).is_ok());
 }

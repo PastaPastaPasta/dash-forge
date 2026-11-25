@@ -776,12 +776,13 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let main_slot = store::main_slot_sources(&network, &grant.identity_id)?;
     let held = held_keys(ctx, main_slot, &grant.identity_id);
     guard_replacement(ctx, &held, renewing)?;
-    let left_live = left_live(
-        &held,
-        &grant,
-        State::wallet_key(&state, &network, &grant.identity_id),
-        |id| identity.key_disabled(id) == Some(false),
-    );
+    // A request naming forge-user is a new app to the wallet, so it may not disable the key it
+    // granted this computer under forge-core: the chain says whether it did.
+    let previous = State::wallet_key(&state, &network, &grant.identity_id)
+        .filter(|_| forge.user.is_none() || args.no_sync);
+    let left_live = left_live(&held, &grant, previous, |id| {
+        identity.key_disabled(id) == Some(false)
+    });
     let opened: Vec<&BridgeIdentity> = held.iter().filter_map(|h| h.key.as_ref().ok()).collect();
     let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &opened);
     let text = stored_text(&grant, ctx.network(), &network, &encryption)?;

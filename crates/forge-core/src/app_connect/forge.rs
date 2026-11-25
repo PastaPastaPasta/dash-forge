@@ -239,6 +239,7 @@ pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, Reject
                 .ok_or(RejectReason::Framing)?;
             if e.role != verify::KeyRole::Encryption
                 || e.key.purpose != purpose::ENCRYPTION
+                || e.key.security_level != level::MEDIUM
                 || e.key.key_type != super::key_type::ECDSA_SECP256K1
                 || e.key.disabled
                 || e.key.bounds != Some(KeyBounds::SingleContract { contract_id: user })

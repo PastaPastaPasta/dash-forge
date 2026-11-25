@@ -33,8 +33,9 @@ pub struct PushStorage {
     /// `storage.toml`, the pusher's synced profiles, and the owner's shared ones
     /// (`share.<owner8>.<name>`).
     pub effective: Effective,
-    /// The synced policy for this repository, used when git config sets none: the pusher's own
-    /// for it, else the one its owner shared, else the pusher's synced default.
+    /// The synced policy for this repository, used when git config sets none: the first of the
+    /// pusher's own for it, the one its owner shared, and the pusher's synced default that
+    /// resolves (one naming a profile that is gone or unusable here is skipped).
     pub policy: Option<StoragePolicy>,
     /// The owner whose storage this push may use, when it is shared with the pusher.
     pub shared_by: Option<String>,
@@ -75,7 +76,10 @@ pub async fn push_storage(
             out.shared_by = Some(owner_id.to_string());
         }
     }
-    out.policy = own_repo.or(shared_policy).or(own_default);
+    out.policy = [own_repo, shared_policy, own_default]
+        .into_iter()
+        .flatten()
+        .find(|p| p.resolve(&out.effective.profiles).is_ok());
     Ok(out)
 }
 

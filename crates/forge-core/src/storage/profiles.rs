@@ -557,6 +557,17 @@ impl Profile {
         }
     }
 
+    /// Turn `allow_private_uri` off: a profile someone else wrote never records a non-public
+    /// address from this machine.
+    pub fn forbid_private_uri(&mut self) {
+        match self {
+            Profile::S3(p) => p.allow_private_uri = false,
+            Profile::IpfsKubo(p) => p.allow_private_uri = false,
+            Profile::IpfsPinningService(p) => p.allow_private_uri = false,
+            Profile::Platform(_) => {}
+        }
+    }
+
     /// Whether uploads to this profile can be re-read for verification.
     pub fn can_reread(&self) -> bool {
         match self {
