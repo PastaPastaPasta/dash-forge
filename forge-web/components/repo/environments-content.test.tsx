@@ -39,6 +39,7 @@ const entry = (name: string, value: string) => ({ name, type: 'secret' as const,
 function card(over: Partial<EnvCardView>): EnvCardView {
   return {
     env: 'production',
+    repo: 'carol/shop',
     kind: 'current',
     audience: { group: 'maintainers', also: [] },
     audienceLabel: 'Maintainers',
@@ -199,7 +200,7 @@ describe('EnvironmentsView', () => {
     render(<EnvironmentsView view={page([card({ env: 'staging', stale })], 0, { viewerMaintainer: true })} />)
     const lines = byTestId('env-stale-line').map((l) => l.textContent)
     expect(lines).toEqual(["DANA is a writer, but staging hasn't been saved since.", "bob isn't in its audience any more, but can read staging until it's saved again."])
-    expect(byTestId('env-stale')[0]?.textContent).toContain('Save it again: dg env resave --env staging')
+    expect(byTestId('env-stale')[0]?.textContent).toContain('Save it again: dg env resave carol/shop --env staging')
   })
 
   it('counts environments this viewer cannot read, never naming them', () => {
@@ -237,7 +238,7 @@ describe('EnvironmentsView', () => {
     expect(c.textContent).toContain("2 people changed production at the same time, so its values can't be used until a maintainer keeps one.")
     expect(byTestId('env-version').map((v) => v.querySelector('code')?.textContent)).toEqual(['8V2UnsMbU1', 'ByFFj1bXro'])
     expect(byTestId('env-version')[1]?.textContent).toContain("You can't read this version here.")
-    expect(c.textContent).toContain('Compare them with dg env history --env production, then a maintainer keeps one: dg env edit --env production --keep <id>')
+    expect(c.textContent).toContain('Compare them with dg env history carol/shop --env production --network testnet, then a maintainer keeps one: dg env edit carol/shop --env production --keep <id> --network testnet')
     expect(host.innerHTML).not.toContain('QAMARK-x')
   })
 
@@ -257,7 +258,7 @@ describe('EnvironmentsContent', () => {
     envState.value = { state: { data: null, loading: true, error: null, cause: null, settled: false, reload: () => undefined }, locked: true }
     render(<EnvironmentsContent home={home} addr={addr} />)
     expect(host.querySelector('button')?.textContent).toBe('Unlock to read members-only content')
-    expect(text()).toContain('Only maintainers can change environments, here or with dg: dg env set NAME --env production')
+    expect(text()).toContain('Only maintainers can change environments, here or with dg: dg env set O/shop NAME --env production')
     expect(byTestId('env-access-sentence')[0]?.textContent).toBe('Access is granted, not logged.')
   })
 })

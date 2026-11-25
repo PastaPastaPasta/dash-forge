@@ -386,7 +386,7 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
           </p>
         </div>
         <div>
-          <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS)</h3>
+          <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS, testnet only)</h3>
           <div className="mb-1.5 flex">
             <CommandBox text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" what="install command" />
           </div>
@@ -397,6 +397,9 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
               Releases page
             </a>
             .
+          </p>
+          <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+            The latest release predates mainnet and wallet sign-in: build from source for either.
           </p>
         </div>
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">

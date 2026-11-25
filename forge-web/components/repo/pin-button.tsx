@@ -81,7 +81,7 @@ function PublicPinDialog({ repo, pin, onClose }: { repo: RepoRef; pin: ReturnTyp
     <div className="space-y-3 text-dense">
       {pin.storage.needsUnlock ? <UnlockMore title="Unlock this tab to use your storage" />
         : pin.storage.error ? <p role="alert">{pin.storage.error}</p>
-        : noStorage ? <p>Pinning needs storage of your own that others can read: an S3 or R2 bucket with a public URL, or an IPFS node. <a className="underline" href={DOCS.selfHost} target="_blank" rel="noreferrer noopener">Self-host guide</a></p>
+        : noStorage ? <p>Pinning needs storage of your own that others can read: an S3 or R2 bucket with a public URL, or an IPFS node. <Link className="underline" href={DOCS.selfHostBackend} target="_blank" rel="noreferrer noopener">Self-host guide</Link></p>
         : s === null ? <p>{pin.status.error ?? 'Reading this repository’s files…'}</p>
         : s.packs.length === 0 ? <p>This repository has no files to pin yet.</p>
         : missing === 0 && tooLarge > 0 ? <>

@@ -109,7 +109,7 @@ describe('mirror fiat costs and budgets', () => {
     expect(field('mirror-cli-cap').textContent).toContain('≤ $16.00 on mainnet')
     const commands = (): string[] => [...host.querySelectorAll('code')].map((c) => c.textContent ?? '')
     const before = commands()
-    expect(before).toContain('dg auth login --mnemonic --budget 0.4 --network devnet --devnet-name sakura')
+    expect(before).toContain('dg auth login --budget 0.4 --network devnet --devnet-name sakura')
     await act(async () => setFiatSettings({ currency: 'EUR' }))
     expect(field('mirror-cli-cap').textContent).toContain('≤ €14.40 on mainnet')
     await act(async () => setFiatSettings({ enabled: false }))

@@ -7,7 +7,7 @@
  * "Finish creating <name>" on the next visit instead of leaving a half-made repo. On success
  * the repo's empty state shows the push commands (`ux-dx-spec.md` §5.5).
  *
- * Visibility is chosen here only (immutable, `ux-dx-spec.md` §9 "Create"). A private repo needs
+ * Visibility is chosen here (a private repo can later be made public once, `ux-dx-spec.md` §9 "Create"). A private repo needs
  * the owner's encryption key in this browser; its confirmation states the four facts `dg repo
  * create --private` prints, and its third step is the owner's epoch-0 key plus the sealed
  * anchor config (`private-repos.md` §5.3): four documents.
@@ -398,7 +398,7 @@ export default function NewRepoPage(): JSX.Element {
               {(
                 [
                   ['public', Globe, 'Public', 'Anyone can read it.'],
-                  ['private', Lock, 'Private', 'Encrypted to members. Cannot change later.'],
+                  ['private', Lock, 'Private', 'Encrypted to members. Can be made public later.'],
                 ] as const
               ).map(([v, Icon, label, hint], i) => (
                 <button
@@ -638,7 +638,7 @@ export default function NewRepoPage(): JSX.Element {
           orgRecord
             ? `${orgRecord.label} will own it and be its maintainer. ${confirm ? protectionNote(confirm) : ''}You sign first; it is created once ${orgRecord.threshold} of ${orgRecord.members.length} members sign. The name is permanent.`
             : confirm?.visibility === 'private'
-            ? `You'll be its maintainer. ${protectionNote(confirm)}${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name and visibility are permanent, and repos can be archived but not deleted.`
+            ? `You'll be its maintainer. ${protectionNote(confirm)}${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name is permanent. It can be made public later, but never private again. Repos can be archived but not deleted.`
             : `You'll be its maintainer. ${confirm ? protectionNote(confirm) : ''}${confirm?.membersOnly === true ? 'Members-only content will be on: members can post things only members can read. ' : ''}The name is permanent, and repos can be archived but not deleted.`
         }
         cost={forOrg ? null : confirm ? costOf(confirm) : cost}
