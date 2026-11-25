@@ -90,7 +90,7 @@ describe('request card', () => {
     expect(host.querySelector('[data-testid="org-sign"]')).toBeNull()
   })
 
-  it('done, ready, expired and invalid', () => {
+  it('done, ready, expired, declined and invalid', () => {
     const v = view([request('done', true, 2)])
     render(<RequestCard view={v} request={v.requests[0]!} />)
     expect(host.querySelector('[data-testid="org-done"]')?.textContent).toContain('Done')
@@ -103,6 +103,11 @@ describe('request card', () => {
     const e = view([request('expired', false)])
     render(<RequestCard view={e} request={e.requests[0]!} />)
     expect(host.textContent).toContain('Expired')
+
+    const d = view([request('declined', false)])
+    render(<RequestCard view={d} request={d.requests[0]!} />)
+    expect(host.textContent).toContain('Declined: too many members declined it')
+    expect(host.querySelector('[data-testid="org-sign"]')).toBeNull()
 
     const i = view([request('invalid', false)])
     render(<RequestCard view={i} request={i.requests[0]!} />)

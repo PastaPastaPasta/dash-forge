@@ -435,6 +435,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             orgOwned ? 'Sign & ask co-signers' : action?.kind === 'grant' ? envFlow.confirmLabel('Sign & add', 'add') : action?.kind === 'change' ? envFlow.confirmLabel('Sign & change', 'change') : envFlow.confirmLabel('Sign & remove', 'remove')
           }
           blocked={orgOwned ? undefined : (envFlow.blocked ?? keyBlock)}
+          request={orgOwned}
           onConfirm={runAction}
         >
           {/* What they could read: members-only discussion. Nothing is listed when they keep a

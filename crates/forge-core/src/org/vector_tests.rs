@@ -330,3 +330,51 @@ fn requests_group_by_forge_note() {
         None
     );
 }
+
+#[test]
+fn a_request_reads_declined_once_the_rest_cannot_reach_the_threshold() {
+    let v = vector();
+    let one = &v["proposals"]["one"]["envelope"];
+    let pid = v["proposals"]["one"]["id"].as_str().unwrap();
+    let room_id = v["room"].as_str().unwrap();
+    let at = "2030-01-01T00:00:00.000Z";
+    let no = |i: usize| {
+        member::reject(&MemberKeys::derive(&seed(&v, i)), room_id, pid, "no", at).unwrap()
+    };
+    let (no1, no2, no3) = (no(0), no(1), no(2));
+    let outsider = Seed::from_phrase(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "",
+    )
+    .unwrap();
+    let no_outsider =
+        member::reject(&MemberKeys::derive(&outsider), room_id, pid, "no", at).unwrap();
+    let declined = |extra: &[&Value]| {
+        let mut msgs = vec![one];
+        msgs.extend_from_slice(extra);
+        let state = room(&v, &msgs);
+        let members = state.ceremonies[cid(&v)]
+            .config
+            .participants
+            .iter()
+            .map(|p| p.auth_pub.clone())
+            .collect();
+        let req = request::requests(&state, cid(&v), &members).remove(0);
+        request::declined_out(&state, &req, &state.ceremonies[cid(&v)])
+    };
+    assert!(!declined(&[&no2]), "one decline of 2 of 3 leaves two");
+    assert!(declined(&[&no2, &no3]));
+    assert!(
+        !declined(&[&no2, &no_outsider]),
+        "a non-member's decline is not counted"
+    );
+    assert!(
+        !declined(&[&v["approvals"]["m1"], &no1, &no2]),
+        "a member who also approved is not counted"
+    );
+    assert!(declined(&[&v["approvals"]["m1"], &no2, &no3]));
+    assert!(
+        !declined(&[&v["approvals"]["m1"], &v["approvals"]["m3"], &no2]),
+        "ready"
+    );
+}

@@ -475,7 +475,6 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
           orgKind.isOrg ? <OrgManagesAccess what="details" /> : <OwnerOnlyNote />
         ) : null}
       </div>
-      {org.dialog}
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
@@ -490,8 +489,10 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
         cost={pending && !orgOwned ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
         confirmLabel={orgOwned ? 'Sign & ask co-signers' : 'Sign & save'}
         {...(orgOwned ? {} : { toast: { running: 'Saving the repo details…', done: 'Repository details saved' } })}
+        request={orgOwned}
         onConfirm={run}
       />
+      {org.dialog}
     </Card>
   )
 }
