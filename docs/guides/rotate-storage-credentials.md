@@ -11,7 +11,7 @@ Rotating takes four steps, in this order, so nobody is left holding a key that n
 
 1. Make a new credential at the provider, next to the old one.
 2. Update the profile with it, then run `dg storage test <name>`.
-3. Refresh each share that uses the profile (testnet): `dg storage share <owner/repo> <the same profiles>` (with the same `--copies`, if you set it), or open the repository's **Settings** in the web app. `dg collab add`/`remove` refresh it too. Updating the profile alone does not.
+3. Refresh each share that uses the profile (testnet): `dg storage share <owner/repo> <the same profiles>` (with the same `--copies`, if you set it), or open (or reload) the repository's **Settings** in the web app. Updating the profile alone does not, and neither does adding a writer.
 4. Revoke the old credential at the provider.
 
 Maintainers only ever get storage set for their repository, never your default storage.
@@ -24,7 +24,7 @@ Maintainers only ever get storage set for their repository, never your default s
    - **A hosted provider:** a new access key limited to the bucket, from its dashboard.
 2. Update the profile:
    - **dg:** keep the old profile name so repositories that use it don't change. The simplest way is `dg storage add` with no arguments: give the same name, confirm the replace, and answer every question again with the **new access key id** and the new secret. It stores the secret, then syncs the profile.
-     With flags, store the new secret **first**, under a new keychain entry, because `dg storage add` syncs the profile with whatever secret it finds at that moment. Repeat every setting the profile has (`dg storage list` shows them), changing only the key:
+     With flags, store the new secret **first**, under a keychain entry you haven't used yet (`nas-2`, next time `nas-3`), because `dg storage add` syncs the profile with whatever secret it finds at that moment. Repeat every setting the profile has (`dg storage list` shows them), changing only the key:
      ```sh
      security add-generic-password -s dash-forge -a nas-2 -w     # macOS; on Linux: secret-tool store --label=nas-2 service dash-forge account nas-2
      dg storage add nas --kind s3 --endpoint <endpoint> --region <region> \
@@ -46,7 +46,7 @@ Maintainers only ever get storage set for their repository, never your default s
 ## An IPFS pinning service
 
 1. Create a new access token in the service's dashboard.
-2. Update the profile's `--pinning-token`.
+2. Update the profile's `--pinning-token` (kept in a new keychain entry or an environment variable).
 3. Refresh the shares, as in step 3 at the top.
 4. Revoke the old token.
 
@@ -58,9 +58,11 @@ dg storage test nas
 
 A green test means the new credential works on this computer. `dg storage list` must not mark the profile "local (synced copy differs)": that means maintainers still get the old key, so run `dg storage add` again as in step 2, then refresh the shares. A push with nothing new to send does not refresh a share.
 
+Before you revoke the old credential, also update every other place that holds it: another computer whose own `storage.toml` has the profile (its local copy wins over the synced one; run `dg storage list` there), and any GitHub Action or mirror secret that uses the same key.
+
 ## What happens to existing testnet maintainers
 
-Before repo-specific sharing, a share could carry your default storage. At your next push, `dg collab add`/`remove`, `dg storage share`, or visit to the repo's settings, a repository with no storage of its own set stops sharing: its share moves to an empty one at the next epoch and every maintainer's grant is revoked, exactly as a removal does. dg and the web app say so once. Your maintainers then push to their own storage. To keep sharing, set storage for the repository: `dg storage share <owner/repo> <profile>`, or **Use separate storage for this repo to share it with maintainers** in the repo's **Settings → Storage**. Those maintainers could read the default storage's credentials before, so rotate them as described above if that matters to you.
+Before repo-specific sharing, a share could carry your default storage. At your next push, a maintainer change (`dg collab add … --role maintainer`, `dg collab remove`), `dg storage share`, or visit to the repo's settings, a repository with no storage of its own set stops sharing: its share moves to an empty one at the next epoch and every maintainer's grant is revoked, exactly as a removal does. dg and the web app say so once. Your maintainers then push to their own storage. To keep sharing, set storage for the repository: `dg storage share <owner/repo> <profile>`, or **Use separate storage for this repo to share it with maintainers** in the repo's **Settings → Storage**. Those maintainers could read the default storage's credentials before, so rotate them as described above if that matters to you.
 
 ## What a maintainer trusts
 
