@@ -46,7 +46,7 @@ export function RowMenu({
   }, [open])
   const onKey = (e: KeyboardEvent<HTMLDivElement>): void => {
     const all = [...(ref.current?.querySelectorAll<HTMLButtonElement>(ENABLED_ITEMS) ?? [])]
-    const at = all.indexOf(document.activeElement as HTMLButtonElement)
+    const at = Math.max(0, all.indexOf(document.activeElement as HTMLButtonElement))
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
       all[(at + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length]?.focus()

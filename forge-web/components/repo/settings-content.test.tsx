@@ -310,6 +310,30 @@ describe('one section at a time, picked by the URL hash', () => {
     }
   })
 
+  it('follows a click on a link to this page before the router changes the URL', async () => {
+    await render(repoHome('public'), 'collaborators')
+    const link = document.createElement('a')
+    link.href = `${window.location.pathname}${window.location.search}#storage`
+    link.addEventListener('click', (e) => e.preventDefault())
+    document.body.appendChild(link)
+    await act(async () => {
+      link.click()
+    })
+    expect(heading()).toBe('Storage')
+    expect(window.location.hash).toBe('#collaborators')
+    link.remove()
+  })
+
+  it('goes back to the default section when the hash is cleared', async () => {
+    await render(repoHome('public'), 'storage')
+    await act(async () => {
+      history.pushState(null, '', `${window.location.pathname}${window.location.search}`)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(host.querySelector('[data-settings-pane="general"]')?.hasAttribute('hidden')).toBe(false)
+    expect(host.querySelector('[data-settings-pane="storage"]')?.hasAttribute('hidden')).toBe(true)
+  })
+
   it("keeps a writer out of the Danger zone a link names, on their default section", async () => {
     viewer.id = 'writer'
     role.value = 'writer'

@@ -78,23 +78,33 @@ export function sectionOfHash(hash: string): SettingsSection | null {
  * The section the hash names, or `fallback` (also for a section `allowed` leaves out, such as the
  * Danger zone for a writer). Follows the hash as links change it: a plain hash link fires
  * `hashchange`, Back fires `popstate`, and a router link to this same page changes the URL by
- * `pushState` (no event), so a click on any link is followed by a look at the hash too. A hash
- * that names no section (the skip link's `#main`) keeps the section shown.
+ * `pushState` (no event) some time after the click, so a click on a link to this page is followed
+ * by its own hash. A hash that names no section (the skip link's `#main`) keeps the section
+ * shown; no hash at all is the default. Nothing switches while a dialog is open over a section.
  */
 export function useSettingsSection(fallback: SettingsSection, allowed: (s: SettingsSection) => boolean = () => true): SettingsSection {
   const [named, setNamed] = useState<SettingsSection | null>(null)
   const [anchor, setAnchor] = useState<{ id: string } | null>(null)
   useEffect(() => {
-    const read = (): void => {
-      const hash = window.location.hash
+    const apply = (hash: string): void => {
+      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return
+      if (hash === '' || hash === '#') {
+        setNamed(null)
+        return
+      }
       const section = sectionOfHash(hash)
       if (section === null) return
       setNamed(section)
       const id = hash.replace(/^#/, '')
       if (id in ANCHORS) setAnchor({ id })
     }
+    const read = (): void => apply(window.location.hash)
     const afterClick = (e: MouseEvent): void => {
-      if (e.target instanceof Element && e.target.closest('a[href*="#"]') !== null) window.setTimeout(read, 0)
+      const link = e.target instanceof Element ? e.target.closest<HTMLAnchorElement>('a[href*="#"]') : null
+      if (link === null) return
+      const to = new URL(link.href, window.location.href)
+      const here = new URL(window.location.href)
+      if (to.pathname.replace(/\/$/, '') === here.pathname.replace(/\/$/, '') && to.search === here.search) apply(to.hash)
     }
     read()
     window.addEventListener('hashchange', read)
