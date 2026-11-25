@@ -69,8 +69,13 @@ fn share_of(profiles: &StorageProfiles, policy: &StoragePolicy) -> ShareContent 
     for (n, p) in &profiles.profiles {
         doc.set(&storage::profile_key(n), 1, resolved(p));
     }
-    doc.set(storage::DEFAULT_KEY, 1, storage::policy_to_synced(policy));
-    match ShareRule::of(Some(&doc), &id("any repo")) {
+    let repo = id("any repo");
+    doc.set(
+        &storage::repo_key(&repo),
+        1,
+        storage::policy_to_synced(policy),
+    );
+    match ShareRule::of(Some(&doc), &repo) {
         ShareRule::Content(c) => c,
         other => panic!("expected a share, got {other:?}"),
     }
@@ -734,9 +739,12 @@ fn the_share_rule_follows_the_synced_policy_only() {
     let local = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
     let repo = id("rule repo");
     let mut doc = SlotDoc::new(SLOT_STORAGE);
-    // No synced policy: keep the share as it is.
-    assert!(matches!(ShareRule::of(Some(&doc), &repo), ShareRule::Keep));
+    // No synced slot: keep the share as it is. A slot with no entry for this repository: stop.
     assert!(matches!(ShareRule::of(None, &repo), ShareRule::Keep));
+    assert!(matches!(
+        ShareRule::of(Some(&doc), &repo),
+        ShareRule::Nothing
+    ));
     // A web profile on a custom endpoint stays `r2`, and its synced value is shared as is.
     let web = json!({"settings": {"kind": "s3", "provider": "r2", "endpoint": "https://files.example.org", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "https://pub.example.org", "prefix": ""}, "secrets": {"accessKeyId": "AK", "secretAccessKey": "SK", "sessionToken": ""}});
     doc.set("profile:web-r2", 1, web.clone());
@@ -745,11 +753,21 @@ fn the_share_rule_follows_the_synced_policy_only() {
         1,
         json!({"targets": ["web-r2"], "replicas": 1, "platformFallback": false}),
     );
+    // The default storage is never shared.
+    assert!(matches!(
+        ShareRule::of(Some(&doc), &repo),
+        ShareRule::Nothing
+    ));
+    doc.set(
+        &storage::repo_key(&repo),
+        1,
+        json!({"targets": ["web-r2"], "replicas": 1, "platformFallback": false}),
+    );
     let ShareRule::Content(c) = ShareRule::of(Some(&doc), &repo) else {
-        panic!("default policy shares")
+        panic!("the repository's own entry shares")
     };
     assert_eq!(c.profiles["web-r2"]["settings"]["provider"], "r2");
-    // The repository's own entry wins; naming a profile that is not synced keeps the share.
+    // Naming a profile that is not synced keeps the share.
     doc.set(
         &storage::repo_key(&repo),
         2,
@@ -869,7 +887,8 @@ fn the_share_rule_matches_the_shared_fixture() {
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let mut doc = SlotDoc::new(SLOT_STORAGE);
-        for (key, entry) in case["entries"].as_object().unwrap() {
+        let absent = case["entries"].is_null();
+        for (key, entry) in case["entries"].as_object().into_iter().flatten() {
             let key = key.replace("@repo", repo);
             let mut entry: Entry = serde_json::from_value(entry.clone()).unwrap();
             if let Some(r) = entry.v.as_ref().and_then(Value::as_str) {
@@ -880,7 +899,8 @@ fn the_share_rule_matches_the_shared_fixture() {
             doc.entries.insert(key, entry);
         }
         let expect = &case["expect"];
-        match (ShareRule::of(Some(&doc), repo), expect.as_str()) {
+        let slot = (!absent).then_some(&doc);
+        match (ShareRule::of(slot, repo), expect.as_str()) {
             (ShareRule::Keep, Some("keep")) | (ShareRule::Nothing, Some("nothing")) => {}
             (ShareRule::Content(c), None) => {
                 let names: Vec<&str> = c.profiles.keys().map(String::as_str).collect();
@@ -1006,4 +1026,99 @@ async fn a_shared_name_the_maintainer_already_uses_leaves_the_share_out() {
         mine.profiles[&clash]
     );
     assert_eq!(view.effective.origin[&clash], Origin::Local);
+}
+
+#[tokio::test]
+async fn a_share_made_from_the_default_stops_at_the_next_reconcile() {
+    set_secrets();
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    // A share an earlier build made from the owner's default storage.
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    let mut slot = SlotDoc::new(SLOT_STORAGE);
+    let local = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
+    slot.set("profile:r2-main", 1, resolved(&local.profiles["r2-main"]));
+    slot.set(
+        storage::DEFAULT_KEY,
+        1,
+        json!({"targets": ["r2-main"], "replicas": 1, "platformFallback": false}),
+    );
+    owner.merge_into(SLOT_STORAGE, &slot).await.unwrap();
+    let stopped = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(stopped.stopped && !stopped.shared && !stopped.repo_policy_set);
+    assert_eq!(stopped.epoch, 1);
+    assert_eq!(stopped.revoked, vec![r.member.clone()]);
+    assert!(r.store.all_grants().is_empty());
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    assert!(owner
+        .open_share(&share, &owner.rsk(&repo, 1))
+        .unwrap()
+        .profiles
+        .is_empty());
+    // Once: the next reconcile finds it empty already and writes nothing.
+    let writes = r.store.writes();
+    let again = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(!again.stopped && !again.share_written);
+    assert_eq!((again.epoch, r.store.writes()), (1, writes));
+    // The maintainer sees no share and uses their own storage.
+    r.store.as_signer(&r.member);
+    let view = repo::push_storage(
+        &UserSync::new(&r.e_member, &r.store),
+        &r.repo,
+        &r.owner,
+        true,
+        &StorageProfiles::default(),
+    )
+    .await
+    .unwrap();
+    assert!(view.share_missing && view.shared_by.is_none());
+    // Setting storage for this repository shares it again, one epoch on.
+    r.store.as_signer(&r.owner);
+    let mut set = SlotDoc::new(SLOT_STORAGE);
+    set.set(
+        &storage::repo_key(&r.repo),
+        now_ms(),
+        json!({"targets": ["r2-main"], "replicas": 1, "platformFallback": false}),
+    );
+    owner.merge_into(SLOT_STORAGE, &set).await.unwrap();
+    let shared = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(shared.shared && shared.repo_policy_set && !shared.stopped);
+    assert_eq!((shared.epoch, shared.granted.len()), (1, 1));
+    // A tombstone (`dg storage share --stop`) stops it again.
+    let mut stop = SlotDoc::new(SLOT_STORAGE);
+    stop.remove(&storage::repo_key(&r.repo), now_ms() + 1);
+    owner.merge_into(SLOT_STORAGE, &stop).await.unwrap();
+    let off = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(off.stopped && !off.repo_policy_set);
+    assert_eq!(off.epoch, 2);
+}
+
+#[test]
+fn a_one_time_note_shows_once_per_computer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user-sync.toml");
+    std::fs::write(&path, "device = \"a1b2c3\"\nfuture = 1\n").unwrap();
+    assert!(local::note_once_at(&path, "testnet/hint/R"));
+    assert!(!local::note_once_at(&path, "testnet/hint/R"));
+    assert!(local::note_once_at(&path, "testnet/hint/S"));
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("future = 1") && raw.contains("a1b2c3"));
 }

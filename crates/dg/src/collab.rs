@@ -520,6 +520,15 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             if let Some(r) = &rotation {
                 crate::keys::print_rotation(handle, r);
             }
+            if let Some(d) = &shared {
+                crate::sync::print_stopped_default(ctx, &handle.display(), d);
+                if role == Role::Maintainer && !d.repo_policy_set {
+                    println!(
+                        "  {}",
+                        forge_core::user_sync::no_repo_storage_line(member, &handle.display())
+                    );
+                }
+            }
             match storage_shared {
                 Some("shared") => println!("  {member} pushes to your storage for this repository (Platform fees stay theirs)"),
                 Some("after-wallet-sign-in") => println!("  {member} gets your storage for this repository after signing in with a wallet once"),
@@ -651,13 +660,17 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // when they were gone already: a run that stopped before its saves is finished this way.
     let (resaved, exposed_lines) = crate::env::finish_removal(&s, &removal).await;
     // Also when the membership was already gone: a removal run again finishes the revocation.
-    let storage_revoked = if stays_maintainer {
-        false
+    let reconciled = if stays_maintainer {
+        None
     } else {
-        crate::sync::after_membership_change(ctx, &s, Some(member))
-            .await
-            .is_some_and(|d| d.revoked.iter().any(|m| m == member))
+        crate::sync::after_membership_change(ctx, &s, Some(member)).await
     };
+    if let Some(d) = &reconciled {
+        crate::sync::print_stopped_default(ctx, &handle.display(), d);
+    }
+    let storage_revoked = reconciled
+        .as_ref()
+        .is_some_and(|d| d.revoked.iter().any(|m| m == member));
     let (relettered, narrow_text) = narrow.save(&s).await;
     if !narrow_text.is_empty() {
         eprintln!("{}", narrow_text.trim_start());

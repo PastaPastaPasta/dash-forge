@@ -2355,6 +2355,20 @@ pub enum StorageCommand {
         #[arg(long)]
         global: bool,
     },
+    /// Share storage profiles with a repository's maintainers, the only storage they ever get from you (owner only).
+    Share {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Comma-separated profile names to share.
+        #[arg(required_unless_present = "stop", conflicts_with = "stop")]
+        profiles: Option<String>,
+        /// Copies that must confirm (default: every listed profile).
+        #[arg(long, conflicts_with = "stop")]
+        copies: Option<usize>,
+        /// Stop sharing storage with the repository's maintainers.
+        #[arg(long)]
+        stop: bool,
+    },
     /// Publish where this repo's files can be read.
     Advertise {
         /// The repository (`owner/name`).

@@ -51,6 +51,12 @@ pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
             platform_fallback,
             global,
         } => use_profiles(ctx, profiles, *replicas, *platform_fallback, *global).await,
+        StorageCommand::Share {
+            repo,
+            profiles,
+            copies,
+            stop,
+        } => share(ctx, repo, profiles.as_deref(), *copies, *stop).await,
         StorageCommand::Advertise { repo, remote } => advertise(ctx, repo, remote.as_deref()).await,
         StorageCommand::Mirror(cmd) => crate::pack_mirror::run(ctx, cmd).await,
     }
@@ -310,6 +316,177 @@ pub(crate) fn check_publishable<'a>(
     let from_git = allow_private_uri_config(remote)?;
     let given = flag.is_some_and(|(_, on)| on);
     refuse_unpublishable(targets, given || from_git, lead, flag.map(|(f, _)| f)).map_err(Into::into)
+}
+
+/// The synced entries `dg storage share` writes: every named profile as synced (a profile only in
+/// storage.toml, or one whose synced copy differs, is uploaded from storage.toml) and the
+/// repository's policy over them. Errors name the profile, never a secret.
+fn share_changes(
+    names: &[String],
+    copies: Option<usize>,
+    repo_id: &str,
+    local: &StorageProfiles,
+    synced: Option<&forge_core::user_sync::SlotDoc>,
+    at: u64,
+) -> Result<forge_core::user_sync::SlotDoc> {
+    use forge_core::user_sync::{storage as us, SlotDoc, SLOT_STORAGE};
+    let mut changes = SlotDoc::new(SLOT_STORAGE);
+    let mut external = 0usize;
+    for name in names {
+        if name == PLATFORM_PROFILE {
+            continue;
+        }
+        let held = synced.and_then(|d| d.get(&us::profile_key(name)));
+        let profile = match (local.profiles.get(name), held) {
+            (Some(p), _) => {
+                let value = us::profile_to_synced(p).map_err(|e| {
+                    UserError::new(codes::STORAGE_POLICY, format!("{name} can't be shared"))
+                        .cause(e.to_string())
+                        .fix("set its secrets in this shell or keychain, then run it again")
+                })?;
+                if held.is_none_or(|h| !us::same_profile_value(h, &value)) {
+                    changes.set(&us::profile_key(name), at, value.clone());
+                }
+                us::profile_from_synced(&value).ok().flatten()
+            }
+            (None, Some(h)) => us::profile_from_synced(h).ok().flatten(),
+            (None, None) => None,
+        };
+        let Some(profile) = profile else {
+            return Err(crate::errors::not_found(
+                format!("no usable storage profile {name:?}"),
+                "`dg storage list` lists the profiles",
+            ));
+        };
+        if !profile.is_platform() {
+            external += 1;
+        }
+    }
+    if external == 0 {
+        return Err(UserError::new(
+            codes::STORAGE_POLICY,
+            "name at least one storage profile other than platform",
+        )
+        .fix("to stop sharing, run `dg storage share <repo> --stop`")
+        .into());
+    }
+    if copies.is_some_and(|c| c == 0 || c > names.len()) {
+        return Err(UserError::new(
+            codes::STORAGE_POLICY,
+            format!("--copies must be 1 to {}", names.len()),
+        )
+        .into());
+    }
+    let policy = StoragePolicy {
+        targets: names.to_vec(),
+        replicas: copies,
+        platform_fallback: false,
+    };
+    changes.set(&us::repo_key(repo_id), at, us::policy_to_synced(&policy));
+    Ok(changes)
+}
+
+/// `dg storage share <owner/repo> <profiles> [--copies N]` and `--stop`: set (or remove) the storage
+/// a repository's maintainers get, then lend it to them (`identity-synced-state.md` §5).
+async fn share(
+    ctx: &Ctx,
+    repo: &str,
+    profiles: Option<&str>,
+    copies: Option<usize>,
+    stop: bool,
+) -> Result<()> {
+    use forge_core::user_sync::{self as us, key::LocalKey, SlotDoc, UserSync, SLOT_STORAGE};
+    let Some(contract) = ctx.target.v2.as_ref().and_then(|f| f.user.clone()) else {
+        return Err(
+            UserError::new(codes::UNSUPPORTED, "sync isn't available on this network").into(),
+        );
+    };
+    let s = crate::common::Session::open(ctx, repo).await?;
+    let me = s.identity.id();
+    if s.repo.owner_id() != me {
+        return Err(UserError::new(
+            codes::USAGE,
+            "only the repository's owner sets the storage its maintainers get",
+        )
+        .into());
+    }
+    let LocalKey::Held(key) = us::key::load(&ctx.network_label(), &me) else {
+        return Err(
+            UserError::new(codes::USAGE, "settings sync is off on this computer")
+                .fix("sign in with your wallet: `dg auth login --wallet`")
+                .into(),
+        );
+    };
+    let names: Vec<String> = profiles
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .fold(Vec::new(), |mut v, n| {
+            if !v.contains(&n) {
+                v.push(n);
+            }
+            v
+        });
+    let local = StorageProfiles::load()?;
+    let repo_id = s.repo.id().to_string();
+    let maintainers = us::repo::current_maintainers(&s.client, &s.repo).await?;
+    let done = crate::sync::Writer::new(&s.client, &s.bridge, &s.identity)
+        .with_store(&contract, async |store| {
+            let sync = UserSync::new(&key, store);
+            let current = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
+            let at = us::now_ms();
+            let changes = if stop {
+                let mut c = SlotDoc::new(SLOT_STORAGE);
+                if current
+                    .as_ref()
+                    .is_some_and(|d| d.get(&us::storage::repo_key(&repo_id)).is_some())
+                {
+                    c.remove(&us::storage::repo_key(&repo_id), at);
+                }
+                c
+            } else {
+                share_changes(&names, copies, &repo_id, &local, current.as_ref(), at)?
+            };
+            if !changes.entries.is_empty() {
+                sync.merge_into(SLOT_STORAGE, &changes).await?;
+            }
+            Ok(sync.reconcile_repo_by_rule(&repo_id, &maintainers).await?)
+        })
+        .await?;
+    let shown = s.repo.display();
+    ctx.emit(
+        json!({
+            "status": if stop { "stopped" } else { "shared" },
+            "repo": shown,
+            "profiles": if stop { Vec::new() } else { names.clone() },
+            "epoch": done.epoch,
+            "granted": done.granted,
+            "waiting": done.waiting,
+            "revoked": done.revoked,
+        }),
+        || {
+            if stop {
+                println!("Stopped sharing storage with {shown}'s maintainers.");
+                for m in &done.revoked {
+                    println!("  {}", crate::sync::rotate_line(m));
+                }
+            } else {
+                println!(
+                    "{shown}'s maintainers push to {} (Platform fees stay theirs).",
+                    names.join(", ")
+                );
+                if !done.waiting.is_empty() {
+                    println!(
+                        "  {} get it after signing in with a wallet once",
+                        done.waiting.join(", ")
+                    );
+                }
+            }
+        },
+    );
+    Ok(())
 }
 
 /// A one-line, secret-free description of a profile.
@@ -1861,6 +2038,51 @@ async fn probe_uris(uris: &[String], reader: &PackReader) -> Vec<serde_json::Val
 pub(crate) mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn storage_share_sets_the_repository_entry_and_uploads_what_is_only_local() {
+        use forge_core::user_sync::{storage as us, ShareRule, SlotDoc, SLOT_STORAGE};
+        let local = StorageProfiles::parse(
+            r#"
+[profiles.nas]
+kind = "ipfs-kubo"
+api = "https://kubo.example.org:5001"
+public_gateway = "https://gw.example.org"
+"#,
+        )
+        .unwrap();
+        let mut synced = SlotDoc::new(SLOT_STORAGE);
+        let web = serde_json::json!({"settings": {"kind": "s3", "provider": "r2", "endpoint": "https://files.example.org", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "https://pub.example.org", "prefix": ""}, "secrets": {"accessKeyId": "AK", "secretAccessKey": "SK"}});
+        synced.set("profile:web-r2", 1, web.clone());
+        let names = vec![
+            "nas".to_string(),
+            "web-r2".to_string(),
+            "platform".to_string(),
+        ];
+        let changes = share_changes(&names, Some(2), "REPO", &local, Some(&synced), 5).unwrap();
+        // The local-only profile is uploaded; the synced one is used as it is.
+        assert!(changes.get("profile:nas").is_some());
+        assert!(changes.get("profile:web-r2").is_none());
+        let policy = us::policy_from_synced(changes.get(&us::repo_key("REPO")).unwrap()).unwrap();
+        assert_eq!(policy.targets, names);
+        assert_eq!(policy.replicas, Some(2));
+        // What the share rule then makes of it: both profiles, as synced.
+        let mut after = synced.clone();
+        after.merge(&changes);
+        let ShareRule::Content(c) = ShareRule::of(Some(&after), "REPO") else {
+            panic!("the repository's own entry shares")
+        };
+        assert_eq!(c.profiles.keys().collect::<Vec<_>>(), ["nas", "web-r2"]);
+        assert_eq!(c.profiles["web-r2"], web);
+        // Refusals: a name with no profile, Platform alone, and a copy count past the list.
+        let missing = vec!["gone".to_string()];
+        assert!(share_changes(&missing, None, "REPO", &local, Some(&synced), 5).is_err());
+        let platform = vec!["platform".to_string()];
+        assert!(share_changes(&platform, None, "REPO", &local, None, 5).is_err());
+        let one = vec!["nas".to_string()];
+        assert!(share_changes(&one, Some(2), "REPO", &local, None, 5).is_err());
+        assert!(share_changes(&one, Some(0), "REPO", &local, None, 5).is_err());
+    }
 
     pub(crate) fn add_args(argv: &[&str]) -> StorageAddArgs {
         let mut full = vec!["dg", "storage", "add"];
