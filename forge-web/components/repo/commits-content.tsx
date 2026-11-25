@@ -408,14 +408,15 @@ function LogBody({
           ...run.rows.map((entry) => (
           <div
             key={entry.oid}
-            className="relative grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-0.5 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850"
+            className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2.5 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 sm:gap-y-0.5 dark:border-anvil-850"
             data-testid="commit-row"
           >
             {/* Phones: the message gets the whole first line; author, signature and id share the
                 second. Wider: message over author on the left, signature and id beside both.
                 Touch: the message link stretches over the row (a 44px+ target); the signature
-                and copy buttons are positioned later, so they stay on top of it. */}
-            <div className="col-span-3 row-start-1 flex min-w-0 items-center gap-1.5 sm:col-span-1">
+                and copy buttons are positioned later, so they stay on top of it, and the phone
+                row gap keeps their 44px hit areas off the message line. */}
+            <div className="col-span-2 row-start-1 flex min-w-0 items-center gap-1.5 sm:col-span-1">
               <Link href={repoHref('/repo/commit', addr, { oid: entry.oid })} className="block min-w-0 truncate text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:after:absolute coarse:after:inset-0 coarse:after:content-[''] dark:text-anvil-50 dark:hover:text-forge-400">
                 {entry.subject || '(no message)'}
               </Link>
@@ -427,8 +428,10 @@ function LogBody({
                 · <Time ms={entry.author.when} />
               </span>
             </div>
-            <SignatureBadge state={signatures.get(entry.oid)} className="col-start-2 row-start-2 sm:row-span-2 sm:row-start-1" />
-            <Oid value={entry.oid} chars={7} className="col-start-3 row-start-2 sm:row-span-2 sm:row-start-1" />
+            <div className="col-start-2 row-start-2 flex items-center gap-3 sm:row-span-2 sm:row-start-1">
+              <SignatureBadge state={signatures.get(entry.oid)} />
+              <Oid value={entry.oid} chars={7} />
+            </div>
           </div>
           )),
         ])}
