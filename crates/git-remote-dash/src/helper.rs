@@ -1689,13 +1689,8 @@ impl Helper {
                 }
                 // The stop line already points to the rotation guide.
                 for m in done.revoked.iter().filter(|_| stop_line.is_none()) {
-                    let why = if done.stopped {
-                        ""
-                    } else {
-                        " is no longer a maintainer and"
-                    };
                     eprintln!(
-                        "dash: {m}{why} lost access to this repository's shared storage; rotate the credentials they saw: {}",
+                        "dash: {m} lost access to this repository's shared storage; rotate the credentials they saw: {}",
                         forge_core::user_sync::ROTATE_GUIDE
                     );
                 }

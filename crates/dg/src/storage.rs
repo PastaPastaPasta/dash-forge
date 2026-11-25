@@ -480,6 +480,9 @@ async fn share(
             let sync = UserSync::new(&key, store);
             let current = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
             let at = us::now_ms();
+            let had_entry = current
+                .as_ref()
+                .is_some_and(|d| d.get(&us::storage::repo_key(&repo_id)).is_some());
             let changes = if stop {
                 // Always a tombstone: an older entry another device merges later loses to it.
                 let mut c = SlotDoc::new(SLOT_STORAGE);
@@ -491,9 +494,13 @@ async fn share(
             if !changes.entries.is_empty() {
                 sync.merge_into(SLOT_STORAGE, &changes).await?;
             }
-            Ok(sync.reconcile_repo_by_rule(&repo_id, &maintainers).await?)
+            Ok((
+                sync.reconcile_repo_by_rule(&repo_id, &maintainers).await?,
+                had_entry,
+            ))
         })
         .await?;
+    let (done, had_entry) = done;
     let shown = s.repo.display();
     if !stop && !done.shared {
         return Err(UserError::new(
@@ -517,6 +524,9 @@ async fn share(
         || {
             if stop && !done.stopped {
                 println!("Nothing was shared with this repo's maintainers.");
+                if had_entry {
+                    println!("Your own pushes to {shown} use your default storage again.");
+                }
             } else if stop {
                 println!(
                     "Stopped sharing storage with {shown}'s maintainers; your own pushes to it use your default storage again. {}",

@@ -680,13 +680,20 @@ pub enum Wanted<'a> {
 }
 
 impl Wanted<'_> {
-    /// Over the share as it is now: [`Self::KeepRepoOnly`] becomes [`Self::Nothing`] for a version
-    /// 1 share that lends storage, else [`Self::Keep`].
+    /// Over the share as it is now (`granted`: any grant to it exists): [`Self::KeepRepoOnly`]
+    /// becomes [`Self::Nothing`] for a version 1 share that lends storage, or for one that lends
+    /// nothing but still has grants (a stop that was interrupted), else [`Self::Keep`].
     #[must_use]
-    pub fn over(self, current: Option<&ShareContent>) -> Self {
+    pub fn over(self, current: Option<&ShareContent>, granted: bool) -> Self {
         match self {
             Self::KeepRepoOnly
-                if current.is_some_and(|c| c.version < SHARE_VERSION && c.lends()) =>
+                if current.is_some_and(|c| {
+                    if c.lends() {
+                        c.version < SHARE_VERSION
+                    } else {
+                        granted
+                    }
+                }) =>
             {
                 Self::Nothing
             }
@@ -757,14 +764,29 @@ pub fn rotate_pointer() -> String {
     format!("Rotate credentials they saw: {ROTATE_GUIDE}")
 }
 
+/// The line an owner sees once when a share from before repo-only sharing (version 1) stops
+/// because the storage set for `repo` can't be used.
+pub fn stopped_legacy_line(repo: &str) -> String {
+    format!(
+        "Stopped sharing your default storage with {repo}'s maintainers. This repo's own storage setting can't be used; set it again to share it. {}",
+        rotate_pointer()
+    )
+}
+
 /// The owner's one line for a reconcile that stopped sharing `repo` (`owner/name`): about the
-/// default storage when the repository never had storage of its own set, else plainly. `None`
-/// when nothing stopped.
+/// default storage when the repository never had storage of its own set or the share predates
+/// repo-only sharing, else plainly. `None` when nothing stopped.
 pub fn stopped_line(repo: &str, done: &Reconciled) -> Option<String> {
-    if !done.stopped || (done.repo_policy_set && !done.stopped_unscoped) {
+    if !done.stopped {
         return None;
     }
-    Some(if done.repo_policy_removed && !done.stopped_unscoped {
+    if done.stopped_unscoped {
+        return Some(stopped_legacy_line(repo));
+    }
+    if done.repo_policy_set {
+        return None;
+    }
+    Some(if done.repo_policy_removed {
         format!(
             "Stopped sharing storage with {repo}'s maintainers. {}",
             rotate_pointer()
@@ -965,7 +987,7 @@ impl UserSync<'_> {
         let all = self.store.grants_of_repo(me, repo_id).await?;
         let current = self.current_share(existing.as_ref(), &repo)?;
         let unscoped = matches!(wanted, Wanted::KeepRepoOnly);
-        let wanted = wanted.over(current.as_ref());
+        let wanted = wanted.over(current.as_ref(), !all.is_empty());
         let unscoped = unscoped && matches!(wanted, Wanted::Nothing);
         let stop = matches!(wanted, Wanted::Nothing);
         let keys = if stop {
@@ -1029,9 +1051,11 @@ impl UserSync<'_> {
             let unchanged = existing.as_ref().is_some_and(|s| {
                 s.epoch == out.epoch
                     && s.key_id == self.key.key_id
-                    // Lent content written before this rule is written again as this version.
+                    // Content written before this rule is written again as this version: lent
+                    // content, or an empty share when sharing stops (older builds can't refill it).
                     && current.as_ref().is_some_and(|c| {
-                        c.same_as(&content) && (c.version == content.version || !content.lends())
+                        c.same_as(&content)
+                            && (c.version == content.version || (!content.lends() && !stop))
                     })
             });
             if !unchanged {
@@ -1057,8 +1081,10 @@ impl UserSync<'_> {
             self.store.delete_grant(g).await?;
             out.revoked.push(g.member_id.clone());
         }
-        // A share already empty, written again (as under a new key id), stops nothing.
-        out.stopped = (stopping && out.share_written) || (stop && !out.revoked.is_empty());
+        // Only when maintainers lost something: lent storage, or a grant. A share already empty,
+        // written again (as under a new key id), stops nothing.
+        let lent = current.as_ref().is_some_and(ShareContent::lends);
+        out.stopped = stop && ((lent && out.share_written) || !out.revoked.is_empty());
         out.stopped_unscoped = unscoped && out.stopped;
         Ok(out)
     }

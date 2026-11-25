@@ -917,8 +917,13 @@ fn the_share_rule_matches_the_shared_fixture() {
                 ShareContent::nothing()
             }
         });
+        let granted = case
+            .get("share")
+            .and_then(|s| s.get("grants"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let rule = ShareRule::of(slot, repo);
-        match (rule.wanted().over(share.as_ref()), expect.as_str()) {
+        match (rule.wanted().over(share.as_ref(), granted), expect.as_str()) {
             (Wanted::Keep, Some("keep")) | (Wanted::Nothing, Some("nothing")) => {}
             (Wanted::Content(c), None) => {
                 let names: Vec<&str> = c.profiles.keys().map(String::as_str).collect();
@@ -1205,12 +1210,10 @@ fn the_stop_line_names_the_default_only_when_the_repo_never_had_storage() {
         stopped_unscoped: true,
         ..done.clone()
     };
-    assert!(stopped_line("o/r", &unscoped)
-        .unwrap()
-        .contains("default storage"));
-    assert!(stopped_line("o/r", &unscoped)
-        .unwrap()
-        .ends_with("Rotate credentials they saw: docs/guides/rotate-storage-credentials.md"));
+    assert_eq!(
+        stopped_line("o/r", &unscoped).unwrap(),
+        "Stopped sharing your default storage with o/r's maintainers. This repo's own storage setting can't be used; set it again to share it. Rotate credentials they saw: docs/guides/rotate-storage-credentials.md"
+    );
     let set = Reconciled {
         repo_policy_set: true,
         ..done
@@ -1372,9 +1375,10 @@ async fn a_kept_version_1_share_that_lends_storage_stops_once() {
         (stopped.epoch, stopped.revoked.clone()),
         (1, vec![r.member.clone()])
     );
-    assert!(stopped_line("o/r", &stopped)
-        .unwrap()
-        .contains("default storage"));
+    assert_eq!(
+        stopped_line("o/r", &stopped),
+        Some(stopped_legacy_line("o/r"))
+    );
     assert!(r.store.all_grants().is_empty());
     let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
     let repo = crate::platform::decode_identifier(&r.repo).unwrap();
@@ -1529,4 +1533,82 @@ async fn an_empty_share_under_a_new_key_id_does_not_stop_again() {
     assert!(again.share_written && !again.stopped);
     assert_eq!(again.epoch, first.epoch);
     assert!(stopped_line("o/r", &again).is_none());
+}
+
+#[tokio::test]
+async fn an_interrupted_legacy_stop_finishes_at_the_next_reconcile() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    // What a stop left when it wrote the empty share and failed before deleting the grant.
+    leftover_grant(&r, 0, 9).await;
+    unusable_repo_entry(&owner, &r.repo).await;
+    let done = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(done.stopped && done.stopped_unscoped);
+    assert_eq!(done.revoked, vec![r.member.clone()]);
+    assert_eq!(stopped_line("o/r", &done), Some(stopped_legacy_line("o/r")));
+    assert!(r.store.all_grants().is_empty());
+    let writes = r.store.writes();
+    let again = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(!again.stopped && stopped_line("o/r", &again).is_none());
+    assert_eq!(r.store.writes(), writes);
+}
+
+#[tokio::test]
+async fn an_empty_version_1_share_is_written_as_version_2_once_when_sharing_stops() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let empty_v1 = ShareContent {
+        version: 1,
+        ..ShareContent::nothing()
+    };
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&empty_v1), &maintainers)
+        .await
+        .unwrap();
+    // Kept with no slot read: it stays as it is.
+    let writes = r.store.writes();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Keep, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(r.store.writes(), writes);
+    let up = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert!(up.share_written && !up.stopped);
+    assert_eq!(up.epoch, 0);
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    assert_eq!(
+        owner
+            .open_share(&share, &owner.rsk(&repo, 0))
+            .unwrap()
+            .version,
+        SHARE_VERSION
+    );
+    let writes = r.store.writes();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(r.store.writes(), writes);
 }
