@@ -77,8 +77,8 @@ jobs:
   # order, and a re-run (of a push or a dispatch) can take the slot of a newer merge's waiting
   # run, so a run whose commit is no longer master's head (read from the API, never the cached
   # site) starts this workflow on master instead and builds nothing; that run deploys the newest
-  # commit. The lookup fails closed. A rollback is a dispatch from another ref, which is not
-  # checked.
+  # commit. The lookup fails closed. Only master deploys (the environments allow no other
+  # branch), so a rollback is a revert merged to master.
   current:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -368,7 +368,7 @@ jobs:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
           url="${PAGE_URL%/}/.well-known/security.txt"
-          if ! body="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'User-Agent: Mozilla/5.0' "$url")"; then
+          if ! body="$(curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors -H 'User-Agent: Mozilla/5.0' "$url")"; then
             echo "::warning title=security.txt not served::$url did not answer"
             exit 0
           fi
@@ -389,7 +389,7 @@ jobs:
           BUILT_BEACONS: ${{ (vars.PAGES_CF_BEACON_TOKEN || github.repository == 'PastaPastaPasta/dash-forge') && '1' || '0' }}
         run: |
           # A fresh deploy can take a moment to answer: retry on any error, not just timeouts.
-          if ! html="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' "$PAGE_URL")"; then
+          if ! html="$(curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' "$PAGE_URL")"; then
             echo "::warning title=Beacon check skipped::could not fetch $PAGE_URL to look for an injected analytics beacon"
             exit 0
           fi

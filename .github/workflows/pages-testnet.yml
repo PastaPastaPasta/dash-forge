@@ -49,8 +49,8 @@ jobs:
   # order, and a re-run (of a push or a dispatch) can take the slot of a newer merge's waiting
   # run, so a run whose commit is no longer master's head (read from the API, never the cached
   # site) starts this workflow on master instead and builds nothing; that run deploys the newest
-  # commit. The lookup fails closed. A rollback is a dispatch from another ref, which is not
-  # checked.
+  # commit. The lookup fails closed. Only master deploys (the environments allow no other
+  # branch), so a rollback is a revert merged to master.
   current:
     runs-on: ubuntu-latest
     timeout-minutes: 5
