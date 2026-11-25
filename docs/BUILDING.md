@@ -294,7 +294,8 @@ before their registration); `deploy-v2.mjs` adds the `v2` section to it.
 
 `pnpm build:dash-site` (in `forge-web/`) builds the copy of the web app meant for
 a [dash-sites](https://github.com/PastaPastaPasta/dash-sites) name such as
-forg3.dash.site, where every stored byte costs DASH. It is the ordinary export
+forg3.dash.site (registered, but nothing is published there yet), where every
+stored byte costs DASH. It is the ordinary export
 with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
 
 - The docs hub is left out: each `/docs/<page>/` becomes a small redirect to the
@@ -305,7 +306,15 @@ with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
   with its SHA-384. The script refuses if the built file is not byte-identical to
   the package's. `dash-sites publish out --external dash-site-external.json` then
   publishes the site without storing it; readers fetch it from an npm CDN and use
-  it only if the hash matches.
+  it only if the hash matches. That makes the copy a version 2 site: dash.site
+  opens it, while the testnet host `id.dashhq.org` and dash-sites extension 0.1.0
+  do not yet.
+
+Like every build, it targets testnet unless `NEXT_PUBLIC_NETWORK=mainnet` is set,
+and the `dash-sites` CLI publishes to testnet unless given `--network mainnet`.
+A mainnet copy needs both, plus `--name <label>` and the owning identity
+(`--identity-file <file>`, or `--identity <id>` with `DASH_SITES_KEY`). Run
+`dash-sites publish … --dry-run` first to see the size and price.
 
 `NEXT_PUBLIC_SITE_URL` must be the address the build is published at (e.g.
 `https://forg3.dash.site`), and not forge.dashhq.org or testnet-forge.dashhq.org.
