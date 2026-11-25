@@ -182,7 +182,8 @@ Forge's four contracts are registered on testnet (Platform 5.0.0-rc.8, protocol 
 `dash-testnet-51`, since 2026-10-26) and on mainnet (chain id `evo1`, since 2026-11-24).
 Every tool defaults to testnet until you choose a network: `dg auth login --network mainnet`
 records mainnet as `dg`'s and `git-remote-dash`'s default. A web build defaults to testnet
-unless `NEXT_PUBLIC_NETWORK` says otherwise. The e2e workflows and `ipfs-release.sh` target testnet.
+unless `NEXT_PUBLIC_NETWORK` says otherwise. The e2e workflows target testnet; forge.dashhq.org
+(`pages.yml`) and the release's IPFS build (`ipfs-release.sh`) target mainnet.
 
 Before testnet, Forge ran on devnets: moutai, then bonsia, then sakura, which went down around
 2026-10-24 ([networks.md](networks.md) has the history). Their deployment files stay in the

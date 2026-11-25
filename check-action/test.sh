@@ -67,7 +67,7 @@ resolve INPUT_JOB_STATUS=success INPUT_NETWORK=testnet INPUT_DEVNET_NAME=moutai 
 has "--network=testnet"
 lacks_prefix "--devnet-name"
 
-# action.yml's defaults: a network Forge is deployed on (testnet, the hosted site's), and the
+# action.yml's defaults: a network Forge is deployed on (testnet, dg's default), and the
 # release cut from this commit (the workspace version), which install 'true' downloads.
 case="action.yml defaults"
 default_of() {

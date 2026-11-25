@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "dg"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2352,7 +2352,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forge-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "argon2",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "forge-gateway"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2430,7 +2430,7 @@ dependencies = [
 
 [[package]]
 name = "forge-import"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "forge-notify"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "forge-relay"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2506,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "forge-runner"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2526,7 +2526,7 @@ dependencies = [
 
 [[package]]
 name = "forge-secrets"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2750,7 +2750,7 @@ dependencies = [
 
 [[package]]
 name = "git-remote-dash"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "forge-core",

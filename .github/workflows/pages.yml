@@ -1,10 +1,10 @@
 name: Deploy forge-web to Pages
 
-# The hosted build (forge.dashhq.org) targets testnet, where forge-v2 (Platform protocol 14) is
-# registered. The network is a build-time choice (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME);
-# override it with the repository variables PAGES_NETWORK / PAGES_DEVNET_NAME (PAGES_NETWORK=devnet
-# needs PAGES_DEVNET_NAME) without editing this file. The header badge names the network the build
-# reads.
+# The hosted build (forge.dashhq.org) targets mainnet from 2026-11-24, set by the repository
+# variable PAGES_NETWORK=mainnet; testnet-forge.dashhq.org gets the testnet build. The network is a build-time
+# choice (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME); override it with the repository variables
+# PAGES_NETWORK / PAGES_DEVNET_NAME (PAGES_NETWORK=devnet needs PAGES_DEVNET_NAME) without editing
+# this file. The header badge names the network the build reads.
 #
 # The "devnet is moving" notice (docs/archive/devnet-move.md) is switched the same way, with the
 # repository variable PAGES_DEVNET_NOTICE: unset (no banner), `upcoming` (a dismissible banner on

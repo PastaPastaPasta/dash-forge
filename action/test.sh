@@ -144,7 +144,7 @@ validate() {
         INPUT_REPO=alice/project INPUT_GITHUB_REPO=alice/project INPUT_NETWORK=mainnet \
         INPUT_DEVNET_NAME='' INPUT_SYNC=code,releases INPUT_STORAGE_KIND=platform \
         INPUT_REPLICAS=1 INPUT_COST_CAP=0.05 INPUT_DRY_RUN=false INPUT_INSTALL=true \
-        INPUT_STATE_CACHE=true INPUT_VERSION=0.2.0 INPUT_S3_ENDPOINT='' INPUT_S3_BUCKET='' \
+        INPUT_STATE_CACHE=true INPUT_VERSION=0.3.0 INPUT_S3_ENDPOINT='' INPUT_S3_BUCKET='' \
         INPUT_S3_REGION='' INPUT_S3_PUBLIC_URL='' INPUT_S3_PREFIX='' INPUT_PINNING_ENDPOINT='' \
         "$@" bash "$here/validate.sh" >"$tmp/val" 2>&1
 }
@@ -330,7 +330,7 @@ case="mirror s3 without secrets"
 if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3; then fail "accepted"; fi
 expect log 'S3_SECRET_ACCESS_KEY'
 
-# action.yml's defaults: a network Forge is deployed on (testnet, the hosted site's), and the
+# action.yml's defaults: a network Forge is deployed on (testnet, dg's default), and the
 # release cut from this commit (the workspace version), which install 'true' downloads.
 case="action.yml defaults"
 default_of() {
