@@ -1,58 +1,68 @@
 # Rotate storage credentials
 
-When you share a repository's storage with its maintainers (`dg storage share <owner/repo> <profile>`, or the repo's Settings → Storage; see [settings that follow the identity](../design/identity-synced-state.md#5-flows)), each maintainer's client decrypts the storage profiles you set for that repository, credentials included, so their pushes can write packs to your bucket or IPFS node. Removing a maintainer stops them reading anything shared **after** the removal: Forge moves the share to a new key and deletes their grant. It cannot take back what they already decrypted. Rotate those credentials.
+Rotate a storage credential when someone may have seen it:
 
-Rotating takes three steps:
+- **A maintainer you shared a repository's storage with** (testnet only). When you share a repository's storage with its maintainers (`dg storage share <owner/repo> <profile>`, or the repo's **Settings → Storage**; see [Collaborating](collaborating.md#storage-for-maintainers-testnet)), each maintainer's client decrypts the storage profiles you set for that repository, credentials included, so their pushes can write packs to your bucket or IPFS node. Removing a maintainer stops them reading anything shared **after** the removal: Forge moves the share to a new key and deletes their grant. It cannot take back what they already decrypted.
+- **Your settings-sync key** (testnet only), if a site may have tricked you into approving a wallet code: whoever holds it can read every storage credential synced with your identity ([Identity and keys](identity-and-keys.md#settings-that-follow-your-identity-testnet)).
 
-1. Make a new credential at the provider.
-2. Update the profile with it. In dg, put the new secret in place first, then run `dg storage add <name> …` again with the same name and all its settings (any flag you leave out changes the profile everywhere).
-3. Revoke the old credential at the provider.
+Sharing and settings sync use the forge-user contract, which is registered on testnet only. On mainnet, Forge neither shares nor syncs storage credentials.
 
-The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So do `dg collab add`, `dg collab remove` and `dg storage share` on it: they refresh the shared profiles from the storage you set for that repository. Maintainers only ever get storage set for their repository, never your default storage.
+Rotating takes four steps, in this order, so nobody is left holding a key that no longer works:
 
-## Cloudflare R2
+1. Make a new credential at the provider, next to the old one.
+2. Update the profile with it, then run `dg storage test <name>`.
+3. Refresh each share that uses the profile (testnet): `dg storage share <owner/repo> <the same profiles>` (with the same `--copies`, if you set it), or open (or reload) the repository's **Settings** in the web app. Updating the profile alone does not, and neither does adding a writer.
+4. Revoke the old credential at the provider.
 
-1. In the Cloudflare dashboard, open **R2 → Manage R2 API Tokens** and create a token with **Object Read & Write** on the bucket only. Copy the access key id and the secret access key.
+Maintainers only ever get storage set for their repository, never your default storage.
+
+## S3-compatible storage
+
+1. Make a new key that can read and write the bucket only. On a store you run, with the `g` function and `rc` commands from [Storage on your home NAS](home-nas-storage.md#a-bucket-a-key-for-that-bucket-only-public-reads-and-cors):
+   - **Garage:** `g key create forge-key-2`, then `g bucket allow --read --write forge --key forge-key-2`.
+   - **RustFS:** a new user with the same policy: `rc admin user add nas/ forge-2 <a new long random secret>`, then `rc admin policy attach nas/ forge-rw --user forge-2`.
+   - **A hosted provider:** a new access key limited to the bucket, from its dashboard.
 2. Update the profile:
-   - **dg:** keep the old name so repositories that use it don't change.
+   - **dg:** keep the old profile name so repositories that use it don't change. The simplest way is `dg storage add` with no arguments: give the same name, confirm the replace, and answer every question again with the **new access key id** and the new secret. It stores the secret, then syncs the profile.
+     With flags, store the new secret **first**, under a keychain entry you haven't used yet (`nas-2`, next time `nas-3`), because `dg storage add` syncs the profile with whatever secret it finds at that moment. Repeat every setting the profile has (`dg storage list` shows them), changing only the key:
      ```sh
-     dg storage add r2-main --kind s3 --endpoint https://<account>.r2.cloudflarestorage.com \
-       --region auto --bucket forge --public-url https://<your public origin> \
-       --access-key-id <new id> --secret-access-key keychain:dash-forge/r2-main
+     security add-generic-password -s dash-forge -a nas-2 -w     # macOS; on Linux: secret-tool store --label=nas-2 service dash-forge account nas-2
+     dg storage add nas --kind s3 --endpoint <endpoint> --region <region> \
+       --bucket forge --public-url <public URL> \
+       --access-key-id <new key id> --secret-access-key keychain:dash-forge/nas-2
      ```
-     Store the new secret under that keychain entry (or in the environment variable the profile names) **before** you run it. `dg storage add` reads the secret when it runs and updates your synced copy, which is the copy maintainers get. Changing only the keychain entry or the variable changes this computer, not the synced copy: maintainers keep getting the old key, and `dg storage share` stops with E502. `dg storage add` with no arguments asks for each value and stores a pasted secret for you, in the right order.
+     Add `--session-token` if your provider uses one. A new entry name matters on Linux: overwriting the old entry with `secret-tool` does not replace a secret dg stored itself, so the profile would sync the new key id with the old secret. Changing only the keychain entry or the environment variable also changes this computer, not the synced copy: maintainers keep getting the old key, and `dg storage share` stops with E502.
    - **Web app:** open **Settings → Storage**, edit the profile, and paste the new keys.
-3. Delete the old token in the dashboard.
-
-## Other S3-compatible storage (AWS, Backblaze B2, MinIO, a NAS)
-
-1. Create a new access key for the same user or service account, limited to the bucket.
-2. Update the profile as above (`--access-key-id`, `--secret-access-key`, and `--session-token` if you use one).
-3. Deactivate and delete the old key.
+3. Refresh the shares, as in step 3 at the top.
+4. Delete the old key: `g key delete --yes forge-key` on Garage, remove the old user (`forge`) on RustFS, or delete it in the provider's dashboard.
 
 ## A kubo node behind auth
 
-1. Change the credential your proxy checks: the basic-auth password, or the bearer token.
-2. Update the profile's `--api-auth` (the full `Authorization` header value, kept in the keychain or an environment variable).
-3. Reload the proxy so the old value stops working.
+1. Add the new credential to your proxy next to the old one (a second basic-auth user, or a second accepted bearer token), and reload it.
+2. Update the profile's `--api-auth` (the full `Authorization` header value, kept in a new keychain entry or an environment variable).
+3. Refresh the shares, as in step 3 at the top.
+4. Remove the old credential from the proxy and reload it.
 
 ## An IPFS pinning service
 
 1. Create a new access token in the service's dashboard.
-2. Update the profile's `--pinning-token`.
-3. Revoke the old token.
+2. Update the profile's `--pinning-token` (kept in a new keychain entry or an environment variable).
+3. Refresh the shares, as in step 3 at the top.
+4. Revoke the old token.
 
 ## Check
 
 ```sh
-dg storage test r2-main
+dg storage test nas
 ```
 
-A green test means the new credential works on this computer. `dg storage list` must not mark the profile "local (synced copy differs)": that means maintainers still get the old key, so run `dg storage add` again as in step 2. Run one push to each repository whose maintainers changed. It shares the updated profile with the remaining maintainers; the removed one gets nothing.
+A green test means the new credential works on this computer. `dg storage list` must not mark the profile "local (synced copy differs)": that means maintainers still get the old key, so run `dg storage add` again as in step 2, then refresh the shares. A push with nothing new to send does not refresh a share.
+
+Before you revoke the old credential, also update every other place that holds it: another computer whose own `storage.toml` has the profile (its local copy wins over the synced one; run `dg storage list` there), and any GitHub Action or mirror secret that uses the same key.
 
 ## What happens to existing testnet maintainers
 
-Before repo-specific sharing, a share could carry your default storage. At your next push, `dg collab add`/`remove`, `dg storage share`, or visit to the repo's settings, a repository with no storage of its own set stops sharing: its share moves to an empty one at the next epoch and every maintainer's grant is revoked, exactly as a removal does. dg says so once. Your maintainers then push to their own storage. To keep sharing, set storage for the repository (`dg storage share <owner/repo> <profile>`). Those maintainers could read the default storage's credentials before, so rotate them as described above if that matters to you.
+Before repo-specific sharing, a share could carry your default storage. At your next push, a maintainer change (`dg collab add … --role maintainer`, `dg collab remove`), `dg storage share`, or visit to the repo's settings, a repository with no storage of its own set stops sharing: its share moves to an empty one at the next epoch and every maintainer's grant is revoked, exactly as a removal does. dg and the web app say so once. Your maintainers then push to their own storage. To keep sharing, set storage for the repository: `dg storage share <owner/repo> <profile>`, or **Use separate storage for this repo to share it with maintainers** in the repo's **Settings → Storage**. Those maintainers could read the default storage's credentials before, so rotate them as described above if that matters to you.
 
 ## What a maintainer trusts
 

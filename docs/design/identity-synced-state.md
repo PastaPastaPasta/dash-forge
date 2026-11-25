@@ -1,6 +1,6 @@
 # Settings that follow the identity (storage, preferences, maintainer access)
 
-Status: design, 2026-11-25. Request from the owner (via Forge PM): "if I set up storage in cli via dash wallet login, any other dash wallet login should share that storage automatically, whether in another wallet or computer. Being a maintainer should let someone else see the storage / use the storage (r2 / ipfs, not platform spend)."
+Status: built. Settings sync shipped in [#729](https://github.com/PastaPastaPasta/dash-forge/pull/729), and repo-only maintainer sharing in [#740](https://github.com/PastaPastaPasta/dash-forge/pull/740). testnet-forge.dashhq.org runs both; `dg` has them when built from source (no release includes them yet). forge-user is registered on testnet only; mainnet is the owner's decision (§9). Designed 2026-11-25. Request from the owner (via Forge PM): "if I set up storage in cli via dash wallet login, any other dash wallet login should share that storage automatically, whether in another wallet or computer. Being a maintainer should let someone else see the storage / use the storage (r2 / ipfs, not platform spend)."
 
 ## 1. Where things live today
 
@@ -80,13 +80,13 @@ The normative definitions are `tools/user-sync-vectors/gen.py` and its output, `
 
 With no `repo:<id>` entry (absent, or tombstoned by `--stop`), or one naming only Platform, sharing stops (below). An entry that can't be used (it does not parse, or names a profile that is missing, tombstoned, of an unknown kind or invalid) keeps the share as it is and lends it to no new maintainer, but only a version 2 share: a version 1 share that lends storage may hold the default, so it stops the same way. Clients write every share as version 2 and never rewrite one newer than they know. This is reconciled on each owner visit to the repo's settings, each owner `dg` push, `dg collab add/remove` and `dg storage share`. When the owner adds a maintainer to a repo with no storage of its own, dg says the maintainer pushes to their own storage and how to share it. A maintainer pushing to a repo whose owner shares nothing sees one line, once per repo per device, naming the command the owner can run; their own storage is used. A maintainer with no key yet is listed, collapsed, as "gets access after signing in with a wallet once". A maintainer's client merges granted repo profiles into its effective config for **that repo only**, so its pushes to that repo store packs in the owner's storage. Its Platform writes still use its own identity's key and credits.
 
-**Removal.** When the owner removes a maintainer (web or `dg repo maintainer remove`), or the reconcile finds a grant to someone who is no longer a maintainer, the client:
+**Removal.** When the owner removes a maintainer (web or `dg collab remove`), or the reconcile finds a grant to someone who is no longer a maintainer, the client:
 1. moves to epoch e+1;
 2. re-encrypts `share` with `RSK(e+1)`;
 3. rewrites the remaining members' grants;
 4. deletes the removed member's grant.
 
-The removed member can no longer read the current share. **What cannot be revoked:** credentials they already decrypted, and old document versions anyone may have cached. The removal screen therefore says so in one line and links to `docs/guides/rotate-storage-credentials.md`: roll the R2 or S3 token, kubo auth or pinning token, update the profile, and the share follows automatically.
+The removed member can no longer read the current share. **What cannot be revoked:** credentials they already decrypted, and old document versions anyone may have cached. The removal screen therefore says so in one line and links to `docs/guides/rotate-storage-credentials.md`: roll the S3 key, kubo auth or pinning token, update the profile, and the share follows automatically.
 
 ## 6. Threat model
 
@@ -144,17 +144,17 @@ Registering `forge-user` on mainnet from the deployer `CL4UTHLA…` costs the am
 - **Name clashes.** On a dg device the local profile keeps its name, because `storage.toml` wins, and it is uploaded as `<name>-<device>`. The web app shows the local copy as `<name>-<device>`. dg-only profile fields (`allowPrivateUri`, `pinTimeoutSecs`) travel in a sibling `dg` object, which the web app keeps when it edits that profile.
 - **Shared storage on the maintainer's side.**
   - dg names a shared profile `share.<owner8>.<name>`, and the web app names it `shared-<name>`.
-  - It is used for that repo when the clone sets no `dash.storage` of its own. A repo's own setting always wins.
+  - It is used for that repo when git config (the clone's, or the global one `dg storage use --global` writes) sets no `dash.storage`; with one set, the push doesn't read the share. A repo's own setting always wins.
   - **What a share holds.** Both clients use the same rule (`forge-contracts/fixtures/user-sync/share-rule.json`): only the owner's synced `repo:<id>` policy and the synced profiles it names. The synced default is never shared, and a policy set only in git config is never shared. No synced slot: the share stays as it is. No live `repo:<id>` entry, or one naming only Platform: sharing stops. An entry that doesn't parse, or names a profile that isn't synced, live, known or valid: the share stays as it is. Shares are compared by content, not by bytes, so dg and the web app don't rewrite each other's share.
   - **Stopping.** A repo with no live `repo:<id>` entry, or one naming only Platform, gets a share with no content at the next epoch, and all its grants are revoked. A share that is already empty is left as it is. A share kept as it is (a repo entry that doesn't parse or names an unusable profile) still refreshes the grants its maintainers hold, but is never lent to a new maintainer, since it may hold what an older build shared from the default storage. A maintainer is told the owner shares nothing only when there is no share, or no grant to them at all; a grant that is just behind (a new key the owner hasn't reconciled yet) says nothing. A share is never deleted, and a new share starts above the highest epoch any grant ever used, so an epoch key a removed member kept never opens later content.
-  - The owner side reconciles on owner pushes (dg), on `dg collab add/remove`, and on visits to the repo's settings (web).
+  - The owner side reconciles on owner pushes (dg), on `dg collab add/remove` and `dg storage share`, and on visits to the repo's settings (web).
   - A removal writes the share at the new epoch first, then the remaining grants, and deletes the revoked grants last, so an interrupted removal never leaves new credentials at an epoch the removed member can open.
 - **Preferences** sync in the web app only: diff view, merge identity, fiat, trending, image hosts, IPFS gateways and organizations. The IPFS peer setting stays per device. A local value is never overwritten. A device reads the synced value only while its own copy is unchanged since the last sync.
 - **`dg storage use --global`** writes `dash.storage` to the global git config, as on master, and also records the synced default policy. Git config itself never syncs: on a second machine, pushes from dg read `dash.storage` from that machine's git config first.
 
 ## 11. Testnet proof (2026-11-25)
 
-The proof used builds of this branch, the testnet `forge-user` contract, and a RustFS S3 bucket on a public https URL (a temporary boat.dev sandbox). Evidence is in `forge-contracts/evidence/testnet/user-sync-2026-11-25.md`. Steps, all passing:
+The proof used builds of this branch, the testnet `forge-user` contract, and a RustFS S3 bucket on a public https URL (a temporary boat.dev sandbox). Evidence is in `forge-contracts/evidence/testnet/user-sync-2026-11-25.md`. It predates #740: the maintainer steps (5 and 6) shared the owner's default storage, which today's clients stop sharing; today the owner would first run `dg storage share`. Steps, all passing:
 
 1. **Box A, real wallet.** `dg auth login --wallet` with DashPay Android 11.9.2 (testnet build), identity `G1SAVd3…`. The approval screen shows App ID `forge-user` and "Receive messages encrypted to you in Dash Forge". dg reports "storage settings sync with your identity across devices".
 2. **Box A, storage.** `dg storage add proof-s3 … --secret-access-key env:…` lists the profile as `[local+synced]`. `storage.toml` still holds only the `env:` reference.
