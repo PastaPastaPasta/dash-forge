@@ -1,5 +1,5 @@
 {
-  "description": "What a repository's share holds (docs/design/identity-synced-state.md §5): forge-core ShareRule::of and forge-web shareRule over the same synced storage slot entries ({at, v}; v null is a tombstone; entries null means the slot is absent or unreadable). Only the repository's own repo:<repoId> entry is ever shared; the synced default never is. No slot: keep. No live repo entry: nothing (stop sharing). A repo entry that does not parse, or names a non-Platform profile that is missing, tombstoned, of an unknown kind or invalid: keep. Platform only: nothing. expect is keep, nothing, or the shared profile names and policy targets.",
+  "description": "What a repository's share holds (docs/design/identity-synced-state.md §5): forge-core ShareRule::of and forge-web shareRule over the same synced storage slot entries ({at, v}; v null is a tombstone; entries null means the slot is absent or unreadable). Only the repository's own repo:<repoId> entry is ever shared; the synced default never is. No slot: keep. No live repo entry: nothing (stop sharing). A repo entry that does not parse, or names a non-Platform profile that is missing, tombstoned, of an unknown kind or invalid: keep. Platform only: nothing. A case's share, when given, is the repository's current share as its owner opens it: its format version and whether it lends storage (holds any profile); without one there is no share. Version 2 is written only under this rule; a share kept while the slot was read that is still version 1 and lends storage may hold the default, so it stops (nothing). With no slot read, any share is kept. expect is keep, nothing, or the shared profile names and policy targets.",
   "repo": "RuLeRepo11111111111111111111111111111111111",
   "profiles": {
     "web-r2": { "settings": { "kind": "s3", "provider": "r2", "endpoint": "https://files.example.org", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "https://pub.example.org", "prefix": "" }, "secrets": { "accessKeyId": "AK", "secretAccessKey": "SK", "sessionToken": "" } },
@@ -64,6 +64,51 @@
       "name": "a named profile of a kind this build does not know keeps the share",
       "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "profile:future": { "at": 1, "v": "@future" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2", "future"], "replicas": 2, "platformFallback": false } } },
       "expect": "keep"
+    },
+    {
+      "name": "replicas 0 does not parse: keep the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 0, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "replicas above 8 does not parse: keep the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 9, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "a fractional replicas does not parse: keep the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1.5, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "kept while the slot was read, a version 1 share that lends storage stops (it may hold the default)",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "share": { "version": 1, "lends": true },
+      "expect": "nothing"
+    },
+    {
+      "name": "kept while the slot was read, a version 2 share is kept",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "share": { "version": 2, "lends": true },
+      "expect": "keep"
+    },
+    {
+      "name": "kept while the slot was read, an empty version 1 share is kept (nothing to stop)",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "share": { "version": 1, "lends": false },
+      "expect": "keep"
+    },
+    {
+      "name": "no slot read: a version 1 share that lends storage is kept",
+      "entries": null,
+      "share": { "version": 1, "lends": true },
+      "expect": "keep"
+    },
+    {
+      "name": "a usable repository entry replaces a version 1 share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
+      "share": { "version": 1, "lends": true },
+      "expect": { "profiles": ["web-r2"], "targets": ["web-r2"] }
     }
   ]
 }
