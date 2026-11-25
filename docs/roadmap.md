@@ -2,7 +2,7 @@
 
 **The promise:** git hosting that nobody can take down. Refs, issues, PRs and access control live on Dash Platform under the users' own keys. Bulk pack data lives on Platform, or on cheap storage providers (S3, IPFS, HTTPS, other git hosts) that it is checked against by hash. No server is ever trusted, and every server can be replaced.
 
-Sections 1 to 5 keep the 2026-09-24 baseline and decisions as history; §6 (the plan and its execution tracker), §7 (launch criteria) and the testnet launch table were refreshed against `master` on 2026-10-16. Only the Phase 6a and Phase 6 checkboxes were updated since, on 2026-11-25, after the testnet (2026-10-26) and mainnet (2026-11-24) registrations.
+Sections 1 to 5 keep the 2026-09-24 baseline and decisions as history; §6 (the plan and its execution tracker), §7 (launch criteria) and the testnet launch table were refreshed against `master` on 2026-10-16. Only the Phase 6a and Phase 6 checkboxes, and the storage-profiles line above Phase 1, were updated since, on 2026-11-25, after the testnet (2026-10-26) and mainnet (2026-11-24) registrations.
 
 This document covers three things:
 - where the project actually stands, checked against the code on `master` and not against the tracker's status lines;

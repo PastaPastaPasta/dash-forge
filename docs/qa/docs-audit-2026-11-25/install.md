@@ -57,7 +57,7 @@ There is no mainnet binary release. On mainnet, a terminal user builds `dg` and 
 | 34 | "Mainnet keeps the SDK's built-in seeds" | BUILDING.md:247 | ok | master dg mainnet doctor: "DAPI: built-in seed list" (`mainnet.json` has 167 `dapiAddresses`, unused by Rust) |
 | 35 | "`make e2e` — the CLI suite (… 11 scenarios)" | BUILDING.md:350 | stale (fixed) | `ls e2e/cli/scenarios` → 37 |
 | 36 | tenderdash archive `v1.5.3`; "version comes from `TENDERDASH_COMMITISH`" | BUILDING.md:379-385 | stale (fixed) | rs-tenderdash-abci v1.8.0 `proto/build.rs:7` `DEFAULT_VERSION = "v1.8.0"` (env var overrides) |
-| 37 | dash.site build section | BUILDING.md:287-313 | deferred (dash-sites lane) | wording already says "copy", not "gateway" |
+| 37 | dash.site build section | BUILDING.md:293-330 | stale (fixed) | did not say the build targets testnet without `NEXT_PUBLIC_NETWORK=mainnet`, that the `dash-sites` CLI needs `--network mainnet --name … --identity…`, that forg3.dash.site has no site yet (`dash-sites resolve forg3 --network mainnet`: `no-site`), or that the copy is a version 2 site; added (commit ea9bb880). Wording says "copy", not "gateway" |
 | 38 | Network precedence for dg / git-remote-dash | BUILDING.md:214-235 | ok (spot check) | `dg doctor` names the chooser ("from the command line", "the default"); #698 env warning is documented |
 | 39 | Release notes v0.2.0 asset table (6 archives, CAR, CID, manifest, SHA256SUMS) | docs/releases/v0.2.0.md:93-104 | ok | `gh release view v0.2.0` assets match exactly; `sha256sum --check` OK for the gnu archive and `.cid` |
 | 40 | "forge-web-0.2.0.cid" CID | release body | ok | file content `bafybeiagoqvgg642b253tcf7o4ij462xdvpg3w7w5dsdwcpuk4aknlrua4` = release body |

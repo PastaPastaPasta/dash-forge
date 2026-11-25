@@ -294,7 +294,7 @@ before their registration); `deploy-v2.mjs` adds the `v2` section to it.
 
 `pnpm build:dash-site` (in `forge-web/`) builds the copy of the web app meant for
 a [dash-sites](https://github.com/PastaPastaPasta/dash-sites) name such as
-forg3.dash.site (registered, but nothing is published there yet), where every
+forg3.dash.site (registered; nothing published there as of 2026-11-25), where every
 stored byte costs DASH. It is the ordinary export
 with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
 
