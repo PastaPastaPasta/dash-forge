@@ -10,7 +10,6 @@
 
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
-import { Webhook as WebhookIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
 import { DOC, repoContractIds } from '@/lib/repo'
@@ -45,6 +44,7 @@ import { SecretValue } from '@/components/ui/secret-value'
 import { Field, Input } from '@/components/ui/input'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Section } from '@/components/repo/repo-settings-sections'
+import { RowMenu } from '@/components/ui/row-menu'
 import { shortId } from '@/lib/utils'
 
 function identityProblem(id: string): string | null {
@@ -123,11 +123,8 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
   const toggle = (e: string, on: boolean): void => setEvents((xs) => (on ? [...xs.filter((x) => x !== e), e] : xs.filter((x) => x !== e)))
 
   return (
-    <Section id="webhooks" title="Webhooks" icon={<WebhookIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
+    <Section id="webhooks" title="Webhooks" description="Send repository events to a URL through a relay. URLs and events are public; secrets are encrypted to the relay.">
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="webhooks">
-        <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Delivers repository events to your URL via a relay. URLs and events are public; secrets are encrypted to the relay.
-        </p>
         {!isPublic ? (
           <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="webhooks-private">
             Webhooks are for public repos: a relay is not a member of a private repo and could not read what it would deliver.
@@ -137,7 +134,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
         ) : docs.data === null ? (
           <LoadingBlock label="Reading webhooks" />
         ) : (
-          <ul aria-label="Webhooks" className="divide-y divide-anvil-100 overflow-hidden rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
+          <ul aria-label="Webhooks" className="divide-y divide-anvil-100 rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
             {hooks.length === 0 ? (
               <li className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">No webhooks.</li>
             ) : (
@@ -155,17 +152,19 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
                     </p>
                   </div>
                   {maintainer && (canSeal || (identity !== null && !removalNeedsTombstone(docs.data ?? [], h.hookId, identity))) ? (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      aria-label={`Remove the webhook to ${h.url}`}
+                    <RowMenu
+                      label={`Actions for the webhook to ${h.url}`}
                       disabled={guard.disabledReason !== null}
-                      onClick={() => {
-                        if (guard.check(removeCost(h))) setRemoving(h)
-                      }}
-                    >
-                      Remove
-                    </Button>
+                      items={[
+                        {
+                          label: 'Remove webhook',
+                          destructive: true,
+                          onSelect: () => {
+                            if (guard.check(removeCost(h))) setRemoving(h)
+                          },
+                        },
+                      ]}
+                    />
                   ) : null}
                 </li>
               ))

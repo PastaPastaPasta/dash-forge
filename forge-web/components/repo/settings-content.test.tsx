@@ -33,11 +33,16 @@ vi.mock('@/lib/repo', async (importOriginal) => ({
   readMembershipsCached: async () => [{ identity: 'owner', role: 'maintainer' }],
 }))
 vi.mock('@/components/repo/repo-settings-sections', () => ({
-  SettingsNav: () => null,
+  Card: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   GeneralSettings: () => null,
   BranchSettings: () => null,
   DangerZone: () => null,
-  Section: ({ children }: { children: React.ReactNode }) => <section>{children}</section>,
+  Section: ({ id, title, children }: { id?: string; title: string; children: React.ReactNode }) => (
+    <section id={id}>
+      <h2>{title}</h2>
+      {children}
+    </section>
+  ),
 }))
 vi.mock('@/components/storage/repo-storage-policy', () => ({
   RepoStoragePolicy: ({ unlockAbove }: { unlockAbove?: boolean }) => <div data-testid="storage-policy" data-unlock-above={String(unlockAbove === true)} />,
@@ -88,7 +93,9 @@ afterEach(() => {
   host.remove()
 })
 
-async function render(home: RepoHome): Promise<void> {
+/** Renders the page on the section `hash` names (the page shows one section at a time). */
+async function render(home: RepoHome, hash = 'collaborators'): Promise<void> {
+  window.location.hash = hash
   await act(async () => {
     root.render(<SettingsContent home={home} reload={() => undefined} />)
   })
@@ -157,12 +164,14 @@ describe('one unlock per Settings page', () => {
   it('a locked private repo: the Storage section defers to the unlock under Collaborators', async () => {
     await render(privateHome('locked'))
     expect(host.querySelectorAll('[data-testid="members-unlock"]')).toHaveLength(1)
+    await render(privateHome('locked'), 'storage')
+    expect(host.querySelectorAll('[data-testid="members-unlock"]')).toHaveLength(1)
     expect(unlockAbove()).toBe('true')
   })
 
   it('anywhere else the Storage section offers its own unlock when it needs one', async () => {
     for (const home of [repoHome('public'), privateHome('member'), privateHome('no-key')]) {
-      await render(home)
+      await render(home, 'storage')
       expect(unlockAbove()).toBe('false')
     }
   })
@@ -172,7 +181,7 @@ describe('a non-maintainer on Settings (QW3-055)', () => {
   it('says the page is read-only and never asks an outsider to unlock storage for a repo they cannot push to', async () => {
     viewer.id = 'outsider'
     role.value = null
-    await render(repoHome('public'))
+    await render(repoHome('public'), 'storage')
     expect(host.querySelector('[data-testid="settings-read-only"]')?.textContent).toMatch(/read-only: only its maintainers can change them/)
     expect(host.querySelector('[data-testid="storage-policy"]')).toBeNull()
   })
@@ -180,7 +189,7 @@ describe('a non-maintainer on Settings (QW3-055)', () => {
   it('tells a writer the same, and keeps their own push storage', async () => {
     viewer.id = 'writer'
     role.value = 'writer'
-    await render(repoHome('public'))
+    await render(repoHome('public'), 'storage')
     expect(host.querySelector('[data-testid="settings-read-only"]')?.textContent).toMatch(/You're a writer here/)
     expect(host.querySelector('[data-testid="storage-policy"]')).not.toBeNull()
   })
@@ -261,5 +270,93 @@ describe('Add a member checks the acceptance before pricing the add (QW4-036)', 
     await render(repoHome('public'))
     await type(ID)
     expect(add().disabled).toBe(false)
+  })
+})
+
+describe('one section at a time, picked by the URL hash', () => {
+  const heading = (): string | null | undefined => host.querySelector('[data-settings-pane]:not([hidden]) section h2')?.textContent
+
+  it('opens the section an old bookmark names, keeping the others mounted but hidden', async () => {
+    await render(repoHome('public'), 'storage')
+    expect(heading()).toBe('Storage')
+    expect(host.querySelector('[data-settings-pane="collaborators"]')?.hasAttribute('hidden')).toBe(true)
+    expect(host.querySelector('#member-id')).not.toBeNull()
+    expect(host.querySelector('nav[aria-label="Settings sections"] [aria-current="page"]')?.getAttribute('href')).toBe('#storage')
+  })
+
+  it('opens Members for its unlock anchor', async () => {
+    await render(privateHome('locked'), 'members-unlock')
+    expect(heading()).toBe('Members')
+  })
+
+  it('follows the hash as the nav changes it', async () => {
+    await render(repoHome('public'), 'collaborators')
+    expect(heading()).toBe('Members')
+    await act(async () => {
+      window.location.hash = 'storage'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    expect(heading()).toBe('Storage')
+  })
+
+  it('keeps the section on a hash that names none (the skip link) and on a malformed one', async () => {
+    await render(repoHome('public'), 'storage')
+    for (const hash of ['main', '%']) {
+      await act(async () => {
+        window.location.hash = hash
+        window.dispatchEvent(new HashChangeEvent('hashchange'))
+      })
+      expect(heading()).toBe('Storage')
+    }
+  })
+
+  it('follows a click on a link to this page before the router changes the URL', async () => {
+    await render(repoHome('public'), 'collaborators')
+    const link = document.createElement('a')
+    link.href = `${window.location.pathname}${window.location.search}#storage`
+    link.addEventListener('click', (e) => e.preventDefault())
+    document.body.appendChild(link)
+    await act(async () => {
+      link.click()
+    })
+    expect(heading()).toBe('Storage')
+    expect(window.location.hash).toBe('#collaborators')
+    link.remove()
+  })
+
+  it('stays put when a link to this page opens in another tab', async () => {
+    await render(repoHome('public'), 'collaborators')
+    const link = document.createElement('a')
+    link.href = `${window.location.pathname}${window.location.search}#storage`
+    link.addEventListener('click', (e) => e.preventDefault())
+    document.body.appendChild(link)
+    await act(async () => {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }))
+    })
+    expect(heading()).toBe('Members')
+    link.target = '_blank'
+    await act(async () => {
+      link.click()
+    })
+    expect(heading()).toBe('Members')
+    link.remove()
+  })
+
+  it('goes back to the default section when the hash is cleared', async () => {
+    await render(repoHome('public'), 'storage')
+    await act(async () => {
+      history.pushState(null, '', `${window.location.pathname}${window.location.search}`)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(host.querySelector('[data-settings-pane="general"]')?.hasAttribute('hidden')).toBe(false)
+    expect(host.querySelector('[data-settings-pane="storage"]')?.hasAttribute('hidden')).toBe(true)
+  })
+
+  it("keeps a writer out of the Danger zone a link names, on their default section", async () => {
+    viewer.id = 'writer'
+    role.value = 'writer'
+    await render(repoHome('public'), 'danger')
+    expect(heading()).toBe('Members')
+    expect(host.querySelector('nav a[href="#danger"]')).toBeNull()
   })
 })

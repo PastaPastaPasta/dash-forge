@@ -236,7 +236,7 @@ test('g2. a release asset uploads on that default; without one the dialog says w
   // the dialog names the step and links to the page that fixes it.
   const repoPolicy = page.getByTestId('repo-storage-policy')
   const openRepoSettings = async (): Promise<void> => {
-    await page.goto(repoPath('settings'), { waitUntil: 'domcontentloaded' })
+    await page.goto(repoPath('settings', '#storage'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await unlockAll(page, repoPolicy)
     await expect(repoPolicy).toContainText(/Using your default|This repo has its own choice/, { timeout: 60_000 })

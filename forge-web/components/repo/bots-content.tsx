@@ -17,8 +17,7 @@
  */
 
 import { useState } from 'react'
-import Link from 'next/link'
-import { Bot, ChevronLeft, Plus, Server } from 'lucide-react'
+import { Bot, Plus, Server } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
 import {
@@ -47,7 +46,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useDpnsName } from '@/hooks/use-dpns-name'
-import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import type { RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 import { BetaBadge } from '@/components/ui/beta-badge'
 import { Button } from '@/components/ui/button'
@@ -84,7 +83,7 @@ export function BotsContent({ home, addr }: { home: RepoHome; addr: RepoAddress 
   if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider')) {
     return <PrivateRepoState repo={home.repo} addr={addr} access={access} />
   }
-  return <Bots home={home} addr={addr} />
+  return <Bots home={home} />
 }
 
 /** One change a maintainer is making: give or change a bot's access, take it away, or change its push access. */
@@ -93,7 +92,7 @@ type Change =
   | { readonly kind: 'remove'; readonly entry: NoticeEntry }
   | { readonly kind: 'push'; readonly action: PushAction }
 
-function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
+function Bots({ home }: { home: RepoHome }): JSX.Element {
   const repo = home.repo
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity } = useAuth()
@@ -114,14 +113,8 @@ function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Elemen
   const display = useRepoDisplay(home)
   return (
     <div className="max-w-3xl space-y-5" data-testid="bots">
-      <Link
-        href={repoHref('/repo/settings', addr)}
-        className="hit-area inline-flex items-center gap-1 text-dense text-anvil-600 hover:text-anvil-900 dark:text-anvil-300 dark:hover:text-anvil-50"
-      >
-        <ChevronLeft className="h-4 w-4" aria-hidden /> Settings
-      </Link>
       <div>
-        <h2 id="bots-title" className="flex items-center gap-2 text-prose">
+        <h2 id="bots-title" className="flex items-center gap-2 text-lg font-semibold text-anvil-900 dark:text-anvil-50">
           <Bot className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Bots and runners <BetaBadge feature="bots" />
         </h2>
         {data !== null && !canEdit ? (

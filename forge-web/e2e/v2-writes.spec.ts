@@ -70,7 +70,7 @@ test('w2. owner adds COLLAB as a writer, once COLLAB accepted the invitation', a
   await expect(invited.getByText(/You accepted the invitation/)).toBeVisible({ timeout: 60_000 })
   await invited.context().close()
 
-  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  const page = await signedIn(browser, 'OWNER', repoPath('settings', '#collaborators'))
   await page.getByLabel('Identity ID').fill(COLLAB)
   await page.getByRole('radio', { name: 'Write', exact: true }).click()
   // The member form's Add comes first; a pending-invitation row below it has an Add of its own.
@@ -132,9 +132,10 @@ test('w6. owner approves the fixture PR, then removes the writer', async ({ brow
 
   // A full navigation locks the key; the vault unlocks it again with the passphrase.
   const settings = page
-  await settings.goto(repoPath('settings'), { waitUntil: 'domcontentloaded' })
+  await settings.goto(repoPath('settings', '#collaborators'), { waitUntil: 'domcontentloaded' })
   await unlock(settings)
-  await settings.getByRole('button', { name: /^remove$/i }).first().click()
+  await settings.getByRole('button', { name: /^actions for/i }).first().click()
+  await settings.getByRole('menuitem', { name: /^remove from repo$/i }).click()
   await confirmWrite(settings, /sign & remove/i)
   await expect(settings.getByTestId('role-badge').filter({ hasText: /^Write$/i })).toHaveCount(0, { timeout: 60_000 })
 
@@ -164,14 +165,15 @@ test('w7. star, unstar, star, unstar in a row (create and index-only delete shar
 })
 
 test('w8. grant, revoke, grant, revoke a writer in a row', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  const page = await signedIn(browser, 'OWNER', repoPath('settings', '#collaborators'))
   for (let round = 0; round < 2; round++) {
     await page.getByLabel('Identity ID').fill(COLLAB)
     await page.getByRole('radio', { name: 'Write', exact: true }).click()
     await page.getByRole('button', { name: /^add$/i }).first().click()
     await confirmWrite(page, /sign & add/i)
     await expect(page.getByTestId('role-badge').filter({ hasText: /^Write$/i })).toBeVisible({ timeout: 60_000 })
-    await page.getByRole('button', { name: /^remove$/i }).first().click()
+    await page.getByRole('button', { name: /^actions for/i }).first().click()
+    await page.getByRole('menuitem', { name: /^remove from repo$/i }).click()
     await confirmWrite(page, /sign & remove/i)
     await expect(page.getByTestId('role-badge').filter({ hasText: /^Write$/i })).toHaveCount(0, { timeout: 60_000 })
   }

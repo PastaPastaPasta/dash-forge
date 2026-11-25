@@ -200,14 +200,14 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
       const codeOnlyDone = converted && now !== null && now.converted && now.phase === 'public' && now.mode !== 'everything'
       if (!isOwner || !codeOnlyDone) return null
       return (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4" data-testid="make-public-everything-row">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="make-public-everything-row">
           <div className="min-w-0 flex-1">
             <p className="text-dense font-medium">
               {EVERYTHING_LATER_TITLE} <BetaBadge feature="makeRepoPublic" />
             </p>
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{EVERYTHING_LATER_TEXT}</p>
           </div>
-          <Button variant="danger" disabled={inFlight || !labelReady} onClick={() => open({ kind: 'everything' })} data-testid="make-public-everything-open">
+          <Button variant="outline" disabled={inFlight || !labelReady} onClick={() => open({ kind: 'everything' })} data-testid="make-public-everything-open">
             Make everything public…
           </Button>
         </div>
@@ -217,7 +217,7 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
     if (!isOwner) rowText = ownerOnlyLine(ownerName ? `@${ownerName}` : shortId(repo.ownerId))
     else if (oneWay.data === false) rowText = COPY.frozen
     return (
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4" data-testid="make-public-row">
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="make-public-row">
         <div className="min-w-0 flex-1">
           <p className="text-dense font-medium">
             Make this repo public <BetaBadge feature="makeRepoPublic" />
@@ -226,7 +226,7 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
         </div>
         {isOwner ? (
           <Button
-            variant="danger"
+            variant="outline"
             disabled={oneWay.data === false || !oneWay.settled || !status.settled || !labelReady || inFlight}
             onClick={() => open({ kind: 'new' })}
             data-testid="make-public-open"

@@ -167,7 +167,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   })
 
   test('v2-7. settings list members from membership documents', async ({ page }) => {
-    await page.goto(url('settings'), { waitUntil: 'domcontentloaded' })
+    await page.goto(`${url('settings')}#collaborators`, { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     // Settings → Members (the glossary's term for people with a role; #66 had called it Collaborators).
     const collaborators = page.getByRole('region', { name: 'Members' })
