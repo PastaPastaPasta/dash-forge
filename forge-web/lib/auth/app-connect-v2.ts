@@ -43,8 +43,12 @@ import {
   appConnectRequestHash,
   buildAppConnectUri,
   listAppConnectCandidates,
+  openAppConnectPayload,
   verifyAppConnectCandidate,
+  verifyAppConnectKeys,
+  type AppConnectCandidate,
   type AppConnectGrant,
+  type AppConnectVerification,
   type AppConnectRejectReason,
   type AppConnectRequest,
 } from '../vendor/platform-auth/app-connect'
@@ -333,6 +337,29 @@ export class PollTrigger {
   }
 }
 
+/** `c`'s keys but slot `slot`, verified against the request's auth binding alone; null when they do not verify. */
+async function withoutSlot(
+  req: V2LoginRequest,
+  c: AppConnectCandidate,
+  port: ReturnType<typeof appConnectPort>,
+  now: number,
+  slot: number,
+): Promise<AppConnectVerification | null> {
+  let slots: Uint8Array[]
+  try {
+    slots = await openAppConnectPayload({ appEphemeralPrivateKey: req.appEphemeralPriv, ownerId: decodeIdentifier(c.ownerId), walletEphemeralPubKey: c.walletEphemeralPubKey, encryptedPayload: c.encryptedPayload })
+  } catch {
+    return null
+  }
+  const dropped = slots.splice(slot, 1)
+  for (const d of dropped) d.fill(0)
+  if (slots.length === 0) return null
+  const verdict = await verifyAppConnectKeys({ request: { authBindings: req.request.authBindings, encBindings: [] }, ownerId: c.ownerId, identity: port, now, privateKeys: slots })
+  if (verdict.ok) return verdict
+  for (const s of slots) s.fill(0)
+  return null
+}
+
 /** A verified v2 grant: the answering identity and its key, checked by Forge's own rules. */
 export interface V2Grant {
   readonly identityId: string
@@ -380,8 +407,10 @@ async function grantOf(
   try {
     const [main, ...others] = grant.authKeys
     if (!main || others.length > 0 || main.role !== 'contractGroup') throw new WalletGrantRefused('framing')
-    const [enc, ...moreEnc] = grant.encryptionKeys
-    if (moreEnc.length > 0 || (enc !== undefined && (p.syncContract === null || !isSyncKey(enc, p.syncContract)))) throw new WalletGrantRefused('framing')
+    const [sent, ...moreEnc] = grant.encryptionKeys
+    if (moreEnc.length > 0 || (sent !== undefined && p.syncContract === null)) throw new WalletGrantRefused('framing')
+    // A sync key Forge cannot use is left out: sync stays off, the sign-in goes on.
+    const enc = sent !== undefined && p.syncContract !== null && isSyncKey(sent, p.syncContract) ? sent : undefined
     let key: WalletKey | null
     try {
       key = await findWalletKey(sdk, { identityId: grant.identityId, wif: encodeWif(main.privateKey, p.network), forge: p.forge, network: p.network })
@@ -457,7 +486,12 @@ export async function awaitV2Grant(
         let answer: V2Grant | UnusableWalletKey | null = null
         try {
           const chainNow = req.chainTimeAtCreation + (now() - req.createdAt)
-          const verdict = await verifyAppConnectCandidate({ request: req.request, appEphemeralPrivateKey: req.appEphemeralPriv, candidate: c, identity: port, now: chainNow })
+          let verdict = await verifyAppConnectCandidate({ request: req.request, appEphemeralPrivateKey: req.appEphemeralPriv, candidate: c, identity: port, now: chainNow })
+          // Refused for one slot: when the others verify against the auth binding alone, that slot
+          // was the optional sync key, and the sign-in goes on without it.
+          if (!verdict.ok && !verdict.retryable && !NOT_AN_ANSWER.has(verdict.reason) && req.syncContract !== null && verdict.slot !== undefined) {
+            verdict = (await withoutSlot(req, c, port, chainNow, verdict.slot)) ?? verdict
+          }
           if (!verdict.ok && NOT_AN_ANSWER.has(verdict.reason)) {
             notAnswers.add(contents)
             continue

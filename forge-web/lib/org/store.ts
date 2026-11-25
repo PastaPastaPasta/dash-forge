@@ -1,5 +1,5 @@
 import { participantKeys, seedFromMnemonic, type MemberKeys } from './derive'
-import { effectiveRaw } from '../user-sync/overlay'
+import { effectiveRaw, notePrefWrite } from '../user-sync/overlay'
 
 export interface OrgMember {
   readonly index: number
@@ -58,6 +58,7 @@ function write(network: string, list: readonly OrgRecord[]): void {
   cache.set(network, list)
   try {
     globalThis.localStorage?.setItem(storageKey(network), JSON.stringify(list))
+    notePrefWrite(storageKey(network))
   } catch {
     /* storage unavailable: kept for this tab */
   }

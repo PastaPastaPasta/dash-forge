@@ -37,6 +37,8 @@ export interface SyncRecord {
   readonly deletes?: Readonly<Record<string, number>>
   /** Storage keys the user edited here, and when: uploaded even when the value is the one held here before. */
   readonly edits?: Readonly<Record<string, number>>
+  /** Preference keys written here since the last sync, and when: they read as written, and are uploaded. */
+  readonly prefEdits?: Readonly<Record<string, number>>
 }
 
 /** Record that the user edited `keys` of the storage settings here at `at`. */
@@ -83,12 +85,26 @@ export function store(): Storage | null {
   }
 }
 
+const isMap = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const isMeta = (v: unknown): boolean => isMap(v) && typeof v['keyId'] === 'number' && typeof v['syncedAt'] === 'number' && isMap(v['base']) && isMap(v['base']['tags'])
+
+/** The stored record, each part dropped that does not read as one (it is redone by the next sync). */
 export function readRecord(networkKey: string, identityId: string): SyncRecord | null {
   try {
     const raw = store()?.getItem(recordKey(networkKey, identityId))
     if (!raw) return null
-    const r = JSON.parse(raw) as SyncRecord
-    return r && r.v === RECORD_VERSION ? r : null
+    const r = JSON.parse(raw) as unknown
+    if (!isMap(r) || r['v'] !== RECORD_VERSION) return null
+    const prefs = r['prefs']
+    const prefsOk = isMeta(prefs) && isMap((prefs as Record<string, unknown>)['raw']) && isMap((prefs as Record<string, unknown>)['view'])
+    return {
+      v: 1,
+      ...(isMeta(r['storage']) ? { storage: r['storage'] as SlotMeta } : {}),
+      ...(prefsOk ? { prefs: prefs as PrefsMeta } : {}),
+      ...(isMap(r['deletes']) ? { deletes: r['deletes'] as Record<string, number> } : {}),
+      ...(isMap(r['edits']) ? { edits: r['edits'] as Record<string, number> } : {}),
+      ...(isMap(r['prefEdits']) ? { prefEdits: r['prefEdits'] as Record<string, number> } : {}),
+    }
   } catch {
     return null
   }
@@ -108,7 +124,7 @@ export function writeRecord(networkKey: string, identityId: string, record: Sync
   if (active?.networkKey === networkKey && active.identityId === identityId) setActive(networkKey, identityId)
 }
 
-let active: { networkKey: string; identityId: string; prefs: PrefsMeta | null } | null = null
+let active: { networkKey: string; identityId: string; prefs: PrefsMeta | null; edits: Readonly<Record<string, number>> } | null = null
 
 /** The preference keys whose effective value differs between two overlays. */
 function changedKeys(a: PrefsMeta | null | undefined, b: PrefsMeta | null | undefined): string[] {
@@ -131,8 +147,9 @@ function announce(keys: readonly string[]): void {
 /** The signed-in identity whose synced preferences apply (null: none, the local ones only). */
 export function setActive(networkKey: string, identityId: string | null): void {
   const before = active?.prefs ?? null
-  const prefs = identityId === null ? null : (readRecord(networkKey, identityId)?.prefs ?? null)
-  active = identityId === null ? null : { networkKey, identityId, prefs }
+  const record = identityId === null ? null : readRecord(networkKey, identityId)
+  const prefs = record?.prefs ?? null
+  active = identityId === null ? null : { networkKey, identityId, prefs, edits: record?.prefEdits ?? {} }
   announce(changedKeys(before, prefs))
 }
 
@@ -141,8 +158,19 @@ export function effectiveRaw(key: string, localRaw: string | null): string | nul
   const prefs = active?.prefs
   if (!prefs) return localRaw
   const merged = prefs.view[key]
+  // Written here since the last sync: the user's choice, whatever value it is.
+  if (active !== null && Object.hasOwn(active.edits, key)) return localRaw
   if (merged === undefined || !Object.hasOwn(prefs.raw, key) || prefs.raw[key] !== localRaw) return localRaw
   return merged
+}
+
+/**
+ * A preference reader wrote `key` (the user changed it here): it reads as written from now on, and
+ * the next sync uploads it, even when it equals the value held here before.
+ */
+export function notePrefWrite(key: string): void {
+  if (active === null || active.prefs === null) return
+  updateRecord(active.networkKey, active.identityId, { prefEdits: { ...(readRecord(active.networkKey, active.identityId)?.prefEdits ?? {}), [key]: Date.now() } })
 }
 
 /** `localStorage.getItem(key)` as a preference reader should see it. */

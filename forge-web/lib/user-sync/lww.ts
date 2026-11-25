@@ -46,7 +46,7 @@ export function parseDoc(raw: unknown, slot: string): LwwDoc {
   const version = r['version']
   if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) throw new Error('the synced settings have no version')
   if (version > LWW_VERSION) throw new NewerSyncFormatError(slot, version)
-  const entries: Record<string, LwwEntry> = {}
+  const entries = dict<LwwEntry>()
   const rawEntries = r['entries']
   if (typeof rawEntries !== 'object' || rawEntries === null || Array.isArray(rawEntries)) throw new Error('the synced settings have no entries')
   for (const [key, e] of Object.entries(rawEntries as Record<string, unknown>)) {
@@ -55,6 +55,13 @@ export function parseDoc(raw: unknown, slot: string): LwwDoc {
     entries[key] = readable(e) ? { ...e, at: e.at, v: e.v ?? null } : (e as LwwEntry)
   }
   return { ...r, format: r['format'] as string, version, entries }
+}
+
+/** A map with no prototype: any key, `__proto__` too, is an own entry. */
+export function dict<T>(from?: Readonly<Record<string, T>>): Record<string, T> {
+  const out = Object.create(null) as Record<string, T>
+  if (from) for (const [k, v] of Object.entries(from)) out[k] = v
+  return out
 }
 
 function readable(e: unknown): e is LwwEntry {
@@ -127,15 +134,15 @@ export function planSlot(p: {
   readonly uploadLocal?: boolean
 }): SlotPlan {
   const remote = p.remote ?? emptyDoc(p.slot)
-  const entries: Record<string, LwwEntry> = { ...remote.entries }
+  const entries = dict(remote.entries)
   const deletions = p.deletions ?? {}
   for (const key of new Set([...Object.keys(p.local), ...Object.keys(deletions)])) {
     const synced = entries[key]
     if (synced !== undefined && !readable(synced)) continue
     if (!Object.hasOwn(p.local, key)) {
       const at = deletions[key]
-      // A delete loses to a value set elsewhere after it.
-      if (at !== undefined && synced !== undefined && synced.v !== null && at > synced.at) entries[key] = { ...synced, at, v: null }
+      // A delete loses to a value set elsewhere after it, and is the newest tombstone otherwise.
+      if (at !== undefined && at > (synced?.at ?? -Infinity)) entries[key] = { ...synced, at, v: null }
       continue
     }
     const editedAt = p.edits?.[key]
@@ -144,7 +151,9 @@ export function planSlot(p: {
     const idOf = p.options.lists?.[key]
     const list = idOf !== undefined && synced !== undefined && Array.isArray(synced.v) && Array.isArray(lv)
     let changed: boolean
-    if (synced === undefined || editedAt !== undefined) changed = true
+    if (editedAt !== undefined) changed = true
+    // Missing from the synced copy: uploaded, unless it is a value this identity never set here.
+    else if (synced === undefined) changed = p.uploadLocal !== false || (p.base !== null && p.base.tags[key] !== p.tag(key, p.local[key]))
     else if (p.base === null) changed = list
     else changed = p.base.tags[key] !== p.tag(key, p.local[key])
     if (!changed) continue
@@ -153,8 +162,8 @@ export function planSlot(p: {
     entries[key] = { ...synced, at: Math.max(p.now, (synced?.at ?? 0) + 1), v }
   }
   const next: LwwDoc = { ...remote, entries }
-  const view: Record<string, unknown> = {}
-  const add: Record<string, unknown> = {}
+  const view = dict<unknown>()
+  const add = dict<unknown>()
   const collisions: string[] = []
   for (const [key, e] of Object.entries(entries)) {
     if (!readable(e) || e.v === null) continue
@@ -172,6 +181,9 @@ export function planSlot(p: {
  */
 export function mergeList(synced: readonly unknown[], local: readonly unknown[], base: Readonly<Record<string, string>>, idOf: (e: unknown) => string, tag: (e: unknown) => string): unknown[] {
   const localById = new Map(local.map((e) => [idOf(e), e] as const))
+  // The same elements, reordered here: the order is the change (a gateway list is tried in order).
+  const syncedIds = synced.map(idOf)
+  if (syncedIds.length === local.length && localById.size === local.length && syncedIds.every((id) => localById.has(id))) return [...local]
   const removed = new Set(Object.keys(base).filter((id) => !localById.has(id)))
   const changed = new Map([...localById].filter(([id, e]) => base[id] !== tag(e)))
   const out: unknown[] = []

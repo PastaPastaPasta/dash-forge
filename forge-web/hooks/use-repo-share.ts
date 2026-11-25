@@ -32,6 +32,8 @@ export interface RepoShareState {
    * Resolves whether a share existed (so they may have seen its credentials).
    */
   readonly afterRemoval: (member: string) => Promise<boolean>
+  /** Owner: `member` is a maintainer again (the add read back): this tab grants them again. */
+  readonly afterAdd: (member: string) => void
 }
 
 /** Members removed in this tab, per repo: never granted again from a node read that still lists them. */
@@ -63,7 +65,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
 
   const repoKey = `${ACTIVE_NETWORK.key}:${repo.repoId}`
   const reconcile = useCallback(
-    (view: Readonly<Record<string, unknown>>): Promise<Reconciled | null> =>
+    (view: Readonly<Record<string, unknown>> | null): Promise<Reconciled | null> =>
       oneAtATime(repoKey, async () => {
         if (user === undefined || identity === null || sdk === null || signer === null || !isOwner) return null
         const maintainers = await readMaintainers(sdk, repo)
@@ -99,7 +101,9 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
       removedHere.set(repoKey, new Set([...(removedHere.get(repoKey) ?? []), member]))
-      const done = config === null ? null : await reconcile(config).catch(() => null)
+      // Before this tab's sync settled too: with no synced view the share keeps what it holds,
+      // and the removed member's grant still goes, at the next epoch.
+      const done = await reconcile(config).catch(() => null)
       if (done !== null) {
         setWaiting(done.waiting)
         return done.shared
@@ -111,14 +115,36 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     [config, reconcile, user, sdk, repo, repoKey],
   )
 
-  return { waiting, memberNeedsKey, afterRemoval }
+  const afterAdd = useCallback(
+    (member: string): void => {
+      removedHere.get(repoKey)?.delete(member)
+    },
+    [repoKey],
+  )
+
+  return { waiting, memberNeedsKey, afterRemoval, afterAdd }
 }
 
+/** Grant reads in flight (one per repo and identity); a settled one is read again on the next visit. */
 const granted = new Map<string, Promise<GrantedStorage | null>>()
-// The owner's credentials go with the unlock that opened them, and with the key.
+/** Bumped on a lock or a key change: a grant opened before it is dropped, and a read begun before it ignored. */
+let grantGeneration = 0
+const generationListeners = new Set<() => void>()
 if (typeof window !== 'undefined') {
-  onVaultLock(() => granted.clear())
-  onSyncKeyChange(() => granted.clear())
+  const invalidate = (): void => {
+    grantGeneration++
+    granted.clear()
+    for (const l of generationListeners) l()
+  }
+  onVaultLock(invalidate)
+  onSyncKeyChange(invalidate)
+}
+
+function onGrantInvalidated(listener: () => void): () => void {
+  generationListeners.add(listener)
+  return () => {
+    generationListeners.delete(listener)
+  }
 }
 
 /**
@@ -129,14 +155,17 @@ export function useGrantedStorage(repo: RepoRef | null, config: StorageConfig | 
   const { identity } = useAuth()
   const { sdk } = useSdk()
   const user = ACTIVE_NETWORK.v2?.user
-  const [grant, setGrant] = useState<GrantedStorage | null>(null)
+  // The grant with the scope (network, identity, repo) and generation it was read for: used only for those.
+  const [grant, setGrant] = useState<{ readonly scope: string; readonly generation: number; readonly value: GrantedStorage | null } | null>(null)
+  const [generation, setGeneration] = useState(grantGeneration)
+  useEffect(() => onGrantInvalidated(() => setGeneration(grantGeneration)), [])
+  const scope = repo === null || identity === null ? null : `${ACTIVE_NETWORK.key}:${identity}:${repo.repoId}`
 
   useEffect(() => {
-    setGrant(null)
-    if (user === undefined || repo === null || identity === null || sdk === null || identity === repo.ownerId) return
+    if (user === undefined || repo === null || identity === null || sdk === null || identity === repo.ownerId || scope === null) return
     let stale = false
-    const key = `${ACTIVE_NETWORK.key}:${identity}:${repo.repoId}`
-    let read = granted.get(key)
+    const startedAt = grantGeneration
+    let read = granted.get(scope)
     if (read === undefined) {
       read = (async () => {
         if (!(await readMaintainers(sdk, repo)).includes(identity)) return null
@@ -144,19 +173,20 @@ export function useGrantedStorage(repo: RepoRef | null, config: StorageConfig | 
           readGrantedStorage({ port: forgeUserPort(sdk, user, null), networkKey: ACTIVE_NETWORK.key, memberId: identity, keyId, E }, { repoId: repo.repoId, repoOwnerId: repo.ownerId }),
         )
       })().catch(() => null)
-      granted.set(key, read)
-      // A failed or empty read is tried again next time this repo is opened.
-      void read.then((g) => {
-        if (g === null) granted.delete(key)
+      const mine = read
+      granted.set(scope, mine)
+      void mine.finally(() => {
+        if (granted.get(scope) === mine) granted.delete(scope)
       })
     }
     void read.then((g) => {
-      if (!stale) setGrant(g)
+      if (!stale && grantGeneration === startedAt) setGrant((prev) => (prev !== null && prev.scope === scope && prev.generation === startedAt && prev.value === g ? prev : { scope, generation: startedAt, value: g }))
     })
     return () => {
       stale = true
     }
-  }, [user, repo, identity, sdk])
+  }, [user, repo, identity, sdk, scope, generation])
 
-  return config === null || repo === null ? config : withGrantedStorage(config, repo.repoId, grant)
+  const current = grant !== null && grant.scope === scope && grant.generation === generation ? grant.value : null
+  return config === null || repo === null ? config : withGrantedStorage(config, repo.repoId, current)
 }

@@ -297,13 +297,22 @@ describe('settings sync: the forge-user encryption binding', () => {
     expect(grant.syncKey).toBeUndefined()
   })
 
-  it('refuses an encryption key bound to another contract, at the wrong level, or disabled', async () => {
+  it('signs in without sync when the encryption key is bound to another contract, at the wrong level, or disabled', async () => {
     for (const bad of [{ bounds: { $type: 'singleContract', id: FORGE.core } }, { securityLevelNumber: 2 }, { disabledAt: 1n }] as Partial<ChainKey>[]) {
       const chain = fakeChain()
       const req = { ...syncRequest(), identityHint: ALICE }
       await chain.approve(req.qrUri, ALICE, {}, bad)
-      await expect(awaitV2Grant(chain.sdk, req, { ...syncFast, settleMs: 0 })).rejects.toBeInstanceOf(WalletGrantRefused)
+      const grant = await awaitV2Grant(chain.sdk, req, { ...syncFast, settleMs: 0 })
+      expect(grant.key.keyId).toBe(1)
+      expect(grant.syncKey).toBeUndefined()
     }
+  })
+
+  it('still refuses an answer whose sign-in key is unusable, whatever the sync key', async () => {
+    const chain = fakeChain()
+    const req = { ...syncRequest(), identityHint: ALICE }
+    await chain.approve(req.qrUri, ALICE, { disabledAt: 1n })
+    await expect(awaitV2Grant(chain.sdk, req, { ...syncFast, settleMs: 0 })).rejects.toBeInstanceOf(WalletGrantRefused)
   })
 
   it('refuses an encryption key when Forge did not ask for one', async () => {

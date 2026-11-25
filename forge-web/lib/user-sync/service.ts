@@ -15,7 +15,7 @@ import { canonicalJson, hkdf32, openState, sealState, type StateContext, type St
 import { LWW_VERSION, NewerSyncFormatError, baseOf, parseDoc, planSlot, sameDoc, type LwwDoc, type PlanOptions, type SlotBase, type SlotPlan, type Tagger } from './lww'
 import { prefsOwner, readRecord, store, updateRecord, type PrefsMeta, type SlotMeta, type SyncRecord } from './overlay'
 import type { Stored, UserSyncPort } from './platform'
-import { PREFS_PLAN, prefKeys, prefsEntries, prefsViewRaw } from './prefs-slot'
+import { PREFS_PLAN, prefKeys, prefSlotEdits, prefsEntries, prefsViewRaw } from './prefs-slot'
 import { carryProfileExtras, storageEntries, storageView, withAdditions } from './storage-slot'
 
 /** This device's storage settings, as the vault keeps them. */
@@ -43,6 +43,8 @@ export interface SyncContext {
   readonly storage: LocalStorageConfig | null
   readonly localStore?: Pick<Storage, 'getItem' | 'setItem'> | null
   readonly now?: () => number
+  /** Whether this identity is still the one signed in here (checked right before a shared browser key is written). */
+  readonly stillActive?: () => boolean
 }
 
 export interface SyncOutcome {
@@ -152,8 +154,14 @@ async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: numb
   const snapshot = storageEntries(local)
   const plan = await mergeSlot(ctx, 'storage', { local: snapshot, base, options: { carry: carryProfileExtras }, tag, deletions: deletes, edits })
   // Additions only, to the settings as they are now (a Settings save may have landed meanwhile).
-  const written = await ctx.storage.update((current) => withAdditions(current, plan.add))
-  const addedHere = Object.fromEntries(Object.entries(storageEntries(written)).filter(([k]) => Object.hasOwn(plan.add, k) && !Object.hasOwn(snapshot, k)))
+  // Only what this update itself added joins the base: a value a Settings save set meanwhile stays a change.
+  let addedHere: Record<string, unknown> = {}
+  const written = await ctx.storage.update((current) => {
+    const next = withAdditions(current, plan.add)
+    const had = storageEntries(current)
+    addedHere = next === null ? {} : Object.fromEntries(Object.entries(storageEntries(next)).filter(([k]) => !Object.hasOwn(had, k) && !Object.hasOwn(snapshot, k)))
+    return next
+  })
   return {
     config: storageView(plan.view, plan.collisions, written, ctx.deviceId),
     synced: plan.view,
@@ -163,15 +171,17 @@ async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: numb
   }
 }
 
-async function syncPrefs(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<PrefsMeta> {
+async function syncPrefs(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<PrefsMeta & { readonly carried: Readonly<Record<string, number>> }> {
   const tag = await tagger(ctx.E, ctx.identityId, ctx.networkKey, 'prefs')
   const store = localStore(ctx)
   const keys = prefKeys(ctx.network)
   const raw = readRaw(store, keys)
   const meta = record?.prefs
   const base = meta && meta.keyId === ctx.keyId ? meta.base : null
-  // This browser's preferences are uploaded by the first identity that syncs here, or once changed in a session.
-  const plan = await mergeSlot(ctx, 'prefs', { local: prefsEntries(raw, ctx.network), base, options: PREFS_PLAN, tag, uploadLocal: base !== null || prefsOwner(ctx.identityId) })
+  // This browser's preferences are uploaded by the first identity that syncs here, or once changed in its session.
+  const prefEdits = record?.prefEdits ?? {}
+  const edits = prefSlotEdits(prefEdits, ctx.network)
+  const plan = await mergeSlot(ctx, 'prefs', { local: prefsEntries(raw, ctx.network), base, options: PREFS_PLAN, tag, edits, uploadLocal: prefsOwner(ctx.identityId) })
   // A preference never set here takes the synced value as its own (an older build sees it too);
   // one set here is never overwritten: the readers show the merged value through the overlay.
   const viewBefore = prefsViewRaw(plan.view, raw, ctx.network)
@@ -180,7 +190,7 @@ async function syncPrefs(ctx: SyncContext, record: SyncRecord | null, at: number
     const v = viewBefore[k]
     if (raw[k] !== null || v === undefined) continue
     try {
-      if (store?.getItem(k) === null) {
+      if (ctx.stillActive?.() !== false && store?.getItem(k) === null) {
         store.setItem(k, v)
         after[k] = v
       }
@@ -188,15 +198,17 @@ async function syncPrefs(ctx: SyncContext, record: SyncRecord | null, at: number
       /* storage refused: the overlay still shows it */
     }
   }
-  return { keyId: ctx.keyId, syncedAt: at, base: baseAfter(prefsEntries(raw, ctx.network), prefsEntries(after, ctx.network), tag, PREFS_PLAN.lists), raw: after, view: prefsViewRaw(plan.view, after, ctx.network) }
+  return { keyId: ctx.keyId, syncedAt: at, base: baseAfter(prefsEntries(raw, ctx.network), prefsEntries(after, ctx.network), tag, PREFS_PLAN.lists), raw: after, view: prefsViewRaw(plan.view, after, ctx.network), carried: prefEdits }
 }
 
 /** One sync of both slots. Throws when Platform cannot be read or written; nothing local is lost either way. */
 export async function syncUserSettings(ctx: SyncContext): Promise<SyncOutcome> {
   const at = (ctx.now ?? Date.now)()
   const record = readRecord(ctx.networkKey, ctx.identityId)
-  const prefs = await syncPrefs(ctx, record, at)
-  updateRecord(ctx.networkKey, ctx.identityId, { prefs })
+  const { carried, ...prefs } = await syncPrefs(ctx, record, at)
+  // The preference edits this run carried are done; any made meanwhile stay for the next.
+  const prefEditsLeft = Object.entries(readRecord(ctx.networkKey, ctx.identityId)?.prefEdits ?? {}).filter(([k, t]) => carried[k] !== t)
+  updateRecord(ctx.networkKey, ctx.identityId, { prefs, prefEdits: Object.fromEntries(prefEditsLeft) })
   const storage = await syncStorage(ctx, record, at)
   if (storage !== null) {
     // The deletes this run carried are done; any made meanwhile stay for the next.

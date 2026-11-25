@@ -1,5 +1,5 @@
 import { fiatProviders, isCurrency, validRate, type Currency, type FiatSource, type Rates } from './providers'
-import { readPref } from '../user-sync/overlay'
+import { notePrefWrite, readPref } from '../user-sync/overlay'
 
 export const FIAT_SETTINGS_KEY = 'forge:fiat:v1'
 export const FIAT_RATES_KEY = 'forge:fiat-rates:v1'
@@ -113,6 +113,7 @@ export function setFiatSettings(next: Partial<FiatSettings>): void {
   if (typeof updated.enabled !== 'boolean' || !isCurrency(updated.currency)) return
   applySettings(updated)
   write(FIAT_SETTINGS_KEY, { v: 1, ...settings })
+  notePrefWrite(FIAT_SETTINGS_KEY)
   refresh()
 }
 

@@ -9,7 +9,7 @@
 import { useCallback, useSyncExternalStore } from 'react'
 
 import { DEFAULT_PREFS, PREFS_KEY, parsePrefs, type Prefs } from '@/lib/view/prefs'
-import { effectiveRaw } from '@/lib/user-sync/overlay'
+import { effectiveRaw, notePrefWrite } from '@/lib/user-sync/overlay'
 
 const listeners = new Set<() => void>()
 let cachedRaw: string | null | undefined
@@ -51,6 +51,7 @@ export function usePrefs(): readonly [Prefs, (patch: Partial<Prefs>) => void] {
     const next = { ...read(), ...patch }
     try {
       window.localStorage.setItem(PREFS_KEY, JSON.stringify(next))
+      notePrefWrite(PREFS_KEY)
     } catch {
       // Private mode: the change lasts for this page only.
       memoryOnly = next

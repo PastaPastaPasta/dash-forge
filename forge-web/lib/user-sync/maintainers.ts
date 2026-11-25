@@ -10,7 +10,7 @@
 import { decodeIdentifier } from '../auth/base58'
 import { PLATFORM_PROFILE, policySchema, validProfileName, type StoragePolicy, type StorageProfile } from '../storage/profiles'
 import type { StorageConfig } from '../storage/store'
-import { canonicalJson, openShare, repoStorageKey, sealShare, unwrapGrant, wrapGrant, type GrantParams } from './crypto'
+import { WRAPPED_BYTES, canonicalJson, openShare, repoStorageKey, sealShare, unwrapGrant, wrapGrant, type GrantParams } from './crypto'
 import type { GrantFields, UserSyncPort } from './platform'
 import { profileOf } from './storage-slot'
 
@@ -187,10 +187,20 @@ export interface Reconciled {
  * repo's current maintainers. A grant to anyone else (`removed`, or found stale) moves to the next
  * epoch first. Writes only what differs.
  */
-export async function reconcileRepoShare(
-  ctx: OwnerContext,
-  p: { readonly repoId: string; readonly view: Readonly<Record<string, unknown>> | null; readonly maintainers: readonly string[]; readonly removed?: readonly string[] },
-): Promise<Reconciled> {
+export async function reconcileRepoShare(ctx: OwnerContext, p: ReconcileInput): Promise<Reconciled> {
+  const done = await reconcileOnce(ctx, p)
+  // Another tab or device may have granted meanwhile (a stale maintainer list): a grant to anyone
+  // not a maintainer now, or past this epoch, is revoked by one more pass, at the next epoch.
+  const removed = new Set(p.removed ?? [])
+  const members = new Set(p.maintainers.filter((m) => m !== ctx.ownerId && !removed.has(m)))
+  const after = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
+  const unexpected = after.some((g) => !members.has(g.fields.memberId) || (done.epoch !== null && g.fields.epoch > done.epoch))
+  return unexpected ? reconcileOnce(ctx, p) : done
+}
+
+type ReconcileInput = { readonly repoId: string; readonly view: Readonly<Record<string, unknown>> | null; readonly maintainers: readonly string[]; readonly removed?: readonly string[] }
+
+async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reconciled> {
   const network = ctx.networkKey
   const repo = decodeIdentifier(p.repoId)
   const removed = new Set(p.removed ?? [])
@@ -219,19 +229,20 @@ export async function reconcileRepoShare(
   const stale = grants.filter((g) => nothing || !members.includes(g.fields.memberId))
   if (plain === null && !nothing) {
     // Keep, with no share to keep (none, or one this key does not open): only grants to former
-    // maintainers go, and an unreadable share they could open moves to the nothing share first.
-    if (existing !== null && stale.length > 0) await writeShare(ctx, p.repoId, repo, at + 1, NOTHING_SHARED, existing)
+    // maintainers go, after the nothing share is written past their epoch (it keeps the epoch for
+    // the next share, and an unreadable share they could open is replaced).
+    const epoch = existing === null ? at : at + 1
+    if (stale.length > 0) await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
     for (const g of stale) await ctx.port.deleteGrant(g)
-    return { granted: [], waiting: [], shared: existing !== null, epoch: existing === null ? null : stale.length > 0 ? at + 1 : at }
+    return { granted: [], waiting: [], shared: existing !== null, epoch: stale.length > 0 ? epoch : existing === null ? null : at }
   }
   if (plain === null) {
     // Stop sharing: the nothing share at the next epoch (unless it is already there with no grant), every grant revoked.
-    if (!shownNothing || grants.length > 0) {
-      const epoch = existing === null ? at : at + 1
-      await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
-    }
+    const write = !shownNothing || grants.length > 0
+    const epoch = existing === null ? at : at + 1
+    if (write) await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
     for (const g of grants) await ctx.port.deleteGrant(g)
-    return { granted: [], waiting: [], shared: existing !== null, epoch: existing === null && grants.length === 0 ? null : at }
+    return { granted: [], waiting: [], shared: existing !== null, epoch: write ? epoch : (existing?.fields.epoch ?? null) }
   }
   // A grant to anyone not a maintainer now (removed here, or found stale), or sharing again after a
   // stop, or a grant past the share: the next epoch.
@@ -251,7 +262,8 @@ export async function reconcileRepoShare(
         continue
       }
       const own = grants.find((g) => g.fields.memberId === member) ?? null
-      if (own !== null && own.fields.epoch === epoch && own.fields.senderKeyId === ctx.keyId && own.fields.recipientKeyId === key.keyId) {
+      // An envelope of another size (a later format) is rewritten in this one.
+      if (own !== null && own.fields.epoch === epoch && own.fields.senderKeyId === ctx.keyId && own.fields.recipientKeyId === key.keyId && own.fields.wrapped.length === WRAPPED_BYTES) {
         granted.push(member)
         continue
       }
@@ -320,8 +332,10 @@ export async function readGrantedStorage(ctx: MemberContext, p: { readonly repoI
     if (plain['policy'] === null || plain['policy'] === undefined) return null
     const read = syncedPolicy(plain['policy'])
     if (read === null) return null
-    const replicas = Math.min(Math.max(read.replicas ?? read.targets.length, 1), read.targets.length)
-    const policy = policySchema.safeParse({ targets: read.targets, replicas, platformFallback: read.platformFallback })
+    // Each destination once, and no more copies than destinations (a share may list Platform twice).
+    const targets = [...new Set(read.targets)]
+    const replicas = Math.min(Math.max(read.replicas ?? targets.length, 1), targets.length)
+    const policy = policySchema.safeParse({ targets, replicas, platformFallback: read.platformFallback })
     if (!policy.success) return null
     const profiles = Object.entries(plain['profiles'] as Record<string, unknown>).flatMap(([name, v]) => profileOf(name, v) ?? [])
     // Platform needs no profile (dg's shares name it without one).
@@ -345,11 +359,23 @@ export function sharedName(name: string): string {
 export function withGrantedStorage(config: StorageConfig, repoId: string, granted: GrantedStorage | null): StorageConfig {
   if (granted === null || config.repoPolicies[repoId] !== undefined) return config
   const own = new Set(config.profiles.map((p) => p.name))
-  const added = granted.profiles.filter((p) => !(p.name === PLATFORM_PROFILE && own.has(PLATFORM_PROFILE))).map((p) => ({ ...p, name: sharedName(p.name) }) as StorageProfile)
-  if (granted.policy.targets.includes(PLATFORM_PROFILE) && !own.has(PLATFORM_PROFILE) && !added.some((p) => p.name === PLATFORM_PROFILE)) {
+  // Each shared profile under a name of its own: never one of the maintainer's (they keep theirs).
+  const taken = new Set(own)
+  const names = new Map<string, string>()
+  const added: StorageProfile[] = []
+  for (const p of granted.profiles) {
+    if (p.name === PLATFORM_PROFILE) continue
+    const base = sharedName(p.name)
+    let name = base
+    for (let i = 2; taken.has(name); i++) name = `${base.slice(0, 60)}-${i}`
+    taken.add(name)
+    names.set(p.name, name)
+    added.push({ ...p, name } as StorageProfile)
+  }
+  if (granted.policy.targets.includes(PLATFORM_PROFILE) && !own.has(PLATFORM_PROFILE)) {
     added.push({ name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as StorageProfile)
   }
-  const profiles = [...config.profiles.filter((p) => !added.some((a) => a.name === p.name)), ...added]
-  const policy: StoragePolicy = { ...granted.policy, targets: granted.policy.targets.map(sharedName) }
+  const profiles = [...config.profiles, ...added]
+  const policy: StoragePolicy = { ...granted.policy, targets: granted.policy.targets.map((t) => (t === PLATFORM_PROFILE ? t : (names.get(t) ?? sharedName(t)))) }
   return { ...config, profiles, repoPolicies: { ...config.repoPolicies, [repoId]: policy } }
 }

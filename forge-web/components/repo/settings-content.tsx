@@ -232,10 +232,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       done.kind === 'change'
         ? rows.some((m) => m.identity === done.member && m.role === done.to)
         : rows.some((m) => m.identity === done.member && m.role === done.role) === (done.kind === 'grant')
-    await retryWhileMissing(async () => {
+    const confirmed = await retryWhileMissing(async () => {
       invalidateMembers(repo, network)
       return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
     }, 8)
+    // A maintainer again, and it reads back: this tab grants them the owner's storage again.
+    if (confirmed === true && ((done.kind === 'grant' && done.role === 'maintainer') || (done.kind === 'change' && done.to === 'maintainer'))) share.afterAdd(done.member)
     // Once the removal reads back: the owner's storage moves to a new epoch without them.
     if (done.role === 'maintainer' && (done.kind === 'revoke' || (done.kind === 'change' && done.to !== 'maintainer'))) {
       setRotate(await share.afterRemoval(done.member).catch(() => false))
