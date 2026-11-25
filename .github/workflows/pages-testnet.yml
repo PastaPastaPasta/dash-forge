@@ -45,7 +45,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A re-run of an old push run may have taken the queue slot of a newer merge's waiting run.
+  # Before anything builds, a re-run whose commit is no longer master's head (the API, not the
+  # cached site) starts this workflow on master, so the newest commit deploys, and stops. The
+  # deploy job checks again, for a re-run of failed jobs that skips this one.
+  current:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Hand an old commit's re-run to master
+        if: github.event_name != 'workflow_dispatch' && github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+          if [ "$head" != "$SHA" ]; then
+            gh workflow run pages-testnet.yml --repo "$GITHUB_REPOSITORY" --ref master
+            echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}; started pages-testnet.yml on master instead"
+            exit 1
+          fi
+
   build:
+    needs: current
     if: vars.TESTNET_SITE_ENABLED == 'true'
     runs-on: ubuntu-latest
     defaults:
