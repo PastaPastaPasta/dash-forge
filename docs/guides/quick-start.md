@@ -91,7 +91,7 @@ dg auth new
 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
-- **In the web app**: on [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org) (or [forge.dashhq.org](https://forge.dashhq.org) on mainnet), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On mainnet the sheet leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under **Other ways to sign in**.)
+- **In the web app**: on [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org), **Sign in → Other ways to sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On [forge.dashhq.org](https://forge.dashhq.org), mainnet, **Other ways to sign in** leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under its **Advanced**.)
 - **With the Dash bridge**: <https://bridge.thepasta.org>, on testnet, then **Download Key Backup**.
 
 To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with DashPay and approve once for all of Forge). On testnet that needs DashPay Wallet for Android's testnet build, 11.9.2 or later; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
@@ -171,6 +171,8 @@ dg storage test r2-main   # re-run the checks at any time
 ```
 
 **In the browser**, open **Settings → Storage** (`/settings/storage`) in the web app. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for everything the web app uploads: a merge's pack, a commit the browser makes to a pull request's branch (applying suggestions, "Update branch"), and release assets. `git push` uses `dg`'s profiles.
+
+On testnet, after a sign-in with your Dash wallet (web or `dg auth login --wallet`), storage profiles also [follow your identity](identity-and-keys.md#settings-that-follow-your-identity-testnet) to every browser and `dg` where you sign in with the wallet. On mainnet they stay on the device where you set them up.
 
 [Bring your own storage](bring-your-own-storage.md) has the provider-by-provider setup and the flags for scripts.
 
@@ -390,7 +392,7 @@ There is no search server. The first search of a branch reads each of its text f
 
 A **large repository** (over 2,000 files, or 16 MiB stored) is indexed on its default branch only, and one index is kept. For `dashpay/dash`, indexing `develop` reads about 25 MiB (4,398 files, 45 MiB of text) and takes about 35 seconds. A private repository's index is kept in memory for the tab only, never on disk. Your browser keeps up to 256 MiB of indexes across repositories and drops the least recently used first.
 
-To file an issue, review a pull request or star a repository from the browser, choose **Sign in**. The web app registers a limited key for this browser (0.05 DASH budget, 90 days, usable only on Forge) and keeps it encrypted; your master key is used once and not stored. [Identity and keys](identity-and-keys.md#limited-keys) explains the options.
+To file an issue, review a pull request or star a repository from the browser, choose **Sign in**. **Use my Dash wallet** has your wallet add a limited key for this browser; your recovery phrase or identity file can register one instead (the master key is used once and not stored). The key spends only on Forge, 0.05 DASH for 90 days by default, and the browser keeps it encrypted. [Identity and keys](identity-and-keys.md#limited-keys) explains the options.
 
 ---
 
