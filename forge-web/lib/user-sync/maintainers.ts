@@ -48,7 +48,7 @@ export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing'; 
 
 const KEEP: ShareRule = { kind: 'keep' }
 
-/** A synced policy as both clients read it (dg `policy_from_synced`): `replicas` null when it names none. */
+/** A synced policy as both clients read it (dg `policy_from_synced`): `replicas` null when it names none, else 1 to 8. */
 export interface SyncedPolicy {
   readonly targets: readonly string[]
   readonly replicas: number | null
@@ -61,7 +61,8 @@ export function syncedPolicy(v: unknown): SyncedPolicy | null {
   const targets = r['targets']
   if (!Array.isArray(targets) || targets.length === 0 || !targets.every((t) => typeof t === 'string' && validProfileName(t))) return null
   const replicas = r['replicas']
-  return { targets: targets as string[], replicas: typeof replicas === 'number' && Number.isSafeInteger(replicas) && replicas >= 0 ? replicas : null, platformFallback: r['platformFallback'] === true }
+  if (replicas !== undefined && replicas !== null && !(typeof replicas === 'number' && Number.isInteger(replicas) && replicas >= 1 && replicas <= 8)) return null
+  return { targets: targets as string[], replicas: typeof replicas === 'number' ? replicas : null, platformFallback: r['platformFallback'] === true }
 }
 
 function httpUrl(v: unknown): URL | null {

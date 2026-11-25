@@ -108,6 +108,16 @@ describe('the stopped-sharing notice', () => {
     expect(takeStoppedNotice('testnet', 'reloaded')).toBeNull()
   })
 
+  it('is not said once the repo has storage of its own, nor after an explicit stop', () => {
+    noteStopped('testnet', 'since', 'default')
+    expect(takeStoppedNotice('testnet', 'since', true)).toBeNull()
+    expect(takeStoppedNotice('testnet', 'since')).toBeNull()
+    noteStopped('testnet', 'moot', 'default')
+    noteStopped('testnet', 'moot', 'removed')
+    expect(takeStoppedNotice('testnet', 'moot')).toBe('removed')
+    expect(takeStoppedNotice('testnet', 'moot')).toBeNull()
+  })
+
   it('says an explicit stop plainly, each time, and records nothing', () => {
     noteStopped('testnet', 'stop', 'removed')
     expect(takeStoppedNotice('testnet', 'stop')).toBe('removed')

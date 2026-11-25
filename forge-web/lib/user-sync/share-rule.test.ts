@@ -22,6 +22,16 @@ function liveView(entries: Readonly<Record<string, Entry>>): Record<string, unkn
   return out
 }
 
+describe('a synced policy as both clients read it', () => {
+  it('takes replicas only as a count of 1 to 8 (anything else is no policy: keep)', async () => {
+    const { syncedPolicy } = await import('./maintainers')
+    expect(syncedPolicy({ targets: ['a'] })?.replicas).toBeNull()
+    expect(syncedPolicy({ targets: ['a'], replicas: null })?.replicas).toBeNull()
+    expect(syncedPolicy({ targets: ['a'], replicas: 8 })?.replicas).toBe(8)
+    for (const bad of [0, 9, 1.5, -1, '2']) expect(syncedPolicy({ targets: ['a'], replicas: bad })).toBeNull()
+  })
+})
+
 describe('the share rule both clients follow', () => {
   for (const c of fixture.cases) {
     it(c.name, () => {

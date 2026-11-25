@@ -65,20 +65,24 @@ function stopStore(): Pick<Storage, 'getItem' | 'setItem'> | null {
  * it. The default-storage line also waits in its key, so a reload before it shows keeps it.
  */
 export function noteStopped(networkKey: string, repoId: string, line: StopLine): void {
-  if (line === 'default') {
-    try {
-      const store = stopStore()
-      if (store !== null && store.getItem(stoppedDefaultKey(networkKey, repoId)) === null) store.setItem(stoppedDefaultKey(networkKey, repoId), STOP_PENDING)
-    } catch {
-      // Said in this tab only.
-    }
+  try {
+    const store = stopStore()
+    const stored = store?.getItem(stoppedDefaultKey(networkKey, repoId)) ?? null
+    // The default line waits in its key; an explicit stop after it makes it moot.
+    if (line === 'default' && stored === null) store?.setItem(stoppedDefaultKey(networkKey, repoId), STOP_PENDING)
+    if (line === 'removed' && stored === STOP_PENDING) store?.setItem(stoppedDefaultKey(networkKey, repoId), String(Date.now()))
+  } catch {
+    // Said in this tab only.
   }
   stopsToSay.set(`${networkKey}:${repoId}`, line)
   for (const l of stopListeners) l()
 }
 
-/** The line to say now for (network, repo), if any: the default-storage one once per repo, recorded as said. */
-export function takeStoppedNotice(networkKey: string, repoId: string): StopLine | null {
+/**
+ * The line to say now for (network, repo), if any: the default-storage one once per repo, recorded as
+ * said, and not at all once the repo has storage of its own (`repoStorageSet`: set since, elsewhere).
+ */
+export function takeStoppedNotice(networkKey: string, repoId: string, repoStorageSet = false): StopLine | null {
   const noted = stopsToSay.get(`${networkKey}:${repoId}`)
   stopsToSay.delete(`${networkKey}:${repoId}`)
   if (noted === 'removed') return 'removed'
@@ -88,23 +92,26 @@ export function takeStoppedNotice(networkKey: string, repoId: string): StopLine 
     const stored = store?.getItem(key) ?? null
     if (stored === STOP_PENDING) {
       store?.setItem(key, String(Date.now()))
-      return 'default'
+      return repoStorageSet ? null : 'default'
     }
+    if (repoStorageSet) return null
     // Noted here but not recordable (storage blocked): said in this tab.
     return noted === 'default' && stored === null ? 'default' : null
   } catch {
-    return noted === 'default' ? 'default' : null
+    return noted === 'default' && !repoStorageSet ? 'default' : null
   }
 }
 
 /**
- * The owner's line for a share a reconcile stopped (see `StopLine`), taken only while `visible`
- * (the Storage section shows): a stop made on another section is said there, not lost.
+ * The owner's line for a share a reconcile stopped (see `StopLine`), to the owner only, taken only
+ * while `visible` (the Storage section shows): a stop made on another section is said there, not lost.
  */
 export function useStoppedShareNotice(repo: RepoRef, visible: boolean): StopLine | null {
-  const [line, setLine] = useState<StopLine | null>(null)
+  const { identity } = useAuth()
+  const [said, setSaid] = useState<{ readonly owner: string; readonly repoId: string; readonly line: StopLine } | null>(null)
   const [tick, setTick] = useState(0)
   const on = ACTIVE_NETWORK.v2?.user !== undefined
+  const owner = identity !== null && identity === repo.ownerId ? identity : null
   useEffect(() => {
     if (!on) return
     const bump = (): void => setTick((t) => t + 1)
@@ -114,11 +121,11 @@ export function useStoppedShareNotice(repo: RepoRef, visible: boolean): StopLine
     }
   }, [on])
   useEffect(() => {
-    if (!on || !visible) return
-    const taken = takeStoppedNotice(ACTIVE_NETWORK.key, repo.repoId)
-    if (taken !== null) setLine(taken)
-  }, [on, visible, repo.repoId, tick])
-  return line
+    if (!on || !visible || owner === null) return
+    const taken = takeStoppedNotice(ACTIVE_NETWORK.key, repo.repoId, Object.hasOwn(syncedShareView(owner) ?? {}, `repo:${repo.repoId}`))
+    if (taken !== null) setSaid({ owner, repoId: repo.repoId, line: taken })
+  }, [on, visible, owner, repo.repoId, tick])
+  return said !== null && said.owner === owner && said.repoId === repo.repoId ? said.line : null
 }
 
 /** Members removed in this tab, per repo: never granted again from a node read that still lists them. */
@@ -144,6 +151,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   // driver ran).
   const syncKind = useUserSyncStatus().kind
   const config = identity !== null && syncKind === 'synced' ? syncedShareView(identity) : null
+  const removedKeys = identity !== null && syncKind === 'synced' ? syncedRemovedKeys(identity) : null
   const [waiting, setWaiting] = useState<readonly string[]>([])
   const [granted, setGranted] = useState<readonly string[]>([])
   const [maintainers, setMaintainers] = useState<readonly string[] | null>(null)
@@ -152,12 +160,12 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
 
   const repoKey = `${ACTIVE_NETWORK.key}:${repo.repoId}`
   const reconcile = useCallback(
-    (view: Readonly<Record<string, unknown>> | null): Promise<Reconciled | null> =>
+    (view: Readonly<Record<string, unknown>> | null, removedKeys: readonly string[] | null): Promise<Reconciled | null> =>
       oneAtATime(repoKey, async () => {
         if (user === undefined || identity === null || sdk === null || signer === null || !isOwner) return null
         const maintainers = await readMaintainers(sdk, repo)
         const removed = [...(removedHere.get(repoKey) ?? [])]
-        const repoPolicyRemoved = view !== null && (syncedRemovedKeys(identity) ?? []).includes(`repo:${repo.repoId}`)
+        const repoPolicyRemoved = view !== null && (removedKeys ?? []).includes(`repo:${repo.repoId}`)
         return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
           spendAction(namedAction('Storage shared with maintainers'), (tag) =>
             reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, view, maintainers, removed, repoPolicyRemoved }),
@@ -175,7 +183,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
         const listed = await readMaintainers(sdk, repo).catch(() => null)
         if (!stale && listed !== null) setMaintainers(listed.filter((m) => m !== identity))
         if (config === null || stale) return
-        const done = await reconcile(config).catch(() => null)
+        const done = await reconcile(config, removedKeys).catch(() => null)
         // Sharing just stopped: said even if this visit moved on meanwhile (a later pass finds nothing left to stop).
         if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
         if (stale || done === null) return
@@ -190,14 +198,14 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     return () => {
       stale = true
     }
-  }, [user, identity, sdk, isOwner, config, reconcile, repo])
+  }, [user, identity, sdk, isOwner, config, removedKeys, reconcile, repo])
 
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
       removedHere.set(repoKey, new Set([...(removedHere.get(repoKey) ?? []), member]))
       // Before this tab's sync settled too: with no synced view the share keeps what it holds,
       // and the removed member's grant still goes, at the next epoch.
-      const done = await reconcile(config).catch(() => null)
+      const done = await reconcile(config, removedKeys).catch(() => null)
       if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
       if (done !== null) {
         setWaiting(done.waiting)
@@ -208,7 +216,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       if (user === undefined || sdk === null) return false
       return (await forgeUserPort(sdk, user, null).readShare(repo.ownerId, repo.repoId).catch(() => null)) !== null
     },
-    [config, reconcile, user, sdk, repo, repoKey],
+    [config, removedKeys, reconcile, user, sdk, repo, repoKey],
   )
 
   const afterAdd = useCallback(
