@@ -885,6 +885,7 @@ function MakePublicDialog({
         ) : null}
         {check !== null ? (
           <CheckForm
+            repo={label}
             check={check}
             defaults={defaults ?? check.codeRefs}
             groupName={groupName}
@@ -973,6 +974,7 @@ function MakePublicDialog({
 // ---------------------------------------------------------------------------------------------
 
 function CheckForm({
+  repo,
   check,
   defaults,
   groupName,
@@ -993,6 +995,8 @@ function CheckForm({
   allowed,
   onAllow,
 }: {
+  /** The repository (`owner/name`) the fix commands name. */
+  repo: string
   check: MakePublicCheck
   defaults: readonly MakePublicRef[]
   groupName: string
@@ -1102,7 +1106,7 @@ function CheckForm({
               </p>
             ) : null}
             <p className="text-anvil-600 dark:text-anvil-300">{CODE_ONLY_STAYS}</p>
-            {codeBlocker !== null ? <Blocker error={codeBlocker} action={recheck} /> : null}
+            {codeBlocker !== null ? <Blocker error={codeBlocker} repo={repo} action={recheck} /> : null}
           </ModeOption>
         )}
 
@@ -1114,7 +1118,7 @@ function CheckForm({
           {unread !== null ? <p className="text-anvil-600 dark:text-anvil-300">{unread}</p> : null}
           {wordsBy !== null ? <p data-testid="make-public-words-by">{wordsBy}</p> : null}
           {!modeAllowed('everything') ? <p className="text-anvil-600 dark:text-anvil-300">Only the owner can choose Everything.</p> : null}
-          {everythingBlocker !== null ? <Blocker error={everythingBlocker} check={check} action={everythingBlocker.code === 'E503' ? recheck : null} /> : null}
+          {everythingBlocker !== null ? <Blocker error={everythingBlocker} repo={repo} check={check} action={everythingBlocker.code === 'E503' ? recheck : null} /> : null}
         </ModeOption>
       </fieldset>
 
@@ -1213,13 +1217,13 @@ function RefBox({
 }
 
 /** What blocks a mode, inline under it: E812 with its fix, code that couldn't be fetched or read. */
-function Blocker({ error, check, action = null }: { error: MakePublicError; check?: MakePublicCheck; action?: JSX.Element | null }): JSX.Element {
+function Blocker({ error, repo, check, action = null }: { error: MakePublicError; repo: string; check?: MakePublicCheck; action?: JSX.Element | null }): JSX.Element {
   const envs = error.code === 'E812' && check !== undefined ? check.oldFormat : []
   return (
     <div role="alert" className="space-y-1.5 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-blocker" data-code={error.code}>
       {envs.length > 0
         ? envs.map((env) => {
-            const fix = oldFormatFix(env)
+            const fix = oldFormatFix(repo, env)
             return (
               <div key={env} className="space-y-0.5">
                 <p>{oldFormatLine(env)}</p>

@@ -35,7 +35,7 @@ Install the current `dg` and `git-remote-dash` first ([Quick start](quick-start.
    dg init                     # creates the repository on testnet and pushes the current branch
    git push origin --all && git push origin --tags
    ```
-   **A repository that was private needs `dg init --private`.** A plain `dg init` creates a public repository, and visibility cannot be changed afterwards.
+   **A repository that was private needs `dg init --private`.** A plain `dg init` creates a public repository, and a public repository can never be made private. (A private one can be made public once, by its owner: [Private repositories](collaborating.md#private-repositories).)
 4. **Recreate what lived only on Forge**: members (by the ids of the identities they create on testnet), issues, releases and settings.
 
 The push uploads your packs to your bucket again, under the new repository, and costs what any first push costs ([What things cost](costs.md)). The bucket's old contents can be deleted once you no longer need them.

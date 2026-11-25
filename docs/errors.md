@@ -59,6 +59,8 @@ Messages never include secrets. Storage credentials are referenced by `env:` or 
 
 **What to do:** follow the manual workaround the output describes.
 
+Making a private repository public (`dg repo make-public`, or the Danger zone in the web app) reports E103 on a network whose contract keeps a repository's visibility as it was created: "this network's Forge can't make a private repository public yet". Nothing was written. The web app also reports it for a repository too large to make public in the browser, and names the `dg repo make-public` command to use instead.
+
 ## E104
 
 **Checks failed.** `dg doctor` found at least one failing check.
@@ -130,6 +132,13 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 **Unsupported git operation.** `dash://` cannot serve shallow clones (`--depth`, `--shallow-since`, `--shallow-exclude`). It fails instead of quietly making a full clone.
 
 **What to do:** use a partial clone for a lightweight checkout: `git clone --filter=blob:none dash://…`.
+
+`dg` reports E205, before anything is signed, for a few other things this network or setup doesn't support:
+
+- **Organizations on mainnet.** `dg org …` and `dg repo create --owner <org>` stop with "Organizations are not available on mainnet yet." They work on testnet and devnets ([Organizations](guides/organizations.md)).
+- **Wallet sign-in on a network before Platform protocol 14.** `dg auth login` (with `--wallet`, or with no file) stops with "this network cannot sign in with a wallet yet". Sign in with `dg auth login <file>` or `dg auth login --mnemonic` there.
+- **Bot push access on a network whose contracts have none.** `dg bot allow --push` and the commands that change push access (`dg bot renew`, `suspend`, `resume`, `revoke --push`) stop with "Bots can't push to `<repo>` yet." A bot there pushes to its own fork and opens a pull request ([Bots](guides/bots.md)).
+- **An X.509 commit-signing key.** `dg profile key add` without `--ssh`/`--gpg`, when git's `gpg.format=x509`, stops: Forge verifies Ed25519 SSH and OpenPGP keys only ([Signed commits](guides/identity-and-keys.md#signed-commits-and-verified-badges)).
 
 ## E206
 
@@ -604,12 +613,12 @@ Pushing a members-only branch with `-o public` is refused with this code too: th
 ```
 error: E806 can't check for members-only commits: your encryption key isn't available
        this clone has fetched members-only branches, so a public push can't be checked without it
-  fix: dg auth unlock, then push again
+  fix: run `dg auth status`: its Private line says how to store your encryption key; then push again
 ```
 
 It has two triggers. A **push** to a public branch is refused when the repository has members-only branches, your key isn't available and this clone has no record of what it holds (`.git/dash/sealed-ledger`, which every clone made by a current `git-remote-dash` has). A **fetch** is refused when this clone has fetched members-only branches before and your key can't open them now: fetching only the public view would let `git fetch --prune` delete them. A push that would delete a members-only branch, or reuse its name for a public one, while your key isn't available is refused the same way: written without the key, it would publish the branch's name. A record from a newer version of Forge that this one can't read is refused the same way.
 
-**What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
+**What to do:** run `dg auth status`: its `Private:` line says whether your encryption key is stored on this computer and, if not, the command that stores it. Then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
 
 Even with the members key unlocked, a fetch refuses with E806 if a remote-tracking branch's tip is recorded as narrower in this clone's readable sealed-object ledger and its name is absent, or deleted by an update you can't authenticate with its branch key. It says `can't fetch: no key for previously fetched branches is available (sec/example)`, explains that the branch no longer opens with your keys, and offers `git branch -dr origin/sec/example` to forget it here or asks you to have its maintainer share its branch key again. Because the members key is already unlocked, this refusal does not suggest unlocking it. Public names in any state and deletions opened with the members key are covered, as are deletions opened with the branch key. URL fetches skip this local coverage check because they write no remote-tracking refs. This check uses local names and recorded tips; it does not link unreadable generations or claim that a newer generation exists.
 

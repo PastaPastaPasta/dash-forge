@@ -160,6 +160,10 @@ dig +short CAA forge.dashhq.org
 
 Expect your records and Cloudflare's. Then confirm Universal SSL still shows **Active** under SSL/TLS → Edge Certificates.
 
+## How a deploy runs
+
+Every merge to master that touches the web app, `docs/` or the deployment files deploys both sites. Deploys run one at a time and are never cut off. While one runs, only the newest waiting run is kept, so the last merge always deploys. A run whose commit is no longer master's head builds nothing and starts a run on master instead. Each deploy ends by reading the live `forge-manifest.json` and fails unless it is this build's: about 15 minutes for forge.dashhq.org and 25 for testnet-forge.dashhq.org, which also waits for its site repository's Pages build.
+
 ## Pausing the site (operator)
 
 A bug in the web app that corrupts or leaks on write, or a wrong cost, needs "stop writes, keep reading" faster than a code fix. The Pages build has a switch for that, on every network, with no code change. It is the repository variable `PAGES_NOTICE`, read by `.github/workflows/pages.yml` into `NEXT_PUBLIC_PAGES_NOTICE` (`forge-web/lib/pages-notice.ts`).
@@ -224,10 +228,12 @@ The same rules apply:
 
 Build with `NEXT_PUBLIC_SITE_URL=https://<your host>` so link previews (`og:image`) point at your copy, not forge.dashhq.org, and the wallet sign-in tells users to scan only codes shown on your host. A build under `NEXT_PUBLIC_BASE_PATH` adds that path to it.
 
-For nginx. A self-hosted copy has no analytics beacon unless its build sets `NEXT_PUBLIC_CF_BEACON_TOKEN`; if it does, use `Referrer-Policy: strict-origin` (section 6). `add_header` in a `location` replaces every `add_header` inherited from the `server`, so a location that sets Cache-Control must repeat the other headers the site sends:
+For nginx (IPv4 and IPv6: give the host name an A and an AAAA record, and keep both `listen` lines; add your certificate and a port-80 redirect as usual). A self-hosted copy has no analytics beacon unless its build sets `NEXT_PUBLIC_CF_BEACON_TOKEN`; if it does, use `Referrer-Policy: strict-origin` (section 6). `add_header` in a `location` replaces every `add_header` inherited from the `server`, so a location that sets Cache-Control must repeat the other headers the site sends:
 
 ```nginx
 server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
   # The section 7 headers, plus COOP/COEP (section 5).
   add_header Cross-Origin-Opener-Policy "same-origin" always;
   add_header Cross-Origin-Embedder-Policy "credentialless" always;

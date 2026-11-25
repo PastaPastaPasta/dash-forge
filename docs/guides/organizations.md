@@ -2,7 +2,7 @@
 
 An organization is a repository owner held by several people: any *N* of its *M* members sign together, and no one holds the whole key. Forge uses the groups made in [multisig.dashhq.org](https://multisig.dashhq.org). How it works, and why, is in the [organizations design](../design/organizations.md).
 
-Organizations are on testnet and devnets. On mainnet the pages, menu entry and badge are absent.
+Organizations are on testnet and devnets. On mainnet the pages, menu entry and badge are absent, and `dg org …` and `dg repo create --owner` stop with "Organizations are not available on mainnet yet." ([E205](../errors.md#e205)). A team on mainnet can share an [organization identity](collaborating.md#organizations) instead.
 
 ## Make an organization
 

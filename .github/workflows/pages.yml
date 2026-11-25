@@ -65,12 +65,56 @@ on:
 permissions:
   contents: read
 
+# Deploys run one at a time and are never cut off. While one runs, GitHub keeps only the newest
+# waiting run (an older waiting run is cancelled before it starts; the newer commit includes it), so
+# the last merge always deploys and the site never moves back to an older commit.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  # Only master's head deploys from master. GitHub does not promise to start queued runs in merge
+  # order, and a re-run (of a push or a dispatch) can take the slot of a newer merge's waiting
+  # run, so a run whose commit is no longer master's head (read from the API, never the cached
+  # site) starts this workflow on master instead and builds nothing; that run deploys the newest
+  # commit. The lookup fails closed. Only master deploys (the environments allow no other
+  # branch), so a rollback is a revert merged to master.
+  current:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      superseded: ${{ steps.head.outputs.superseded }}
+    steps:
+      - id: head
+        name: Hand a superseded commit to master
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          CONFIRM: ${{ inputs.confirm_network }}
+        run: |
+          head=""
+          for try in 1 2 3; do
+            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha 2>/dev/null)" || head=""
+            [[ $head =~ ^[0-9a-f]{40}$ ]] && break
+            head=""
+            [ "$try" = 3 ] || sleep 10
+          done
+          [ -n "$head" ] || { echo "::error::could not read master's head"; exit 1; }
+          if [ "$head" = "$SHA" ]; then
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          else
+            gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref master -f confirm_network="$CONFIRM"
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Superseded::master is at ${head}, past ${SHA}; started pages.yml on master to deploy it"
+          fi
+
   build:
+    needs: current
+    if: needs.current.outputs.superseded != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -270,15 +314,52 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      SITE_URL: ${{ vars.PAGES_SITE_URL || 'https://forge.dashhq.org' }}
+      SHA: ${{ github.sha }}
     steps:
+      # "Re-run failed jobs" skips the `current` job that already passed, so check again; the
+      # `recover` job below starts the run on master.
+      - name: Refuse a re-run of a superseded commit
+        if: github.ref == 'refs/heads/master' && github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+          [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not read master's head"; exit 1; }
+          if [ "$head" != "$SHA" ]; then
+            echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}"
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: forge-manifest
+          path: built
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+      # The deploy is done only when the site serves this build's manifest: the whole file, so a
+      # redeploy of the same commit (a pause notice, a network flip) waits too. Pages' CDN caches
+      # for up to 10 minutes.
+      - name: Check the live site serves this build
+        run: |
+          url="${SITE_URL%/}/forge-manifest.json"
+          want="$(jq -S -c . built/forge-manifest.json)"
+          while [ "$SECONDS" -lt 900 ]; do
+            got="$(curl -fsSL --max-time 20 -A 'Mozilla/5.0' "$url" 2>/dev/null | jq -S -c . 2>/dev/null)" || got=""
+            if [ "$got" = "$want" ]; then echo "live: $url serves $SHA"; exit 0; fi
+            sleep 20
+          done
+          live="$(printf '%s' "$got" | jq -r '.commit // empty' 2>/dev/null)" || live=""
+          echo "::error title=Site not updated::$url does not serve this build of $SHA after 15 minutes (it serves ${live:-nothing})"
+          exit 1
       # The deployed site must serve security.txt (RFC 9116): a dot directory can be lost between
       # the export and the artifact. Reports only, like the check below: the deploy has happened.
       - name: Check the live site serves .well-known/security.txt
@@ -287,7 +368,7 @@ jobs:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
           url="${PAGE_URL%/}/.well-known/security.txt"
-          if ! body="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'User-Agent: Mozilla/5.0' "$url")"; then
+          if ! body="$(curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors -H 'User-Agent: Mozilla/5.0' "$url")"; then
             echo "::warning title=security.txt not served::$url did not answer"
             exit 0
           fi
@@ -308,7 +389,7 @@ jobs:
           BUILT_BEACONS: ${{ (vars.PAGES_CF_BEACON_TOKEN || github.repository == 'PastaPastaPasta/dash-forge') && '1' || '0' }}
         run: |
           # A fresh deploy can take a moment to answer: retry on any error, not just timeouts.
-          if ! html="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' "$PAGE_URL")"; then
+          if ! html="$(curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' "$PAGE_URL")"; then
             echo "::warning title=Beacon check skipped::could not fetch $PAGE_URL to look for an injected analytics beacon"
             exit 0
           fi
@@ -322,4 +403,29 @@ jobs:
             fi
           else
             echo "No injected analytics beacon on $PAGE_URL ($served, as built)"
+          fi
+
+  # "Re-run failed jobs" re-runs the failed jobs and the jobs after them, but not a `current` that
+  # passed. Whatever this re-run's jobs did, if its commit is no longer master's head, start the
+  # workflow on master so the newest commit deploys.
+  recover:
+    needs: [current, build, deploy]
+    if: always() && github.ref == 'refs/heads/master' && github.run_attempt != '1' && needs.current.outputs.superseded != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Hand a superseded commit to master
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          CONFIRM: ${{ inputs.confirm_network }}
+        run: |
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+          [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not read master's head"; exit 1; }
+          if [ "$head" != "$SHA" ]; then
+            gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref master -f confirm_network="$CONFIRM"
+            echo "::notice title=Superseded::master is at ${head}, past ${SHA}; started pages.yml on master to deploy it"
           fi

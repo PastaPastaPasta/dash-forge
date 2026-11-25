@@ -48,7 +48,7 @@ export function SecurityPanel(): JSX.Element {
           <span className="font-medium">Stay signed in for public repos (up to {KEPT_TTL_MS / HOUR_MS} h)</span>
           <span id="stay-signed-in-note" className="block text-[12px] text-anvil-500 dark:text-anvil-400">
             {pasted
-              ? 'Not for a pasted key: it is held in this tab only and is gone after a reload. Import your identity file or recovery phrase to get a key this browser can keep.'
+              ? 'Not for a pasted key: it is held in this tab only and is gone after a reload. Sign in another way to get a key this browser can keep.'
               : stay
               ? <>Reloads and new tabs stay signed in for up to {KEPT_TTL_MS / HOUR_MS} hours ({KEPT_IDLE_MS / HOUR_MS} h idle), with a key capped at {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" /> that can only spend on Forge. Private repos still ask to unlock.</>
               : 'Off: each reload or new tab starts locked; unlock with your passkey or passphrase to write.'}

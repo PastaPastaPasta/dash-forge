@@ -2,7 +2,7 @@
 
 **The promise:** git hosting that nobody can take down. Refs, issues, PRs and access control live on Dash Platform under the users' own keys. Bulk pack data lives on Platform, or on cheap storage providers (S3, IPFS, HTTPS, other git hosts) that it is checked against by hash. No server is ever trusted, and every server can be replaced.
 
-Sections 1 to 5 keep the 2026-09-24 baseline and decisions as history; §6 (the plan and its execution tracker), §7 (launch criteria) and the testnet launch table were refreshed against `master` on 2026-10-16.
+Sections 1 to 5 keep the 2026-09-24 baseline and decisions as history; §6 (the plan and its execution tracker), §7 (launch criteria) and the testnet launch table were refreshed against `master` on 2026-10-16. Only the Phase 6a and Phase 6 checkboxes, and the storage-profiles line above Phase 1, were updated since, on 2026-11-25, after the testnet (2026-10-26) and mainnet (2026-11-24) registrations.
 
 This document covers three things:
 - where the project actually stands, checked against the code on `master` and not against the tracker's status lines;
@@ -107,7 +107,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 
 ### Phase 1 — Bring your own storage, for real (L) · *gate: the survivability drill passes*
 - [x] `git push` honors the repo's storage config: packs go to the owner's backends, the manifest records every URI plus the hash, refs go to Platform. Platform chunks are used only when Platform is the configured tier.
-- [x] Storage profiles the user supplies once (`dg storage add`, and the web app's settings): S3-compatible with **SigV4** (AWS/R2/B2/MinIO), IPFS via their kubo API or any Pinning Service API endpoint they choose. Credentials stay local (OS keychain / browser-encrypted vault) and never go on-chain.
+- [x] Storage profiles the user supplies once (`dg storage add`, and the web app's settings): S3-compatible with **SigV4** (AWS/R2/B2/MinIO), IPFS via their kubo API or any Pinning Service API endpoint they choose. Credentials stay local (OS keychain / browser-encrypted vault); on testnet, a wallet sign-in can also sync an encrypted copy through forge-user (#729).
 - [x] Browser push: the web app uploads to the user's bucket directly (presigned or SigV4 in-browser; CORS setup guide), so web-only users can publish without the CLI. *The browser uploads the packs of its merges and pull-request branch commits, and release assets. Publishing new code still needs `git push` or the Mirror Action, since web editing is not started (Phase 5).*
 - [x] A replication policy chosen by the user (N targets; the push fails if fewer than N confirm).
 - [x] `packMirror` document so anyone can record extra mirrors on-chain (`dg storage mirror add`). Readers race every recorded URI plus a user-configurable gateway list, with Platform chunks as the last resort. *Done (#411): the devnet set's forge-core has the `packMirror` type, and the production set has it in forge-meta; `crates/dg/src/pack_mirror.rs` and `forge-web/lib/repo/pack-mirrors.ts` write and read it. Recording a copy at a new address with `dg reseed --profile` still needs repo membership; a `packMirror` does not.*
@@ -167,7 +167,7 @@ Work:
 - [ ] Web editing (CodeMirror → commit → push). *Not started. Web commits to a PR's branch exist for suggestions and Update branch (public repositories).*
 - [x] In-repo code search (#345): `forge-web/app/repo/search` builds the index in the browser (`lib/view/code-search.worker.ts`). Search across repositories stays name prefix, topic and owner.
 - [x] Relay: users run it (Docker), with `encryptedFor` webhook secrets and a check-run write-back Action.
-- [x] Parity wave P1 (#343–#356): `dg` parity with `gh` and `dg status` / `dg search` (#343, #356), fork sync (#344), code search (#345), profiles and signed-commit badges (#346, #348), branch and tag admin (#347), long bodies (#350), CI re-run and schedules (#351, #354), CODEOWNERS (#352), issue and PR templates (#353), rebase merge (#355).
+- [x] Parity wave P1 (#343–#356): `dg` parity with `gh` and `dg pr status` / `dg issue status` / `dg search` (#343, #356), fork sync (#344), code search (#345), profiles and signed-commit badges (#346, #348), branch and tag admin (#347), long bodies (#350), CI re-run and schedules (#351, #354), CODEOWNERS (#352), issue and PR templates (#353), rebase merge (#355).
 
 ### Phase 5b — Mixed visibility (members-only content in public repositories) (L) · *gate: no screen claims more than was verified; the beta features are labelled*
 
@@ -189,13 +189,13 @@ Deferred, none blocking a testnet launch (stated as known limitations, not promi
 - [ ] Upstream Platform asks A1, A3 and A5–A9 are not filed; the rules they would enforce stay client rules.
 
 ### Phase 6a — Testnet launch (M) · *gate: criteria L1–L12 in §7*
-- [ ] Register the four-contract production set on testnet after the owner signs the contract hashes ([Deploying Forge to a network](deploying-to-a-network.md)); commit `deployments/testnet.json`, the frozen `registered/testnet/` copies and the snapshot.
+- [x] Register the four-contract production set on testnet after the owner signs the contract hashes ([Deploying Forge to a network](deploying-to-a-network.md)); commit `deployments/testnet.json`, the frozen `registered/testnet/` copies and the snapshot.
 - [x] Tag and publish the first release (v0.2.0), with the default network changed to a deployed one; move the hosted app, the gateway, the Actions and the nightly to testnet.
 - [ ] Durability and risk statement, terms, privacy notice and an announcement channel (owner-approved); the soft-launch period; the announcement.
 
 ### Phase 6 — Mainnet launch (S, gated on PV14 mainnet)
-- [ ] The owner registers the forge-v2 contracts (D-D); commit `deployments/mainnet.json`; mainnet web build (network switch retained).
-- [ ] dashpay mirrors on mainnet; Dash Forge hosts itself on Forge with GitHub as its mirror.
+- [x] The owner registers the forge-v2 contracts (D-D); commit `deployments/mainnet.json`; mainnet web build (network switch retained). *Done 2026-11-24: forge.dashhq.org serves mainnet, testnet moved to testnet-forge.dashhq.org ([networks.md](networks.md)). No release has the mainnet contracts yet: v0.2.0 is testnet only.*
+- [ ] dashpay mirrors on mainnet; Dash Forge hosts itself on Forge with GitHub as its mirror. *Partial: this repository is mirrored to mainnet Forge on every push to master (`forge-sync`), but its home is still GitHub.*
 - [ ] Weekly mainnet smoke run from a user-funded CI identity.
 
 ### Later

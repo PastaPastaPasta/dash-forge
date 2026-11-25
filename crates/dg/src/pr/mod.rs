@@ -4520,7 +4520,7 @@ pub(crate) fn members_key_needed(repo: &Repo, action: &str) -> anyhow::Error {
             repo.display()
         ),
     )
-    .fix("dg auth unlock, then try again")
+    .fix("run `dg auth status`: its Private line says how to store your encryption key (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE); then try again")
     .fix(format!(
         "if you are a member and no key was shared with you yet, ask a maintainer: `dg repo keys repair {}`",
         repo.display()

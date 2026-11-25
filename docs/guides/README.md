@@ -36,6 +36,7 @@ Also:
 - [Limits](../limits.md): sizes, counts and caps, with where each comes from.
 - [Error codes](../errors.md): what every `[Exxx]` means and how to fix it.
 - [Installing](../INSTALL.md) and [building from source](../BUILDING.md).
+- [The move to testnet](devnet-move.md): for anyone who used Forge on a devnet before 2026-10-26.
 - [The Mirror Action's reference](../../action/README.md), [the check action's](../../check-action/README.md) and [running a relay](../../crates/forge-relay/README.md).
 
 ## What "coming soon" means
@@ -52,6 +53,6 @@ Wallet sign-in works on mainnet with DashPay for Android 11.9.2+ or Dash Wallet 
 
 ## Which network
 
-The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. The v0.2.0 binaries work on testnet only and have no `--wallet`; for mainnet or wallet sign-in, build from source. [Networks](../networks.md) has the details.
+The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. The v0.2.0 binaries work on testnet only and have no `--wallet`; there is no mainnet release yet, so for mainnet or wallet sign-in, [build from source](../INSTALL.md#build-from-source). [Networks](../networks.md) has the details.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

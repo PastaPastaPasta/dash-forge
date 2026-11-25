@@ -56,12 +56,14 @@ export const DOC_SECTIONS: readonly DocSection[] = [
       guide('home-nas-storage', 'Storage on your home NAS'),
       guide('run-your-own-ipfs-node', 'Run your own IPFS node'),
       guide('self-host-backend', 'Run your own backend'),
+      guide('pin-and-fork', 'Pin or fork a repository'),
     ],
   },
   {
     title: 'Collaborate',
     pages: [
       guide('collaborating', 'Collaborating'),
+      guide('organizations', 'Organizations'),
       { slug: 'audiences', path: 'docs/security/audiences.md', title: 'Who can read what' },
       guide('boards', 'Boards'),
       guide('bots', 'Bots and agents'),

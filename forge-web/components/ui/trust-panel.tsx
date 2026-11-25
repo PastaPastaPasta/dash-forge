@@ -227,13 +227,13 @@ export function TrustPanel({ report, className }: { report: TrustReport; classNa
 
 /**
  * Who served this app's code (L-81): the checks above cover the data, not the code doing the
- * checking. forge.dashhq.org is GitHub Pages behind Cloudflare, which can rewrite the HTML.
+ * checking. forge.dashhq.org is GitHub Pages.
  */
 function HostingNote(): JSX.Element {
   const [host, setHost] = useState<string | null>(null)
   useEffect(() => setHost(window.location.host), [])
   const who =
-    host === 'forge.dashhq.org' ? 'forge.dashhq.org (GitHub Pages, behind Cloudflare)' : host === null ? 'the site you opened' : host
+    host === 'forge.dashhq.org' ? 'forge.dashhq.org (GitHub Pages)' : host === null ? 'the site you opened' : host
   return (
     <>
       This app&apos;s code comes from {who}, and you trust that host for the code itself. If you don&apos;t, pin the IPFS build or

@@ -104,7 +104,7 @@ describe('keyOriginLabel names where this browser’s key came from (plan item 1
   it('names each origin, a pasted key, a wallet’s older code and a key registered here', () => {
     expect(keyOriginLabel(null, null, false)).toBeNull()
     expect(keyOriginLabel('session', null, true)).toBe('A pasted key (this tab only)')
-    expect(keyOriginLabel('vault', 'app-connect', false)).toBe('Your DashPay wallet (App Connect)')
+    expect(keyOriginLabel('vault', 'app-connect', false)).toBe('Your Dash wallet (App Connect)')
     expect(keyOriginLabel('vault', 'dg', false)).toBe('Handed over by dg on your computer')
     expect(keyOriginLabel('vault', 'passkey', false)).toBe('Restored from a passkey')
     expect(keyOriginLabel('vault', null, true)).toBe("A wallet's older code (DashConnect)")

@@ -149,16 +149,16 @@ test('m1. signed out: choose a path, copy CLI commands and resume their settings
   await expect(cli.getByLabel('Forge repo name', { exact: true })).toHaveValue(GH.name.toLowerCase())
   await expect(cli.getByLabel('Spending cap (DASH)')).toHaveValue('0.2')
   const flags = `--network ${E2E_NETWORK}${E2E_NETWORK === 'devnet' ? ` --devnet-name ${E2E_DEVNET}` : ''}`
-  await expect(cli).toContainText(`dg auth login --mnemonic ${flags}`)
+  await expect(cli).toContainText(`dg auth login ${flags}`)
   await expect(cli).toContainText(`--repo ${GH.name.toLowerCase()} --sync code,releases --max-spend 0.2 ${flags}`)
   await cli.getByLabel('Forge repo name', { exact: true }).fill('mirror-cli-e2e')
   await cli.getByLabel('Spending cap (DASH)').fill('0.4')
   await cli.getByRole('checkbox', { name: /Issues and pull requests too/ }).check()
   const command = `dg import github.com/${GH.owner}/${GH.name} --repo mirror-cli-e2e --sync all --max-spend 0.4 --state mirror-cli-e2e.sync.json ${flags}`
   await expect(cli).toContainText(command)
-  await expect(cli).toContainText(`dg auth login --mnemonic --budget 0.4 ${flags}`)
+  await expect(cli).toContainText(`dg auth login --budget 0.4 ${flags}`)
   for (const [label, text] of [
-    ['Copy the dg sign-in command', `dg auth login --mnemonic --budget 0.4 ${flags}`],
+    ['Copy the dg sign-in command', `dg auth login --budget 0.4 ${flags}`],
     ['Copy the GitHub sign-in command', 'gh auth login'],
     ['Copy the import command', command],
     ['Copy the storage command', 'dg storage use <profile> --global'],

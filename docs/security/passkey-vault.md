@@ -1,6 +1,6 @@
 # Passkeys for other devices: the passkey vault and its threat model
 
-Status: implemented in the web app, and live wherever forge-meta has the `vaultEntry` type: on testnet since its forge-meta update to version 2 on 2026-10-26 (see [Deployment status](#deployment-status)). Elsewhere it stays hidden. The contract is [forge-v2.md §2](../contracts/forge-v2.md#forge-meta-mainnet-set-only), and the user-facing guide is [identity and keys](../guides/identity-and-keys.md#passkeys-for-other-devices).
+Status: implemented in the web app, and live wherever forge-meta has the `vaultEntry` type: on testnet since its forge-meta update to version 2 on 2026-10-26, and on mainnet since its registration on 2026-11-24 (see [Deployment status](#deployment-status)). Elsewhere it stays hidden. The contract is [forge-v2.md §2](../contracts/forge-v2.md#forge-meta-mainnet-set-only), and the user-facing guide is [identity and keys](../guides/identity-and-keys.md#passkeys-for-other-devices).
 
 ## What it is
 
@@ -28,9 +28,9 @@ The web app says so where it matters: the add dialog and the passkeys section re
 
 ## Where it works
 
-A passkey's relying party id is the page's host. Forge allows exactly `forge.dashhq.org` and `localhost` (development and the end-to-end suite), nothing else:
+A passkey's relying party id is the page's host. Forge allows exactly `forge.dashhq.org` (mainnet), `testnet-forge.dashhq.org` (testnet) and `localhost` (development and the end-to-end suite), nothing else (`forge-web/lib/auth/passkey-vault/policy.ts`). A passkey made on one site does not work on the other:
 
-- Never `dashhq.org`: every subdomain could then ask the browser for the same PRF output and open every entry.
+- Never `dashhq.org`: every subdomain could then ask the browser for the same PRF output and open every entry. The testnet site is a sibling of forge.dashhq.org, never a child, because a child host could ask for forge.dashhq.org's passkeys.
 - Not a shared origin (a GitHub Pages project site, an IPFS path gateway) and not an IPFS subdomain gateway (one origin per release, so the passkey would be lost with the next one).
 - Not an IP address: WebAuthn does not allow one. The end-to-end suite opens `http://localhost:<port>` for that reason, not `127.0.0.1`.
 
@@ -83,7 +83,7 @@ The `vaultEntry` type is in the committed forge-meta (`forge-contracts/contracts
 
 - **Testnet: live.** forge-meta was updated in place to version 2 on 2026-10-26: one `DataContractUpdate`, `deploy-v2.mjs --set mainnet --update meta`, signed by the testnet deployer with `--expect-sha256`, then `snapshot-contracts.mjs`. The scratch set got the same update first. On both, the live test showed that a group-bound limited key writes `vaultEntry` ([evidence](../../forge-contracts/evidence/testnet/README.md#forge-meta-update-to-version-2-the-passkey-vault-2026-10-26)). Testnet lists the flag in its `since` (`build.py` `NETWORK_REGISTRATIONS`), so `--check` still reproduces what testnet registered.
 - **Devnet sakura: not updated.** It is retired and unreachable; the same update, signed by its deployer, would be needed if it came back.
-- **Mainnet:** the type is part of the registration set.
+- **Mainnet: live.** forge-meta, with `vaultEntry`, was registered with the rest of the mainnet set on 2026-11-24 (`forge-contracts/deployments/mainnet.json`).
 
 Where forge-meta has no `vaultEntry`, the feature is **inert**: the web app reads forge-meta from Platform (a proved fetch, which bypasses the bundled snapshot) and shows no passkey tile, no passkeys section and no offer while the contract has no `vaultEntry`. A read that fails also hides them. Nothing breaks and nothing is spent.
 

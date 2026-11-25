@@ -15,7 +15,7 @@ variables:
   FORGE_VERSION: "0.2.0"
 ```
 
-To run code that is not in a release, pin a commit you have reviewed in the URL and set `FORGE_SOURCE_REF: <the same commit>` instead of `FORGE_VERSION`: the job builds the tools from it (several minutes the first time).
+To run code that is not in a release, pin a commit you have reviewed in the URL and set `FORGE_SOURCE_REF: <the same commit>` instead of `FORGE_VERSION`: the job builds the tools from it (several minutes the first time). Do that for mainnet (`FORGE_NETWORK: mainnet`): the v0.2.0 binaries know testnet only.
 
 | Variable | Default | Meaning |
 |---|---|---|

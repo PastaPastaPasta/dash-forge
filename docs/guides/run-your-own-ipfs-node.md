@@ -1,6 +1,6 @@
 # Run your own IPFS node
 
-One command, `dg ipfs up`, sets up an IPFS node (kubo) on your computer, starts it at login, connects it to the Forge web app, and saves a storage profile so `dg` can push to it. The same node can also keep a copy of someone else's repository: `dg ipfs pin owner/name`.
+One command, `dg ipfs up`, sets up an IPFS node (kubo) on your computer, starts it at login, saves a storage profile so `dg` can push to it, and prints a link and a code that connect it to the Forge web app. The same node can also keep a copy of someone else's repository: `dg ipfs pin owner/name`.
 
 Neither costs any DASH. Your node stores bytes on your own disk, and nothing in this guide writes to Platform.
 
@@ -136,9 +136,9 @@ Chrome may ask you to **allow access to apps on this device** (Local Network Acc
 
 | Browser | On forge.dashhq.org |
 |---|---|
-| Chrome, Edge | Works. The first time, it asks to let the site reach apps on your device. Allow it. |
-| Firefox | Works after the same kind of prompt. |
-| Brave | Works after you allow it. If it doesn't ask, look at the site's permissions. |
+| Chrome | Works (tested with Chrome 158). The first time, it asks to let the site reach apps on your device. Allow it. |
+| Edge, Brave | Not tested. They are built on Chromium, so they should ask the same way. If Brave doesn't ask, look at the site's permissions. |
+| Firefox | Not tested. |
 | Safari | **Does not work.** Safari doesn't let a secure site reach a node on your computer. The page says so. Use `dg` to push, or connect from another browser. |
 
 While the prompt is open, the page says so and waits for your answer. If you block it, the page tells you to allow the site in its site settings (the icon left of the address); do that and press **Connect** again.
@@ -155,9 +155,9 @@ In `dg`:
 dg storage use kubo
 ```
 
-To keep a second copy elsewhere, list both: `dg storage use r2-main,kubo`. [Choosing where a repo pushes](bring-your-own-storage.md#choosing-where-a-repo-pushes) has the details.
+To keep a second copy elsewhere, list both: `dg storage use nas,kubo`. [Choosing where a repo pushes](bring-your-own-storage.md#choosing-where-a-repo-pushes) has the details.
 
-Two cautions, both from [Bring your own storage](bring-your-own-storage.md#ipfs-your-own-kubo-node):
+One caution, from [Bring your own storage](bring-your-own-storage.md#ipfs-your-own-kubo-node):
 
 - The profile `dg ipfs up` saves has no public gateway. Other people can read your packs only if they can find your node on the IPFS network ([Being reachable](#being-reachable)). A laptop that is often off is a poor only copy. Keep a bucket as well.
 
@@ -175,7 +175,7 @@ shows the kubo version and peer id, whether the service is running, the bytes st
 |---|---|
 | `dg ipfs connect [--open]` | A new connection link and code. |
 | `dg ipfs origin add <https://host>` | Allow another website. It restarts the node. |
-| `dg ipfs origin remove <https://host>` | Stop allowing a website. `https://forge.dashhq.org` can't be removed. |
+| `dg ipfs origin remove <https://host>` | Stop allowing a website. The two Forge web apps (`https://forge.dashhq.org`, `https://testnet-forge.dashhq.org`) can't be removed. |
 | `dg ipfs down` | Stop the node and remove its login service. Your files, tokens and profile stay. `dg ipfs up` starts it again. |
 | `dg ipfs down --purge` | The same, then delete the node's directory, its storage profile and its keychain entry. It asks first and says how many bytes it will delete. Everything you pinned goes too. |
 | `dg ipfs ipfs -- <args>` | Run the node's own `ipfs` program with the owner token, for example `dg ipfs ipfs -- repo stat`. |
@@ -308,7 +308,7 @@ Private repositories need more care:
 | `systemd's user service is unavailable` | Run `dg ipfs up --no-service`, then `dg ipfs serve` under your own supervisor. |
 | `could not start the IPFS login service` (macOS) | Run `dg ipfs up --no-service`, then `dg ipfs serve` yourself. |
 | Windows: `could not start the logon task` | The task is best effort. Run `dg ipfs serve` yourself. |
-| The page says `Safari can't reach a node on this computer from a secure site` | Safari blocks it. Use `dg` to push, or Chrome, Firefox or Brave. |
+| The page says `Safari can't reach a node on this computer from a secure site` | Safari blocks it. Use `dg` to push, or Chrome. |
 | `The IPFS node on this computer isn't running` | Run `dg ipfs up` (or `dg ipfs status` to see why it stopped), then press **Connect**. |
 | `This site needs your OK to reach the node on this computer` | You closed the browser's prompt without answering. Press **Connect** and choose **Allow**. |
 | `Your browser isn't letting this site reach apps on this device` | You blocked the browser's prompt. Allow it in the site's settings, then press **Connect**. |

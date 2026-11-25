@@ -44,7 +44,7 @@ export default function StorageSettingsPage(): JSX.Element {
           <EmptyState
             icon={HardDrive}
             title="Sign in to set up storage"
-            body="Storage credentials stay encrypted in this browser."
+            body="Storage credentials are kept encrypted."
             action={<SignInButton />}
           />
         )}

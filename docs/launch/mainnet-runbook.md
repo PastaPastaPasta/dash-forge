@@ -1,5 +1,7 @@
 # Mainnet launch runbook (2026-11-24)
 
+> **Status (2026-11-25).** This is the plan as written for launch day, kept as the record. The registration is done: the four contracts are on mainnet (`forge-contracts/deployments/mainnet.json`, evidence in `forge-contracts/evidence/mainnet/`), forge.dashhq.org serves the mainnet build and testnet-forge.dashhq.org the testnet one. Step 11 has not happened: there is no v0.3.0 (its release PR, #688, is still a draft), so the latest release is v0.2.0, whose binaries know testnet only. On mainnet, build `dg` and `git-remote-dash` from source ([Networks](../networks.md)).
+
 **For the people who take Forge to Dash mainnet this morning:** Pasta (keys, funds, DNS, the go) and the agent on the launch thread (everything else). Read it all before the first step. The general procedure behind it is [Deploying Forge to a network](../deploying-to-a-network.md). This page is that procedure turned into today's ordered steps, with the decisions already made.
 
 Contract registration is the only step that cannot be undone. Everything after it (the site, the CLI release, the announcement) can be reverted in minutes. The window to abandon a bad registration cheaply is **before the announcement** ([Rollback](#6-rollback)).
@@ -60,7 +62,7 @@ Prepared overnight. The launch thread checks each item again at T-60.
 - [x] The testnet rehearsal of these exact steps passed ([§8](#8-testnet-rehearsal)): 2026-11-24 06:15 to 07:05Z.
 - [ ] The testnet site serves the testnet build at `https://testnet-forge.dashhq.org` (after P1), and its `/forge-manifest.json` says `"network": "testnet"`.
 - [ ] The launch-day docs PR (mainnet live, v0.3.0 bumps, `RELEASE_NETWORK='mainnet'`) is open as a draft.
-- [ ] No other PR is about to merge: **freeze merges to `master` from step 7 until the flip is live** (step 9). The Pages guard reads the live manifest, which GitHub's CDN caches for up to 10 minutes, and `cancel-in-progress` would let a merge cancel the flip run.
+- [ ] No other PR is about to merge: **freeze merges to `master` from step 7 until the flip is live** (step 9). The Pages guard reads the live manifest, which GitHub's CDN caches for up to 10 minutes, and Pages runs keep only the newest waiting run, so a merge pushed while the flip run is still waiting to start would replace it.
 
 ## 4. The steps, in order
 
@@ -226,6 +228,8 @@ Registered repositories and Platform-stored packs can't be deleted, so the write
 
 ## 6. Rollback
 
+**Rolling back a site.** Both sites deploy only from master, one run at a time, and only master's head deploys (`pages.yml`, `pages-testnet.yml`). To put an earlier version back, merge a revert to master. To redeploy the current head, run the workflow on master by workflow_dispatch. Don't re-run a Pages run started before 2026-11-25 (#730): a re-run uses that run's old workflow, which cancels whatever deploy is in progress.
+
 **What can't be undone.** Registered contracts are permanent. They can't be deleted or re-owned, and an update may only add types and optional properties. Every repository, issue and pack written under them stays on chain. The deployer's nonces are spent.
 
 **How a bad registration is superseded.** Register a fresh set from the same deployer with `deploy-v2.mjs --network mainnet --set mainnet --force-new --abandon-live-set mainnet …` (about 2 DASH). That writes a new record, and the old one moves to `*Superseded`. Then release clients that read the new ids, and say which ids were abandoned. Documents under the old ids stay on chain and are no longer read. A defect that clients can enforce is fixed instead by a client release, and an additive schema fix by `--update`, gated by `tools/contract-validate --expect-update`.
@@ -253,7 +257,7 @@ The fastest full rollback to "testnet-only" is **R1**: three variables, two disp
 | **v0.2.0 binaries on mainnet** say "not deployed" until v0.3.0 | certain, until step 11 | The CLI can't reach mainnet for a few hours. | Release the same day. The web `/mirror` wizard pins the Action to the deployed commit with a source install, so mirrors set up from the mainnet site work without the release. |
 | **DNS / certificate delay** on testnet-forge.dashhq.org | low | Testnet users have no site for a while. | Do P1 now, and step 8 checks it before the flip. |
 | **Platform reset on mainnet** | very low | Contracts are gone. | The escrowed deployer (mnemonic + asset-lock txid + height) restores the same ids: `mint.mjs restore` (testnet-only today, so a mainnet restore needs that tool extended first) and `deploy-v2 --replay`. |
-| **A merge cancels the flip run** (`cancel-in-progress`), or the guard reads a stale manifest | low | The flip run fails or is cancelled, and the site stays on testnet. | The merge freeze (step 7). Re-run the dispatch. |
+| **A merge replaces the flip run while it waits to start**, or the guard reads a stale manifest | low | The flip run fails or is cancelled, and the site stays on testnet. | The merge freeze (step 7). Re-run the dispatch. |
 
 ## 8. Testnet rehearsal
 

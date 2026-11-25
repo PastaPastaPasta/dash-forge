@@ -61,7 +61,7 @@ export default function GettingStartedPage(): JSX.Element {
           <li className="space-y-1">
             <h2 className="text-prose font-semibold">1. Create or connect a Dash identity</h2>
             <p className="text-dense text-anvil-600 dark:text-anvil-300">
-              Your Dash Platform identity is your account (made from a 12-word recovery phrase, or connected via a wallet). Keep it offline. Nobody can reset it for you. Browsing needs none.
+              Your Dash Platform identity is your account. Create it in a Dash wallet app, or in the browser from a 12-word recovery phrase. Keep the phrase offline: nobody can reset it for you. Browsing needs no identity.
             </p>
           </li>
 
@@ -96,7 +96,7 @@ export default function GettingStartedPage(): JSX.Element {
             How browser sign-in stays safe
           </summary>
           <p className="mt-2">
-            Signing in gives this browser a limited key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days by default. A passkey or passphrase protects it; your master key and recovery phrase are never stored.
+            Signing in gives this browser a limited key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days by default. A passkey or passphrase can lock it; your master key and recovery phrase are never stored.
           </p>
         </details>
 
