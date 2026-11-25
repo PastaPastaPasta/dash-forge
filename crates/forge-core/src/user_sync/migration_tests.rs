@@ -632,3 +632,46 @@ async fn a_synced_policy_naming_a_profile_that_is_gone_is_skipped() {
     };
     assert!(policy.unwrap().resolve(&set).is_ok());
 }
+
+#[tokio::test]
+async fn an_interrupted_removal_finishes_at_a_newer_epoch_and_never_reuses_one() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    r.store.fail_next_share_write();
+    assert!(owner
+        .reconcile_repo(&r.repo, Wanted::Keep, &BTreeSet::new())
+        .await
+        .is_err());
+    // Nothing was revoked yet, so the next run still sees it and moves the epoch.
+    assert_eq!(r.store.all_grants().len(), 1);
+    assert_eq!(
+        r.store
+            .share(&r.owner, &r.repo)
+            .await
+            .unwrap()
+            .unwrap()
+            .epoch,
+        0
+    );
+    let done = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &BTreeSet::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        (done.epoch, done.revoked.clone()),
+        (1, vec![r.member.clone()])
+    );
+    assert!(r.store.all_grants().is_empty());
+    r.store.as_signer(&r.member);
+    assert!(UserSync::new(&r.e_member, &r.store)
+        .granted_share(&r.repo, &r.owner)
+        .await
+        .unwrap()
+        .is_none());
+}

@@ -640,37 +640,15 @@ impl UserSync<'_> {
             .await
     }
 
-    /// The grants of `repo_id` to revoke: anyone who is no longer one of `maintainers` (or is
-    /// the owner), or whose recipient key is no longer a live forge-user key; everyone when
-    /// sharing stops.
-    async fn to_revoke(
-        &self,
-        grants: &[GrantDoc],
-        maintainers: &BTreeSet<String>,
-        stop: bool,
-    ) -> Result<Vec<GrantDoc>> {
-        let mut out = Vec::new();
-        for g in grants {
-            let gone = stop
-                || g.member_id == self.key.identity_id
-                || !maintainers.contains(&g.member_id)
-                || self
-                    .store
-                    .encryption_key(&g.member_id, Some(g.recipient_key_id))
-                    .await?
-                    .is_none();
-            if gone {
-                out.push(g.clone());
-            }
-        }
-        Ok(out)
-    }
-
     /// As the owner of `repo_id`: make its share hold what `wanted` says, grant it to every one
-    /// of `maintainers` that has a live forge-user key, and revoke every other grant, moving to
-    /// a new epoch when one is revoked (the removed key can still open the old one). Revoked
-    /// grants go first, so a share that cannot be written or read never keeps one. Writes nothing
-    /// that is already so.
+    /// of `maintainers` that has a live forge-user key, and revoke every other grant: anyone
+    /// who is no longer a maintainer (or is the owner), whose recipient key is no longer live,
+    /// or everyone when sharing stops. A revocation moves the share to a new epoch (the revoked
+    /// key can still open the old one). Order matters for an interrupted run: the share at the new
+    /// epoch is written first, then the remaining grants, then the revoked grants are deleted,
+    /// so a run that stops part-way leaves the revocations for the next run to finish at an even
+    /// newer epoch, never a share at an epoch a revoked key holds. Writes nothing that is
+    /// already so.
     pub async fn reconcile_repo(
         &self,
         repo_id: &str,
@@ -682,7 +660,18 @@ impl UserSync<'_> {
         let existing = self.store.share(me, repo_id).await?;
         let all = self.store.grants_of_repo(me, repo_id).await?;
         let stop = matches!(wanted, Wanted::Nothing);
-        let revoked = self.to_revoke(&all, maintainers, stop).await?;
+        let mut keys: BTreeMap<String, Vec<EncKeyInfo>> = BTreeMap::new();
+        for member in maintainers.iter().filter(|m| *m != me) {
+            keys.insert(member.clone(), self.store.encryption_keys(member).await?);
+        }
+        let revoked: Vec<&GrantDoc> = all
+            .iter()
+            .filter(|g| {
+                stop || keys
+                    .get(&g.member_id)
+                    .is_none_or(|ks| !ks.iter().any(|k| k.id == g.recipient_key_id))
+            })
+            .collect();
         let mut out = Reconciled {
             epoch: existing.as_ref().map_or(0, |s| s.epoch),
             ..Reconciled::default()
@@ -690,63 +679,66 @@ impl UserSync<'_> {
         if !revoked.is_empty() && existing.is_some() {
             out.epoch = out.epoch.checked_add(1).ok_or(Error::Integrity)?;
         }
-        for g in &revoked {
+        let current = existing
+            .as_ref()
+            .and_then(|s| self.open_share(s, &self.rsk(&repo, s.epoch)).ok());
+        let content = match (wanted, &current) {
+            (Wanted::Content(c), _) | (Wanted::Keep, Some(c)) => Some(c.clone()),
+            (Wanted::Nothing, _) | (Wanted::Keep, None)
+                if existing.is_some() && (stop || !revoked.is_empty()) =>
+            {
+                Some(ShareContent::nothing())
+            }
+            _ => None,
+        };
+        let rsk = self.rsk(&repo, out.epoch);
+        if let Some(mut content) = content {
+            if let Some(c) = &current {
+                for (k, v) in &c.extra {
+                    content.extra.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            let unchanged = existing.as_ref().is_some_and(|s| {
+                s.epoch == out.epoch
+                    && s.key_id == self.key.key_id
+                    && current.as_ref().is_some_and(|c| c.same_as(&content))
+            });
+            if !unchanged {
+                self.put_share(existing.as_ref(), repo_id, out.epoch, &rsk, &content)
+                    .await?;
+                out.share_written = true;
+            }
+            out.shared = !stop && !content.profiles.is_empty();
+        }
+        let mut replaced = BTreeSet::new();
+        if out.shared {
+            for (member, live) in &keys {
+                let Some(their) = live.last() else {
+                    out.waiting.push(member.clone());
+                    continue;
+                };
+                let old = all.iter().find(|g| g.member_id == *member);
+                if old.is_some_and(|g| {
+                    g.epoch == out.epoch
+                        && g.recipient_key_id == their.id
+                        && g.sender_key_id == self.key.key_id
+                }) {
+                    continue;
+                }
+                self.put_grant(old, repo_id, member, their, out.epoch, &rsk)
+                    .await?;
+                if let Some(g) = old {
+                    replaced.extend(g.id.clone());
+                }
+                out.granted.push(member.clone());
+            }
+        }
+        for g in revoked {
+            if g.id.as_ref().is_some_and(|id| replaced.contains(id)) {
+                continue;
+            }
             self.store.delete_grant(g).await?;
             out.revoked.push(g.member_id.clone());
-        }
-        let current = match &existing {
-            Some(s) => Some(self.open_share(s, &self.rsk(&repo, s.epoch))?),
-            None => None,
-        };
-        let mut content = match wanted {
-            Wanted::Content(c) => c.clone(),
-            Wanted::Nothing if existing.is_some() => ShareContent::nothing(),
-            Wanted::Keep => match &current {
-                Some(c) => c.clone(),
-                None => return Ok(out),
-            },
-            Wanted::Nothing => return Ok(out),
-        };
-        if let Some(c) = &current {
-            for (k, v) in &c.extra {
-                content.extra.entry(k.clone()).or_insert_with(|| v.clone());
-            }
-        }
-        let rsk = self.rsk(&repo, out.epoch);
-        let unchanged = existing.as_ref().is_some_and(|s| {
-            s.epoch == out.epoch
-                && s.key_id == self.key.key_id
-                && current.as_ref().is_some_and(|c| c.same_as(&content))
-        });
-        if !unchanged {
-            self.put_share(existing.as_ref(), repo_id, out.epoch, &rsk, &content)
-                .await?;
-            out.share_written = true;
-        }
-        if stop {
-            return Ok(out);
-        }
-        out.shared = true;
-        let kept: Vec<&GrantDoc> = all
-            .iter()
-            .filter(|g| !revoked.iter().any(|r| r.id == g.id))
-            .collect();
-        for member in maintainers.iter().filter(|m| *m != me) {
-            let Some(their) = self.store.encryption_key(member, None).await? else {
-                out.waiting.push(member.clone());
-                continue;
-            };
-            let old = kept.iter().copied().find(|g| g.member_id == *member);
-            if old.is_some_and(|g| {
-                g.epoch == out.epoch
-                    && g.recipient_key_id == their.id
-                    && g.sender_key_id == self.key.key_id
-            }) {
-                continue;
-            }
-            self.put_grant(old, repo_id, member, &their, out.epoch, &rsk)
-                .await?;
-            out.granted.push(member.clone());
         }
         Ok(out)
     }
@@ -779,8 +771,10 @@ impl UserSync<'_> {
         }
         let Some(owner_key) = self
             .store
-            .encryption_key(owner_id, Some(grant.sender_key_id))
+            .encryption_keys(owner_id)
             .await?
+            .into_iter()
+            .find(|k| k.id == grant.sender_key_id)
         else {
             return Ok(None);
         };

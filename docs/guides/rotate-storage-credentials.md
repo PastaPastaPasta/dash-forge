@@ -8,7 +8,7 @@ Rotating takes three steps:
 2. Update the profile with it.
 3. Revoke the old credential at the provider.
 
-The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So does `dg collab add` or `dg collab remove` on it when the repository's storage policy is synced with your identity (`dg storage use … --global`).
+The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So does `dg collab add` or `dg collab remove` on it when the repository has its own storage policy synced with your identity (set in the web app's repository settings); otherwise they re-encrypt the share as it is, and your next push brings it up to date.
 
 ## Cloudflare R2
 
@@ -49,6 +49,10 @@ dg storage test r2-main
 ```
 
 A green test means the new credential works. Run one push to each repository whose maintainers changed. It shares the updated profile with the remaining maintainers; the removed one gets nothing.
+
+## What a maintainer trusts
+
+Sharing works both ways. The upload address in a shared profile (the bucket endpoint, the kubo API) is chosen by the owner, and the maintainer's own client connects to it when it pushes. Forge never lets a shared profile record a non-public address on chain from the maintainer's machine, but the maintainer still trusts the owner with where their pushes go.
 
 ## What rotation does not cover
 

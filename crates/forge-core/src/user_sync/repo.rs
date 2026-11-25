@@ -39,6 +39,8 @@ pub struct PushStorage {
     pub policy: Option<StoragePolicy>,
     /// The owner whose storage this push may use, when it is shared with the pusher.
     pub shared_by: Option<String>,
+    /// Whether [`Self::policy`] is the pusher's own synced policy for this repository.
+    pub policy_is_repos_own: bool,
 }
 
 /// [`PushStorage`] for `sync`'s identity pushing to `repo_id`, owned by `owner_id`, over
@@ -76,10 +78,18 @@ pub async fn push_storage(
             out.shared_by = Some(owner_id.to_string());
         }
     }
-    out.policy = [own_repo, shared_policy, own_default]
-        .into_iter()
-        .flatten()
-        .find(|p| p.resolve(&out.effective.profiles).is_ok());
+    let usable = |p: &Option<StoragePolicy>| {
+        p.as_ref()
+            .filter(|p| p.resolve(&out.effective.profiles).is_ok())
+            .cloned()
+    };
+    let (own_repo, shared_policy, own_default) = (
+        usable(&own_repo),
+        usable(&shared_policy),
+        usable(&own_default),
+    );
+    out.policy_is_repos_own = own_repo.is_some();
+    out.policy = own_repo.or(shared_policy).or(own_default);
     Ok(out)
 }
 

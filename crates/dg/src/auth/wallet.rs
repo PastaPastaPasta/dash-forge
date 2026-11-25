@@ -65,7 +65,15 @@ struct State {
     /// The key a wallet granted, per `<network>/<identity>`.
     #[serde(default)]
     wallet_keys: BTreeMap<String, u32>,
+    /// The App Connect app each of those keys was granted to (`forge-user` or `forge-core`);
+    /// absent for a key granted before forge-user existed, which was forge-core's.
+    #[serde(default)]
+    wallet_apps: BTreeMap<String, String>,
 }
+
+/// The app a sign-in request names: [`APP_FORGE_USER`] or [`APP_FORGE_CORE`].
+const APP_FORGE_USER: &str = "forge-user";
+const APP_FORGE_CORE: &str = "forge-core";
 
 fn wallet_key_name(network: &str, identity_id: &str) -> String {
     format!("{network}/{identity_id}")
@@ -135,13 +143,31 @@ impl State {
         Ok((id, false))
     }
 
-    fn record_wallet_key(path: &Path, network: &str, identity_id: &str, key_id: u32) -> Result<()> {
+    fn record_wallet_key(
+        path: &Path,
+        network: &str,
+        identity_id: &str,
+        key_id: u32,
+        app: &str,
+    ) -> Result<()> {
         let _lock = lock_state(path)?;
         let mut state = Self::load(path)?;
-        state
-            .wallet_keys
-            .insert(wallet_key_name(network, identity_id), key_id);
+        let name = wallet_key_name(network, identity_id);
+        state.wallet_keys.insert(name.clone(), key_id);
+        state.wallet_apps.insert(name, app.to_string());
         state.save(path)
+    }
+
+    /// The app the recorded wallet key of `identity_id` on `network` was granted to.
+    fn wallet_app(path: &Path, network: &str, identity_id: &str) -> String {
+        Self::load(path)
+            .ok()
+            .and_then(|s| {
+                s.wallet_apps
+                    .get(&wallet_key_name(network, identity_id))
+                    .cloned()
+            })
+            .unwrap_or_else(|| APP_FORGE_CORE.to_string())
     }
 
     fn wallet_key(path: &Path, network: &str, identity_id: &str) -> Option<u32> {
@@ -778,8 +804,13 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     guard_replacement(ctx, &held, renewing)?;
     // A request naming forge-user is a new app to the wallet, so it may not disable the key it
     // granted this computer under forge-core: the chain says whether it did.
+    let app = if forge.user.is_some() && !args.no_sync {
+        APP_FORGE_USER
+    } else {
+        APP_FORGE_CORE
+    };
     let previous = State::wallet_key(&state, &network, &grant.identity_id)
-        .filter(|_| forge.user.is_none() || args.no_sync);
+        .filter(|_| State::wallet_app(&state, &network, &grant.identity_id) == app);
     let left_live = left_live(&held, &grant, previous, |id| {
         identity.key_disabled(id) == Some(false)
     });
@@ -791,7 +822,9 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .store(&network, &grant.identity_id, &text, store::Slot::Main)
         .map_err(|e| not_stored(&e, grant.key_id, renewing))?;
     let sync_key = keep_sync_key(ctx, &mut key_store, &network, &grant);
-    if let Err(e) = State::record_wallet_key(&state, &network, &grant.identity_id, grant.key_id) {
+    if let Err(e) =
+        State::record_wallet_key(&state, &network, &grant.identity_id, grant.key_id, app)
+    {
         if !ctx.json {
             eprintln!("note: signed in, but `dg auth status` will not know the key came from your wallet ({e:#})");
         }
@@ -1369,9 +1402,11 @@ mod tests {
         assert_eq!(State::connection_id(&path, "testnet").unwrap(), (id, true));
         assert_ne!(State::connection_id(&path, "devnet-sakura").unwrap().0, id);
         assert_eq!(State::wallet_key(&path, "testnet", "ALICE"), None);
-        State::record_wallet_key(&path, "testnet", "ALICE", 7).unwrap();
-        State::record_wallet_key(&path, "testnet", "ALICE", 9).unwrap();
+        assert_eq!(State::wallet_app(&path, "testnet", "ALICE"), APP_FORGE_CORE);
+        State::record_wallet_key(&path, "testnet", "ALICE", 7, APP_FORGE_CORE).unwrap();
+        State::record_wallet_key(&path, "testnet", "ALICE", 9, APP_FORGE_USER).unwrap();
         assert_eq!(State::wallet_key(&path, "testnet", "ALICE"), Some(9));
+        assert_eq!(State::wallet_app(&path, "testnet", "ALICE"), APP_FORGE_USER);
         assert_eq!(State::wallet_key(&path, "devnet-sakura", "ALICE"), None);
         // Recording a key keeps the connection id.
         assert_eq!(State::connection_id(&path, "testnet").unwrap().0, id);

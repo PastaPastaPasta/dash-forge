@@ -291,18 +291,14 @@ impl UserStore for PlatformUserStore<'_> {
             .await
     }
 
-    async fn encryption_key(
-        &self,
-        identity: &str,
-        key_id: Option<u32>,
-    ) -> Result<Option<EncKeyInfo>> {
+    async fn encryption_keys(&self, identity: &str) -> Result<Vec<EncKeyInfo>> {
         let identity = match self.client.fetch_identity(identity).await {
             Ok(i) => i,
-            Err(Error::NotFound) => return Ok(None),
+            Err(Error::NotFound) => return Ok(Vec::new()),
             Err(e) => return Err(e),
         };
         let contract = self.contract.id();
-        Ok(identity
+        let mut keys: Vec<EncKeyInfo> = identity
             .public_keys()
             .into_iter()
             .filter(|k| {
@@ -314,12 +310,13 @@ impl UserStore for PlatformUserStore<'_> {
                             id: contract.clone(),
                             document_type: None,
                         })
-                    && key_id.is_none_or(|want| k.id == want)
             })
-            .max_by_key(|k| k.id)
             .map(|k| EncKeyInfo {
                 id: k.id,
                 public_key: k.public_key,
-            }))
+            })
+            .collect();
+        keys.sort_by_key(|k| k.id);
+        Ok(keys)
     }
 }

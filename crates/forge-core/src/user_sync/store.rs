@@ -121,13 +121,8 @@ pub trait UserStore: Send + Sync {
     async fn put_grant(&self, doc: &GrantDoc) -> Result<()>;
     /// Delete the signer's `grant`.
     async fn delete_grant(&self, doc: &GrantDoc) -> Result<()>;
-    /// `identity`'s live forge-user ENCRYPTION key: key `key_id` when given (only if it is
-    /// one), else the newest.
-    async fn encryption_key(
-        &self,
-        identity: &str,
-        key_id: Option<u32>,
-    ) -> Result<Option<EncKeyInfo>>;
+    /// `identity`'s live forge-user ENCRYPTION keys, oldest first (one identity read).
+    async fn encryption_keys(&self, identity: &str) -> Result<Vec<EncKeyInfo>>;
 }
 
 /// An in-memory [`UserStore`] playing one signer at a time (`MemoryStore::as_signer`), which
@@ -148,6 +143,7 @@ struct Memory {
     grants: BTreeMap<String, GrantDoc>,
     keys: BTreeMap<String, Vec<EncKeyInfo>>,
     writes: u64,
+    fail_share_write: bool,
 }
 
 #[cfg(test)]
@@ -171,6 +167,11 @@ impl MemoryStore {
             .entry(identity.to_string())
             .or_default()
             .push(EncKeyInfo { id, public_key });
+    }
+
+    /// Make the next share write fail (an interrupted run).
+    pub fn fail_next_share_write(&self) {
+        self.inner.lock().expect("store lock").fail_share_write = true;
     }
 
     /// Disable `identity`'s key `id` (it no longer counts as live).
@@ -288,6 +289,9 @@ impl UserStore for MemoryStore {
 
     async fn put_share(&self, doc: &ShareDoc) -> Result<()> {
         let mut m = self.inner.lock().expect("store lock");
+        if std::mem::take(&mut m.fail_share_write) {
+            return Err(Error::Platform("the node went away".into()));
+        }
         let existing = m
             .shares
             .values()
@@ -365,16 +369,10 @@ impl UserStore for MemoryStore {
         Ok(())
     }
 
-    async fn encryption_key(
-        &self,
-        identity: &str,
-        key_id: Option<u32>,
-    ) -> Result<Option<EncKeyInfo>> {
+    async fn encryption_keys(&self, identity: &str) -> Result<Vec<EncKeyInfo>> {
         let m = self.inner.lock().expect("store lock");
-        let keys = m.keys.get(identity).cloned().unwrap_or_default();
-        Ok(match key_id {
-            Some(id) => keys.into_iter().find(|k| k.id == id),
-            None => keys.into_iter().max_by_key(|k| k.id),
-        })
+        let mut keys = m.keys.get(identity).cloned().unwrap_or_default();
+        keys.sort_by_key(|k| k.id);
+        Ok(keys)
     }
 }

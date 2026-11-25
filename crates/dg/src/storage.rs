@@ -756,7 +756,9 @@ async fn check_public_read(
 }
 
 async fn test(ctx: &Ctx, name: &str) -> Result<()> {
-    let profiles = StorageProfiles::load()?;
+    let profiles = crate::sync::merged(ctx, &StorageProfiles::load()?)
+        .await
+        .profiles;
     let profile = profiles
         .get(name)
         .with_context(|| format!("no storage profile {name:?} (see `dg storage list`)"))?;

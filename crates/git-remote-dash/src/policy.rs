@@ -89,6 +89,17 @@ pub(crate) fn config_value(remote: Option<&str>, remote_key: &str, key: &str) ->
     pick_scoped(per_remote, repo_wide)
 }
 
+/// Whether `dash.storage` (or the remote's `dashStorage`) is set in this repository's own git
+/// config (not globally, system-wide or on the command line).
+pub(crate) fn storage_set_in_repo(remote: Option<&str>) -> bool {
+    let per_remote =
+        remote.and_then(|r| LocalRepo::config_get_scoped(&format!("remote.{r}.dashStorage")));
+    let repo_wide = LocalRepo::config_get_scoped("dash.storage");
+    forge_core::storage::policy::pick_scoped_entry(per_remote, repo_wide).is_some_and(
+        |(scope, v)| matches!(scope.as_str(), "local" | "worktree") && !v.trim().is_empty(),
+    )
+}
+
 /// `dash.costWarnThreshold`, in DASH: 0.05 when unset, `None` when set to `off`.
 fn cost_warn_threshold(remote: Option<&str>) -> Result<Option<f64>> {
     Ok(

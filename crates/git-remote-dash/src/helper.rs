@@ -1716,7 +1716,17 @@ impl Helper {
                 self.reconcile_after_push = true;
                 self.share_plan =
                     forge_core::user_sync::ShareContent::for_resolved(&policy.resolved);
-                self.share_stop = policy.resolved.external.is_empty() && policy.storage_configured;
+                // Stop sharing only for this repository's own choice of Platform, never a global or
+                // default one (which a push from another clone may not share).
+                let own_choice = crate::policy::storage_set_in_repo(self.remote.as_deref())
+                    || (crate::policy::config_value(
+                        self.remote.as_deref(),
+                        "dashStorage",
+                        "storage",
+                    )
+                    .is_none()
+                        && synced.as_ref().is_some_and(|v| v.policy_is_repos_own));
+                self.share_stop = policy.resolved.external.is_empty() && own_choice;
             }
             policy
         } else {

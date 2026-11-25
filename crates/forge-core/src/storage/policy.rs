@@ -62,13 +62,21 @@ pub fn pick_scoped(
     per_remote: Option<(String, String)>,
     repo_wide: Option<(String, String)>,
 ) -> Option<String> {
+    pick_scoped_entry(per_remote, repo_wide).map(|(_, v)| v)
+}
+
+/// [`pick_scoped`], with the git config scope the winning value came from.
+pub fn pick_scoped_entry(
+    per_remote: Option<(String, String)>,
+    repo_wide: Option<(String, String)>,
+) -> Option<(String, String)> {
     match (per_remote, repo_wide) {
-        (Some((rs, rv)), Some((ws, wv))) => Some(if scope_rank(&rs) >= scope_rank(&ws) {
-            rv
+        (Some(r), Some(w)) => Some(if scope_rank(&r.0) >= scope_rank(&w.0) {
+            r
         } else {
-            wv
+            w
         }),
-        (Some((_, v)), None) | (None, Some((_, v))) => Some(v),
+        (Some(e), None) | (None, Some(e)) => Some(e),
         (None, None) => None,
     }
 }
