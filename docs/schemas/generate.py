@@ -893,6 +893,10 @@ cmd('storage use', 'Which storage profiles pushes use.', {
     'replicas': ANY, 'platformFallback': ANY, 'scope': E('global', 'repo'), 'warnings': ANY,
     'advertisedMode': ANY, 'existingPacks': ANY,
 }, ['storage', 'scope'])
+cmd('storage share', 'The storage a repository’s maintainers get, set or stopped, and who has it.', {
+    'status': E('shared', 'stopped'), 'repo': S, 'profiles': SA, 'epoch': I,
+    'granted': SA, 'waiting': SA, 'revoked': SA,
+}, ['status', 'repo', 'epoch'])
 cmd('storage advertise', 'The storage the repository advertises to forks and mirrors.', {
     'status': E('advertised', 'unchanged'), 'mode': ANY, 'uris': SA, 'configDocId': nl(S),
 }, ['status'])

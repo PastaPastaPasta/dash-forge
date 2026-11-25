@@ -9,6 +9,7 @@
 pub mod crypto;
 pub mod doc;
 pub mod key;
+pub mod local;
 pub mod platform;
 pub mod repo;
 pub mod storage;
@@ -41,6 +42,11 @@ pub const DOC_GRANT: &str = "grant";
 pub const SLOT_STORAGE: &str = "storage";
 /// The share plaintext's format.
 pub const SHARE_FORMAT: &str = "forge-user/share";
+/// The share version this build writes. Version 2 is only ever written under the repo-only
+/// [`ShareRule`]; a version 1 share may hold what an older build shared from the default storage.
+pub const SHARE_VERSION: u64 = 2;
+/// Where an owner learns to rotate what a former maintainer saw.
+pub const ROTATE_GUIDE: &str = "docs/guides/rotate-storage-credentials.md";
 
 /// The time now, in ms.
 pub fn now_ms() -> u64 {
@@ -460,6 +466,8 @@ pub struct ShareContent {
     pub profiles: BTreeMap<String, Value>,
     /// The policy.
     pub policy: Value,
+    /// The version it was written in ([`SHARE_VERSION`] for new content; 1 when it says none).
+    pub version: u64,
     /// Fields this build does not know.
     pub extra: Map<String, Value>,
 }
@@ -468,6 +476,7 @@ impl std::fmt::Debug for ShareContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShareContent")
             .field("profiles", &self.profiles.keys().collect::<Vec<_>>())
+            .field("version", &self.version)
             .finish_non_exhaustive()
     }
 }
@@ -478,8 +487,14 @@ impl ShareContent {
         Self {
             profiles: BTreeMap::new(),
             policy: Value::Null,
+            version: SHARE_VERSION,
             extra: Map::new(),
         }
+    }
+
+    /// Whether it lends any storage.
+    fn lends(&self) -> bool {
+        !self.profiles.is_empty()
     }
 
     /// Whether `self` holds what `other` holds, as both clients read it: the same profiles with
@@ -497,18 +512,10 @@ impl ShareContent {
                 == storage::policy_from_synced(&other.policy)
     }
 
-    /// The version a share was written in (1 when it says nothing else).
-    fn version(&self) -> u64 {
-        self.extra
-            .get("version")
-            .and_then(Value::as_u64)
-            .unwrap_or(doc::DOC_VERSION)
-    }
-
     fn to_json(&self) -> Vec<u8> {
         let mut v = json!({
             "format": SHARE_FORMAT,
-            "version": 1,
+            "version": self.version,
             "profiles": self.profiles,
             "policy": self.policy,
         });
@@ -528,9 +535,11 @@ impl ShareContent {
         if m.remove("format").as_ref().and_then(Value::as_str) != Some(SHARE_FORMAT) {
             return Err(bad());
         }
-        if m.get("version").and_then(Value::as_u64) == Some(doc::DOC_VERSION) {
-            m.remove("version");
-        }
+        // A version that is not a count is one this build cannot know: as newer.
+        let version = m
+            .remove("version")
+            .map_or(Some(1), |v| v.as_u64())
+            .unwrap_or(u64::MAX);
         let profiles = match m.remove("profiles") {
             Some(Value::Object(p)) => p.into_iter().collect(),
             _ => return Err(bad()),
@@ -539,6 +548,7 @@ impl ShareContent {
         Ok(Self {
             profiles,
             policy,
+            version,
             extra: m,
         })
     }
@@ -580,14 +590,19 @@ impl ShareContent {
     }
 }
 
-/// What a repository's share holds, by the rule both clients follow: the owner's synced
-/// effective policy for it (its `repo:<id>` entry, else the synced default) and the synced
-/// profiles that policy names, as they are synced. No synced policy, or one naming a profile
-/// that is not synced or not usable: the share stays as it is. A policy naming only Platform:
-/// sharing stops.
+/// What a repository's share holds, by the rule both clients follow: only storage its owner set
+/// for that repository, never the owner's default or any other account-wide setting. The owner's
+/// synced `repo:<id>` entry and the synced profiles it names, carried as synced. No synced slot:
+/// the share stays as it is. No live `repo:<id>` entry: sharing stops. An entry that does not
+/// parse, or names a non-Platform profile that is not synced, not live, of an unknown kind or not
+/// valid: the share stays as it is, unless it predates this rule (version 1) and lends storage,
+/// when sharing stops. An entry naming only Platform: sharing stops.
 #[derive(Debug, Clone)]
 pub enum ShareRule {
-    /// Keep the share as it is (grants are still reconciled).
+    /// No synced storage slot: keep the share as it is (grants are still reconciled).
+    Unread,
+    /// The slot names no usable storage for the repository: keep a share written under this rule
+    /// ([`SHARE_VERSION`]); one from before it that lends storage stops (it may hold the default).
     Keep,
     /// These profiles and policy.
     Content(ShareContent),
@@ -598,12 +613,11 @@ pub enum ShareRule {
 impl ShareRule {
     /// The rule over the owner's synced storage slot `doc`.
     pub fn of(doc: Option<&SlotDoc>, repo_id: &str) -> Self {
-        let Some(doc) = doc else { return Self::Keep };
-        let raw = doc
-            .get(&storage::repo_key(repo_id))
-            .or_else(|| doc.get(storage::DEFAULT_KEY));
-        let Some((raw, policy)) = raw.and_then(|v| Some((v, storage::policy_from_synced(v)?)))
-        else {
+        let Some(doc) = doc else { return Self::Unread };
+        let Some(raw) = doc.get(&storage::repo_key(repo_id)) else {
+            return Self::Nothing;
+        };
+        let Some(policy) = storage::policy_from_synced(raw) else {
             return Self::Keep;
         };
         let mut profiles = BTreeMap::new();
@@ -635,6 +649,7 @@ impl ShareRule {
         Self::Content(ShareContent {
             profiles,
             policy,
+            version: SHARE_VERSION,
             extra: Map::new(),
         })
     }
@@ -642,7 +657,8 @@ impl ShareRule {
     /// As a [`Wanted`].
     pub fn wanted(&self) -> Wanted<'_> {
         match self {
-            Self::Keep => Wanted::Keep,
+            Self::Unread => Wanted::Keep,
+            Self::Keep => Wanted::KeepRepoOnly,
             Self::Content(c) => Wanted::Content(c),
             Self::Nothing => Wanted::Nothing,
         }
@@ -654,21 +670,49 @@ impl ShareRule {
 pub enum Wanted<'a> {
     /// What it holds now (the caller does not know the repository's policy).
     Keep,
+    /// What it holds now when written under the repo-only rule; a share from before it (version
+    /// 1) that lends storage stops.
+    KeepRepoOnly,
     /// These profiles and policy.
     Content(&'a ShareContent),
     /// Nothing: the policy names no storage to share, so sharing stops.
     Nothing,
 }
 
-/// The epoch a reconcile writes at: the share's; when a key loses access or sharing stops, one
-/// past the highest of the share's and every surviving grant's epoch. With no share (one an
-/// older client deleted), also past every grant's, so an epoch never goes back and no key that
-/// held an earlier one reads a later one.
+impl Wanted<'_> {
+    /// Over the share as it is now (`granted`: any grant to it exists): [`Self::KeepRepoOnly`]
+    /// becomes [`Self::Nothing`] for a version 1 share that lends storage, or for one that lends
+    /// nothing but still has grants (a stop that was interrupted), else [`Self::Keep`].
+    #[must_use]
+    pub fn over(self, current: Option<&ShareContent>, granted: bool) -> Self {
+        match self {
+            Self::KeepRepoOnly
+                if current.is_some_and(|c| {
+                    if c.lends() {
+                        c.version < SHARE_VERSION
+                    } else {
+                        granted
+                    }
+                }) =>
+            {
+                Self::Nothing
+            }
+            Self::KeepRepoOnly => Self::Keep,
+            w => w,
+        }
+    }
+}
+
+/// The epoch a reconcile writes at: the share's; when a key loses access, sharing stops, or a
+/// grant is ahead of the share (its holder has that later epoch's key), one past the highest of
+/// the share's and every surviving grant's epoch. With no share (one an older client deleted),
+/// also past every grant's, so an epoch never goes back and no key that held an earlier one reads
+/// a later one.
 fn share_epoch(existing: Option<&ShareDoc>, grants: &[GrantDoc], bump: bool) -> Result<u32> {
     let next = |e: u32| e.checked_add(1).ok_or(Error::Integrity);
     let highest_grant = grants.iter().map(|g| g.epoch).max();
     match (existing, highest_grant) {
-        (Some(s), g) if bump => next(s.epoch.max(g.unwrap_or(0))),
+        (Some(s), g) if bump || g.is_some_and(|g| g > s.epoch) => next(s.epoch.max(g.unwrap_or(0))),
         (Some(s), _) => Ok(s.epoch),
         (None, Some(g)) => next(g),
         (None, None) => Ok(0),
@@ -677,6 +721,7 @@ fn share_epoch(existing: Option<&ShareDoc>, grants: &[GrantDoc], bump: bool) -> 
 
 /// What an owner's reconcile did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent outcomes of one reconcile
 pub struct Reconciled {
     /// The epoch now.
     pub epoch: u32,
@@ -691,6 +736,79 @@ pub struct Reconciled {
     pub revoked: Vec<String>,
     /// Whether the repository shares storage now.
     pub shared: bool,
+    /// Whether this reconcile stopped a share that lent storage (or left grants): its maintainers
+    /// lost access now. Not set again for a share that was already empty.
+    pub stopped: bool,
+    /// Whether what stopped was a share from before repo-only sharing (version 1), kept with no
+    /// usable storage set for the repository: it may have held the default storage.
+    pub stopped_unscoped: bool,
+    /// From [`UserSync::reconcile_repo_by_rule`]: whether the owner set storage for this
+    /// repository (a live synced `repo:<id>` entry).
+    pub repo_policy_set: bool,
+    /// From [`UserSync::reconcile_repo_by_rule`]: whether the owner removed the storage set for
+    /// this repository (a tombstoned `repo:<id>` entry, `dg storage share --stop`).
+    pub repo_policy_removed: bool,
+}
+
+/// The line an owner sees once when the share of `repo` (`owner/name`) stops because it has no
+/// storage set for it (a share made from the default storage before repo-specific sharing).
+pub fn stopped_default_line(repo: &str) -> String {
+    format!(
+        "Stopped sharing your default storage with {repo}'s maintainers; to share storage, set it for this repo: dg storage share {repo} <profile>. {}",
+        rotate_pointer()
+    )
+}
+
+/// The pointer a stop line ends with.
+pub fn rotate_pointer() -> String {
+    format!("Rotate credentials they saw: {ROTATE_GUIDE}")
+}
+
+/// The line an owner sees once when a share from before repo-only sharing (version 1) stops
+/// because the storage set for `repo` can't be used.
+pub fn stopped_legacy_line(repo: &str) -> String {
+    format!(
+        "Stopped sharing your default storage with {repo}'s maintainers. This repo's own storage setting can't be used; set it again to share it. {}",
+        rotate_pointer()
+    )
+}
+
+/// The owner's one line for a reconcile that stopped sharing `repo` (`owner/name`): about the
+/// default storage when the repository never had storage of its own set or the share predates
+/// repo-only sharing, else plainly. `None` when nothing stopped.
+pub fn stopped_line(repo: &str, done: &Reconciled) -> Option<String> {
+    if !done.stopped {
+        return None;
+    }
+    if done.stopped_unscoped {
+        return Some(stopped_legacy_line(repo));
+    }
+    if done.repo_policy_set {
+        return None;
+    }
+    Some(if done.repo_policy_removed {
+        format!(
+            "Stopped sharing storage with {repo}'s maintainers. {}",
+            rotate_pointer()
+        )
+    } else {
+        stopped_default_line(repo)
+    })
+}
+
+/// The line an owner sees on adding `member` as a maintainer of `repo`, which has no storage set.
+pub fn no_repo_storage_line(member: &str, repo: &str) -> String {
+    format!(
+        "{member} pushes to their own storage; to share yours with this repo's maintainers: dg storage share {repo} <profile>"
+    )
+}
+
+/// The line a maintainer sees once per repository on this computer when `owner` shares no storage
+/// for `repo`.
+pub fn maintainer_no_share_line(owner: &str, repo: &str) -> String {
+    format!(
+        "{owner} hasn't shared storage for this repo with you yet; ask them to run `dg storage share {repo} <profile>`. Your own storage is used."
+    )
 }
 
 impl UserSync<'_> {
@@ -704,6 +822,23 @@ impl UserSync<'_> {
             &aad,
         )?)?;
         ShareContent::parse(&plain)
+    }
+
+    /// The owner's share as it opens now (`None` when there is none or it does not open), refused
+    /// when it is newer than this build writes.
+    fn current_share(
+        &self,
+        existing: Option<&ShareDoc>,
+        repo: &[u8; 32],
+    ) -> Result<Option<ShareContent>> {
+        let current = existing.and_then(|s| self.open_share(s, &self.rsk(repo, s.epoch)).ok());
+        if current.as_ref().is_some_and(|c| c.version > SHARE_VERSION) {
+            return Err(Error::InvalidInput(
+                "this repository's shared storage was written by a newer Forge; update dg to change it"
+                    .into(),
+            ));
+        }
+        Ok(current)
     }
 
     fn rsk(&self, repo: &[u8; 32], epoch: u32) -> crypto::Key32 {
@@ -789,10 +924,14 @@ impl UserSync<'_> {
         all: &[GrantDoc],
         keys: &BTreeMap<String, Vec<EncKeyInfo>>,
         rsk: &[u8; 32],
+        admit_new: bool,
         out: &mut Reconciled,
     ) -> Result<BTreeSet<String>> {
         let mut replaced = BTreeSet::new();
         for (member, live) in keys {
+            if !admit_new && !all.iter().any(|g| g.member_id == *member) {
+                continue;
+            }
             let Some(their) = live.last() else {
                 out.waiting.push(member.clone());
                 continue;
@@ -846,18 +985,16 @@ impl UserSync<'_> {
         let repo = crate::platform::decode_identifier(repo_id)?;
         let existing = self.store.share(me, repo_id).await?;
         let all = self.store.grants_of_repo(me, repo_id).await?;
+        let current = self.current_share(existing.as_ref(), &repo)?;
+        let unscoped = matches!(wanted, Wanted::KeepRepoOnly);
+        let wanted = wanted.over(current.as_ref(), !all.is_empty());
+        let unscoped = unscoped && matches!(wanted, Wanted::Nothing);
         let stop = matches!(wanted, Wanted::Nothing);
         let keys = if stop {
             BTreeMap::new()
         } else {
             self.live_keys(maintainers).await?
         };
-        // A grant moving to a member's newer key rotates too: the key it held keeps the old RSK.
-        let rekeyed = all.iter().any(|g| {
-            keys.get(&g.member_id)
-                .and_then(|ks| ks.last())
-                .is_some_and(|newest| newest.id != g.recipient_key_id)
-        });
         let revoked: Vec<&GrantDoc> = all
             .iter()
             .filter(|g| {
@@ -866,19 +1003,23 @@ impl UserSync<'_> {
                     .is_none_or(|ks| !ks.iter().any(|k| k.id == g.recipient_key_id))
             })
             .collect();
-        let current = existing
-            .as_ref()
-            .and_then(|s| self.open_share(s, &self.rsk(&repo, s.epoch)).ok());
-        if current
-            .as_ref()
-            .is_some_and(|c| c.version() > doc::DOC_VERSION)
-        {
-            return Err(Error::InvalidInput(
-                "this repository's shared storage was written by a newer Forge; update dg to change it"
-                    .into(),
-            ));
-        }
-        let stopping = stop && current.as_ref().is_none_or(|c| !c.profiles.is_empty());
+        let stopping = stop && current.as_ref().is_none_or(ShareContent::lends);
+        // A grant moving to a member's newer key rotates, while the share lends storage: the key it
+        // held keeps the old RSK. An empty share's grants are never rewritten, so bumping for them
+        // would write the share again on every reconcile.
+        let will_lend = match wanted {
+            Wanted::Content(c) => c.lends(),
+            Wanted::Keep | Wanted::KeepRepoOnly => {
+                current.as_ref().is_some_and(ShareContent::lends)
+            }
+            Wanted::Nothing => false,
+        };
+        let rekeyed = will_lend
+            && all.iter().any(|g| {
+                keys.get(&g.member_id)
+                    .and_then(|ks| ks.last())
+                    .is_some_and(|newest| newest.id != g.recipient_key_id)
+            });
         let mut out = Reconciled {
             epoch: share_epoch(
                 existing.as_ref(),
@@ -888,10 +1029,12 @@ impl UserSync<'_> {
             ..Reconciled::default()
         };
         let content = match (wanted, &current) {
-            (Wanted::Content(c), _) | (Wanted::Keep, Some(c)) => Some(c.clone()),
+            (Wanted::Content(c), _) | (Wanted::Keep | Wanted::KeepRepoOnly, Some(c)) => {
+                Some(c.clone())
+            }
             // Stopping, or revoking with nothing to re-encrypt, still writes an (empty) share at
             // the new epoch, before any grant goes: it is what keeps the epoch from going back.
-            (Wanted::Nothing, _) | (Wanted::Keep, None)
+            (Wanted::Nothing, _) | (Wanted::Keep | Wanted::KeepRepoOnly, None)
                 if (existing.is_some() || !all.is_empty()) && (stop || !revoked.is_empty()) =>
             {
                 Some(ShareContent::nothing())
@@ -908,17 +1051,25 @@ impl UserSync<'_> {
             let unchanged = existing.as_ref().is_some_and(|s| {
                 s.epoch == out.epoch
                     && s.key_id == self.key.key_id
-                    && current.as_ref().is_some_and(|c| c.same_as(&content))
+                    // Content written before this rule is written again as this version: lent
+                    // content, or an empty share when sharing stops (older builds can't refill it).
+                    && current.as_ref().is_some_and(|c| {
+                        c.same_as(&content)
+                            && (c.version == content.version || (!content.lends() && !stop))
+                    })
             });
             if !unchanged {
                 self.put_share(existing.as_ref(), repo_id, out.epoch, &rsk, &content)
                     .await?;
                 out.share_written = true;
             }
-            out.shared = !stop && !content.profiles.is_empty();
+            out.shared = !stop && content.lends();
         }
         let replaced = if out.shared {
-            self.grant_members(repo_id, &all, &keys, &rsk, &mut out)
+            // A share kept as it is (no usable repository setting) is never lent to anyone new:
+            // it may hold what an older build shared from the default storage.
+            let admit_new = matches!(wanted, Wanted::Content(_));
+            self.grant_members(repo_id, &all, &keys, &rsk, admit_new, &mut out)
                 .await?
         } else {
             BTreeSet::new()
@@ -930,6 +1081,11 @@ impl UserSync<'_> {
             self.store.delete_grant(g).await?;
             out.revoked.push(g.member_id.clone());
         }
+        // Only when maintainers lost something: lent storage, or a grant. A share already empty,
+        // written again (as under a new key id), stops nothing.
+        let lent = current.as_ref().is_some_and(ShareContent::lends);
+        out.stopped = stop && ((lent && out.share_written) || !out.revoked.is_empty());
+        out.stopped_unscoped = unscoped && out.stopped;
         Ok(out)
     }
 
@@ -942,8 +1098,15 @@ impl UserSync<'_> {
     ) -> Result<Reconciled> {
         let own = self.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
         let rule = ShareRule::of(own.as_ref(), repo_id);
-        self.reconcile_repo(repo_id, rule.wanted(), maintainers)
-            .await
+        let mut out = self
+            .reconcile_repo(repo_id, rule.wanted(), maintainers)
+            .await?;
+        let entry = own
+            .as_ref()
+            .and_then(|d| d.entries.get(&storage::repo_key(repo_id)));
+        out.repo_policy_set = entry.is_some_and(|e| e.v.is_some());
+        out.repo_policy_removed = entry.is_some_and(|e| e.v.is_none());
+        Ok(out)
     }
 
     /// As a maintainer of `repo_id`, owned by `owner_id`: the storage its owner shared with this

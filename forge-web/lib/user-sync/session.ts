@@ -23,6 +23,8 @@ interface State {
   readonly storage: StorageConfig | null
   /** The synced storage slot's live entries (what a repo's share is taken from), from the last sync. */
   readonly synced?: Readonly<Record<string, unknown>> | null
+  /** That slot's tombstoned keys, read only with `synced`. */
+  readonly syncedRemoved?: readonly string[] | null
 }
 
 let state: State = { identityId: null, status: { kind: 'off' }, storage: null }
@@ -65,6 +67,11 @@ export function syncedShareView(identityId: string): Readonly<Record<string, unk
   return state.identityId === identityId ? (state.synced ?? null) : null
 }
 
+/** The synced storage slot's tombstoned keys for `identityId` (with `syncedShareView`), or null. */
+export function syncedRemovedKeys(identityId: string): readonly string[] | null {
+  return state.identityId === identityId && state.synced ? (state.syncedRemoved ?? []) : null
+}
+
 /** Who sync is for now, and whether it can run (it holds the key); drops the last outcome on a change. */
 export function setSyncSubject(identityId: string | null, status: UserSyncStatus): void {
   if (identityId !== state.identityId) set({ identityId, status, storage: null, synced: null })
@@ -105,7 +112,7 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
           } else if (state.identityId === identityId) {
             if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
             // A Settings save during the run shows what it saved: the run's view predates it (the next run follows).
-            else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: localSaves !== saves ? state.storage : (outcome.storage ?? state.storage), synced: outcome.synced ?? state.synced ?? null })
+            else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: localSaves !== saves ? state.storage : (outcome.storage ?? state.storage), synced: outcome.synced ?? state.synced ?? null, syncedRemoved: outcome.synced ? (outcome.syncedRemoved ?? []) : (state.syncedRemoved ?? null) })
           }
         } catch (e) {
           if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
