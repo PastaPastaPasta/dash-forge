@@ -205,7 +205,9 @@ export function ConfirmDialog({
         <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 space-y-3 border-0 p-0 empty:hidden">
           {children}
         </fieldset>
-        {costPending || request ? null : cost ? (
+        {request ? (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400">Nothing is spent now. The organization pays when the last co-signer finishes it.</p>
+        ) : costPending ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>
