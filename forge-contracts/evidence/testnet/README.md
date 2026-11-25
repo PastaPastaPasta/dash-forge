@@ -106,3 +106,12 @@ included. Its fees fell within the scratch set's ranges, in credits: a repositor
 a reason not established here: the triage member's first card (the item's first) 79,191,280
 (70.5M-70.9M there; still under its preview with the contract-nonce surcharge, 88.5M), and the
 stranger's first refused card 10,257,440 (its refused board right after it paid 1,641,280).
+
+## forge-user: settings that follow the identity (2026-11-25)
+
+A fifth contract, **forge-user** (`46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU`, 2,240 B), was registered
+from `forge-contracts/contracts/user/forge-user.json` by the same deployer at identity nonce 5 and
+recorded with the same contract group (`contractGroupId`). It holds the `state`, `share` and `grant` types of
+[identity-synced state](../../../docs/design/identity-synced-state.md); the four contracts above are
+unchanged. It is recorded in `forge-contracts/deployments/testnet.json` (`user`), and
+`user-sync-2026-11-25.md` is the live proof on testnet. It is not registered on mainnet.

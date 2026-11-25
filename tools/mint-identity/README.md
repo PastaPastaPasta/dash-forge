@@ -14,9 +14,9 @@ Platform → write a bridge-format identity JSON
 
 It is a Node ≥ 20 ESM tool. The crypto/transaction/proof logic is ported from the
 `mainnet-bridge` browser app (`src/crypto`, `src/transaction`, `src/proof`,
-`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@4.2.0-beta.7`,
-which runs natively under Node. The 4.2 SDK talks protocol 14 to devnet moutai
-and still negotiates protocol 13 with testnet, so one install serves both.
+`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@5.0.0-rc.8` (`package.json`),
+which runs natively under Node and talks protocol 14 to testnet and devnets alike.
+It does not mint on mainnet: there, create an identity in a Dash wallet or the bridge.
 
 ## Install
 
@@ -30,10 +30,11 @@ npm test        # offline unit tests (no network)
 
 | Flag | Network | Default funding | Lock proof |
 |---|---|---|---|
-| `--network testnet` (default) | public testnet, protocol 13 | `faucet` | InstantSend (islock via `getislocks` JSON-RPC) |
-| `--network devnet --devnet-name sakura` | devnet sakura (`dash-devnet-sakura`), protocol 14 | `fund-from-key` | chain lock (`ChainAssetLockProof`) |
-| `--network devnet --devnet-name moutai` | devnet moutai (`dash-devnet-moutai`), protocol 14 | `fund-from-key` | chain lock (`ChainAssetLockProof`) |
+| `--network testnet` (default) | public testnet, protocol 14 | `faucet` | InstantSend (islock via `getislocks` JSON-RPC) |
+| `--network devnet --devnet-name sakura` | devnet sakura (`dash-devnet-sakura`), protocol 14; **retired** (down since 2026-10-24) | `fund-from-key` | chain lock (`ChainAssetLockProof`) |
+| `--network devnet --devnet-name moutai` | devnet moutai (`dash-devnet-moutai`), protocol 14; **retired** | `fund-from-key` | chain lock (`ChainAssetLockProof`) |
 
+Both devnets are kept in the registry for their records only; a new devnet needs its own entry.
 Devnets are listed in the `DEVNETS` registry in `src/config.mjs` (Insight URL,
 DAPI addresses, quorum base URL, chain id). A devnet uses testnet's Core
 prefixes (address 140, WIF 239, coin type 1), so deposit addresses start with `y`.

@@ -4,7 +4,7 @@
 
 Registration is the one step in a Forge launch that cannot be undone. Contracts cannot be deleted or re-owned, and an update may only add types and optional properties or loosen a few bounds ([after registration](#7-after-registration-what-can-still-change)). Rehearse it on a scratch set first, and read this page to the end before you broadcast anything.
 
-**Status.** Forge is registered on testnet (2026-10-26) and mainnet (2026-11-24). A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; on any other network every client reports "not deployed" ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
+**Status.** Forge is registered on testnet (2026-10-26) and mainnet (2026-11-24). A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; on any other network every client reports "not deployed" ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where, and [forge-v2.md](contracts/forge-v2.md#where-they-are-registered) lists the ids. Testnet also has a fifth contract, forge-user (2026-11-25, settings that follow a person's identity), in the same group; it is not registered on mainnet, and this page does not cover it.
 
 1. [What is registered](#1-what-is-registered)
 2. [Before you register](#2-before-you-register)
@@ -67,7 +67,7 @@ The deployer owns the contracts and the group, and only the owner can update the
 
 - **A fresh, dedicated, owner-held deployer.** Create it from a new mnemonic on a machine the owner controls (`tools/mint-identity/mint.mjs`, [README](../tools/mint-identity/README.md)); never reuse a QA, CI or personal identity. The owner's **master key stays offline**.
 - **Escrow the mnemonic and the asset-lock transaction id** offline, in two places. Both are needed by `mint.mjs restore`, which re-creates the same identity from its original asset lock after a Platform reset ([forge-v2.md, Same-id restore](contracts/forge-v2.md#same-id-restore-after-a-platform-reset)). Record the identity id, the asset-lock `txid` and the creation height; pass the height as `--deployer-created-height`.
-- **The deployer signs nothing but Forge registrations and updates.** Its identity-nonce sequence is part of the restore procedure. The script writes every transition it signs into `v2.nonceLedger` before it broadcasts. If something else signed with the deployer's identity (a key rotation, say), the next create stops until you name it with `--acknowledge-nonce <n> --note "<what it was>"`.
+- **The deployer signs nothing but Forge registrations and updates.** Its identity-nonce sequence is part of the restore procedure. The script writes every transition it signs into `v2.nonceLedger` before it broadcasts. If something else signed with the deployer's identity (a key rotation, say), the next create stops until you name it with `--acknowledge-nonce <n> --note "<what it was>"`. Mainnet currently breaks this, pending the owner's decision: the deployer also owns the Forge copy of this repository and holds its sync key ([forge-sync](../tools/forge-sync/README.md)), so its key changes need acknowledging.
 - **The CRITICAL key is present for the registration session only.** The script signs with the identity's CRITICAL authentication key and refuses a key that is missing, different from the file, or disabled on chain. Delete the file from the signing machine afterwards.
 - **Testnet versus mainnet.** Testnet DASH is free from a faucet (see [Costs](guides/costs.md)). **Mainnet DASH is real money and there is no faucet:** fund the mainnet deployer through the bridge, and note that `tools/mint-identity` supports testnet and devnets only.
 
@@ -83,7 +83,7 @@ Fees are credits (1 DASH = 10^11 credits) and are the same on every network of t
 | forge-meta | 10,948 B | 0.4650 |
 | **The four** | | **1.9746** |
 
-Measured on testnet with a scratch registration of the committed four-contract set (Platform 5.0, protocol 14). Mainnet uses the same fee schedule. Fund the deployer with 3 DASH to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
+Measured on testnet with a scratch registration of the committed four-contract set (Platform 5.0, protocol 14). Mainnet uses the same fee schedule: the real mainnet registration on 2026-11-24 cost 1.9745 DASH (`forge-contracts/deployments/mainnet.json`). Fund the deployer with 3 DASH to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
 
 On mainnet the same set costs the same number of DASH, in real money. A dry run costs nothing.
 
@@ -142,7 +142,7 @@ Flags used on this page, all in `forge-contracts/scripts/deploy-v2.mjs`: `--set`
 5. **Check with `dg doctor --network <network>`.** Its `forge-v2` rows print the core, collab and community ids and the group, and verify enrolment in the group. forge-meta is checked too, but is named only when its check fails; a dedicated meta row is not there yet (CLIE-19, when available).
 6. **Seed the labelled fixture and the showcase** with the QA identity, never a user's: `forge-contracts/deployments/fixtures/<network>.json` for the read tests, and `SHOWCASE` in `forge-web/lib/view/showcase.ts` for the landing page.
 
-**Key exchange.** Mobile-wallet sign-in reads a key-exchange contract. Testnet uses yappr's, which the shipped wallets pin (recorded in `testnet.json` as `keyExchange`, "not deployed by Forge"). Mainnet's record names none; sign-in there needs one, and registering Forge's own copy is an owner decision (`deploy-key-exchange.mjs` refuses testnet and mainnet).
+**Wallet sign-in needs nothing registered.** It is App Connect v2 (`dashpay://connect`), which uses Platform's App Connect system contract (`H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ`, the same id on every protocol 14 network; `crates/forge-core/src/app_connect/mod.rs`). The `keyExchange` entry in `testnet.json` names yappr's key-exchange contract, which only the removed older sign-in (DashConnect) read.
 
 ### What the registration PR commits
 
@@ -205,7 +205,7 @@ Contracts cannot be rolled back, so the real window is **before the announcement
 - [ ] Schema merged to `master`; `build.py --check` and `contract-validate` green
 - [ ] Scratch rehearsal of the same JSON passed the live suites, with a different deployer
 - [ ] The owner signed the `--print-sha256` lines
-- [ ] Deployer created fresh, funded (about 2.5 DASH), mnemonic and asset-lock txid escrowed offline in two places; master key offline
+- [ ] Deployer created fresh, funded (3 DASH, [§4](#4-what-it-costs)), mnemonic and asset-lock txid escrowed offline in two places; master key offline
 - [ ] `refresh-dapi.mjs --check` clean
 - [ ] `deploy-v2.mjs --dry-run` clean
 - [ ] Registered; C1 matches; group owner and the four memberships verified

@@ -2,7 +2,7 @@
 
 Follows `../INIT.md` (design path & PRDs); deviations forced by verified platform constraints are listed in [init-reconciliation.md](init-reconciliation.md).
 
-The on-chain model is **forge-v2**: three shared contracts, forge-core, forge-collab and forge-community, in one Platform protocol 14 contract group. The full specification is [contracts/forge-v2.md](contracts/forge-v2.md). (forge-v1, a global registry contract plus one contract per repository with token access control, was removed on 2026-09-26 with no backwards compatibility.)
+The on-chain model is **forge-v2**: shared contracts in one Platform protocol 14 contract group. Testnet and mainnet run four, forge-core, forge-collab, forge-community and forge-meta; devnets may run the first three alone. Testnet also has forge-user, which keeps a person's own settings (§4.1). The full specification is [contracts/forge-v2.md](contracts/forge-v2.md). (forge-v1, a global registry contract plus one contract per repository with token access control, was removed on 2026-09-26 with no backwards compatibility.)
 
 ## 1. Goals and non-goals
 
@@ -13,21 +13,23 @@ The on-chain model is **forge-v2**: three shared contracts, forge-core, forge-co
 - Cost as first-class UX: estimates before every write batch, DASH primary / fiat secondary (USD unless the user picks another currency); a repository costs ~0.001 DASH to create, and bulky pack bytes can live in storage the user brings.
 - Migration path: one-command GitHub import.
 
-**Non-goals (first release)**: private repos (Phase 3 design: [security/private-repos.md](security/private-repos.md)), on-chain fast-forward/merge validation (reflog auditability instead — explicit INIT.md limit), Actions-equivalent (CI is external by design, bridged via relay), global cross-repo search, notifications inbox (poll badge only), wikis (`docs/` convention).
+**Non-goals (first release)**: on-chain fast-forward/merge validation (reflog auditability instead — explicit INIT.md limit), Actions-equivalent (CI is external by design, bridged via relay), global cross-repo search, wikis (`docs/` convention). Private repositories ([security/private-repos.md](security/private-repos.md)) and a notifications inbox were non-goals too, and have shipped since.
 
 ## 2. Components
 
 ```
                  ┌───────────────────────────────────────────────────────┐
-                 │          Dash Platform (contract group dash-forge)    │
-                 │  forge-core contract     │ forge-collab contract      │
-                 │  repo, maintainer,       │ issue, patch, comment,     │
-                 │  writer, config,         │ review, event, authorEvent,│
-                 │  refUpdate,              │ checkRun, webhook,         │
-                 │  protectedRefUpdate,     │ profile, star, follow      │
-                 │  packManifest,           │                            │
-                 │  manifestPart, chunk,    │ all keyed by repoId;       │
-                 │  release, label, repoKey │ writes gated by membership │
+                 │   Dash Platform (contract group dash-forge)           │
+                 │  forge-core: repo, members, config, refUpdate,        │
+                 │    pushGrant, protectedRefUpdate, packManifest,       │
+                 │    chunk, release                                     │
+                 │  forge-collab: issue, patch, comment, review,         │
+                 │    transition                                         │
+                 │  forge-community: event, authorEvent, checkRun,       │
+                 │    webhook, star, watch, milestone, policy, runner    │
+                 │  forge-meta: label, topic, packMirror, repoKey, ban,  │
+                 │    profile, follow, board, card, vaultEntry           │
+                 │  repo data keyed by repoId; writes gated by members   │
                  └────────▲───────────────▲───────────────▲──────────────┘
                           │ DAPI (proofs) │               │ block/ST stream
       ┌───────────────────┴───┐   ┌───────┴────────┐  ┌───┴───────────────┐
@@ -38,7 +40,7 @@ The on-chain model is **forge-v2**: three shared contracts, forge-core, forge-co
       └───▲────────▲──────▲───┘   └────────────────┘  └───────────────────┘
           │        │      │                                    ▲
    ┌──────┴───┐ ┌──┴───┐ ┌┴────────────┐                       │
-   │git-remote│ │ dg │ │forge-import │            external backends
+   │git-remote│ │  dg  │ │forge-import │            external backends
    │  -dash   │ │ (gh  │ │(GitHub      │        IPFS │ S3 │ HTTPS (fee
    │ (helper) │ │ repl)│ │ migrator)   │        reduction / archival;
    └──────────┘ └──────┘ └─────────────┘        hash-verified caches)
@@ -49,16 +51,18 @@ The on-chain model is **forge-v2**: three shared contracts, forge-core, forge-co
 
 ## 3. Naming & resolution
 
-`dash://<owner>/<name>` → owner identity (base58 id; DPNS names are a later addition) → forge-core `repo` by unique `($ownerId, name)` → `repoId` → newest `config` for that `repoId` (defaultBranch, backend descriptor, protected patterns). `dash://<repoId>` names a `repo` document directly. Contract ids come only from `forge-contracts/deployments/<network>.json` (`v2` section); a network without a forge-v2 deployment fails with "not deployed" and never falls back to another network. Web routes use query params (static export).
+`dash://<owner>/<name>` → owner identity (base58 id, or a DPNS name resolved with a proof) → forge-core `repo` by unique `($ownerId, name)` → `repoId` → newest `config` for that `repoId` (defaultBranch, backend descriptor, protected patterns). `dash://<repoId>` names a `repo` document directly. Contract ids come only from `forge-contracts/deployments/<network>.json` (`v2` section); a network without a forge-v2 deployment fails with "not deployed" and never falls back to another network. Web routes use query params (static export).
 
 ## 4. On-chain model (summary — full schemas and rules in [contracts/forge-v2.md](contracts/forge-v2.md))
 
 ### 4.1 Contract topology
-Three shared contracts, registered once per network by one deployer identity and joined by a protocol 14 **contract group** (`dash-forge`). Every repository is a set of documents in them, keyed by the `repo` document's id (`repoId`). Creating a repository writes three documents: `repo`, the owner's `maintainer` membership, and the first `config`. The full type tables are in [forge-v2.md §2](contracts/forge-v2.md#2-types-and-who-can-write-them).
+Shared contracts, registered once per network by one deployer identity and joined by a protocol 14 **contract group** (`dash-forge`). The ids per network are in `forge-contracts/deployments/<network>.json` ([forge-v2.md, where they are registered](contracts/forge-v2.md#where-they-are-registered)). Every repository is a set of documents in them, keyed by the `repo` document's id (`repoId`). Creating a repository writes three documents: `repo`, the owner's `maintainer` membership, and the first `config`. The full type tables are in [forge-v2.md §2](contracts/forge-v2.md#2-types-and-who-can-write-them).
 
-- **forge-core**: `repo` (the listing; `name` immutable, unique per owner), membership (`maintainer`, `writer`, and an invitee's `consent`), **settings** (`config`: append-only, non-deletable, maintainer-gated; append-only history makes protection evaluable *as-of any past update*), **git data** (`refUpdate`, `protectedRefUpdate`, `packManifest`, `chunk`: all non-deletable), `release`, `label` and `topic`.
-- **forge-collab**: `issue`, `patch` (PR), `transition` (open, closed, merged, draft and lock state, as a consensus sum), `comment`, `review`, and `repoKey` (private repositories' key wraps).
+- **forge-core**: `repo` (the listing; `name` immutable, unique per owner), membership (`maintainer`, `writer`, and an invitee's `consent`), **settings** (`config`: append-only, non-deletable, maintainer-gated; append-only history makes protection evaluable *as-of any past update*), **git data** (`refUpdate`, `protectedRefUpdate`, `packManifest`, `chunk`: all non-deletable), `release`, `label`, `topic` and `packMirror` (anyone's extra copy of a public repo's pack).
+- **forge-collab**: `issue`, `patch` (PR), `transition` (open, closed, merged, draft and lock state, as a consensus sum), `comment`, `review`, `repoKey` (private repositories' key wraps) and `ban` (a maintainer's ban of an identity from a repo).
 - **forge-community**: `event` (member actions: label, assign, ...), `authorEvent` (actions the target's author may take), `milestone`, `runner` and `checkRun` (CI results written by runner identities), `policy` (branch policy), `webhook` (relay subscription, secret encrypted to the relay identity), and the social graph (`profile`, `star`, `watch`, `follow`).
+- **forge-meta** (testnet and mainnet): takes `label`, `topic` and `packMirror` from forge-core, `repoKey` and `ban` from forge-collab, and `profile` and `follow` from forge-community, and adds the passkey vault (`vaultEntry`) and boards (`board`, `card`). forge-core gains `pushGrant` (a bot's push grant) on the same set. On a devnet with three contracts those types stay where the list above puts them. Clients read the layout from the deployment record.
+- **forge-user** (testnet only, in the same group): `state`, `share` and `grant`, the settings that follow a person's identity between devices. Until it is registered on mainnet, those settings stay on the device there.
 
 ### 4.2 Membership gates (the authorization system)
 - Access is **membership documents** in forge-core: `maintainer` and `writer`, unique per `(repoId, memberId)`, created only by the repo owner (`dg collab add <owner/name> <member> --role writer|maintainer`, `dg collab remove`, `dg collab list`). The membership list is on-chain and publicly queryable.
@@ -82,7 +86,7 @@ Three shared contracts, registered once per network by one deployer identity and
 - Pack = unit of storage. **Stored packs are always self-contained and locator-quality**: every delta base is inside the pack, ahead of the deltas that use it, and the producer refuses anything else. Storing the `index-pack --fix-thin` pack directly does not qualify — completion appends the bases after the deltas — so a push builds two candidates (the delta packed non-thin; the completed pack re-emitted bases-first) and stores the smaller; neither dominates (`economics.md`). O(bytes/14 KiB) STs, not O(objects). So a delta chain never spans pushes. Readers follow at most 4,095 deltas in one chain (git's `pack.depth` ceiling): if a writer skipped this and stored raw thin packs, each delta'ing against the last push, a file changed in more than about 4,095 such pushes leaves the repository unreadable in the browser until `dg repack` rebuilds its history.
 - Partial clone & single-object reads: the merged `objectLocator` (§6.3) → ranged `chunk` fetch by seq (or HTTP Range on external backends); packs pushed since the last repack are covered by their own index fragments. The one-contiguous-span read is sound for **blobs** (OFS_DELTA bases sit earlier in the same pack after repack); **trees need the per-base delta-chain fallback** (a single span over-fetches them catastrophically — §6.3). **Shallow clone (`--depth`) is out of scope** — a fetch/push helper gives git no reply channel to serve depth negotiation (S0.9); partial clone (`--filter=blob:none` + `.promisor` markers) is the supported subsetting path, and `--depth` fails loudly.
 - **Repack** (`dg repack`): rewrite history into one optimized pack and upload it as a superseding pack. On the Platform tier this only consolidates (fewer packs to read); it deletes nothing, because the old chunks and manifests are non-deletable. Garbage collection applies only to external storage the user controls.
-- Availability for external backends: multiple URIs per manifest + reseed (`dg reseed --from-local` re-uploads a lost copy to its recorded address from any clone that has the pack, given write access to that storage); loss is availability-only, never integrity. Recording a copy at a new address needs repo membership; a `packMirror` type that lets anyone record one is planned as a new document type in a later contract update.
+- Availability for external backends: multiple URIs per manifest + reseed (`dg reseed --from-local` re-uploads a lost copy to its recorded address from any clone that has the pack, given write access to that storage); loss is availability-only, never integrity. Anyone can also record a copy of a public repository's pack at their own address with a `packMirror` document (`dg repo pin`, the web's **Pin**); readers try those copies too.
 
 ## 6. Data flow
 
@@ -117,7 +121,7 @@ Client-side rules are versioned (`FORGE_RULES_V2`: `forge-core::rules::v2`, `for
 - 27,000 credits/byte storage deposit (refundable on delete, 50-era amortization; the non-deletable types never refund); 1 DASH = 10¹¹ credits.
 - On-Platform data ≈ **0.33 DASH/MiB**, with optional fiat equivalents at live mainnet rates ([costs.md](guides/costs.md); DASH stays primary; fee-multiplier governance lever flagged).
 - Social artifacts are noise (2 KiB issue ≈ 2¢). Ref update ≈ 0.0006–0.0009 DASH (its index entries, not its bytes, dominate). Creating a repository ≈ **0.0016 DASH** on bonsia (three documents; the v1 per-repo contract was ~1.18 DASH).
-- forge-v2 registration: forge-core 0.60 + forge-collab 0.55 DASH in fees (1.161234 DASH measured on devnet moutai), paid once per network by the deployer ([forge-v2.md §7](contracts/forge-v2.md#7-measured-size-and-cost)).
+- forge-v2 registration: the four contracts cost 1.9745 DASH on mainnet (2026-11-24, `forge-contracts/deployments/mainnet.json`), paid once per network by the deployer ([forge-v2.md §7](contracts/forge-v2.md#7-measured-size-and-cost)).
 - Cost engine (forge-core) quotes every write batch pre-broadcast and tracks running spend (`dg cost`, web settings).
 
 ## 9. Security & trust
