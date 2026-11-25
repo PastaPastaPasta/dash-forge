@@ -45,33 +45,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # A re-run of an old push run may have taken the queue slot of a newer merge's waiting run.
-  # Before anything builds, a re-run whose commit is no longer master's head (the API, not the
-  # cached site) starts this workflow on master, so the newest commit deploys, and stops. The
-  # deploy job checks again, for a re-run of failed jobs that skips this one.
+  # Only master's head deploys. GitHub does not promise to start queued runs in merge order, and
+  # a re-run can take the slot of a newer merge's waiting run, so a push run whose commit is no
+  # longer master's head (read from the API, never the cached site) starts this workflow on
+  # master instead and builds nothing; that run deploys the newest commit. The lookup fails
+  # closed. A workflow_dispatch is the operator's choice of ref, so it may roll back.
   current:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       actions: write
+    outputs:
+      superseded: ${{ steps.head.outputs.superseded }}
     steps:
-      - name: Hand an old commit's re-run to master
-        if: github.event_name != 'workflow_dispatch' && github.run_attempt != '1'
+      - id: head
+        name: Hand a superseded commit to master
+        if: github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
         run: |
-          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
-          if [ "$head" != "$SHA" ]; then
+          head=""
+          for _ in 1 2 3; do
+            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)" && break
+            sleep 10
+          done
+          [ -n "$head" ] || { echo "::error::could not read master's head"; exit 1; }
+          if [ "$head" = "$SHA" ]; then
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          else
             gh workflow run pages-testnet.yml --repo "$GITHUB_REPOSITORY" --ref master
-            echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}; started pages-testnet.yml on master instead"
-            exit 1
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Superseded::master is at ${head}, past ${SHA}; started pages-testnet.yml on master to deploy it"
           fi
 
   build:
     needs: current
-    if: vars.TESTNET_SITE_ENABLED == 'true'
+    if: needs.current.outputs.superseded != 'true' && vars.TESTNET_SITE_ENABLED == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -162,33 +173,18 @@ jobs:
           path: site
       - name: Check the downloaded export
         run: test -s site/.well-known/security.txt && test -s site/forge-manifest.json
-      # A re-run of an old push run must not deploy its commit: it may have taken the queue slot
-      # of a newer merge's waiting run. It checks master's head (the API, not the cached site),
-      # fails closed, and starts a run on master so the newest commit still deploys. A first run
-      # is in merge order; its check of the live manifest fails open. A workflow_dispatch is the
-      # operator's choice of ref, so it may roll back.
-      - name: Refuse to deploy over a newer commit
-        if: github.event_name != 'workflow_dispatch'
+      # "Re-run failed jobs" skips the `current` job that already passed, so check again.
+      - name: Refuse a re-run of a superseded commit
+        if: github.event_name != 'workflow_dispatch' && github.run_attempt != '1'
         env:
           GH_TOKEN: ${{ github.token }}
-          SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
           SHA: ${{ github.sha }}
         run: |
-          if [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
-            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
-            if [ "$head" != "$SHA" ]; then
-              gh workflow run pages-testnet.yml --repo "$GITHUB_REPOSITORY" --ref master
-              echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}; started pages-testnet.yml on master instead"
-              exit 1
-            fi
-          fi
-          live="$(curl -fsSL --max-time 20 --retry 3 --retry-all-errors -A 'Mozilla/5.0' "${SITE_URL%/}/forge-manifest.json" | jq -r '.commit // empty')" || live=""
-          if [ -n "$live" ] && [ "$live" != "$SHA" ]; then
-            status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${SHA}...${live}?per_page=1" -q .status)" || status=""
-            if [ "$status" = ahead ]; then
-              echo "::error title=Older commit::${SITE_URL} serves ${live}, which is newer than ${SHA}"
-              exit 1
-            fi
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+          if [ "$head" != "$SHA" ]; then
+            gh workflow run pages-testnet.yml --repo "$GITHUB_REPOSITORY" --ref master
+            echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}; started pages-testnet.yml on master instead"
+            exit 1
           fi
       - name: Push to the site repository
         env:
