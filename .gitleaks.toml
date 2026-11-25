@@ -30,6 +30,10 @@ paths = [
     '''forge-contracts/vectors/.*\.json''',
     # The generator for those vectors.
     '''forge-contracts/schema/vectors\.py''',
+    # forge-user sync crypto vectors (docs/design/identity-synced-state.md §4): keys derived from
+    # fixed labels by their generator, replayed by both clients, guarding nothing.
+    '''forge-contracts/fixtures/user-sync/vectors\.json''',
+    '''tools/user-sync-vectors/gen\.py''',
     # Interop vectors vendored from platform-auth (App Connect, passkey vault): keys derived from
     # fixed seeds and published upstream so every app reproduces the same bytes.
     '''forge-web/lib/vendor/platform-auth/[^/]+/(vectors\.json|__vectors__/[^/]+\.json)''',
