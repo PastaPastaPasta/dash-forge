@@ -945,7 +945,7 @@ fn keep_sync_key(
         Ok(_) => Some(key),
         Err(e) => {
             if !ctx.json {
-                eprintln!("note: settings sync is off on this computer: its key could not be stored ({e:#})");
+                eprintln!("note: the settings-sync key could not be stored ({e:#}); a sync key this computer already keeps stays in use");
             }
             None
         }
