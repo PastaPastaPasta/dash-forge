@@ -45,12 +45,16 @@ export function RotateCredentialsNote(): JSX.Element {
 }
 
 /** Said once per repo when the owner's reconcile stopped a share of the default storage. */
-export function StoppedShareLine({ line }: { readonly line: 'default' | 'removed' }): JSX.Element {
+const STOPPED_LINE = {
+  default: "Stopped sharing your default storage with this repo's maintainers. Set storage for this repo to share it.",
+  removed: "Stopped sharing storage with this repo's maintainers.",
+  legacy: "Stopped sharing your default storage with this repo's maintainers. This repo's own storage setting can't be used; set it again to share it.",
+} as const
+
+export function StoppedShareLine({ line }: { readonly line: keyof typeof STOPPED_LINE }): JSX.Element {
   return (
     <div className="mb-3 text-dense text-anvil-700 dark:text-anvil-200">
-      <p data-testid={line === 'default' ? 'stopped-default-share' : 'stopped-share'}>
-        {line === 'default' ? "Stopped sharing your default storage with this repo's maintainers. Set storage for this repo to share it." : "Stopped sharing storage with this repo's maintainers."}
-      </p>
+      <p data-testid={line === 'removed' ? 'stopped-share' : 'stopped-default-share'}>{STOPPED_LINE[line]}</p>
       <details className="mt-1" data-testid="stopped-share-rotate">
         <summary className="cursor-pointer">The keys they saw</summary>
         <p className="mt-1">
@@ -124,13 +128,15 @@ export function storageCardView(p: {
   readonly maintainers: number
   /** Whether the share lends storage as it stands (a kept one too); null before it was reconciled: the policy says. */
   readonly lends?: boolean | null
+  /** Maintainers holding a grant or waiting for a key (with `lends`): a kept share is lent to no one new. */
+  readonly holders?: number
 }): {
   readonly hint: string
   readonly shareAction?: string
   readonly details: boolean
 } {
   if (!p.syncOn) return { hint: LOCAL_PUSHES_HINT, details: false }
-  const lends = p.lends ?? (p.hasRepoStorage && p.repoStorageShareable)
+  const lends = p.lends === undefined || p.lends === null ? p.hasRepoStorage && p.repoStorageShareable : p.lends && (p.holders ?? 1) > 0
   if (p.owner && lends && p.maintainers > 0) return { hint: "Shared with this repo's maintainers.", details: true }
   if (p.owner && !p.hasRepoStorage && p.maintainers > 0) return { hint: 'Only you see this.', shareAction: SHARE_ACTION, details: false }
   return { hint: 'Only you see this.', details: false }

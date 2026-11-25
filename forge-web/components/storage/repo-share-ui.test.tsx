@@ -52,7 +52,9 @@ describe('the "Your browser pushes" card by case', () => {
 
   it('follows the share as it stands once reconciled: a kept share still shared, a stopped one not', () => {
     const shared = { hint: "Shared with this repo's maintainers.", details: true }
-    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: false, maintainers: 2, lends: true })).toEqual(shared)
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: false, maintainers: 2, lends: true, holders: 1 })).toEqual(shared)
+    // Kept, but lent to no one (a kept share is never lent anew).
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: false, maintainers: 2, lends: true, holders: 0 })).toEqual({ hint: 'Only you see this.', details: false })
     expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 2, lends: false })).toEqual({ hint: 'Only you see this.', details: false })
     expect(storageCardView({ syncOn: false, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 2, lends: true })).toEqual({ hint: LOCAL_PUSHES_HINT, details: false })
   })
@@ -87,7 +89,7 @@ describe('the per-repo editor', () => {
 
 describe('the stop line', () => {
   it('points, collapsed, to rotating the keys maintainers saw', async () => {
-    for (const line of ['default', 'removed'] as const) {
+    for (const line of ['default', 'removed', 'legacy'] as const) {
       await act(async () => root.render(<StoppedShareLine line={line} />))
       const more = host.querySelector('[data-testid="stopped-share-rotate"]') as HTMLDetailsElement
       expect(more.open).toBe(false)
@@ -135,6 +137,15 @@ describe('the stopped-sharing notice', () => {
     noteStopped('testnet', 'moot', 'removed')
     expect(takeStoppedNotice('testnet', 'moot')).toBe('removed')
     expect(takeStoppedNotice('testnet', 'moot')).toBeNull()
+  })
+
+  it('says a version 1 share stopped once, even though the repo has storage set (its setting is unusable)', () => {
+    noteStopped('testnet', 'legacy', 'legacy')
+    expect(localStorage.getItem(stoppedDefaultKey('testnet', 'legacy'))).toBe('pending:legacy')
+    expect(takeStoppedNotice('testnet', 'legacy', true)).toBe('legacy')
+    expect(takeStoppedNotice('testnet', 'legacy', true)).toBeNull()
+    localStorage.setItem(stoppedDefaultKey('testnet', 'reload-legacy'), 'pending:legacy')
+    expect(takeStoppedNotice('testnet', 'reload-legacy', true)).toBe('legacy')
   })
 
   it('says an explicit stop plainly, each time, and records nothing', () => {

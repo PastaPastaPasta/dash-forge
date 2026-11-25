@@ -392,18 +392,32 @@ describe('maintainers use the owner’s storage', () => {
     })
 
     for (const version of [1, undefined]) {
-      it(`a kept share still lending in version ${version ?? '(none)'} stops: the next epoch, grants revoked, the default line`, async () => {
+      it(`a kept share still lending in version ${version ?? '(none)'} stops: the next epoch, grants revoked, its line`, async () => {
         const { platform, owner, member } = identities()
         await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
         await rewriteAs(platform, owner, version)
         const done = await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
-        expect(done).toMatchObject({ granted: [], epoch: 1, stopped: 'default' })
+        expect(done).toMatchObject({ granted: [], epoch: 1, stopped: 'legacy' })
         expect(platform.grants.size).toBe(0)
         expect(await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
         const again = await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
         expect(again.stopped).toBeUndefined()
       })
     }
+
+    it('with no slot read a version 1 share is kept in version 1 (a removal too), and stops once the slot is read', async () => {
+      const { platform, owner } = identities()
+      await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE, BOB] })
+      await rewriteAs(platform, owner, 1)
+      await reconcileRepoShare(owner, { repoId: REPO, view: null, maintainers: [ALICE, BOB] })
+      expect(await openVersion(platform, owner)).toBe(1)
+      const gone = await reconcileRepoShare(owner, { repoId: REPO, view: null, maintainers: [ALICE], removed: [BOB] })
+      expect(gone.epoch).toBe(1)
+      expect(await openVersion(platform, owner)).toBe(1)
+      const done = await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
+      expect(done).toMatchObject({ granted: [], epoch: 2, stopped: 'legacy', lends: false })
+      expect(platform.grants.size).toBe(0)
+    })
 
     it('a kept share in version 2 stays as it is, its grants too', async () => {
       const { platform, owner } = identities()

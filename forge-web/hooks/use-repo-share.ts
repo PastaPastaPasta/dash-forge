@@ -19,7 +19,7 @@ import { namedAction, spendAction } from '@/lib/spend-toast'
 import type { StorageConfig } from '@/lib/storage'
 import { readGrantedStorage, reconcileRepoShare, withGrantedStorage, type GrantedStorage, type Reconciled, type StopLine } from '@/lib/user-sync/maintainers'
 import { forgeUserPort } from '@/lib/user-sync/platform'
-import { syncedRemovedKeys, syncedShareView } from '@/lib/user-sync/session'
+import { syncedRemovedKeys, syncedShareView, userSyncStatus } from '@/lib/user-sync/session'
 import { quietSigner, useUserSyncStatus } from '@/hooks/use-user-sync'
 
 export interface RepoShareState {
@@ -49,6 +49,8 @@ export function stoppedDefaultKey(networkKey: string, repoId: string): string {
 
 /** The key's value from a stop until the line is shown (then the time it was). */
 const STOP_PENDING = 'pending'
+/** The same, for the line about a version 1 share kept from before (never dropped for repo storage: it is set). */
+const LEGACY_PENDING = 'pending:legacy'
 
 /** Stops a reconcile in this tab made, per network:repo, waiting to be said. */
 const stopsToSay = new Map<string, StopLine>()
@@ -71,8 +73,8 @@ export function noteStopped(networkKey: string, repoId: string, line: StopLine):
     const store = stopStore()
     const stored = store?.getItem(stoppedDefaultKey(networkKey, repoId)) ?? null
     // The default line waits in its key; an explicit stop after it makes it moot.
-    if (line === 'default' && stored === null) store?.setItem(stoppedDefaultKey(networkKey, repoId), STOP_PENDING)
-    if (line === 'removed' && stored === STOP_PENDING) store?.setItem(stoppedDefaultKey(networkKey, repoId), String(Date.now()))
+    if (line !== 'removed' && stored === null) store?.setItem(stoppedDefaultKey(networkKey, repoId), line === 'legacy' ? LEGACY_PENDING : STOP_PENDING)
+    if (line === 'removed' && (stored === STOP_PENDING || stored === LEGACY_PENDING)) store?.setItem(stoppedDefaultKey(networkKey, repoId), String(Date.now()))
   } catch {
     // Said in this tab only.
   }
@@ -92,16 +94,20 @@ export function takeStoppedNotice(networkKey: string, repoId: string, repoStorag
   try {
     const store = stopStore()
     const stored = store?.getItem(key) ?? null
-    if (stored === STOP_PENDING) {
+    if (stored === STOP_PENDING || stored === LEGACY_PENDING) {
       store?.setItem(key, String(Date.now()))
-      return repoStorageSet ? null : 'default'
+      return stored === LEGACY_PENDING ? 'legacy' : repoStorageSet ? null : 'default'
     }
-    if (repoStorageSet) return null
-    // Noted here but not recordable (storage blocked): said in this tab.
-    return noted === 'default' && stored === null ? 'default' : null
+    // Said before; else noted here but not recordable (storage blocked): said in this tab.
+    return stored !== null ? null : unrecorded(noted, repoStorageSet)
   } catch {
-    return noted === 'default' && !repoStorageSet ? 'default' : null
+    return unrecorded(noted, repoStorageSet)
   }
+}
+
+function unrecorded(noted: StopLine | undefined, repoStorageSet: boolean): StopLine | null {
+  if (noted === 'legacy') return 'legacy'
+  return noted === 'default' && !repoStorageSet ? 'default' : null
 }
 
 /**
@@ -163,11 +169,15 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
 
   const repoKey = `${ACTIVE_NETWORK.key}:${repo.repoId}`
   const reconcile = useCallback(
-    (view: Readonly<Record<string, unknown>> | null, removedKeys: readonly string[] | null): Promise<Reconciled | null> =>
+    (): Promise<Reconciled | null> =>
       oneAtATime(repoKey, async () => {
         if (user === undefined || identity === null || sdk === null || signer === null || !isOwner) return null
         const maintainers = await readMaintainers(sdk, repo)
         const removed = [...(removedHere.get(repoKey) ?? [])]
+        // The synced slot as it is now (a sync may have landed since the caller rendered); before this
+        // tab's sync settled, none: the share keeps what it holds.
+        const view = userSyncStatus().kind === 'synced' ? syncedShareView(identity) : null
+        const removedKeys = view === null ? null : syncedRemovedKeys(identity)
         const repoPolicyRemoved = view !== null && (removedKeys ?? []).includes(`repo:${repo.repoId}`)
         return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
           spendAction(namedAction('Storage shared with maintainers'), (tag) =>
@@ -186,7 +196,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
         const listed = await readMaintainers(sdk, repo).catch(() => null)
         if (!stale && listed !== null) setMaintainers(listed.filter((m) => m !== identity))
         if (config === null || stale) return
-        const done = await reconcile(config, removedKeys).catch(() => null)
+        const done = await reconcile().catch(() => null)
         // Sharing just stopped: said even if this visit moved on meanwhile (a later pass finds nothing left to stop).
         if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
         if (stale || done === null) return
@@ -216,7 +226,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       removedHere.set(repoKey, new Set([...(removedHere.get(repoKey) ?? []), member]))
       // Before this tab's sync settled too: with no synced view the share keeps what it holds,
       // and the removed member's grant still goes, at the next epoch.
-      const done = await reconcile(config, removedKeys).catch(() => null)
+      const done = await reconcile().catch(() => null)
       if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
       void refreshMaintainers()
       if (done !== null) {
@@ -229,7 +239,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       if (user === undefined || sdk === null) return false
       return (await forgeUserPort(sdk, user, null).readShare(repo.ownerId, repo.repoId).catch(() => null)) !== null
     },
-    [config, removedKeys, reconcile, user, sdk, repo, repoKey, refreshMaintainers],
+    [reconcile, user, sdk, repo, repoKey, refreshMaintainers],
   )
 
   const afterAdd = useCallback(
@@ -239,7 +249,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
         await refreshMaintainers()
         // The new maintainer gets the repo's storage now (as `dg collab add` does), not on the next visit.
         if (config === null) return
-        const done = await reconcile(config, removedKeys).catch(() => null)
+        const done = await reconcile().catch(() => null)
         if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
         if (done === null) return
         setWaiting(done.waiting)
@@ -247,7 +257,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
         setLends(done.lends)
       })()
     },
-    [repoKey, refreshMaintainers, config, removedKeys, reconcile, repo],
+    [repoKey, refreshMaintainers, config, reconcile, repo],
   )
 
   return { waiting, memberNeedsKey, afterRemoval, afterAdd, maintainers, granted, lends }

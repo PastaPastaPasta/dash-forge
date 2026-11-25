@@ -528,7 +528,7 @@ function SyncedPushesCard(p: {
   const storage = useStorageConfig()
   const policy = storage.config?.repoPolicies[p.repo.repoId]
   const shareable = policy?.targets.some((t) => storage.config?.profiles.some((x) => x.name === t && x.settings.kind !== 'platform')) ?? false
-  const card = storageCardView({ syncOn: true, owner: p.owner, hasRepoStorage: policy !== undefined, repoStorageShareable: shareable, maintainers: p.share.maintainers?.length ?? 0, lends: p.share.lends })
+  const card = storageCardView({ syncOn: true, owner: p.owner, hasRepoStorage: policy !== undefined, repoStorageShareable: shareable, maintainers: p.share.maintainers?.length ?? 0, lends: p.share.lends, holders: p.share.granted.length + p.share.waiting.length })
   return (
     <Card title="Your browser pushes" hint={card.hint}>
       {p.stopLine !== null ? <StoppedShareLine line={p.stopLine} /> : null}

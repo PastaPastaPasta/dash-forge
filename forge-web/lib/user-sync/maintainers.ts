@@ -43,11 +43,12 @@ export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: SHARE
 export type NothingReason = 'no-repo-policy' | 'platform-only' | 'legacy-share'
 
 /**
- * The owner's line for a pass that stopped sharing a repo with no storage of its own (forge-core
- * `stopped_line`): `default` when it never had any (a share made from the default storage before
- * repo-only sharing), `removed` when the owner removed it.
+ * The owner's line for a pass that stopped sharing (forge-core `stopped_line`): `default` when the
+ * repo never had storage of its own (a share made from the default storage before repo-only
+ * sharing), `removed` when the owner removed it, `legacy` when its own setting cannot be used and
+ * the share kept was a version 1 one (it may hold the default storage).
  */
-export type StopLine = 'default' | 'removed'
+export type StopLine = 'default' | 'removed' | 'legacy'
 
 export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing'; readonly reason: NothingReason } | { readonly kind: 'content'; readonly plain: SharePlain }
 
@@ -303,10 +304,12 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     rule.kind === 'content' ? rule.plain : rule.kind === 'keep' && opened !== null ? opened : (existing !== null || grants.length > 0) && (stop || revoked.length > 0) ? NOTHING_SHARED : null
   let written = false
   if (content !== null) {
-    // A lending share still in version 1 is written again in this one (an empty share's version does not count).
-    const same = existing !== null && existing.fields.epoch === epoch && existing.fields.keyId === ctx.keyId && opened !== null && shareMeaning(opened) === shareMeaning(content) && (!lent(content) || shareVersion(opened) === SHARE_VERSION)
+    // A share kept as it is keeps its version (a version 1 one is never made version 2 without the
+    // slot read); one the repo setting names, lending in version 1, is written again in version 2.
+    const keptAsIs = rule.kind === 'keep' && opened !== null && content === opened
+    const same = existing !== null && existing.fields.epoch === epoch && existing.fields.keyId === ctx.keyId && opened !== null && shareMeaning(opened) === shareMeaning(content) && (rule.kind !== 'content' || !lent(content) || shareVersion(opened) === SHARE_VERSION)
     if (!same) {
-      await writeShare(ctx, p.repoId, repo, epoch, { ...content, version: SHARE_VERSION }, existing)
+      await writeShare(ctx, p.repoId, repo, epoch, { ...content, version: keptAsIs ? shareVersion(opened) : SHARE_VERSION }, existing)
       written = true
     }
   }
@@ -352,7 +355,7 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   // Said once, as the share is empty after: only when maintainers lost something (storage it lent,
   // or their grants), never for an empty share written again; not for Platform-only storage the owner did set.
   const lost = (written && lent(opened)) || deleted > 0
-  const line: StopLine | null = rule.kind !== 'nothing' || !lost ? null : rule.reason === 'legacy-share' ? 'default' : rule.reason === 'no-repo-policy' ? (p.repoPolicyRemoved === true ? 'removed' : 'default') : null
+  const line: StopLine | null = rule.kind !== 'nothing' || !lost ? null : rule.reason === 'legacy-share' ? 'legacy' : rule.reason === 'no-repo-policy' ? (p.repoPolicyRemoved === true ? 'removed' : 'default') : null
   const stopped = line === null ? {} : { stopped: line }
   return { granted, waiting, shared: lends || existing !== null, lends, epoch: written ? epoch : (existing?.fields.epoch ?? null), ...stopped }
 }
