@@ -2,7 +2,7 @@
 
 `forge-gateway` is an **optional** read-only mirror of the **public** repositories of one network. With it, a plain `git clone https://<gateway>/<owner>/<name>.git` works without `git-remote-dash`, which helps GitHub Actions `checkout`, Go modules, Cargo and npm git dependencies, Nix, Renovate, IDEs and locked-down machines. The same binary serves README badges, Atom feeds and link-preview cards.
 
-dashhq runs one for forge.dashhq.org. Anyone can run their own from the same image with the same settings. This page covers both.
+dashhq runs one for the testnet site, testnet-forge.dashhq.org, at `git-forge.dashhq.org`. The mainnet site, forge.dashhq.org, has no gateway yet. Anyone can run their own from the same image with the same settings. This page covers both.
 
 1. [What a gateway is trusted for](#what-a-gateway-is-trusted-for)
 2. [What you need](#what-you-need)
@@ -47,7 +47,7 @@ How a refresh works: the gateway reads a proof-verified snapshot (chain tip firs
 
 ## What you need
 
-| | Minimum | dashhq (forge.dashhq.org) |
+| | Minimum | dashhq (testnet) |
 |---|---|---|
 | Host | 2 vCPU, 2 GiB RAM, Docker | An LXC or VM on the home Proxmox (proxmox3), Docker Compose |
 | Disk | The mirror cap (`GATEWAY_CACHE_MAX`, default 20 GiB) plus 5 GiB | 40 GiB volume |
@@ -79,7 +79,7 @@ Then, in `services/forge-gateway/`, write a `.env` and start it:
 cat > .env <<'EOF'
 DASH_FORGE_NETWORK=testnet
 GATEWAY_PUBLIC_URL=https://git-forge.dashhq.org
-GATEWAY_WEB_URL=https://forge.dashhq.org
+GATEWAY_WEB_URL=https://testnet-forge.dashhq.org
 GATEWAY_ALL_PUBLIC=true
 GATEWAY_TRUST_PROXY=cloudflare
 EOF
@@ -88,6 +88,8 @@ curl -fsS http://127.0.0.1:8080/readyz
 ```
 
 The compose file binds the gateway to `127.0.0.1:8080` on the host. Put TLS in front of it ([DNS and TLS](#dns-and-tls)); never expose it as plain HTTP.
+
+Set `GATEWAY_WEB_URL` to the web app of the gateway's network: `https://forge.dashhq.org` for mainnet, `https://testnet-forge.dashhq.org` for testnet. Its default is the mainnet site, while the default network is testnet.
 
 Without Docker: `cargo build --release -p forge-gateway -p git-remote-dash`, put both binaries on `PATH` (or set `GATEWAY_HELPER_DIR`), install `git` and a font (`fonts-dejavu-core`), and run `forge-gateway` with the variables below.
 
@@ -110,10 +112,10 @@ Every setting is a flag (`forge-gateway --help`) and an environment variable. Em
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GATEWAY_LISTEN` | `127.0.0.1:8080` (image: `0.0.0.0:8080`) | Listen address. |
+| `GATEWAY_LISTEN` | `127.0.0.1:8080` (image: `0.0.0.0:8080`) | Listen address. Both defaults are IPv4. `[::]:8080` listens on IPv6 and, on Linux, IPv4 too. `[::1]:8080` is IPv6 loopback only, in place of 127.0.0.1. |
 | `GATEWAY_DATA_DIR` | `./forge-gateway-data` (image: `/data`) | Mirrors, manifests and the Platform read cache. |
 | `GATEWAY_PUBLIC_URL` | `http://<listen>` | This gateway's public URL, used in feeds, previews and the index page. Never taken from the request's `Host`. |
-| `GATEWAY_WEB_URL` | `https://forge.dashhq.org` | The web app links point at. |
+| `GATEWAY_WEB_URL` | `https://forge.dashhq.org` | The web app links point at. Name the site of `DASH_FORGE_NETWORK`'s network. |
 | `GATEWAY_ALL_PUBLIC` | `false` (compose: `true`) | Serve any public repository on demand. |
 | `GATEWAY_REPOS` | none | `owner/name` list: mirrored at start, kept warm, never evicted (and the only ones served without `GATEWAY_ALL_PUBLIC`). |
 | `GATEWAY_CACHE_MAX` | `20G` | Disk cap for all mirrors; the least recently served are evicted above it. |
@@ -155,7 +157,7 @@ The fetch runs with `HOME` set to `<data>/home` and without `DASH_FORGE_KEY`: no
 3. Cache rules: let Cloudflare cache `/badge/*`, `/feed/*` and `/og/*` (they send `Cache-Control: public, max-age=300`; a share page is the same for every client, so caching it is safe). Do **not** cache `*/info/refs`, `*/git-upload-pack` or `*/forge-manifest.json` (they say `no-cache` or `max-age=30`; the default rules already respect that).
 4. Cloudflare's 100-second origin timeout applies to the first byte only: a clone streams, and a cold mirror answers `503 Retry-After` after `GATEWAY_COLD_WAIT_SECS`.
 
-**A plain VPS:** an `A` (and `AAAA`) record for the hostname pointing at the VPS, and a TLS proxy. With Caddy:
+**A plain VPS:** an `A` record for the VPS's IPv4 address and an `AAAA` record for its IPv6 address, and a TLS proxy that listens on both (Caddy does by default). With Caddy:
 
 ```
 git.example.org {
@@ -193,7 +195,7 @@ GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake
 | `GET /healthz`, `/readyz`, `/metrics` | Liveness, readiness (with the gateway's `version`), Prometheus metrics. |
 | `GET /.well-known/security.txt` | How to report a vulnerability ([RFC 9116](https://www.rfc-editor.org/rfc/rfc9116)): the Dash Forge project's contacts and policy, with this gateway's own `Canonical` URL when `GATEWAY_PUBLIC_URL` is https. If you run your own gateway and want reports about your deployment to reach you, answer this path at your proxy. |
 
-`<owner>` is an identity id or a DPNS name. A README badge: `[![checks](https://git-forge.dashhq.org/badge/alice/project/ci.svg)](https://forge.dashhq.org/alice/project)`.
+`<owner>` is an identity id or a DPNS name. A README badge for a testnet repository on dashhq's gateway: `[![checks](https://git-forge.dashhq.org/badge/alice/project/ci.svg)](https://testnet-forge.dashhq.org/alice/project)`.
 
 ### Share links (preview cards)
 
@@ -201,10 +203,10 @@ forge.dashhq.org is a static site: a short URL such as `https://forge.dashhq.org
 
 | Share link | Opens |
 |---|---|
-| `https://git-forge.dashhq.org/og/alice/project` | `https://forge.dashhq.org/alice/project` |
-| `https://git-forge.dashhq.org/og/alice/project/issues/7` | `https://forge.dashhq.org/alice/project/issues/7` |
-| `https://git-forge.dashhq.org/og/alice/project/pull/7/files` | `https://forge.dashhq.org/alice/project/pull/7/files` |
-| `https://git-forge.dashhq.org/og/alice/project/tree/feature%2Fx/src?repo=<id>` | `https://forge.dashhq.org/alice/project/tree/feature%2Fx/src?repo=<id>` |
+| `https://git-forge.dashhq.org/og/alice/project` | `https://testnet-forge.dashhq.org/alice/project` |
+| `https://git-forge.dashhq.org/og/alice/project/issues/7` | `https://testnet-forge.dashhq.org/alice/project/issues/7` |
+| `https://git-forge.dashhq.org/og/alice/project/pull/7/files` | `https://testnet-forge.dashhq.org/alice/project/pull/7/files` |
+| `https://git-forge.dashhq.org/og/alice/project/tree/feature%2Fx/src?repo=<id>` | `https://testnet-forge.dashhq.org/alice/project/tree/feature%2Fx/src?repo=<id>` |
 
 This scheme is stable: everything after `/og` is the web app's short path (`forge-web/lib/short-url.ts`), owner by DPNS name or identity id, kept exactly as written (a `%2F` in a ref stays one segment). Only a `?repo=<id>` pin is carried along; any other query string is dropped. The page always opens `GATEWAY_WEB_URL` plus that path, never a host taken from the request, so a share link cannot send anyone elsewhere. A path that is not a short URL (a bad `%` escape, a `.` or `..` segment, plain or escaped as `%2e`, characters a short URL never has) answers `404`.
 
@@ -249,12 +251,24 @@ for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16;
 done
 iptables -I DOCKER-USER -s "$SUBNET" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -I INPUT -s "$SUBNET" -m conntrack --ctstate NEW -j REJECT
-# IPv6, if the network has it:
-# ip6tables -I DOCKER-USER -s <subnet6> -d fc00::/7 -j REJECT
-# ip6tables -I DOCKER-USER -s <subnet6> -d fe80::/10 -j REJECT
+
+# The same for IPv6. Docker gives the compose network an IPv6 subnet only when it has
+# `enable_ipv6: true` (the stock compose file has none, so these rules do nothing until
+# you add it; read the subnet from `docker network inspect forge-gateway_default`, IPAM
+# Config), and fills the ip6tables DOCKER-USER chain only with its ip6tables
+# option on (the default since Docker 27). An IPv6 LAN usually uses global addresses from
+# the ISP's prefix, so name that prefix too. If your NAT64 uses a local prefix
+# that can reach private IPv4 (RFC 8215 `64:ff9b:1::/48`), reject that prefix too.
+SUBNET6=fd00:db8:1::/64
+LAN6=2001:db8:abcd::/56
+for net in fc00::/7 fe80::/10 "$LAN6"; do
+  ip6tables -I DOCKER-USER -s "$SUBNET6" -d "$net" -j REJECT
+done
+ip6tables -I DOCKER-USER -s "$SUBNET6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+ip6tables -I INPUT -s "$SUBNET6" -m conntrack --ctstate NEW -j REJECT
 ```
 
-Rules inserted with `-I` go first, so the `ESTABLISHED` rule, inserted last, keeps replies flowing. If the forge-relay of `GATEWAY_WAKE_URL` (or a DAPI node) is on the LAN, allow exactly its address and port by running `iptables -I DOCKER-USER -s "$SUBNET" -d <address> -p tcp --dport <port> -j ACCEPT` after the rules above, so it lands above the rejects. Make the rules persistent the way the host does (`iptables-persistent`, or the Proxmox firewall on the LXC or VM, which can express the same rules per guest).
+Rules inserted with `-I` go first, so the `ESTABLISHED` rule, inserted last, keeps replies flowing. If the forge-relay of `GATEWAY_WAKE_URL` (or a DAPI node) is on the LAN, allow exactly its address and port by running `iptables -I DOCKER-USER -s "$SUBNET" -d <address> -p tcp --dport <port> -j ACCEPT` (or, for an IPv6 address, `ip6tables -I DOCKER-USER -s "$SUBNET6" -d <address> -p tcp --dport <port> -j ACCEPT`) after the rules above, so it lands above the rejects. Make the rules persistent the way the host does (`iptables-persistent`, or the Proxmox firewall on the LXC or VM, which can express the same rules per guest).
 
 ## Takedowns and hidden repositories
 
@@ -340,9 +354,9 @@ NEXT_PUBLIC_GATEWAY_URL=https://git-forge.dashhq.org NEXT_PUBLIC_GATEWAY_LABEL="
 
 The same variable turns **Copy link** on a public repository's pages into a [share link](#share-links-preview-cards) (`https://git-forge.dashhq.org/og/alice/project/issues/7`), which unfurls with a preview card and opens the page. The gateway sends people to its own `GATEWAY_WEB_URL`, so point a build at a gateway whose `GATEWAY_WEB_URL` is that build's site.
 
-For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads the URL and the label from repository variables, so turning the gateway on or off needs no code change:
+For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads the URL and the label from repository variables, so turning the gateway on or off needs no code change. The testnet site's workflow (`pages-testnet.yml`) reads `TESTNET_SITE_GATEWAY_URL` and `TESTNET_SITE_GATEWAY_LABEL` the same way; dashhq's gateway is set there, and `PAGES_GATEWAY_URL` is unset, so the mainnet site shows no HTTPS line.
 
-1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` to `https://git-forge.dashhq.org`, and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
+1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` (forge.dashhq.org) or `TESTNET_SITE_GATEWAY_URL` (testnet-forge.dashhq.org) to a gateway of that site's network (for mainnet, one such as `https://git.example.org`), and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
 2. Deploy: **Actions → Deploy forge-web to Pages → Run workflow** on master (or push to master). Don't re-run an older run: that deploys its older commit.
 
 Delete the variable and deploy again to hide the HTTPS line. A value that is not an `https://` or `http://` URL, or that carries a query, a fragment or credentials, is ignored, and the row stays hidden. Set it only once the gateway answers: the clone box doesn't check that the gateway is up before it shows the row. The deploy fails when the gateway's `/readyz` names a different network from the build's (`PAGES_NETWORK`), so moving the site to another network means moving or unsetting the gateway too; a gateway it cannot reach only warns.
@@ -383,6 +397,6 @@ What the owner provides; the software is ready:
 2. **The hostname:** `git-forge.dashhq.org` (or another), added as a public hostname on a Cloudflare tunnel → `http://localhost:8080` (dashboard step, or a Cloudflare API token scoped to the tunnel and the `dashhq.org` DNS zone).
 3. **Build and start:** the commands under [Run it](#run-it), with `GATEWAY_PUBLIC_URL=https://git-forge.dashhq.org`.
 4. **Optional, for seconds-fresh mirrors:** a forge-relay with `[wake]` listing the repositories, and its secret in `GATEWAY_WAKE_SECRET_FILE`.
-5. **The web app:** set the repository variable `PAGES_GATEWAY_URL` (and `PAGES_GATEWAY_LABEL`), then deploy ([Show it in the web app](#show-it-in-the-web-app)).
+5. **The web app:** set the variable for the site of the gateway's network, `TESTNET_SITE_GATEWAY_URL` for testnet-forge.dashhq.org or `PAGES_GATEWAY_URL` for a mainnet gateway on forge.dashhq.org (and the matching label), then deploy ([Show it in the web app](#show-it-in-the-web-app)).
 6. **An abuse and privacy contact,** filled into the privacy notice, and the notice published (for example on the gateway's index page or the docs site).
 7. **Software Heritage (optional):** ask SWH to allowlist the gateway's domain, so public repositories can be archived from their HTTPS URLs.

@@ -131,12 +131,12 @@ A first write can create repository, author, target or identity-contract index s
 | Profile | ~0.00032 DASH create with a short name as the identity's first meta write (~0.00023 after prior meta writes), ~0.000028 same-size edit (three repeats) |
 | Webhook | ~0.00077 DASH later, ~0.00101 first; removal immediately refunded ~0.00067 |
 | Topic | ~0.00066 DASH later; ~0.00078 DASH first (CLI includes a config replacement). Raw documents with reused global names cost ~0.00048 DASH later; fresh names ~0.00062 |
-| Pack mirror | ~0.00048 DASH later, ~0.00064 first with a short URI |
+| Pack mirror | ~0.00048 DASH later, ~0.00064 first with a short URI; `dg` quotes 0.00075. Pinning a repository writes one per pack ([Pin or fork](pin-and-fork.md)) |
 | Runner registration | ~0.00040 DASH later, ~0.00047 first |
 | Policy / ban | Policy ~0.00027 DASH later, ~0.00035 first; ban ~0.00040 |
 | CI check run | ~0.00072 DASH later, ~0.00122 first (queued check) |
 | Bot push grant | ~0.00028 DASH later, ~0.00044 first. The CLI bot-allow aggregate cost ~0.00218, including its additional artifact writes |
-| Fork a repository | ~0.008 DASH for a small repository (1 pack, 1 branch, testnet); parent packs referenced, not uploaded |
+| Fork a repository | ~0.008 DASH for a small repository (1 pack, 1 branch, testnet). Copying the parent's packs to your own storage (the default when you have storage others can read) costs nothing on Platform beyond a few bytes per extra address; `--no-copy` references them instead ([Pin or fork](pin-and-fork.md)) |
 | Mirror a GitHub repository, first run † | Historical moutai examples: 0.078 DASH (`dash-faucet`) and 0.112 for a repository with 2 PRs, 15 comments and 7 reviews. No-new-content rerun: 0 |
 | Top up a browser key's budget † | ~0.00002 DASH on moutai |
 | Clone, fetch, browse, read issues, download a zip | **free** |
@@ -278,7 +278,7 @@ Pack bytes are almost all of a repository's size, so where you keep them decides
 | **Your bucket** (any S3-compatible store) or IPFS | Platform: manifests + refs per push. Provider: storage and egress, at their prices. | ~0.04 DASH a month on Platform (~0.004–0.0055 DASH a push to the default branch, its history index included), plus your provider's prices, if any |
 | **Dash Platform** | ~0.33 DASH per MiB pushed (quoted up to 0.39), plus ~0.004–0.011 DASH per push | ~17 DASH for the first upload, then ~0.33 DASH per MiB pushed |
 
-Platform storage buys you something: it is stored by the network, and it can never be deleted, even by you. Your bucket is cheap, but it is only as available as your account with the provider. You can have both: `dg storage use r2-main,platform` keeps a copy in each place. See [Bring your own storage](bring-your-own-storage.md).
+Platform storage buys you something: it is stored by the network, and it can never be deleted, even by you. Your bucket is cheap, but it is only as available as your account with the provider. You can have both: `dg storage use nas,platform` keeps a copy in each place. See [Bring your own storage](bring-your-own-storage.md).
 
 If you set nothing, **packs go to Platform**. That is fine for small repositories, and expensive for large ones.
 

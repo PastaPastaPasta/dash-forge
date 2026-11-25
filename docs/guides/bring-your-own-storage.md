@@ -9,6 +9,8 @@ This guide covers:
 1. [How it fits together](#how-it-fits-together)
    - [The quick way: `dg storage add` asks](#the-quick-way-dg-storage-add-asks)
    - [In the browser: the storage wizard](#in-the-browser-the-storage-wizard)
+   - [Storage settings that follow your identity (testnet)](#storage-settings-that-follow-your-identity-testnet)
+   - [macOS: no dialog for what Forge stored](#macos-no-dialog-for-what-forge-stored)
 2. [An S3-compatible bucket](#an-s3-compatible-bucket) (step by step on a NAS: [Storage on your home NAS](home-nas-storage.md))
 3. [IPFS: your own kubo node](#ipfs-your-own-kubo-node)
 4. [Choosing where a repo pushes](#choosing-where-a-repo-pushes)
@@ -26,7 +28,7 @@ This guide covers:
 
 | Piece | Where it lives | Who can see it |
 |---|---|---|
-| Storage **profiles** (endpoint, bucket, public URL, *references* to secrets) | `~/.config/dash-forge/storage.toml` (override with `DASH_FORGE_STORAGE_CONFIG`) | only you |
+| Storage **profiles** (endpoint, bucket, public URL, *references* to secrets) | `~/.config/dash-forge/storage.toml` (override with `DASH_FORGE_STORAGE_CONFIG`); on testnet, after a wallet sign-in, also an encrypted copy on Platform ([below](#storage-settings-that-follow-your-identity-testnet)) | only you |
 | **Secrets** (S3 secret key, kubo API token, …) | environment variables or your OS keychain | only you (and, on macOS, any program running as you: see below) |
 | A repo's **storage policy**: which profiles, how many copies | git config (`dash.storage`, `dash.replicas`) | only you |
 | Pack bytes | your bucket / IPFS node (and/or Platform chunks) | public, if you give the bucket a public URL |
@@ -38,7 +40,7 @@ This guide covers:
 >
 > It never records the endpoint or any credential. If the bucket name itself is sensitive, give the profile a `--public-url` (a CDN or custom domain that hides the bucket) and treat the bucket name as public anyway. `dg storage advertise` publishes only the https public read bases.
 
-Secrets are **never** written to `storage.toml`, to the chain, or to logs. A keychain entry is protected at rest and from other users; on macOS `dg` reads it through Apple's `security` tool, so any program running as you can read it without a prompt, like an `env:` variable in your shell. Give Forge a key scoped to the one bucket. `storage.toml` holds only references like `env:R2_SECRET_ACCESS_KEY` or `keychain:dash-forge/r2-main`. If you paste a literal secret into it, `dg` refuses to load the file.
+Secrets are **never** written to `storage.toml` or to logs, and never in the clear to the chain (on testnet, the encrypted copy that follows your identity holds them; [below](#storage-settings-that-follow-your-identity-testnet)). A keychain entry is protected at rest and from other users; on macOS `dg` reads it through Apple's `security` tool, so any program running as you can read it without a prompt, like an `env:` variable in your shell. Give Forge a key scoped to the one bucket. `storage.toml` holds only references like `env:R2_SECRET_ACCESS_KEY` or `keychain:dash-forge/r2-main`. If you paste a literal secret into it, `dg` refuses to load the file.
 
 A push works like this:
 
@@ -64,33 +66,36 @@ Run `dg storage add` with no arguments in a terminal. It asks for each value, wi
 
 ```
 $ dg storage add
-? Profile name › r2-main
+? Profile name › nas
 ? Kind › 1) S3-compatible (Cloudflare R2, Backblaze B2, AWS S3, MinIO)
-? Provider › 1) Cloudflare R2   (region auto, path-style; recommended: free egress)
-? Account id › 7c1…
+? Provider › 4) MinIO / other S3-compatible
+? Endpoint › https://s3.example.org
+? Region › us-east-1
 ? Bucket › forge
-? Public URL (your custom domain, or r2.dev) › https://files.example.org
-? Access key id › …
+? Public URL › https://s3.example.org/forge
+? Access key id › forge
 ? Secret access key — how do you want to store it? › 1) paste it now; dg stores it in the macOS Keychain (recommended)
 ? Secret access key ›                  (input is hidden)
-Testing r2-main …
+Testing nas …
+  [ OK ] credentials    resolved (SigV4 signing)
   [ OK ] put            wrote probe/… (signed PUT)
   [ OK ] get            read back identical bytes (signed GET)
-  [ OK ] public read    anonymous GET https://files.example.org/probe/… OK
-  [FAIL] browser CORS   the CORS preflight from https://forge.dashhq.org answered 403 Forbidden — allow the `Range` request header for the web app's origin
+  [ OK ] public read    anonymous GET https://s3.example.org/forge/probe/… OK
+  [FAIL] browser CORS   …; the CORS preflight from https://testnet-forge.dashhq.org answered 403 Forbidden — allow the `Range` request header for the web app's origin
   [ OK ] delete         probe removed
-  → Cloudflare dashboard → R2 → forge → Settings → CORS Policy → Add CORS policy, paste: …
-    then run `dg storage test r2-main`
+  → Garage, RustFS and most S3-compatible stores take this document through the S3 API: save it as cors.json and run `aws --endpoint-url <your endpoint> s3api put-bucket-cors --bucket forge --cors-configuration file://cors.json`: …
+    then run `dg storage test nas`
   note: git push and clone work without CORS; the web app cannot read this storage until it passes
-Saved ~/.config/dash-forge/storage.toml (secret stored as keychain:dash-forge/r2-main)
-Equivalent: dg storage add r2-main --kind s3 --endpoint https://7c1….r2.cloudflarestorage.com --region auto --bucket forge --public-url https://files.example.org --access-key-id … --secret-access-key keychain:dash-forge/r2-main
-Use it in a repo: dg storage use r2-main
-? Make r2-main the default storage for new repos (and any repo without its own dash.storage)? [Y/n]
+Saved ~/.config/dash-forge/storage.toml (secret stored as keychain:dash-forge/nas)
+Equivalent: dg storage add nas --kind s3 --endpoint https://s3.example.org --region us-east-1 --bucket forge --public-url https://s3.example.org/forge --access-key-id forge --secret-access-key keychain:dash-forge/nas
+Use it in a repo: dg storage use nas
+? Make nas the default storage for new repos (and any repo without its own dash.storage)? [Y/n]
 ```
 
 - The answers map one to one onto `dg storage add`'s flags, and the `Equivalent:` line is a command you can re-run (in CI, on another machine) without the questions.
 - The secret can be **pasted** (read without echo and written to the macOS Keychain, Windows Credential Manager or the Secret Service keyring under service `dash-forge`, account = the profile name), taken from an **environment variable** (`env:NAME`), or an entry **already in the keychain** (`keychain:<service>/<account>`). It is never written to `storage.toml`, printed or logged. `dg storage remove <name>` deletes the profile's own `keychain:dash-forge/<name>` entry, where a pasted secret goes, unless another profile in the same `storage.toml` still names it, and says what it deleted. Any other entry the profile named (under another service, or under another profile's name) is left in place and listed, since it may be a secret you stored yourself.
-- The provider presets fill in each provider's endpoint and region; other stores ask for the endpoint.
+- The provider presets fill in each provider's endpoint and region; other stores ask for the endpoint. The Cloudflare R2, Backblaze B2 and AWS S3 presets follow each provider's documentation and have not been tested end to end; Forge's S3 storage has been tested with RustFS and Garage ([Running your own store](#an-s3-compatible-bucket)).
+- The CORS check uses the web app of the network `dg` runs on: `https://testnet-forge.dashhq.org` by default, `https://forge.dashhq.org` with `--network mainnet` ([which origin](#cors-origins-mainnet-and-testnet)).
 - Accepting the last question sets `git config --global dash.storage <name>`, which `dg repo create` / `dg init` and every repository without its own `dash.storage` then use.
 - With `--json`, `--yes`, or no terminal, nothing is asked: `dg storage add` without a name fails with [E201](../errors.md#e201) and tells you to pass the flags.
 
@@ -98,16 +103,30 @@ Keychain entries you created by hand (`security add-generic-password -s dash-for
 
 ### In the browser: the storage wizard
 
-The web app has the same setup at **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. It is what the browser uses when it uploads to your storage itself: a merge's pack, a commit to a pull request's branch (applying suggestions, "Update branch"), and a release's assets. `git push` keeps using `dg`'s profiles.
+The web app has the same setup at **Settings → Storage** (`/settings/storage`), on forge.dashhq.org (mainnet) and testnet-forge.dashhq.org (testnet). It is what the browser uses when it uploads to your storage itself: a merge's pack, a commit to a pull request's branch (applying suggestions, "Update branch"), and a release's assets. `git push` keeps using `dg`'s profiles.
 
-- **Providers:** Cloudflare R2 (recommended: free egress), Backblaze B2, AWS S3, Garage / RustFS / other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.33 DASH/MiB; see [Costs](costs.md)). Each field has a "where to find this" hint.
+- **Providers:** Cloudflare R2, Backblaze B2, AWS S3, Garage / RustFS / other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.39 DASH/MiB quoted; see [Costs](costs.md)). Each field has a "where to find this" hint. As in `dg`, the R2, B2 and AWS presets have not been tested end to end; RustFS and Garage have.
 - **A live test from the page**, so it checks exactly what the browser will do, CORS included. S3: signed PUT, signed GET, anonymous GET through the public URL, a ranged read, a CORS preflight for PUT, then the probe is deleted. IPFS: the kubo API, add with a CID check and pin, the gateway re-read, the public gateway, the pinning service, then unpin. A failing CORS row shows a copy-paste fix for your provider, filled in with your bucket and this app's origin; the browser needs PUT allowed from the app's origin, where the CLI needs no CORS at all.
-- **Credentials stay in this browser**, sealed in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits), and are never sent anywhere else or written on chain. Lock the vault and they are unreadable.
+- **Credentials are sealed in this browser**, in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits). Lock the vault and they are unreadable. On mainnet they stay in this browser only. On testnet, after a sign-in with a Dash wallet, an encrypted copy also follows your identity ([below](#storage-settings-that-follow-your-identity-testnet)).
 - **Replication:** one place, every chosen place, or Platform as a costed fallback that asks first. A repository's **Settings → Your browser pushes** overrides the default for that repository.
 - **Only public https addresses are recorded on chain.** The wizard can reach a store or kubo on `localhost` for testing, but it refuses to record a loopback, private or plain-http URL, and readers skip such URLs even if a manifest names one.
 - **kubo's RPC API is its admin interface.** The fix block creates a Forge token limited to add, pin, unpin, id and version calls (after an owner token, so you do not lock yourself out) rather than opening the whole API to the page. It also prints a Caddy proxy for the preflight ([Kubo and the browser](#kubo-and-the-browser-a-proxy-in-front-of-kubo)). The simpler route is `dg ipfs up`, and the wizard shows that command first.
 
-**macOS: no dialog for what Forge stored.** `dg` writes the keychain, and `dg`, `git-remote-dash` and `forge-import` all read it, through Apple's `/usr/bin/security` tool, so they read what `dg` stored with no dialog, also after an upgrade or a rebuild. Entries you add with `security add-generic-password`, as in this guide, work the same way. An entry another program created (Keychain Access, say) can make macOS show an access dialog: the read prints a notice after a few seconds and waits up to 120 s for an answer. Over SSH no dialog can be answered, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
+### Storage settings that follow your identity (testnet)
+
+On **testnet**, your storage profiles (credentials included) and your default storage (`dg storage use --global`, or the web app's default) can follow your identity to every device where you sign in with a Dash wallet. Forge encrypts them with a key the wallet derives from your recovery phrase, and keeps them in the `forge-user` contract on Platform. Only that wallet key opens them. Platform nodes and other readers can't read them; they can see that you have synced settings, their sizes and when they changed ([what readers see](../design/identity-synced-state.md#6-threat-model)).
+
+- **When it is on:** after `dg auth login --wallet` (dg says `storage settings sync with your identity across devices`) or a wallet sign-in in the web app. A passkey, an identity file or a pasted key does not turn it on. `dg auth login --wallet --no-sync` doesn't ask the wallet for the sync key, but a key kept from an earlier sign-in still syncs until `dg auth logout`.
+- **In the web app** the per-repository choice (a repository's **Settings → Your browser pushes**) follows too.
+- **In `dg`:** `dg storage list` marks each profile `local`, `synced`, `local+synced`, `local (synced copy differs)` or `shared`. Synced secrets are held in memory only, never written to `storage.toml`. A profile in `storage.toml` wins over a synced one of the same name. Git config itself does not sync: on another machine, `dash.storage` comes from that machine's git config first.
+- **Where to see it:** Settings → Storage shows a collapsed **Synced with your identity** line, or **On this device only** with how to turn it on.
+- **Nothing local is deleted.** `storage.toml` and the browser vault keep their own copies.
+
+**Mainnet: not yet.** The `forge-user` contract is registered on testnet only. On mainnet, storage settings stay on the device where you made them, exactly as before, until `forge-user` is registered there.
+
+### macOS: no dialog for what Forge stored
+
+`dg` writes the keychain, and `dg`, `git-remote-dash` and `forge-import` all read it, through Apple's `/usr/bin/security` tool, so they read what `dg` stored with no dialog, also after an upgrade or a rebuild. Entries you add with `security add-generic-password`, as in this guide, work the same way. An entry another program created (Keychain Access, say) can make macOS show an access dialog: the read prints a notice after a few seconds and waits up to 120 s for an answer. Over SSH no dialog can be answered, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
 
 ---
 
@@ -179,7 +198,7 @@ Dash Forge adds content with fixed import parameters: CIDv1, raw leaves, a 256 K
 dg ipfs up
 ```
 
-This downloads kubo 0.43.1 (checked against a SHA-512 built into `dg`), runs it for your user, starts it at every login, saves a storage profile called `kubo`, and opens the web app's connect page. Then `dg storage use kubo` sends your pushes to it. In the web app, press **Test and save**, then tick **Use it for my pushes**.
+This downloads kubo 0.43.1 (checked against a SHA-512 built into `dg`), runs it for your user, starts it at every login, saves a storage profile called `kubo`, and prints a link and a one-time code for the web app's Storage page. It doesn't open a browser unless you pass `--open`. Then `dg storage use kubo` sends your pushes to it. In the web app, open the link (or paste the code), press **Test and save**, then tick **Use it for my pushes**.
 
 The node accepts the web app's requests only from the websites you allow and only for adding, pinning, unpinning and identifying. [Run your own IPFS node](run-your-own-ipfs-node.md) covers the rest: other Forge addresses (`--origin`), checking and stopping the node, forwarding port 4001 so others can reach it, Safari, and keeping a copy of someone else's repository with `dg ipfs pin`.
 
@@ -409,7 +428,7 @@ A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
 - when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned;
 - one pass over the copies in steps 1 to 3 ends after twice the candidate deadline (4 minutes for a small pack), however many copies are left. The Platform fallback in step 4 is not part of it.
 
-The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json), with the date it was last verified. `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. It is deliberately short: public gateways come and go (ipfs.io and dweb.link stopped serving on 2026-09-21), and every dead entry costs a timeout. Override it for the CLI in `storage.toml`:
+The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json), with the date it was last verified. Its first entry is `https://ipfs.dashhq.org`, a read-only gateway in front of the dashhq node that pins Forge's packs (it serves only what that node pins); the others are independent public gateways. `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. It is deliberately short: public gateways come and go (ipfs.io and dweb.link stopped serving on 2026-09-21), and every dead entry costs a timeout. Override it for the CLI in `storage.toml`:
 
 ```toml
 [read]
@@ -475,7 +494,7 @@ dg storage mirror remove <record id>                              # delete one o
 
 A mirror holds up to 4 addresses, all public `https://` URLs (no user name or password, not on a private network, not a temporary tunnel such as `trycloudflare.com` or `ts.net`) or all bare `ipfs://<CID>`s. `dg` refuses an address that readers would never fetch before it reads or signs anything, and a network without pack mirrors before it downloads the pack. Before paying for the record, `dg` checks the addresses against the contract's rules and that they serve the pack's exact bytes (`--no-verify` skips the download). A mirror is only for a pack the repository lists, and only for a public repository: a private repository's packs are sealed to its members. You hold one mirror per pack: to change its addresses, remove it and add a new one.
 
-**How readers use them.** `dg`, `git clone`/`git fetch` and the web app read the recorded mirrors only after every copy the manifests name has failed, never on a healthy read. They try members' mirrors first (maintainers, then other members), then everyone else's, each oldest first, at most 8 addresses for one pack, and at most 2 from any one non-member's mirror; an `ipfs://` address is read through your IPFS gateways. Bytes that don't hash to the pack are discarded, so a wrong or hostile mirror can only fail to serve. When a mirror serves a pack, `git clone` and `git fetch` print a warning and the web app's storage row says so: the repository is surviving on a record its writer may delete, and whoever holds the storage the pack was pushed to should restore the copies: run `dg reseed <owner>/<repo> --profile <name>`, where `<name>` is the storage profile the pack was pushed with. Storage keys are content-addressed, so that re-creates the address the manifest records. A maintainer or writer needs no clone for it: `dg reseed` reads the pack from the mirror. Anyone with a clone can instead add `--from-local` (see [Restoring a lost copy](#restoring-a-lost-copy)). A bare `dg reseed <owner>/<repo>` stops with E201 (it needs a target). A push never counts a mirror as a stored copy: it stores the pack, and its browse index, again. `dg repo reindex` reads only the index's recorded copies to decide which packs it lacks. A mirror record costs about 0.00075 DASH; deleting your own refunds part of it.
+**How readers use them.** `dg`, `git clone`/`git fetch` and the web app read the recorded mirrors only after every copy the manifests name has failed, never on a healthy read. They try members' mirrors first (maintainers, then other members), then everyone else's, each oldest first, at most 8 addresses for one pack, and at most 2 from any one non-member's mirror; an `ipfs://` address is read through your IPFS gateways. Bytes that don't hash to the pack are discarded, so a wrong or hostile mirror can only fail to serve. When a mirror serves a pack, `git clone` and `git fetch` print a warning and the web app's storage row says so: the repository is surviving on a record its writer may delete, and whoever holds the storage the pack was pushed to should restore the copies: run `dg reseed <owner>/<repo> --profile <name>`, where `<name>` is the storage profile the pack was pushed with. Storage keys are content-addressed, so that re-creates the address the manifest records. A maintainer or writer needs no clone for it: `dg reseed` reads the pack from the mirror. Anyone with a clone can instead add `--from-local` (see [Restoring a lost copy](#restoring-a-lost-copy)). A bare `dg reseed <owner>/<repo>` stops with E201 (it needs a target). A push never counts a mirror as a stored copy: it stores the pack, and its browse index, again. `dg repo reindex` reads only the index's recorded copies to decide which packs it lacks. `dg` quotes a mirror record at 0.00075 DASH, an upper bound (measured: about 0.00048, 0.00064 for a repository's first); deleting your own refunds part of it.
 
 ## Troubleshooting
 

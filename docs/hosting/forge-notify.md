@@ -2,7 +2,7 @@
 
 `forge-notify` is an **optional** service that sends Dash Forge notifications by email and Web Push. It covers review requests, assignments, @mentions, activity on threads you take part in, activity on repositories you watch, own or belong to, and releases. Forge works the same without it: the in-browser inbox (`/notifications/`) reads the chain itself whenever Forge is open.
 
-dashhq runs one for forge.dashhq.org. Anyone can run their own from the same image with the same settings. This page covers both.
+dashhq does not run one yet (2026-11-25): neither site sets a notification service, so the web app shows no email or push settings. The [checklist](#checklist-for-dashhq) is what running one for forge.dashhq.org takes. Anyone can run their own from the same image with the same settings.
 
 1. [What the service is trusted for](#what-the-service-is-trusted-for)
 2. [What you need](#what-you-need)
@@ -39,7 +39,7 @@ Delivery only. Every notice is a hint that links back to forge-web, which reads 
 
 ## What you need
 
-| | Minimum | dashhq (forge.dashhq.org) |
+| | Minimum | dashhq (forge.dashhq.org, if it runs one) |
 |---|---|---|
 | Host | 1 vCPU, 512 MiB RAM, Docker | An LXC or VM on the home Proxmox, Docker Compose |
 | Disk | 1 GiB for the SQLite store (about 2 KiB per subscriber plus pending digests) | 5 GiB volume |
@@ -81,7 +81,7 @@ shred -u /dev/shm/notify-keys.env
 Write `.env` next to `docker-compose.yml` (every variable is under [Settings](#settings)):
 
 ```sh
-FORGE_NOTIFY_NETWORK=testnet
+FORGE_NOTIFY_NETWORK=mainnet
 FORGE_NOTIFY_PUBLIC_URL=https://notify-forge.dashhq.org
 FORGE_NOTIFY_WEB_URL=https://forge.dashhq.org
 FORGE_NOTIFY_PRIVACY_URL=https://forge.dashhq.org/privacy/notify/
@@ -118,7 +118,7 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 | `FORGE_NOTIFY_PRIVACY_URL` | | Your privacy notice (https), linked before anyone subscribes |
 | `FORGE_NOTIFY_CONTACT` | | Your contact address, shown in `/v1/info` |
 | `FORGE_NOTIFY_DATA_DIR` | `/data` | The SQLite store's directory |
-| `FORGE_NOTIFY_LISTEN` | `0.0.0.0:8080` | Listen address (behind the TLS proxy) |
+| `FORGE_NOTIFY_LISTEN` | `0.0.0.0:8080` | Listen address (behind the TLS proxy). The default is IPv4 only; `[::]:8080` listens on IPv6 too, and on Linux also accepts IPv4 |
 | `FORGE_NOTIFY_DATA_KEY` / `_FILE` | (required, secret) | 32 bytes, base64 (`forge-notify keys`) |
 | `FORGE_NOTIFY_SMTP_HOST` | | SMTP server. Unset: no email. |
 | `FORGE_NOTIFY_SMTP_PORT` | 587 / 465 / 25 | By `FORGE_NOTIFY_SMTP_TLS` |
@@ -148,7 +148,7 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 The service speaks plain HTTP on the host's loopback. Put TLS in front of it:
 
 - **Cloudflare tunnel (dashhq).** Add a public hostname `notify-forge.dashhq.org` → `http://localhost:8080` to the tunnel. Cloudflare sets `CF-Connecting-IP` and overwrites any value a client sends, so keep `FORGE_NOTIFY_TRUST_PROXY=cloudflare`. No inbound port is opened. Keep the hostname one level under the zone: Cloudflare's free certificate does not cover a deeper name such as `notify.forge.dashhq.org` (see [forge-gateway](forge-gateway.md#dns-and-tls)).
-- **Caddy or nginx.** An `A`/`AAAA` record for the hostname, a certificate (Caddy gets one by itself), and `reverse_proxy 127.0.0.1:8080`, with `FORGE_NOTIFY_TRUST_PROXY=forwarded`. The service reads only the last `X-Forwarded-For` entry, the one your proxy appends; earlier entries come from the client.
+- **Caddy or nginx.** An `A` record and an `AAAA` record for the hostname (IPv4 and IPv6), a proxy listening on both, a certificate (Caddy gets one by itself), and `reverse_proxy 127.0.0.1:8080`, with `FORGE_NOTIFY_TRUST_PROXY=forwarded`. The service reads only the last `X-Forwarded-For` entry, the one your proxy appends; earlier entries come from the client.
 
 If the host can be reached without the proxy, set `FORGE_NOTIFY_TRUST_PROXY=none`. Otherwise anyone can pick their own rate-limit key.
 
