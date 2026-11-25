@@ -7,7 +7,7 @@
  * "Finish creating <name>" on the next visit instead of leaving a half-made repo. On success
  * the repo's empty state shows the push commands (`ux-dx-spec.md` §5.5).
  *
- * Visibility is chosen here only (immutable, `ux-dx-spec.md` §9 "Create"). A private repo needs
+ * Visibility is chosen here (a private repo can later be made public once, `ux-dx-spec.md` §9 "Create"). A private repo needs
  * the owner's encryption key in this browser; its confirmation states the four facts `dg repo
  * create --private` prints, and its third step is the owner's epoch-0 key plus the sealed
  * anchor config (`private-repos.md` §5.3): four documents.

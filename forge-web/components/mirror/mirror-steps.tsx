@@ -1038,7 +1038,7 @@ export function CliStep({ github, settings, onSettings, ownerId }: {
             <p className="text-dense">You need dg and git-remote-dash (<Link href={DOCS.install} className="underline">install</Link>), and the GitHub CLI, signed in.</p>
             {ownerId ? <Hint>Sign dg in as {shortIdentity(ownerId)} to fill this repo.</Hint> : null}
             <CopyRow text={commands.login} label="Copy the dg sign-in command" />
-            <Hint>Scan its QR code with your Dash wallet, or add --mnemonic to type your 12 words. New to Dash? <code>{commands.newIdentity}</code> makes an identity.</Hint>
+            <Hint>Scan its QR code with your Dash wallet. With dg v0.2.0 or no wallet, add --mnemonic to type your 12 words. New to Dash? <code>{commands.newIdentity}</code> makes an identity.</Hint>
             <CopyRow text={commands.githubLogin} label="Copy the GitHub sign-in command" />
           </section>
           <section className="space-y-2" aria-label="Copy the repo">
