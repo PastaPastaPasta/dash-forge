@@ -118,7 +118,7 @@ The removed member can no longer read the current share. **What cannot be revoke
 ## 8. Backwards compatibility
 
 - **No change to any existing contract, document type or document meaning.** `forge-user` is a new contract that joins the existing group.
-- **Local storage config, credentials, keys, repos and packs** keep working, and nothing local is deleted (§7). A migration test (`forge-web/lib/user-sync/migration.test.ts`, `crates/dg/tests/user_sync_migration.rs`) starts from master-format state (a web vault blob and `forge.prefs.v1`; a dg `storage.toml` with `keychain:` refs) and proves that the merged view contains every profile, policy and preference, and that the local stores are byte-identical afterwards except for additions.
+- **Local storage config, credentials, keys, repos and packs** keep working, and nothing local is deleted (§7). A migration test (`forge-web/lib/user-sync/migration.test.ts`, `crates/forge-core/src/user_sync/migration_tests.rs`) starts from master-format state (a web vault blob and `forge.prefs.v1`; a dg `storage.toml` with `keychain:` refs) and proves that the merged view contains every profile, policy and preference, and that the local stores are byte-identical afterwards except for additions.
 - **Sign-in request.** On networks with `forge-user`, `appId` changes from forge-core to forge-user.
   - Consequence: the wallet's "disable the previous key for the same identity/app/connection id" rule doesn't match the browser's older forge-core-app grant on the first new sign-in. That older key stays live until it expires or the user disconnects it in the wallet.
   - It loses no data, and the existing "older key from this browser" row in Settings lists it.
@@ -143,11 +143,12 @@ Registering `forge-user` on mainnet from the deployer `CL4UTHLA…` costs the am
 - **Shared storage on the maintainer's side.**
   - dg names a shared profile `share.<owner8>.<name>`, and the web app names it `shared-<name>`.
   - It is used for that repo when the clone sets no `dash.storage` of its own. A repo's own setting always wins.
-  - A repo the owner switches to Platform-only has its share emptied, and all its grants are revoked.
+  - **What a share holds.** Both clients use the same rule: the owner's synced effective policy for the repo (the synced `repo:<id>` policy, else the synced default) and the profiles it names. A policy set only in git config is never shared. Shares are compared by content, not by bytes, so dg and the web app don't rewrite each other's share.
+  - **Stopping.** A repo whose synced policy becomes Platform-only gets a share with no content at the next epoch, and all its grants are revoked. A share is never deleted, and a new share starts above the highest epoch any grant ever used, so an epoch key a removed member kept never opens later content.
   - The owner side reconciles on owner pushes (dg), on `dg collab add/remove`, and on visits to the repo's settings (web).
   - A removal writes the share at the new epoch first, then the remaining grants, and deletes the revoked grants last, so an interrupted removal never leaves new credentials at an epoch the removed member can open.
 - **Preferences** sync in the web app only: diff view, merge identity, fiat, trending, image hosts, IPFS gateways and organizations. The IPFS peer setting stays per device. A local value is never overwritten. A device reads the synced value only while its own copy is unchanged since the last sync.
-- **`dg storage use --global`** still writes `dash.storage` to the global git config, which never syncs. On a second machine the synced profiles appear, but the policy naming them has to be set there too (or in the web app's synced default).
+- **`dg storage use --global`** writes `dash.storage` to the global git config, as on master, and also records the synced default policy. Git config itself never syncs: on a second machine, pushes from dg read `dash.storage` from that machine's git config first.
 
 ## 11. Testnet proof (2026-11-25)
 
