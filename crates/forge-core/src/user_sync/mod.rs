@@ -602,18 +602,18 @@ pub enum Wanted<'a> {
     Nothing,
 }
 
-/// The epoch a reconcile writes at: the share's, one past it when a key loses access or sharing
-/// stops. With no share (one an older client deleted), past every epoch a surviving grant names,
-/// so an epoch never goes back and no key that held an earlier one reads a later one.
+/// The epoch a reconcile writes at: the share's; when a key loses access or sharing stops, one
+/// past the highest of the share's and every surviving grant's epoch. With no share (one an
+/// older client deleted), also past every grant's, so an epoch never goes back and no key that
+/// held an earlier one reads a later one.
 fn share_epoch(existing: Option<&ShareDoc>, grants: &[GrantDoc], bump: bool) -> Result<u32> {
     let next = |e: u32| e.checked_add(1).ok_or(Error::Integrity);
-    match existing {
-        Some(s) if bump => next(s.epoch),
-        Some(s) => Ok(s.epoch),
-        None => grants
-            .iter()
-            .map(|g| next(g.epoch))
-            .try_fold(0, |a, e| e.map(|e| a.max(e))),
+    let highest_grant = grants.iter().map(|g| g.epoch).max();
+    match (existing, highest_grant) {
+        (Some(s), g) if bump => next(s.epoch.max(g.unwrap_or(0))),
+        (Some(s), _) => Ok(s.epoch),
+        (None, Some(g)) => next(g),
+        (None, None) => Ok(0),
     }
 }
 
@@ -774,8 +774,10 @@ impl UserSync<'_> {
         };
         let content = match (wanted, &current) {
             (Wanted::Content(c), _) | (Wanted::Keep, Some(c)) => Some(c.clone()),
+            // Stopping, or revoking with nothing to re-encrypt, still writes an (empty) share at
+            // the new epoch, before any grant goes: it is what keeps the epoch from going back.
             (Wanted::Nothing, _) | (Wanted::Keep, None)
-                if existing.is_some() && (stop || !revoked.is_empty()) =>
+                if (existing.is_some() || !all.is_empty()) && (stop || !revoked.is_empty()) =>
             {
                 Some(ShareContent::nothing())
             }

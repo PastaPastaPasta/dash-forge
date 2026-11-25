@@ -800,3 +800,104 @@ async fn a_slot_written_by_a_newer_version_is_read_but_not_rewritten() {
     assert!(sync.merge_into(SLOT_STORAGE, &change).await.is_err());
     assert_eq!(store.writes(), 1);
 }
+
+#[tokio::test]
+async fn stopping_with_no_share_writes_the_empty_share_past_every_grant_first() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    r.store.delete_share(&r.owner, &r.repo);
+    let stopped = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(stopped.revoked, vec![r.member.clone()]);
+    assert!(stopped.share_written && !stopped.shared);
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    assert_eq!(share.epoch, 1);
+    assert!(r.store.all_grants().is_empty());
+}
+
+#[test]
+fn a_bump_goes_past_the_highest_of_the_share_and_its_grants() {
+    let doc = |epoch| GrantDoc {
+        id: None,
+        owner_id: String::new(),
+        revision: None,
+        repo_id: String::new(),
+        member_id: String::new(),
+        epoch,
+        sender_key_id: 0,
+        recipient_key_id: 0,
+        wrapped: Vec::new(),
+    };
+    let share = |epoch| ShareDoc {
+        id: None,
+        owner_id: String::new(),
+        revision: None,
+        repo_id: String::new(),
+        epoch,
+        key_id: 0,
+        nonce: [0; 12],
+        pieces: Vec::new(),
+    };
+    assert_eq!(share_epoch(Some(&share(2)), &[doc(5)], true).unwrap(), 6);
+    assert_eq!(share_epoch(Some(&share(7)), &[doc(5)], true).unwrap(), 8);
+    assert_eq!(share_epoch(Some(&share(2)), &[doc(5)], false).unwrap(), 2);
+    assert_eq!(share_epoch(None, &[doc(3), doc(1)], false).unwrap(), 4);
+    assert_eq!(share_epoch(None, &[], true).unwrap(), 0);
+    assert!(share_epoch(Some(&share(u32::MAX)), &[], true).is_err());
+}
+
+/// `forge-contracts/fixtures/user-sync/share-rule.json` (shared with forge-web's `shareRule`):
+/// every case through [`ShareRule::of`]. Entry values `"@name"` stand for `profiles[name]`, and
+/// `repo:@repo` for the fixture's repository.
+#[test]
+fn the_share_rule_matches_the_shared_fixture() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../forge-contracts/fixtures/user-sync/share-rule.json"
+    ))
+    .unwrap();
+    let repo = fixture["repo"].as_str().unwrap();
+    let cases = fixture["cases"].as_array().unwrap();
+    assert!(!cases.is_empty());
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let mut doc = SlotDoc::new(SLOT_STORAGE);
+        for (key, entry) in case["entries"].as_object().unwrap() {
+            let key = key.replace("@repo", repo);
+            let mut entry: Entry = serde_json::from_value(entry.clone()).unwrap();
+            if let Some(r) = entry.v.as_ref().and_then(Value::as_str) {
+                if let Some(p) = r.strip_prefix('@') {
+                    entry.v = Some(fixture["profiles"][p].clone());
+                }
+            }
+            doc.entries.insert(key, entry);
+        }
+        let expect = &case["expect"];
+        match (ShareRule::of(Some(&doc), repo), expect.as_str()) {
+            (ShareRule::Keep, Some("keep")) | (ShareRule::Nothing, Some("nothing")) => {}
+            (ShareRule::Content(c), None) => {
+                let names: Vec<&str> = c.profiles.keys().map(String::as_str).collect();
+                let want: Vec<&str> = expect["profiles"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                assert_eq!(names, want, "{name}: profiles");
+                assert_eq!(c.policy["targets"], expect["targets"], "{name}: targets");
+                for n in &names {
+                    let synced = doc.get(&storage::profile_key(n)).unwrap();
+                    assert_eq!(&c.profiles[*n], synced, "{name}: {n} is shared as synced");
+                }
+            }
+            (got, _) => panic!("{name}: expected {expect}, got {got:?}"),
+        }
+    }
+}
