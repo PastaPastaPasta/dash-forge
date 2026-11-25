@@ -862,6 +862,7 @@ fn an_items_sidebar_reads_its_owners_public_repositories_only() {
         group: "group".into(),
         superseded_in_group: Vec::new(),
         group_owner: None,
+        user: None,
     };
     let owner = encode_identifier(ALICE);
     let repo = RepoRef {

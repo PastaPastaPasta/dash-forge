@@ -790,7 +790,7 @@ impl KeyKind {
 
 /// Whether `id` (base58) is one of Forge's contracts, current or superseded.
 fn is_forge_contract(forge: Option<&ForgeIds>, id: &str) -> bool {
-    forge.is_some_and(|f| f.contains(id) || f.superseded_in_group.iter().any(|c| c == id))
+    forge.is_some_and(|f| f.is_group_member(id))
 }
 
 /// What an AUTHENTICATION key is, from its bounds and whether it has a budget. Mirrors
@@ -1070,6 +1070,7 @@ mod tests {
             group: "GROUP".into(),
             superseded_in_group: vec!["OLD".into()],
             group_owner: None,
+            user: None,
         }
     }
 

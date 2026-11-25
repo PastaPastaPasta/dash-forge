@@ -328,7 +328,7 @@ fn unknown_contracts(forge: &ForgeIds, members: &GroupMembers) -> BTreeSet<Strin
 }
 
 fn is_known(forge: &ForgeIds, contract: &str) -> bool {
-    forge.contains(contract) || forge.superseded_in_group.iter().any(|s| s == contract)
+    forge.is_group_member(contract)
 }
 
 /// The members this binary does not know, as `contract`, `contract (document type t)` or
@@ -387,6 +387,7 @@ mod tests {
             group: "GROUP".into(),
             superseded_in_group: vec!["OLDCOLLAB".into()],
             group_owner: Some(DEPLOYER.into()),
+            user: None,
         }
     }
 

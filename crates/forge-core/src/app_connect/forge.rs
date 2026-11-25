@@ -1,9 +1,11 @@
 //! Forge's App Connect request and rules (`forge-web/lib/auth/app-connect-v2.ts`).
 //!
-//! One request asks for ONE key: AUTHENTICATION / HIGH, bound to the dash-forge contract group,
-//! with a budget and an expiry. It covers every Forge contract, so no further grants are asked
-//! for. The request's app is forge-core (its owner is the group's owner, as the profile's owner
-//! rule needs), and no encryption key is asked for: no Forge contract allows a wallet-issued one.
+//! One request asks for ONE signing key: AUTHENTICATION / HIGH, bound to the dash-forge contract
+//! group, with a budget and an expiry. It covers every Forge contract, so no further grants are
+//! asked for. The request's app is forge-core (its owner is the group's owner, as the profile's
+//! owner rule needs). Where forge-user is registered (`identity-synced-state.md` §5), the app is
+//! forge-user instead and the request adds one ENCRYPTION binding to it: the wallet's
+//! deterministic key `E`, the same on every device restored from the same phrase.
 //!
 //! A renewal names the identity (`IDENTITY_HINT`) and carries the same connection id, and no
 //! `MODE`: wallets do not know `MODE` = renew yet, and its type is even, so a wallet that does
@@ -56,6 +58,9 @@ pub struct LoginParams {
     pub now_ms: u64,
     /// The identity a renewal is for.
     pub identity_hint: Option<Id>,
+    /// Ask for forge-user's encryption key where forge-user is registered. `false` makes the
+    /// request exactly as before it (the retry for a wallet that refuses the binding).
+    pub sync: bool,
 }
 
 /// Forge's request: one group-bound HIGH key with the proposed limits.
@@ -69,9 +74,16 @@ pub fn forge_request(
             crate::Error::Config(format!("the {what} id {text} is not a Platform id"))
         })
     };
+    let user = match (&forge.user, p.sync) {
+        (Some(user), true) => Some(id(user, "forge-user")?),
+        _ => None,
+    };
     Ok(Request {
         app_ephemeral_pub_key,
-        app_id: id(&forge.core, "forge-core")?,
+        app_id: match user {
+            Some(user) => user,
+            None => id(&forge.core, "forge-core")?,
+        },
         label: LABEL.into(),
         auth_bindings: vec![AuthBinding {
             kind: BindingKind::ContractGroup,
@@ -81,7 +93,13 @@ pub fn forge_request(
             total_budget: Some(p.budget_credits),
             expires_at_ms: Some(p.chain_now_ms.saturating_add(p.lifetime_ms)),
         }],
-        enc_bindings: vec![],
+        enc_bindings: user
+            .map(|contract_id| request::EncBinding {
+                contract_id,
+                purpose: purpose::ENCRYPTION,
+            })
+            .into_iter()
+            .collect(),
         created_at_ms: p.now_ms,
         identity_hint: p.identity_hint,
         connection_id: Some(p.connection_id),
@@ -169,7 +187,19 @@ pub struct WalletGrant {
     pub remaining_budget: u64,
     /// When it stops signing (block time, ms).
     pub expires_at_ms: u64,
+    /// forge-user's encryption key `E`, when the request asked for it and the wallet sent it.
+    pub encryption: Option<GrantedEncryption>,
     secret: SecretBytes,
+}
+
+/// The forge-user ENCRYPTION key a wallet sent, checked by the verifier: `ECDSA_SECP256K1`,
+/// MEDIUM, bound to forge-user alone, enabled, current, its public key the private key's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantedEncryption {
+    /// Its id on the identity.
+    pub key_id: u32,
+    /// The private key.
+    pub secret: SecretBytes,
 }
 
 impl WalletGrant {
@@ -194,9 +224,36 @@ impl WalletGrant {
 /// a private key that is one.
 pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, RejectReason> {
     let mut auth = grant.auth_keys.into_iter();
-    let (Some(main), None, true) = (auth.next(), auth.next(), grant.encryption_keys.is_empty())
+    let mut enc = grant.encryption_keys.into_iter();
+    let (Some(main), None, encryption, None) = (auth.next(), auth.next(), enc.next(), enc.next())
     else {
         return Err(RejectReason::Framing);
+    };
+    let encryption = match encryption {
+        None => None,
+        Some(e) => {
+            let user = forge
+                .user
+                .as_deref()
+                .and_then(decode_id)
+                .ok_or(RejectReason::Framing)?;
+            if e.role != verify::KeyRole::Encryption
+                || e.key.purpose != purpose::ENCRYPTION
+                || e.key.key_type != super::key_type::ECDSA_SECP256K1
+                || e.key.disabled
+                || e.key.bounds != Some(KeyBounds::SingleContract { contract_id: user })
+                || public_key_of(e.private_key.expose())
+                    .as_ref()
+                    .map(|p| p.as_slice())
+                    != Some(e.key.data.as_slice())
+            {
+                return Err(RejectReason::KeyUnmatched);
+            }
+            Some(GrantedEncryption {
+                key_id: e.key.id,
+                secret: e.private_key,
+            })
+        }
     };
     if main.role != verify::KeyRole::ContractGroup {
         return Err(RejectReason::Framing);
@@ -227,6 +284,7 @@ pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, Reject
         total_budget,
         remaining_budget,
         expires_at_ms,
+        encryption,
         secret: main.private_key,
     })
 }
@@ -489,6 +547,7 @@ mod tests {
             chain_now_ms: CHAIN_T0,
             now_ms: T0,
             identity_hint: hint,
+            sync: true,
         }
     }
 

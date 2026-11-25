@@ -89,12 +89,35 @@ impl IdentityPort for PlatformClient {
             .unwrap_or_default())
     }
 
-    /// Forge asks for no encryption key (no Forge contract accepts a wallet-issued one), so the
-    /// verifier never calls this; the SDK has no proved `getIdentitiesContractKeys` fetch yet.
-    async fn contract_keys(&self, _: &Id, _: &Id, _: u8) -> Result<Vec<ChainKey>> {
-        Err(Error::Config(
-            "App Connect encryption bindings are not supported here".into(),
-        ))
+    /// The identity's enabled keys of `purpose` bound to `contract_id` alone, from the proved
+    /// identity (the SDK has no proved `getIdentitiesContractKeys` fetch yet). forge-user takes
+    /// `MultipleReferenceToLatest`; the wallets reuse the deterministic key, so any enabled one
+    /// of these is the identity's.
+    async fn contract_keys(
+        &self,
+        identity_id: &Id,
+        contract_id: &Id,
+        purpose: u8,
+    ) -> Result<Vec<ChainKey>> {
+        let identity = match self.fetch_identity(&encode_identifier(*identity_id)).await {
+            Ok(identity) => identity,
+            Err(Error::NotFound) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        Ok(identity
+            .0
+            .public_keys()
+            .values()
+            .map(chain_key)
+            .filter(|k| {
+                !k.disabled
+                    && k.purpose == purpose
+                    && k.bounds
+                        == Some(KeyBounds::SingleContract {
+                            contract_id: *contract_id,
+                        })
+            })
+            .collect())
     }
 }
 

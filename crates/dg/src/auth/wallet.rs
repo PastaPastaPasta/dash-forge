@@ -278,6 +278,7 @@ pub(crate) async fn request_grant<C: WalletChain>(
                 chain_now_ms,
                 now_ms: now(),
                 identity_hint: renew,
+                sync: true,
             },
         )?;
         ui.show(&req);

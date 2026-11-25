@@ -171,7 +171,7 @@ fn with_secret_key<T>(secret: &[u8; 32], f: impl FnOnce(&secp256k1::SecretKey) -
 }
 
 /// The compressed public key of a 32-byte private key, or `None` when it is not one.
-fn public_key_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
+pub(crate) fn public_key_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
     with_secret_key(secret, |key| public_of(key).serialize())
 }
 

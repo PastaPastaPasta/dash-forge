@@ -93,6 +93,7 @@ pub(crate) mod test_http;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod user_error;
+pub mod user_sync;
 pub mod webhooks;
 
 pub use error::{Error, Result};
