@@ -26,6 +26,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as secp from '@noble/secp256k1'
 import { bytesToHex } from '@noble/hashes/utils.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 
 import { APP_CONNECT_CONTRACT_ID } from '../lib/auth/app-connect-port'
 import { base58Encode } from '../lib/auth/base58'
@@ -55,13 +56,18 @@ export function newV2Wallet(): V2Wallet {
 /** Why this wallet would refuse a request (the profile's `ac` statuses), or null when it accepts. */
 export function v2RequestRefusal(
   req: AppConnectRequest,
-  p: { readonly now: number; readonly groupId: string; readonly expectLabel?: string },
+  p: { readonly now: number; readonly groupId: string; readonly expectLabel?: string; readonly userContractId?: string },
 ): { readonly status: 'stale' | 'unsupported' | 'invalid'; readonly why: string } | null {
   const age = checkAppConnectRequestAge(req.createdAt, p.now)
   if (age !== null) return { status: 'stale', why: `request is ${age}` }
   if (req.mode !== undefined) return { status: 'unsupported', why: `unknown mode ${req.mode}` }
   if (req.authBindings.length !== 1) return { status: 'invalid', why: `${req.authBindings.length} auth bindings, Forge asks for one` }
-  if (req.encBindings.length !== 0) return { status: 'invalid', why: 'an encryption binding: no Forge contract allows wallet-issued encryption keys' }
+  if (req.encBindings.length > 1) return { status: 'invalid', why: `${req.encBindings.length} encryption bindings` }
+  for (const e of req.encBindings) {
+    if (p.userContractId === undefined || base58Encode(e.contractId) !== p.userContractId) return { status: 'invalid', why: 'an encryption binding on a contract that has not opted in' }
+    if (base58Encode(req.appId) !== p.userContractId) return { status: 'invalid', why: 'encryption must be bound to the app contract' }
+    if (e.purpose !== 1) return { status: 'invalid', why: 'only ENCRYPTION keys' }
+  }
   const [binding] = req.authBindings
   if (binding === undefined) return { status: 'invalid', why: 'no auth binding' }
   if (binding.kind !== 'contractGroup') return { status: 'invalid', why: `binding kind ${binding.kind}` }
@@ -96,6 +102,13 @@ interface IdentityFileKey {
   readonly privateKeyWif: string
 }
 
+function toBytes(v: unknown): Uint8Array {
+  if (v instanceof Uint8Array) return v
+  if (typeof v === 'string') return /^[0-9a-f]+$/i.test(v) ? Uint8Array.from(v.match(/../g)!.map((h) => parseInt(h, 16))) : Uint8Array.from(Buffer.from(v, 'base64'))
+  if (v && typeof (v as { toBytes?: unknown }).toBytes === 'function') return (v as { toBytes(): Uint8Array }).toBytes()
+  return new Uint8Array()
+}
+
 const grantKey = (identityId: string, connectionId: Uint8Array | undefined): string => `${identityId}:${connectionId ? bytesToHex(connectionId) : 'none'}`
 
 /**
@@ -119,7 +132,8 @@ export async function approveV2(p: {
   // The parsing and sealing are the vendored module's own: parse once to check, answer from the same URI.
   const parsed = parseAppConnectUri(p.uri)
   const req = parsed.request
-  const refusal = v2RequestRefusal(req, { now: (p.now ?? Date.now)(), groupId })
+  const userContractId: string | undefined = dep.user?.contractId
+  const refusal = v2RequestRefusal(req, { now: (p.now ?? Date.now)(), groupId, userContractId })
   if (refusal !== null) throw new Error(`the scripted wallet refuses this request (${refusal.status}): ${refusal.why}`)
   const binding = req.authBindings[0]!
   const budget = p.limits?.budget ?? binding.totalBudget!
@@ -149,13 +163,37 @@ export async function approveV2(p: {
     totalBudget: budget,
     expiresAt: BigInt(expiresAt),
   })
-  // One master-signed update: the new key in, the previous grant's key out.
-  await sdk.identities.update({ identity, addPublicKeys: [key], ...(live ? { disablePublicKeys: [previous] } : {}), signer })
+  // An encryption binding: like the wallets (DIP "Encryption Keys", rotation 0) the key is the same
+  // on every approval; here derived from the identity file's master key. Registered once.
+  const encSlots: Uint8Array[] = []
+  const addKeys = [key]
+  if (req.encBindings.length === 1) {
+    const contractId = base58Encode(req.encBindings[0]!.contractId)
+    const masterBytes = evo.PrivateKey.fromWIF(master.privateKeyWif).toBytes() as Uint8Array
+    const encPriv = sha256(new Uint8Array([...new TextEncoder().encode('forge-e2e/app-connect-enc/'), ...masterBytes, ...req.encBindings[0]!.contractId]))
+    const encPub = secp.getPublicKey(encPriv, true)
+    type K = { keyId: number; purpose?: unknown; data?: unknown; disabledAt?: unknown; contractBounds?: unknown }
+    const existing = identity.publicKeys.find((k: K) => k.disabledAt === undefined && bytesToHex(toBytes(k.data)) === bytesToHex(encPub))
+    if (!existing) {
+      signer.addKey(evo.PrivateKey.fromBytes(encPriv, 'testnet'))
+      addKeys.push(new evo.IdentityPublicKeyInCreation({
+        keyId: next + 1,
+        purpose: 'encryption',
+        securityLevel: 'medium',
+        keyType: 'ecdsa_secp256k1',
+        data: encPub,
+        contractBounds: evo.ContractBounds.SingleContract(contractId),
+      }))
+    }
+    encSlots.push(encPriv)
+  }
+  // One master-signed update: the new key(s) in, the previous grant's key out.
+  await sdk.identities.update({ identity, addPublicKeys: addKeys, ...(live ? { disablePublicKeys: [previous] } : {}), signer })
   p.wallet.grants.set(slot, next)
   p.wallet.added.set(identityId, [...(p.wallet.added.get(identityId) ?? []), next])
 
   // Publish the response under the identity, sealed to the request's ephemeral key.
-  const answer = await answerV2(p.uri, { ownerId: identityId, slots: [priv] })
+  const answer = await answerV2(p.uri, { ownerId: identityId, slots: [priv, ...encSlots] })
   // The identity's own HIGH authentication key signs the document, built from the identity file as wallet-responder.mjs does.
   const high = rec.identityKeys.find((x) => x.securityLevel === 'HIGH' && x.purpose === 'AUTHENTICATION')
   if (!high) throw new Error('the identity file has no HIGH authentication key')
@@ -181,6 +219,7 @@ export async function approveV2(p: {
   )
   await sdk.documents.create({ document, identityKey, signer: publisher })
   priv.fill(0)
+  for (const e of encSlots) e.fill(0)
 
   return {
     identityId,

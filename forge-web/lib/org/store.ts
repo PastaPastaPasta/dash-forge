@@ -1,4 +1,5 @@
 import { participantKeys, seedFromMnemonic, type MemberKeys } from './derive'
+import { effectiveRaw, notePrefWrite } from '../user-sync/overlay'
 
 export interface OrgMember {
   readonly index: number
@@ -43,7 +44,7 @@ function read(network: string): readonly OrgRecord[] {
   if (hit) return hit
   let list: readonly OrgRecord[] = EMPTY
   try {
-    const raw = globalThis.localStorage?.getItem(storageKey(network))
+    const raw = effectiveRaw(storageKey(network), globalThis.localStorage?.getItem(storageKey(network)) ?? null)
     const parsed = raw ? (JSON.parse(raw) as unknown) : []
     if (Array.isArray(parsed)) list = parsed.filter(validRecord).filter((r) => r.network === network)
   } catch {
@@ -57,6 +58,7 @@ function write(network: string, list: readonly OrgRecord[]): void {
   cache.set(network, list)
   try {
     globalThis.localStorage?.setItem(storageKey(network), JSON.stringify(list))
+    notePrefWrite(storageKey(network))
   } catch {
     /* storage unavailable: kept for this tab */
   }

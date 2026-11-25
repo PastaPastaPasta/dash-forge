@@ -68,6 +68,7 @@ mod signing;
 mod status;
 mod storage;
 mod storage_wizard;
+mod sync;
 mod verify_app;
 mod verify_mirror;
 mod webhook;

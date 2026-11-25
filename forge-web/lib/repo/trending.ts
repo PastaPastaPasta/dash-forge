@@ -25,6 +25,7 @@ import { DOC, asIdentifierString } from './contract'
 import { contractOf } from './source'
 import { starShape, type StarShape } from './star-shape'
 import { hasStar } from './writes'
+import { effectiveRaw, notePrefWrite } from '../user-sync/overlay'
 
 /**
  * Whether a star counts toward Trending unless the user turned it off. The owner's default
@@ -55,7 +56,7 @@ function browserStore(): Store | null {
 
 /** The stored preference, or {@link TRENDING_DEFAULT}. */
 export function trendingPref(storage: Store | null = browserStore()): boolean {
-  const raw = storage?.getItem(TRENDING_PREF_KEY) ?? null
+  const raw = effectiveRaw(TRENDING_PREF_KEY, storage?.getItem(TRENDING_PREF_KEY) ?? null)
   if (raw === 'on') return true
   if (raw === 'off') return false
   return TRENDING_DEFAULT
@@ -63,6 +64,7 @@ export function trendingPref(storage: Store | null = browserStore()): boolean {
 
 export function setTrendingPref(on: boolean, storage: Store | null = browserStore()): void {
   storage?.setItem(TRENDING_PREF_KEY, on ? 'on' : 'off')
+  notePrefWrite(TRENDING_PREF_KEY)
 }
 
 /** Which window a trending read selects: the trailing week (`oldest`) or today (`newest`). */

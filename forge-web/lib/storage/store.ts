@@ -71,6 +71,25 @@ export async function saveStorageConfig(network: Network, identityId: string, co
   await writeStorageBlob(network, identityId, parsed)
 }
 
+let writing: Promise<unknown> = Promise.resolve()
+
+/**
+ * Read, change and seal the stored configuration as one step: `change` gets the stored config and
+ * returns the one to seal (null: leave it). Every such update in this tab runs after the last, so
+ * a Settings save and settings sync never overwrite each other. Resolves to what is stored after.
+ */
+export function updateStorageConfig(network: Network, identityId: string, change: (current: StorageConfig) => StorageConfig | null): Promise<StorageConfig> {
+  const run = writing.then(async () => {
+    const current = await loadStorageConfig(network, identityId)
+    const next = change(current)
+    if (next === null) return current
+    await saveStorageConfig(network, identityId, next)
+    return next
+  })
+  writing = run.catch(() => undefined)
+  return run
+}
+
 /**
  * Delete stored storage settings this key cannot open (sealed under an earlier key, or in a
  * shape this app does not understand). The profiles in them are lost: add them again.

@@ -628,6 +628,7 @@ mod tests {
             group: String::new(),
             superseded_in_group: Vec::new(),
             group_owner: None,
+            user: None,
         }
     }
 

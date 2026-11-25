@@ -65,7 +65,15 @@ struct State {
     /// The key a wallet granted, per `<network>/<identity>`.
     #[serde(default)]
     wallet_keys: BTreeMap<String, u32>,
+    /// The App Connect app each of those keys was granted to (`forge-user` or `forge-core`);
+    /// absent for a key granted before forge-user existed, which was forge-core's.
+    #[serde(default)]
+    wallet_apps: BTreeMap<String, String>,
 }
+
+/// The app a sign-in request names: [`APP_FORGE_USER`] or [`APP_FORGE_CORE`].
+const APP_FORGE_USER: &str = "forge-user";
+const APP_FORGE_CORE: &str = "forge-core";
 
 fn wallet_key_name(network: &str, identity_id: &str) -> String {
     format!("{network}/{identity_id}")
@@ -77,7 +85,7 @@ fn state_path() -> Result<PathBuf> {
 
 /// The lock held while the state file `path` is read, changed and saved, so two dg runs at
 /// once do not drop each other's entries (also `key-origins.toml`, [`super::origin`]).
-pub(super) fn lock_state(path: &Path) -> Result<std::fs::File> {
+pub(crate) fn lock_state(path: &Path) -> Result<std::fs::File> {
     let lock = path.with_extension("lock");
     if let Some(dir) = lock.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -135,13 +143,31 @@ impl State {
         Ok((id, false))
     }
 
-    fn record_wallet_key(path: &Path, network: &str, identity_id: &str, key_id: u32) -> Result<()> {
+    fn record_wallet_key(
+        path: &Path,
+        network: &str,
+        identity_id: &str,
+        key_id: u32,
+        app: &str,
+    ) -> Result<()> {
         let _lock = lock_state(path)?;
         let mut state = Self::load(path)?;
-        state
-            .wallet_keys
-            .insert(wallet_key_name(network, identity_id), key_id);
+        let name = wallet_key_name(network, identity_id);
+        state.wallet_keys.insert(name.clone(), key_id);
+        state.wallet_apps.insert(name, app.to_string());
         state.save(path)
+    }
+
+    /// The app the recorded wallet key of `identity_id` on `network` was granted to.
+    fn wallet_app(path: &Path, network: &str, identity_id: &str) -> String {
+        Self::load(path)
+            .ok()
+            .and_then(|s| {
+                s.wallet_apps
+                    .get(&wallet_key_name(network, identity_id))
+                    .cloned()
+            })
+            .unwrap_or_else(|| APP_FORGE_CORE.to_string())
     }
 
     fn wallet_key(path: &Path, network: &str, identity_id: &str) -> Option<u32> {
@@ -237,6 +263,7 @@ pub(crate) trait LoginUi: Sync {
 /// computer holds a key a wallet granted it under that connection id (which the wallet disables
 /// when it answers): the request then carries it as `IDENTITY_HINT`, as the web app's renewal
 /// does, and only that identity's answer is read.
+#[allow(clippy::too_many_arguments)] // the request's parts, the chain and the terminal
 pub(crate) async fn request_grant<C: WalletChain>(
     chain: &C,
     network: &Network,
@@ -244,9 +271,11 @@ pub(crate) async fn request_grant<C: WalletChain>(
     proposal: Proposal,
     connection_id: [u8; 16],
     renew: Option<Id>,
+    sync: bool,
     ui: &impl LoginUi,
 ) -> Result<WalletGrant> {
     let renewing = renew.is_some();
+    let sync_asked = sync && forge.user.is_some();
     let protocol = chain
         .protocol_version()
         .await
@@ -278,6 +307,7 @@ pub(crate) async fn request_grant<C: WalletChain>(
                 chain_now_ms,
                 now_ms: now(),
                 identity_hint: renew,
+                sync,
             },
         )?;
         ui.show(&req);
@@ -292,7 +322,7 @@ pub(crate) async fn request_grant<C: WalletChain>(
         match await_forge_grant(chain, req, forge, &opts).await {
             Ok(grant) => return Ok(grant),
             Err(LoginError::Expired(_)) if ui.again()? => {}
-            Err(e) => return Err(login_error(network, &e, renewing)),
+            Err(e) => return Err(login_error(network, &e, renewing, sync_asked)),
         }
     }
 }
@@ -308,7 +338,12 @@ fn nothing_stored(renewing: bool, what: &str) -> String {
 }
 
 /// A sign-in that ended without a key, with what to do.
-fn login_error(network: &Network, e: &LoginError, renewing: bool) -> anyhow::Error {
+fn login_error(
+    network: &Network,
+    e: &LoginError,
+    renewing: bool,
+    sync_asked: bool,
+) -> anyhow::Error {
     let testnet = matches!(network, Network::Testnet);
     let u = match e {
         LoginError::Expired(read_error) => {
@@ -317,6 +352,9 @@ fn login_error(network: &Network, e: &LoginError, renewing: bool) -> anyhow::Err
                 .fix(format!("run `{RENEW}` again and scan the new code: {SCAN_HOW}"));
             if testnet {
                 u = u.fix(TESTNET_WALLET);
+            }
+            if sync_asked {
+                u = u.fix(format!("if your wallet showed an error for the code, it may not know the settings-sync request yet: `{RENEW} --wallet --no-sync`"));
             }
             if let Some(read) = read_error {
                 u = u.note(format!("the last read of Platform failed: {read}"));
@@ -737,6 +775,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         proposal,
         connection_id,
         renew,
+        !args.no_sync,
         &ui,
     )
     .await;
@@ -763,19 +802,29 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let main_slot = store::main_slot_sources(&network, &grant.identity_id)?;
     let held = held_keys(ctx, main_slot, &grant.identity_id);
     guard_replacement(ctx, &held, renewing)?;
-    let left_live = left_live(
-        &held,
-        &grant,
-        State::wallet_key(&state, &network, &grant.identity_id),
-        |id| identity.key_disabled(id) == Some(false),
-    );
+    // A request naming forge-user is a new app to the wallet, so it may not disable the key it
+    // granted this computer under forge-core: the chain says whether it did.
+    let app = if forge.user.is_some() && !args.no_sync {
+        APP_FORGE_USER
+    } else {
+        APP_FORGE_CORE
+    };
+    let previous = State::wallet_key(&state, &network, &grant.identity_id)
+        .filter(|_| State::wallet_app(&state, &network, &grant.identity_id) == app);
+    let left_live = left_live(&held, &grant, previous, |id| {
+        identity.key_disabled(id) == Some(false)
+    });
     let opened: Vec<&BridgeIdentity> = held.iter().filter_map(|h| h.key.as_ref().ok()).collect();
     let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &opened);
     let text = stored_text(&grant, ctx.network(), &network, &encryption)?;
-    let stored = store::Storer::new(args.storage.insecure_plaintext)
+    let mut key_store = store::Storer::new(args.storage.insecure_plaintext);
+    let stored = key_store
         .store(&network, &grant.identity_id, &text, store::Slot::Main)
         .map_err(|e| not_stored(&e, grant.key_id, renewing))?;
-    if let Err(e) = State::record_wallet_key(&state, &network, &grant.identity_id, grant.key_id) {
+    let sync_key = keep_sync_key(ctx, &mut key_store, &network, &grant);
+    if let Err(e) =
+        State::record_wallet_key(&state, &network, &grant.identity_id, grant.key_id, app)
+    {
         if !ctx.json {
             eprintln!("note: signed in, but `dg auth status` will not know the key came from your wallet ({e:#})");
         }
@@ -791,6 +840,26 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .map_err(|e| not_default(&e, &grant.identity_id, grant.key_id, &stored))?;
 
     let kept_ids: Vec<u32> = encryption.iter().map(|k| k.id).collect();
+    // No new key (`--no-sync`, or one the wallet did not send): a key kept from an earlier
+    // sign-in of this identity still syncs, so say so rather than "off".
+    let sync_key = sync_key.or_else(|| {
+        forge.user.as_ref()?;
+        match forge_core::user_sync::key::load(&network, &grant.identity_id) {
+            forge_core::user_sync::LocalKey::Held(key) => Some(key),
+            _ => None,
+        }
+    });
+    let sync_label = match (&sync_key, forge.user.as_deref()) {
+        (_, None) => "unavailable",
+        (None, Some(_)) => "off",
+        (Some(key), Some(contract)) => {
+            if let Ok(bridge) = BridgeIdentity::from_source_text(text.expose()) {
+                let writer = crate::sync::Writer::new(&client, &bridge, &identity);
+                crate::sync::ensure_first_sync(ctx, &writer, key, contract).await;
+            }
+            "on"
+        }
+    };
     let balance = identity.balance();
     ctx.emit(
         super::group::with_group_fields(
@@ -814,6 +883,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "balanceDash": credits_to_dash(balance),
                 "renew": RENEW,
                 "previousKeyLeftLive": left_live,
+                "settingsSync": sync_label,
             }),
             Some(&checked),
         ),
@@ -825,6 +895,14 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             );
             super::print_kept_encryption(&kept_ids);
             println!("  stored in {}", stored.describe());
+            if grant.encryption_dropped && sync_label != "on" {
+                println!("  your wallet's settings-sync key could not be used, so this computer signed in without sync");
+            }
+            match sync_label {
+                "on" => println!("  storage settings sync with your identity across devices"),
+                "off" => println!("  {}", crate::sync::OFF_HINT),
+                _ => {}
+            }
             println!(
                 "  balance {} DASH{}",
                 dash_amount(credits_to_dash(balance)),
@@ -837,6 +915,39 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// Keep the forge-user key `E` the wallet sent beside the signing key (keychain first, else the
+/// sealed file, through `storer` so a passphrase is asked once). `None` when there is none or it
+/// could not be kept: sign-in works either way, without sync.
+fn keep_sync_key(
+    ctx: &Ctx,
+    storer: &mut store::Storer,
+    network: &str,
+    grant: &WalletGrant,
+) -> Option<forge_core::user_sync::SyncKey> {
+    let enc = grant.encryption.as_ref()?;
+    let key = forge_core::user_sync::SyncKey::new(
+        network,
+        &grant.identity_id,
+        enc.key_id,
+        enc.secret.clone(),
+    )
+    .ok()?;
+    match storer.store(
+        network,
+        &grant.identity_id,
+        &key.to_text(),
+        store::Slot::Sync,
+    ) {
+        Ok(_) => Some(key),
+        Err(e) => {
+            if !ctx.json {
+                eprintln!("note: settings sync is off on this computer: its key could not be stored ({e:#})");
+            }
+            None
+        }
+    }
 }
 
 /// `e` as a [`UserError`] of its own code, cause and fixes, or an unexpected one.
@@ -1123,6 +1234,7 @@ mod tests {
             proposal(),
             [5; 16],
             renew,
+            true,
             &ui,
         )
         .await;
@@ -1302,9 +1414,11 @@ mod tests {
         assert_eq!(State::connection_id(&path, "testnet").unwrap(), (id, true));
         assert_ne!(State::connection_id(&path, "devnet-sakura").unwrap().0, id);
         assert_eq!(State::wallet_key(&path, "testnet", "ALICE"), None);
-        State::record_wallet_key(&path, "testnet", "ALICE", 7).unwrap();
-        State::record_wallet_key(&path, "testnet", "ALICE", 9).unwrap();
+        assert_eq!(State::wallet_app(&path, "testnet", "ALICE"), APP_FORGE_CORE);
+        State::record_wallet_key(&path, "testnet", "ALICE", 7, APP_FORGE_CORE).unwrap();
+        State::record_wallet_key(&path, "testnet", "ALICE", 9, APP_FORGE_USER).unwrap();
         assert_eq!(State::wallet_key(&path, "testnet", "ALICE"), Some(9));
+        assert_eq!(State::wallet_app(&path, "testnet", "ALICE"), APP_FORGE_USER);
         assert_eq!(State::wallet_key(&path, "devnet-sakura", "ALICE"), None);
         // Recording a key keeps the connection id.
         assert_eq!(State::connection_id(&path, "testnet").unwrap().0, id);
@@ -1577,6 +1691,7 @@ mod tests {
         let err = login_error(
             &Network::Testnet,
             &LoginError::Ambiguous(vec!["A".into(), "B".into()]),
+            true,
             true,
         );
         assert!(user_error(&err)

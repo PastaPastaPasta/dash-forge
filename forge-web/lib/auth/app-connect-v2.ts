@@ -4,8 +4,10 @@
  * One request asks for ONE key: AUTHENTICATION / HIGH, bound to the dash-forge contract group, with
  * Forge's default budget and expiry ({@link defaultLimits}, from chain time). It covers every Forge
  * contract, so no further grants are asked for. The request's app is forge-core (its owner is the
- * group's owner, as the profile's owner rule needs); no encryption key is asked for, since no Forge
- * contract allows a wallet-issued one (members-only content is set up in Settings).
+ * group's owner, as the profile's owner rule needs). Where forge-user is deployed
+ * (docs/design/identity-synced-state.md §5) the app is forge-user instead, and the request also
+ * asks for its ENCRYPTION key, the one key every wallet login of the identity derives alike: it
+ * syncs settings. A response without it signs in all the same, without sync.
  *
  * A wallet that approves registers the key (disabling the key of its previous grant for this
  * browser's connection id, `./connection-id`) and publishes a `loginKeyResponse` in the App
@@ -30,6 +32,7 @@ import * as secp from '@noble/secp256k1'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
+import { KeyPurpose, KeyType } from '../vendor/platform-auth/app-connect/types'
 import { withTimeout } from '../timeout'
 import type { ForgeIds } from '../deployments'
 import {
@@ -40,8 +43,12 @@ import {
   appConnectRequestHash,
   buildAppConnectUri,
   listAppConnectCandidates,
+  openAppConnectPayload,
   verifyAppConnectCandidate,
+  verifyAppConnectKeys,
+  type AppConnectCandidate,
   type AppConnectGrant,
+  type AppConnectVerification,
   type AppConnectRejectReason,
   type AppConnectRequest,
 } from '../vendor/platform-auth/app-connect'
@@ -108,12 +115,15 @@ export function forgeV2Request(
     readonly now: number
     /** The identity a renewal is for. */
     readonly identityHint?: string
+    /** Ask for forge-user's encryption key where it is deployed (default); false: the request of a build without sync. */
+    readonly sync?: boolean
   },
 ): AppConnectRequest {
   const limits = defaultLimits(p.chainNow)
+  const sync = syncContract(forge, p.sync)
   return {
     appEphemeralPubKey: p.appEphemeralPubKey,
-    appId: decodeIdentifier(forge.core),
+    appId: decodeIdentifier(sync ?? forge.core),
     label: APP_CONNECT_LABEL,
     authBindings: [
       {
@@ -124,7 +134,7 @@ export function forgeV2Request(
         expiresAt: limits.expiresAt,
       },
     ],
-    encBindings: [],
+    encBindings: sync !== null ? [{ contractId: decodeIdentifier(sync), purpose: KeyPurpose.ENCRYPTION }] : [],
     createdAt: requestCreatedAt(p.now, p.chainNow),
     connectionId: p.connectionId,
     ...(p.identityHint !== undefined ? { identityHint: decodeIdentifier(p.identityHint) } : {}),
@@ -132,8 +142,39 @@ export function forgeV2Request(
   }
 }
 
+/** The contract whose encryption key a request asks for: forge-user where deployed, unless `sync` is false. */
+export function syncContract(forge: ForgeIds, sync = true): string | null {
+  return sync && forge.user !== undefined ? forge.user : null
+}
+
+/** Where the app of this browser's wallet grant for an identity is noted (removed with the vault). */
+function grantedAppKey(networkKey: string, identityId: string): string {
+  return `forge:user-sync:app:${networkKey}:${identityId}`
+}
+
+/** Note the app a stored grant's request named (`syncContract`: forge-user, or null for forge-core). */
+export function recordGrantedApp(networkKey: string, identityId: string, syncContract: string | null): void {
+  try {
+    if (syncContract === null) localStorage.removeItem(grantedAppKey(networkKey, identityId))
+    else localStorage.setItem(grantedAppKey(networkKey, identityId), syncContract)
+  } catch {
+    /* storage refused: a renewal then asks as before sync */
+  }
+}
+
+/** The forge-user contract a stored grant's request named, or null (forge-core, or not noted). */
+export function grantedApp(networkKey: string, identityId: string): string | null {
+  try {
+    return localStorage.getItem(grantedAppKey(networkKey, identityId))
+  } catch {
+    return null
+  }
+}
+
 export interface V2LoginRequest {
   readonly request: AppConnectRequest
+  /** forge-user, when the request asks for its encryption key; null otherwise. */
+  readonly syncContract: string | null
   /** For the QR code: no callback (a shorter code, and the phone has no Forge tab to return to). */
   readonly qrUri: string
   /** For a wallet on this device: the same request, with the callback when one was given. */
@@ -165,6 +206,7 @@ export function newV2LoginRequest(
     readonly identityHint?: string
     readonly now?: number
     readonly callbackUrl?: (requestHash: Uint8Array) => string | null
+    readonly sync?: boolean
   },
 ): V2LoginRequest {
   const now = p.now ?? Date.now()
@@ -175,12 +217,14 @@ export function newV2LoginRequest(
     chainNow: p.chainNow,
     now,
     ...(p.identityHint !== undefined ? { identityHint: p.identityHint } : {}),
+    ...(p.sync !== undefined ? { sync: p.sync } : {}),
   })
   const requestHash = appConnectRequestHash(request)
   const callback = p.callbackUrl?.(requestHash)
   const qrUri = buildAppConnectUri(request, network)
   return {
     request,
+    syncContract: syncContract(forge, p.sync),
     qrUri,
     linkUri: callback ? buildAppConnectUri(request, network, callback) : qrUri,
     requestHash,
@@ -293,10 +337,58 @@ export class PollTrigger {
   }
 }
 
+/** `c`'s keys but slot `slot`, verified against the request's auth binding alone; null when they do not verify. */
+async function withoutSlot(
+  req: V2LoginRequest,
+  c: AppConnectCandidate,
+  port: ReturnType<typeof appConnectPort>,
+  now: number,
+  slot: number,
+): Promise<AppConnectVerification | null> {
+  let slots: Uint8Array[]
+  try {
+    slots = await openAppConnectPayload({ appEphemeralPrivateKey: req.appEphemeralPriv, ownerId: decodeIdentifier(c.ownerId), walletEphemeralPubKey: c.walletEphemeralPubKey, encryptedPayload: c.encryptedPayload })
+  } catch {
+    return null
+  }
+  const dropped = slots.splice(slot, 1)
+  for (const d of dropped) d.fill(0)
+  if (slots.length === 0) return null
+  const verdict = await verifyAppConnectKeys({ request: { authBindings: req.request.authBindings, encBindings: [] }, ownerId: c.ownerId, identity: port, now, privateKeys: slots })
+  if (verdict.ok) return verdict
+  for (const s of slots) s.fill(0)
+  return null
+}
+
 /** A verified v2 grant: the answering identity and its key, checked by Forge's own rules. */
 export interface V2Grant {
   readonly identityId: string
   readonly key: WalletKey
+  /** forge-user's encryption key (settings sync), when the request asked and the wallet sent it; the holder wipes `secret`. */
+  readonly syncKey?: { readonly keyId: number; readonly secret: Uint8Array }
+}
+
+/** Wipe a grant's sync key (once stored, or when the grant is dropped). */
+export function wipeGrant(grant: V2Grant | null): void {
+  grant?.syncKey?.secret.fill(0)
+}
+
+/**
+ * Whether a granted encryption key is forge-user's sync key: ECDSA_SECP256K1, ENCRYPTION, MEDIUM, bound to
+ * forge-user alone, not disabled, and its public key is the private key's. (The vendored verifier
+ * checked the same and that Platform resolves it as the contract's current key; checked again
+ * here because this is what Forge relies on.)
+ */
+export function isSyncKey(granted: AppConnectGrant['encryptionKeys'][number], contract: string): boolean {
+  const k = granted.key
+  if (granted.role !== 'encryption' || k.purpose !== KeyPurpose.ENCRYPTION || k.type !== KeyType.ECDSA_SECP256K1 || k.securityLevel !== KeySecurityLevel.MEDIUM) return false
+  if (k.disabledAt !== undefined || k.bounds?.kind !== 'singleContract' || k.bounds.contractId !== contract) return false
+  try {
+    const pub = secp.getPublicKey(granted.privateKey, true)
+    return pub.length === k.data.length && pub.every((b, i) => b === k.data[i])
+  } catch {
+    return false
+  }
 }
 
 /** Rejections that mean "not an answer to this request" (another request's, or tampered). */
@@ -307,10 +399,18 @@ const NOT_AN_ANSWER: ReadonlySet<AppConnectRejectReason> = new Set(['decrypt', '
  * {@link findWalletKey} (group-bound, AUTHENTICATION / HIGH, live, with its budget and expiry).
  * Null when the node read does not show the key yet. The grant's private keys are zeroed.
  */
-async function grantOf(sdk: EvoSDK, grant: AppConnectGrant, p: { readonly network: Network; readonly forge: ForgeIds }): Promise<V2Grant | null> {
+async function grantOf(
+  sdk: EvoSDK,
+  grant: AppConnectGrant,
+  p: { readonly network: Network; readonly forge: ForgeIds; readonly syncContract: string | null },
+): Promise<V2Grant | null> {
   try {
     const [main, ...others] = grant.authKeys
-    if (!main || others.length > 0 || grant.encryptionKeys.length > 0 || main.role !== 'contractGroup') throw new WalletGrantRefused('framing')
+    if (!main || others.length > 0 || main.role !== 'contractGroup') throw new WalletGrantRefused('framing')
+    const [sent, ...moreEnc] = grant.encryptionKeys
+    if (moreEnc.length > 0 || (sent !== undefined && p.syncContract === null)) throw new WalletGrantRefused('framing')
+    // A sync key Forge cannot use is left out: sync stays off, the sign-in goes on.
+    const enc = sent !== undefined && p.syncContract !== null && isSyncKey(sent, p.syncContract) ? sent : undefined
     let key: WalletKey | null
     try {
       key = await findWalletKey(sdk, { identityId: grant.identityId, wif: encodeWif(main.privateKey, p.network), forge: p.forge, network: p.network })
@@ -320,7 +420,7 @@ async function grantOf(sdk: EvoSDK, grant: AppConnectGrant, p: { readonly networ
     }
     if (key === null) return null
     if (key.keyId !== main.key.id || isUnlimited(key) || key.scope.unbounded) throw new WalletGrantRefused('key-limits')
-    return { identityId: grant.identityId, key }
+    return { identityId: grant.identityId, key, ...(enc !== undefined ? { syncKey: { keyId: enc.key.id, secret: enc.privateKey.slice() } } : {}) }
   } finally {
     for (const g of [...grant.authKeys, ...grant.encryptionKeys]) g.privateKey.fill(0)
   }
@@ -370,6 +470,7 @@ export async function awaitV2Grant(
   const notAnswers = new Set<string>()
   let cleanSince = 0
   let firstAt = 0
+  let returned: V2Grant | null = null
   try {
     for (;;) {
       if (p.signal?.aborted) throw new DOMException('cancelled', 'AbortError')
@@ -385,14 +486,19 @@ export async function awaitV2Grant(
         let answer: V2Grant | UnusableWalletKey | null = null
         try {
           const chainNow = req.chainTimeAtCreation + (now() - req.createdAt)
-          const verdict = await verifyAppConnectCandidate({ request: req.request, appEphemeralPrivateKey: req.appEphemeralPriv, candidate: c, identity: port, now: chainNow })
+          let verdict = await verifyAppConnectCandidate({ request: req.request, appEphemeralPrivateKey: req.appEphemeralPriv, candidate: c, identity: port, now: chainNow })
+          // Refused for one slot: when the others verify against the auth binding alone, that slot
+          // was the optional sync key, and the sign-in goes on without it.
+          if (!verdict.ok && !verdict.retryable && !NOT_AN_ANSWER.has(verdict.reason) && req.syncContract !== null && verdict.slot !== undefined) {
+            verdict = (await withoutSlot(req, c, port, chainNow, verdict.slot)) ?? verdict
+          }
           if (!verdict.ok && NOT_AN_ANSWER.has(verdict.reason)) {
             notAnswers.add(contents)
             continue
           }
           // It opened: this identity saw the QR and answered, whatever its key turns out to be.
           responders.add(c.ownerId)
-          if (verdict.ok) answer = await grantOf(sdk, verdict.grant, { network: p.network, forge: p.forge })
+          if (verdict.ok) answer = await grantOf(sdk, verdict.grant, { network: p.network, forge: p.forge, syncContract: req.syncContract })
           else if (!verdict.retryable) answer = new WalletGrantRefused(verdict.reason)
         } catch (e) {
           // Only reads fail past the decryption: this identity answered; check it again next poll.
@@ -415,6 +521,7 @@ export async function awaitV2Grant(
       const only = [...answered.values()].find((a) => a !== null)
       if (only && cleanSince !== 0 && t - Math.max(firstAt, cleanSince) >= settleMs) {
         if (only instanceof UnusableWalletKey) throw only
+        returned = only
         return only
       }
       const delay = p.intervalMs ?? appConnectPollDelayMs(t - req.createdAt)
@@ -423,5 +530,6 @@ export async function awaitV2Grant(
     }
   } finally {
     disposeV2Request(req)
+    for (const a of answered.values()) if (a !== returned && a !== null && !(a instanceof UnusableWalletKey)) wipeGrant(a)
   }
 }

@@ -30,6 +30,7 @@ use forge_core::storage::publish::{
 };
 use forge_core::storage::{human_bytes, ResolvedPolicy, StoragePolicy, StorageProfiles};
 use forge_core::user_error::{codes, dash, UserError};
+use forge_core::user_sync::repo::PushStorage;
 
 use crate::git::LocalRepo;
 use crate::options::OptionState;
@@ -107,24 +108,34 @@ fn confirm_mode(remote: Option<&str>) -> Result<ConfirmMode> {
 }
 
 impl PushPolicy {
-    /// Load the policy for a push through `remote` (the git remote name, when named).
-    pub fn load(remote: Option<&str>) -> Result<Self> {
+    /// Load the policy for a push through `remote` (the git remote name, when named), with the
+    /// identity's synced storage (`identity-synced-state.md` §7): its
+    /// profiles are added to storage.toml's (which wins on a name), and its policy is used when
+    /// git config sets no `dash.storage`.
+    pub fn load_with(remote: Option<&str>, synced: Option<&PushStorage>) -> Result<Self> {
         let storage = config_value(remote, "dashStorage", "storage");
-        let raw = StoragePolicy::from_git_values(
-            storage.as_deref(),
-            config_value(remote, "dashReplicas", "replicas").as_deref(),
-            config_value(remote, "dashPlatformFallback", "platformFallback").as_deref(),
-        )?;
+        let storage_set = storage.as_ref().is_some_and(|v| !v.trim().is_empty());
+        let synced_policy = synced
+            .and_then(|s| s.policy.clone())
+            .filter(|_| !storage_set);
+        let raw = match &synced_policy {
+            Some(p) => p.clone(),
+            None => StoragePolicy::from_git_values(
+                storage.as_deref(),
+                config_value(remote, "dashReplicas", "replicas").as_deref(),
+                config_value(remote, "dashPlatformFallback", "platformFallback").as_deref(),
+            )?,
+        };
         // Profiles are only needed when the policy names one; a Platform-only push must
         // keep working even if storage.toml is broken or absent.
-        let profiles = if raw.is_platform_only() {
-            StorageProfiles::load().unwrap_or_default()
-        } else {
-            StorageProfiles::load()?
+        let profiles = match synced {
+            Some(s) => s.effective.profiles.clone(),
+            None if raw.is_platform_only() => StorageProfiles::load().unwrap_or_default(),
+            None => StorageProfiles::load()?,
         };
         let resolved = raw.resolve(&profiles)?;
         let cost_warn_threshold = cost_warn_threshold(remote)?;
-        let storage_configured = storage.is_some_and(|v| !v.trim().is_empty());
+        let storage_configured = storage_set || synced_policy.is_some();
         let confirm = confirm_mode(remote)?;
         let allow_private_uri = config_value(remote, "dashAllowPrivateUri", "allowPrivateUri")
             .map(|v| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))
@@ -158,7 +169,16 @@ impl PushPolicy {
     /// push option `allow-private-uri`, `dash.allowPrivateUri` or the profile's
     /// `allow_private_uri` allows it.
     pub fn load_for_push(remote: Option<&str>, options: &OptionState) -> Result<Self> {
-        let policy = Self::load(remote)?;
+        Self::load_for_push_with(remote, options, None)
+    }
+
+    /// [`Self::load_for_push`] with the identity's synced storage ([`Self::load_with`]).
+    pub fn load_for_push_with(
+        remote: Option<&str>,
+        options: &OptionState,
+        synced: Option<&PushStorage>,
+    ) -> Result<Self> {
+        let policy = Self::load_with(remote, synced)?;
         policy.check_publishable(options.has_push_option(ALLOW_PRIVATE_URI_PUSH_OPTION))?;
         Ok(policy)
     }

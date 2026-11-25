@@ -18,7 +18,7 @@ mod new;
 pub(crate) mod origin;
 mod rekey;
 pub mod store;
-mod wallet;
+pub(crate) mod wallet;
 
 use std::path::PathBuf;
 
@@ -138,6 +138,7 @@ pub struct StorageArgs {
 /// `dg auth login` arguments. With nothing to sign in from (no file, --mnemonic, --full-key or
 /// --replace), it signs in with a DashPay wallet, as `--wallet` does.
 #[derive(Debug, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // independent clap flags
 pub struct LoginArgs {
     /// The identity file (bridge export, `dg auth export`, or mint-identity output). Also
     /// accepted via --identity. Without one (or --mnemonic), dg signs in with your wallet.
@@ -157,6 +158,11 @@ pub struct LoginArgs {
     /// Replace this limited key (disable it in the same update), e.g. the one a lost laptop held.
     #[arg(long, value_name = "KEY_ID", conflicts_with = "full_key")]
     pub replace: Option<u32>,
+    /// With --wallet: don't ask the wallet for the key that syncs your storage settings across
+    /// devices (for a wallet that shows an error for the sign-in code). A sync key kept from an
+    /// earlier sign-in still syncs; `dg auth logout` removes it.
+    #[arg(long)]
+    pub no_sync: bool,
     #[command(flatten)]
     pub limits: KeyLimitArgs,
     #[command(flatten)]

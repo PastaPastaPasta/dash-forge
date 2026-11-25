@@ -270,6 +270,18 @@ struct DeploymentFile {
     /// The forge-v2 record `deploy-v2.mjs` read-modify-writes (`forge-contracts/scripts`).
     #[serde(default)]
     v2: Option<V2Record>,
+    /// forge-user (`docs/design/identity-synced-state.md`): absent where it is not registered.
+    #[serde(default)]
+    user: Option<UserRecord>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserRecord {
+    #[serde(default)]
+    contract_id: Option<String>,
+    #[serde(default)]
+    contract_group_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -412,6 +424,7 @@ impl V2Record {
             group,
             superseded_in_group,
             group_owner,
+            user: None,
         })
     }
 }
@@ -442,6 +455,9 @@ pub struct ForgeIds {
     /// neither the group's owner nor forge-core's.
     /// The group must also have no admins (`deploy-v2.mjs` registers none).
     pub group_owner: Option<String>,
+    /// forge-user (settings that follow the identity), a member of the same group; `None`
+    /// where it is not registered (mainnet, until the owner registers it).
+    pub user: Option<String>,
 }
 
 impl ForgeIds {
@@ -465,6 +481,14 @@ impl ForgeIds {
         self.all().iter().any(|(_, id)| *id == contract_id)
     }
 
+    /// Whether `contract_id` is a Forge member of the group: a current or superseded Forge
+    /// contract, or forge-user.
+    pub fn is_group_member(&self, contract_id: &str) -> bool {
+        self.contains(contract_id)
+            || self.superseded_in_group.iter().any(|c| c == contract_id)
+            || self.user.as_deref() == Some(contract_id)
+    }
+
     /// Whether a key with `bounds` is unbound or bound to Forge: a Forge contract (current, or
     /// superseded in the group), any document type of one, or the Forge contract group. A key
     /// bound to another app's contract or group is not Forge's to use.
@@ -472,9 +496,7 @@ impl ForgeIds {
         use crate::platform::KeyBounds;
         match bounds {
             None => true,
-            Some(KeyBounds::Contract { id, .. }) => {
-                self.contains(id) || self.superseded_in_group.contains(id)
-            }
+            Some(KeyBounds::Contract { id, .. }) => self.is_group_member(id),
             Some(KeyBounds::ContractGroup { id }) => *id == self.group,
         }
     }
@@ -491,6 +513,7 @@ impl ForgeIds {
             group: "G".into(),
             superseded_in_group: vec![],
             group_owner: None,
+            user: None,
         }
     }
 
@@ -591,7 +614,15 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
         key: key.to_string(),
         dapi_addresses,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
-        v2: file.v2.as_ref().and_then(V2Record::ids),
+        v2: file.v2.as_ref().and_then(V2Record::ids).map(|mut ids| {
+            ids.user = file
+                .user
+                .as_ref()
+                .filter(|u| u.contract_group_id.as_deref() == Some(ids.group.as_str()))
+                .and_then(|u| u.contract_id.clone())
+                .filter(|s| !s.is_empty());
+            ids
+        }),
         retired: file.retired,
     }))
 }
@@ -1071,6 +1102,7 @@ mod tests {
                 .filter_map(|r| r["contractId"].as_str().map(str::to_string))
                 .collect(),
             group_owner: Some(on_disk("/v2/contractGroup/owner")),
+            user: None,
         }
     }
 
@@ -1193,6 +1225,7 @@ mod tests {
                 group: "G".into(),
                 superseded_in_group: vec![],
                 group_owner: None,
+                user: None,
             })
         );
         // Three contracts: forge-community's own id, and its superseded ones in the group
@@ -1211,6 +1244,7 @@ mod tests {
                 group: "G".into(),
                 superseded_in_group: vec!["OLDM".into()],
                 group_owner: None,
+                user: None,
             })
         );
         // Four contracts (D44): forge-meta's id, and its superseded ones in the group

@@ -442,13 +442,38 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     if !narrow_text.is_empty() {
         eprintln!("{}", narrow_text.trim_start());
     }
-    // A role already held writes nothing (a keyed repository's wrap may still).
-    let spent = if held && !keyed && post_keys.as_ref().is_none_or(|p| p.sent.is_empty()) {
+    let demoted = change_from == Some(Role::Maintainer) && role != Role::Maintainer;
+    let shared = if role == Role::Maintainer || demoted {
+        crate::sync::after_membership_change(ctx, &s, demoted.then_some(member)).await
+    } else {
+        None
+    };
+    let shared_wrote = shared
+        .as_ref()
+        .is_some_and(|d| d.share_written || !d.granted.is_empty() || !d.revoked.is_empty());
+    // A role already held writes nothing (a keyed repository's wrap, or its shared storage, may
+    // still): measured after every write of this command.
+    let spent = if held
+        && !keyed
+        && !shared_wrote
+        && post_keys.as_ref().is_none_or(|p| p.sent.is_empty())
+    {
         0
     } else {
         s.spent_since(before).await
     };
     let key_pending = (keyed || post_key) && !can_receive;
+    let storage_shared = shared.as_ref().map(|d| {
+        if d.revoked.iter().any(|m| m == member) {
+            "revoked"
+        } else if d.waiting.iter().any(|m| m == member) {
+            "after-wallet-sign-in"
+        } else if d.shared {
+            "shared"
+        } else {
+            "nothing-to-share"
+        }
+    });
     let price = ctx.fiat_price();
     ctx.emit(
         json!({
@@ -468,6 +493,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "keyPending": key_pending,
             "postKeySent": post_keys.as_ref().is_some_and(|p| !p.sent.is_empty()),
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
+            "storageShared": storage_shared,
         }),
         || {
             println!(
@@ -493,6 +519,12 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             }
             if let Some(r) = &rotation {
                 crate::keys::print_rotation(handle, r);
+            }
+            match storage_shared {
+                Some("shared") => println!("  {member} pushes to your storage for this repository (Platform fees stay theirs)"),
+                Some("after-wallet-sign-in") => println!("  {member} gets your storage for this repository after signing in with a wallet once"),
+                Some("revoked") => println!("  {}", crate::sync::rotate_line(member)),
+                _ => {}
             }
         },
     );
@@ -618,6 +650,14 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // after the rotation: the pinned environments saved again, unless changed meanwhile. Also
     // when they were gone already: a run that stopped before its saves is finished this way.
     let (resaved, exposed_lines) = crate::env::finish_removal(&s, &removal).await;
+    // Also when the membership was already gone: a removal run again finishes the revocation.
+    let storage_revoked = if stays_maintainer {
+        false
+    } else {
+        crate::sync::after_membership_change(ctx, &s, Some(member))
+            .await
+            .is_some_and(|d| d.revoked.iter().any(|m| m == member))
+    };
     let (relettered, narrow_text) = narrow.save(&s).await;
     if !narrow_text.is_empty() {
         eprintln!("{}", narrow_text.trim_start());
@@ -635,6 +675,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
             "environmentPlan": removal.regroup_json(),
             "resavedEnvironments": resaved,
             "branchesShared": relettered,
+            "sharedStorageRevoked": storage_revoked,
         }),
         || {
             if !dropped.is_empty() {
@@ -654,6 +695,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
                     shown.label(),
                     handle.display()
                 );
+                if storage_revoked {
+                    println!("  {}", crate::sync::rotate_line(member));
+                }
             } else {
                 println!(
                     "{member} doesn't have {} access to {}; nothing to remove.{exposed_lines}",

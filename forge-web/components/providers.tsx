@@ -5,6 +5,7 @@ import { useEffect, type ReactNode } from 'react'
 import { AuthProvider } from '@/contexts/auth-context'
 import { InboxPoller } from '@/hooks/use-inbox'
 import { OrgPoller } from '@/hooks/use-orgs'
+import { UserSyncDriver } from '@/hooks/use-user-sync'
 import { dapiReadAddresses, DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { installDapiFetchGate } from '@/lib/sdk/budget'
 import { stopPrehydrationCatcher } from '@/lib/prehydration'
@@ -43,6 +44,7 @@ export function Providers({ children }: { children: ReactNode }): JSX.Element {
         {/* Once, app-wide: page navigations remount the header, never the poller. */}
         <InboxPoller />
         <OrgPoller />
+        <UserSyncDriver />
         {children}
       </AuthProvider>
     </ThemeProvider>

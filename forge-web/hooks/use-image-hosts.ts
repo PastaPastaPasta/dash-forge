@@ -9,6 +9,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { IMAGE_HOSTS_KEY, parseImageHosts } from '@/lib/view/markdown-links'
+import { effectiveRaw, notePrefWrite } from '@/lib/user-sync/overlay'
 
 const EMPTY_HOSTS: readonly string[] = []
 const hostListeners = new Set<() => void>()
@@ -24,6 +25,7 @@ function readHosts(): readonly string[] {
   } catch {
     raw = null
   }
+  raw = effectiveRaw(IMAGE_HOSTS_KEY, raw)
   if (raw !== hostsRaw) {
     hostsRaw = raw
     hostsCached = parseImageHosts(raw)
@@ -55,6 +57,7 @@ export function allowHost(host: string, always: boolean): void {
     const next = [...new Set([...readHosts(), host])]
     try {
       window.localStorage.setItem(IMAGE_HOSTS_KEY, JSON.stringify(next))
+      notePrefWrite(IMAGE_HOSTS_KEY)
     } catch {
       /* private mode: this session only */
     }

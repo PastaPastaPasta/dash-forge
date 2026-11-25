@@ -50,7 +50,7 @@ pub const PLATFORM_PROFILE: &str = "platform";
 pub const STORAGE_CONFIG_ENV: &str = "DASH_FORGE_STORAGE_CONFIG";
 
 /// A reference to a secret held outside the profiles file.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum SecretRef {
     /// An environment variable name (`env:R2_SECRET_ACCESS_KEY`).
     Env(String),
@@ -63,7 +63,32 @@ pub enum SecretRef {
         /// Keychain account name.
         account: String,
     },
+    /// A secret held in memory only: a profile synced with the identity
+    /// ([`crate::user_sync`]). It never serializes, so it can never reach storage.toml.
+    Value(Secret),
 }
+
+impl PartialEq for SecretRef {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (SecretRef::Env(a), SecretRef::Env(b)) => a == b,
+            (
+                SecretRef::Keychain { service, account },
+                SecretRef::Keychain {
+                    service: s2,
+                    account: a2,
+                },
+            ) => service == s2 && account == a2,
+            (SecretRef::Value(a), SecretRef::Value(b)) => {
+                use subtle::ConstantTimeEq as _;
+                bool::from(a.expose().as_bytes().ct_eq(b.expose().as_bytes()))
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for SecretRef {}
 
 impl std::fmt::Debug for SecretRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,6 +102,7 @@ impl std::fmt::Display for SecretRef {
         match self {
             SecretRef::Env(v) => write!(f, "env:{v}"),
             SecretRef::Keychain { service, account } => write!(f, "keychain:{service}/{account}"),
+            SecretRef::Value(_) => f.write_str("synced"),
         }
     }
 }
@@ -134,6 +160,11 @@ impl From<SecretRef> for String {
 
 impl Serialize for SecretRef {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        if matches!(self, SecretRef::Value(_)) {
+            return Err(serde::ser::Error::custom(
+                "a synced secret is held in memory only and is never written to storage.toml",
+            ));
+        }
         s.serialize_str(&self.to_string())
     }
 }
@@ -164,6 +195,7 @@ impl SecretRef {
                     Err(why) => Err(Error::Config(format!("secret {self}: {why}"))),
                 }
             }
+            SecretRef::Value(secret) => Ok(secret.clone()),
         }
     }
 
@@ -522,6 +554,17 @@ impl Profile {
             Profile::IpfsKubo(p) => p.allow_private_uri,
             Profile::IpfsPinningService(p) => p.allow_private_uri,
             Profile::Platform(_) => false,
+        }
+    }
+
+    /// Turn `allow_private_uri` off: a profile someone else wrote never records a non-public
+    /// address from this machine.
+    pub fn forbid_private_uri(&mut self) {
+        match self {
+            Profile::S3(p) => p.allow_private_uri = false,
+            Profile::IpfsKubo(p) => p.allow_private_uri = false,
+            Profile::IpfsPinningService(p) => p.allow_private_uri = false,
+            Profile::Platform(_) => {}
         }
     }
 

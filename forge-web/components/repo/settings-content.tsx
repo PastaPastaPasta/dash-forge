@@ -44,6 +44,9 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
+import { RepoShareNotes, RotateCredentialsNote } from '@/components/storage/repo-share-notes'
+import { useRepoStorageShare } from '@/hooks/use-repo-share'
+import { useUserSyncStatus } from '@/hooks/use-user-sync'
 import { PrivateMembers } from '@/components/repo/private-members'
 import { MemberEnvOutcomeView, MemberEnvPlanView, useMemberEnvFlow } from '@/components/repo/member-env-plan'
 import type { MemberChange } from '@/lib/env/member-change'
@@ -138,6 +141,13 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     { enabled: ready && sdk !== null },
   )
   const memberRows = members.data ?? []
+  // Maintainers use the owner's storage (forge-user): the share and grants, and a removal's epoch.
+  const share = useRepoStorageShare(repo)
+  // Settings sync carries this choice to the identity's other devices: the hint says so only then.
+  const syncKind = useUserSyncStatus().kind
+  const syncOn = syncKind === 'synced' || syncKind === 'syncing'
+  // A removed maintainer could have copied the shared credentials: say so once.
+  const [rotate, setRotate] = useState(false)
   // The identity the owner tried to add before they accepted: the invite is pending on them.
   const [awaiting, setAwaiting] = useState<string | null>(null)
   // A member added to a repo with members-only content before they have an encryption key.
@@ -222,10 +232,16 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       done.kind === 'change'
         ? rows.some((m) => m.identity === done.member && m.role === done.to)
         : rows.some((m) => m.identity === done.member && m.role === done.role) === (done.kind === 'grant')
-    await retryWhileMissing(async () => {
+    const confirmed = await retryWhileMissing(async () => {
       invalidateMembers(repo, network)
       return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
     }, 8)
+    // A maintainer again, and it reads back: this tab grants them the owner's storage again.
+    if (confirmed === true && ((done.kind === 'grant' && done.role === 'maintainer') || (done.kind === 'change' && done.to === 'maintainer'))) share.afterAdd(done.member)
+    // Once the removal reads back: the owner's storage moves to a new epoch without them.
+    if (done.role === 'maintainer' && (done.kind === 'revoke' || (done.kind === 'change' && done.to !== 'maintainer'))) {
+      setRotate(await share.afterRemoval(done.member).catch(() => false))
+    }
     members.reload()
   }
   const maintainer = viewerRole === 'maintainer'
@@ -449,6 +465,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         </ConfirmDialog>
         {org.dialog}
         <MemberEnvOutcomeView home={home} flow={envFlow} />
+        {rotate ? <RotateCredentialsNote /> : null}
         </>
         )}
       </Section>
@@ -465,8 +482,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           </Card>
           {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
           {!(viewer.known && viewerRole === null) ? (
-            <Card title="Your browser pushes" hint="Only you see this: it stays in this browser.">
+            <Card title="Your browser pushes" hint={syncOn ? 'Only you see this.' : 'Only you see this: it stays in this browser.'}>
               <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
+              <RepoShareNotes waiting={share.waiting} memberNeedsKey={share.memberNeedsKey} />
             </Card>
           ) : null}
         </Section>
