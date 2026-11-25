@@ -672,7 +672,8 @@ fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> 
     let cause = at_risk.join("; ");
     if !ctx.yes {
         eprintln!("The wallet's key would replace what this computer stores: {cause}.");
-        let prompt = "Sign in with the wallet's key instead (dg's own stored copy is overwritten; keep your recovery words)?";
+        let prompt =
+            "Sign in with the wallet's key instead (a key dg replaces is first copied beside it)?";
         if ctx.ask(prompt, false)? {
             return Ok(());
         }
@@ -692,7 +693,7 @@ fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> 
             .fix("set DASH_FORGE_PASSPHRASE (or run it in a terminal) so dg can open the key file");
     }
     Err(u
-        .fix(format!("keep using it, or `dg auth logout` (keep your recovery words) and run `{RENEW}` again"))
+        .fix(format!("keep using it, or run `{RENEW}` in a terminal and confirm: dg first copies a key it replaces beside it"))
         .note(nothing_stored(renewing, "the key your wallet added stays on the identity until you disconnect Dash Forge in the wallet (More → Tools → Connections)"))
         .into())
 }
@@ -883,6 +884,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "balanceDash": credits_to_dash(balance),
                 "renew": RENEW,
                 "previousKeyLeftLive": left_live,
+                "previousKeyKeptAt": store::kept_this_run(),
                 "settingsSync": sync_label,
             }),
             Some(&checked),
@@ -943,7 +945,7 @@ fn keep_sync_key(
         Ok(_) => Some(key),
         Err(e) => {
             if !ctx.json {
-                eprintln!("note: settings sync is off on this computer: its key could not be stored ({e:#})");
+                eprintln!("note: the settings-sync key could not be stored ({e:#}); a sync key this computer already keeps stays in use");
             }
             None
         }
