@@ -237,11 +237,8 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
         }
     }
     node.config.add_forge_origins();
-    node.config.set_link_origin(Some(
-        args.origin
-            .first()
-            .map_or(ctx.network().web_origin(), String::as_str),
-    ))?;
+    node.config
+        .set_link_origin(args.origin.first().map(String::as_str))?;
     node.config.validate()?;
     if let Some(existing) = StorageProfiles::load()?.get(&node.config.name) {
         if !matches!(existing, Profile::IpfsKubo(ref p) if p.api == node.api()) {

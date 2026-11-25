@@ -55,7 +55,7 @@ Running it again is safe. It keeps the same kubo, repo, pins and tokens, so brow
 
 ### Your own Forge address
 
-The node only talks to websites on its allow-list. Both Forge web apps, `https://forge.dashhq.org` (mainnet) and `https://testnet-forge.dashhq.org` (testnet), are always on it. The link `dg ipfs up` prints opens the web app of the network `dg` uses; `dg ipfs connect --origin https://testnet-forge.dashhq.org` prints one for testnet. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
+The node only talks to websites on its allow-list. Both Forge web apps, `https://forge.dashhq.org` (mainnet) and `https://testnet-forge.dashhq.org` (testnet), are always on it. The link `dg ipfs up` prints opens forge.dashhq.org. On testnet-forge.dashhq.org, paste the code instead, or get a testnet link with `dg ipfs connect --origin https://testnet-forge.dashhq.org`. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
 
 ```sh
 dg ipfs up --origin https://forge.example.org

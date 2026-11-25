@@ -86,7 +86,7 @@ export function KuboConnectView({ storage, fragmentOnly = false, showUnlock = tr
         <h3 className="font-medium">Run one command</h3>
         {browser?.command ? <>
           <CopyBlock text={browser.command} label="Copy the node setup command" />
-          <p>It sets up IPFS on this computer and prints a link that connects it here. Needs <Link className="underline" href={DOCS.install}>dg</Link>.</p>
+          <p>It sets up IPFS on this computer and prints a link and a code to connect it. Needs <Link className="underline" href={DOCS.install}>dg</Link>.</p>
         </> : <p>Open Forge from its own address to connect a node.</p>}
         <label className="block">Or paste the code <code>dg ipfs up</code> printed<Input aria-label="Connection code" autoComplete="off" spellCheck={false} placeholder="XXXX-XXXX-XXXX" onChange={(e) => setCode(e.target.value)} /></label>
         <details><summary className="cursor-pointer">Advanced</summary><label>Port<Input aria-label="Node port" type="number" min={1} max={65535} value={port} onChange={(e) => setPort(e.target.value)} /></label></details>
