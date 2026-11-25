@@ -29,7 +29,7 @@ Without `--storage`, both commands use the first profile in your storage policy 
 ## What it costs
 
 - **Copying** is free on Platform: it only uses your own disk or bucket.
-- **A pin** writes one pack mirror record per pack: `dg` quotes up to 0.00075 DASH each (measured about 0.0005, 0.0006 for a repository's first). `dg repo unpin` deletes them and refunds part of that.
+- **A pin** writes one pack mirror record per pack: `dg` quotes up to 0.00075 DASH each (measured about 0.0005, 0.0006 for a repository's first). `dg repo unpin` deletes them and refunds most of that, as its prompt says (on testnet, less as the records age; see [Refunds](costs.md#refunds)).
 - **A fork** costs what it did before, plus a few bytes for each extra address in its manifests.
 
 ## Private repositories

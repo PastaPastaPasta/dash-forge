@@ -10,6 +10,7 @@ This guide covers:
    - [The quick way: `dg storage add` asks](#the-quick-way-dg-storage-add-asks)
    - [In the browser: the storage wizard](#in-the-browser-the-storage-wizard)
    - [Storage settings that follow your identity (testnet)](#storage-settings-that-follow-your-identity-testnet)
+   - [macOS: no dialog for what Forge stored](#macos-no-dialog-for-what-forge-stored)
 2. [An S3-compatible bucket](#an-s3-compatible-bucket) (step by step on a NAS: [Storage on your home NAS](home-nas-storage.md))
 3. [IPFS: your own kubo node](#ipfs-your-own-kubo-node)
 4. [Choosing where a repo pushes](#choosing-where-a-repo-pushes)
@@ -80,7 +81,7 @@ Testing nas …
   [ OK ] put            wrote probe/… (signed PUT)
   [ OK ] get            read back identical bytes (signed GET)
   [ OK ] public read    anonymous GET https://s3.example.org/forge/probe/… OK
-  [FAIL] browser CORS   the CORS preflight from https://testnet-forge.dashhq.org answered 403 Forbidden — allow the `Range` request header for the web app's origin
+  [FAIL] browser CORS   …; the CORS preflight from https://testnet-forge.dashhq.org answered 403 Forbidden — allow the `Range` request header for the web app's origin
   [ OK ] delete         probe removed
   → Garage, RustFS and most S3-compatible stores take this document through the S3 API: save it as cors.json and run `aws --endpoint-url <your endpoint> s3api put-bucket-cors --bucket forge --cors-configuration file://cors.json`: …
     then run `dg storage test nas`
@@ -115,9 +116,9 @@ The web app has the same setup at **Settings → Storage** (`/settings/storage`)
 
 On **testnet**, your storage profiles (credentials included) and your default storage (`dg storage use --global`, or the web app's default) can follow your identity to every device where you sign in with a Dash wallet. Forge encrypts them with a key the wallet derives from your recovery phrase, and keeps them in the `forge-user` contract on Platform. Only that wallet key opens them; Platform nodes and other readers see only that you have synced settings, their sizes and when they changed ([design](../design/identity-synced-state.md)).
 
-- **When it is on:** after `dg auth login --wallet` (dg says `storage settings sync with your identity across devices`) or a wallet sign-in in the web app. A passkey, an identity file or a pasted key does not turn it on, and `dg auth login --wallet --no-sync` signs in without it.
+- **When it is on:** after `dg auth login --wallet` (dg says `storage settings sync with your identity across devices`) or a wallet sign-in in the web app. A passkey, an identity file or a pasted key does not turn it on. `dg auth login --wallet --no-sync` doesn't ask the wallet for the sync key, but a key kept from an earlier sign-in still syncs until `dg auth logout`.
 - **In the web app** the per-repository choice (a repository's **Settings → Your browser pushes**) follows too.
-- **In `dg`:** `dg storage list` marks each profile `local`, `synced` or `local+synced`. Synced secrets are held in memory only, never written to `storage.toml`. A profile in `storage.toml` wins over a synced one of the same name. Git config itself does not sync: on another machine, `dash.storage` comes from that machine's git config first.
+- **In `dg`:** `dg storage list` marks each profile `local`, `synced`, `local+synced`, `local (synced copy differs)` or `shared`. Synced secrets are held in memory only, never written to `storage.toml`. A profile in `storage.toml` wins over a synced one of the same name. Git config itself does not sync: on another machine, `dash.storage` comes from that machine's git config first.
 - **Where to see it:** Settings → Storage shows a collapsed **Synced with your identity** line, or **On this device only** with how to turn it on.
 - **Nothing local is deleted.** `storage.toml` and the browser vault keep their own copies.
 

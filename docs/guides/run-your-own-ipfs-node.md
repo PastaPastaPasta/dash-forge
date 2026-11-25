@@ -155,7 +155,7 @@ In `dg`:
 dg storage use kubo
 ```
 
-To keep a second copy elsewhere, list both: `dg storage use r2-main,kubo`. [Choosing where a repo pushes](bring-your-own-storage.md#choosing-where-a-repo-pushes) has the details.
+To keep a second copy elsewhere, list both: `dg storage use nas,kubo`. [Choosing where a repo pushes](bring-your-own-storage.md#choosing-where-a-repo-pushes) has the details.
 
 One caution, from [Bring your own storage](bring-your-own-storage.md#ipfs-your-own-kubo-node):
 

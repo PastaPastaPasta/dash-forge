@@ -28,6 +28,7 @@ Storage, IPFS, hosting, limits and costs docs, checked against `origin/master` a
 | 22 | "Two cautions" followed by one | run-your-own-ipfs-node.md:160 | wrong, fixed | One bullet |
 | 23 | Browser table: Edge, Firefox, Brave "work" | run-your-own-ipfs-node.md:137-142 | wrong (untested), fixed | Only Chrome 158 was tested (#727 body); no record of Edge, Brave or Firefox |
 | 24 | Web Pin: `Update pin (N new)`, 512 MiB browser cap, copyable `dg repo pin … --follow` | run-your-own-ipfs-node.md:275-279; pin-and-fork.md:12 | ok / stale, fixed | `forge-web/lib/storage/pin-copies.ts:165-168`; `components/repo/pin-button.tsx:68,106`. pin-and-fork said "Update pin" |
+| 24b | "`dg repo unpin` … refunds most of that" | pin-and-fork.md:32 | ok | Matches the CLI prompt (`repo_pin.rs:483`); on testnet the refund shrinks as records age (costs.md Refunds) |
 | 25 | `dg repo pin/unpin/fork --storage/--no-copy/sync` | pin-and-fork.md:16-27 | ok | `dg repo --help`, `dg repo fork --help`; `repo_pin.rs:37-55` |
 | 26 | Link text "Self-host a storage backend" | pin-and-fork.md:8 | wrong, fixed | The page is "Run your own backend" |
 | 27 | backend.sh: kubo 0.43.1, Caddy 2.11.7, host networking, IPv4+IPv6 | self-host-backend.md:25-30 | ok | `backend.sh:53-54,224,239,263` (ip4 and ip6 swarm addresses) |
@@ -53,9 +54,9 @@ Storage, IPFS, hosting, limits and costs docs, checked against `origin/master` a
 | 47 | Badge and share-link examples open forge.dashhq.org | forge-gateway.md:196,204-207 | wrong, fixed | git-forge serves testnet repos and opens testnet-forge |
 | 48 | `GATEWAY_LISTEN` defaults `127.0.0.1:8080` / image `0.0.0.0:8080` | forge-gateway.md:113 | ok, missing IPv6 note, fixed | `services/forge-gateway/src/config.rs:33`, `Dockerfile:77`; added `[::1]` / `[::]` |
 | 49 | VPS DNS "an A (and AAAA) record" | forge-gateway.md:158 | stale (dual stack), fixed | Now A and AAAA, with the proxy on both |
-| 50 | Egress firewall: IPv6 rules commented out | forge-gateway.md:244-255 | stale (dual stack), fixed | Full ip6tables block, for a compose network with `enable_ipv6` |
+| 50 | Egress firewall: IPv6 rules commented out | forge-gateway.md:244-255 | stale (dual stack), fixed | Full ip6tables block, for a compose network with `enable_ipv6`, including the LAN's global IPv6 prefix (a home LAN rarely uses `fc00::/7`) and an ip6tables allow exception |
 | 51 | IPv6 rate limits by /64 and /48 | forge-gateway.md:230; services/forge-gateway/README.md:28 | ok | `services/forge-gateway/src/limits.rs` |
-| 52 | Pages workflow reads `PAGES_GATEWAY_URL` | forge-gateway.md:343 | missing, fixed | Testnet uses `TESTNET_SITE_GATEWAY_URL` (`pages-testnet.yml:70-71`) |
+| 52 | Pages workflow reads `PAGES_GATEWAY_URL`; "set `PAGES_GATEWAY_URL` to `https://git-forge.dashhq.org`" | forge-gateway.md:343-345,394 | missing / wrong, fixed | Testnet uses `TESTNET_SITE_GATEWAY_URL` (`pages-testnet.yml:70-71`); the mainnet deploy refuses a gateway whose `/readyz` names another network (`docs/launch/mainnet-runbook.md:26`) |
 | 53 | "dashhq runs one for forge.dashhq.org" (notify) | docs/hosting/forge-notify.md:5 | wrong, fixed | `notify-forge.dashhq.org` doesn't resolve; no `PAGES_NOTIFY_URL` or `TESTNET_SITE_NOTIFY_URL` variable |
 | 54 | Notify `.env` example: testnet with the mainnet web URL | forge-notify.md:84-86 | wrong, fixed | Now `mainnet` |
 | 55 | `FORGE_NOTIFY_LISTEN` default `0.0.0.0:8080` | forge-notify.md:121 | ok, missing IPv6 note, fixed | `services/forge-notify/src/config.rs:34` |
@@ -73,6 +74,8 @@ Storage, IPFS, hosting, limits and costs docs, checked against `origin/master` a
 
 - **webcopy-repo:** the IPFS connect page's Safari notice says "Use dg to push, or Chrome, Firefox or Brave" (`forge-web/lib/storage/kubo-connect.ts:31`); only Chrome was tested. The Pin dialog's no-storage copy says "an S3 or R2 bucket" (`components/repo/pin-button.tsx`).
 - **cli:** `dg storage add --kind s3` help lists "AWS S3, Cloudflare R2, Backblaze B2, MinIO" (`main.rs:2411`), and `--endpoint`/`--region` examples use R2/B2.
+- **guides-identity:** `docs/guides/identity-and-keys.md:336` says passkeys work "at https://forge.dashhq.org only"; `testnet-forge.dashhq.org` is allowed too (row 61).
+- **install:** `docs/roadmap.md:110` says storage credentials "never go on-chain"; on testnet an encrypted copy does (row 2).
 - **guides-ops:** economics.md and costs.md cite the testnet registration cost; the mainnet one (2026-11-24) belongs in deploying-to-a-network.md.
 
 ## Product questions

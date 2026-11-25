@@ -39,7 +39,7 @@ Delivery only. Every notice is a hint that links back to forge-web, which reads 
 
 ## What you need
 
-| | Minimum | dashhq (planned, forge.dashhq.org) |
+| | Minimum | dashhq (forge.dashhq.org, if it runs one) |
 |---|---|---|
 | Host | 1 vCPU, 512 MiB RAM, Docker | An LXC or VM on the home Proxmox, Docker Compose |
 | Disk | 1 GiB for the SQLite store (about 2 KiB per subscriber plus pending digests) | 5 GiB volume |
@@ -148,7 +148,7 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 The service speaks plain HTTP on the host's loopback. Put TLS in front of it:
 
 - **Cloudflare tunnel (dashhq).** Add a public hostname `notify-forge.dashhq.org` → `http://localhost:8080` to the tunnel. Cloudflare sets `CF-Connecting-IP` and overwrites any value a client sends, so keep `FORGE_NOTIFY_TRUST_PROXY=cloudflare`. No inbound port is opened. Keep the hostname one level under the zone: Cloudflare's free certificate does not cover a deeper name such as `notify.forge.dashhq.org` (see [forge-gateway](forge-gateway.md#dns-and-tls)).
-- **Caddy or nginx.** An `A`/`AAAA` record for the hostname, a certificate (Caddy gets one by itself), and `reverse_proxy 127.0.0.1:8080`, with `FORGE_NOTIFY_TRUST_PROXY=forwarded`. The service reads only the last `X-Forwarded-For` entry, the one your proxy appends; earlier entries come from the client.
+- **Caddy or nginx.** An `A` record and an `AAAA` record for the hostname (IPv4 and IPv6), a proxy listening on both, a certificate (Caddy gets one by itself), and `reverse_proxy 127.0.0.1:8080`, with `FORGE_NOTIFY_TRUST_PROXY=forwarded`. The service reads only the last `X-Forwarded-For` entry, the one your proxy appends; earlier entries come from the client.
 
 If the host can be reached without the proxy, set `FORGE_NOTIFY_TRUST_PROXY=none`. Otherwise anyone can pick their own rate-limit key.
 

@@ -112,7 +112,7 @@ Every setting is a flag (`forge-gateway --help`) and an environment variable. Em
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GATEWAY_LISTEN` | `127.0.0.1:8080` (image: `0.0.0.0:8080`) | Listen address. Both defaults are IPv4. To listen on IPv6 too, use `[::1]:8080` for loopback only, or `[::]:8080`, which on Linux also accepts IPv4. |
+| `GATEWAY_LISTEN` | `127.0.0.1:8080` (image: `0.0.0.0:8080`) | Listen address. Both defaults are IPv4. `[::]:8080` listens on IPv6 and, on Linux, IPv4 too. `[::1]:8080` is IPv6 loopback only, in place of 127.0.0.1. |
 | `GATEWAY_DATA_DIR` | `./forge-gateway-data` (image: `/data`) | Mirrors, manifests and the Platform read cache. |
 | `GATEWAY_PUBLIC_URL` | `http://<listen>` | This gateway's public URL, used in feeds, previews and the index page. Never taken from the request's `Host`. |
 | `GATEWAY_WEB_URL` | `https://forge.dashhq.org` | The web app links point at. Name the site of `DASH_FORGE_NETWORK`'s network. |
@@ -253,16 +253,19 @@ iptables -I DOCKER-USER -s "$SUBNET" -m conntrack --ctstate ESTABLISHED,RELATED 
 iptables -I INPUT -s "$SUBNET" -m conntrack --ctstate NEW -j REJECT
 
 # The same for IPv6. Docker gives the compose network an IPv6 subnet only when it has
-# `enable_ipv6: true`; with one, apply these too (docker network inspect shows the subnet):
+# `enable_ipv6: true`, and fills the ip6tables DOCKER-USER chain only with its ip6tables
+# option on (the default since Docker 27). An IPv6 LAN usually uses global addresses from
+# the ISP's prefix, so name that prefix too; add 64:ff9b::/96 if the network runs NAT64.
 SUBNET6=fd00:db8:1::/64
-for net in fc00::/7 fe80::/10; do
+LAN6=2001:db8:abcd::/56
+for net in fc00::/7 fe80::/10 "$LAN6"; do
   ip6tables -I DOCKER-USER -s "$SUBNET6" -d "$net" -j REJECT
 done
 ip6tables -I DOCKER-USER -s "$SUBNET6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ip6tables -I INPUT -s "$SUBNET6" -m conntrack --ctstate NEW -j REJECT
 ```
 
-Rules inserted with `-I` go first, so the `ESTABLISHED` rule, inserted last, keeps replies flowing. If the forge-relay of `GATEWAY_WAKE_URL` (or a DAPI node) is on the LAN, allow exactly its address and port by running `iptables -I DOCKER-USER -s "$SUBNET" -d <address> -p tcp --dport <port> -j ACCEPT` after the rules above, so it lands above the rejects. Make the rules persistent the way the host does (`iptables-persistent`, or the Proxmox firewall on the LXC or VM, which can express the same rules per guest).
+Rules inserted with `-I` go first, so the `ESTABLISHED` rule, inserted last, keeps replies flowing. If the forge-relay of `GATEWAY_WAKE_URL` (or a DAPI node) is on the LAN, allow exactly its address and port by running `iptables -I DOCKER-USER -s "$SUBNET" -d <address> -p tcp --dport <port> -j ACCEPT` (or, for an IPv6 address, `ip6tables -I DOCKER-USER -s "$SUBNET6" -d <address> -p tcp --dport <port> -j ACCEPT`) after the rules above, so it lands above the rejects. Make the rules persistent the way the host does (`iptables-persistent`, or the Proxmox firewall on the LXC or VM, which can express the same rules per guest).
 
 ## Takedowns and hidden repositories
 
@@ -350,7 +353,7 @@ The same variable turns **Copy link** on a public repository's pages into a [sha
 
 For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads the URL and the label from repository variables, so turning the gateway on or off needs no code change. The testnet site's workflow (`pages-testnet.yml`) reads `TESTNET_SITE_GATEWAY_URL` and `TESTNET_SITE_GATEWAY_LABEL` the same way; dashhq's gateway is set there, and `PAGES_GATEWAY_URL` is unset, so the mainnet site shows no HTTPS line.
 
-1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` to `https://git-forge.dashhq.org`, and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
+1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` to a gateway of the site's own network (for forge.dashhq.org, a mainnet gateway such as `https://git.example.org`; for the testnet site, `TESTNET_SITE_GATEWAY_URL`), and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
 2. Deploy: **Actions → Deploy forge-web to Pages → Run workflow** on master (or push to master). Don't re-run an older run: that deploys its older commit.
 
 Delete the variable and deploy again to hide the HTTPS line. A value that is not an `https://` or `http://` URL, or that carries a query, a fragment or credentials, is ignored, and the row stays hidden. Set it only once the gateway answers: the clone box doesn't check that the gateway is up before it shows the row. The deploy fails when the gateway's `/readyz` names a different network from the build's (`PAGES_NETWORK`), so moving the site to another network means moving or unsetting the gateway too; a gateway it cannot reach only warns.
@@ -391,6 +394,6 @@ What the owner provides; the software is ready:
 2. **The hostname:** `git-forge.dashhq.org` (or another), added as a public hostname on a Cloudflare tunnel → `http://localhost:8080` (dashboard step, or a Cloudflare API token scoped to the tunnel and the `dashhq.org` DNS zone).
 3. **Build and start:** the commands under [Run it](#run-it), with `GATEWAY_PUBLIC_URL=https://git-forge.dashhq.org`.
 4. **Optional, for seconds-fresh mirrors:** a forge-relay with `[wake]` listing the repositories, and its secret in `GATEWAY_WAKE_SECRET_FILE`.
-5. **The web app:** set the repository variable `PAGES_GATEWAY_URL` (and `PAGES_GATEWAY_LABEL`), then deploy ([Show it in the web app](#show-it-in-the-web-app)).
+5. **The web app:** set the variable for the site of the gateway's network, `TESTNET_SITE_GATEWAY_URL` for testnet-forge.dashhq.org or `PAGES_GATEWAY_URL` for a mainnet gateway on forge.dashhq.org (and the matching label), then deploy ([Show it in the web app](#show-it-in-the-web-app)).
 6. **An abuse and privacy contact,** filled into the privacy notice, and the notice published (for example on the gateway's index page or the docs site).
 7. **Software Heritage (optional):** ask SWH to allowlist the gateway's domain, so public repositories can be archived from their HTTPS URLs.
