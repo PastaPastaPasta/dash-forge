@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -34,23 +34,21 @@ test('x1. explore lists recent repos, trending, most starred and most forked, an
   await expect(recent.locator('a[href*="/repo"]').first()).toBeVisible({ timeout: 60_000 })
   // Trending and Most starred are proved ranked reads (C-1); no "needs an indexer" note.
   await expect(page.getByTestId('trending-note')).toHaveCount(0)
-  const trending = page.getByTestId('explore-trending')
-  await expect(trending.getByRole('heading', { name: /Trending (this week|today)/ })).toBeVisible()
   // Its time-range read lands in a fresh tab, though it can be the page's first query: the SDK
-  // learns the protocol version (14 or more for `timeRange`) before the page queries.
-  // Test fixtures (`e2e-…`) are left out of the rankings; a list of only them says so.
-  await expect(trending.getByTestId('ranked-row').first().or(trending.getByText(/^(No repo has \d+ new stars|Only repos made by Forge's automated tests)/))).toBeVisible({ timeout: 60_000 })
+  // starts at the protocol version (14 or more for `timeRange`) the deployment's snapshots prove.
+  // Test fixtures (`e2e-…`) are left out of the rankings.
+  const trending = page.getByTestId('explore-trending')
+  if (await shownOnceSettled(trending, 'ranked-row')) await expect(trending.getByRole('heading', { name: /Trending (this week|today)/ })).toBeVisible()
   await expect(trending.getByText('That read did not land')).toHaveCount(0)
-  await expect(page.getByTestId('explore-most-starred').getByRole('heading', { name: 'Most starred' })).toBeVisible()
+  const starred = page.getByTestId('explore-most-starred')
+  if (await shownOnceSettled(starred, 'ranked-row')) await expect(starred.getByRole('heading', { name: 'Most starred' })).toBeVisible()
   // Most forked (ranked repo.forkOf, fresh core): the repos that are not forks form the index's
   // null group, which is never shown as a row.
   const forked = page.getByTestId('explore-most-forked')
-  await expect(forked.getByRole('heading', { name: 'Most forked' })).toBeVisible()
-  await expect(forked.getByTestId('ranked-row').first().or(forked.getByText(/^(No repo on this network has been forked yet\.|Only repos made by Forge's automated tests)/))).toBeVisible({ timeout: 60_000 })
+  if (await shownOnceSettled(forked, 'ranked-row')) await expect(forked.getByRole('heading', { name: 'Most forked' })).toBeVisible()
   expect(await forked.getByTestId('ranked-row').evaluateAll((els) => els.filter((el) => !el.getAttribute('data-repo-id')).length)).toBe(0)
   const released = page.getByTestId('explore-recently-released')
-  await expect(released).toContainText('no cross-repo index')
-  await expect(released.locator('[data-empty], li').first()).toBeVisible({ timeout: 60_000 })
+  if (await shownOnceSettled(released, 'release-row')) await expect(released).toContainText('no cross-repo index')
   await expect(page.getByText(/sign in to see your repos/i)).toBeVisible()
   await shot(page, 'd-explore-signed-out')
   const serious = await runAxe(page, 'explore')
@@ -180,3 +178,17 @@ test('x5. the header fits a 390 px phone', async ({ browser }) => {
   expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
   await context.close()
 })
+
+/**
+ * Wait for an Explore list that hides itself when it settles empty (`data-empty-section`) to
+ * settle: true when it shows rows (`rowTestId`); false when it settled empty, hidden or kept
+ * visible with its empty line because a partial-read note says something is missing.
+ */
+async function shownOnceSettled(section: Locator, rowTestId: string): Promise<boolean> {
+  const hidden = section.and(section.page().locator('[data-empty-section]'))
+  const emptyLine = section.locator('[data-empty]')
+  await expect(section.getByTestId(rowTestId).first().or(hidden).or(emptyLine)).toBeAttached({ timeout: 60_000 })
+  if ((await hidden.count()) > 0 || (await emptyLine.count()) > 0) return false
+  await expect(section.getByTestId(rowTestId).first()).toBeVisible()
+  return true
+}

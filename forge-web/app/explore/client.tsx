@@ -224,13 +224,13 @@ export function ExploreClient(): JSX.Element {
           icon={History}
           state={activeState(recent, [starredShown, trendingShown, forkedShown], active)}
           empty="No repos to show yet."
-          note={`Newest first, by a push in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days or else by creation. Pushes have no cross-repo index, so this ranks only the repos read on this page; load more recent repos to widen it.`}
+          note={`Newest first, by a push in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days or else by creation. Pushes have no cross-repo index, so this ranks only the repos read on this page; load more recent repos to widen it.${
+            recent.pushesComplete && (starred.data?.pushesComplete ?? true) && (trending.data?.pushesComplete ?? true) && (forked.data?.pushesComplete ?? true)
+              ? ''
+              : ' Each read looks at the newest 100 pushes of its repos; a push past those 100 is not counted here.'
+          }`}
           partial={() =>
-            recent.fallback
-              ? 'This node refused the combined read, so recent repos came without their pushes and are ranked by when they were created.'
-              : recent.pushesComplete && (starred.data?.pushesComplete ?? true) && (trending.data?.pushesComplete ?? true) && (forked.data?.pushesComplete ?? true)
-                ? null
-                : 'Each read looks at the newest 100 pushes of its repos; a push past those 100 is not counted here.'
+            recent.fallback ? 'This node refused the combined read, so recent repos came without their pushes and are ranked by when they were created.' : null
           }
         >
           {(d) => <RepoGrid repos={d} />}
@@ -243,6 +243,7 @@ export function ExploreClient(): JSX.Element {
           icon={Flame}
           state={trendingShown}
           headerAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
+          hideWhenEmpty={trendWindow === 'week'}
           empty={onlyFixtures(trending) ? ONLY_FIXTURES : trendWindow === 'week' ? `No repo has ${MIN_STARGAZERS} new stars in the last week.` : `No repo has ${MIN_STARGAZERS} new stars since ${todayStart ?? '00:00 UTC'} yet.`}
           note={`${trendNote} ${TRENDING_FLOOR}`}
           partial={missingNote}
@@ -256,6 +257,7 @@ export function ExploreClient(): JSX.Element {
           testId="explore-most-starred"
           icon={Star}
           state={starredShown}
+          hideWhenEmpty
           empty={onlyFixtures(starred) ? ONLY_FIXTURES : `No repo on this network has ${MIN_STARGAZERS} stars yet.`}
           note={`All time, over every star on the network, proved by the ranked star index. ${STARRED_FLOOR}`}
           partial={missingNote}
@@ -269,6 +271,7 @@ export function ExploreClient(): JSX.Element {
           testId="explore-most-forked"
           icon={GitFork}
           state={forkedShown}
+          hideWhenEmpty
           empty={onlyFixtures(forked) ? ONLY_FIXTURES : 'No repo on this network has been forked yet.'}
           note="All time, ranked by how many different identities forked a repo, not by how many forks exist. A fork counts when it exists; forks are not checked for a push. Counts are unweighted."
           partial={(d) =>
@@ -355,6 +358,7 @@ export function ExploreClient(): JSX.Element {
           title="Recently released"
           icon={Package}
           state={releases}
+          hideWhenEmpty
           empty="None of the 24 newest repos has published a release."
           note="Releases have no cross-repo index, so this lists the newest release of each of the 24 newest repos. A full feed needs an indexer."
           partial={(d) => (d.failed > 0 ? `${d.failed} of ${plural(d.total, 'repo')} could not be read; their releases are not shown.` : null)}
@@ -362,7 +366,7 @@ export function ExploreClient(): JSX.Element {
           {(d) => (
             <ul className="divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800">
               {d.rows.map((r) => (
-                <li key={`${r.repo.id}:${r.tagName}`} className="flex flex-wrap items-center gap-2 px-4 py-2 text-dense">
+                <li key={`${r.repo.id}:${r.tagName}`} data-testid="release-row" className="flex flex-wrap items-center gap-2 px-4 py-2 text-dense">
                   <Package className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
                   <Link href={repoHref('/repo/tags', { owner: r.repo.ownerId, name: r.repo.name, repoId: r.repo.id })} className="hit-area font-mono hover:underline">
                     {r.repo.name} {r.tagName}
@@ -493,6 +497,7 @@ function Section<T>({
   empty,
   emptyAction,
   headerAction,
+  hideWhenEmpty = false,
   note,
   partial,
   children: [render, isEmpty],
@@ -504,11 +509,16 @@ function Section<T>({
   empty: string
   emptyAction?: ReactNode
   headerAction?: ReactNode
+  /** A read that settled with nothing to list (and nothing missing) shows no section at all. */
+  hideWhenEmpty?: boolean
   note?: string
   partial?: (d: T) => string | null
   children: [(d: T) => ReactNode, (d: T) => boolean]
 }): JSX.Element {
   const id = testId ?? `explore-${title.toLowerCase().replace(/[^a-z]+/g, '-')}`
+  if (hideWhenEmpty && state.error === null && state.data !== null && isEmpty(state.data) && !partial?.(state.data)) {
+    return <section hidden data-testid={id} data-empty-section="true" />
+  }
   return (
     <section aria-labelledby={id} data-testid={id}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
