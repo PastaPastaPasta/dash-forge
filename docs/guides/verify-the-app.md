@@ -126,9 +126,9 @@ dg verify-app https://forge.dashhq.org
 
 ```
 Site:      https://forge.dashhq.org/
-Build:     commit 0f605099596192a525f99c6cbafab4e54b29cee4 (testnet, host build)
+Build:     commit 1b5473362a063c7c501bec8e8b3a03df779b5b73 (mainnet, host build)
 Manifest:  attested by PastaPastaPasta/dash-forge/.github/workflows/pages.yml@refs/heads/master (certificate fields; signature not checked here: run gh attestation verify)
-Files:     174 of 174 match
+Files:     311 of 311 match
 ```
 
 The site could rewrite its own manifest, so `dg` trusts it only when it is published elsewhere:
@@ -138,11 +138,13 @@ The site could rewrite its own manifest, so `dg` trusts it only when it is publi
 
 Any build this repository's Pages deploy ever published passes, an older one included. To require the build you expect, add `--commit <sha>` (7 characters or more). `--signer-workflow <owner>/<repo>/.github/workflows/<file>` names another deploy workflow, on `refs/heads/master` of its repository, for a fork that publishes its own copy; the default is the official one. The testnet site, `https://testnet-forge.dashhq.org`, is deployed by its own workflow: check it with `dg verify-app https://testnet-forge.dashhq.org --signer-workflow PastaPastaPasta/dash-forge/.github/workflows/pages-testnet.yml`.
 
-It fails (exit 5, [`E504`](../errors.md#e504)) when the site has no manifest, when GitHub has no attestation for it, when none of its attestations was signed by the expected workflow on `master`, when it is not the `--commit` you named, or when any listed file can't be fetched, is missing or differs, and it names each one. It asks for each file as a browser does, so a host that changes pages only for browsers (an injected script) fails the check. One injection is let through: the Cloudflare Web Analytics beacon that Cloudflare's automatic setup adds before `</body>` (as on forge.dashhq.org), in exactly Cloudflare's form and only on a page whose build carries its own beacon for the same site token, is removed before the page is hashed, and the output counts those pages ([Hosting §6](../hosting.md#6-cloudflare-web-analytics-the-page-carries-the-beacon)). `--json` gives the counts and the lists. Set `GITHUB_TOKEN` to lift GitHub's anonymous rate limit. The nightly workflow runs it against forge.dashhq.org.
+It fails (exit 5, [`E504`](../errors.md#e504)) when the site has no manifest, when GitHub has no attestation for it, when none of its attestations was signed by the expected workflow on `master`, when it is not the `--commit` you named, or when any listed file can't be fetched, is missing or differs, and it names each one. It asks for each file as a browser does, so a host that changes pages only for browsers (an injected script) fails the check. One injection is let through: the Cloudflare Web Analytics beacon that Cloudflare's automatic setup adds before `</body>` when the site is behind Cloudflare's proxy (forge.dashhq.org is not today, so nothing is injected there), in exactly Cloudflare's form and only on a page whose build carries its own beacon for the same site token, is removed before the page is hashed, and the output counts those pages ([Hosting §6](../hosting.md#6-cloudflare-web-analytics-the-page-carries-the-beacon)). `--json` gives the counts and the lists. Set `GITHUB_TOKEN` to lift GitHub's anonymous rate limit. The nightly workflow runs it against forge.dashhq.org.
 
 **In the app.** When you unlock a private repository (or manage your encryption key in Settings), the app makes the same lookup for its own manifest. If GitHub has no attestation for it, a note says the copy isn't a published build. Unpublished code could read what you unlock. The note is a check for mistakes and unofficial copies, not a defence: a malicious build can leave it out. `dg verify-app` checks a site from outside.
 
 **What it checks.** The files this run was served, not what someone else gets: a host can serve different bytes to different visitors. Files the site serves beyond the manifest are not checked (the Pages deploy keeps the previous two builds' chunks for open tabs), but the pages and scripts the manifest lists load only each other.
+
+**A copy on dash.site** (such as forg3.dash.site, built with `pnpm build:dash-site`, [BUILDING.md](../BUILDING.md#the-dashsite-build)) can't be checked this way yet. A dash.site address answers every path with a small static page that loads the site from Dash Platform in your browser, so `dg verify-app` only sees that page and fails ([`E504`](../errors.md#e504)). No CI job attests that build's manifest either, so the app there shows its unofficial-copy note.
 
 ---
 

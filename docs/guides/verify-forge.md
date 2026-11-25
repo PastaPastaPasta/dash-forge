@@ -116,7 +116,7 @@ Each row, and the card as a whole, shows one of five states, always as an icon a
 | **Couldn't verify** | The check could not run: a connection that does not check proofs, or objects shown without the hash check. |
 | **Failed** | The check ran and the data was wrong: a quorum key disagreed, an object did not match its git id, or a pack did not match its manifest. Those bytes are refused and never shown. The **Where the bytes came from** row also fails when no storage place answered at all. |
 
-The card's footer always says how far to trust the page itself: *"This app is served by GitHub Pages. If you don't trust that, pin the IPFS build or use the CLI, which needs no website."* See [Run your own copy of the web app](#run-your-own-copy-of-the-web-app).
+The card's footer always says how far to trust the page itself: it names the host the app's code came from, which you trust for that code, and says that if you don't, pin the IPFS build or use the CLI, which needs no website. See [Run your own copy of the web app](#run-your-own-copy-of-the-web-app).
 
 **When storage does not answer**, the repository page shows a card instead of a spinner. It lists each place it tried and why each failed (`timed out`, `not found on 3 gateways`, `missing`), with **Try again** and **Add a gateway**, and shows members the `dg reseed <owner>/<name> --from-local` command that restores a lost copy from any clone ([Bring your own storage](bring-your-own-storage.md#restoring-a-lost-copy)).
 
@@ -195,7 +195,7 @@ The CLI end-to-end suite has a scenario that automates steps 1–3 above (the co
 3. clones, then runs `git fsck --strict` and `git verify-pack`;
 4. checks that the clone's tip equals the raw on-chain tip, re-hashes the tip commit and its tree by hand, and checks that no reachable object is missing.
 
-It runs in the nightly against testnet once the nightly's fixture identities are configured. It is written against the suite's own fixture repository and identities (`e2e/cli/config.sh`). To use it on another repository, copy the steps. Each is a plain `git`, `dg` or `git-remote-dash` command.
+It runs in the Testnet Nightly (`.github/workflows/nightly.yml`) and passes there. It is written against the suite's own fixture repository and identities (`e2e/cli/config.sh`). To use it on another repository, copy the steps. Each is a plain `git`, `dg` or `git-remote-dash` command.
 
 ---
 
@@ -212,7 +212,7 @@ pnpm build                         # writes the static site to forge-web/out/
 npx serve out                      # or any static file server
 ```
 
-Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=<name>` for a devnet. The hosted app is built from master by `.github/workflows/pages.yml`, which uses `NEXT_PUBLIC_NETWORK=testnet`, the network Forge is registered on; a build for a network without a Forge deployment shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
+Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=<name>` for a devnet. The hosted apps are built from master: forge.dashhq.org by `.github/workflows/pages.yml` for mainnet (the repository variable `PAGES_NETWORK`), and testnet-forge.dashhq.org by `.github/workflows/pages-testnet.yml` for testnet. A build for a network without a Forge deployment shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
 
 **Host it anywhere static:** another static host, your own server, or IPFS. For IPFS, build the IPFS variant, which finds its base path when it loads:
 
@@ -223,7 +223,7 @@ ipfs add -r --cid-version 1 out/     # the last line's CID is the site root
 
 Open it through a **subdomain** gateway (`http://<cid>.ipfs.localhost:8080/` on your own kubo node, `https://<cid>.ipfs.<gateway>/` on a public one) or a **path** gateway (`https://<gateway>/ipfs/<cid>/`). The plain `pnpm build` loads its assets from `/`, so it works on a subdomain gateway but not a path gateway. Any other host that serves the app under a sub-path: build with `NEXT_PUBLIC_BASE_PATH=/<sub-path>`.
 
-**Or use a release's IPFS build.** Every release publishes the web app as a CAR file and a CID, built reproducibly from the tag, and the maintainer records them on Forge too. Pin it with `ipfs dag import`, and check it against the tag: [Verify the app you loaded](verify-the-app.md).
+**Or use a release's IPFS build.** Every release since v0.2.0 publishes the web app as a CAR file and a CID, built reproducibly from the tag. Recording them in a Forge release too is a manual step that has not been done yet. Pin it with `ipfs dag import`, and check it against the tag: [Verify the app you loaded](verify-the-app.md).
 
 The app talks only to Platform nodes, the quorum key endpoint, IPFS gateways, and wherever each repository's packs are stored. Your copy works exactly like the hosted one.
 
@@ -232,4 +232,4 @@ Two more things make a copy of your own practical:
 - **Short links** such as `/<owner>/<name>/issues/12` are rewritten to the app's canonical routes by a small script in the build's `404.html`, so any static host that serves `404.html` for unknown paths (GitHub Pages does) supports them. Once a public repository's page has loaded, the address bar shows its short link, so the link people copy from it is short too. A static host answers a short link with its 404 page first, so chat apps and forums show no preview card for it; a build with a gateway makes **Copy link** copy the gateway's share link instead (`https://git-forge.dashhq.org/og/<owner>/<name>/issues/12`), which shows a card and opens the same page ([Share links](../hosting/forge-gateway.md#share-links-preview-cards)). IPFS gateways do not serve `404.html`, so the IPFS build copies canonical links and keeps them in the address bar.
 - **Your own IPFS gateways**: **Settings → Your IPFS gateways** (or **Add a gateway** on a repository whose storage did not answer) adds gateways that are tried before the built-in list. They are saved in this browser only.
 
-The footer of every page says which commit the app was built from, and the CID when it was loaded from IPFS. [Verify the app you loaded](verify-the-app.md) shows how to rebuild that CID from the tag and compare it with the GitHub release and the Forge release on chain. Releases will publish this build once the first one is out (none is yet); building it yourself from a commit you have read remains the strongest check.
+The footer of every page says which commit the app was built from, and the CID when it was loaded from IPFS. [Verify the app you loaded](verify-the-app.md) shows how to rebuild that CID from the tag and compare it with the GitHub release and the Forge release on chain. Building it yourself from a commit you have read remains the strongest check.

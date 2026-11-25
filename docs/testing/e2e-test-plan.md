@@ -1,5 +1,7 @@
 # Dash Forge — E2E & Production Test Plan
 
+> **Status (2026-11-25).** Devnet sakura, which this plan names as the live target, went down on 2026-10-24 and is retired. The live suites now run on testnet: the Testnet Nightly (`.github/workflows/nightly.yml`) runs the CLI suite and the Playwright specs there ([e2e/README.md](../../e2e/README.md#running-on-testnet)). Forge is also registered on mainnet (2026-11-24). The sakura details below are historical.
+
 Full pyramid with emphasis on **real end-to-end testing against live networks**, using bridge.thepasta.org / faucet.thepasta.org for identities and funds. Acceptance criteria from `../INIT.md` are the north-star scenarios (marked ⭐).
 
 ## 1. Test infrastructure: identities & funding

@@ -251,19 +251,19 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Wiki** | None | A `docs/` folder in the repository; the web app renders Markdown |
 | **GitHub Pages** | None: Forge serves no user content | Serve the site from your own host and domain |
 | **Packages** (npm, containers) | None | Publish to the usual registries, or attach build outputs to a release (`dg release create --asset`) |
-| **Projects / boards** | None | Labels, and `dg issue list --label … --assignee …` filters |
+| **Projects / boards** | Boards: columns, fields, iterations and saved views ([Boards](boards.md)), but the importer does not bring GitHub Projects over | Re-create a board with `dg board create` or on the web, and add items to it |
 | **Milestones** | Supported (`dg milestone`, and **Issues → Milestones** on the web), but the importer does not bring them over | Re-create the ones you need ([Milestones](collaborating.md#milestones)) and set them with `dg issue milestone` |
 | **Issue and PR templates** | Supported on the web: Markdown templates, YAML issue forms and `config.yml` from `.github/ISSUE_TEMPLATE/` (or `.gitlab/issue_templates/`), and `pull_request_template.md` / `PULL_REQUEST_TEMPLATE/` (or GitLab's merge request templates). A form's `assignees` are not applied, and `dg` does not read templates | Nothing: they are read from the repository ([Issue and PR templates](collaborating.md#issue-and-pr-templates)) |
 | **Reactions** | None: each one would be a paid document | A comment, or a review approval |
 | **Verified commits** | Supported for Ed25519 SSH and Ed25519/ECDSA OpenPGP keys you publish on your profile; RSA keys don't fit | `dg profile key add` ([Signed commits](identity-and-keys.md#signed-commits-and-verified-badges)) |
 | **Assignees** | Not imported; you can assign on Forge (`dg issue assign`) | Re-assign open items after the import |
 | **CODEOWNERS** | Read from the base branch; new PRs ask the owners for review ([Code owners](collaborating.md#code-owners)). Teams and e-mail owners are not asked, and `@login` is read as a DPNS name. "Require review from code owners" is a branch rule: `dg repo policy set --require-code-owners true`, or **Settings → Branches** ([Requiring a code owner's approval](collaborating.md#code-owners)) | Name people by DPNS name or identity id |
-| **Organizations and teams** | Repositories belong to one identity; members are per repository | A shared maintainer identity, or add each person to each repository |
+| **Organizations and teams** | On testnet, an [organization](organizations.md) (several people sign together, *N* of *M*) can own repositories. On mainnet a repository belongs to one identity. Members are per repository on both; there are no teams | On mainnet, a shared maintainer identity, or add each person to each repository |
 | **Transferring a repository** | Not possible: the owner is fixed | Create a repository under the new owner and push to it (history is unchanged) |
 | **Deleting a repository, issue or PR** | Not possible: they are permanent | Archive the repository (`dg repo archive`), close issues and PRs |
 | **Git LFS** | Not supported | Keep large binaries out of git; attach them to releases, which go to your storage |
 | **`https://` clone URLs, shallow clones** | `dash://` only (needs `git-remote-dash`); no `--depth` ([E205](../errors.md#e205)) | `git clone --filter=blob:none` for a light clone; the web app offers a zip of any branch |
-| **Email notifications** | None: there is no server to send them | The web app's **Notifications**, or a webhook to your own notifier |
+| **Email notifications** | None on forge.dashhq.org or testnet-forge.dashhq.org: no server sends them. A site operator can run the optional [forge-notify](../hosting/forge-notify.md) service for email and Web Push | The web app's **Notifications**, or a webhook to your own notifier |
 | **Code search** | Within one repository, in the web app: built in your browser from the repository's files, the default branch only for a large repository ([Search the code](quick-start.md#search-the-code)). No search across repositories: that needs an indexer, and Forge runs none | `git grep` in a clone |
 | **Secret scanning, Dependabot** | None | Run those tools locally or in your own CI |
 | **Private repositories in the web app** | The web app reads private repositories and writes their issues, PRs and reviews, but can't merge PRs or commit to branches in them yet | Use `dg` for those |

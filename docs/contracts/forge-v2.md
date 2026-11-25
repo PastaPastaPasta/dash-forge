@@ -8,6 +8,22 @@ Three shared data contracts, **forge-core**, **forge-collab** and **forge-commun
 - Registration: `forge-contracts/scripts/deploy-v2.mjs` (the evo-sdk `forge-contracts/sdk-v2` pins; the deployment record's `v2.sdk` names the installed one)
 - Decision record: roadmap D-A (owner decision of 2026-09-24, reviewed by a protocol architect). RC1 scope: dash-forge-qa `design/SCOPE-DECISION.md` and `WIPE-DECISIONS.md` D-10..D-16. Item ids (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9) are those of dash-forge-qa `beta6/RULES-PROPOSAL.md` and `beta6/OPPORTUNITIES.md`.
 
+## Where they are registered
+
+The ids below are copied from the deployment records, `forge-contracts/deployments/<network>.json`, which are what `dg`, `git-remote-dash` and the web app compile in. The records are the source of truth; `dg doctor --network <network>` checks them against the chain.
+
+| Contract | Mainnet (2026-11-24) | Testnet (2026-10-26) |
+|---|---|---|
+| forge-core | `GPHh5EAjvh346epUPQSijmz1xgJp6APjn45EPkGMCjLo` | `D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9` |
+| forge-collab | `7zfipc1sq39fr49L5nrkFoxaJVfYpw3NUjsNkbQe6rp4` | `C5b3Hys3Zb28dfrhDzn3tNdQDNCPU2ZJYgksdgDJe7ve` |
+| forge-community | `83qUBePxmhKgajCUC8Z6hrEXRytVSsTjPgrZ2Uuxdbyv` | `4heUXTZDrbDsy3tqVYJJP2wLCNkqUXRZzF9VQNaRq28o` |
+| forge-meta | `9M8qFSM4vSsnRArtEzeFkTJb5dHso3qxfVWUGkwHguQp` (version 1, with `vaultEntry`, `board` and `card` from the start) | `6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93` (version 3: UPDATE-2 and UPDATE-3 in place) |
+| forge-user | not registered | `46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU` (2026-11-25) |
+| contract group | `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ` | `EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC` |
+| deployer | `CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y` | `3pjHaytsQJg5aKZj3VeqwBPccN7uN3bCJiUNkT8KUBwM` |
+
+Both networks registered the same four files, `forge-contracts/contracts/mainnet/`. forge-user (`forge-contracts/contracts/user/forge-user.json`, settings that follow a person's identity: [design](../design/identity-synced-state.md)) is a fifth contract in the same group, on testnet only; on mainnet those settings stay on the device until it is registered there. The evidence for each registration is in `forge-contracts/evidence/<network>/`. Devnets bonsia, moutai and sakura, where RC1 and RC2 were registered first, are retired.
+
 ## 1. Why shared contracts
 
 Contract registration is priced per contract (a base fee plus a fee per document type, per index and per token). A design where each repository is its own contract therefore pays that fee for every repository and every fork, whatever its size. That was forge-v1: a global registry contract plus one contract per repository, with access control by WRITE/MAINTAIN tokens, at about 1.18 DASH a repository. It was removed on 2026-09-26 with no backwards compatibility; [data-contracts.md](../archive/forge-v1/data-contracts.md) keeps its design for the record.
@@ -646,7 +662,7 @@ Every combination of the RC2 flags validates, and `forge-contracts/schema/varian
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). forge-core is under it; forge-collab and forge-community are just over it, which is allowed.
 
-Total one-time registration fees are **≈ 1.67 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards. The RC1 registration on devnet bonsia (2026-09-29) cost 0.647 + 0.436 + 0.607 = **1.690 DASH** (balance deltas, `deployments/devnet-bonsia.json`), plus 0.141 DASH for the key-exchange copy.
+Total one-time registration fees are **≈ 1.67 DASH** for these three, paid once by the deployer, plus storage. The four-contract set (with forge-meta) cost **1.9745 DASH** on mainnet on 2026-11-24 (`deployments/mainnet.json`, the sum of each contract's `costDash`). A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards. The RC1 registration on devnet bonsia (2026-09-29) cost 0.647 + 0.436 + 0.607 = **1.690 DASH** (balance deltas, `deployments/devnet-bonsia.json`), plus 0.141 DASH for the key-exchange copy.
 
 **Per-write costs on bonsia** (credits; 10¹¹ credits = 1 DASH; `forge-contracts/scripts/rc1-live.mjs`, balance before and after each write once two reads agree; small documents):
 
