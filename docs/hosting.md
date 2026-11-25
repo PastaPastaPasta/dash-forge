@@ -160,6 +160,10 @@ dig +short CAA forge.dashhq.org
 
 Expect your records and Cloudflare's. Then confirm Universal SSL still shows **Active** under SSL/TLS → Edge Certificates.
 
+## How a deploy runs
+
+Every merge to master that touches the web app, `docs/` or the deployment files deploys both sites. Deploys run one at a time and are never cut off. While one runs, only the newest waiting run is kept, so the last merge always deploys. A run whose commit is no longer master's head builds nothing and starts a run on master instead. Each deploy ends by reading the live `forge-manifest.json` and fails unless it is this build's: about 15 minutes for forge.dashhq.org and 25 for testnet-forge.dashhq.org, which also waits for its site repository's Pages build.
+
 ## Pausing the site (operator)
 
 A bug in the web app that corrupts or leaks on write, or a wrong cost, needs "stop writes, keep reading" faster than a code fix. The Pages build has a switch for that, on every network, with no code change. It is the repository variable `PAGES_NOTICE`, read by `.github/workflows/pages.yml` into `NEXT_PUBLIC_PAGES_NOTICE` (`forge-web/lib/pages-notice.ts`).
