@@ -7,7 +7,10 @@ export interface FakePlatform {
   readonly states: Map<string, Stored<StateFields>>
   readonly shares: Map<string, Stored<ShareFields>>
   readonly grants: Map<string, Stored<GrantFields>>
+  /** Each identity's newest live sync key. */
   readonly keys: Map<string, SyncPublicKey>
+  /** Older sync keys still live, per identity. */
+  readonly olderKeys: Map<string, SyncPublicKey[]>
   writes: number
   /** The port as `signer` sees it: it writes only its own documents. */
   port(signer: string): UserSyncPort
@@ -21,6 +24,7 @@ export function fakePlatform(): FakePlatform {
     shares: new Map(),
     grants: new Map(),
     keys: new Map(),
+    olderKeys: new Map(),
     writes: 0,
     port(signer) {
       const bump = <T>(existing: Stored<T> | null, fields: T, map: Map<string, Stored<T>>, key: string): void => {
@@ -48,7 +52,12 @@ export function fakePlatform(): FakePlatform {
         },
         syncKey: async (identityId, keyId) => {
           const k = p.keys.get(identityId)
-          return k && (keyId === undefined || k.keyId === keyId) ? k : null
+          if (keyId === undefined || k?.keyId === keyId) return k ?? null
+          return p.olderKeys.get(identityId)?.find((o) => o.keyId === keyId) ?? null
+        },
+        syncKeys: async (identityId) => {
+          const k = p.keys.get(identityId)
+          return [...(p.olderKeys.get(identityId) ?? []), ...(k ? [k] : [])].sort((a, b) => a.keyId - b.keyId)
         },
       }
     },

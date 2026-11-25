@@ -11,7 +11,7 @@ import { decodeIdentifier } from '../auth/base58'
 import { PLATFORM_PROFILE, policySchema, validProfileName, type StoragePolicy, type StorageProfile } from '../storage/profiles'
 import type { StorageConfig } from '../storage/store'
 import { WRAPPED_BYTES, canonicalJson, openShare, repoStorageKey, sealShare, unwrapGrant, wrapGrant, type GrantParams } from './crypto'
-import type { GrantFields, UserSyncPort } from './platform'
+import type { GrantFields, SyncPublicKey, UserSyncPort } from './platform'
 import { profileOf } from './storage-slot'
 
 export const SHARE_FORMAT = 'forge-user/share'
@@ -231,81 +231,95 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId && !removed.has(m)).sort()
   const grants = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
   const existing = await ctx.port.readShare(ctx.ownerId, p.repoId)
-  // Epochs only go up, whatever happened before: a share is never deleted, and a first one starts
-  // past every grant left over, so no repo storage key anyone ever held opens a later share.
-  const highest = Math.max(-1, ...grants.map((g) => g.fields.epoch))
-  const at = existing === null ? highest + 1 : Math.max(existing.fields.epoch, highest)
-  let current: unknown = null
+  const rule = shareRule(p.view, p.repoId)
+  const stop = rule.kind === 'nothing'
+  // Each maintainer's live forge-user keys, oldest first (none needed when sharing stops).
+  const keys = new Map<string, readonly SyncPublicKey[]>()
+  if (!stop) for (const m of members) keys.set(m, await ctx.port.syncKeys(m))
+  const newest = (m: string): SyncPublicKey | undefined => keys.get(m)?.at(-1)
+  // A grant to a key that is not the member's newest moves the share on: the key it went to keeps
+  // that epoch's repo key, so a rotated-out key never opens what is shared after.
+  const rekeyed = grants.some((g) => {
+    const key = newest(g.fields.memberId)
+    return key !== undefined && key.keyId !== g.fields.recipientKeyId
+  })
+  // Revoked: every grant when sharing stops; else one to anyone not a maintainer now, or to a key no longer live.
+  const revoked = grants.filter((g) => stop || !(keys.get(g.fields.memberId) ?? []).some((k) => k.keyId === g.fields.recipientKeyId))
+  let opened: SharePlain | null = null
   if (existing !== null && existing.fields.keyId === ctx.keyId) {
     const rsk = await repoStorageKey(ctx.E, repo, network, existing.fields.epoch)
     try {
-      current = await openShare(rsk, { network, repoId: repo }, existing.fields).catch(() => null)
+      const plain: unknown = await openShare(rsk, { network, repoId: repo }, existing.fields).catch(() => null)
+      opened = shareMeaning(plain) === null ? null : (plain as SharePlain)
     } finally {
       rsk.fill(0)
     }
   }
-  const shownNothing = existing === null || shareMeaning(current) === shareMeaning(NOTHING_SHARED)
-  const rule = shareRule(p.view, p.repoId)
-  // Keep: what the share holds now (re-shared, at the next epoch when a grant goes).
-  const keepCurrent = rule.kind === 'keep' && current !== null && shareMeaning(current) !== null && !shownNothing
-  const plain: SharePlain | null = rule.kind === 'content' ? rule.plain : keepCurrent ? (current as SharePlain) : null
-  const nothing = rule.kind === 'nothing' || (rule.kind === 'keep' && shownNothing && existing !== null)
-  const stale = grants.filter((g) => nothing || !members.includes(g.fields.memberId))
-  if (plain === null && !nothing) {
-    // Keep, with no share to keep (none, or one this key does not open): only grants to former
-    // maintainers go, after the nothing share is written past their epoch (it keeps the epoch for
-    // the next share, and an unreadable share they could open is replaced).
-    const epoch = existing === null ? at : at + 1
-    if (stale.length > 0) await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
-    for (const g of stale) await ctx.port.deleteGrant(g)
-    return { granted: [], waiting: [], shared: existing !== null, epoch: stale.length > 0 ? epoch : existing === null ? null : at }
-  }
-  if (plain === null) {
-    // Stop sharing: the nothing share at the next epoch (unless it is already there with no grant), every grant revoked.
-    const write = !shownNothing || grants.length > 0
-    const epoch = existing === null ? at : at + 1
-    if (write) await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
-    for (const g of grants) await ctx.port.deleteGrant(g)
-    // Said once, as the share is empty after; not for Platform-only storage the owner did set.
-    const stopped = rule.kind === 'nothing' && rule.reason === 'no-repo-policy' && (write || grants.length > 0) ? { stopped: p.repoPolicyRemoved === true ? ('removed' as const) : ('default' as const) } : {}
-    return { granted: [], waiting: [], shared: existing !== null, epoch: write ? epoch : (existing?.fields.epoch ?? null), ...stopped }
-  }
-  // A grant to anyone not a maintainer now (removed here, or found stale), or sharing again after a
-  // stop, or a grant past the share: the next epoch.
-  const bump = existing !== null && (stale.length > 0 || shownNothing || highest > existing.fields.epoch)
-  const epoch = bump ? at + 1 : at
+  const lent = (s: SharePlain | null): boolean => s !== null && Object.keys(s.profiles).length > 0
+  // Stopping a share that lends storage, or one that does not open here.
+  const stopping = stop && (opened === null || lent(opened))
+  // Epochs only go up: a share is never deleted, and a new one starts past every grant left over,
+  // so no repo storage key anyone ever held opens a later share. Also past a grant ahead of the share.
+  const highest = grants.length === 0 ? null : Math.max(...grants.map((g) => g.fields.epoch))
+  const ahead = existing !== null && highest !== null && highest > existing.fields.epoch
+  const bump = revoked.length > 0 || stopping || rekeyed || ahead
+  const epoch = existing !== null ? (bump ? Math.max(existing.fields.epoch, highest ?? 0) + 1 : existing.fields.epoch) : highest !== null ? highest + 1 : 0
   if (epoch > 0xffffffff) throw new Error('this repository changed its storage maintainers too often to share again')
-  const rsk = await repoStorageKey(ctx.E, repo, network, epoch)
-  try {
-    const same = !bump && existing !== null && existing.fields.epoch === epoch && existing.fields.keyId === ctx.keyId && current !== null && shareMeaning(current) === shareMeaning(plain)
-    if (!same) await ctx.port.writeShare(p.repoId, await sealShare(rsk, { network, repoId: repo, epoch, keyId: ctx.keyId }, plain), existing)
-    const granted: string[] = []
-    const waiting: string[] = []
-    for (const member of members) {
-      const own = grants.find((g) => g.fields.memberId === member) ?? null
-      // A share kept as it is (no usable repo setting) may hold what an older build shared from the
-      // default storage: it is never lent to anyone new, only refreshed for those who hold it.
-      if (rule.kind === 'keep' && own === null) continue
-      const key = await ctx.port.syncKey(member)
-      if (key === null) {
-        waiting.push(member)
-        continue
-      }
-      // An envelope of another size (a later format) is rewritten in this one.
-      if (own !== null && own.fields.epoch === epoch && own.fields.senderKeyId === ctx.keyId && own.fields.recipientKeyId === key.keyId && own.fields.wrapped.length === WRAPPED_BYTES) {
-        granted.push(member)
-        continue
-      }
-      const params: GrantParams = { network, ownerId: decodeIdentifier(ctx.ownerId), repoId: repo, memberId: decodeIdentifier(member), epoch, senderKeyId: ctx.keyId, recipientKeyId: key.keyId }
-      const fields: GrantFields = { repoId: p.repoId, memberId: member, epoch, senderKeyId: ctx.keyId, recipientKeyId: key.keyId, wrapped: await wrapGrant(ctx.E, key.pub, params, rsk) }
-      await ctx.port.writeGrant(fields, own)
-      granted.push(member)
+  // Keep: what the share holds now, as it is (an empty one stays empty, its grants left as they are).
+  // Stopping, or revoking with nothing to re-encrypt: the empty share at the new epoch, written
+  // before any grant goes (it keeps the epoch from going back).
+  const content: SharePlain | null =
+    rule.kind === 'content' ? rule.plain : rule.kind === 'keep' && opened !== null ? opened : (existing !== null || grants.length > 0) && (stop || revoked.length > 0) ? NOTHING_SHARED : null
+  let written = false
+  if (content !== null) {
+    const same = existing !== null && existing.fields.epoch === epoch && existing.fields.keyId === ctx.keyId && opened !== null && shareMeaning(opened) === shareMeaning(content)
+    if (!same) {
+      await writeShare(ctx, p.repoId, repo, epoch, content, existing)
+      written = true
     }
-    for (const g of stale) await ctx.port.deleteGrant(g)
-    return { granted, waiting, shared: true, epoch }
-  } finally {
-    rsk.fill(0)
   }
+  const lends = !stop && lent(content)
+  const granted: string[] = []
+  const waiting: string[] = []
+  // Grants rewritten in place (to a member's newer key): replaced, not deleted.
+  const replaced = new Set<string>()
+  if (lends) {
+    const rsk = await repoStorageKey(ctx.E, repo, network, epoch)
+    try {
+      for (const member of members) {
+        const own = grants.find((g) => g.fields.memberId === member) ?? null
+        // A share kept as it is (no usable repo setting) may hold what an older build shared from
+        // the default storage: it is never lent to anyone new, only refreshed for those who hold it.
+        if (rule.kind === 'keep' && own === null) continue
+        const key = newest(member)
+        if (key === undefined) {
+          waiting.push(member)
+          continue
+        }
+        // An envelope of another size (a later format) is rewritten in this one.
+        if (own !== null && own.fields.epoch === epoch && own.fields.senderKeyId === ctx.keyId && own.fields.recipientKeyId === key.keyId && own.fields.wrapped.length === WRAPPED_BYTES) {
+          granted.push(member)
+          continue
+        }
+        const params: GrantParams = { network, ownerId: decodeIdentifier(ctx.ownerId), repoId: repo, memberId: decodeIdentifier(member), epoch, senderKeyId: ctx.keyId, recipientKeyId: key.keyId }
+        const fields: GrantFields = { repoId: p.repoId, memberId: member, epoch, senderKeyId: ctx.keyId, recipientKeyId: key.keyId, wrapped: await wrapGrant(ctx.E, key.pub, params, rsk) }
+        await ctx.port.writeGrant(fields, own)
+        if (own !== null) replaced.add(own.id)
+        granted.push(member)
+      }
+    } finally {
+      rsk.fill(0)
+    }
+  }
+  let deleted = 0
+  for (const g of revoked) {
+    if (replaced.has(g.id)) continue
+    await ctx.port.deleteGrant(g)
+    deleted++
+  }
+  // Said once, as the share is empty after; not for Platform-only storage the owner did set.
+  const stopped = rule.kind === 'nothing' && rule.reason === 'no-repo-policy' && (written || deleted > 0) ? { stopped: p.repoPolicyRemoved === true ? ('removed' as const) : ('default' as const) } : {}
+  return { granted, waiting, shared: lends || existing !== null, epoch: written ? epoch : (existing?.fields.epoch ?? null), ...stopped }
 }
 
 async function writeShare(ctx: OwnerContext, repoId: string, repo: Uint8Array, epoch: number, plain: SharePlain, existing: Awaited<ReturnType<UserSyncPort['readShare']>>): Promise<void> {

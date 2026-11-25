@@ -132,8 +132,9 @@ describe('maintainers use the owner’s storage', () => {
     epochs.push(shareEpoch())
     await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
     epochs.push(shareEpoch())
-    expect(epochs).toEqual([0, 1, 2, 3])
-    expect((await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER }))?.epoch).toBe(3)
+    // Sharing again stays at the stop's epoch, as dg does: no grant ever went to it.
+    expect(epochs).toEqual([0, 1, 2, 2])
+    expect((await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER }))?.epoch).toBe(2)
     expect(await readGrantedStorage(member(BOB), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
   })
 
@@ -303,6 +304,62 @@ describe('maintainers use the owner’s storage', () => {
     expect(done.granted).toEqual([ALICE])
     expect(done.waiting).toEqual([])
     expect([...platform.grants.keys()].some((k) => k.endsWith(`/${BOB}`))).toBe(false)
+  })
+
+  it('a member’s new key moves the share to the next epoch: the rotated-out key opens nothing current', async () => {
+    const { platform, owner, member } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    const before = member(ALICE)
+    const E = secp.utils.randomSecretKey()
+    platform.keys.set(ALICE, { keyId: 12, pub: secp.getPublicKey(E, true) })
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    expect(done).toMatchObject({ granted: [ALICE], epoch: 1 })
+    expect([...platform.grants.values()].map((g) => [g.fields.recipientKeyId, g.fields.epoch])).toEqual([[12, 1]])
+    expect([...platform.shares.values()][0]!.fields.epoch).toBe(1)
+    expect(await readGrantedStorage(before, { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
+    expect((await readGrantedStorage({ ...before, keyId: 12, E }, { repoId: REPO, repoOwnerId: OWNER }))?.epoch).toBe(1)
+    const writes = platform.writes
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    expect(platform.writes).toBe(writes)
+  })
+
+  it('a member’s new key with the old one still live: the next epoch, the grant rewritten in place', async () => {
+    const { platform, owner } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    const old = platform.keys.get(ALICE)!
+    const id = [...platform.grants.values()][0]!.id
+    platform.olderKeys.set(ALICE, [old])
+    platform.keys.set(ALICE, { keyId: 12, pub: secp.getPublicKey(secp.utils.randomSecretKey(), true) })
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    expect(done.epoch).toBe(1)
+    const grants = [...platform.grants.values()]
+    expect(grants.map((g) => [g.id, g.fields.recipientKeyId, g.fields.epoch])).toEqual([[id, 12, 1]])
+  })
+
+  it('a grant to a key no longer live is revoked at the next epoch; the member waits for a key', async () => {
+    const { platform, owner } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE, BOB] })
+    platform.keys.delete(ALICE)
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE, BOB] })
+    expect(done).toMatchObject({ granted: [BOB], waiting: [ALICE], epoch: 1 })
+    expect([...platform.grants.values()].map((g) => g.fields.memberId)).toEqual([BOB])
+  })
+
+  it('a share kept as it is that is already empty leaves its members’ grants: no epoch, no writes', async () => {
+    const { platform, owner } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    const grant = [...platform.grants.entries()][0]!
+    const { [`repo:${REPO}`]: _own, ...defaultOnly } = VIEW
+    await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE] })
+    expect(platform.grants.size).toBe(0)
+    // A grant left behind (an interrupted stop, another client): under keep, it stays.
+    platform.grants.set(grant[0], grant[1])
+    const writes = platform.writes
+    const unusable = { ...VIEW, [`repo:${REPO}`]: { targets: [] } }
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
+    expect(done).toMatchObject({ granted: [], epoch: 1 })
+    expect(platform.writes).toBe(writes)
+    expect(platform.grants.size).toBe(1)
   })
 
   it('a repo with no storage of its own and no share writes nothing', async () => {

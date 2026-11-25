@@ -51,6 +51,8 @@ export interface UserSyncPort {
   deleteGrant(existing: Stored<GrantFields>): Promise<void>
   /** `identityId`'s key `keyId` when it is a live forge-user ENCRYPTION key, else null. */
   syncKey(identityId: string, keyId?: number): Promise<SyncPublicKey | null>
+  /** Every live forge-user ENCRYPTION key of `identityId`, oldest (lowest id) first (forge-core `encryption_keys`). */
+  syncKeys(identityId: string): Promise<readonly SyncPublicKey[]>
 }
 
 const isU32 = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 0xffffffff
@@ -145,6 +147,22 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
     }
     await replaceDocumentIdempotent(sdk, signer(), { contractId, documentType, documentId: existing.id, changes, ...(existing.revision !== undefined ? { expectedRevision: existing.revision } : {}) })
   }
+  // Live forge-user ENCRYPTION keys bound to this contract with a usable public key, oldest first.
+  const liveSyncKeys = async (identityId: string): Promise<readonly SyncPublicKey[]> => {
+    const identity = await authSdk(sdk).identities.fetch(identityId)
+    if (!identity) return []
+    const live = identity.publicKeys.filter((k) => {
+      if (k.disabledAt !== undefined || k.purposeNumber !== KeyPurpose.ENCRYPTION || k.keyTypeNumber !== KeyType.ECDSA_SECP256K1) return false
+      if (typeof k.data !== 'string' || !/^(?:[0-9a-f]{2}){33}$/i.test(k.data)) return false
+      try {
+        const b = k.contractBounds?.toJSON()
+        return b?.$type === 'singleContract' && b.id === contractId
+      } catch {
+        return false
+      }
+    })
+    return live.sort((a, b) => a.keyId - b.keyId).map((k) => ({ keyId: k.keyId, pub: hexToBytes(k.data as string) }))
+  }
   return {
     async readState(ownerId, slot) {
       const doc = await one('state', [['$ownerId', '==', ownerId], ['slot', '==', slot]], [['slot', 'asc']])
@@ -175,21 +193,9 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
       await deleteDocumentIdempotent(sdk, signer(), { contractId, documentType: 'grant', documentId: existing.id })
     },
     async syncKey(identityId, keyId) {
-      const identity = await authSdk(sdk).identities.fetch(identityId)
-      if (!identity) return null
-      const live = identity.publicKeys.filter((k) => {
-        if (k.disabledAt !== undefined || k.purposeNumber !== KeyPurpose.ENCRYPTION || k.keyTypeNumber !== KeyType.ECDSA_SECP256K1) return false
-        if (keyId !== undefined && k.keyId !== keyId) return false
-        try {
-          const b = k.contractBounds?.toJSON()
-          return b?.$type === 'singleContract' && b.id === contractId
-        } catch {
-          return false
-        }
-      })
-      const best = live.sort((a, b) => b.keyId - a.keyId)[0]
-      if (!best || typeof best.data !== 'string' || !/^(?:[0-9a-f]{2}){33}$/i.test(best.data)) return null
-      return { keyId: best.keyId, pub: hexToBytes(best.data) }
+      const live = await liveSyncKeys(identityId)
+      return (keyId === undefined ? live.at(-1) : live.find((k) => k.keyId === keyId)) ?? null
     },
+    syncKeys: liveSyncKeys,
   }
 }
