@@ -130,7 +130,7 @@ test('s2. a reachable host without CORS shows the copy-paste fix', async ({ brow
 })
 
 test('s3. a repo can override where browser pushes go', async ({ browser }) => {
-  const page = await signedIn(browser, 'MAINTAINER', `/repo/settings/?owner=${EMPTY_REPO.owner}&name=${EMPTY_REPO.name}`)
+  const page = await signedIn(browser, 'MAINTAINER', `/repo/settings/?owner=${EMPTY_REPO.owner}&name=${EMPTY_REPO.name}#storage`)
   const box = page.getByTestId('repo-storage-policy')
   await expect(box).toContainText('Using your default', { timeout: 60_000 })
   await box.getByRole('combobox').selectOption('fallback')
