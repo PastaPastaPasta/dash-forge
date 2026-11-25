@@ -8,37 +8,140 @@
  */
 
 import { decodeIdentifier } from '../auth/base58'
-import { PLATFORM_PROFILE, policySchema, type StoragePolicy, type StorageProfile } from '../storage/profiles'
-import { policyForRepo, type StorageConfig } from '../storage/store'
+import { PLATFORM_PROFILE, policySchema, validProfileName, type StoragePolicy, type StorageProfile } from '../storage/profiles'
+import type { StorageConfig } from '../storage/store'
 import { canonicalJson, openShare, repoStorageKey, sealShare, unwrapGrant, wrapGrant, type GrantParams } from './crypto'
 import type { GrantFields, UserSyncPort } from './platform'
 import { profileOf } from './storage-slot'
 
 export const SHARE_FORMAT = 'forge-user/share'
 
+/** A policy in a share: the synced `{targets, replicas, platformFallback}`, and whatever else it carries. */
+export interface SharedPolicy {
+  readonly targets: readonly string[]
+  readonly [field: string]: unknown
+}
+
 export interface SharePlain {
   readonly format: typeof SHARE_FORMAT
   readonly version: 1
   readonly profiles: Readonly<Record<string, { readonly settings: unknown; readonly secrets: unknown }>>
-  /** Null: nothing is shared (the repo stores on Platform only, or has no policy). */
-  readonly policy: StoragePolicy | null
+  /** The synced policy as it is, its targets as shared; null: nothing is shared (Platform only). */
+  readonly policy: SharedPolicy | null
 }
 
 /** The share that shares nothing: what stopping writes, at the next epoch. */
 export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: 1, profiles: {}, policy: null }
 
+/** What a repository's share should hold: as it is (keep), nothing (stop sharing), or this. */
+export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing' } | { readonly kind: 'content'; readonly plain: SharePlain }
+
+const KEEP: ShareRule = { kind: 'keep' }
+
+/** A synced policy as both clients read it (dg `policy_from_synced`): `replicas` null when it names none. */
+export interface SyncedPolicy {
+  readonly targets: readonly string[]
+  readonly replicas: number | null
+  readonly platformFallback: boolean
+}
+
+export function syncedPolicy(v: unknown): SyncedPolicy | null {
+  if (typeof v !== 'object' || v === null) return null
+  const r = v as Record<string, unknown>
+  const targets = r['targets']
+  if (!Array.isArray(targets) || targets.length === 0 || !targets.every((t) => typeof t === 'string' && validProfileName(t))) return null
+  const replicas = r['replicas']
+  return { targets: targets as string[], replicas: typeof replicas === 'number' && Number.isSafeInteger(replicas) && replicas >= 0 ? replicas : null, platformFallback: r['platformFallback'] === true }
+}
+
+function httpUrl(v: unknown): URL | null {
+  if (typeof v !== 'string') return null
+  try {
+    const u = new URL(v)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.hostname !== '' && u.username === '' && u.password === '' && u.search === '' && u.hash === '' ? u : null
+  } catch {
+    return null
+  }
+}
+
+const httpOrigin = (v: unknown): boolean => httpUrl(v) !== null
+
+/** dg's `S3Config::validate` over a synced s3 profile's settings. */
+function s3Valid(o: Record<string, unknown>): boolean {
+  const url = httpUrl(o['endpoint'])
+  const bucket = o['bucket']
+  if (url === null || (url.pathname !== '/' && url.pathname !== '') || typeof bucket !== 'string' || !/^[a-z0-9._-]+$/.test(bucket)) return false
+  const pathStyle = typeof o['pathStyle'] === 'boolean' ? o['pathStyle'] : true
+  const ipHost = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname) || url.hostname.startsWith('[')
+  if (!pathStyle && (ipHost || (bucket.includes('.') && url.protocol === 'https:'))) return false
+  const prefix = typeof o['prefix'] === 'string' ? o['prefix'] : ''
+  return prefix === '' || prefix.replace(/\/+$/, '').split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..')
+}
+
+const filled = (o: Record<string, unknown>, k: string): boolean => typeof o[k] === 'string' && o[k] !== ''
+const optionalOrigin = (o: Record<string, unknown>, k: string): boolean => !filled(o, k) || httpOrigin(o[k])
+
 /**
- * What the owner shares for `repoId` (the rule dg follows too): the owner's synced effective policy
- * for the repo (its `repo:<id>` policy, else the default) and the profiles it names, Platform
- * needing none; {@link NOTHING_SHARED} when it names nothing but Platform. `config` is the synced
- * config, never a device-local one.
+ * What a synced profile value is to the share rule, read as dg reads it (`profile_from_synced`,
+ * then `validate`): `platform`, `storage`, or null when it does not read (an unknown kind too).
  */
-export function sharePlain(config: StorageConfig, repoId: string): SharePlain {
-  const policy = policyForRepo(config, repoId)
-  if (policy === null) return NOTHING_SHARED
-  const named = policy.targets.map((t) => config.profiles.find((p) => p.name === t)).filter((p): p is StorageProfile => p !== undefined && p.settings.kind !== 'platform')
-  if (named.length === 0) return NOTHING_SHARED
-  return { format: SHARE_FORMAT, version: 1, profiles: Object.fromEntries(named.map((p) => [p.name, { settings: p.settings, secrets: p.secrets }])), policy }
+export function syncedProfileKind(v: unknown): 'platform' | 'storage' | null {
+  if (typeof v !== 'object' || v === null) return null
+  const settings = (v as Record<string, unknown>)['settings']
+  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) return null
+  const o = settings as Record<string, unknown>
+  const rawSecrets = (v as Record<string, unknown>)['secrets']
+  const secrets = (typeof rawSecrets === 'object' && rawSecrets !== null ? rawSecrets : {}) as Record<string, unknown>
+  switch (o['kind']) {
+    case 'platform':
+      return 'platform'
+    case 's3':
+      if (!s3Valid(o)) return null
+      if (filled(secrets, 'accessKeyId') !== filled(secrets, 'secretAccessKey')) return null
+      if (filled(secrets, 'sessionToken') && !filled(secrets, 'secretAccessKey')) return null
+      return 'storage'
+    case 'ipfs-kubo':
+      return httpOrigin(o['api']) && optionalOrigin(o, 'gateway') && optionalOrigin(o, 'publicGateway') ? 'storage' : null
+    case 'ipfs-pinning-service':
+      return httpOrigin(o['api']) && httpOrigin(o['pinningEndpoint']) && filled(secrets, 'pinningToken') && optionalOrigin(o, 'gateway') && optionalOrigin(o, 'publicGateway') ? 'storage' : null
+    default:
+      return null
+  }
+}
+
+/**
+ * What the owner shares for `repoId`, by the rule dg follows too (forge-core `ShareRule::of`), over
+ * the owner's synced storage slot (`view`: its live entries; null when it was not read): the
+ * repo's `repo:<id>` policy, else (only when that entry is absent) the default, and the synced
+ * profiles it names, as they are synced; a platform-kind profile is the `platform` target. No
+ * usable policy, or one naming a profile that is not synced or does not read: keep the share as it
+ * is (never a partial set). A policy naming only Platform: nothing.
+ */
+export function shareRule(view: Readonly<Record<string, unknown>> | null, repoId: string): ShareRule {
+  if (view === null) return KEEP
+  const repoKey = `repo:${repoId}`
+  const raw = Object.hasOwn(view, repoKey) ? view[repoKey] : view['default']
+  const policy = raw === undefined ? null : syncedPolicy(raw)
+  if (policy === null) return KEEP
+  const profiles: Record<string, { readonly settings: unknown; readonly secrets: unknown }> = {}
+  const targets: string[] = []
+  for (const name of policy.targets) {
+    if (name === PLATFORM_PROFILE) {
+      targets.push(name)
+      continue
+    }
+    const key = `profile:${name}`
+    if (!Object.hasOwn(view, key)) return KEEP
+    const kind = syncedProfileKind(view[key])
+    if (kind === null) return KEEP
+    if (kind === 'platform') targets.push(PLATFORM_PROFILE)
+    else {
+      profiles[name] = view[key] as { settings: unknown; secrets: unknown }
+      targets.push(name)
+    }
+  }
+  if (Object.keys(profiles).length === 0) return { kind: 'nothing' }
+  return { kind: 'content', plain: { format: SHARE_FORMAT, version: 1, profiles, policy: { ...(raw as object), targets } } }
 }
 
 /**
@@ -56,7 +159,8 @@ export function shareMeaning(plain: unknown): string | null {
     const secrets = typeof value['secrets'] === 'object' && value['secrets'] !== null ? (value['secrets'] as Record<string, unknown>) : {}
     profiles[name] = { settings: value['settings'] ?? null, secrets: Object.fromEntries(Object.entries(secrets).filter(([, x]) => x !== undefined && x !== null && x !== '')) }
   }
-  return canonicalJson({ profiles, policy: r['policy'] ?? null })
+  const policy = r['policy'] === null || r['policy'] === undefined ? null : syncedPolicy(r['policy'])
+  return canonicalJson({ profiles, policy })
 }
 
 export interface OwnerContext {
@@ -83,16 +187,16 @@ export interface Reconciled {
  * repo's current maintainers. A grant to anyone else (`removed`, or found stale) moves to the next
  * epoch first. Writes only what differs.
  */
-export async function reconcileRepoShare(ctx: OwnerContext, p: { readonly repoId: string; readonly config: StorageConfig; readonly maintainers: readonly string[]; readonly removed?: readonly string[] }): Promise<Reconciled> {
+export async function reconcileRepoShare(
+  ctx: OwnerContext,
+  p: { readonly repoId: string; readonly view: Readonly<Record<string, unknown>> | null; readonly maintainers: readonly string[]; readonly removed?: readonly string[] },
+): Promise<Reconciled> {
   const network = ctx.networkKey
   const repo = decodeIdentifier(p.repoId)
   const removed = new Set(p.removed ?? [])
   const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId && !removed.has(m)).sort()
   const grants = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
   const existing = await ctx.port.readShare(ctx.ownerId, p.repoId)
-  const plain = sharePlain(p.config, p.repoId)
-  const nothing = plain.policy === null
-  const stale = grants.filter((g) => nothing || !members.includes(g.fields.memberId))
   // Epochs only go up, whatever happened before: a share is never deleted, and a first one starts
   // past every grant left over, so no repo storage key anyone ever held opens a later share.
   const highest = Math.max(-1, ...grants.map((g) => g.fields.epoch))
@@ -107,9 +211,22 @@ export async function reconcileRepoShare(ctx: OwnerContext, p: { readonly repoId
     }
   }
   const shownNothing = existing === null || shareMeaning(current) === shareMeaning(NOTHING_SHARED)
-  if (nothing) {
-    // Stop sharing: the nothing share at the next epoch (unless it is already there), every grant revoked.
-    if (!shownNothing || (existing === null && grants.length > 0)) {
+  const rule = shareRule(p.view, p.repoId)
+  // Keep: what the share holds now (re-shared, at the next epoch when a grant goes).
+  const keepCurrent = rule.kind === 'keep' && current !== null && shareMeaning(current) !== null && !shownNothing
+  const plain: SharePlain | null = rule.kind === 'content' ? rule.plain : keepCurrent ? (current as SharePlain) : null
+  const nothing = rule.kind === 'nothing' || (rule.kind === 'keep' && shownNothing && existing !== null)
+  const stale = grants.filter((g) => nothing || !members.includes(g.fields.memberId))
+  if (plain === null && !nothing) {
+    // Keep, with no share to keep (none, or one this key does not open): only grants to former
+    // maintainers go, and an unreadable share they could open moves to the nothing share first.
+    if (existing !== null && stale.length > 0) await writeShare(ctx, p.repoId, repo, at + 1, NOTHING_SHARED, existing)
+    for (const g of stale) await ctx.port.deleteGrant(g)
+    return { granted: [], waiting: [], shared: existing !== null, epoch: existing === null ? null : stale.length > 0 ? at + 1 : at }
+  }
+  if (plain === null) {
+    // Stop sharing: the nothing share at the next epoch (unless it is already there with no grant), every grant revoked.
+    if (!shownNothing || grants.length > 0) {
       const epoch = existing === null ? at : at + 1
       await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
     }
@@ -123,7 +240,7 @@ export async function reconcileRepoShare(ctx: OwnerContext, p: { readonly repoId
   if (epoch > 0xffffffff) throw new Error('this repository changed its storage maintainers too often to share again')
   const rsk = await repoStorageKey(ctx.E, repo, network, epoch)
   try {
-    const same = !bump && existing !== null && existing.fields.epoch === epoch && current !== null && shareMeaning(current) === shareMeaning(plain)
+    const same = !bump && existing !== null && existing.fields.epoch === epoch && existing.fields.keyId === ctx.keyId && current !== null && shareMeaning(current) === shareMeaning(plain)
     if (!same) await ctx.port.writeShare(p.repoId, await sealShare(rsk, { network, repoId: repo, epoch, keyId: ctx.keyId }, plain), existing)
     const granted: string[] = []
     const waiting: string[] = []
@@ -201,7 +318,10 @@ export async function readGrantedStorage(ctx: MemberContext, p: { readonly repoI
     if (plain === null || plain['format'] !== SHARE_FORMAT || typeof plain['profiles'] !== 'object' || plain['profiles'] === null) return null
     // The nothing share: the owner stopped sharing.
     if (plain['policy'] === null || plain['policy'] === undefined) return null
-    const policy = policySchema.safeParse(plain['policy'])
+    const read = syncedPolicy(plain['policy'])
+    if (read === null) return null
+    const replicas = Math.min(Math.max(read.replicas ?? read.targets.length, 1), read.targets.length)
+    const policy = policySchema.safeParse({ targets: read.targets, replicas, platformFallback: read.platformFallback })
     if (!policy.success) return null
     const profiles = Object.entries(plain['profiles'] as Record<string, unknown>).flatMap(([name, v]) => profileOf(name, v) ?? [])
     // Platform needs no profile (dg's shares name it without one).

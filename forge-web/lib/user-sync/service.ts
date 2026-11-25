@@ -48,8 +48,8 @@ export interface SyncContext {
 export interface SyncOutcome {
   /** The effective storage config (null when the storage slot was not synced this run). */
   readonly storage: StorageConfig | null
-  /** The synced storage config alone (no device-local copies): what a repo's share holds. */
-  readonly synced: StorageConfig | null
+  /** The synced storage slot's live entries (no device-local copies): what a repo's share is taken from. */
+  readonly synced: Readonly<Record<string, unknown>> | null
   readonly syncedAt: number
 }
 
@@ -93,7 +93,7 @@ async function readSlot(ctx: SyncContext, slot: string): Promise<{ stored: Store
 async function mergeSlot(
   ctx: SyncContext,
   slot: string,
-  p: { readonly local: Record<string, unknown>; readonly base: SlotBase | null; readonly options: PlanOptions; readonly tag: Tagger; readonly deletions?: Readonly<Record<string, number>>; readonly uploadLocal?: boolean },
+  p: { readonly local: Record<string, unknown>; readonly base: SlotBase | null; readonly options: PlanOptions; readonly tag: Tagger; readonly deletions?: Readonly<Record<string, number>>; readonly edits?: Readonly<Record<string, number>>; readonly uploadLocal?: boolean },
 ): Promise<SlotPlan> {
   const now = ctx.now ?? Date.now
   for (let attempt = 0; ; attempt++) {
@@ -139,7 +139,7 @@ function baseAfter(snapshot: Record<string, unknown>, written: Record<string, un
   return baseOf({ ...snapshot, ...added }, tag, lists)
 }
 
-async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<{ config: StorageConfig; synced: StorageConfig; meta: SlotMeta; deletes: Readonly<Record<string, number>> } | null> {
+async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<{ config: StorageConfig; synced: Readonly<Record<string, unknown>>; meta: SlotMeta; deletes: Readonly<Record<string, number>>; edits: Readonly<Record<string, number>> } | null> {
   if (ctx.storage === null) return null
   const tag = await tagger(ctx.E, ctx.identityId, ctx.networkKey, 'storage')
   const syncId = await ctx.storage.syncId()
@@ -147,17 +147,19 @@ async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: numb
   // A base for another key or another blob (forgotten, discarded, re-keyed) is no base: a first sync.
   const base = meta && meta.keyId === ctx.keyId && meta.syncId === syncId ? meta.base : null
   const deletes = record?.deletes ?? {}
+  const edits = record?.edits ?? {}
   const local = await ctx.storage.load()
   const snapshot = storageEntries(local)
-  const plan = await mergeSlot(ctx, 'storage', { local: snapshot, base, options: { carry: carryProfileExtras }, tag, deletions: deletes })
+  const plan = await mergeSlot(ctx, 'storage', { local: snapshot, base, options: { carry: carryProfileExtras }, tag, deletions: deletes, edits })
   // Additions only, to the settings as they are now (a Settings save may have landed meanwhile).
   const written = await ctx.storage.update((current) => withAdditions(current, plan.add))
   const addedHere = Object.fromEntries(Object.entries(storageEntries(written)).filter(([k]) => Object.hasOwn(plan.add, k) && !Object.hasOwn(snapshot, k)))
   return {
     config: storageView(plan.view, plan.collisions, written, ctx.deviceId),
-    synced: storageView(plan.view, [], written, ctx.deviceId),
+    synced: plan.view,
     meta: { keyId: ctx.keyId, syncedAt: at, syncId, base: baseAfter(snapshot, addedHere, tag) },
     deletes,
+    edits,
   }
 }
 
@@ -198,8 +200,10 @@ export async function syncUserSettings(ctx: SyncContext): Promise<SyncOutcome> {
   const storage = await syncStorage(ctx, record, at)
   if (storage !== null) {
     // The deletes this run carried are done; any made meanwhile stay for the next.
-    const left = Object.entries(readRecord(ctx.networkKey, ctx.identityId)?.deletes ?? {}).filter(([k, t]) => storage.deletes[k] !== t)
-    updateRecord(ctx.networkKey, ctx.identityId, { storage: storage.meta, deletes: Object.fromEntries(left) })
+    const now = readRecord(ctx.networkKey, ctx.identityId)
+    const left = Object.entries(now?.deletes ?? {}).filter(([k, t]) => storage.deletes[k] !== t)
+    const editsLeft = Object.entries(now?.edits ?? {}).filter(([k, t]) => storage.edits[k] !== t)
+    updateRecord(ctx.networkKey, ctx.identityId, { storage: storage.meta, deletes: Object.fromEntries(left), edits: Object.fromEntries(editsLeft) })
   }
   return { storage: storage?.config ?? null, synced: storage?.synced ?? null, syncedAt: at }
 }

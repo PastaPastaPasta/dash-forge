@@ -187,6 +187,14 @@ function sameProfile(a: StorageProfile, b: StorageProfile): boolean {
 
 const EMPTY: StorageConfig = { version: 1, profiles: [], defaultPolicy: null, repoPolicies: {}, lastTests: {} }
 
+/** The keys a Settings save set to another value than the page showed (`shown` to `after`). */
+export function storageEdits(shown: StorageConfig, after: StorageConfig): string[] {
+  const before = storageEntries(shown)
+  return Object.entries(storageEntries(after))
+    .filter(([k, v]) => !Object.hasOwn(before, k) || canonicalJson(before[k]) !== canonicalJson(v))
+    .map(([k]) => k)
+}
+
 /** The keys a Settings save removed (`before` to `after`): the only deletions sync turns into tombstones. */
 export function storageDeletions(before: StorageConfig, after: StorageConfig): string[] {
   const kept = storageEntries(after)

@@ -35,6 +35,15 @@ export interface SyncRecord {
   readonly prefs?: PrefsMeta
   /** Storage keys the user deleted here, and when: the only tombstones sync writes. */
   readonly deletes?: Readonly<Record<string, number>>
+  /** Storage keys the user edited here, and when: uploaded even when the value is the one held here before. */
+  readonly edits?: Readonly<Record<string, number>>
+}
+
+/** Record that the user edited `keys` of the storage settings here at `at`. */
+export function noteStorageEdits(networkKey: string, identityId: string, keys: readonly string[], at: number): void {
+  if (keys.length === 0) return
+  const r = readRecord(networkKey, identityId)
+  updateRecord(networkKey, identityId, { edits: { ...(r?.edits ?? {}), ...Object.fromEntries(keys.map((k) => [k, at])) } })
 }
 
 /** Record that the user deleted `keys` from the storage settings here at `at`. */

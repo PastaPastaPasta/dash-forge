@@ -21,8 +21,8 @@ interface State {
   readonly identityId: string | null
   readonly status: UserSyncStatus
   readonly storage: StorageConfig | null
-  /** The synced config alone (what a repo's share holds), from the last sync. */
-  readonly synced?: StorageConfig | null
+  /** The synced storage slot's live entries (what a repo's share is taken from), from the last sync. */
+  readonly synced?: Readonly<Record<string, unknown>> | null
 }
 
 let state: State = { identityId: null, status: { kind: 'off' }, storage: null }
@@ -60,8 +60,8 @@ export function syncedStorage(identityId: string): StorageConfig | null {
   return state.identityId === identityId ? state.storage : null
 }
 
-/** The synced storage config alone for `identityId` from this tab's last sync, or null (none yet). */
-export function syncedShareConfig(identityId: string): StorageConfig | null {
+/** The synced storage slot's live entries for `identityId` from this tab's last sync, or null (none yet). */
+export function syncedShareView(identityId: string): Readonly<Record<string, unknown>> | null {
   return state.identityId === identityId ? (state.synced ?? null) : null
 }
 

@@ -19,7 +19,7 @@ import { namedAction, spendAction } from '@/lib/spend-toast'
 import type { StorageConfig } from '@/lib/storage'
 import { readGrantedStorage, reconcileRepoShare, withGrantedStorage, type GrantedStorage, type Reconciled } from '@/lib/user-sync/maintainers'
 import { forgeUserPort } from '@/lib/user-sync/platform'
-import { syncedShareConfig } from '@/lib/user-sync/session'
+import { syncedShareView } from '@/lib/user-sync/session'
 import { quietSigner, useUserSyncStatus } from '@/hooks/use-user-sync'
 
 export interface RepoShareState {
@@ -52,25 +52,25 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const { identity, signer, controller } = useAuth()
   const { sdk } = useSdk()
   const user = ACTIVE_NETWORK.v2?.user
-  // What the share holds is the owner's synced config, once this tab's sync finished: never the
+  // What the share holds comes from the owner's synced storage slot, once this tab's sync finished: never the
   // device-local one, nor what a tab has before its first sync ('off' is also the state before the
   // driver ran).
   const syncKind = useUserSyncStatus().kind
-  const config = identity !== null && syncKind === 'synced' ? syncedShareConfig(identity) : null
+  const config = identity !== null && syncKind === 'synced' ? syncedShareView(identity) : null
   const [waiting, setWaiting] = useState<readonly string[]>([])
   const [memberNeedsKey, setMemberNeedsKey] = useState(false)
   const isOwner = identity !== null && identity === repo.ownerId
 
   const repoKey = `${ACTIVE_NETWORK.key}:${repo.repoId}`
   const reconcile = useCallback(
-    (cfg: StorageConfig): Promise<Reconciled | null> =>
+    (view: Readonly<Record<string, unknown>>): Promise<Reconciled | null> =>
       oneAtATime(repoKey, async () => {
         if (user === undefined || identity === null || sdk === null || signer === null || !isOwner) return null
         const maintainers = await readMaintainers(sdk, repo)
         const removed = [...(removedHere.get(repoKey) ?? [])]
         return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
           spendAction(namedAction('Storage shared with maintainers'), (tag) =>
-            reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, config: cfg, maintainers, removed }),
+            reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, view, maintainers, removed }),
           ),
         )
       }),

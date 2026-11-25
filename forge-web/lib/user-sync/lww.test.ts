@@ -103,4 +103,12 @@ describe('the last-writer-wins slot', () => {
     const plan = planSlot({ slot: 'prefs', local: { a: 2 }, base: baseOf({ a: 1 }, tag), remote: parsed, now: 10, tag, options: {} })
     expect(plan.next.entries['a']).toEqual({ at: 10, v: 2, by: 'dg' })
   })
+
+  it('an edit made here counts even when it goes back to the value this device held', () => {
+    const local = { 'repo:r': { targets: ['a'] } }
+    const remote = doc({ 'repo:r': { at: 5, v: { targets: ['b'] } } })
+    expect(planSlot({ slot: 'storage', local, base: baseOf(local, tag), remote, now: 10, tag, options: {} }).upload).toBe(false)
+    const plan = planSlot({ slot: 'storage', local, base: baseOf(local, tag), remote, now: 10, tag, options: {}, edits: { 'repo:r': 9 } })
+    expect(plan.next.entries['repo:r']).toEqual({ at: 10, v: { targets: ['a'] } })
+  })
 })

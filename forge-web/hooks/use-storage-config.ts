@@ -21,8 +21,8 @@ import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { hasStorageBlob } from '@/lib/auth/vault'
 import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, saveStorageConfig, updateStorageConfig, type StorageConfig } from '@/lib/storage'
 import { deviceShortId } from '@/lib/user-sync/device'
-import { noteStorageDeletes } from '@/lib/user-sync/overlay'
-import { localAfterSave, storageDeletions } from '@/lib/user-sync/storage-slot'
+import { noteStorageDeletes, noteStorageEdits } from '@/lib/user-sync/overlay'
+import { localAfterSave, storageDeletions, storageEdits } from '@/lib/user-sync/storage-slot'
 import { noteLocalSettingsChange, onSyncedStorage, setSyncedStorage, syncedStorage } from '@/lib/user-sync/session'
 
 const NO_SYNC = (): null => null
@@ -95,7 +95,10 @@ export function useStorageConfig(): StorageConfigState {
         return shown === null ? next : localAfterSave(local, shown, next, deviceShortId())
       })
       // What the user deleted here is what sync deletes everywhere (never what is merely missing).
-      noteStorageDeletes(ACTIVE_NETWORK.key, identity, storageDeletions(shown ?? before ?? EMPTY_STORAGE_CONFIG, next), Date.now())
+      const at = Date.now()
+      noteStorageDeletes(ACTIVE_NETWORK.key, identity, storageDeletions(shown ?? before ?? EMPTY_STORAGE_CONFIG, next), at)
+      // What the user changed on the page counts as theirs, even back to a value this device held.
+      noteStorageEdits(ACTIVE_NETWORK.key, identity, storageEdits(shown ?? before ?? EMPTY_STORAGE_CONFIG, next), at)
       if (shown !== null) setSyncedStorage(identity, next)
       noteLocalSettingsChange()
       reload()

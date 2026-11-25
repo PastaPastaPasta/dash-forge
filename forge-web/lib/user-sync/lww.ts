@@ -122,6 +122,8 @@ export function planSlot(p: {
   readonly tag: Tagger
   readonly options: PlanOptions
   readonly deletions?: Readonly<Record<string, number>>
+  /** Keys the user edited here (and when): uploaded even when the value equals the one at the last sync. */
+  readonly edits?: Readonly<Record<string, number>>
   readonly uploadLocal?: boolean
 }): SlotPlan {
   const remote = p.remote ?? emptyDoc(p.slot)
@@ -136,12 +138,13 @@ export function planSlot(p: {
       if (at !== undefined && synced !== undefined && synced.v !== null && at > synced.at) entries[key] = { ...synced, at, v: null }
       continue
     }
-    if (p.base === null && p.uploadLocal === false) continue
+    const editedAt = p.edits?.[key]
+    if (p.base === null && p.uploadLocal === false && editedAt === undefined) continue
     const lv = p.options.carry && synced !== undefined ? p.options.carry(key, synced.v, p.local[key]) : p.local[key]
     const idOf = p.options.lists?.[key]
     const list = idOf !== undefined && synced !== undefined && Array.isArray(synced.v) && Array.isArray(lv)
     let changed: boolean
-    if (synced === undefined) changed = true
+    if (synced === undefined || editedAt !== undefined) changed = true
     else if (p.base === null) changed = list
     else changed = p.base.tags[key] !== p.tag(key, p.local[key])
     if (!changed) continue
