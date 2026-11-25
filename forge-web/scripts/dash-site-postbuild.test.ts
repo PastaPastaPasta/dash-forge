@@ -1,15 +1,20 @@
 /** The forg3.dash.site build: docs pages become redirects, and the SDK wasm is listed only when it is npm's file. */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 
+import { cspProblem } from './csp-hashes.mjs'
 import { docsBase, externalAssets, redirectDocs } from './dash-site-postbuild.mjs'
+
+const made: string[] = []
+afterAll(() => made.forEach((dir) => rmSync(dir, { recursive: true, force: true })))
 
 function exportDir(): string {
   const out = mkdtempSync(join(tmpdir(), 'dash-site-'))
+  made.push(out)
   for (const page of ['', 'quick-start', 'install']) {
     mkdirSync(join(out, 'docs', page), { recursive: true })
     writeFileSync(join(out, 'docs', page, 'index.html'), '<html>a long rendered guide</html>')
@@ -21,6 +26,7 @@ function exportDir(): string {
 
 function wasmPackage(bytes: Buffer, version = '5.0.0-rc.8'): string {
   const dir = mkdtempSync(join(tmpdir(), 'wasm-sdk-'))
+  made.push(dir)
   mkdirSync(join(dir, 'dist/raw'), { recursive: true })
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@dashevo/wasm-sdk', version }))
   writeFileSync(join(dir, 'dist/raw/wasm_sdk_bg.wasm'), bytes)
@@ -30,6 +36,8 @@ function wasmPackage(bytes: Buffer, version = '5.0.0-rc.8'): string {
 describe('dash-site postbuild', () => {
   it('accepts only a plain https docs URL', () => {
     expect(docsBase('https://forge.dashhq.org/docs/')).toBe('https://forge.dashhq.org/docs')
+    expect(docsBase('https://u:p@forge.dashhq.org/a"b<c/')).toBe('https://forge.dashhq.org/a%22b%3Cc')
+    expect(docsBase('https://forge.dashhq.org/')).toBe('https://forge.dashhq.org')
     expect(() => docsBase('http://forge.dashhq.org/docs')).toThrow()
     expect(() => docsBase('https://forge.dashhq.org/docs?x=1')).toThrow()
     expect(() => docsBase(undefined)).toThrow(/FORGE_DOCS_URL/)
@@ -40,9 +48,13 @@ describe('dash-site postbuild', () => {
     const pages = redirectDocs(out, 'https://forge.dashhq.org/docs')
     expect(pages).toEqual(['/docs/', '/docs/install/', '/docs/quick-start/'])
     expect(existsSync(join(out, 'docs/quick-start/index.txt'))).toBe(false)
+    expect(existsSync(join(out, 'docs/index.txt'))).toBe(false)
     const html = readFileSync(join(out, 'docs/quick-start/index.html'), 'utf8')
     expect(html).toContain('content="0;url=https://forge.dashhq.org/docs/quick-start/"')
     expect(readFileSync(join(out, 'docs/index.html'), 'utf8')).toContain('url=https://forge.dashhq.org/docs/"')
+    // The anchor of an in-app link (#who-enforces-what) is kept, under a CSP that allows only this script.
+    expect(html).toContain('location.replace("https://forge.dashhq.org/docs/quick-start/"+location.hash)')
+    expect(cspProblem(html, 'redirect')).toBeNull()
   })
 
   it('lists the wasm with its SHA-384 when it is the package file, and refuses a different file', () => {
@@ -59,5 +71,7 @@ describe('dash-site postbuild', () => {
     })
     expect(() => externalAssets(out, wasmPackage(Buffer.from('rebuilt')))).toThrow(/differs from @dashevo\/wasm-sdk/)
     expect(() => externalAssets(out, wasmPackage(bytes, '^5.0.0'))).toThrow(/unexpected package/)
+    writeFileSync(join(out, '_next/static/wasm/wasm_sdk_bg.fedcba9876543210.wasm'), bytes)
+    expect(() => externalAssets(out, wasmPackage(bytes))).toThrow(/expected one/)
   })
 })

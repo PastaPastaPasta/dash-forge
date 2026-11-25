@@ -18,7 +18,7 @@
 
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const WASM_PACKAGE = '@dashevo/wasm-sdk'
@@ -35,9 +35,16 @@ export function docsBase(value) {
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
 }
 
+/**
+ * A page that sends the reader to `target`, keeping the address's `#anchor` (a meta refresh alone
+ * would drop it), under a CSP that allows only its own one-line script: the page shares an origin
+ * with the signing-key vault, like every other page of the app.
+ */
 export function redirectPage(target) {
   const href = escape(target)
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${href}"><link rel="canonical" href="${href}"><title>Dash Forge docs</title></head><body><p>The guides are at <a href="${href}">${href}</a>.</p></body></html>\n`
+  const js = `location.replace(${JSON.stringify(target).replace(/</g, '\\u003c')}+location.hash)`
+  const csp = `default-src 'none'; script-src 'sha256-${createHash('sha256').update(js).digest('base64')}'; base-uri 'none'; form-action 'none'`
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><script>${js}</script><meta http-equiv="refresh" content="0;url=${href}"><link rel="canonical" href="${href}"><title>Dash Forge docs</title></head><body><p>The guides are at <a href="${href}">${href}</a>.</p></body></html>\n`
 }
 
 /** Replaces `out/docs/` with redirect pages, one per page the hub had. Returns the redirected paths. */
@@ -49,7 +56,7 @@ export function redirectDocs(out, base) {
     for (const entry of readdirSync(dir).sort()) {
       const full = join(dir, entry)
       if (statSync(full).isDirectory()) walk(full)
-      else if (entry === 'index.html') pages.push(relative(docs, dir))
+      else if (entry === 'index.html') pages.push(relative(docs, dir).split(sep).join('/'))
     }
   }
   walk(docs)
@@ -57,7 +64,7 @@ export function redirectDocs(out, base) {
   for (const page of pages) {
     const dir = join(docs, page)
     mkdirSync(dir, { recursive: true })
-    const suffix = page === '' ? '/' : `/${page.split('\\').join('/')}/`
+    const suffix = page === '' ? '/' : `/${page}/`
     writeFileSync(join(dir, 'index.html'), redirectPage(`${base}${suffix}`))
   }
   return pages.map((page) => (page === '' ? '/docs/' : `/docs/${page}/`))
@@ -80,11 +87,15 @@ export function externalAssets(out, packageDir) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [out = 'out', mapFile] = process.argv.slice(2)
-  if (!mapFile) throw new Error('usage: dash-site-postbuild.mjs <out-dir> <map-file>')
   const base = docsBase(process.env.FORGE_DOCS_URL)
-  const redirected = redirectDocs(out, base)
-  const here = dirname(fileURLToPath(import.meta.url))
-  const assets = externalAssets(out, join(here, '..', 'node_modules', WASM_PACKAGE))
-  writeFileSync(mapFile, `${JSON.stringify(assets, null, 2)}\n`)
-  console.log(`dash-site: ${redirected.length} docs pages now redirect to ${base}; ${Object.keys(assets).length} file(s) listed in ${mapFile}`)
+  // `--check`: run first in build:dash-site, so a missing FORGE_DOCS_URL fails before the build.
+  if (out !== '--check') {
+    if (!mapFile) throw new Error('usage: dash-site-postbuild.mjs <out-dir> <map-file>')
+    rmSync(mapFile, { force: true })
+    const here = dirname(fileURLToPath(import.meta.url))
+    const assets = externalAssets(out, join(here, '..', 'node_modules', WASM_PACKAGE))
+    const redirected = redirectDocs(out, base)
+    writeFileSync(mapFile, `${JSON.stringify(assets, null, 2)}\n`)
+    console.log(`dash-site: ${redirected.length} docs pages now redirect to ${base}; ${Object.keys(assets).length} file(s) listed in ${mapFile}`)
+  }
 }
