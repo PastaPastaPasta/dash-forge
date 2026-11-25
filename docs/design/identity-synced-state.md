@@ -48,19 +48,25 @@ Only the owner of a Platform document can change or delete it, so nobody but the
 
 ## 4. Encryption
 
-All of this is AES-256-GCM (WebCrypto and RustCrypto), HKDF-SHA256 and secp256k1 ECDH. Shared vectors live in `forge-contracts/fixtures/user-sync/vectors.json`, and both languages test against them.
+The normative definitions are `tools/user-sync-vectors/gen.py` and its output, `forge-contracts/fixtures/user-sync/vectors.json`. Rust and TypeScript must both reproduce every value in the vectors. The primitives are AES-256-GCM (16-byte tag), HKDF-SHA256 (32-byte output) and secp256k1 ECDH (the x coordinate). Ids are their 32 raw bytes, `lp(s)` is a one-byte length followed by the UTF-8 bytes, and `u32` is big-endian. `network` is Forge's network key (`mainnet`, `testnet`, `devnet-<name>`).
 
-- **The user's key.** `E` is the wallet's shared encryption private key for `forge-user`, and `keyId` is its id on the identity.
-  - `K_state(slot) = HKDF(ikm = E, salt = identityId bytes, info = "forge-user/v1/state/" ‖ network ‖ "/" ‖ slot)`.
-  - AAD is `"forge-user/v1" ‖ network ‖ identityId ‖ slot ‖ u8(v) ‖ u32be(keyId)`.
-  - The plaintext is deflate-raw(JSON), split across `d0..d2`.
-- **The repo storage key**, for each repo and epoch: `RSK(repo, epoch) = HKDF(ikm = E_owner, salt = repoId, info = "forge-user/v1/repo-storage/" ‖ network ‖ "/" ‖ u32be(epoch))`. Any device of the owner derives it, so the owner needs no grant to themself. The `share` holds the shared profiles' JSON, with AAD `"forge-user/v1/share" ‖ network ‖ repoId ‖ u32be(epoch)`.
-- **A grant** wraps RSK to a member's `forge-user` encryption public key.
-  - `shared = ECDH(E_owner, P_member)` (x coordinate).
-  - `W = HKDF(shared, salt = repoId, info = "forge-user/v1/grant/" ‖ network ‖ memberId ‖ u32be(epoch) ‖ u32be(senderKeyId) ‖ u32be(recipientKeyId))`.
-  - `wrapped = nonce ‖ AES-GCM(W, RSK)`.
-  - The member opens it with `ECDH(E_member, P_owner)`.
-- Secrets never touch plaintext storage: the decrypted config is held in memory. The web app writes it through to the existing local vault blob (sealed as today), and dg to the OS keychain or sealed file (below). Nothing is logged. The redacting `Secret` type wraps every credential in Rust.
+- **State.** `E` is the wallet's shared encryption private key for `forge-user`, and `keyId` is its id on the identity.
+  - `K = HKDF(ikm = E, salt = identityId, info = "forge-user/v1/state/" ‖ network ‖ "/" ‖ slot)`.
+  - `AAD = "forge-user/v1" ‖ lp(network) ‖ identityId ‖ lp(slot) ‖ u8(v) ‖ u32(keyId)`.
+  - The plaintext is `deflate-raw(JSON)`. The ciphertext (with its tag) is split into 5,000-byte pieces `d0`, `d1`, `d2`, so at most 15,000 bytes. `n` is a fresh random 12-byte nonce on every write.
+- **The repo storage key.** `RSK(repo, epoch) = HKDF(ikm = E_owner, salt = repoId, info = "forge-user/v1/repo-storage/" ‖ network ‖ "/" ‖ u32(epoch))`. Any device of the owner derives it, so the owner needs no grant to themself.
+  - The share is encrypted under it with `AAD = "forge-user/v1/share" ‖ lp(network) ‖ repoId ‖ u32(epoch) ‖ u32(keyId)`, which binds the `keyId` the owner derived it with.
+- **A grant.**
+  - `shared = ECDH(E_owner, P_member)`.
+  - `W = HKDF(shared, salt = repoId, info = "forge-user/v1/grant/" ‖ lp(network) ‖ memberId ‖ u32(epoch) ‖ u32(senderKeyId) ‖ u32(recipientKeyId))`.
+  - `wrapped = nonce(12) ‖ AES-GCM(W, RSK, AAD = ownerId)`, which is 60 bytes.
+  - The member computes `ECDH(E_member, P_owner)` from the owner's key, which it reads as `senderKeyId` on the owner's identity.
+- **Plaintext formats.** Every slot is a last-writer-wins map: `{"format": "forge-user/<slot>", "version": 1, "entries": {key: {"at": ms, "v": value | null}}}`, where `null` is a tombstone.
+  - Storage keys are `profile:<name>` (`{settings, secrets}`, in the same camelCase fields as the web app's `StorageProfile`), `default` (a policy), `repo:<repoId>` (a policy) and `test:<name>`.
+  - Prefs keys are `diff`, `mergeIdentity`, `fiat`, `trending`, `imageHosts`, `ipfsGateways`, `ipfsPeer` and `orgs`.
+  - A share is `{"format": "forge-user/share", "version": 1, "profiles": {name: {settings, secrets}}, "policy": policy}`.
+  - A reader ignores entries it does not understand and writes them back unchanged, so older and newer clients do not erase each other's keys.
+- Decrypted settings are held in memory. The web app writes them through to the existing local vault blob (sealed as today), and dg to the OS keychain or sealed file (§7). Nothing is logged. In Rust, every credential is held in the redacting `Secret` type.
 
 ## 5. Flows
 
