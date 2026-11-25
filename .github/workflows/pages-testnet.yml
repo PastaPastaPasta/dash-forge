@@ -162,7 +162,6 @@ jobs:
     timeout-minutes: 40
     permissions:
       contents: read
-      actions: write # the guard starts a run on master in place of an old re-run
     environment:
       name: testnet-site
       url: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
@@ -173,7 +172,8 @@ jobs:
           path: site
       - name: Check the downloaded export
         run: test -s site/.well-known/security.txt && test -s site/forge-manifest.json
-      # "Re-run failed jobs" skips the `current` job that already passed, so check again.
+      # "Re-run failed jobs" skips the `current` job that already passed, so check again; the
+      # `recover` job below starts the run on master.
       - name: Refuse a re-run of a superseded commit
         if: github.event_name != 'workflow_dispatch' && github.run_attempt != '1'
         env:
@@ -182,8 +182,7 @@ jobs:
         run: |
           head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
           if [ "$head" != "$SHA" ]; then
-            gh workflow run pages-testnet.yml --repo "$GITHUB_REPOSITORY" --ref master
-            echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}; started pages-testnet.yml on master instead"
+            echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}"
             exit 1
           fi
       - name: Push to the site repository
@@ -257,3 +256,26 @@ jobs:
           live="$(printf '%s' "$got" | jq -r '.commit // empty' 2>/dev/null)" || live=""
           echo "::error title=Site not updated::$url does not serve this build of $SHA after 25 minutes (it serves ${live:-nothing})"
           exit 1
+
+  # "Re-run failed jobs" re-runs the failed jobs and the jobs after them, but not a `current` that
+  # passed. Whatever this re-run's jobs did, if its commit is no longer master's head, start the
+  # workflow on master so the newest commit deploys.
+  recover:
+    needs: [current, build, attest, deploy]
+    if: always() && github.event_name != 'workflow_dispatch' && github.run_attempt != '1' && needs.current.outputs.superseded != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Hand a superseded commit to master
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+          if [ "$head" != "$SHA" ]; then
+            gh workflow run pages-testnet.yml --repo "$GITHUB_REPOSITORY" --ref master
+            echo "::notice title=Superseded::master is at ${head}, past ${SHA}; started pages-testnet.yml on master to deploy it"
+          fi
