@@ -661,15 +661,16 @@ pub enum Wanted<'a> {
     Nothing,
 }
 
-/// The epoch a reconcile writes at: the share's; when a key loses access or sharing stops, one
-/// past the highest of the share's and every surviving grant's epoch. With no share (one an
-/// older client deleted), also past every grant's, so an epoch never goes back and no key that
-/// held an earlier one reads a later one.
+/// The epoch a reconcile writes at: the share's; when a key loses access, sharing stops, or a
+/// grant is ahead of the share (its holder has that later epoch's key), one past the highest of
+/// the share's and every surviving grant's epoch. With no share (one an older client deleted),
+/// also past every grant's, so an epoch never goes back and no key that held an earlier one reads
+/// a later one.
 fn share_epoch(existing: Option<&ShareDoc>, grants: &[GrantDoc], bump: bool) -> Result<u32> {
     let next = |e: u32| e.checked_add(1).ok_or(Error::Integrity);
     let highest_grant = grants.iter().map(|g| g.epoch).max();
     match (existing, highest_grant) {
-        (Some(s), g) if bump => next(s.epoch.max(g.unwrap_or(0))),
+        (Some(s), g) if bump || g.is_some_and(|g| g > s.epoch) => next(s.epoch.max(g.unwrap_or(0))),
         (Some(s), _) => Ok(s.epoch),
         (None, Some(g)) => next(g),
         (None, None) => Ok(0),
@@ -904,12 +905,6 @@ impl UserSync<'_> {
         } else {
             self.live_keys(maintainers).await?
         };
-        // A grant moving to a member's newer key rotates too: the key it held keeps the old RSK.
-        let rekeyed = all.iter().any(|g| {
-            keys.get(&g.member_id)
-                .and_then(|ks| ks.last())
-                .is_some_and(|newest| newest.id != g.recipient_key_id)
-        });
         let revoked: Vec<&GrantDoc> = all
             .iter()
             .filter(|g| {
@@ -931,6 +926,20 @@ impl UserSync<'_> {
             ));
         }
         let stopping = stop && current.as_ref().is_none_or(|c| !c.profiles.is_empty());
+        // A grant moving to a member's newer key rotates, while the share lends storage: the key it
+        // held keeps the old RSK. An empty share's grants are never rewritten, so bumping for them
+        // would write the share again on every reconcile.
+        let will_lend = match wanted {
+            Wanted::Content(c) => !c.profiles.is_empty(),
+            Wanted::Keep => current.as_ref().is_some_and(|c| !c.profiles.is_empty()),
+            Wanted::Nothing => false,
+        };
+        let rekeyed = will_lend
+            && all.iter().any(|g| {
+                keys.get(&g.member_id)
+                    .and_then(|ks| ks.last())
+                    .is_some_and(|newest| newest.id != g.recipient_key_id)
+            });
         let mut out = Reconciled {
             epoch: share_epoch(
                 existing.as_ref(),

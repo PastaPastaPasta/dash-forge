@@ -866,7 +866,9 @@ fn a_bump_goes_past_the_highest_of_the_share_and_its_grants() {
     };
     assert_eq!(share_epoch(Some(&share(2)), &[doc(5)], true).unwrap(), 6);
     assert_eq!(share_epoch(Some(&share(7)), &[doc(5)], true).unwrap(), 8);
-    assert_eq!(share_epoch(Some(&share(2)), &[doc(5)], false).unwrap(), 2);
+    // A grant ahead of the share moves it past that grant even with nothing else to bump.
+    assert_eq!(share_epoch(Some(&share(2)), &[doc(5)], false).unwrap(), 6);
+    assert_eq!(share_epoch(Some(&share(5)), &[doc(5)], false).unwrap(), 5);
     assert_eq!(share_epoch(None, &[doc(3), doc(1)], false).unwrap(), 4);
     assert_eq!(share_epoch(None, &[], true).unwrap(), 0);
     assert!(share_epoch(Some(&share(u32::MAX)), &[], true).is_err());
@@ -1181,4 +1183,125 @@ fn the_stop_line_names_the_default_only_when_the_repo_never_had_storage() {
         "Stopped sharing storage with o/r's maintainers."
     );
     assert!(stopped_line("o/r", &Reconciled::default()).is_none());
+}
+
+/// A grant put straight into the store, as one a run that stopped part-way left behind.
+async fn leftover_grant(r: &Shared, epoch: u32, recipient_key_id: u32) {
+    r.store
+        .put_grant(&GrantDoc {
+            id: None,
+            owner_id: r.owner.clone(),
+            revision: None,
+            repo_id: r.repo.clone(),
+            member_id: r.member.clone(),
+            epoch,
+            sender_key_id: 7,
+            recipient_key_id,
+            wrapped: vec![0; crypto::WRAPPED_LEN],
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_empty_kept_share_with_a_grant_to_an_older_live_key_writes_nothing() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    // A grant left to the member's key 9, still live, while their newest is 11.
+    leftover_grant(&r, 0, 9).await;
+    let newer = key(&r.member, 11, "member2 newer E");
+    r.store.add_key(&r.member, 11, newer.public_key().to_vec());
+    let writes = r.store.writes();
+    for _ in 0..3 {
+        let kept = owner
+            .reconcile_repo(&r.repo, Wanted::Keep, &maintainers)
+            .await
+            .unwrap();
+        assert_eq!(kept.epoch, 1);
+        assert!(!kept.share_written && kept.granted.is_empty());
+    }
+    assert_eq!(r.store.writes(), writes, "no paid write on every reconcile");
+}
+
+#[tokio::test]
+async fn a_grant_ahead_of_the_share_moves_the_share_past_it() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    // The member's grant says epoch 3 while the share is at 0: they hold RSK(3).
+    let old = r.store.all_grants().remove(0);
+    r.store
+        .put_grant(&GrantDoc { epoch: 3, ..old })
+        .await
+        .unwrap();
+    let moved = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(moved.epoch, 4);
+    assert_eq!(
+        r.store
+            .share(&r.owner, &r.repo)
+            .await
+            .unwrap()
+            .unwrap()
+            .epoch,
+        4
+    );
+    assert!(r.store.all_grants().iter().all(|g| g.epoch == 4));
+    // After the member's removal the next share is past 4, never at 3.
+    let removed = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &BTreeSet::new())
+        .await
+        .unwrap();
+    assert_eq!(removed.epoch, 5);
+}
+
+#[tokio::test]
+async fn remove_stop_and_share_again_keeps_epochs_moving_forward() {
+    let r = repo_with_one_maintainer();
+    let bob = id("member3");
+    let e_bob = key(&bob, 5, "member3 E");
+    r.store.add_key(&bob, 5, e_bob.public_key().to_vec());
+    let both: BTreeSet<String> = [r.member.clone(), bob].into();
+    let alice: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let mut epochs = Vec::new();
+    for (wanted, maintainers) in [
+        (Wanted::Content(&r.content), &both),
+        (Wanted::Content(&r.content), &alice),
+        (Wanted::Nothing, &alice),
+        (Wanted::Content(&r.content), &alice),
+    ] {
+        owner
+            .reconcile_repo(&r.repo, wanted, maintainers)
+            .await
+            .unwrap();
+        epochs.push(
+            r.store
+                .share(&r.owner, &r.repo)
+                .await
+                .unwrap()
+                .unwrap()
+                .epoch,
+        );
+    }
+    // Sharing again stays at the stop's epoch: no grant ever went to it.
+    assert_eq!(epochs, [0, 1, 2, 2]);
 }
