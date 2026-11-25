@@ -124,6 +124,9 @@ jobs:
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: write # the guard starts a run on master in place of an old re-run
     environment:
       name: testnet-site
       url: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
@@ -134,8 +137,11 @@ jobs:
           path: site
       - name: Check the downloaded export
         run: test -s site/.well-known/security.txt && test -s site/forge-manifest.json
-      # A re-run of an old push run must not put an older commit back on the site. Fails open: an
-      # unreadable manifest or compare deploys.
+      # A re-run of an old push run must not deploy its commit: it may have taken the queue slot
+      # of a newer merge's waiting run. It checks master's head (the API, not the cached site),
+      # fails closed, and starts a run on master so the newest commit still deploys. A first run
+      # is in merge order; its check of the live manifest fails open. A workflow_dispatch is the
+      # operator's choice of ref, so it may roll back.
       - name: Refuse to deploy over a newer commit
         if: github.event_name != 'workflow_dispatch'
         env:
@@ -143,11 +149,19 @@ jobs:
           SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
           SHA: ${{ github.sha }}
         run: |
+          if [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+            if [ "$head" != "$SHA" ]; then
+              gh workflow run pages-testnet.yml --repo "$GITHUB_REPOSITORY" --ref master
+              echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}; started pages-testnet.yml on master instead"
+              exit 1
+            fi
+          fi
           live="$(curl -fsSL --max-time 20 --retry 3 --retry-all-errors -A 'Mozilla/5.0' "${SITE_URL%/}/forge-manifest.json" | jq -r '.commit // empty')" || live=""
           if [ -n "$live" ] && [ "$live" != "$SHA" ]; then
             status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${SHA}...${live}?per_page=1" -q .status)" || status=""
             if [ "$status" = ahead ]; then
-              echo "::error title=Older commit::${SITE_URL} serves ${live}, which is newer than ${SHA}. To redeploy, run this workflow on master by workflow_dispatch; don't re-run an old run."
+              echo "::error title=Older commit::${SITE_URL} serves ${live}, which is newer than ${SHA}"
               exit 1
             fi
           fi
