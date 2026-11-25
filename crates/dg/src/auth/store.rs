@@ -157,8 +157,9 @@ pub struct Storer {
     /// Never use the keychain (a full identity with its master key).
     pub no_keychain: bool,
     pass: Option<Secret>,
-    /// Where this storer last put a pending key, the one copy [`promote`] removes.
-    staged: Option<Stored>,
+    /// Where this storer last put a pending key, and the key, so [`promote`] removes that copy
+    /// only while it still holds this run's key.
+    staged: Option<(Stored, Secret)>,
 }
 
 impl Storer {
@@ -189,9 +190,12 @@ impl Storer {
         text: &Secret,
         slot: Slot,
     ) -> Result<Stored> {
+        // One store at a time per identity, across processes: the copy's name, the copy and the
+        // write happen together.
+        let _lock = identity_lock(network, identity_id)?;
         let stored = self.write(network, identity_id, text, slot)?;
         if slot == Slot::Pending {
-            self.staged = Some(stored.clone());
+            self.staged = Some((stored.clone(), Secret::new(text.expose())));
         }
         Ok(stored)
     }
@@ -208,6 +212,9 @@ impl Storer {
             // An entry that can't be read is left as it is (it can't be copied first), and the
             // key goes to a file instead.
             match keep_keychain_entry(&acct, &backup_stamp(), text.expose()) {
+                // The sync key is looked up in the keychain before the file, so a file beside an
+                // entry left in place would never be read: keep the old one and stop.
+                Err(e) if slot == Slot::Sync => return Err(e),
                 Err(e) => eprintln!(
                     "note: the keychain entry could not be copied first ({e:#}), so it is left as it is; using a file"
                 ),
@@ -263,7 +270,9 @@ impl Storer {
         }
         let pass = self.pass.as_ref().context("no passphrase")?;
         let sealed_text = sealed::seal(text.expose().as_bytes(), pass.expose())?;
-        keep_replaced_file(&path, sealed_text.as_bytes(), slot)?;
+        if !sealed_holds(&path, pass, text) {
+            keep_replaced_file(&path, sealed_text.as_bytes(), slot)?;
+        }
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
         Ok(Stored::Sealed(path))
     }
@@ -473,24 +482,66 @@ pub fn promote(
     text: &Secret,
 ) -> Result<Stored> {
     let main = storer.store(network, identity_id, text, Slot::Main)?;
-    if let Some(staged) = storer.staged.take() {
-        discard(&staged);
+    if let Some((stored, staged)) = storer.staged.take() {
+        let _lock = identity_lock(network, identity_id)?;
+        discard(&stored, &staged, storer.pass.as_ref());
     }
     Ok(main)
 }
 
-/// Delete one stored copy, best effort.
-fn discard(stored: &Stored) {
+/// Delete one stored copy, best effort, and only while it still holds `key` (another sign-in
+/// may have staged its own key there since).
+fn discard(stored: &Stored, key: &Secret, pass: Option<&Secret>) {
     match stored {
         Stored::Keychain { source } => {
             if let Some((svc, acct)) = keystore::parse_keychain_source(source) {
-                let _ = keychain::delete(svc, acct);
+                if keychain::get(svc, acct)
+                    .is_ok_and(|v| v.is_some_and(|v| v.expose() == key.expose()))
+                {
+                    let _ = keychain::delete(svc, acct);
+                }
             }
         }
-        Stored::Sealed(p) | Stored::Plaintext(p) => {
-            let _ = std::fs::remove_file(p);
+        Stored::Plaintext(p) => {
+            if std::fs::read(p)
+                .is_ok_and(|b| zeroize::Zeroizing::new(b).as_slice() == key.expose().as_bytes())
+            {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        Stored::Sealed(p) => {
+            if pass.is_some_and(|pass| sealed_holds(p, pass, key)) {
+                let _ = std::fs::remove_file(p);
+            }
         }
     }
+}
+
+/// Whether the sealed file `path` opens with `pass` to exactly `key`.
+fn sealed_holds(path: &std::path::Path, pass: &Secret, key: &Secret) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| sealed::open(&raw, pass.expose()).ok())
+        .is_some_and(|plain| plain.as_slice() == key.expose().as_bytes())
+}
+
+/// An exclusive lock on `identities/<network>-<id>.lock`, held while a key for that identity is
+/// copied and written. The file is never removed.
+fn identity_lock(network: &str, identity_id: &str) -> Result<std::fs::File> {
+    let path = key_file(network, identity_id)?.with_extension("lock");
+    if let Some(dir) = path.parent() {
+        keystore::ensure_private_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("locking {}", path.display()))?;
+    Ok(file)
 }
 
 /// Remove what [`store`] wrote for `identity_id` on `network` (keychain entries and key files,
@@ -695,9 +746,33 @@ mod tests {
         let earlier = t.path().join("testnet-Y.key.pending");
         std::fs::write(&staged, b"this run").unwrap();
         std::fs::write(&earlier, b"an earlier run").unwrap();
-        discard(&Stored::Sealed(staged.clone()));
+        let key = Secret::new("this run");
+        std::fs::write(&earlier, b"an earlier run").unwrap();
+        discard(&Stored::Plaintext(staged.clone()), &key, None);
         assert!(!staged.exists());
         assert_eq!(std::fs::read(&earlier).unwrap(), b"an earlier run");
+        // Another sign-in staged its own key in the same place since: it stays.
+        std::fs::write(&staged, b"another run").unwrap();
+        discard(&Stored::Plaintext(staged.clone()), &key, None);
+        assert_eq!(std::fs::read(&staged).unwrap(), b"another run");
+        // A sealed copy is removed only when it opens to this run's key.
+        let pass = Secret::new("test-passphrase");
+        let sealed = t.path().join("testnet-Z.key.pending");
+        std::fs::write(
+            &sealed,
+            sealed::seal(b"another run", "test-passphrase").unwrap(),
+        )
+        .unwrap();
+        discard(&Stored::Sealed(sealed.clone()), &key, Some(&pass));
+        assert!(sealed.exists());
+        std::fs::write(
+            &sealed,
+            sealed::seal(b"this run", "test-passphrase").unwrap(),
+        )
+        .unwrap();
+        assert!(sealed_holds(&sealed, &pass, &key));
+        discard(&Stored::Sealed(sealed.clone()), &key, Some(&pass));
+        assert!(!sealed.exists());
     }
 
     /// Writing the same bytes again keeps no copy; different bytes do. A sync key's copy is not
