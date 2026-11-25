@@ -1,0 +1,122 @@
+/**
+ * This tab's settings sync: whether it runs for the signed-in identity, its last outcome, and the
+ * effective storage config it produced (memory only: it holds credentials). One run at a time; a
+ * request while one runs makes one more run after it.
+ */
+
+import type { StorageConfig } from '../storage/store'
+import type { SyncOutcome } from './service'
+
+export type UserSyncStatus =
+  /** No forge-user on this network, or nobody signed in. */
+  | { readonly kind: 'off' }
+  /** Signed in without the sync key (not a wallet sign-in, or the wallet did not send it, or locked). */
+  | { readonly kind: 'local'; readonly syncedAt: number | null }
+  | { readonly kind: 'syncing'; readonly syncedAt: number | null }
+  | { readonly kind: 'synced'; readonly syncedAt: number }
+  | { readonly kind: 'error'; readonly syncedAt: number | null; readonly message: string }
+
+interface State {
+  readonly identityId: string | null
+  readonly status: UserSyncStatus
+  readonly storage: StorageConfig | null
+}
+
+let state: State = { identityId: null, status: { kind: 'off' }, storage: null }
+const listeners = new Set<() => void>()
+const storageListeners = new Set<() => void>()
+
+function set(next: State): void {
+  const storageChanged = next.storage !== state.storage
+  state = next
+  for (const l of listeners) l()
+  if (storageChanged) for (const l of storageListeners) l()
+}
+
+export function subscribeUserSync(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+/** Be told when the effective storage config changes (a sync finished, or ended). */
+export function onSyncedStorage(listener: () => void): () => void {
+  storageListeners.add(listener)
+  return () => {
+    storageListeners.delete(listener)
+  }
+}
+
+export function userSyncStatus(): UserSyncStatus {
+  return state.status
+}
+
+/** The effective storage config the last sync produced for `identityId`, or null (use the local one). */
+export function syncedStorage(identityId: string): StorageConfig | null {
+  return state.identityId === identityId ? state.storage : null
+}
+
+/** Who sync is for now, and whether it can run (it holds the key); drops the last outcome on a change. */
+export function setSyncSubject(identityId: string | null, status: UserSyncStatus): void {
+  if (identityId !== state.identityId) set({ identityId, status, storage: null })
+  else if (state.status.kind !== 'syncing' && (status.kind !== state.status.kind || status.kind === 'off')) set({ ...state, status, ...(status.kind === 'off' || status.kind === 'local' ? { storage: null } : {}) })
+}
+
+let running: Promise<void> | null = null
+let again: { readonly identityId: string; readonly exec: () => Promise<SyncOutcome | null> } | null = null
+
+/**
+ * Run `exec` (one sync; null: it could not run, the key is gone). Single-flight: a request while
+ * one runs is kept, and the latest one runs once the current one ends.
+ */
+export function requestUserSync(identityId: string, exec: () => Promise<SyncOutcome | null>): Promise<void> {
+  if (running) {
+    again = { identityId, exec }
+    return running
+  }
+  const run = async (): Promise<void> => {
+    let next: { readonly identityId: string; readonly exec: () => Promise<SyncOutcome | null> } | null = { identityId, exec }
+    while (next) {
+      const { identityId, exec: current } = next
+      again = null
+      const syncedAt = 'syncedAt' in state.status ? state.status.syncedAt : null
+      try {
+        if (state.identityId === identityId) set({ ...state, status: { kind: 'syncing', syncedAt } })
+        const outcome = await current()
+        if (state.identityId !== identityId) {
+          next = again
+          continue
+        }
+        if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
+        else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage })
+      } catch (e) {
+        if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
+      }
+      next = again
+    }
+  }
+  running = run().finally(() => {
+    running = null
+  })
+  return running
+}
+
+const changeListeners = new Set<() => void>()
+
+/** Local settings changed here (a Settings save): sync again. */
+export function noteLocalSettingsChange(): void {
+  for (const l of changeListeners) l()
+}
+
+export function onLocalSettingsChange(listener: () => void): () => void {
+  changeListeners.add(listener)
+  return () => {
+    changeListeners.delete(listener)
+  }
+}
+
+/** Show `config` as the effective one until the sync it starts finishes (a Settings save). */
+export function setSyncedStorage(identityId: string, config: StorageConfig): void {
+  if (state.identityId === identityId && state.storage !== null) set({ ...state, storage: config })
+}

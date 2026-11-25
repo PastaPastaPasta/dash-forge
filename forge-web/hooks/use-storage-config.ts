@@ -13,13 +13,17 @@
  * says stored settings are waiting for the unlock.
  */
 
-import { useCallback } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { DEFAULT_NETWORK } from '@/lib/constants'
 import { hasStorageBlob } from '@/lib/auth/vault'
 import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, saveStorageConfig, type StorageConfig } from '@/lib/storage'
+import { localAfterSave } from '@/lib/user-sync/storage-slot'
+import { noteLocalSettingsChange, onSyncedStorage, setSyncedStorage, syncedStorage } from '@/lib/user-sync/session'
+
+const NO_SYNC = (): null => null
 
 export interface StorageConfigState {
   readonly config: StorageConfig | null
@@ -69,10 +73,16 @@ export function useStorageConfig(): StorageConfigState {
     { enabled: identity !== null },
   )
   const { reload } = state
+  // Settings that follow the identity: the merged config, once this tab synced (it replaces the local one).
+  const synced = useSyncExternalStore(onSyncedStorage, identity === null ? NO_SYNC : () => syncedStorage(identity), NO_SYNC)
   const save = useCallback(
     async (next: StorageConfig): Promise<void> => {
       if (!storable || identity === null) throw new Error('Storage settings are kept in the vault: sign in with a stored key (not a pasted one).')
-      await saveStorageConfig(DEFAULT_NETWORK, identity, next)
+      const shown = syncedStorage(identity)
+      // The local blob keeps what the merged view hides (nothing local is dropped unseen).
+      await saveStorageConfig(DEFAULT_NETWORK, identity, shown === null ? next : localAfterSave(await loadStorageConfig(DEFAULT_NETWORK, identity), shown, next))
+      if (shown !== null) setSyncedStorage(identity, next)
+      noteLocalSettingsChange()
       reload()
     },
     [identity, reload, storable],
@@ -90,7 +100,7 @@ export function useStorageConfig(): StorageConfigState {
   }, [identity, reload])
   const sealed = state.data === SEALED
   const needsUnlock = sealed || noneStored
-  const config = identity === null || needsUnlock ? null : (state.data as StorageConfig | null)
+  const config = identity === null || needsUnlock ? null : (synced ?? (state.data as StorageConfig | null))
   const usable = config ?? (identity !== null && noneStored ? EMPTY_STORAGE_CONFIG : null)
   return { config, loading: state.loading, error: state.error, storable, needsUnlock, usable, sealed, storedSince, save, reload, discard }
 }
