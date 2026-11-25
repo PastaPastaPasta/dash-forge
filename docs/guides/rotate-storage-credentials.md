@@ -5,7 +5,7 @@ When you share a repository's storage with its maintainers (`dg storage share <o
 Rotating takes three steps:
 
 1. Make a new credential at the provider.
-2. Update the profile with it.
+2. Update the profile with it. In dg, put the new secret in place first, then run `dg storage add <name> …` again with the same name.
 3. Revoke the old credential at the provider.
 
 The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So do `dg collab add`, `dg collab remove` and `dg storage share` on it: they refresh the shared profiles from the storage you set for that repository. Maintainers only ever get storage set for their repository, never your default storage.
@@ -20,7 +20,7 @@ The shared copy follows automatically. Your next push to the repository re-encry
        --region auto --bucket forge --public-url https://<your public origin> \
        --access-key-id <new id> --secret-access-key keychain:dash-forge/r2-main
      ```
-     Then store the new secret under that keychain entry. `dg storage add` with no arguments asks for each value and stores a pasted secret for you.
+     Store the new secret under that keychain entry (or in the environment variable the profile names) **before** you run it. `dg storage add` reads the secret when it runs and updates your synced copy, which is the copy maintainers get. Changing only the keychain entry or the variable changes this computer, not the synced copy, and `dg storage share` then stops with E502. `dg storage add` with no arguments asks for each value and stores a pasted secret for you, in the right order.
    - **Web app:** open **Settings → Storage**, edit the profile, and paste the new keys.
 3. Delete the old token in the dashboard.
 

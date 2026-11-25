@@ -359,7 +359,10 @@ fn share_changes(
                         format!("{name} in storage.toml differs from your synced {name}"),
                     )
                     .cause("only the synced copy is shared, and this computer's copy never replaces it")
-                    .fix("share the synced copy under another name, or remove this computer's copy from storage.toml")
+                    .fix(format!(
+                        "if you changed its credentials, run `dg storage add {name} …` again with the new secret in place: that updates the synced copy"
+                    ))
+                    .fix("otherwise share the synced copy under another name, or remove this computer's copy from storage.toml")
                     .into());
                 }
                 us::profile_from_synced(held).ok().flatten()
@@ -2145,7 +2148,15 @@ public_gateway = "https://gw.example.org"
             serde_json::json!({"settings": {"kind": "ipfs-kubo", "provider": "kubo", "api": "https://other.example.org:5001", "gateway": "", "publicGateway": "", "pinningEndpoint": ""}, "secrets": {}}),
         );
         let nas = vec!["nas".to_string()];
-        assert!(share_changes(&nas, None, "REPO", &local, Some(&differing), 5).is_err());
+        let err = share_changes(&nas, None, "REPO", &local, Some(&differing), 5).unwrap_err();
+        let shown = err
+            .downcast_ref::<UserError>()
+            .map(|u| u.render("", false))
+            .unwrap_or_default();
+        assert!(
+            shown.contains("run `dg storage add nas …` again"),
+            "{shown}"
+        );
         let mut removed = synced.clone();
         removed.remove("profile:nas", 3);
         assert!(share_changes(&nas, None, "REPO", &local, Some(&removed), 5).is_err());
