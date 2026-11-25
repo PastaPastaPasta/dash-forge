@@ -2,7 +2,7 @@
 
 **The promise:** git hosting that nobody can take down. Refs, issues, PRs and access control live on Dash Platform under the users' own keys. Bulk pack data lives on Platform, or on cheap storage providers (S3, IPFS, HTTPS, other git hosts) that it is checked against by hash. No server is ever trusted, and every server can be replaced.
 
-Sections 1 to 5 keep the 2026-09-24 baseline and decisions as history; §6 (the plan and its execution tracker), §7 (launch criteria) and the testnet launch table were refreshed against `master` on 2026-10-16.
+Sections 1 to 5 keep the 2026-09-24 baseline and decisions as history; §6 (the plan and its execution tracker), §7 (launch criteria) and the testnet launch table were refreshed against `master` on 2026-10-16. Only the Phase 6a and Phase 6 checkboxes were updated since, on 2026-11-25, after the testnet (2026-10-26) and mainnet (2026-11-24) registrations.
 
 This document covers three things:
 - where the project actually stands, checked against the code on `master` and not against the tracker's status lines;
@@ -189,13 +189,13 @@ Deferred, none blocking a testnet launch (stated as known limitations, not promi
 - [ ] Upstream Platform asks A1, A3 and A5–A9 are not filed; the rules they would enforce stay client rules.
 
 ### Phase 6a — Testnet launch (M) · *gate: criteria L1–L12 in §7*
-- [ ] Register the four-contract production set on testnet after the owner signs the contract hashes ([Deploying Forge to a network](deploying-to-a-network.md)); commit `deployments/testnet.json`, the frozen `registered/testnet/` copies and the snapshot.
+- [x] Register the four-contract production set on testnet after the owner signs the contract hashes ([Deploying Forge to a network](deploying-to-a-network.md)); commit `deployments/testnet.json`, the frozen `registered/testnet/` copies and the snapshot.
 - [x] Tag and publish the first release (v0.2.0), with the default network changed to a deployed one; move the hosted app, the gateway, the Actions and the nightly to testnet.
 - [ ] Durability and risk statement, terms, privacy notice and an announcement channel (owner-approved); the soft-launch period; the announcement.
 
 ### Phase 6 — Mainnet launch (S, gated on PV14 mainnet)
-- [ ] The owner registers the forge-v2 contracts (D-D); commit `deployments/mainnet.json`; mainnet web build (network switch retained).
-- [ ] dashpay mirrors on mainnet; Dash Forge hosts itself on Forge with GitHub as its mirror.
+- [x] The owner registers the forge-v2 contracts (D-D); commit `deployments/mainnet.json`; mainnet web build (network switch retained). *Done 2026-11-24: forge.dashhq.org serves mainnet, testnet moved to testnet-forge.dashhq.org ([networks.md](networks.md)). No release has the mainnet contracts yet: v0.2.0 is testnet only.*
+- [ ] dashpay mirrors on mainnet; Dash Forge hosts itself on Forge with GitHub as its mirror. *Partial: this repository is mirrored to mainnet Forge on every push to master (`forge-sync`), but its home is still GitHub.*
 - [ ] Weekly mainnet smoke run from a user-funded CI identity.
 
 ### Later

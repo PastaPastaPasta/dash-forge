@@ -8,7 +8,7 @@
 |---|---|
 | **Mainnet** | Live since 2026-11-24 at **[forge.dashhq.org](https://forge.dashhq.org)**. Real DASH. |
 | **Testnet** | Live at **[testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)**. Free test DASH; the network can be reset. |
-| **Binaries** | The latest release, [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0) (2026-11-22), predates mainnet and works on **testnet only**. To use mainnet from the terminal, build from source (below). |
+| **Binaries** | The latest release, [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0) (2026-11-22), predates mainnet and works on **testnet only**. There is no mainnet release yet: to use mainnet from the terminal, build from source (below). |
 
 [Networks](docs/networks.md) has contract ids and history.
 
@@ -22,7 +22,7 @@ Then **New → Repository**, and **Settings → Storage** to choose where code i
 
 ## Use it from the terminal
 
-`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Build both (needs Rust and `protoc` 25+, see [BUILDING.md](docs/BUILDING.md)):
+`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Build both (needs Rust, `protoc` 25+ and, on Linux, a C compiler, `pkg-config` and the OpenSSL headers; see [INSTALL.md](docs/INSTALL.md#build-from-source)):
 
 ```sh
 git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
@@ -93,7 +93,7 @@ This repository's home is GitHub. Every push to master, and every tag, is mirror
 | `crates/forge-relay` | A user-run daemon that turns Platform events into webhooks ([README](crates/forge-relay/README.md)). |
 | `crates/forge-import` | GitHub import and mirroring, behind `dg import` and the [Mirror Action](action/README.md). |
 
-Build with `cargo build --workspace` (with `protoc` on `PATH`) and `pnpm install && pnpm build` in `forge-web/`. Contract ids come only from `forge-contracts/deployments/<network>.json`. Design notes: [architecture](docs/architecture.md), [economics](docs/economics.md), [limits](docs/limits.md), [deploying to a network](docs/deploying-to-a-network.md). End-to-end tests: [e2e/README.md](e2e/README.md).
+Build with `cargo build --workspace` (with the [prerequisites](docs/BUILDING.md#prerequisites)) and `pnpm install && pnpm build` in `forge-web/`. Contract ids come only from `forge-contracts/deployments/<network>.json`. Design notes: [architecture](docs/architecture.md), [economics](docs/economics.md), [limits](docs/limits.md), [deploying to a network](docs/deploying-to-a-network.md). End-to-end tests: [e2e/README.md](e2e/README.md).
 </details>
 
 ## Contributing, security and license

@@ -2,12 +2,13 @@
 
 > **Current release: [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0)**
 > ([release notes](releases/v0.2.0.md), [changelog](../CHANGELOG.md)), the first published
-> release. You can also [build from source](#build-from-source) from any commit. v0.2.0 predates
-> Forge's mainnet registration, so its binaries work on testnet only; for mainnet, build from source. The version policy is in [VERSIONING.md](VERSIONING.md).
+> release. v0.2.0 predates Forge's mainnet registration, so its binaries work on **testnet
+> only** and have no wallet sign-in (`dg auth login --wallet`). There is no mainnet release yet:
+> **on mainnet, [build from source](#build-from-source)**. The version policy is in [VERSIONING.md](VERSIONING.md).
 
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
-ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use
-Dash Forge. Each archive contains:
+ships prebuilt binaries, so on the networks a release knows you do not need Rust, `protoc`, or
+the Platform SDK source. Each archive contains:
 
 | File | What it is |
 |---|---|
@@ -19,6 +20,7 @@ Dash Forge. Each archive contains:
 | `LICENSE-MIT`, `LICENSE-APACHE` | Dash Forge's own licenses: use either one |
 | `THIRD-PARTY-LICENSES` | the licenses of the open-source Rust crates built into the binaries |
 | `licenses/` | the licenses of OpenSSL (Linux archives) and of musl libc (the musl archive), which are built into those binaries |
+| `README.md`, `INSTALL.md` | the project README and this page |
 
 ## Supported platforms
 
@@ -38,7 +40,9 @@ There is no static build for aarch64 Linux yet. On an aarch64 system with glibc 
 
 ### Windows
 
-Use [WSL](https://learn.microsoft.com/windows/wsl/install) and the Linux build.
+Use [WSL](https://learn.microsoft.com/windows/wsl/install) and the Linux build. Each release
+also carries an `x86_64-pc-windows-msvc` zip, but it has not been tested, and the install
+script refuses Windows.
 
 ## Install script (Linux and macOS)
 
@@ -88,9 +92,11 @@ curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/i
 Then check the install:
 
 ```sh
-dg --version      # dg 0.2.0 (<commit> <target>)
+dg --version      # dg 0.2.0 (<commit> <target>), then the Forge contracts built in, per network
 dg doctor         # git, git-remote-dash (same version as dg), network, identity
 ```
+
+`dg --version` from v0.2.0 lists `mainnet  not deployed`: that build cannot use mainnet.
 
 ## Manual download and verification
 
@@ -187,8 +193,15 @@ Your configuration and identities in `~/.config/dash-forge` are left untouched.
 
 ## Build from source
 
-This works from any commit and needs no release. You need Rust (the version is pinned by
-`rust-toolchain.toml`) and `protoc` 25 or newer; [BUILDING.md](BUILDING.md) has the details.
+This works from any commit and needs no release. It is the way to use **mainnet** from the
+terminal until a release after v0.2.0. You need:
+
+- Rust through [rustup](https://rustup.rs) (the first cargo command installs the toolchain
+  pinned by `rust-toolchain.toml`);
+- `protoc` 25 or newer. Distribution packages are often older (Ubuntu's is 3.21 and fails), so
+  install a release from GitHub as [BUILDING.md](BUILDING.md#prerequisites) shows;
+- on Linux, a C compiler, `pkg-config` and the OpenSSL headers. On Debian or Ubuntu:
+  `sudo apt-get install build-essential pkg-config libssl-dev`.
 
 ```sh
 git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
@@ -196,7 +209,11 @@ cargo install --locked --path crates/dg
 cargo install --locked --path crates/git-remote-dash
 ```
 
-`cargo install` puts both binaries in `~/.cargo/bin`.
+`cargo install` puts both binaries in `~/.cargo/bin`; make sure it is on your `PATH`, ahead of
+any older `dg` in `~/.local/bin`. A source build reports the version in `Cargo.toml`, so a build
+from master also says `dg 0.2.0`; `dg --version` tells them apart by listing mainnet's contract
+group. Then sign in on mainnet with `dg auth login --network mainnet --wallet`, which records
+mainnet as the default for `dg` and `git`.
 
 ## For maintainers: cutting a release
 
@@ -204,7 +221,7 @@ cargo install --locked --path crates/git-remote-dash
    that change to `master`. That PR runs the release pipeline as a dry run, because it
    touches `Cargo.toml`. Make sure all six targets are green.
 2. Tag the merge commit `v<version>` and push the tag. `release.yml` then does the rest:
-   it builds all six targets from scratch (no build cache), runs `install.sh` against the
+   it builds all six targets (the five above and the Windows zip) from scratch (no build cache), runs `install.sh` against the
    built archives, writes `SHA256SUMS`, attests the files, and publishes the release with
    generated notes: the install and verify commands, the web app's CID, a "Networks" block
    (the contract groups the binaries embed, read from `forge-contracts/deployments/` at the tag,

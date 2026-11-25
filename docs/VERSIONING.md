@@ -7,7 +7,7 @@ Dash Forge follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.ht
 - `dg`, `git-remote-dash`, `forge-relay`, `forge-import` and `forge-runner` share one version: `version` under `[workspace.package]` in the root `Cargo.toml`. `dg --version` prints it, and `dg doctor` warns when `git-remote-dash` is a different version.
 - A release is the git tag `v<version>`, such as `v0.1.0`, on a commit on `master`.
 - The Mirror Action (`PastaPastaPasta/dash-forge/action@v<version>`) and the check action (`PastaPastaPasta/dash-forge/check-action@v<version>`) use the same tags. At a release tag, each action installs that release's binaries by default.
-- The `forge-relay` container image is tagged with the version (`ghcr.io/pastapastapasta/forge-relay:<version>`), and `:latest` follows the newest release that is not a pre-release.
+- The `forge-relay` and `forge-gateway` container images are tagged with the version (`ghcr.io/pastapastapasta/forge-relay:<version>`, `ghcr.io/pastapastapasta/forge-gateway:<version>`), and `:latest` follows the newest release that is not a pre-release.
 - Each release has its own web app build, and so its own IPFS CID (`forge-web-<version>.cid`). The CID changes with every release.
 - Pre-releases are tagged like `v0.2.0-rc.1`. `install.sh` never picks one as "latest": install it with `DASH_FORGE_VERSION=0.2.0-rc.1`.
 
@@ -50,6 +50,6 @@ A release works on the networks that have a live deployment in that directory at
 
 1. A pull request sets the new version in `Cargo.toml` and adds its section to `CHANGELOG.md`. Because it touches `Cargo.toml`, the release pipeline runs on it as a dry run.
 2. After it merges, a maintainer pushes a signed tag `v<version>` on the merge commit on `master`.
-3. `release.yml` builds every target from scratch, writes `SHA256SUMS`, attests the files, publishes the GitHub release with the web app's IPFS build, and pushes the `forge-relay` image. Publishing and the image push both wait for a maintainer's approval in the protected `release` environment. It refuses to publish if the tag does not match the `Cargo.toml` version or the commit is not on `master`.
+3. `release.yml` builds every target from scratch, writes `SHA256SUMS`, attests the files, publishes the GitHub release with the web app's IPFS build, and pushes the `forge-relay` and `forge-gateway` images. Publishing and each image push wait for a maintainer's approval in the protected `release` environment. It refuses to publish if the tag does not match the `Cargo.toml` version or the commit is not on `master`.
 
 [INSTALL.md](INSTALL.md#for-maintainers-cutting-a-release) has the details, including the protected `release` environment and recording the web app's build on Forge.
