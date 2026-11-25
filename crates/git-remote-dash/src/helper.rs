@@ -1614,6 +1614,19 @@ impl Helper {
                         "dash: note: the storage this repository's owner shares is not used: {why}"
                     );
                 }
+                if view.share_missing.as_deref().is_some_and(|state| {
+                    forge_core::user_sync::local::note_once(&format!(
+                        "{network}/no-share/{}/{state}",
+                        conn.repo.id()
+                    ))
+                }) {
+                    let shown = conn.repo.display();
+                    let owner = shown.split('/').next().unwrap_or(conn.repo.owner_id());
+                    eprintln!(
+                        "dash: {}",
+                        forge_core::user_sync::maintainer_no_share_line(owner, &shown)
+                    );
+                }
                 Some(view)
             }
             Err(e) => {
@@ -1661,6 +1674,10 @@ impl Helper {
         };
         match run.await {
             Ok(done) => {
+                if let Some(line) = forge_core::user_sync::stopped_line(&conn.repo.display(), &done)
+                {
+                    eprintln!("dash: {line}");
+                }
                 let writes =
                     usize::from(done.share_written) + done.granted.len() + done.revoked.len();
                 if writes > 0 {
@@ -1670,7 +1687,7 @@ impl Helper {
                         if writes == 1 { "" } else { "s" }
                     );
                 }
-                for m in &done.revoked {
+                for m in done.revoked.iter().filter(|_| !done.stopped) {
                     eprintln!("dash: {m} is no longer a maintainer and lost access to this repository's shared storage; rotate the credentials they saw: docs/guides/rotate-storage-credentials.md");
                 }
             }

@@ -5,11 +5,7 @@
 //! On only where forge-user is registered and this computer holds the identity's forge-user
 //! key `E` (`dg auth login --wallet`); everywhere else dg behaves exactly as before.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-use anyhow::{Context as _, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
 
 use forge_core::platform::{LoadedIdentity, PlatformClient, WriteEngine};
 use forge_core::storage::policy::{run_git_config, GitConfigRun};
@@ -77,65 +73,9 @@ pub fn state(ctx: &Ctx) -> SyncState {
 // user-sync.toml: this computer's device id and when each identity's first sync was checked
 // ---------------------------------------------------------------------------------------
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct LocalState {
-    #[serde(default)]
-    device: String,
-    /// `<network>/<identity>` → ms of the checked first upload.
-    #[serde(default)]
-    synced: BTreeMap<String, u64>,
-}
-
-fn local_state_path() -> Result<PathBuf> {
-    Ok(crate::config::config_dir()?.join("user-sync.toml"))
-}
-
-impl LocalState {
-    fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|raw| toml::from_str(&raw).ok())
-            .unwrap_or_default()
-    }
-
-    fn save(&self, path: &Path) -> Result<()> {
-        let raw = toml::to_string_pretty(self).context("serializing user-sync.toml")?;
-        forge_core::keystore::write_private_file(path, raw.as_bytes())
-            .with_context(|| format!("writing {}", path.display()))
-    }
-
-    /// This computer's short id, made on first use (`<name>-<device>` keeps a clashing profile).
-    fn device(path: &Path) -> String {
-        // Under the same lock as `record_synced`: two runs never save each other's older copy.
-        let _lock = crate::auth::wallet::lock_state(path);
-        let mut s = Self::load(path);
-        if s.device.len() == 6 && s.device.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return s.device;
-        }
-        let mut b = [0u8; 3];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut b);
-        s.device = hex::encode(b);
-        let _ = s.save(path);
-        s.device
-    }
-}
-
-fn account(key: &SyncKey) -> String {
-    format!("{}/{}", key.network, key.identity_id)
-}
-
 /// When this computer's first upload for `key`'s identity was checked, if it was.
 pub fn synced_at(key: &SyncKey) -> Option<u64> {
-    let path = local_state_path().ok()?;
-    LocalState::load(&path).synced.get(&account(key)).copied()
-}
-
-fn record_synced(key: &SyncKey, at: u64) -> Result<()> {
-    let path = local_state_path()?;
-    let _lock = crate::auth::wallet::lock_state(&path)?;
-    let mut s = LocalState::load(&path);
-    s.synced.insert(account(key), at);
-    s.save(&path)
+    user_sync::local::synced_at(&key.network, &key.identity_id)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -199,8 +139,7 @@ pub async fn ensure_first_sync(ctx: &Ctx, writer: &Writer<'_>, key: &SyncKey, co
     let Ok(local) = StorageProfiles::load() else {
         return;
     };
-    let Ok(path) = local_state_path() else { return };
-    let device = LocalState::device(&path);
+    let device = user_sync::local::device();
     let policy = global_default_policy();
     let run = writer
         .with_store(contract, async |store| {
@@ -210,7 +149,11 @@ pub async fn ensure_first_sync(ctx: &Ctx, writer: &Writer<'_>, key: &SyncKey, co
     match run {
         Ok(done) => {
             if done.recorded {
-                let _ = record_synced(key, user_sync::now_ms());
+                let _ = user_sync::local::record_synced(
+                    &key.network,
+                    &key.identity_id,
+                    user_sync::now_ms(),
+                );
             }
             if ctx.json {
                 return;
@@ -353,6 +296,14 @@ pub fn rotate_line(member: &str) -> String {
     format!(
         "{member} could read this repository's shared storage credentials; they can't read new ones, but rotate what they saw: {ROTATE_GUIDE}"
     )
+}
+
+/// The one line an owner sees when a reconcile stopped a share (about the default storage when the
+/// repository never had storage of its own): once, as the share is already empty after.
+pub fn print_stopped_default(ctx: &Ctx, repo: &str, done: &user_sync::Reconciled) {
+    if let Some(line) = user_sync::stopped_line(repo, done).filter(|_| !ctx.json) {
+        println!("{line}");
+    }
 }
 
 /// As the owner of the session's repository, after its members changed: lend its shared

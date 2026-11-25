@@ -51,6 +51,12 @@ pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
             platform_fallback,
             global,
         } => use_profiles(ctx, profiles, *replicas, *platform_fallback, *global).await,
+        StorageCommand::Share {
+            repo,
+            profiles,
+            copies,
+            stop,
+        } => share(ctx, repo, profiles.as_deref(), *copies, *stop).await,
         StorageCommand::Advertise { repo, remote } => advertise(ctx, repo, remote.as_deref()).await,
         StorageCommand::Mirror(cmd) => crate::pack_mirror::run(ctx, cmd).await,
     }
@@ -310,6 +316,227 @@ pub(crate) fn check_publishable<'a>(
     let from_git = allow_private_uri_config(remote)?;
     let given = flag.is_some_and(|(_, on)| on);
     refuse_unpublishable(targets, given || from_git, lead, flag.map(|(f, _)| f)).map_err(Into::into)
+}
+
+/// The synced entries `dg storage share` writes: every named profile as synced (a profile only in
+/// storage.toml, or one whose synced copy differs, is uploaded from storage.toml) and the
+/// repository's policy over them. Errors name the profile, never a secret.
+fn share_changes(
+    names: &[String],
+    copies: Option<usize>,
+    repo_id: &str,
+    local: &StorageProfiles,
+    synced: Option<&forge_core::user_sync::SlotDoc>,
+    at: u64,
+) -> Result<forge_core::user_sync::SlotDoc> {
+    use forge_core::user_sync::{storage as us, SlotDoc, SLOT_STORAGE};
+    let mut changes = SlotDoc::new(SLOT_STORAGE);
+    let mut external = 0usize;
+    for name in names {
+        if name == PLATFORM_PROFILE {
+            continue;
+        }
+        // As first sync does: a name the synced copy holds is shared as synced (this computer's
+        // copy never overwrites it account-wide), one it removed is not revived, and only a name
+        // it has never held is uploaded from storage.toml.
+        let entry = synced.and_then(|d| d.entries.get(&us::profile_key(name)));
+        let profile = match (entry, local.profiles.get(name)) {
+            (Some(e), _) if e.v.is_none() => {
+                return Err(UserError::new(
+                    codes::STORAGE_POLICY,
+                    format!("{name} was removed from your synced storage on another device"),
+                )
+                .fix(format!(
+                    "add it again with `dg storage add {name} …`, then share it"
+                ))
+                .into());
+            }
+            (Some(e), Some(p)) => {
+                let held = e.v.as_ref().expect("live");
+                if us::profile_to_synced(p).is_ok_and(|v| !us::same_profile_value(held, &v)) {
+                    return Err(UserError::new(
+                        codes::STORAGE_POLICY,
+                        format!("{name} in storage.toml differs from your synced {name}"),
+                    )
+                    .cause("only the synced copy is shared, and this computer's copy never replaces it")
+                    .fix("share the synced copy under another name, or remove this computer's copy from storage.toml")
+                    .into());
+                }
+                us::profile_from_synced(held).ok().flatten()
+            }
+            (Some(e), None) => {
+                e.v.as_ref()
+                    .and_then(|v| us::profile_from_synced(v).ok().flatten())
+            }
+            (None, Some(p)) => {
+                let value = us::profile_to_synced(p).map_err(|e| {
+                    UserError::new(codes::STORAGE_POLICY, format!("{name} can't be shared"))
+                        .cause(e.to_string())
+                        .fix("set its secrets in this shell or keychain, then run it again")
+                })?;
+                changes.set(&us::profile_key(name), at, value.clone());
+                us::profile_from_synced(&value).ok().flatten()
+            }
+            (None, None) => None,
+        };
+        let Some(profile) = profile else {
+            return Err(crate::errors::not_found(
+                format!("no usable storage profile {name:?}"),
+                "`dg storage list` lists the profiles",
+            ));
+        };
+        if !profile.is_platform() {
+            external += 1;
+        }
+    }
+    if external == 0 {
+        return Err(UserError::new(
+            codes::STORAGE_POLICY,
+            "name at least one storage profile other than platform",
+        )
+        .fix("to stop sharing, run `dg storage share <repo> --stop`")
+        .into());
+    }
+    if copies.is_some_and(|c| c == 0 || c > names.len()) {
+        return Err(UserError::new(
+            codes::STORAGE_POLICY,
+            format!("--copies must be 1 to {}", names.len()),
+        )
+        .into());
+    }
+    let policy = StoragePolicy {
+        targets: names.to_vec(),
+        replicas: copies,
+        platform_fallback: false,
+    };
+    changes.set(&us::repo_key(repo_id), at, us::policy_to_synced(&policy));
+    Ok(changes)
+}
+
+/// The owner's sync key on this computer, or why there is none (never asking for a passphrase).
+fn owner_sync_key(ctx: &Ctx, me: &str) -> Result<forge_core::user_sync::SyncKey> {
+    use forge_core::user_sync::key::LocalKey;
+    match forge_core::user_sync::key::load(&ctx.network_label(), me) {
+        LocalKey::Held(key) => Ok(key),
+        LocalKey::Locked => Err(UserError::new(
+            codes::USAGE,
+            "settings sync is off for this run: its key is in a passphrase-sealed file",
+        )
+        .fix("set DASH_FORGE_PASSPHRASE and run it again")
+        .into()),
+        LocalKey::Absent => Err(UserError::new(
+            codes::USAGE,
+            "settings sync is off on this computer",
+        )
+        .fix("sign in with your wallet: `dg auth login --wallet`")
+        .into()),
+    }
+}
+
+/// Comma-separated profile names, trimmed, each once, in order.
+fn profile_names(list: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        if !out.iter().any(|o| o == n) {
+            out.push(n.to_string());
+        }
+    }
+    out
+}
+
+/// `dg storage share <owner/repo> <profiles> [--copies N]` and `--stop`: set (or remove) the storage
+/// a repository's maintainers get, then lend it to them (`identity-synced-state.md` §5).
+async fn share(
+    ctx: &Ctx,
+    repo: &str,
+    profiles: Option<&str>,
+    copies: Option<usize>,
+    stop: bool,
+) -> Result<()> {
+    use forge_core::user_sync::{self as us, SlotDoc, UserSync, SLOT_STORAGE};
+    let Some(contract) = ctx.target.v2.as_ref().and_then(|f| f.user.clone()) else {
+        return Err(
+            UserError::new(codes::UNSUPPORTED, "sync isn't available on this network").into(),
+        );
+    };
+    let s = crate::common::Session::open(ctx, repo).await?;
+    let me = s.identity.id();
+    if s.repo.owner_id() != me {
+        return Err(UserError::new(
+            codes::USAGE,
+            "only the repository's owner sets the storage its maintainers get",
+        )
+        .into());
+    }
+    let key = owner_sync_key(ctx, &me)?;
+    let names = profile_names(profiles.unwrap_or_default());
+    let local = StorageProfiles::load()?;
+    let repo_id = s.repo.id().to_string();
+    let maintainers = us::repo::current_maintainers(&s.client, &s.repo).await?;
+    let done = crate::sync::Writer::new(&s.client, &s.bridge, &s.identity)
+        .with_store(&contract, async |store| {
+            let sync = UserSync::new(&key, store);
+            let current = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
+            let at = us::now_ms();
+            let changes = if stop {
+                let mut c = SlotDoc::new(SLOT_STORAGE);
+                if current
+                    .as_ref()
+                    .is_some_and(|d| d.get(&us::storage::repo_key(&repo_id)).is_some())
+                {
+                    c.remove(&us::storage::repo_key(&repo_id), at);
+                }
+                c
+            } else {
+                share_changes(&names, copies, &repo_id, &local, current.as_ref(), at)?
+            };
+            if !changes.entries.is_empty() {
+                sync.merge_into(SLOT_STORAGE, &changes).await?;
+            }
+            Ok(sync.reconcile_repo_by_rule(&repo_id, &maintainers).await?)
+        })
+        .await?;
+    let shown = s.repo.display();
+    if !stop && !done.shared {
+        return Err(UserError::new(
+            codes::STORAGE_POLICY,
+            format!("the storage for {shown} was saved, but isn't shared"),
+        )
+        .cause("another device changed your synced storage at the same time")
+        .fix("check `dg storage list`, then run it again")
+        .into());
+    }
+    ctx.emit(
+        json!({
+            "status": if stop { "stopped" } else { "shared" },
+            "repo": shown,
+            "profiles": if stop { Vec::new() } else { names.clone() },
+            "epoch": done.epoch,
+            "granted": done.granted,
+            "waiting": done.waiting,
+            "revoked": done.revoked,
+        }),
+        || {
+            if stop {
+                println!("Stopped sharing storage with {shown}'s maintainers; your own pushes to it use your default storage again.");
+                for m in &done.revoked {
+                    println!("  {}", crate::sync::rotate_line(m));
+                }
+            } else {
+                println!(
+                    "{shown}'s maintainers push to {} (Platform fees stay theirs).",
+                    names.join(", ")
+                );
+                if !done.waiting.is_empty() {
+                    println!(
+                        "  {} get it after signing in with a wallet once",
+                        done.waiting.join(", ")
+                    );
+                }
+            }
+        },
+    );
+    Ok(())
 }
 
 /// A one-line, secret-free description of a profile.
@@ -1861,6 +2088,63 @@ async fn probe_uris(uris: &[String], reader: &PackReader) -> Vec<serde_json::Val
 pub(crate) mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn storage_share_sets_the_repository_entry_and_uploads_what_is_only_local() {
+        use forge_core::user_sync::{storage as us, ShareRule, SlotDoc, SLOT_STORAGE};
+        let local = StorageProfiles::parse(
+            r#"
+[profiles.nas]
+kind = "ipfs-kubo"
+api = "https://kubo.example.org:5001"
+public_gateway = "https://gw.example.org"
+"#,
+        )
+        .unwrap();
+        let mut synced = SlotDoc::new(SLOT_STORAGE);
+        let web = serde_json::json!({"settings": {"kind": "s3", "provider": "r2", "endpoint": "https://files.example.org", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "https://pub.example.org", "prefix": ""}, "secrets": {"accessKeyId": "AK", "secretAccessKey": "SK"}});
+        synced.set("profile:web-r2", 1, web.clone());
+        let names = vec![
+            "nas".to_string(),
+            "web-r2".to_string(),
+            "platform".to_string(),
+        ];
+        let changes = share_changes(&names, Some(2), "REPO", &local, Some(&synced), 5).unwrap();
+        // The local-only profile is uploaded; the synced one is used as it is.
+        assert!(changes.get("profile:nas").is_some());
+        assert!(changes.get("profile:web-r2").is_none());
+        let policy = us::policy_from_synced(changes.get(&us::repo_key("REPO")).unwrap()).unwrap();
+        assert_eq!(policy.targets, names);
+        assert_eq!(policy.replicas, Some(2));
+        // What the share rule then makes of it: both profiles, as synced.
+        let mut after = synced.clone();
+        after.merge(&changes);
+        let ShareRule::Content(c) = ShareRule::of(Some(&after), "REPO") else {
+            panic!("the repository's own entry shares")
+        };
+        assert_eq!(c.profiles.keys().collect::<Vec<_>>(), ["nas", "web-r2"]);
+        assert_eq!(c.profiles["web-r2"], web);
+        // This computer's differing copy never replaces the synced one, nor revives a removed one.
+        let mut differing = synced.clone();
+        differing.set(
+            "profile:nas",
+            2,
+            serde_json::json!({"settings": {"kind": "ipfs-kubo", "provider": "kubo", "api": "https://other.example.org:5001", "gateway": "", "publicGateway": "", "pinningEndpoint": ""}, "secrets": {}}),
+        );
+        let nas = vec!["nas".to_string()];
+        assert!(share_changes(&nas, None, "REPO", &local, Some(&differing), 5).is_err());
+        let mut removed = synced.clone();
+        removed.remove("profile:nas", 3);
+        assert!(share_changes(&nas, None, "REPO", &local, Some(&removed), 5).is_err());
+        // Refusals: a name with no profile, Platform alone, and a copy count past the list.
+        let missing = vec!["gone".to_string()];
+        assert!(share_changes(&missing, None, "REPO", &local, Some(&synced), 5).is_err());
+        let platform = vec!["platform".to_string()];
+        assert!(share_changes(&platform, None, "REPO", &local, None, 5).is_err());
+        let one = vec!["nas".to_string()];
+        assert!(share_changes(&one, Some(2), "REPO", &local, None, 5).is_err());
+        assert!(share_changes(&one, Some(0), "REPO", &local, None, 5).is_err());
+    }
 
     pub(crate) fn add_args(argv: &[&str]) -> StorageAddArgs {
         let mut full = vec!["dg", "storage", "add"];
