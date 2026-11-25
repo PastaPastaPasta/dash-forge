@@ -228,8 +228,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     }, 8)
     members.reload()
   }
-  const showDanger = viewerRole === 'maintainer' || isOwner
-  const section = useSettingsSection(viewerRole !== null && viewerRole !== 'maintainer' && !isOwner ? 'collaborators' : 'general', (s) => s !== 'danger' || showDanger)
+  const maintainer = viewerRole === 'maintainer'
+  const showDanger = maintainer || isOwner
+  const section = useSettingsSection(viewerRole !== null && !maintainer && !isOwner ? 'collaborators' : 'general', (s) => s !== 'danger' || showDanger)
   const memberManager = isOwner && repo.visibility !== 'private'
   return (
     <SettingsShell addr={{ owner: repo.ownerId, name: repo.name }} active={section} showDanger={showDanger}>
@@ -240,13 +241,13 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       ) : null}
 
       <SettingsPane id="general" active={section}>
-        <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload}>
+        <GeneralSettings home={home} maintainer={maintainer} owner={isOwner} onSaved={reload}>
           <PlatformDetails repo={repo} />
         </GeneralSettings>
       </SettingsPane>
 
       <SettingsPane id="branches" active={section}>
-        <BranchSettings home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
+        <BranchSettings home={home} maintainer={maintainer} onSaved={reload} />
       </SettingsPane>
 
       <SettingsPane id="collaborators" active={section}>
@@ -259,7 +260,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             : 'People who can push, review or triage here. They join only after accepting an invitation.'
         }
       >
-        <MembersContentSetting home={home} maintainer={viewerRole === 'maintainer'} />
+        <MembersContentSetting home={home} maintainer={maintainer} />
         {home.private?.access === 'member' ? (
           <PrivateMembers home={home} session={home.private.session} />
         ) : (
@@ -454,7 +455,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       </SettingsPane>
 
       <SettingsPane id="bans" active={section}>
-        <BanSettings home={home} maintainer={viewerRole === 'maintainer'} />
+        <BanSettings home={home} maintainer={maintainer} />
       </SettingsPane>
 
       <SettingsPane id="storage" active={section}>
@@ -472,12 +473,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       </SettingsPane>
 
       <SettingsPane id="webhooks" active={section}>
-        <WebhookSettings home={home} maintainer={viewerRole === 'maintainer'} />
+        <WebhookSettings home={home} maintainer={maintainer} />
       </SettingsPane>
 
       {showDanger ? (
         <SettingsPane id="danger" active={section}>
-          <DangerZone home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
+          <DangerZone home={home} maintainer={maintainer} owner={isOwner} onSaved={reload} />
         </SettingsPane>
       ) : null}
     </SettingsShell>

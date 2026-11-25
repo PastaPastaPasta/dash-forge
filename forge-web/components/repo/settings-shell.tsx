@@ -14,7 +14,9 @@ import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
 /** The sections of `/repo/settings` itself, each a hash. */
-export type SettingsSection = 'general' | 'collaborators' | 'bans' | 'branches' | 'storage' | 'webhooks' | 'danger'
+const SECTIONS = ['general', 'collaborators', 'bans', 'branches', 'storage', 'webhooks', 'danger'] as const
+
+export type SettingsSection = (typeof SECTIONS)[number]
 
 /** Where the nav is: a section of `/repo/settings`, or one of the pages beside it. */
 export type SettingsPlace = SettingsSection | 'environments' | 'bots'
@@ -53,8 +55,6 @@ const GROUPS: readonly { readonly label: string | null; readonly items: readonly
   },
   { label: null, items: [{ id: 'danger', label: 'Danger zone', icon: AlertTriangle }] },
 ]
-
-const SECTIONS: readonly SettingsSection[] = ['general', 'collaborators', 'bans', 'branches', 'storage', 'webhooks', 'danger']
 
 /** Anchors inside a section: a link to one opens its section, then scrolls to it. */
 const ANCHORS: Readonly<Record<string, SettingsSection>> = {
@@ -179,28 +179,17 @@ export function SettingsShell({
                       ? 'bg-anvil-100 font-medium text-anvil-900 dark:bg-anvil-800 dark:text-anvil-50'
                       : 'text-anvil-600 hover:bg-anvil-100 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-anvil-50',
                   )
-                  const body = (
-                    <>
-                      <Icon className={cn('h-4 w-4 shrink-0', current ? 'text-forge-700 dark:text-forge-400' : 'text-anvil-400 dark:text-anvil-500')} aria-hidden />
-                      {item.label}
-                    </>
-                  )
+                  let href = `${settings}#${item.id}`
+                  if (item.page !== undefined) href = repoHref(item.page, addr)
+                  else if (onSettingsPage) href = `#${item.id}`
+                  // A plain hash link on this page: it fires `hashchange`, which a router push would not.
+                  const Anchor = item.page === undefined && onSettingsPage ? 'a' : Link
                   return (
                     <li key={item.id} role="listitem" className="contents md:block">
-                      {item.page !== undefined ? (
-                        <Link href={repoHref(item.page, addr)} className={className} aria-current={current ? 'page' : undefined}>
-                          {body}
-                        </Link>
-                      ) : onSettingsPage ? (
-                        // A plain hash link: the page follows `hashchange`, which a router push would not fire.
-                        <a href={`#${item.id}`} className={className} aria-current={current ? 'page' : undefined}>
-                          {body}
-                        </a>
-                      ) : (
-                        <Link href={`${settings}#${item.id}`} className={className}>
-                          {body}
-                        </Link>
-                      )}
+                      <Anchor href={href} className={className} aria-current={current ? 'page' : undefined}>
+                        <Icon className={cn('h-4 w-4 shrink-0', current ? 'text-forge-700 dark:text-forge-400' : 'text-anvil-400 dark:text-anvil-500')} aria-hidden />
+                        {item.label}
+                      </Anchor>
                     </li>
                   )
                 })}

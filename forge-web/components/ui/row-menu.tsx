@@ -11,6 +11,8 @@ import { MoreHorizontal } from 'lucide-react'
 import { useDismiss } from '@/components/repo/target-rail'
 import { cn } from '@/lib/utils'
 
+const ENABLED_ITEMS = '[role="menuitem"]:not(:disabled)'
+
 export interface RowMenuItem {
   readonly label: string
   readonly onSelect: () => void
@@ -40,10 +42,10 @@ export function RowMenu({
   useDismiss(open, ref, close)
   // The menu takes focus on its first item; the arrows move through it, Tab leaves it.
   useEffect(() => {
-    if (open) ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus()
+    if (open) ref.current?.querySelector<HTMLButtonElement>(ENABLED_ITEMS)?.focus()
   }, [open])
   const onKey = (e: KeyboardEvent<HTMLDivElement>): void => {
-    const all = [...(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])]
+    const all = [...(ref.current?.querySelectorAll<HTMLButtonElement>(ENABLED_ITEMS) ?? [])]
     const at = all.indexOf(document.activeElement as HTMLButtonElement)
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()

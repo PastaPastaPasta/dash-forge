@@ -95,7 +95,7 @@ import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { MakeRepoPublic } from '@/components/repo/make-repo-public'
 import { madePublic } from '@/components/repo/conversion-status'
 import { readMakePublicStatus } from '@/lib/repo/make-public-status'
-import { shortId } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------------------------
 // Layout
@@ -137,7 +137,6 @@ export function Card({
   hint,
   action,
   children,
-  className,
   testId,
   collapsed = false,
 }: {
@@ -145,15 +144,14 @@ export function Card({
   hint?: React.ReactNode
   action?: React.ReactNode
   children: React.ReactNode
-  className?: string
   testId?: string
   /** Only the title row shows (its action opens the rest). */
   collapsed?: boolean
 }): JSX.Element {
   return (
-    <div className={'rounded-lg border border-anvil-200 dark:border-anvil-800' + (className ? ` ${className}` : '')} data-testid={testId}>
+    <div className="rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid={testId}>
       {title !== undefined ? (
-        <div className={'flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3' + (collapsed ? '' : ' border-b border-anvil-100 dark:border-anvil-850')}>
+        <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3', !collapsed && 'border-b border-anvil-100 dark:border-anvil-850')}>
           <div className="min-w-0 flex-1">
             <h3 className="text-dense font-semibold text-anvil-900 dark:text-anvil-50">{title}</h3>
             {hint !== undefined ? <p className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400">{hint}</p> : null}
