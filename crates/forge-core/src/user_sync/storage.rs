@@ -206,6 +206,29 @@ pub fn profile_from_synced(value: &Value) -> Result<Option<Profile>> {
     Ok(Some(profile))
 }
 
+/// What a synced profile value means, for comparing two: its settings and its non-empty
+/// secrets. The `dg` extras and key order never count; `provider` (a label the web form picks)
+/// counts only when `with_provider`.
+pub fn profile_meaning(value: &Value, with_provider: bool) -> Value {
+    let mut settings = value.get("settings").cloned().unwrap_or(Value::Null);
+    if !with_provider {
+        if let Value::Object(m) = &mut settings {
+            m.remove("provider");
+        }
+    }
+    let mut secrets = value.get("secrets").cloned().unwrap_or(Value::Null);
+    if let Value::Object(m) = &mut secrets {
+        m.retain(|_, x| !x.is_null() && x.as_str() != Some(""));
+    }
+    json!({"settings": settings, "secrets": secrets})
+}
+
+/// Whether a local profile's synced value `a` and a synced value `b` mean the same profile
+/// (the web's `provider` label aside).
+pub fn same_profile_value(a: &Value, b: &Value) -> bool {
+    profile_meaning(a, false) == profile_meaning(b, false)
+}
+
 /// A policy as the synced `{targets, replicas, platformFallback}`.
 pub fn policy_to_synced(policy: &StoragePolicy) -> Value {
     json!({

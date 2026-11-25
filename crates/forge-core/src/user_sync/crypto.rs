@@ -24,8 +24,8 @@ pub const STATE_V: u8 = 1;
 pub const WRAPPED_LEN: usize = 12 + 32 + 16;
 
 const DOMAIN: &[u8] = b"forge-user/v1";
-/// The most a deflated JSON may inflate to (a state is at most 15,000 bytes of ciphertext).
-const MAX_INFLATED: u64 = 4 << 20;
+/// The most a deflated JSON may inflate to: 1 MiB, as the web app reads.
+const MAX_INFLATED: u64 = 1 << 20;
 
 /// A 32-byte symmetric key, wiped on drop and never printed.
 pub type Key32 = Zeroizing<[u8; 32]>;

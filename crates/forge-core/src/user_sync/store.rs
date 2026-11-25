@@ -169,6 +169,15 @@ impl MemoryStore {
             .push(EncKeyInfo { id, public_key });
     }
 
+    /// Delete `owner`'s share of `repo`, as an older web build did.
+    pub fn delete_share(&self, owner: &str, repo: &str) {
+        self.inner
+            .lock()
+            .expect("store lock")
+            .shares
+            .retain(|_, d| !(d.owner_id == owner && d.repo_id == repo));
+    }
+
     /// Make the next share write fail (an interrupted run).
     pub fn fail_next_share_write(&self) {
         self.inner.lock().expect("store lock").fail_share_write = true;
