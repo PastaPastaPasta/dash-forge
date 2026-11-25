@@ -38,8 +38,11 @@ describe('dash-site postbuild', () => {
     expect(siteOrigin('https://forg3.dash.site')).toBe('https://forg3.dash.site')
     expect(siteOrigin('https://forg3.dash.site/')).toBe('https://forg3.dash.site')
     expect(() => siteOrigin(undefined)).toThrow(/NEXT_PUBLIC_SITE_URL/)
-    expect(() => siteOrigin('https://forge.dashhq.org')).toThrow(/forge\.dashhq\.org/)
-    for (const bad of ['http://forg3.dash.site', 'https://forg3.dash.site/x', 'https://forg3.dash.site?a', 'https://u:p@forg3.dash.site']) {
+    expect(siteOrigin('https://FORG3.dash.site:8443')).toBe('https://forg3.dash.site:8443')
+    for (const official of ['https://forge.dashhq.org', 'https://FORGE.DASHHQ.ORG', 'https://forge.dashhq.org:8443', 'https://forge.dashhq.org.', 'https://testnet-forge.dashhq.org']) {
+      expect(() => siteOrigin(official)).toThrow(/forge\.dashhq\.org: set it/)
+    }
+    for (const bad of ['http://forg3.dash.site', 'https://forg3.dash.site/x', 'https://forg3.dash.site?a', 'https://forg3.dash.site/?', 'https://forg3.dash.site#', 'https://u:p@forg3.dash.site']) {
       expect(() => siteOrigin(bad)).toThrow(/plain https origin/)
     }
   })

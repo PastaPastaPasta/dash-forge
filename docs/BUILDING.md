@@ -301,11 +301,11 @@ with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
   publishes the site without storing it; readers fetch it from an npm CDN and use
   it only if the hash matches.
 
-- `NEXT_PUBLIC_SITE_URL` must be the address the build is published at (e.g.
-  `https://forg3.dash.site`), and not forge.dashhq.org. The wallet sign-in tells
-  people to scan only codes shown on that address, so a dash.site copy built with
-  the default would name the wrong host. The build stops without it, and checks
-  the export names it.
+`NEXT_PUBLIC_SITE_URL` must be the address the build is published at (e.g.
+`https://forg3.dash.site`), and not forge.dashhq.org or testnet-forge.dashhq.org.
+The wallet sign-in tells people to scan only codes shown on that address, so a
+dash.site copy built with the default would name the wrong host. The build stops
+without it, and checks the export names it.
 
 `pnpm build` and `pnpm build:ipfs` are unchanged. The dash.site build's
 `forge-manifest.json` lists the redirect pages and depends on `FORGE_DOCS_URL`;

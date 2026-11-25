@@ -31,7 +31,7 @@ const escape = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/
 export function docsBase(value) {
   if (!value) throw new Error('set FORGE_DOCS_URL (the https address of the docs hub to link to)')
   const url = new URL(value)
-  if (url.protocol !== 'https:' || url.search || url.hash) throw new Error(`FORGE_DOCS_URL must be a plain https URL: ${value}`)
+  if (/[?#]/.test(value) || url.protocol !== 'https:' || url.search || url.hash) throw new Error(`FORGE_DOCS_URL must be a plain https URL: ${value}`)
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
 }
 
@@ -45,10 +45,13 @@ export function docsBase(value) {
 export function siteOrigin(value) {
   if (!value) throw new Error('set NEXT_PUBLIC_SITE_URL to the address this build is published at (e.g. https://forg3.dash.site)')
   const url = new URL(value)
-  if (url.protocol !== 'https:' || url.search || url.hash || url.username || url.password || url.pathname !== '/') {
+  if (/[?#]/.test(value) || url.protocol !== 'https:' || url.search || url.hash || url.username || url.password || url.pathname !== '/') {
     throw new Error(`NEXT_PUBLIC_SITE_URL must be a plain https origin: ${value}`)
   }
-  if (url.host === 'forge.dashhq.org') throw new Error('NEXT_PUBLIC_SITE_URL is forge.dashhq.org: set it to the dash.site address this build is published at')
+  const host = url.hostname.replace(/\.$/, '')
+  if (host === 'forge.dashhq.org' || host === 'testnet-forge.dashhq.org') {
+    throw new Error(`NEXT_PUBLIC_SITE_URL is ${host}: set it to the dash.site address this build is published at`)
+  }
   return url.origin
 }
 
