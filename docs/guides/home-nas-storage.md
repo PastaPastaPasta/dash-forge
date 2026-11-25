@@ -120,7 +120,7 @@ docker compose exec garage /garage layout apply --version 1
 
 ## Give it a public https address
 
-Put a reverse proxy with a certificate, or a tunnel you control, in front of the store, and route your hostname to it. With a reverse proxy, give the hostname an A record for your public IPv4 address and an AAAA record for the proxy's IPv6 address, and have the proxy listen on both: Caddy does by default; nginx needs both `listen 443 ssl;` and `listen [::]:443 ssl;`. A named Cloudflare Tunnel needs neither: Cloudflare answers on IPv4 and IPv6 for you.
+Put a reverse proxy with a certificate, or a tunnel you control, in front of the store, and route your hostname to it. With a reverse proxy, give the hostname an A record for your public IPv4 address and an AAAA record for the proxy's IPv6 address, and have the proxy listen on both: Caddy does by default; nginx needs both `listen 443 ssl;` and `listen [::]:443 ssl;`. On a home connection, forward TCP 80 and 443 on the router to the proxy for IPv4, and allow them to the proxy's IPv6 address in the router's IPv6 firewall. A named Cloudflare Tunnel needs neither: Cloudflare answers on IPv4 and IPv6 for you.
 
 | Store | Hostname | Route to |
 |---|---|---|

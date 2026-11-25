@@ -253,9 +253,12 @@ iptables -I DOCKER-USER -s "$SUBNET" -m conntrack --ctstate ESTABLISHED,RELATED 
 iptables -I INPUT -s "$SUBNET" -m conntrack --ctstate NEW -j REJECT
 
 # The same for IPv6. Docker gives the compose network an IPv6 subnet only when it has
-# `enable_ipv6: true`, and fills the ip6tables DOCKER-USER chain only with its ip6tables
+# `enable_ipv6: true` (the stock compose file has none, so these rules do nothing until
+# you add it; read the subnet from `docker network inspect forge-gateway_default`, IPAM
+# Config), and fills the ip6tables DOCKER-USER chain only with its ip6tables
 # option on (the default since Docker 27). An IPv6 LAN usually uses global addresses from
-# the ISP's prefix, so name that prefix too; add 64:ff9b::/96 if the network runs NAT64.
+# the ISP's prefix, so name that prefix too. If your NAT64 uses a local prefix
+# that can reach private IPv4 (RFC 8215 `64:ff9b:1::/48`), reject that prefix too.
 SUBNET6=fd00:db8:1::/64
 LAN6=2001:db8:abcd::/56
 for net in fc00::/7 fe80::/10 "$LAN6"; do
@@ -353,7 +356,7 @@ The same variable turns **Copy link** on a public repository's pages into a [sha
 
 For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads the URL and the label from repository variables, so turning the gateway on or off needs no code change. The testnet site's workflow (`pages-testnet.yml`) reads `TESTNET_SITE_GATEWAY_URL` and `TESTNET_SITE_GATEWAY_LABEL` the same way; dashhq's gateway is set there, and `PAGES_GATEWAY_URL` is unset, so the mainnet site shows no HTTPS line.
 
-1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` to a gateway of the site's own network (for forge.dashhq.org, a mainnet gateway such as `https://git.example.org`; for the testnet site, `TESTNET_SITE_GATEWAY_URL`), and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
+1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` (forge.dashhq.org) or `TESTNET_SITE_GATEWAY_URL` (testnet-forge.dashhq.org) to a gateway of that site's network (for mainnet, one such as `https://git.example.org`), and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
 2. Deploy: **Actions → Deploy forge-web to Pages → Run workflow** on master (or push to master). Don't re-run an older run: that deploys its older commit.
 
 Delete the variable and deploy again to hide the HTTPS line. A value that is not an `https://` or `http://` URL, or that carries a query, a fragment or credentials, is ignored, and the row stays hidden. Set it only once the gateway answers: the clone box doesn't check that the gateway is up before it shows the row. The deploy fails when the gateway's `/readyz` names a different network from the build's (`PAGES_NETWORK`), so moving the site to another network means moving or unsetting the gateway too; a gateway it cannot reach only warns.

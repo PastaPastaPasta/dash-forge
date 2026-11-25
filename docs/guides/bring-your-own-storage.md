@@ -114,7 +114,7 @@ The web app has the same setup at **Settings → Storage** (`/settings/storage`)
 
 ### Storage settings that follow your identity (testnet)
 
-On **testnet**, your storage profiles (credentials included) and your default storage (`dg storage use --global`, or the web app's default) can follow your identity to every device where you sign in with a Dash wallet. Forge encrypts them with a key the wallet derives from your recovery phrase, and keeps them in the `forge-user` contract on Platform. Only that wallet key opens them; Platform nodes and other readers see only that you have synced settings, their sizes and when they changed ([design](../design/identity-synced-state.md)).
+On **testnet**, your storage profiles (credentials included) and your default storage (`dg storage use --global`, or the web app's default) can follow your identity to every device where you sign in with a Dash wallet. Forge encrypts them with a key the wallet derives from your recovery phrase, and keeps them in the `forge-user` contract on Platform. Only that wallet key opens them. Platform nodes and other readers can't read them; they can see that you have synced settings, their sizes and when they changed ([what readers see](../design/identity-synced-state.md#6-threat-model)).
 
 - **When it is on:** after `dg auth login --wallet` (dg says `storage settings sync with your identity across devices`) or a wallet sign-in in the web app. A passkey, an identity file or a pasted key does not turn it on. `dg auth login --wallet --no-sync` doesn't ask the wallet for the sync key, but a key kept from an earlier sign-in still syncs until `dg auth logout`.
 - **In the web app** the per-repository choice (a repository's **Settings → Your browser pushes**) follows too.
