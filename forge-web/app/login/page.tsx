@@ -42,7 +42,7 @@ export default function LoginPage(): JSX.Element {
           body={
             ACTIVE_NETWORK.v2 === null
               ? `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
-              : 'Sign in with a Dash wallet, an identity file or your recovery phrase, or create a new identity. Reading works without signing in.'
+              : 'Sign in with your Dash wallet, a passkey or dg, or create a new identity. Reading works without signing in.'
           }
           action={<Button variant="primary" onClick={() => openLogin()}>Open sign-in</Button>}
         />

@@ -221,7 +221,7 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(q('qr-value')).toBeNull()
-    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/needs App Connect v2.*recovery phrase or identity file/)
+    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/Wallet sign-in isn't available.*another way to sign in/)
     expect(v2.calls).toEqual([])
     expect(byText('Try again')).toBeDefined()
   })
@@ -241,7 +241,7 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(q('qr-value')).toBeNull()
-    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/needs App Connect v2/)
+    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/Wallet sign-in isn't available/)
     expect(v2.awaited).toBe(0)
   })
 
