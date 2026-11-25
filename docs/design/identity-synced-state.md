@@ -1,0 +1,124 @@
+# Settings that follow the identity (storage, preferences, maintainer access)
+
+Status: design, 2026-11-25. Request from the owner (via Forge PM): "if I set up storage in cli via dash wallet login, any other dash wallet login should share that storage automatically, whether in another wallet or computer. Being a maintainer should let someone else see the storage / use the storage (r2 / ipfs, not platform spend)."
+
+## 1. Where things live today
+
+| Data | forge-web | dg / git-remote-dash |
+|---|---|---|
+| Storage profiles (S3/R2, kubo, pinning, NAS, self-hosted backend), default policy, per-repo policies | one sealed blob in the IndexedDB vault (`lib/storage/store.ts`, `vault.ts` `writeStorageBlob`), opened by this device's passkey or passphrase | `~/.config/dash-forge/storage.toml`; secrets as `env:` / `keychain:` references (`forge-core/src/storage/profiles.rs`) |
+| Display preferences (diff layout, whitespace, palette), merge author name/email | `localStorage forge.prefs.v1` | `git config` |
+| Fiat display | `forge:fiat:v1` | `fiat.toml` |
+| Trending, image hosts, IPFS gateways, IPFS peer setting | `forge.trending.v1`, `forge.imageHosts.v1`, `forge.ipfsGateways`, `forge.ipfsPeer` | `storage.toml [read]` |
+| Organizations you follow | `forge:orgs:<network>` | `org` config |
+| Session, vault, connection id, resume, banner dismissals, drafts, DAPI budget | local by nature | local by nature |
+
+None of it leaves the device. A second login (another browser, another wallet app, another computer) starts empty.
+
+## 2. The one key every wallet login can derive
+
+App Connect v2 can hand the app a **shared encryption key**: the wallet derives it from the seed at the DIP "Encryption Keys" path `m/9'/coin'/5'/7'/0'/identityId'/contractId'/purpose'/rotation'`, rotation 0, and registers its public key on the identity as `ECDSA_SECP256K1 / ENCRYPTION / MEDIUM`, bound to that one contract. Every approval sends the same private key again. That holds on any device and in any wallet app restored from the same recovery phrase. Checked against the source:
+- DashPay Android: released v11.9.2, `AppConnectSession.kt` `ApplicationKeyDerivation.encryption(seed, identity, contractId, purpose, rotation = 0)`;
+- Dash Wallet iOS: `develop` f6e507b5b, `AppConnectV2Login.swift` (same path).
+
+The wallets have two conditions (Android `AppConnectSession.kt:250`, iOS `ownershipRefusal`):
+1. The encryption binding must name the request's **app contract** (`appId`).
+2. That contract must opt in with `requiresIdentityEncryptionBoundedKey` set to `Unique` or `MultipleReferenceToLatest`.
+
+No Forge contract opts in (`forge-contracts/evidence/*/c1.json`), and Platform forbids changing that setting on an existing contract (`rs-dpp` `validate_update_v0`: "contract can not change the requirement of needing a document encryption bounded key"). **So automatic sync for wallet logins needs one new contract.** Nothing else a wallet login holds is the same on two devices: the auth key is derived per request (`hash256(appEphPub ‖ index)`), and the connection id is random per browser.
+
+We considered and rejected three alternatives:
+- **Keys per device, re-wrapped by an existing device.** It needs a device that is already signed in to be online. That fails "automatic", and fails outright for someone with only one device that was wiped.
+- **Storing it in an existing document type** (`vaultEntry.sealed` is at most 256 bytes; `profile` and `board` would change what those documents mean). This breaks the rule that existing documents keep their meaning.
+- **A Forge-hosted key service.** The owner decided "we host nothing".
+
+## 3. Data model: contract `forge-user`
+
+A new, small contract, `forge-contracts/contracts/forge-user.json`, owned by the deployer that owns the other Forge contracts:
+- `requiresIdentityEncryptionBoundedKey: 2` (`MultipleReferenceToLatest`, as yappr's vault contract uses);
+- registered as a member of the existing `dash-forge` contract group. Every group-bound key a wallet already granted can therefore write to it without a new approval. Older web and dg builds accept unknown group members owned by the same owner (`assertGroupHolds`; `dg auth group.rs`, rule 4).
+
+| Type | Owner | Fields | Index | Mutable / deletable |
+|---|---|---|---|---|
+| `state` | the identity | `slot` (string ≤ 32: `storage`, `prefs`), `v` (format, 1), `keyId` (the enc key used), `n` (12-byte nonce), `d0` `d1` `d2` (ciphertext, ≤ 5000 bytes each) | unique `($ownerId, slot)` | yes / yes |
+| `share` | the repo owner | `repoId`, `epoch` (u32), `n`, `d0` `d1` (the repo's storage, under the repo storage key) | unique `($ownerId, repoId)` | yes / yes |
+| `grant` | the repo owner | `repoId`, `memberId`, `epoch`, `recipientKeyId`, `senderKeyId`, `wrapped` (≤ 96 bytes) | unique `($ownerId, repoId, memberId)`; `(memberId)` | yes / yes |
+
+Only the owner of a Platform document can change or delete it, so nobody but the identity can write its `state`. The same goes for the repo owner's `share` and `grant`. Readers accept a `share` or `grant` only when its `$ownerId` is the repo's owner.
+
+## 4. Encryption
+
+All of this is AES-256-GCM (WebCrypto and RustCrypto), HKDF-SHA256 and secp256k1 ECDH. Shared vectors live in `forge-contracts/fixtures/user-sync/vectors.json`, and both languages test against them.
+
+- **The user's key.** `E` is the wallet's shared encryption private key for `forge-user`, and `keyId` is its id on the identity.
+  - `K_state(slot) = HKDF(ikm = E, salt = identityId bytes, info = "forge-user/v1/state/" ‖ network ‖ "/" ‖ slot)`.
+  - AAD is `"forge-user/v1" ‖ network ‖ identityId ‖ slot ‖ u8(v) ‖ u32be(keyId)`.
+  - The plaintext is deflate-raw(JSON), split across `d0..d2`.
+- **The repo storage key**, for each repo and epoch: `RSK(repo, epoch) = HKDF(ikm = E_owner, salt = repoId, info = "forge-user/v1/repo-storage/" ‖ network ‖ "/" ‖ u32be(epoch))`. Any device of the owner derives it, so the owner needs no grant to themself. The `share` holds the shared profiles' JSON, with AAD `"forge-user/v1/share" ‖ network ‖ repoId ‖ u32be(epoch)`.
+- **A grant** wraps RSK to a member's `forge-user` encryption public key.
+  - `shared = ECDH(E_owner, P_member)` (x coordinate).
+  - `W = HKDF(shared, salt = repoId, info = "forge-user/v1/grant/" ‖ network ‖ memberId ‖ u32be(epoch) ‖ u32be(senderKeyId) ‖ u32be(recipientKeyId))`.
+  - `wrapped = nonce ‖ AES-GCM(W, RSK)`.
+  - The member opens it with `ECDH(E_member, P_owner)`.
+- Secrets never touch plaintext storage: the decrypted config is held in memory. The web app writes it through to the existing local vault blob (sealed as today), and dg to the OS keychain or sealed file (below). Nothing is logged. The redacting `Secret` type wraps every credential in Rust.
+
+## 5. Flows
+
+**Sign-in.** The App Connect v2 request gains one encryption binding (purpose ENCRYPTION, contract `forge-user`), and its `appId` becomes `forge-user` wherever that contract exists on the network; elsewhere it stays as it is today. The auth binding is unchanged (contract group, HIGH, the same limits). The wallet shows the same title (the owner's DPNS name). The response carries the key, which Forge checks against the identity before use: `ECDSA_SECP256K1`, ENCRYPTION, bound to `forge-user`, not disabled, and its public key matches the private key. dg (`dg auth login --wallet`) stores `E` next to its auth key (keychain, else the sealed file). The web app keeps it in the vault, under the same rules as the private-repo encryption key (memory for the tab, sealed at rest, never in the 12 h resume record).
+
+**Sync** is invisible. Once a session holds `E`, both clients read the `state` slots when they start and after each change, and write the merged result back. The effective storage config is the merged view (§7). Settings → Storage shows no new screen. One collapsed line under "More" says "Synced with your identity" (or "On this device only", with how to turn sync on).
+
+**Maintainers.** When the owner's client holds `E` and the repo's storage policy names a non-Platform profile:
+1. It writes `share` (epoch e), holding only the profiles that policy names.
+2. For each current maintainer (forge-core `maintainer` docs) whose identity has a live `forge-user` encryption key, it writes a `grant`.
+
+This is reconciled on each owner visit to the repo's settings and each owner `dg` push. A maintainer with no key yet is listed, collapsed, as "gets access after signing in with a wallet once". A maintainer's client merges granted repo profiles into its effective config for **that repo only**, so its pushes to that repo store packs in the owner's storage. Its Platform writes still use its own identity's key and credits.
+
+**Removal.** When the owner removes a maintainer (web or `dg repo maintainer remove`), or the reconcile finds a grant to someone who is no longer a maintainer, the client:
+1. moves to epoch e+1;
+2. re-encrypts `share` with `RSK(e+1)`;
+3. rewrites the remaining members' grants;
+4. deletes the removed member's grant.
+
+The removed member can no longer read the current share. **What cannot be revoked:** credentials they already decrypted, and old document versions anyone may have cached. The removal screen therefore says so in one line and links to `docs/guides/rotate-storage-credentials.md`: roll the R2 or S3 token, kubo auth or pinning token, update the profile, and the share follows automatically.
+
+## 6. Threat model
+
+| Adversary | Gets | Doesn't get |
+|---|---|---|
+| Anyone reading the chain | that the identity has sync slots, their sizes and update times; which repos share storage with whom (the `grant` rows are public) | any setting or credential (AES-GCM under keys derived from `E`) |
+| A Platform node | the same; it can withhold or roll back a document (the client then shows the older config, which is not a secret leak) | the plaintext |
+| A current maintainer | the shared profiles of that repo, including credentials, by design | the owner's other profiles, the owner's prefs, the owner's Platform key or credits |
+| A removed maintainer | what they saw before removal (rotate it, §5) | anything shared after removal |
+| XSS in the Forge origin, with a session unlocked | `E`, and through it the synced config. This is the same exposure as today's vault blob and private-repo key | the wallet seed, other apps' keys |
+| Malware on a device running dg | `E` from the keychain or sealed file. This is equivalent to today's storage.toml secrets | the seed |
+| A phishing page that gets a wallet approval | `E` (as with any approval today, SECU-08) | nothing more than an auth-key phish already gives |
+| Disabling `E` on-chain | blocks new grants to it | old ciphertext. The rotation path is a new rotation index, which the wallets do not offer yet |
+
+`E` is bound to `forge-user` only. It can't open private-repo content (that uses the separate encryption key from Settings) and can't sign anything.
+
+## 7. Migration and merge (additive)
+
+- **Local data is never deleted or rewritten by sync.** The web vault blob and `storage.toml` stay the source on their device. The synced copy is written alongside, and the local blob gains synced profiles (write-through), so older builds on the same device keep working.
+- **First sync on a device.** If a local config exists and the `storage` slot is empty, the client uploads it, re-reads it, decrypts it and checks it is deep-equal to what it uploaded. It records `syncedAt` locally only after that check. Until then the local copy is what pushes use.
+- **Merging.** Profiles are merged by name, with an `updatedAt` per profile and tombstones for deletions made on a synced device.
+  - A local profile that is not in the synced copy is uploaded.
+  - When names collide with different settings, nothing is dropped: the newer one is the synced copy, and the other is kept as `<name>-<device short id>` on the device that had it. Policies follow the same last-writer-wins rule per repo.
+  - A tombstone hides a profile from the merged view, but leaves it in the local blob or `storage.toml`, where it can be restored from "On this device only".
+- **dg** materializes synced profiles in memory and in the keychain (`keychain:dash-forge-sync/<network>/<identity>/<profile>`), never into `storage.toml`. A profile in `storage.toml` wins on name. `dg storage list` marks each profile as local or synced.
+- **Old clients against new data.** They never read `forge-user`. Their local data is unchanged, so they behave exactly as before.
+- **New clients against old data.** With no `forge-user` contract on the network, or a session without `E` (passkey, identity file, pasted key, or a wallet login from before this change), they behave exactly as today. The only addition is the collapsed line.
+
+## 8. Backwards compatibility
+
+- **No change to any existing contract, document type or document meaning.** `forge-user` is a new contract that joins the existing group.
+- **Local storage config, credentials, keys, repos and packs** keep working, and nothing local is deleted (§7). A migration test (`forge-web/lib/user-sync/migration.test.ts`, `crates/dg/tests/user_sync_migration.rs`) starts from master-format state (a web vault blob and `forge.prefs.v1`; a dg `storage.toml` with `keychain:` refs) and proves that the merged view contains every profile, policy and preference, and that the local stores are byte-identical afterwards except for additions.
+- **Sign-in request.** On networks with `forge-user`, `appId` changes from forge-core to forge-user.
+  - Consequence: the wallet's "disable the previous key for the same identity/app/connection id" rule doesn't match the browser's older forge-core-app grant on the first new sign-in. That older key stays live until it expires or the user disconnects it in the wallet.
+  - It loses no data, and the existing "older key from this browser" row in Settings lists it.
+  - A wallet that refuses the binding (an older iOS) leaves the user unable to sign in. To prevent that, a refusal of type `unsupported` or `invalid` is retried once without the binding and with the old `appId`.
+- **Mainnet.** `forge-user` is not registered on mainnet. Until it is, mainnet builds behave exactly as today (§7, last bullet). Registering it is the owner's decision (§9).
+
+## 9. Mainnet decision (owner)
+
+Registering `forge-user` on mainnet from the deployer `CL4UTHLA…` costs the amount measured by its testnet registration (recorded in `deployments/testnet.json` `user.costCredits`). Fees are protocol constants, so mainnet costs the same in credits. It needs the deployer key, which is only on the owner's machine. Until then, mainnet keeps device-local settings.

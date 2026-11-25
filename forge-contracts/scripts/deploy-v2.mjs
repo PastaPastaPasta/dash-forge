@@ -1257,10 +1257,11 @@ async function deploy(argv, injected, locks) {
       }
       // A nonce that created a contract was the deployer's contract create (one of the set's that
       // landed unseen?), not something else's transition: it is never recorded as `external`. The
-      // one exception is the record's own key-exchange contract (deploy-key-exchange.mjs, on a devnet).
+      // exceptions are the record's own key-exchange contract (deploy-key-exchange.mjs, on a devnet) and
+      // forge-user (deploy-user.mjs).
       for (const n of unexplained.filter((x) => !used.has(x))) {
         const id = contractId(ownerId, n);
-        if (id !== d.keyExchange?.contractId && await sdk.contracts.fetch(id)) {
+        if (id !== d.keyExchange?.contractId && id !== d.user?.contractId && await sdk.contracts.fetch(id)) {
           throw new Error(
             `--acknowledge-nonce ${n}: identity nonce ${n} created contract ${id}, a contract create of the deployer's (not the record's keyExchange), so it is no external transition. ` +
               `Check whether it is a reservation of this set (${RECORD_KEYS.map((k) => `v2.${k}`).join(', ')}) and settle the record by hand. Nothing was broadcast.`
