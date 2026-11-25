@@ -36,7 +36,6 @@ export const DOCS = {
   /** After removing a maintainer who could use your storage: roll its keys and tokens. */
   rotateStorage: `${REPO_URL}/blob/master/docs/guides/rotate-storage-credentials.md`,
   /** Running your own storage and keeping pins in sync on a server of yours. */
-  selfHost: `${REPO_URL}/blob/master/docs/guides/self-host-backend.md`,
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
 } as const

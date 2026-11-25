@@ -28,7 +28,7 @@ export function safariNeedsNotice(origin: string): boolean {
   return isSafari() && !(url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1'))
 }
 
-export const SAFARI_NOTICE = "Safari can't reach a node on this computer from a secure site. Use dg to push, or Chrome, Firefox or Brave."
+export const SAFARI_NOTICE = "Safari can't reach a node on this computer from a secure site. Use dg to push, or Chrome."
 export const LOCAL_ACCESS_HINT = 'Your browser may ask to let this site reach apps on this device. Allow it.'
 
 /** Only literal loopback origins; URL normalization must not turn an alias or path into one. */
