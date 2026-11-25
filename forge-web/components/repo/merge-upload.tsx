@@ -178,7 +178,7 @@ function StorageQuestion({
 }
 
 /** What a maintainer reads where the owner set no storage for the repo (networks with sync only). */
-export const OWNER_STORAGE_UNSET = "The owner hasn't set storage for this repo; your own storage is used. Ask them to set it in this repo's Settings → Storage."
+export const OWNER_STORAGE_UNSET = "The owner hasn't shared storage for this repo with you yet; your own storage is used. Ask them to set it in this repo's Settings → Storage."
 
 export function OwnerStorageUnsetLine(): JSX.Element {
   return (

@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import fixture from '../../../forge-contracts/fixtures/user-sync/share-rule.json'
-import { shareMeaning, shareRule } from './maintainers'
+import { SHARE_FORMAT, shareMeaning, shareRule, shareRuleOver } from './maintainers'
 
 type Entry = { readonly at: number; readonly v: unknown }
 
@@ -32,10 +32,18 @@ describe('a synced policy as both clients read it', () => {
   })
 })
 
+/** The fixture's current share, as its owner opens it: its version, and a profile when it lends storage. */
+function currentShare(share: { readonly version: number; readonly lends: boolean; readonly grants?: boolean } | undefined): unknown {
+  if (share === undefined) return null
+  const profiles = share.lends ? { 'web-r2': fixture.profiles['web-r2'] } : {}
+  return { format: SHARE_FORMAT, version: share.version, profiles, policy: share.lends ? { targets: ['web-r2'], replicas: 1, platformFallback: false } : null }
+}
+
 describe('the share rule both clients follow', () => {
   for (const c of fixture.cases) {
     it(c.name, () => {
-      const rule = shareRule(c.entries === null ? null : liveView(c.entries as Record<string, Entry>), fixture.repo)
+      const share = (c as { share?: { version: number; lends: boolean; grants?: boolean } }).share
+      const rule = shareRuleOver(c.entries === null ? null : liveView(c.entries as Record<string, Entry>), fixture.repo, currentShare(share), share?.grants ?? false)
       if (typeof c.expect === 'string') {
         expect(rule.kind).toBe(c.expect)
         return

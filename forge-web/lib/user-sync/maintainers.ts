@@ -15,6 +15,11 @@ import type { GrantFields, SyncPublicKey, UserSyncPort } from './platform'
 import { profileOf } from './storage-slot'
 
 export const SHARE_FORMAT = 'forge-user/share'
+/**
+ * The share format this build writes. 2: what the share holds was set for its repository (repo-only
+ * sharing). 1 (or none given): an older build's, which may hold the owner's default storage.
+ */
+export const SHARE_VERSION = 2
 
 /** A policy in a share: the synced `{targets, replicas, platformFallback}`, and whatever else it carries. */
 export interface SharedPolicy {
@@ -24,25 +29,26 @@ export interface SharedPolicy {
 
 export interface SharePlain {
   readonly format: typeof SHARE_FORMAT
-  readonly version: 1
+  readonly version: number
   readonly profiles: Readonly<Record<string, { readonly settings: unknown; readonly secrets: unknown }>>
   /** The synced policy as it is, its targets as shared; null: nothing is shared (Platform only). */
   readonly policy: SharedPolicy | null
 }
 
 /** The share that shares nothing: what stopping writes, at the next epoch. */
-export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: 1, profiles: {}, policy: null }
+export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: SHARE_VERSION, profiles: {}, policy: null }
 
 /** What a repository's share should hold: as it is (keep), nothing (stop sharing), or this. */
 /** Why nothing is shared: the repo has no storage of its own (`repo:<id>`), or it stores on Platform only. */
-export type NothingReason = 'no-repo-policy' | 'platform-only'
+export type NothingReason = 'no-repo-policy' | 'platform-only' | 'legacy-share'
 
 /**
- * The owner's line for a pass that stopped sharing a repo with no storage of its own (forge-core
- * `stopped_line`): `default` when it never had any (a share made from the default storage before
- * repo-only sharing), `removed` when the owner removed it.
+ * The owner's line for a pass that stopped sharing (forge-core `stopped_line`): `default` when the
+ * repo never had storage of its own (a share made from the default storage before repo-only
+ * sharing), `removed` when the owner removed it, `legacy` when its own setting cannot be used and
+ * the share kept was a version 1 one (it may hold the default storage).
  */
-export type StopLine = 'default' | 'removed'
+export type StopLine = 'default' | 'removed' | 'legacy'
 
 export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing'; readonly reason: NothingReason } | { readonly kind: 'content'; readonly plain: SharePlain }
 
@@ -154,7 +160,27 @@ export function shareRule(view: Readonly<Record<string, unknown>> | null, repoId
     }
   }
   if (Object.keys(profiles).length === 0) return { kind: 'nothing', reason: 'platform-only' }
-  return { kind: 'content', plain: { format: SHARE_FORMAT, version: 1, profiles, policy: { ...(raw as object), targets } } }
+  return { kind: 'content', plain: { format: SHARE_FORMAT, version: SHARE_VERSION, profiles, policy: { ...(raw as object), targets } } }
+}
+
+/** The version a share was written in (1 when it names none, as forge-core reads it). */
+export function shareVersion(plain: unknown): number {
+  const v = typeof plain === 'object' && plain !== null ? (plain as Record<string, unknown>)['version'] : undefined
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : 1
+}
+
+/**
+ * The rule over the synced slot (`view`, as `shareRule`) and the share as it is (`current`, null when
+ * there is none or it does not open; `granted`: any grant to it exists), as forge-core
+ * `Wanted::over`: a share kept while the slot was read stops (nothing) when it still lends storage
+ * in version 1 (made before repo-only sharing, it may hold the owner's default storage), or lends
+ * nothing but still has grants (a stop that was interrupted). With no slot read, any share is kept.
+ */
+export function shareRuleOver(view: Readonly<Record<string, unknown>> | null, repoId: string, current: unknown, granted = false): ShareRule {
+  const rule = shareRule(view, repoId)
+  if (view === null || rule.kind !== 'keep' || current === null || shareMeaning(current) === null) return rule
+  const lends = Object.keys((current as SharePlain).profiles).length > 0
+  return (lends ? shareVersion(current) < SHARE_VERSION : granted) ? { kind: 'nothing', reason: 'legacy-share' } : rule
 }
 
 /**
@@ -192,6 +218,8 @@ export interface Reconciled {
   readonly waiting: readonly string[]
   /** Whether a share exists (so a removed maintainer may have seen its credentials). */
   readonly shared: boolean
+  /** Whether the share lends storage now (what it holds, kept or new; maintainers holding a grant read it). */
+  readonly lends: boolean
   readonly epoch: number | null
   /** This pass stopped sharing (wrote the nothing share or revoked grants) for want of repo storage: the owner's line. */
   readonly stopped?: StopLine
@@ -231,14 +259,6 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId && !removed.has(m)).sort()
   const grants = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
   const existing = await ctx.port.readShare(ctx.ownerId, p.repoId)
-  const rule = shareRule(p.view, p.repoId)
-  const stop = rule.kind === 'nothing'
-  // Each maintainer's live forge-user keys, oldest first (none needed when sharing stops).
-  const keys = new Map<string, readonly SyncPublicKey[]>()
-  if (!stop) for (const m of members) keys.set(m, await ctx.port.syncKeys(m))
-  const newest = (m: string): SyncPublicKey | undefined => keys.get(m)?.at(-1)
-  // Revoked: every grant when sharing stops; else one to anyone not a maintainer now, or to a key no longer live.
-  const revoked = grants.filter((g) => stop || !(keys.get(g.fields.memberId) ?? []).some((k) => k.keyId === g.fields.recipientKeyId))
   let opened: SharePlain | null = null
   if (existing !== null && existing.fields.keyId === ctx.keyId) {
     const rsk = await repoStorageKey(ctx.E, repo, network, existing.fields.epoch)
@@ -249,6 +269,15 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
       rsk.fill(0)
     }
   }
+  if (opened !== null && shareVersion(opened) > SHARE_VERSION) throw new Error("this repository's shared storage was written by a newer Forge; reload the page to change it")
+  const rule = shareRuleOver(p.view, p.repoId, opened, grants.length > 0)
+  const stop = rule.kind === 'nothing'
+  // Each maintainer's live forge-user keys, oldest first (none needed when sharing stops).
+  const keys = new Map<string, readonly SyncPublicKey[]>()
+  if (!stop) for (const m of members) keys.set(m, await ctx.port.syncKeys(m))
+  const newest = (m: string): SyncPublicKey | undefined => keys.get(m)?.at(-1)
+  // Revoked: every grant when sharing stops; else one to anyone not a maintainer now, or to a key no longer live.
+  const revoked = grants.filter((g) => stop || !(keys.get(g.fields.memberId) ?? []).some((k) => k.keyId === g.fields.recipientKeyId))
   const lent = (s: SharePlain | null): boolean => s !== null && Object.keys(s.profiles).length > 0
   // A grant to a key that is not the member's newest moves the share on when it lends storage: the
   // key it went to keeps that epoch's repo key, so a rotated-out key never opens what is shared after.
@@ -276,9 +305,20 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     rule.kind === 'content' ? rule.plain : rule.kind === 'keep' && opened !== null ? opened : (existing !== null || grants.length > 0) && (stop || revoked.length > 0) ? NOTHING_SHARED : null
   let written = false
   if (content !== null) {
-    const same = existing !== null && existing.fields.epoch === epoch && existing.fields.keyId === ctx.keyId && opened !== null && shareMeaning(opened) === shareMeaning(content)
+    // A share kept as it is keeps its version (a version 1 one is never made version 2 without the
+    // slot read). Written again in this version: one the repo setting names, lending in version 1,
+    // and an empty version 1 share when sharing stops (older builds cannot refill it).
+    const keptAsIs = rule.kind === 'keep' && opened !== null && content === opened
+    const version = keptAsIs ? shareVersion(opened) : SHARE_VERSION
+    const same =
+      existing !== null &&
+      existing.fields.epoch === epoch &&
+      existing.fields.keyId === ctx.keyId &&
+      opened !== null &&
+      shareMeaning(opened) === shareMeaning(content) &&
+      (shareVersion(opened) === version || (!lent(content) && !stop))
     if (!same) {
-      await writeShare(ctx, p.repoId, repo, epoch, content, existing)
+      await writeShare(ctx, p.repoId, repo, epoch, { ...content, version }, existing)
       written = true
     }
   }
@@ -321,9 +361,12 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     await ctx.port.deleteGrant(g)
     deleted++
   }
-  // Said once, as the share is empty after; not for Platform-only storage the owner did set.
-  const stopped = rule.kind === 'nothing' && rule.reason === 'no-repo-policy' && (written || deleted > 0) ? { stopped: p.repoPolicyRemoved === true ? ('removed' as const) : ('default' as const) } : {}
-  return { granted, waiting, shared: lends || existing !== null, epoch: written ? epoch : (existing?.fields.epoch ?? null), ...stopped }
+  // Said once, as the share is empty after: only when maintainers lost something (storage it lent,
+  // or their grants), never for an empty share written again; not for Platform-only storage the owner did set.
+  const lost = (written && lent(opened)) || deleted > 0
+  const line: StopLine | null = rule.kind !== 'nothing' || !lost ? null : rule.reason === 'legacy-share' ? 'legacy' : rule.reason === 'no-repo-policy' ? (p.repoPolicyRemoved === true ? 'removed' : 'default') : null
+  const stopped = line === null ? {} : { stopped: line }
+  return { granted, waiting, shared: lends || existing !== null, lends, epoch: written ? epoch : (existing?.fields.epoch ?? null), ...stopped }
 }
 
 async function writeShare(ctx: OwnerContext, repoId: string, repo: Uint8Array, epoch: number, plain: SharePlain, existing: Awaited<ReturnType<UserSyncPort['readShare']>>): Promise<void> {
