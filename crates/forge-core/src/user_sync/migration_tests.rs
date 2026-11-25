@@ -901,3 +901,109 @@ fn the_share_rule_matches_the_shared_fixture() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_migrated_default_names_the_profiles_by_their_synced_names() {
+    set_secrets();
+    let gina = id("gina");
+    let store = MemoryStore::new();
+    store.as_signer(&gina);
+    let e = key(&gina, 1, "gina E");
+    let local = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
+    // Another device synced a different `r2-main` first.
+    let mut other = SlotDoc::new(SLOT_STORAGE);
+    other.set(
+        "profile:r2-main",
+        1,
+        json!({"settings": {"kind": "s3", "provider": "r2", "endpoint": "https://elsewhere.r2.cloudflarestorage.com", "region": "auto", "bucket": "theirs", "pathStyle": true, "publicUrl": "", "prefix": ""}, "secrets": {}}),
+    );
+    UserSync::new(&e, &store)
+        .merge_into(SLOT_STORAGE, &other)
+        .await
+        .unwrap();
+    let policy = StoragePolicy::from_git_values(Some("r2-main,chain"), Some("1"), None).unwrap();
+    first_sync(&store, &e, &local, Some(&policy), "gggggg")
+        .await
+        .unwrap();
+    let doc = UserSync::new(&e, &store)
+        .read_slot(SLOT_STORAGE)
+        .await
+        .unwrap()
+        .unwrap()
+        .doc;
+    let synced = synced_policy(&doc, None).unwrap();
+    assert_eq!(synced.targets, ["r2-main-gggggg", "chain"]);
+    // A default naming a profile that does not sync here is not published at all.
+    let plan = upload_plan(
+        &StorageProfiles::default(),
+        Some(&policy),
+        None,
+        "gggggg",
+        5,
+    );
+    assert!(plan.changes.is_none());
+}
+
+#[tokio::test]
+async fn moving_a_grant_to_a_newer_member_key_rotates_the_epoch() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    let newer = key(&r.member, 11, "member2 newer E");
+    r.store.add_key(&r.member, 11, newer.public_key().to_vec());
+    let moved = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!((moved.epoch, moved.granted.len()), (1, 1));
+    // The older key (still live, but no longer the recipient) does not open the new epoch.
+    r.store.as_signer(&r.member);
+    assert!(UserSync::new(&r.e_member, &r.store)
+        .granted_share(&r.repo, &r.owner)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(UserSync::new(&newer, &r.store)
+        .granted_share(&r.repo, &r.owner)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn a_shared_name_the_maintainer_already_uses_leaves_the_share_out() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    UserSync::new(&r.e_owner, &r.store)
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    r.store.as_signer(&r.member);
+    let clash = format!("share.{}.r2-main", &r.owner[..8]);
+    let mine = StorageProfiles::parse(&format!(
+        "[profiles.\"{clash}\"]\nkind = \"ipfs-kubo\"\napi = \"https://mine.example:5001\"\n"
+    ))
+    .unwrap();
+    let view = repo::push_storage(
+        &UserSync::new(&r.e_member, &r.store),
+        &r.repo,
+        &r.owner,
+        true,
+        &mine,
+    )
+    .await
+    .unwrap();
+    assert!(view.shared_by.is_none() && !view.policy_from_share);
+    assert!(view.share_skipped.is_some());
+    assert_eq!(
+        view.effective.profiles.profiles[&clash],
+        mine.profiles[&clash]
+    );
+    assert_eq!(view.effective.origin[&clash], Origin::Local);
+}

@@ -159,8 +159,8 @@ pub struct LoginArgs {
     #[arg(long, value_name = "KEY_ID", conflicts_with = "full_key")]
     pub replace: Option<u32>,
     /// With --wallet: don't ask the wallet for the key that syncs your storage settings across
-    /// devices (for a wallet that shows an error for the sign-in code). Settings then stay on
-    /// this computer.
+    /// devices (for a wallet that shows an error for the sign-in code). A sync key kept from an
+    /// earlier sign-in still syncs; `dg auth logout` removes it.
     #[arg(long)]
     pub no_sync: bool,
     #[command(flatten)]

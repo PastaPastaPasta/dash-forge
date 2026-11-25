@@ -206,9 +206,9 @@ pub fn profile_from_synced(value: &Value) -> Result<Option<Profile>> {
     Ok(Some(profile))
 }
 
-/// What a synced profile value means, for comparing two: its settings and its non-empty
-/// secrets. The `dg` extras and key order never count; `provider` (a label the web form picks)
-/// counts only when `with_provider`.
+/// What a synced profile value means, for comparing two: its settings, its non-empty secrets and
+/// its pin timeout. Key order and the other `dg` extras never count; `provider` (a label the web
+/// form picks) counts only when `with_provider`.
 pub fn profile_meaning(value: &Value, with_provider: bool) -> Value {
     let mut settings = value.get("settings").cloned().unwrap_or(Value::Null);
     if !with_provider {
@@ -220,7 +220,9 @@ pub fn profile_meaning(value: &Value, with_provider: bool) -> Value {
     if let Value::Object(m) = &mut secrets {
         m.retain(|_, x| !x.is_null() && x.as_str() != Some(""));
     }
-    json!({"settings": settings, "secrets": secrets})
+    // Of the `dg` extras, the pin timeout is what a recipient uses (`allowPrivateUri` it clears).
+    let pin_timeout = value.get("dg").and_then(|d| d.get("pinTimeoutSecs"));
+    json!({"settings": settings, "secrets": secrets, "pinTimeoutSecs": pin_timeout})
 }
 
 /// Whether a local profile's synced value `a` and a synced value `b` mean the same profile
@@ -249,10 +251,15 @@ pub fn policy_from_synced(value: &Value) -> Option<StoragePolicy> {
     if targets.is_empty() || !targets.iter().all(|t| valid_profile_name(t)) {
         return None;
     }
-    let replicas = value
-        .get("replicas")
-        .and_then(Value::as_u64)
-        .and_then(|r| usize::try_from(r).ok());
+    // Present, it is a count of 1 to 8 (the web's schema); anything else makes the policy invalid.
+    let replicas = match value.get("replicas") {
+        None | Some(Value::Null) => None,
+        Some(r) => Some(
+            r.as_u64()
+                .filter(|r| (1..=8).contains(r))
+                .and_then(|r| usize::try_from(r).ok())?,
+        ),
+    };
     Some(StoragePolicy {
         targets,
         replicas,
@@ -353,6 +360,26 @@ kind = "platform"
             in_memory.to_toml().is_err(),
             "a synced secret never reaches storage.toml"
         );
+    }
+
+    #[test]
+    fn a_replica_count_that_is_not_one_to_eight_makes_the_policy_invalid() {
+        for bad in [json!(-1), json!(0), json!(9), json!(1.5), json!("2")] {
+            let v = json!({"targets": ["r2"], "replicas": bad, "platformFallback": false});
+            assert!(policy_from_synced(&v).is_none(), "{v}");
+        }
+        let v = json!({"targets": ["r2"], "platformFallback": false});
+        assert_eq!(policy_from_synced(&v).unwrap().replicas, None);
+    }
+
+    #[test]
+    fn the_pin_timeout_counts_and_the_other_extras_do_not() {
+        let a = json!({"settings": {"kind": "ipfs-pinning-service"}, "secrets": {}, "dg": {"pinTimeoutSecs": 60}});
+        let mut b = a.clone();
+        b["dg"]["allowPrivateUri"] = json!(true);
+        assert!(same_profile_value(&a, &b));
+        b["dg"]["pinTimeoutSecs"] = json!(120);
+        assert!(!same_profile_value(&a, &b));
     }
 
     #[test]

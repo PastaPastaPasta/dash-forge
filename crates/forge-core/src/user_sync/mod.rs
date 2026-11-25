@@ -147,8 +147,19 @@ impl<'a> UserSync<'a> {
 
     /// Merge `changes` into the stored slot and write the result when it differs, then read it
     /// back and check every entry of `changes` that won is there as written. Returns the merged
-    /// document. A write that lost a race is merged and written once more.
+    /// document. A write that lost a race, or that a read-back did not confirm, is merged and
+    /// written once more.
     pub async fn merge_into(&self, slot: &str, changes: &SlotDoc) -> Result<SlotDoc> {
+        self.merge_with(slot, |_| changes.clone()).await
+    }
+
+    /// [`Self::merge_into`] with the changes `plan` makes from the very slot each attempt writes
+    /// over, so they are never planned against an older read.
+    pub async fn merge_with(
+        &self,
+        slot: &str,
+        mut plan: impl FnMut(Option<&SlotDoc>) -> SlotDoc,
+    ) -> Result<SlotDoc> {
         let mut last = None;
         for _ in 0..2 {
             let current = self.read_slot(slot).await?;
@@ -160,11 +171,12 @@ impl<'a> UserSync<'a> {
                     "your synced {slot} settings were written by a newer Forge; update dg to change them"
                 )));
             }
+            let changes = plan(current.as_ref().map(|r| &r.doc));
             let mut merged = current
                 .as_ref()
                 .map_or_else(|| SlotDoc::new(slot), |r| r.doc.clone());
             let before = merged.to_json()?;
-            merged.merge(changes);
+            merged.merge(&changes);
             if merged.to_json()? == before && current.is_some() {
                 return Ok(merged);
             }
@@ -175,7 +187,10 @@ impl<'a> UserSync<'a> {
                 last = Some(e);
                 continue;
             }
-            return self.read_back(slot, &merged).await;
+            match self.read_back(slot, &merged).await {
+                Ok(back) => return Ok(back),
+                Err(e) => last = Some(e),
+            }
         }
         Err(last.unwrap_or(Error::Nonce))
     }
@@ -299,6 +314,7 @@ pub fn upload_plan(
     let synced = synced.unwrap_or(&empty);
     let mut changes = SlotDoc::new(SLOT_STORAGE);
     let mut out = Upload::default();
+    let mut synced_as: BTreeMap<String, String> = BTreeMap::new();
     for (name, profile) in &local.profiles {
         let value = match storage::profile_to_synced(profile) {
             Ok(v) => v,
@@ -312,7 +328,10 @@ pub fn upload_plan(
             None => name.clone(),
             Some(e) => match &e.v {
                 None => continue,
-                Some(v) if storage::same_profile_value(v, &value) => continue,
+                Some(v) if storage::same_profile_value(v, &value) => {
+                    synced_as.insert(name.clone(), name.clone());
+                    continue;
+                }
                 Some(_) => {
                     let alt = format!("{name}-{device}");
                     if !valid_profile_name(&alt) {
@@ -321,18 +340,44 @@ pub fn upload_plan(
                         continue;
                     }
                     match synced.get(&storage::profile_key(&alt)) {
-                        Some(v) if storage::same_profile_value(v, &value) => continue,
+                        Some(v) if storage::same_profile_value(v, &value) => {
+                            synced_as.insert(name.clone(), alt);
+                            continue;
+                        }
                         _ => alt,
                     }
                 }
             },
         };
         changes.set(&storage::profile_key(&target), at, value);
+        synced_as.insert(name.clone(), target.clone());
         out.uploaded.push((name.clone(), target));
     }
-    if let Some(policy) = default_policy.filter(|p| !p.is_platform_only()) {
+    // The default names this device's profiles by their synced names; one that does not sync
+    // (skipped, or tombstoned there) leaves the synced default unset rather than pointing at
+    // another device's profile of the same name.
+    let default_policy = default_policy
+        .filter(|p| !p.is_platform_only())
+        .and_then(|p| {
+            let targets = p
+                .targets
+                .iter()
+                .map(|t| {
+                    if t == crate::storage::PLATFORM_PROFILE {
+                        Some(t.clone())
+                    } else {
+                        synced_as.get(t).cloned()
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(StoragePolicy {
+                targets,
+                ..p.clone()
+            })
+        });
+    if let Some(policy) = default_policy {
         if !synced.entries.contains_key(storage::DEFAULT_KEY) {
-            changes.set(storage::DEFAULT_KEY, at, storage::policy_to_synced(policy));
+            changes.set(storage::DEFAULT_KEY, at, storage::policy_to_synced(&policy));
         }
     }
     out.changes = (!changes.entries.is_empty()).then_some(changes);
@@ -361,20 +406,33 @@ pub async fn first_sync(
     device: &str,
 ) -> Result<FirstSync> {
     let sync = UserSync::new(key, store);
+    let at = now_ms();
     let current = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
-    let plan = upload_plan(local, default_policy, current.as_ref(), device, now_ms());
-    let back = match &plan.changes {
-        Some(changes) => sync.merge_into(SLOT_STORAGE, changes).await?,
-        None => current.unwrap_or_else(|| SlotDoc::new(SLOT_STORAGE)),
+    let mut plan = upload_plan(local, default_policy, current.as_ref(), device, at);
+    let back = if plan.changes.is_some() {
+        let mut planned = None;
+        let back = sync
+            .merge_with(SLOT_STORAGE, |now| {
+                let p = upload_plan(local, default_policy, now, device, at);
+                let changes = p
+                    .changes
+                    .clone()
+                    .unwrap_or_else(|| SlotDoc::new(SLOT_STORAGE));
+                planned = Some(p);
+                changes
+            })
+            .await?;
+        plan = planned.unwrap_or(plan);
+        back
+    } else {
+        current.unwrap_or_else(|| SlotDoc::new(SLOT_STORAGE))
     };
-    let checked = plan.uploaded.iter().all(|(local_name, synced_name)| {
-        let sent = local
-            .profiles
-            .get(local_name)
-            .and_then(|p| storage::profile_to_synced(p).ok());
-        let got = back.get(&storage::profile_key(synced_name));
-        match (sent, got) {
-            (Some(s), Some(g)) => doc::canonical_json(&s) == doc::canonical_json(g),
+    // What was sent, not the secrets resolved again (a credential may have changed since).
+    let checked = plan.uploaded.iter().all(|(_, synced_name)| {
+        let key = storage::profile_key(synced_name);
+        let sent = plan.changes.as_ref().and_then(|c| c.get(&key));
+        match (sent, back.get(&key)) {
+            (Some(s), Some(g)) => doc::canonical_json(s) == doc::canonical_json(g),
             _ => false,
         }
     });
@@ -723,6 +781,52 @@ impl UserSync<'_> {
             .await
     }
 
+    /// Grant `rsk` at `out.epoch` to every member in `keys` with a live key that lacks a current
+    /// grant (replacing its old one in place); those with none wait. The ids of grants replaced.
+    async fn grant_members(
+        &self,
+        repo_id: &str,
+        all: &[GrantDoc],
+        keys: &BTreeMap<String, Vec<EncKeyInfo>>,
+        rsk: &[u8; 32],
+        out: &mut Reconciled,
+    ) -> Result<BTreeSet<String>> {
+        let mut replaced = BTreeSet::new();
+        for (member, live) in keys {
+            let Some(their) = live.last() else {
+                out.waiting.push(member.clone());
+                continue;
+            };
+            let old = all.iter().find(|g| g.member_id == *member);
+            if old.is_some_and(|g| {
+                g.epoch == out.epoch
+                    && g.recipient_key_id == their.id
+                    && g.sender_key_id == self.key.key_id
+            }) {
+                continue;
+            }
+            self.put_grant(old, repo_id, member, their, out.epoch, rsk)
+                .await?;
+            if let Some(g) = old {
+                replaced.extend(g.id.clone());
+            }
+            out.granted.push(member.clone());
+        }
+        Ok(replaced)
+    }
+
+    /// The live forge-user keys of every one of `maintainers` but the owner (one read each).
+    async fn live_keys(
+        &self,
+        maintainers: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, Vec<EncKeyInfo>>> {
+        let mut keys = BTreeMap::new();
+        for member in maintainers.iter().filter(|m| **m != self.key.identity_id) {
+            keys.insert(member.clone(), self.store.encryption_keys(member).await?);
+        }
+        Ok(keys)
+    }
+
     /// As the owner of `repo_id`: make its share hold what `wanted` says, grant it to every one
     /// of `maintainers` that has a live forge-user key, and revoke every other grant: anyone
     /// who is no longer a maintainer (or is the owner), whose recipient key is no longer live,
@@ -743,10 +847,17 @@ impl UserSync<'_> {
         let existing = self.store.share(me, repo_id).await?;
         let all = self.store.grants_of_repo(me, repo_id).await?;
         let stop = matches!(wanted, Wanted::Nothing);
-        let mut keys: BTreeMap<String, Vec<EncKeyInfo>> = BTreeMap::new();
-        for member in maintainers.iter().filter(|m| *m != me) {
-            keys.insert(member.clone(), self.store.encryption_keys(member).await?);
-        }
+        let keys = if stop {
+            BTreeMap::new()
+        } else {
+            self.live_keys(maintainers).await?
+        };
+        // A grant moving to a member's newer key rotates too: the key it held keeps the old RSK.
+        let rekeyed = all.iter().any(|g| {
+            keys.get(&g.member_id)
+                .and_then(|ks| ks.last())
+                .is_some_and(|newest| newest.id != g.recipient_key_id)
+        });
         let revoked: Vec<&GrantDoc> = all
             .iter()
             .filter(|g| {
@@ -769,7 +880,11 @@ impl UserSync<'_> {
         }
         let stopping = stop && current.as_ref().is_none_or(|c| !c.profiles.is_empty());
         let mut out = Reconciled {
-            epoch: share_epoch(existing.as_ref(), &all, !revoked.is_empty() || stopping)?,
+            epoch: share_epoch(
+                existing.as_ref(),
+                &all,
+                !revoked.is_empty() || stopping || rekeyed,
+            )?,
             ..Reconciled::default()
         };
         let content = match (wanted, &current) {
@@ -802,29 +917,12 @@ impl UserSync<'_> {
             }
             out.shared = !stop && !content.profiles.is_empty();
         }
-        let mut replaced = BTreeSet::new();
-        if out.shared {
-            for (member, live) in &keys {
-                let Some(their) = live.last() else {
-                    out.waiting.push(member.clone());
-                    continue;
-                };
-                let old = all.iter().find(|g| g.member_id == *member);
-                if old.is_some_and(|g| {
-                    g.epoch == out.epoch
-                        && g.recipient_key_id == their.id
-                        && g.sender_key_id == self.key.key_id
-                }) {
-                    continue;
-                }
-                self.put_grant(old, repo_id, member, their, out.epoch, &rsk)
-                    .await?;
-                if let Some(g) = old {
-                    replaced.extend(g.id.clone());
-                }
-                out.granted.push(member.clone());
-            }
-        }
+        let replaced = if out.shared {
+            self.grant_members(repo_id, &all, &keys, &rsk, &mut out)
+                .await?
+        } else {
+            BTreeSet::new()
+        };
         for g in revoked {
             if g.id.as_ref().is_some_and(|id| replaced.contains(id)) {
                 continue;

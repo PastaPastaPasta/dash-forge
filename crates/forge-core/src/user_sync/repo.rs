@@ -39,6 +39,11 @@ pub struct PushStorage {
     pub policy: Option<StoragePolicy>,
     /// The owner whose storage this push may use, when it is shared with the pusher.
     pub shared_by: Option<String>,
+    /// Whether [`Self::policy`] is the one the owner shared.
+    pub policy_from_share: bool,
+    /// Why the owner's share was not used although the pusher is a maintainer (it could not be
+    /// read, or a shared name is one of the pusher's own profiles).
+    pub share_skipped: Option<String>,
 }
 
 /// [`PushStorage`] for `sync`'s identity pushing to `repo_id`, owned by `owner_id`, over
@@ -66,14 +71,28 @@ pub async fn push_storage(
         .and_then(storage::policy_from_synced);
     let mut shared_policy = None;
     if is_maintainer {
-        if let Some(share) = sync.granted_share(repo_id, owner_id).await? {
-            let (profiles, policy) = share.as_profiles(owner_id);
-            for (name, p) in profiles {
-                out.effective.origin.insert(name.clone(), Origin::Shared);
-                out.effective.profiles.profiles.insert(name, p);
+        match sync.granted_share(repo_id, owner_id).await {
+            Ok(Some(share)) => {
+                let (profiles, policy) = share.as_profiles(owner_id);
+                // A shared name the pusher already uses is never replaced: the share is left out.
+                if let Some(clash) = profiles
+                    .keys()
+                    .find(|n| out.effective.profiles.profiles.contains_key(*n))
+                {
+                    out.share_skipped = Some(format!(
+                        "your own storage profile {clash} has the name its share would use"
+                    ));
+                } else {
+                    for (name, p) in profiles {
+                        out.effective.origin.insert(name.clone(), Origin::Shared);
+                        out.effective.profiles.profiles.insert(name, p);
+                    }
+                    shared_policy = policy;
+                    out.shared_by = Some(owner_id.to_string());
+                }
             }
-            shared_policy = policy;
-            out.shared_by = Some(owner_id.to_string());
+            Ok(None) => {}
+            Err(e) => out.share_skipped = Some(format!("it could not be read ({e})")),
         }
     }
     let usable = |p: &Option<StoragePolicy>| {
@@ -86,6 +105,7 @@ pub async fn push_storage(
         usable(&shared_policy),
         usable(&own_default),
     );
+    out.policy_from_share = own_repo.is_none() && shared_policy.is_some();
     out.policy = own_repo.or(shared_policy).or(own_default);
     Ok(out)
 }

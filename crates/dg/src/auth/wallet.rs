@@ -840,6 +840,15 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .map_err(|e| not_default(&e, &grant.identity_id, grant.key_id, &stored))?;
 
     let kept_ids: Vec<u32> = encryption.iter().map(|k| k.id).collect();
+    // No new key (`--no-sync`, or one the wallet did not send): a key kept from an earlier
+    // sign-in of this identity still syncs, so say so rather than "off".
+    let sync_key = sync_key.or_else(|| {
+        forge.user.as_ref()?;
+        match forge_core::user_sync::key::load(&network, &grant.identity_id) {
+            forge_core::user_sync::LocalKey::Held(key) => Some(key),
+            _ => None,
+        }
+    });
     let sync_label = match (&sync_key, forge.user.as_deref()) {
         (_, None) => "unavailable",
         (None, Some(_)) => "off",
@@ -886,7 +895,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             );
             super::print_kept_encryption(&kept_ids);
             println!("  stored in {}", stored.describe());
-            if grant.encryption_dropped {
+            if grant.encryption_dropped && sync_label != "on" {
                 println!("  your wallet's settings-sync key could not be used, so this computer signed in without sync");
             }
             match sync_label {

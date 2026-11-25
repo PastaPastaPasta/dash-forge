@@ -176,6 +176,7 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
     let Some(name) = args.name.as_deref() else {
         let no_args = *args == StorageAddArgs::default();
         if no_args && ctx.interactive() {
+            let default_before = crate::sync::global_default_policy();
             let added = crate::storage_wizard::run(
                 &mut crate::prompt::TtyPrompter,
                 ctx.network().web_origin(),
@@ -183,6 +184,11 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
             .await?;
             let saved = StorageProfiles::load()?.profiles.get(&added.name).cloned();
             let _ = crate::sync::after_profile_change(ctx, &added.name, saved.as_ref()).await;
+            if let Some(policy) =
+                crate::sync::global_default_policy().filter(|p| Some(p) != default_before.as_ref())
+            {
+                crate::sync::after_default_policy(ctx, &policy).await;
+            }
             return Ok(());
         }
         return Err(UserError::new(codes::USAGE, "storage profile not added: no profile name")

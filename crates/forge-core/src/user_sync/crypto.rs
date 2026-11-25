@@ -167,6 +167,16 @@ pub fn fresh_nonce() -> Result<[u8; 12]> {
     Ok(n)
 }
 
+/// Refuse a plaintext over what a reader inflates ([`MAX_INFLATED`]), before anything is written.
+pub fn check_plain_len(len: usize) -> Result<()> {
+    if len as u64 > MAX_INFLATED {
+        return Err(Error::InvalidInput(format!(
+            "the settings are {len} bytes; the most a reader opens is {MAX_INFLATED}"
+        )));
+    }
+    Ok(())
+}
+
 /// `deflate-raw` (zlib's `wbits = -15`).
 pub fn deflate_raw(plain: &[u8]) -> Result<Vec<u8>> {
     let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
@@ -210,6 +220,7 @@ pub fn seal_state(
     nonce: &[u8; 12],
     json: &[u8],
 ) -> Result<Vec<Vec<u8>>> {
+    check_plain_len(json.len())?;
     let key = state_key(e, identity, network, slot);
     let aad = state_aad(network, identity, slot, STATE_V, key_id)?;
     split(&seal(&key, nonce, &deflate_raw(json)?, &aad)?)
@@ -472,6 +483,15 @@ mod tests {
             &wrapped,
         )
         .is_err());
+    }
+
+    #[test]
+    fn refuses_a_plaintext_no_reader_would_open() {
+        let e = SecretBytes::new([1; 32]);
+        let big = vec![b'a'; usize::try_from(MAX_INFLATED).unwrap() + 1];
+        assert!(seal_state(&e, "testnet", &[2; 32], "prefs", 1, &[0; 12], &big).is_err());
+        let ok = vec![b'a'; usize::try_from(MAX_INFLATED).unwrap()];
+        assert!(seal_state(&e, "testnet", &[2; 32], "prefs", 1, &[0; 12], &ok).is_ok());
     }
 
     #[test]
