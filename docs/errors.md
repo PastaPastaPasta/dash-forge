@@ -138,7 +138,7 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 - **Organizations on mainnet.** `dg org …` and `dg repo create --owner <org>` stop with "Organizations are not available on mainnet yet." They work on testnet and devnets ([Organizations](guides/organizations.md)).
 - **Wallet sign-in on a network before Platform protocol 14.** `dg auth login` (with `--wallet`, or with no file) stops with "this network cannot sign in with a wallet yet". Sign in with `dg auth login <file>` or `dg auth login --mnemonic` there.
 - **Bot push access on a network whose contracts have none.** `dg bot allow --push` and the commands that change push access (`dg bot renew`, `suspend`, `resume`, `revoke --push`) stop with "Bots can't push to `<repo>` yet." A bot there pushes to its own fork and opens a pull request ([Bots](guides/bots.md)).
-- **An X.509 commit-signing key.** `dg profile key add` with git's `gpg.format=x509` stops: Forge verifies Ed25519 SSH and OpenPGP keys only ([Signed commits](guides/identity-and-keys.md#signed-commits-and-verified-badges)).
+- **An X.509 commit-signing key.** `dg profile key add` without `--ssh`/`--gpg`, when git's `gpg.format=x509`, stops: Forge verifies Ed25519 SSH and OpenPGP keys only ([Signed commits](guides/identity-and-keys.md#signed-commits-and-verified-badges)).
 
 ## E206
 
