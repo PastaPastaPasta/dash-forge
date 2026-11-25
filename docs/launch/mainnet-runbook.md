@@ -226,6 +226,8 @@ Registered repositories and Platform-stored packs can't be deleted, so the write
 
 ## 6. Rollback
 
+**Rolling back a site.** Both sites deploy only from master, one run at a time, and only master's head deploys (`pages.yml`, `pages-testnet.yml`). To put an earlier version back, merge a revert to master. To redeploy the current head, run the workflow on master by workflow_dispatch. Don't re-run a Pages run started before 2026-11-25 (#730): a re-run uses that run's old workflow, which cancels whatever deploy is in progress.
+
 **What can't be undone.** Registered contracts are permanent. They can't be deleted or re-owned, and an update may only add types and optional properties. Every repository, issue and pack written under them stays on chain. The deployer's nonces are spent.
 
 **How a bad registration is superseded.** Register a fresh set from the same deployer with `deploy-v2.mjs --network mainnet --set mainnet --force-new --abandon-live-set mainnet …` (about 2 DASH). That writes a new record, and the old one moves to `*Superseded`. Then release clients that read the new ids, and say which ids were abandoned. Documents under the old ids stay on chain and are no longer read. A defect that clients can enforce is fixed instead by a client release, and an additive schema fix by `--update`, gated by `tools/contract-validate --expect-update`.
