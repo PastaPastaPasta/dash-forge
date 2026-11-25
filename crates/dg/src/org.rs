@@ -645,6 +645,13 @@ async fn decline(ctx: &Ctx, id: &str, reason: &str, phrase: &PhraseArgs) -> Resu
 
 async fn finish(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
     let (mut org, req) = find_request(ctx, id).await?;
+    if org.status(&req, None) == RequestStatus::Declined {
+        return Err(UserError::new(
+            codes::USAGE,
+            "this request can't be finished: it is declined",
+        )
+        .into());
+    }
     let (_, keys) = unlock_for(ctx, phrase, &org.record)?;
     let client = ctx.connect().await?;
     let forge = ctx.target.require_v2()?.clone();

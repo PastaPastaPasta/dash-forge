@@ -693,6 +693,12 @@ impl Org {
                 std::slice::from_ref(problem),
             ));
         }
+        if self.status(req, None) == RequestStatus::Declined {
+            return Err(refused(
+                "broadcast this request",
+                &["it is declined".into()],
+            ));
+        }
         self.bind(client).await?;
         let network = client.network().key();
         if !self.can_finish(client, forge, &network, req).await? {
