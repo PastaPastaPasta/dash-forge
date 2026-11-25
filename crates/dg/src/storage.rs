@@ -336,20 +336,47 @@ fn share_changes(
         if name == PLATFORM_PROFILE {
             continue;
         }
-        let held = synced.and_then(|d| d.get(&us::profile_key(name)));
-        let profile = match (local.profiles.get(name), held) {
-            (Some(p), _) => {
+        // As first sync does: a name the synced copy holds is shared as synced (this computer's
+        // copy never overwrites it account-wide), one it removed is not revived, and only a name
+        // it has never held is uploaded from storage.toml.
+        let entry = synced.and_then(|d| d.entries.get(&us::profile_key(name)));
+        let profile = match (entry, local.profiles.get(name)) {
+            (Some(e), _) if e.v.is_none() => {
+                return Err(UserError::new(
+                    codes::STORAGE_POLICY,
+                    format!("{name} was removed from your synced storage on another device"),
+                )
+                .fix(format!(
+                    "add it again with `dg storage add {name} …`, then share it"
+                ))
+                .into());
+            }
+            (Some(e), Some(p)) => {
+                let held = e.v.as_ref().expect("live");
+                if us::profile_to_synced(p).is_ok_and(|v| !us::same_profile_value(held, &v)) {
+                    return Err(UserError::new(
+                        codes::STORAGE_POLICY,
+                        format!("{name} in storage.toml differs from your synced {name}"),
+                    )
+                    .cause("only the synced copy is shared, and this computer's copy never replaces it")
+                    .fix("share the synced copy under another name, or remove this computer's copy from storage.toml")
+                    .into());
+                }
+                us::profile_from_synced(held).ok().flatten()
+            }
+            (Some(e), None) => {
+                e.v.as_ref()
+                    .and_then(|v| us::profile_from_synced(v).ok().flatten())
+            }
+            (None, Some(p)) => {
                 let value = us::profile_to_synced(p).map_err(|e| {
                     UserError::new(codes::STORAGE_POLICY, format!("{name} can't be shared"))
                         .cause(e.to_string())
                         .fix("set its secrets in this shell or keychain, then run it again")
                 })?;
-                if held.is_none_or(|h| !us::same_profile_value(h, &value)) {
-                    changes.set(&us::profile_key(name), at, value.clone());
-                }
+                changes.set(&us::profile_key(name), at, value.clone());
                 us::profile_from_synced(&value).ok().flatten()
             }
-            (None, Some(h)) => us::profile_from_synced(h).ok().flatten(),
             (None, None) => None,
         };
         let Some(profile) = profile else {
@@ -386,6 +413,37 @@ fn share_changes(
     Ok(changes)
 }
 
+/// The owner's sync key on this computer, or why there is none (never asking for a passphrase).
+fn owner_sync_key(ctx: &Ctx, me: &str) -> Result<forge_core::user_sync::SyncKey> {
+    use forge_core::user_sync::key::LocalKey;
+    match forge_core::user_sync::key::load(&ctx.network_label(), me) {
+        LocalKey::Held(key) => Ok(key),
+        LocalKey::Locked => Err(UserError::new(
+            codes::USAGE,
+            "settings sync is off for this run: its key is in a passphrase-sealed file",
+        )
+        .fix("set DASH_FORGE_PASSPHRASE and run it again")
+        .into()),
+        LocalKey::Absent => Err(UserError::new(
+            codes::USAGE,
+            "settings sync is off on this computer",
+        )
+        .fix("sign in with your wallet: `dg auth login --wallet`")
+        .into()),
+    }
+}
+
+/// Comma-separated profile names, trimmed, each once, in order.
+fn profile_names(list: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        if !out.iter().any(|o| o == n) {
+            out.push(n.to_string());
+        }
+    }
+    out
+}
+
 /// `dg storage share <owner/repo> <profiles> [--copies N]` and `--stop`: set (or remove) the storage
 /// a repository's maintainers get, then lend it to them (`identity-synced-state.md` §5).
 async fn share(
@@ -395,7 +453,7 @@ async fn share(
     copies: Option<usize>,
     stop: bool,
 ) -> Result<()> {
-    use forge_core::user_sync::{self as us, key::LocalKey, SlotDoc, UserSync, SLOT_STORAGE};
+    use forge_core::user_sync::{self as us, SlotDoc, UserSync, SLOT_STORAGE};
     let Some(contract) = ctx.target.v2.as_ref().and_then(|f| f.user.clone()) else {
         return Err(
             UserError::new(codes::UNSUPPORTED, "sync isn't available on this network").into(),
@@ -410,25 +468,8 @@ async fn share(
         )
         .into());
     }
-    let LocalKey::Held(key) = us::key::load(&ctx.network_label(), &me) else {
-        return Err(
-            UserError::new(codes::USAGE, "settings sync is off on this computer")
-                .fix("sign in with your wallet: `dg auth login --wallet`")
-                .into(),
-        );
-    };
-    let names: Vec<String> = profiles
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(str::to_string)
-        .fold(Vec::new(), |mut v, n| {
-            if !v.contains(&n) {
-                v.push(n);
-            }
-            v
-        });
+    let key = owner_sync_key(ctx, &me)?;
+    let names = profile_names(profiles.unwrap_or_default());
     let local = StorageProfiles::load()?;
     let repo_id = s.repo.id().to_string();
     let maintainers = us::repo::current_maintainers(&s.client, &s.repo).await?;
@@ -456,6 +497,15 @@ async fn share(
         })
         .await?;
     let shown = s.repo.display();
+    if !stop && !done.shared {
+        return Err(UserError::new(
+            codes::STORAGE_POLICY,
+            format!("the storage for {shown} was saved, but isn't shared"),
+        )
+        .cause("another device changed your synced storage at the same time")
+        .fix("check `dg storage list`, then run it again")
+        .into());
+    }
     ctx.emit(
         json!({
             "status": if stop { "stopped" } else { "shared" },
@@ -468,7 +518,7 @@ async fn share(
         }),
         || {
             if stop {
-                println!("Stopped sharing storage with {shown}'s maintainers.");
+                println!("Stopped sharing storage with {shown}'s maintainers; your own pushes to it use your default storage again.");
                 for m in &done.revoked {
                     println!("  {}", crate::sync::rotate_line(m));
                 }
@@ -2074,6 +2124,18 @@ public_gateway = "https://gw.example.org"
         };
         assert_eq!(c.profiles.keys().collect::<Vec<_>>(), ["nas", "web-r2"]);
         assert_eq!(c.profiles["web-r2"], web);
+        // This computer's differing copy never replaces the synced one, nor revives a removed one.
+        let mut differing = synced.clone();
+        differing.set(
+            "profile:nas",
+            2,
+            serde_json::json!({"settings": {"kind": "ipfs-kubo", "provider": "kubo", "api": "https://other.example.org:5001", "gateway": "", "publicGateway": "", "pinningEndpoint": ""}, "secrets": {}}),
+        );
+        let nas = vec!["nas".to_string()];
+        assert!(share_changes(&nas, None, "REPO", &local, Some(&differing), 5).is_err());
+        let mut removed = synced.clone();
+        removed.remove("profile:nas", 3);
+        assert!(share_changes(&nas, None, "REPO", &local, Some(&removed), 5).is_err());
         // Refusals: a name with no profile, Platform alone, and a copy count past the list.
         let missing = vec!["gone".to_string()];
         assert!(share_changes(&missing, None, "REPO", &local, Some(&synced), 5).is_err());

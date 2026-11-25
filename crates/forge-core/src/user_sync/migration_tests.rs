@@ -1083,7 +1083,9 @@ async fn a_share_made_from_the_default_stops_at_the_next_reconcile() {
     )
     .await
     .unwrap();
-    assert!(view.share_missing && view.shared_by.is_none());
+    // Its grant was revoked: no grant to it at all at the share's epoch.
+    assert_eq!(view.share_missing.as_deref(), Some("e1"));
+    assert!(view.shared_by.is_none());
     // Setting storage for this repository shares it again, one epoch on.
     r.store.as_signer(&r.owner);
     let mut set = SlotDoc::new(SLOT_STORAGE);
@@ -1121,4 +1123,62 @@ fn a_one_time_note_shows_once_per_computer() {
     assert!(local::note_once_at(&path, "testnet/hint/S"));
     let raw = std::fs::read_to_string(&path).unwrap();
     assert!(raw.contains("future = 1") && raw.contains("a1b2c3"));
+}
+
+#[tokio::test]
+async fn keeping_a_share_never_lends_it_to_a_new_maintainer() {
+    let r = repo_with_one_maintainer();
+    let first: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    // A share from an older build, then a repository setting this build can't use (Keep).
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &first)
+        .await
+        .unwrap();
+    let newcomer = id("newcomer");
+    let e_new = key(&newcomer, 3, "newcomer E");
+    r.store.add_key(&newcomer, 3, e_new.public_key().to_vec());
+    let both: BTreeSet<String> = [r.member.clone(), newcomer.clone()].into();
+    let kept = owner
+        .reconcile_repo(&r.repo, Wanted::Keep, &both)
+        .await
+        .unwrap();
+    assert!(kept.granted.is_empty() && kept.waiting.is_empty());
+    assert!(r.store.all_grants().iter().all(|g| g.member_id == r.member));
+    // A maintainer whose grant is only behind (a newer key, before the owner reconciles) is not
+    // told the owner shares nothing.
+    let newer = key(&r.member, 12, "member2 newest E");
+    r.store.add_key(&r.member, 12, newer.public_key().to_vec());
+    r.store.as_signer(&r.member);
+    let view = repo::push_storage(
+        &UserSync::new(&newer, &r.store),
+        &r.repo,
+        &r.owner,
+        true,
+        &StorageProfiles::default(),
+    )
+    .await
+    .unwrap();
+    assert!(view.share_missing.is_none() && view.shared_by.is_none());
+}
+
+#[test]
+fn the_stop_line_names_the_default_only_when_the_repo_never_had_storage() {
+    let done = Reconciled {
+        stopped: true,
+        ..Reconciled::default()
+    };
+    assert!(stopped_line("o/r", &done)
+        .unwrap()
+        .contains("default storage"));
+    let removed = Reconciled {
+        repo_policy_removed: true,
+        ..done.clone()
+    };
+    assert_eq!(
+        stopped_line("o/r", &removed).unwrap(),
+        "Stopped sharing storage with o/r's maintainers."
+    );
+    assert!(stopped_line("o/r", &Reconciled::default()).is_none());
 }

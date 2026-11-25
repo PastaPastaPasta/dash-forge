@@ -699,6 +699,9 @@ pub struct Reconciled {
     /// From [`UserSync::reconcile_repo_by_rule`]: whether the owner set storage for this
     /// repository (a live synced `repo:<id>` entry).
     pub repo_policy_set: bool,
+    /// From [`UserSync::reconcile_repo_by_rule`]: whether the owner removed the storage set for
+    /// this repository (a tombstoned `repo:<id>` entry, `dg storage share --stop`).
+    pub repo_policy_removed: bool,
 }
 
 /// The line an owner sees once when the share of `repo` (`owner/name`) stops because it has no
@@ -707,6 +710,20 @@ pub fn stopped_default_line(repo: &str) -> String {
     format!(
         "Stopped sharing your default storage with {repo}'s maintainers; to share storage, set it for this repo: dg storage share {repo} <profile>"
     )
+}
+
+/// The owner's one line for a reconcile that stopped sharing `repo` (`owner/name`): about the
+/// default storage when the repository never had storage of its own set, else plainly. `None`
+/// when nothing stopped.
+pub fn stopped_line(repo: &str, done: &Reconciled) -> Option<String> {
+    if !done.stopped || done.repo_policy_set {
+        return None;
+    }
+    Some(if done.repo_policy_removed {
+        format!("Stopped sharing storage with {repo}'s maintainers.")
+    } else {
+        stopped_default_line(repo)
+    })
 }
 
 /// The line an owner sees on adding `member` as a maintainer of `repo`, which has no storage set.
@@ -820,10 +837,14 @@ impl UserSync<'_> {
         all: &[GrantDoc],
         keys: &BTreeMap<String, Vec<EncKeyInfo>>,
         rsk: &[u8; 32],
+        admit_new: bool,
         out: &mut Reconciled,
     ) -> Result<BTreeSet<String>> {
         let mut replaced = BTreeSet::new();
         for (member, live) in keys {
+            if !admit_new && !all.iter().any(|g| g.member_id == *member) {
+                continue;
+            }
             let Some(their) = live.last() else {
                 out.waiting.push(member.clone());
                 continue;
@@ -949,7 +970,10 @@ impl UserSync<'_> {
             out.shared = !stop && !content.profiles.is_empty();
         }
         let replaced = if out.shared {
-            self.grant_members(repo_id, &all, &keys, &rsk, &mut out)
+            // A share kept as it is (no usable repository setting) is never lent to anyone new:
+            // it may hold what an older build shared from the default storage.
+            let admit_new = !matches!(wanted, Wanted::Keep);
+            self.grant_members(repo_id, &all, &keys, &rsk, admit_new, &mut out)
                 .await?
         } else {
             BTreeSet::new()
@@ -977,9 +1001,11 @@ impl UserSync<'_> {
         let mut out = self
             .reconcile_repo(repo_id, rule.wanted(), maintainers)
             .await?;
-        out.repo_policy_set = own
+        let entry = own
             .as_ref()
-            .is_some_and(|d| d.get(&storage::repo_key(repo_id)).is_some());
+            .and_then(|d| d.entries.get(&storage::repo_key(repo_id)));
+        out.repo_policy_set = entry.is_some_and(|e| e.v.is_some());
+        out.repo_policy_removed = entry.is_some_and(|e| e.v.is_none());
         Ok(out)
     }
 

@@ -139,9 +139,7 @@ pub async fn ensure_first_sync(ctx: &Ctx, writer: &Writer<'_>, key: &SyncKey, co
     let Ok(local) = StorageProfiles::load() else {
         return;
     };
-    let Ok(device) = user_sync::local::device() else {
-        return;
-    };
+    let device = user_sync::local::device();
     let policy = global_default_policy();
     let run = writer
         .with_store(contract, async |store| {
@@ -300,11 +298,11 @@ pub fn rotate_line(member: &str) -> String {
     )
 }
 
-/// The one line an owner sees when a reconcile stopped a share made from their default storage
-/// (the repository has no storage of its own set): once, as the share is already empty after.
+/// The one line an owner sees when a reconcile stopped a share (about the default storage when the
+/// repository never had storage of its own): once, as the share is already empty after.
 pub fn print_stopped_default(ctx: &Ctx, repo: &str, done: &user_sync::Reconciled) {
-    if done.stopped && !done.repo_policy_set && !ctx.json {
-        println!("{}", user_sync::stopped_default_line(repo));
+    if let Some(line) = user_sync::stopped_line(repo, done).filter(|_| !ctx.json) {
+        println!("{line}");
     }
 }
 

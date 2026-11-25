@@ -30,10 +30,18 @@ pub fn path() -> Option<PathBuf> {
 }
 
 fn load(path: &Path) -> LocalState {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| toml::from_str(&raw).ok())
-        .unwrap_or_default()
+    load_checked(path).unwrap_or_default()
+}
+
+/// The file's contents (empty when there is none); an error for one that does not parse, which
+/// is then never written over.
+fn load_checked(path: &Path) -> Result<LocalState> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => toml::from_str(&raw)
+            .map_err(|_| Error::Config(format!("{} does not parse", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(LocalState::default()),
+        Err(e) => Err(Error::Io(format!("reading {}: {e}", path.display()))),
+    }
 }
 
 /// Run `f` on the file's contents under its lock, then save them.
@@ -54,7 +62,7 @@ fn update_at<T>(path: &Path, f: impl FnOnce(&mut LocalState) -> T) -> Result<T> 
         .open(path.with_extension("lock"))
         .and_then(|f| f.lock().map(|()| f))
         .map_err(|e| Error::Io(format!("locking {}: {e}", path.display())))?;
-    let mut state = load(path);
+    let mut state = load_checked(path)?;
     let out = f(&mut state);
     let raw = toml::to_string_pretty(&state)
         .map_err(|e| Error::Config(format!("serializing user-sync.toml: {e}")))?;
@@ -67,15 +75,32 @@ fn account(network: &str, identity: &str) -> String {
     format!("{network}/{identity}")
 }
 
-/// This computer's short id, made on first use (`<name>-<device>` keeps a clashing profile).
-pub fn device() -> Result<String> {
+fn valid_device(d: &str) -> bool {
+    d.len() == 6 && d.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn new_device() -> String {
+    let mut b = [0u8; 3];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut b);
+    hex::encode(b)
+}
+
+/// This computer's short id, made (and saved) on first use (`<name>-<device>` keeps a clashing
+/// profile). A file that cannot be written still gets an id for this run.
+pub fn device() -> String {
     update(|s| {
-        if !(s.device.len() == 6 && s.device.bytes().all(|b| b.is_ascii_hexdigit())) {
-            let mut b = [0u8; 3];
-            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut b);
-            s.device = hex::encode(b);
+        if !valid_device(&s.device) {
+            s.device = new_device();
         }
         s.device.clone()
+    })
+    .unwrap_or_else(|_| {
+        let held = path().map(|p| load(&p).device).unwrap_or_default();
+        if valid_device(&held) {
+            held
+        } else {
+            new_device()
+        }
     })
 }
 
@@ -116,6 +141,18 @@ pub fn note_once_at(path: &Path, what: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_does_not_parse_is_never_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user-sync.toml");
+        std::fs::write(&path, "device = [not toml").unwrap();
+        assert!(!note_once_at(&path, "x"));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "device = [not toml"
+        );
+    }
 
     #[test]
     fn unknown_fields_survive_and_a_note_shows_once() {

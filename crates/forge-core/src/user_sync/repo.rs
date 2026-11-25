@@ -41,9 +41,10 @@ pub struct PushStorage {
     pub shared_by: Option<String>,
     /// Whether [`Self::policy`] is the one the owner shared.
     pub policy_from_share: bool,
-    /// The pusher is a maintainer, and the owner shares no storage for this repository (no share,
-    /// or an empty one): the pusher's own storage is used.
-    pub share_missing: bool,
+    /// The pusher is a maintainer and the owner shares no storage with them for this repository
+    /// (no share, an empty one, or none granted to them at all; a grant that is only behind is
+    /// not this): the pusher's own storage is used. A key naming that state for a one-time note.
+    pub share_missing: Option<String>,
     /// Why the owner's share was not used although the pusher is a maintainer (it could not be
     /// read, or a shared name is one of the pusher's own profiles).
     pub share_skipped: Option<String>,
@@ -75,7 +76,9 @@ pub async fn push_storage(
     let mut shared_policy = None;
     if is_maintainer {
         match sync.granted_share(repo_id, owner_id).await {
-            Ok(Some(share)) if share.profiles.is_empty() => out.share_missing = true,
+            Ok(Some(share)) if share.profiles.is_empty() => {
+                out.share_missing = Some("empty".into());
+            }
             Ok(Some(share)) => {
                 let (profiles, policy) = share.as_profiles(owner_id);
                 // A shared name the pusher already uses is never replaced: the share is left out.
@@ -95,7 +98,7 @@ pub async fn push_storage(
                     out.shared_by = Some(owner_id.to_string());
                 }
             }
-            Ok(None) => out.share_missing = true,
+            Ok(None) => out.share_missing = not_granted(sync, repo_id, owner_id).await,
             Err(e) => out.share_skipped = Some(format!("it could not be read ({e})")),
         }
     }
@@ -112,4 +115,18 @@ pub async fn push_storage(
     out.policy_from_share = own_repo.is_none() && shared_policy.is_some();
     out.policy = own_repo.or(shared_policy).or(own_default);
     Ok(out)
+}
+
+/// Why no share reached this maintainer, when it is that the owner shares nothing with them: no
+/// share (`none`), or a share at an epoch with no grant to them at all (`e<epoch>`). `None` when a
+/// grant exists but is not current yet (the owner's next reconcile brings it), or on a read error.
+async fn not_granted(sync: &UserSync<'_>, repo_id: &str, owner_id: &str) -> Option<String> {
+    let me = &sync.key.identity_id;
+    match sync.store.share(owner_id, repo_id).await.ok()? {
+        None => Some("none".into()),
+        Some(share) => match sync.store.grant(owner_id, repo_id, me).await.ok()? {
+            None => Some(format!("e{}", share.epoch)),
+            Some(_) => None,
+        },
+    }
 }
