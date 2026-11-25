@@ -36,6 +36,29 @@ export function docsBase(value) {
 }
 
 /**
+ * The origin this build is published at (NEXT_PUBLIC_SITE_URL, e.g. https://forg3.dash.site). The
+ * app names it in the wallet sign-in's anti-phishing line ("Only scan codes shown on …") and in
+ * its page metadata, and defaults to forge.dashhq.org, which would tell a reader on the dash.site
+ * copy to trust a different address than the one in their address bar. Required, and must not be
+ * forge.dashhq.org.
+ */
+export function siteOrigin(value) {
+  if (!value) throw new Error('set NEXT_PUBLIC_SITE_URL to the address this build is published at (e.g. https://forg3.dash.site)')
+  const url = new URL(value)
+  if (url.protocol !== 'https:' || url.search || url.hash || url.username || url.password || url.pathname !== '/') {
+    throw new Error(`NEXT_PUBLIC_SITE_URL must be a plain https origin: ${value}`)
+  }
+  if (url.host === 'forge.dashhq.org') throw new Error('NEXT_PUBLIC_SITE_URL is forge.dashhq.org: set it to the dash.site address this build is published at')
+  return url.origin
+}
+
+/** Checks the export names `origin` as its own address (the sign-in line reads it from the bundle). */
+export function checkSiteOrigin(out, origin) {
+  const html = readFileSync(join(out, 'index.html'), 'utf8')
+  if (!html.includes(`${origin}/`)) throw new Error(`${join(out, 'index.html')} does not name ${origin}: was NEXT_PUBLIC_SITE_URL set for next build?`)
+}
+
+/**
  * A page that sends the reader to `target`, keeping the address's `#anchor` (a meta refresh alone
  * would drop it), under a CSP that allows only its own one-line script: the page shares an origin
  * with the signing-key vault, like every other page of the app.
@@ -88,14 +111,17 @@ export function externalAssets(out, packageDir) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [out = 'out', mapFile] = process.argv.slice(2)
   const base = docsBase(process.env.FORGE_DOCS_URL)
-  // `--check`: run first in build:dash-site, so a missing FORGE_DOCS_URL fails before the build.
+  const origin = siteOrigin(process.env.NEXT_PUBLIC_SITE_URL)
+  // `--check`: run first in build:dash-site, so a missing FORGE_DOCS_URL or NEXT_PUBLIC_SITE_URL
+  // fails before the build.
   if (out !== '--check') {
     if (!mapFile) throw new Error('usage: dash-site-postbuild.mjs <out-dir> <map-file>')
+    checkSiteOrigin(out, origin)
     rmSync(mapFile, { force: true })
     const here = dirname(fileURLToPath(import.meta.url))
     const assets = externalAssets(out, join(here, '..', 'node_modules', WASM_PACKAGE))
     const redirected = redirectDocs(out, base)
     writeFileSync(mapFile, `${JSON.stringify(assets, null, 2)}\n`)
-    console.log(`dash-site: ${redirected.length} docs pages now redirect to ${base}; ${Object.keys(assets).length} file(s) listed in ${mapFile}`)
+    console.log(`dash-site: built for ${origin}; ${redirected.length} docs pages now redirect to ${base}; ${Object.keys(assets).length} file(s) listed in ${mapFile}`)
   }
 }
