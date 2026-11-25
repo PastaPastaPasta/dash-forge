@@ -19,7 +19,7 @@ Every slug in `forge-web/lib/docs-links.ts` resolves in `forge-web/lib/docs/cata
 | L7 | `/docs/identity-and-keys/` "Identities and keys"; `/docs/costs/`; `/docs/quick-start/` | `app/page.tsx:213-237` | ok | catalog |
 | L8 | "More in Getting started" → `/start/` | `components/login-modal.tsx:484` | ok | `app/start/page.tsx` |
 | L9 | Verify link on "Unpublished build" → GitHub `docs/guides/verify-the-app.md` at the build's commit | `components/build-integrity-notice.tsx:29`, `lib/build-info.ts:34` | ok | file exists |
-| L10 | `DOCS.rotateStorage` → GitHub `docs/guides/rotate-storage-credentials.md` | `components/storage/repo-share-notes.tsx:42` | deferred | maintainer storage sharing; file exists |
+| L10 | `DOCS.rotateStorage` → GitHub `docs/guides/rotate-storage-credentials.md` | `components/storage/repo-share-notes.tsx:42` | deferred → see maintainer-sharing.md #31 | maintainer storage sharing; file exists |
 
 ## Sign-in (`/login`, the sign-in sheet, wallet, dg, passkey)
 
@@ -92,7 +92,7 @@ Every slug in `forge-web/lib/docs-links.ts` resolves in `forge-web/lib/docs/cata
 | A8 | Settings nav: "Storage — Buckets and IPFS nodes for browser pushes"; "Notifications — Browser inbox[, email and push]" | `app/settings/page.tsx` | ok | `NOTIFY_URL` gate |
 | A9 | Notifications: "Reads activity from the chain while Forge is open. No server involved." | `app/settings/notifications/page.tsx:28` | ok | |
 | A10 | /settings/keys: "Every key on your identity, as the network has it." | `app/settings/keys/page.tsx:31` | ok | |
-| A11 | Maintainer storage sharing copy (repo share notes, "rotate those storage keys") | `components/storage/repo-share-notes.tsx` | deferred | another thread is changing maintainer storage sharing |
+| A11 | Maintainer storage sharing copy (repo share notes, "rotate those storage keys") | `components/storage/repo-share-notes.tsx` | deferred → see maintainer-sharing.md #25–#30 | another thread is changing maintainer storage sharing |
 
 ## Banners
 

@@ -57,6 +57,7 @@ export const DOC_SECTIONS: readonly DocSection[] = [
       guide('run-your-own-ipfs-node', 'Run your own IPFS node'),
       guide('self-host-backend', 'Run your own backend'),
       guide('pin-and-fork', 'Pin or fork a repository'),
+      guide('rotate-storage-credentials', 'Rotate storage credentials'),
     ],
   },
   {

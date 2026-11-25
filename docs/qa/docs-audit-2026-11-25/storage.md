@@ -39,7 +39,7 @@ Storage, IPFS, hosting, limits and costs docs, checked against `origin/master` a
 | 32 | RustFS/Garage compose, uid 10001, Garage `[::]` binds | home-nas-storage.md:38-119 | ok | Garage binds are dual stack; Docker `ports:` publishes on IPv4 and IPv6 |
 | 33 | Public https address: no DNS guidance | home-nas-storage.md:121-130 | missing (dual stack), fixed | Added A + AAAA and both listeners, or a tunnel |
 | 34 | `dg storage test` rows, push output lines | home-nas-storage.md:258-285 | ok | `storage.rs:827,903`; `git-remote-dash/src/progress.rs:414,476`, `helper.rs:6309` |
-| 35 | Rotating credentials for shared storage | docs/guides/rotate-storage-credentials.md (whole page) | deferred | Maintainer storage sharing; another thread is changing it. Note: the page doesn't say sharing exists on testnet only, and its R2 section is an untested provider |
+| 35 | Rotating credentials for shared storage | docs/guides/rotate-storage-credentials.md (whole page) | deferred → see maintainer-sharing.md #1–#11 | Maintainer storage sharing; another thread is changing it. Note: the page doesn't say sharing exists on testnet only, and its R2 section is an untested provider |
 | 36 | Fork "parent packs referenced, not uploaded" | costs.md:139; economics.md:93 | stale (#718/#720), fixed | `dg repo fork` copies to your storage unless `--no-copy` |
 | 37 | Pack mirror row; pin not mentioned | costs.md:134 | missing, fixed | One mirror per pack on pin (`repo_pin.rs:296`) |
 | 38 | `dg storage use r2-main,platform` | costs.md:281 | stale, fixed | Example profile now `nas` |
@@ -86,4 +86,4 @@ Storage, IPFS, hosting, limits and costs docs, checked against `origin/master` a
 4. **Browser IPFS peer is IPv4 only.** `storage-defaults.json` `ipfsPeers` lists only a `/dns4/…` address for the dashhq node. The node has IPv6 (`ipfs.dashhq.org` AAAA `2604:a880:cad:d0::c40:d001`): add a `/dns6/…` peer once kubo announces its IPv6 AutoTLS address, so IPv6-only browsers can dial it.
 5. **forge-notify.** The docs now say dashhq doesn't run one yet. Is it still planned for mainnet?
 6. **`forge-user` on mainnet.** Registering it (owner-only, from deployer `CL4UTHLA…`) turns on storage sync there; until then the docs say mainnet storage settings stay on the device.
-7. **The rotate-storage-credentials guide** (deferred) says nothing about sharing existing on testnet only, and leads with Cloudflare R2. Worth a pass once the maintainer-storage change lands.
+7. **The rotate-storage-credentials guide** (deferred → see maintainer-sharing.md #2, #3) says nothing about sharing existing on testnet only, and leads with Cloudflare R2. Worth a pass once the maintainer-storage change lands.

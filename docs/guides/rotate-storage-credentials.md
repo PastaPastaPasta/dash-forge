@@ -1,6 +1,11 @@
 # Rotate storage credentials
 
-When you share a repository's storage with its maintainers (`dg storage share <owner/repo> <profile>`, or the repo's Settings → Storage; see [settings that follow the identity](../design/identity-synced-state.md#5-flows)), each maintainer's client decrypts the storage profiles you set for that repository, credentials included, so their pushes can write packs to your bucket or IPFS node. Removing a maintainer stops them reading anything shared **after** the removal: Forge moves the share to a new key and deletes their grant. It cannot take back what they already decrypted. Rotate those credentials.
+Rotate a storage credential when someone may have seen it:
+
+- **A maintainer you shared a repository's storage with** (testnet only). When you share a repository's storage with its maintainers (`dg storage share <owner/repo> <profile>`, or the repo's **Settings → Storage**; see [Collaborating](collaborating.md#storage-for-maintainers-testnet)), each maintainer's client decrypts the storage profiles you set for that repository, credentials included, so their pushes can write packs to your bucket or IPFS node. Removing a maintainer stops them reading anything shared **after** the removal: Forge moves the share to a new key and deletes their grant. It cannot take back what they already decrypted.
+- **Your settings-sync key** (testnet only), if a site may have tricked you into approving a wallet code: whoever holds it can read every storage credential synced with your identity ([Identity and keys](identity-and-keys.md#settings-that-follow-your-identity-testnet)).
+
+Sharing and settings sync use the forge-user contract, which is registered on testnet only. On mainnet, Forge neither shares nor syncs storage credentials.
 
 Rotating takes three steps:
 
@@ -8,27 +13,24 @@ Rotating takes three steps:
 2. Update the profile with it.
 3. Revoke the old credential at the provider.
 
-The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So do `dg collab add`, `dg collab remove` and `dg storage share` on it: they refresh the shared profiles from the storage you set for that repository. Maintainers only ever get storage set for their repository, never your default storage.
+The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So do `dg collab add`, `dg collab remove`, `dg storage share` and opening the repo's **Settings** in the web app: they refresh the shared profiles from the storage you set for that repository. Maintainers only ever get storage set for their repository, never your default storage.
 
-## Cloudflare R2
+## S3-compatible storage
 
-1. In the Cloudflare dashboard, open **R2 → Manage R2 API Tokens** and create a token with **Object Read & Write** on the bucket only. Copy the access key id and the secret access key.
+1. Make a new key that can read and write the bucket only. On a store you run ([Storage on your home NAS](home-nas-storage.md#a-bucket-a-key-for-that-bucket-only-public-reads-and-cors)):
+   - **Garage:** `g key create forge-key-2`, then `g bucket allow --read --write forge --key forge-key-2`.
+   - **RustFS:** a new user with the same policy: `rc admin user add nas/ forge-2 <a new long random secret>`, then `rc admin policy attach nas/ forge-rw --user forge-2`.
+   - **A hosted provider:** a new access key limited to the bucket, from its dashboard.
 2. Update the profile:
-   - **dg:** keep the old name so repositories that use it don't change.
+   - **dg:** keep the old name so repositories that use it don't change. `dg storage add` with an existing name replaces that profile.
      ```sh
-     dg storage add r2-main --kind s3 --endpoint https://<account>.r2.cloudflarestorage.com \
-       --region auto --bucket forge --public-url https://<your public origin> \
-       --access-key-id <new id> --secret-access-key keychain:dash-forge/r2-main
+     dg storage add nas --kind s3 --endpoint <endpoint> --region <region> \
+       --bucket forge --public-url <public URL> \
+       --access-key-id <new key id> --secret-access-key keychain:dash-forge/nas
      ```
-     Then store the new secret under that keychain entry. `dg storage add` with no arguments asks for each value and stores a pasted secret for you.
+     Then store the new secret under that keychain entry. `dg storage add` with no arguments asks for each value and stores a pasted secret for you. Add `--session-token` if your provider uses one.
    - **Web app:** open **Settings → Storage**, edit the profile, and paste the new keys.
-3. Delete the old token in the dashboard.
-
-## Other S3-compatible storage (AWS, Backblaze B2, MinIO, a NAS)
-
-1. Create a new access key for the same user or service account, limited to the bucket.
-2. Update the profile as above (`--access-key-id`, `--secret-access-key`, and `--session-token` if you use one).
-3. Deactivate and delete the old key.
+3. Delete the old key: `g key delete --yes forge-key` on Garage, remove the old user on RustFS, or delete it in the provider's dashboard.
 
 ## A kubo node behind auth
 
@@ -45,14 +47,14 @@ The shared copy follows automatically. Your next push to the repository re-encry
 ## Check
 
 ```sh
-dg storage test r2-main
+dg storage test nas
 ```
 
 A green test means the new credential works. Run one push to each repository whose maintainers changed. It shares the updated profile with the remaining maintainers; the removed one gets nothing.
 
 ## What happens to existing testnet maintainers
 
-Before repo-specific sharing, a share could carry your default storage. At your next push, `dg collab add`/`remove`, `dg storage share`, or visit to the repo's settings, a repository with no storage of its own set stops sharing: its share moves to an empty one at the next epoch and every maintainer's grant is revoked, exactly as a removal does. dg says so once. Your maintainers then push to their own storage. To keep sharing, set storage for the repository (`dg storage share <owner/repo> <profile>`). Those maintainers could read the default storage's credentials before, so rotate them as described above if that matters to you.
+Before repo-specific sharing, a share could carry your default storage. At your next push, `dg collab add`/`remove`, `dg storage share`, or visit to the repo's settings, a repository with no storage of its own set stops sharing: its share moves to an empty one at the next epoch and every maintainer's grant is revoked, exactly as a removal does. dg and the web app say so once. Your maintainers then push to their own storage. To keep sharing, set storage for the repository: `dg storage share <owner/repo> <profile>`, or **Use separate storage for this repo to share it with maintainers** in the repo's **Settings → Storage**. Those maintainers could read the default storage's credentials before, so rotate them as described above if that matters to you.
 
 ## What a maintainer trusts
 

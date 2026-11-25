@@ -31,7 +31,7 @@ There is no mainnet binary release. On mainnet, a terminal user builds `dg` and 
 | 8 | "v0.2.0 binaries … have no `--wallet`" | README.md:44 | ok | v0.2.0 dg `dg auth login --help`: no `--wallet` |
 | 9 | "DashPay for Android (11.9.2+) or Dash Wallet for iOS (9.1.4+)" | README.md:18 | ok | `forge-web/components/login-modal.tsx:346-350` |
 | 10 | "Platform … up to about 0.39 DASH per MiB" | README.md:62 | ok | master dg `dg doctor`: "~0.39 DASH/MiB" |
-| 11 | "Readers try the repository's own gateway, then ipfs.dashhq.org, then public gateways" | README.md:60 | deferred (storage lane) | #702 |
+| 11 | "Readers try the repository's own gateway, then ipfs.dashhq.org, then public gateways" | README.md:60 | deferred → see maintainer-sharing.md #32 | #702 |
 | 12 | `git clone -c dash.network=mainnet dash://forg3/dash-forge` | README.md:75 | ok | cleanroom, source-built `git-remote-dash`: clone succeeded, `git log -1` = 1b547336 (the master merge of #729) |
 | 13 | "Build with `cargo build --workspace` (with `protoc` on `PATH`)" | README.md:96 | missing (fixed) | same as #4; now links BUILDING prerequisites |
 | 14 | "Every release … ships prebuilt binaries … Each archive contains" (table without README/INSTALL) | INSTALL.md:19-31 | missing (fixed) | `tar -tzf dash-forge-0.2.0-x86_64-unknown-linux-gnu.tar.gz`: also `INSTALL.md`, `README.md` |
@@ -78,11 +78,11 @@ There is no mainnet binary release. On mainnet, a terminal user builds `dg` and 
 | 55 | Mirror Action: default network testnet; mainnet needs `install: 'source'` at `44691a33c` or later | action/README.md:7, :77 | ok | `action/action.yml:24-26`; `44691a33` "wire the mainnet registration into the clients", ancestor of master |
 | 56 | check action: version 0.2.0, testnet default, mainnet needs source build | check-action/README.md:36-68 | ok | `check-action/action.yml:45-56` |
 | 57 | Guides index links `pin-and-fork.md`, `organizations.md` | docs/guides/README.md:16, :18 | wrong (fixed) | not in `forge-web/lib/docs/catalog.ts`, so the docs site sent them to GitHub; `https://forge.dashhq.org/docs/pin-and-fork/` → 404. Added both to the catalog |
-| 58 | Guides index links `rotate-storage-credentials.md` (not in the catalog) | docs/guides/README.md:12 | deferred | maintainer storage sharing is being changed in another thread; `forge-web/lib/docs-links.ts:37` links it on GitHub on purpose |
+| 58 | Guides index links `rotate-storage-credentials.md` (not in the catalog) | docs/guides/README.md:12 | deferred → see maintainer-sharing.md #31 | maintainer storage sharing is being changed in another thread; `forge-web/lib/docs-links.ts:37` links it on GitHub on purpose |
 | 59 | Catalog page `devnet-move` not linked from the index | docs/guides/README.md | missing (fixed) | catalog.ts "Bring your code"; added to "Also" |
 | 60 | Every other index link resolves to a catalog slug; every catalog page reachable | docs/guides/README.md, catalog.ts | ok | `pnpm exec vitest run lib/docs/` 9/9 after the change (checks every relative link) |
 | 61 | "v0.2.0 binaries work on testnet only and have no `--wallet`" | docs/guides/README.md:55 | ok (linked build from source) | #3, #8 |
-| 62 | Wallet sign-in versions and testnet build | docs/guides/README.md:51 | deferred (guides-identity lane) | — |
+| 62 | Wallet sign-in versions and testnet build | docs/guides/README.md:51 | deferred → see maintainer-sharing.md #33 | — |
 | 63 | "no wiki, discussions, organizations or global search" | docs/FAQ.md:83 | stale (fixed) | organizations exist on testnet (#723; `dg org --help`) |
 | 64 | "Projects and boards: later" | docs/FAQ.md:93 | wrong (fixed) | boards shipped in v0.2.0 (CHANGELOG 0.2.0 "Boards in the web app", `dg board`) |
 | 65 | "Teams … Use an organization identity (collaborating.md#organizations)" | docs/FAQ.md:95 | stale (fixed) | links the organizations guide (testnet) |
@@ -92,7 +92,7 @@ There is no mainnet binary release. On mainnet, a terminal user builds `dg` and 
 | 69 | Roadmap Phase 6a "[ ] Register … on testnet"; Phase 6 "[ ] owner registers … mainnet" | docs/roadmap.md:192, :197 | stale (fixed) | testnet 2026-10-26, mainnet 2026-11-24 (#700); self-hosting row marked partial (forge-sync mirrors GitHub → Forge) |
 | 70 | BACKLOG status lines | BACKLOG.md | ok (no status claim contradicted) | items are TODO/Done notes on importer and blame; nothing found contradicting master |
 | 71 | CHANGELOG Unreleased covers master since v0.2.0 | CHANGELOG.md:9-69 | missing (fixed) | `git log --first-parent v0.2.0..origin/master`: 75 merged PRs; ~35 user-visible ones had no entry (#649, #650, #653, #655, #658/#659, #662, #666, #668, #669, #671, #678, #686, #687, #691-#698, #700-#702, #708, #709, #717, #719, #720, #722-#729). Two `### Fixed` headings merged into one, and sections put in Keep a Changelog order |
-| 72 | Maintainer storage sharing (#729 part 2) | CHANGELOG, guides | deferred | another thread is changing it; the new CHANGELOG entry for #729 covers only your own devices |
+| 72 | Maintainer storage sharing (#729 part 2) | CHANGELOG, guides | deferred → see maintainer-sharing.md #12–#20 | another thread is changing it; the new CHANGELOG entry for #729 covers only your own devices |
 | 73 | Lane rule: dash.site called "static site", publishing via dash.site/new | lane files | ok | no "gateway" wording for dash.site and no `/publish` link in this lane's files |
 | 74 | Dual stack in hosting text | lane files | ok | no IPv4-only instructions in this lane's files |
 | 75 | In-app help link `DOCS.selfHost` (Pin button) | forge-web/lib/docs-links.ts:39 | stale (other lane) | it points at `self-host-backend.md` on GitHub, though the catalog serves it as `/docs/self-host-backend/` (`DOCS.selfHostBackend`); left for the webcopy-repo lane |
