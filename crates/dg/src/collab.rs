@@ -468,8 +468,10 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "revoked"
         } else if d.waiting.iter().any(|m| m == member) {
             "after-wallet-sign-in"
-        } else if d.shared {
+        } else if d.granted.iter().any(|m| m == member) {
             "shared"
+        } else if d.shared {
+            "unchanged"
         } else {
             "nothing-to-share"
         }
@@ -520,8 +522,10 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             if let Some(r) = &rotation {
                 crate::keys::print_rotation(handle, r);
             }
+            let stop_printed = shared
+                .as_ref()
+                .is_some_and(|d| crate::sync::print_stopped_default(ctx, &handle.display(), d));
             if let Some(d) = &shared {
-                crate::sync::print_stopped_default(ctx, &handle.display(), d);
                 if role == Role::Maintainer && !d.repo_policy_set {
                     println!(
                         "  {}",
@@ -532,7 +536,9 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             match storage_shared {
                 Some("shared") => println!("  {member} pushes to your storage for this repository (Platform fees stay theirs)"),
                 Some("after-wallet-sign-in") => println!("  {member} gets your storage for this repository after signing in with a wallet once"),
-                Some("revoked") => println!("  {}", crate::sync::rotate_line(member)),
+                Some("revoked") if !stop_printed => {
+                    println!("  {}", crate::sync::rotate_line(member));
+                }
                 _ => {}
             }
         },
@@ -665,9 +671,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     } else {
         crate::sync::after_membership_change(ctx, &s, Some(member)).await
     };
-    if let Some(d) = &reconciled {
-        crate::sync::print_stopped_default(ctx, &handle.display(), d);
-    }
+    let stop_printed = reconciled
+        .as_ref()
+        .is_some_and(|d| crate::sync::print_stopped_default(ctx, &handle.display(), d));
     let storage_revoked = reconciled
         .as_ref()
         .is_some_and(|d| d.revoked.iter().any(|m| m == member));
@@ -708,7 +714,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
                     shown.label(),
                     handle.display()
                 );
-                if storage_revoked {
+                if storage_revoked && !stop_printed {
                     println!("  {}", crate::sync::rotate_line(member));
                 }
             } else {

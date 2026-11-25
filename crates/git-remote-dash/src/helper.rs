@@ -1674,8 +1674,8 @@ impl Helper {
         };
         match run.await {
             Ok(done) => {
-                if let Some(line) = forge_core::user_sync::stopped_line(&conn.repo.display(), &done)
-                {
+                let stop_line = forge_core::user_sync::stopped_line(&conn.repo.display(), &done);
+                if let Some(line) = &stop_line {
                     eprintln!("dash: {line}");
                 }
                 let writes =
@@ -1687,8 +1687,17 @@ impl Helper {
                         if writes == 1 { "" } else { "s" }
                     );
                 }
-                for m in done.revoked.iter().filter(|_| !done.stopped) {
-                    eprintln!("dash: {m} is no longer a maintainer and lost access to this repository's shared storage; rotate the credentials they saw: docs/guides/rotate-storage-credentials.md");
+                // The stop line already points to the rotation guide.
+                for m in done.revoked.iter().filter(|_| stop_line.is_none()) {
+                    let why = if done.stopped {
+                        ""
+                    } else {
+                        " is no longer a maintainer and"
+                    };
+                    eprintln!(
+                        "dash: {m}{why} lost access to this repository's shared storage; rotate the credentials they saw: {}",
+                        forge_core::user_sync::ROTATE_GUIDE
+                    );
                 }
             }
             Err(e) => {

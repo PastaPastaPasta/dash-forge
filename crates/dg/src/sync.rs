@@ -22,7 +22,7 @@ pub const OFF_HINT: &str =
     "storage on this computer only: sign in with your wallet again (`dg auth login --wallet`) to sync storage across devices";
 
 /// The guide a maintainer removal points to.
-pub const ROTATE_GUIDE: &str = "docs/guides/rotate-storage-credentials.md";
+pub const ROTATE_GUIDE: &str = user_sync::ROTATE_GUIDE;
 
 /// Whether sync applies to this run.
 #[derive(Debug)]
@@ -299,11 +299,14 @@ pub fn rotate_line(member: &str) -> String {
 }
 
 /// The one line an owner sees when a reconcile stopped a share (about the default storage when the
-/// repository never had storage of its own): once, as the share is already empty after.
-pub fn print_stopped_default(ctx: &Ctx, repo: &str, done: &user_sync::Reconciled) {
-    if let Some(line) = user_sync::stopped_line(repo, done).filter(|_| !ctx.json) {
+/// repository never had storage of its own): once, as the share is already empty after. Whether
+/// it was printed (it points to the rotation guide, so no per-member line repeats it).
+pub fn print_stopped_default(ctx: &Ctx, repo: &str, done: &user_sync::Reconciled) -> bool {
+    let line = user_sync::stopped_line(repo, done).filter(|_| !ctx.json);
+    if let Some(line) = &line {
         println!("{line}");
     }
+    line.is_some()
 }
 
 /// As the owner of the session's repository, after its members changed: lend its shared
