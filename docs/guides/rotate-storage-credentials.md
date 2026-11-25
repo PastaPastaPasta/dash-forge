@@ -5,7 +5,7 @@ When you share a repository's storage with its maintainers (`dg storage share <o
 Rotating takes three steps:
 
 1. Make a new credential at the provider.
-2. Update the profile with it. In dg, put the new secret in place first, then run `dg storage add <name> …` again with the same name.
+2. Update the profile with it. In dg, put the new secret in place first, then run `dg storage add <name> …` again with the same name and all its settings (any flag you leave out changes the profile everywhere).
 3. Revoke the old credential at the provider.
 
 The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So do `dg collab add`, `dg collab remove` and `dg storage share` on it: they refresh the shared profiles from the storage you set for that repository. Maintainers only ever get storage set for their repository, never your default storage.
@@ -20,7 +20,7 @@ The shared copy follows automatically. Your next push to the repository re-encry
        --region auto --bucket forge --public-url https://<your public origin> \
        --access-key-id <new id> --secret-access-key keychain:dash-forge/r2-main
      ```
-     Store the new secret under that keychain entry (or in the environment variable the profile names) **before** you run it. `dg storage add` reads the secret when it runs and updates your synced copy, which is the copy maintainers get. Changing only the keychain entry or the variable changes this computer, not the synced copy, and `dg storage share` then stops with E502. `dg storage add` with no arguments asks for each value and stores a pasted secret for you, in the right order.
+     Store the new secret under that keychain entry (or in the environment variable the profile names) **before** you run it. `dg storage add` reads the secret when it runs and updates your synced copy, which is the copy maintainers get. Changing only the keychain entry or the variable changes this computer, not the synced copy: maintainers keep getting the old key, and `dg storage share` stops with E502. `dg storage add` with no arguments asks for each value and stores a pasted secret for you, in the right order.
    - **Web app:** open **Settings → Storage**, edit the profile, and paste the new keys.
 3. Delete the old token in the dashboard.
 
@@ -48,7 +48,7 @@ The shared copy follows automatically. Your next push to the repository re-encry
 dg storage test r2-main
 ```
 
-A green test means the new credential works. Run one push to each repository whose maintainers changed. It shares the updated profile with the remaining maintainers; the removed one gets nothing.
+A green test means the new credential works on this computer. `dg storage list` must not mark the profile "local (synced copy differs)": that means maintainers still get the old key, so run `dg storage add` again as in step 2. Run one push to each repository whose maintainers changed. It shares the updated profile with the remaining maintainers; the removed one gets nothing.
 
 ## What happens to existing testnet maintainers
 

@@ -318,6 +318,17 @@ pub(crate) fn check_publishable<'a>(
     refuse_unpublishable(targets, given || from_git, lead, flag.map(|(f, _)| f)).map_err(Into::into)
 }
 
+/// Whether two synced values of a profile differ in their secrets alone (a rotated credential).
+fn only_secrets_differ(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use forge_core::user_sync::storage::profile_meaning;
+    let without_secrets = |v: &serde_json::Value| {
+        let mut m = profile_meaning(v, false);
+        m["secrets"] = serde_json::Value::Null;
+        m
+    };
+    without_secrets(a) == without_secrets(b)
+}
+
 /// The synced entries `dg storage share` writes: every named profile as synced (a profile only in
 /// storage.toml, or one whose synced copy differs, is uploaded from storage.toml) and the
 /// repository's policy over them. Errors name the profile, never a secret.
@@ -353,17 +364,24 @@ fn share_changes(
             }
             (Some(e), Some(p)) => {
                 let held = e.v.as_ref().expect("live");
-                if us::profile_to_synced(p).is_ok_and(|v| !us::same_profile_value(held, &v)) {
-                    return Err(UserError::new(
+                if let Some(v) = us::profile_to_synced(p)
+                    .ok()
+                    .filter(|v| !us::same_profile_value(held, v))
+                {
+                    let err = UserError::new(
                         codes::STORAGE_POLICY,
                         format!("{name} in storage.toml differs from your synced {name}"),
                     )
-                    .cause("only the synced copy is shared, and this computer's copy never replaces it")
-                    .fix(format!(
-                        "if you changed its credentials, run `dg storage add {name} …` again with the new secret in place: that updates the synced copy"
-                    ))
-                    .fix("otherwise share the synced copy under another name, or remove this computer's copy from storage.toml")
-                    .into());
+                    .cause("`dg storage share` shares only the synced copy, and never replaces it with this computer's");
+                    let err = if only_secrets_differ(held, &v) {
+                        err.fix(format!(
+                            "if you rotated its credentials here, run `dg storage add {name}` again with all its settings and the new secret in place: that updates the synced copy"
+                        ))
+                        .fix("or share the synced copy under another name")
+                    } else {
+                        err.fix("share the synced copy under another name, or remove this computer's copy from storage.toml")
+                    };
+                    return Err(err.into());
                 }
                 us::profile_from_synced(held).ok().flatten()
             }
@@ -2148,14 +2166,26 @@ public_gateway = "https://gw.example.org"
             serde_json::json!({"settings": {"kind": "ipfs-kubo", "provider": "kubo", "api": "https://other.example.org:5001", "gateway": "", "publicGateway": "", "pinningEndpoint": ""}, "secrets": {}}),
         );
         let nas = vec!["nas".to_string()];
-        let err = share_changes(&nas, None, "REPO", &local, Some(&differing), 5).unwrap_err();
-        let shown = err
-            .downcast_ref::<UserError>()
-            .map(|u| u.render("", false))
-            .unwrap_or_default();
+        let shown = |doc: &forge_core::user_sync::SlotDoc| {
+            let err = share_changes(&nas, None, "REPO", &local, Some(doc), 5).unwrap_err();
+            err.downcast_ref::<UserError>()
+                .map(|u| u.render("", false))
+                .unwrap_or_default()
+        };
+        let other = shown(&differing);
         assert!(
-            shown.contains("run `dg storage add nas …` again"),
-            "{shown}"
+            other.contains("another name") && !other.contains("dg storage add"),
+            "{other}"
+        );
+        // Only the secret differs, as after a rotation done here: re-adding it is the fix.
+        let mut rotated = synced.clone();
+        let mut held = us::profile_to_synced(&local.profiles["nas"]).unwrap();
+        held["secrets"] = serde_json::json!({"apiAuth": "Bearer old"});
+        rotated.set("profile:nas", 2, held);
+        let rotation = shown(&rotated);
+        assert!(
+            rotation.contains("run `dg storage add nas` again"),
+            "{rotation}"
         );
         let mut removed = synced.clone();
         removed.remove("profile:nas", 3);
