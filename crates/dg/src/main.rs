@@ -131,7 +131,8 @@ pub struct Cli {
     #[arg(long, short = 'y', global = true)]
     pub yes: bool,
 
-    /// Target network (default: testnet, or the configured default).
+    /// Target network (default: this clone's, else the one `dg auth` saved, else
+    /// DASH_FORGE_NETWORK, else the key's, else testnet).
     #[arg(long, global = true, value_enum)]
     pub network: Option<NetworkArg>,
 
@@ -327,7 +328,7 @@ pub enum Command {
         #[arg(long, requires = "from_local")]
         force: bool,
     },
-    /// Storage availability.
+    /// Storage profiles: add and test them, choose where pushes store packs, check a repo's copies.
     #[command(subcommand)]
     Storage(StorageCommand),
     /// Run an IPFS node on this computer and keep repositories' files on it.

@@ -17,8 +17,9 @@ The passthrough command needs kubo's `--api-auth`, so that child argument is vis
 to processes running as the same user.
 
 `--no-service` starts a temporary supervisor for verification, then stops it.
-Run `dg ipfs serve` afterwards under your own supervisor. No browser is opened
-until the permanent node is running; the printed connection link also works once
+Run `dg ipfs serve` afterwards under your own supervisor. `up` and `connect` print
+the connection link and code and open no browser; `--open` opens the link too, and
+on `up` only once the permanent node is running. The printed link also works once
 `serve` starts. `down` also stops a manually running supervisor using its private
 stop request file. The supervisor holds an OS file lock to prevent duplicate
 children; stale lock files do not prevent restarts.

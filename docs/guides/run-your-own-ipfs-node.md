@@ -175,7 +175,7 @@ shows the kubo version and peer id, whether the service is running, the bytes st
 |---|---|
 | `dg ipfs connect [--open]` | A new connection link and code. |
 | `dg ipfs origin add <https://host>` | Allow another website. It restarts the node. |
-| `dg ipfs origin remove <https://host>` | Stop allowing a website. `https://forge.dashhq.org` can't be removed. |
+| `dg ipfs origin remove <https://host>` | Stop allowing a website. The two Forge web apps (`https://forge.dashhq.org`, `https://testnet-forge.dashhq.org`) can't be removed. |
 | `dg ipfs down` | Stop the node and remove its login service. Your files, tokens and profile stay. `dg ipfs up` starts it again. |
 | `dg ipfs down --purge` | The same, then delete the node's directory, its storage profile and its keychain entry. It asks first and says how many bytes it will delete. Everything you pinned goes too. |
 | `dg ipfs ipfs -- <args>` | Run the node's own `ipfs` program with the owner token, for example `dg ipfs ipfs -- repo stat`. |

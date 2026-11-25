@@ -638,7 +638,7 @@ pub fn members_branch_locked(dst: &str) -> (UserError, &'static str) {
             format!("can't change {name}: it is a members-only branch and your encryption key isn't available"),
         )
         .cause("without the key this push would be written for everyone, which would publish the branch's name")
-        .fix("dg auth unlock, then push again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
+        .fix("dg auth status shows whether your encryption key is stored and how to store it; then push again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
         .note(NOTE_NOTHING_SIGNED),
         "members-only branch: unlock your key first",
     )
@@ -781,7 +781,7 @@ pub fn cannot_check_push() -> UserError {
         "can't check for members-only commits: your encryption key isn't available and this clone has no record of what it holds",
     )
     .cause("the repository has members-only branches; a public push can't be checked without your key or this clone's record")
-    .fix("dg auth unlock, then push again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
+    .fix("dg auth status shows whether your encryption key is stored and how to store it; then push again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
     .fix("a clone that never fetched members-only branches can start its record: dg doctor --init-ledger")
     .note(NOTE_NOTHING_SIGNED)
 }
@@ -796,7 +796,7 @@ pub fn cannot_check_fetch(why: &str) -> UserError {
     .cause(format!(
         "this clone has fetched members-only branches, so fetching only the public view would drop them ({why})"
     ))
-    .fix("dg auth unlock, then fetch again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
+    .fix("dg auth status shows whether your encryption key is stored and how to store it; then fetch again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
     .note("nothing was fetched")
 }
 

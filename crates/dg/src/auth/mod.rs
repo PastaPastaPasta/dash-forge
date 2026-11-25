@@ -52,12 +52,12 @@ pub enum AuthCommand {
     /// You get a recovery phrase and a deposit address. Once it is funded, dg creates the
     /// identity with a limited key for this computer, stored in the OS keychain.
     New(new::NewArgs),
-    /// Sign in with an identity file, a recovery phrase, or your DashPay wallet (--wallet).
+    /// Sign in with an identity file, a recovery phrase, or your Dash wallet app (--wallet).
     ///
     /// Registers a limited key for this computer. The master key is used once and not stored,
-    /// unless --full-key. With --wallet, scan the code dg prints with DashPay (More → Tools →
-    /// Connections → Scan QR): the wallet adds the limited key, and the master key never leaves
-    /// it.
+    /// unless --full-key. With --wallet, scan the code dg prints in DashPay for Android or Dash
+    /// Wallet for iOS (More → Tools → Connections → Scan QR): the wallet adds the limited key,
+    /// and the master key never leaves it.
     Login(LoginArgs),
     /// Show the identity, its key, budget left, expiry, balance and where the key is stored.
     Status,
@@ -100,13 +100,15 @@ impl AuthCommand {
     }
 }
 
-/// Limited-key options shared by `new`, `login` and `keys add`.
+/// Limited-key options shared by `new`, `login`, `keys add` and `export`.
 #[derive(Debug, Clone, clap::Args)]
 pub struct KeyLimitArgs {
-    /// The key's total budget in DASH (default 0.25).
+    /// The key's total budget in DASH (default 0.25; 0.5 with `dg auth export --new-key`, 0.05
+    /// with --for-browser).
     #[arg(long, value_name = "DASH")]
     pub budget: Option<f64>,
-    /// How long the key lives: `180d`, `12w`, `6m`, `1y` (default 180d).
+    /// How long the key lives: `180d`, `12w`, `6m`, `1y` (default 180d; 365d with `dg auth
+    /// export --new-key`, 90d with --for-browser).
     #[arg(long, value_name = "DURATION")]
     pub expires: Option<String>,
     /// Refuse to bind the key if the forge contract group holds any contract this dg does not
@@ -146,9 +148,10 @@ pub struct LoginArgs {
     /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
-    /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dashpay://connect` link,
-    /// the wallet adds a limited key (proposed: 0.25 DASH for 180 days, or --budget/--expires;
-    /// the wallet may change them) and dg stores it. Testnet needs DashPay's testnet build.
+    /// Sign in with DashPay or Dash Wallet (App Connect): dg prints a QR code and a
+    /// `dashpay://connect` link, the wallet adds a limited key (proposed: 0.25 DASH for 180 days,
+    /// or --budget/--expires; the wallet may change them) and dg stores it. Testnet needs
+    /// DashPay for Android's testnet build.
     /// The default in a terminal; without one (or with --json) it must be asked for.
     #[arg(long, conflicts_with_all = ["file", "mnemonic", "full_key", "replace"])]
     pub wallet: bool,
