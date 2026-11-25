@@ -237,6 +237,7 @@ pub(crate) trait LoginUi: Sync {
 /// computer holds a key a wallet granted it under that connection id (which the wallet disables
 /// when it answers): the request then carries it as `IDENTITY_HINT`, as the web app's renewal
 /// does, and only that identity's answer is read.
+#[allow(clippy::too_many_arguments)] // the request's parts, the chain and the terminal
 pub(crate) async fn request_grant<C: WalletChain>(
     chain: &C,
     network: &Network,
@@ -784,11 +785,11 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let opened: Vec<&BridgeIdentity> = held.iter().filter_map(|h| h.key.as_ref().ok()).collect();
     let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &opened);
     let text = stored_text(&grant, ctx.network(), &network, &encryption)?;
-    let mut storer = store::Storer::new(args.storage.insecure_plaintext);
-    let stored = storer
+    let mut key_store = store::Storer::new(args.storage.insecure_plaintext);
+    let stored = key_store
         .store(&network, &grant.identity_id, &text, store::Slot::Main)
         .map_err(|e| not_stored(&e, grant.key_id, renewing))?;
-    let sync_key = keep_sync_key(ctx, &mut storer, &network, &grant);
+    let sync_key = keep_sync_key(ctx, &mut key_store, &network, &grant);
     if let Err(e) = State::record_wallet_key(&state, &network, &grant.identity_id, grant.key_id) {
         if !ctx.json {
             eprintln!("note: signed in, but `dg auth status` will not know the key came from your wallet ({e:#})");

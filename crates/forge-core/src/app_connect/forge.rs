@@ -244,7 +244,7 @@ pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, Reject
                 || e.key.bounds != Some(KeyBounds::SingleContract { contract_id: user })
                 || public_key_of(e.private_key.expose())
                     .as_ref()
-                    .map(|p| p.as_slice())
+                    .map(<[u8; 33]>::as_slice)
                     != Some(e.key.data.as_slice())
             {
                 return Err(RejectReason::KeyUnmatched);

@@ -320,6 +320,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one pass over every value in the vectors
     fn reproduces_every_vector() {
         let v: Value = serde_json::from_str(VECTORS).unwrap();
         let net = v["network"].as_str().unwrap();

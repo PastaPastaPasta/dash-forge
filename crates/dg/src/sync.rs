@@ -5,7 +5,7 @@
 //! On only where forge-user is registered and this computer holds the identity's forge-user
 //! key `E` (`dg auth login --wallet`); everywhere else dg behaves exactly as before.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
@@ -277,49 +277,32 @@ pub async fn ensure_first_sync(ctx: &Ctx, writer: &Writer<'_>, key: &SyncKey, co
     }
 }
 
-/// Record a `dg storage` change to profile `name` (`Some`: added or edited, `None`: removed)
-/// in the synced copy. A no-op when sync is off; a failure is a note.
-pub async fn after_profile_change(
-    ctx: &Ctx,
-    name: &str,
-    profile: Option<&forge_core::storage::Profile>,
-) {
+/// Run the first sync if it has not passed here yet, else record one `dg storage` change: entry
+/// `entry` set to `value`, or tombstoned (`None`, only when the synced copy holds it). A no-op
+/// when sync is off; a failure is a note: the local change stands.
+async fn record_change(ctx: &Ctx, entry: String, value: Option<serde_json::Value>) {
     let SyncState::On { key, contract } = state(ctx) else {
         return;
     };
-    let mut changes = SlotDoc::new(SLOT_STORAGE);
-    let at = user_sync::now_ms();
-    let entry = user_sync::storage::profile_key(name);
-    match profile {
-        Some(p) => match user_sync::storage::profile_to_synced(p) {
-            Ok(v) => {
-                changes.set(&entry, at, v);
-            }
-            Err(e) => {
-                if !ctx.json {
-                    eprintln!("note: {name} stays on this computer only ({e})");
-                }
-                return;
-            }
-        },
-        None => {
-            changes.remove(&entry, at);
-        }
-    }
     let run = async {
         let writer = Writer::connect(ctx).await?;
+        if synced_at(&key).is_none() {
+            ensure_first_sync(ctx, &writer, &key, &contract).await;
+        }
         writer
             .with_store(&contract, async |store| {
                 let sync = UserSync::new(&key, store);
-                if profile.is_none()
-                    && sync
-                        .read_slot(SLOT_STORAGE)
-                        .await?
-                        .is_none_or(|r| r.doc.get(&entry).is_none())
-                {
+                let current = sync.read_slot(SLOT_STORAGE).await?;
+                let held = current.as_ref().and_then(|r| r.doc.get(&entry));
+                if held == value.as_ref() {
                     return Ok(());
                 }
-                sync.merge_into(SLOT_STORAGE, &changes).await.map(|_| ())?;
+                let mut changes = SlotDoc::new(SLOT_STORAGE);
+                match &value {
+                    Some(v) => changes.set(&entry, user_sync::now_ms(), v.clone()),
+                    None => changes.remove(&entry, user_sync::now_ms()),
+                };
+                sync.merge_into(SLOT_STORAGE, &changes).await?;
                 Ok(())
             })
             .await
@@ -331,12 +314,44 @@ pub async fn after_profile_change(
     }
 }
 
-/// The profiles to use: `storage.toml` plus the synced ones (when sync is on and readable).
-/// Never fails on account of sync: a read that fails leaves `storage.toml` alone.
-pub async fn effective(ctx: &Ctx, client: Option<&PlatformClient>) -> (Effective, Option<SlotDoc>) {
-    let local = StorageProfiles::load().unwrap_or_default();
+/// Record that profile `name` was added or edited (`Some`) or removed (`None`).
+pub async fn after_profile_change(
+    ctx: &Ctx,
+    name: &str,
+    profile: Option<&forge_core::storage::Profile>,
+) {
+    let value = match profile.map(user_sync::storage::profile_to_synced) {
+        None => None,
+        Some(Ok(v)) => Some(v),
+        Some(Err(e)) => {
+            if !ctx.json && !matches!(state(ctx), SyncState::Unavailable | SyncState::Off) {
+                eprintln!("note: {name} stays on this computer only ({e})");
+            }
+            return;
+        }
+    };
+    record_change(ctx, user_sync::storage::profile_key(name), value).await;
+}
+
+/// Record a new global default policy.
+pub async fn after_default_policy(ctx: &Ctx, policy: &StoragePolicy) {
+    record_change(
+        ctx,
+        user_sync::storage::DEFAULT_KEY.to_string(),
+        Some(user_sync::storage::policy_to_synced(policy)),
+    )
+    .await;
+}
+
+/// `local` plus the synced profiles (when sync is on and readable), and the synced storage
+/// slot. Never fails on account of sync: a read that fails leaves `local` as it is.
+pub async fn merged(
+    ctx: &Ctx,
+    local: &StorageProfiles,
+    client: Option<&PlatformClient>,
+) -> (Effective, Option<SlotDoc>) {
     let SyncState::On { key, contract } = state(ctx) else {
-        return (user_sync::effective(&local, None), None);
+        return (user_sync::effective(local, None), None);
     };
     let owned;
     let client = match client {
@@ -346,42 +361,73 @@ pub async fn effective(ctx: &Ctx, client: Option<&PlatformClient>) -> (Effective
                 owned = c;
                 &owned
             }
-            Err(_) => return (user_sync::effective(&local, None), None),
+            Err(_) => return (user_sync::effective(local, None), None),
         },
     };
     let doc = match PlatformUserStore::open(client, &contract, None).await {
         Ok(store) => read_storage(&store, &key).await.ok().flatten(),
         Err(_) => None,
     };
-    (user_sync::effective(&local, doc.as_ref()), doc)
+    (user_sync::effective(local, doc.as_ref()), doc)
 }
 
 // ---------------------------------------------------------------------------------------
 // Maintainers
 // ---------------------------------------------------------------------------------------
 
-/// The line a removal prints.
+/// The line a removal prints when the member could read the shared storage.
 pub fn rotate_line(member: &str) -> String {
     format!(
         "{member} could read this repository's shared storage credentials; they can't read new ones, but rotate what they saw: {ROTATE_GUIDE}"
     )
 }
 
-/// As the owner of `repo_id`: lend the storage its policy names (`wanted`, or what the share
-/// already holds) to `maintainers`, revoking anyone else. A no-op without sync.
-pub async fn reconcile_repo(
-    writer: &Writer<'_>,
-    key: &SyncKey,
-    contract: &str,
-    repo_id: &str,
-    wanted: Option<&user_sync::ShareContent>,
-    maintainers: &BTreeSet<String>,
-) -> Result<user_sync::Reconciled> {
-    writer
-        .with_store(contract, async |store| {
-            Ok(UserSync::new(key, store)
-                .reconcile_repo(repo_id, wanted, maintainers)
-                .await?)
-        })
-        .await
+/// As the owner of the session's repository, after its members changed: lend its shared
+/// storage to the current maintainers that have a forge-user key and revoke anyone else
+/// (`identity-synced-state.md` §5). With no share yet, one is made from the owner's synced
+/// policy for the repository. `None` when sync is off, the signer is not the owner, or it failed
+/// (a note says so).
+pub async fn after_membership_change(
+    ctx: &Ctx,
+    s: &crate::common::Session,
+) -> Option<user_sync::Reconciled> {
+    let SyncState::On { key, contract } = state(ctx) else {
+        return None;
+    };
+    let me = s.identity.id();
+    if s.repo.owner_id() != me || key.identity_id != me {
+        return None;
+    }
+    let run = async {
+        let maintainers = user_sync::repo::current_maintainers(&s.client, &s.repo).await?;
+        let engine = WriteEngine::new(&s.client, &s.identity, s.bridge.doc_op_key()?)?;
+        let store = PlatformUserStore::open(&s.client, &contract, Some(&engine)).await?;
+        let sync = UserSync::new(&key, &store);
+        let wanted = if store.share(&me, s.repo.id()).await?.is_some() {
+            None
+        } else {
+            let own = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
+            let local = StorageProfiles::load().unwrap_or_default();
+            own.as_ref().and_then(|doc| {
+                let policy = user_sync::synced_policy(doc, Some(s.repo.id()))?;
+                user_sync::ShareContent::for_policy(
+                    &policy,
+                    &user_sync::effective(&local, Some(doc)).profiles,
+                )
+            })
+        };
+        anyhow::Ok(
+            sync.reconcile_repo(s.repo.id(), wanted.as_ref(), &maintainers)
+                .await?,
+        )
+    };
+    match run.await {
+        Ok(done) => Some(done),
+        Err(e) => {
+            if !ctx.json {
+                eprintln!("note: this repository's shared storage was not updated ({e:#}); your next push updates it");
+            }
+            None
+        }
+    }
 }

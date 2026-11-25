@@ -10,8 +10,12 @@ pub mod crypto;
 pub mod doc;
 pub mod key;
 pub mod platform;
+pub mod repo;
 pub mod storage;
 pub mod store;
+
+#[cfg(test)]
+mod migration_tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -501,6 +505,8 @@ pub struct Reconciled {
     pub waiting: Vec<String>,
     /// Members whose grant was deleted (no longer maintainers).
     pub revoked: Vec<String>,
+    /// Whether the repository has a share now.
+    pub shared: bool,
 }
 
 impl UserSync<'_> {
@@ -518,6 +524,77 @@ impl UserSync<'_> {
 
     fn rsk(&self, repo: &[u8; 32], epoch: u32) -> crypto::Key32 {
         crypto::repo_storage_key(self.key.secret(), repo, &self.key.network, epoch)
+    }
+
+    /// Write the share of `repo_id` at `epoch` holding `content`, over `existing`.
+    async fn put_share(
+        &self,
+        existing: Option<&ShareDoc>,
+        repo_id: &str,
+        epoch: u32,
+        rsk: &[u8; 32],
+        content: &ShareContent,
+    ) -> Result<()> {
+        let repo = crate::platform::decode_identifier(repo_id)?;
+        let nonce = crypto::fresh_nonce()?;
+        let aad = crypto::share_aad(&self.key.network, &repo, epoch, self.key.key_id)?;
+        let ct = crypto::seal(rsk, &nonce, &crypto::deflate_raw(&content.to_json())?, &aad)?;
+        let pieces = crypto::split(&ct)?;
+        if pieces.len() > 2 {
+            return Err(Error::InvalidInput(
+                "the shared storage settings are over 10,000 bytes encrypted".into(),
+            ));
+        }
+        self.store
+            .put_share(&ShareDoc {
+                id: existing.and_then(|s| s.id.clone()),
+                owner_id: self.key.identity_id.clone(),
+                revision: existing.and_then(|s| s.revision),
+                repo_id: repo_id.to_string(),
+                epoch,
+                key_id: self.key.key_id,
+                nonce,
+                pieces,
+            })
+            .await
+    }
+
+    /// Wrap `rsk` (epoch `epoch` of `repo_id`) to `member`'s key `their`, over `old`.
+    async fn put_grant(
+        &self,
+        old: Option<&GrantDoc>,
+        repo_id: &str,
+        member: &str,
+        their: &EncKeyInfo,
+        epoch: u32,
+        rsk: &[u8; 32],
+    ) -> Result<()> {
+        let wrapped = crypto::wrap_grant(
+            self.key.secret(),
+            &their.public_key,
+            &self.key.network,
+            self.key.identity(),
+            &crate::platform::decode_identifier(repo_id)?,
+            &crate::platform::decode_identifier(member)?,
+            epoch,
+            self.key.key_id,
+            their.id,
+            rsk,
+            &crypto::fresh_nonce()?,
+        )?;
+        self.store
+            .put_grant(&GrantDoc {
+                id: old.and_then(|g| g.id.clone()),
+                owner_id: self.key.identity_id.clone(),
+                revision: old.and_then(|g| g.revision),
+                repo_id: repo_id.to_string(),
+                member_id: member.to_string(),
+                epoch,
+                sender_key_id: self.key.key_id,
+                recipient_key_id: their.id,
+                wrapped,
+            })
+            .await
     }
 
     /// As the owner of `repo_id`: make its share hold `wanted` (keeping what is there when
@@ -559,36 +636,13 @@ impl UserSync<'_> {
             }
             return Ok(out);
         };
+        out.shared = true;
         let rsk = self.rsk(&repo, epoch);
         let share_current = existing.as_ref().is_some_and(|s| {
             s.epoch == epoch && s.key_id == self.key.key_id && current.as_ref() == Some(&content)
         });
         if !share_current {
-            let nonce = crypto::fresh_nonce()?;
-            let aad = crypto::share_aad(&self.key.network, &repo, epoch, self.key.key_id)?;
-            let ct = crypto::seal(
-                &rsk,
-                &nonce,
-                &crypto::deflate_raw(&content.to_json())?,
-                &aad,
-            )?;
-            let pieces = crypto::split(&ct)?;
-            if pieces.len() > 2 {
-                return Err(Error::InvalidInput(
-                    "the shared storage settings are over 10,000 bytes encrypted".into(),
-                ));
-            }
-            self.store
-                .put_share(&ShareDoc {
-                    id: existing.as_ref().and_then(|s| s.id.clone()),
-                    owner_id: me.clone(),
-                    revision: existing.as_ref().and_then(|s| s.revision),
-                    repo_id: repo_id.to_string(),
-                    epoch,
-                    key_id: self.key.key_id,
-                    nonce,
-                    pieces,
-                })
+            self.put_share(existing.as_ref(), repo_id, epoch, &rsk, &content)
                 .await?;
             out.share_written = true;
         }
@@ -605,32 +659,7 @@ impl UserSync<'_> {
             }) {
                 continue;
             }
-            let member_bytes = crate::platform::decode_identifier(member)?;
-            let wrapped = crypto::wrap_grant(
-                self.key.secret(),
-                &their.public_key,
-                &self.key.network,
-                self.key.identity(),
-                &repo,
-                &member_bytes,
-                epoch,
-                self.key.key_id,
-                their.id,
-                &rsk,
-                &crypto::fresh_nonce()?,
-            )?;
-            self.store
-                .put_grant(&GrantDoc {
-                    id: old.and_then(|g| g.id.clone()),
-                    owner_id: me.clone(),
-                    revision: old.and_then(|g| g.revision),
-                    repo_id: repo_id.to_string(),
-                    member_id: member.clone(),
-                    epoch,
-                    sender_key_id: self.key.key_id,
-                    recipient_key_id: their.id,
-                    wrapped,
-                })
+            self.put_grant(old, repo_id, member, &their, epoch, &rsk)
                 .await?;
             out.granted.push(member.clone());
         }

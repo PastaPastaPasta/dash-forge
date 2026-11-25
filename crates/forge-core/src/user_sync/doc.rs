@@ -187,6 +187,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn doc(entries: Value) -> SlotDoc {
         serde_json::from_value(
             json!({"format": "forge-user/storage", "version": 1, "entries": entries}),

@@ -138,6 +138,7 @@ pub struct StorageArgs {
 /// `dg auth login` arguments. With nothing to sign in from (no file, --mnemonic, --full-key or
 /// --replace), it signs in with a DashPay wallet, as `--wallet` does.
 #[derive(Debug, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // independent clap flags
 pub struct LoginArgs {
     /// The identity file (bridge export, `dg auth export`, or mint-identity output). Also
     /// accepted via --identity. Without one (or --mnemonic), dg signs in with your wallet.
