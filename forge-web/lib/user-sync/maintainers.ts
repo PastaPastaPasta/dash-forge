@@ -171,15 +171,16 @@ export function shareVersion(plain: unknown): number {
 
 /**
  * The rule over the synced slot (`view`, as `shareRule`) and the share as it is (`current`, null when
- * there is none or it does not open): a share kept while the slot was read that still lends storage
- * in version 1 was made before repo-only sharing and may hold the owner's default storage, so it
- * stops (nothing). With no slot read, any share is kept.
+ * there is none or it does not open; `granted`: any grant to it exists), as forge-core
+ * `Wanted::over`: a share kept while the slot was read stops (nothing) when it still lends storage
+ * in version 1 (made before repo-only sharing, it may hold the owner's default storage), or lends
+ * nothing but still has grants (a stop that was interrupted). With no slot read, any share is kept.
  */
-export function shareRuleOver(view: Readonly<Record<string, unknown>> | null, repoId: string, current: unknown): ShareRule {
+export function shareRuleOver(view: Readonly<Record<string, unknown>> | null, repoId: string, current: unknown, granted = false): ShareRule {
   const rule = shareRule(view, repoId)
   if (view === null || rule.kind !== 'keep' || current === null || shareMeaning(current) === null) return rule
   const lends = Object.keys((current as SharePlain).profiles).length > 0
-  return lends && shareVersion(current) < SHARE_VERSION ? { kind: 'nothing', reason: 'legacy-share' } : rule
+  return (lends ? shareVersion(current) < SHARE_VERSION : granted) ? { kind: 'nothing', reason: 'legacy-share' } : rule
 }
 
 /**
@@ -269,7 +270,7 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     }
   }
   if (opened !== null && shareVersion(opened) > SHARE_VERSION) throw new Error("this repository's shared storage was written by a newer Forge; reload the page to change it")
-  const rule = shareRuleOver(p.view, p.repoId, opened)
+  const rule = shareRuleOver(p.view, p.repoId, opened, grants.length > 0)
   const stop = rule.kind === 'nothing'
   // Each maintainer's live forge-user keys, oldest first (none needed when sharing stops).
   const keys = new Map<string, readonly SyncPublicKey[]>()
@@ -305,11 +306,19 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   let written = false
   if (content !== null) {
     // A share kept as it is keeps its version (a version 1 one is never made version 2 without the
-    // slot read); one the repo setting names, lending in version 1, is written again in version 2.
+    // slot read). Written again in this version: one the repo setting names, lending in version 1,
+    // and an empty version 1 share when sharing stops (older builds cannot refill it).
     const keptAsIs = rule.kind === 'keep' && opened !== null && content === opened
-    const same = existing !== null && existing.fields.epoch === epoch && existing.fields.keyId === ctx.keyId && opened !== null && shareMeaning(opened) === shareMeaning(content) && (rule.kind !== 'content' || !lent(content) || shareVersion(opened) === SHARE_VERSION)
+    const version = keptAsIs ? shareVersion(opened) : SHARE_VERSION
+    const same =
+      existing !== null &&
+      existing.fields.epoch === epoch &&
+      existing.fields.keyId === ctx.keyId &&
+      opened !== null &&
+      shareMeaning(opened) === shareMeaning(content) &&
+      (shareVersion(opened) === version || (!lent(content) && !stop))
     if (!same) {
-      await writeShare(ctx, p.repoId, repo, epoch, { ...content, version: keptAsIs ? shareVersion(opened) : SHARE_VERSION }, existing)
+      await writeShare(ctx, p.repoId, repo, epoch, { ...content, version }, existing)
       written = true
     }
   }

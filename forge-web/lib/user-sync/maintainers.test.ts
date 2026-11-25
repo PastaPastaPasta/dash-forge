@@ -345,27 +345,34 @@ describe('maintainers use the owner’s storage', () => {
     expect([...platform.grants.values()].map((g) => g.fields.memberId)).toEqual([BOB])
   })
 
-  it('a share kept as it is that is already empty leaves its members’ grants: no epoch, no writes', async () => {
+  it('an empty share that still has grants (an interrupted stop): kept with no slot read, stopped again once it is read', async () => {
     const { platform, owner } = identities()
     await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
     const grant = [...platform.grants.entries()][0]!
     const { [`repo:${REPO}`]: _own, ...defaultOnly } = VIEW
     await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE] })
     expect(platform.grants.size).toBe(0)
-    // A grant left behind (an interrupted stop, another client): under keep, it stays.
+    // The grant a stop left behind (it failed before deleting it).
     platform.grants.set(grant[0], grant[1])
     const writes = platform.writes
-    const unusable = { ...VIEW, [`repo:${REPO}`]: { targets: [] } }
-    const done = await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
-    expect(done).toMatchObject({ granted: [], epoch: 1 })
+    const kept = await reconcileRepoShare(owner, { repoId: REPO, view: null, maintainers: [ALICE] })
+    expect(kept).toMatchObject({ granted: [], epoch: 1 })
     expect(platform.writes).toBe(writes)
     expect(platform.grants.size).toBe(1)
     // A newer key for that member, the old one still live: an empty share has nothing to move away from.
     platform.olderKeys.set(ALICE, [platform.keys.get(ALICE)!])
     platform.keys.set(ALICE, { keyId: 12, pub: secp.getPublicKey(secp.utils.randomSecretKey(), true) })
-    await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
-    await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
+    await reconcileRepoShare(owner, { repoId: REPO, view: null, maintainers: [ALICE] })
+    await reconcileRepoShare(owner, { repoId: REPO, view: null, maintainers: [ALICE] })
     expect(platform.writes).toBe(writes)
+    // With the slot read and the repo setting unusable, the stop is finished: the grant goes, the line is said.
+    const unusable = { ...VIEW, [`repo:${REPO}`]: { targets: [] } }
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
+    expect(done).toMatchObject({ granted: [], epoch: 2, stopped: 'legacy' })
+    expect(platform.grants.size).toBe(0)
+    const after = platform.writes
+    expect((await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })).stopped).toBeUndefined()
+    expect(platform.writes).toBe(after)
   })
 
   describe('share format version 2', () => {
@@ -447,6 +454,22 @@ describe('maintainers use the owner’s storage', () => {
       await rewriteAs(platform, owner, 3)
       const writes = platform.writes
       await expect(reconcileRepoShare(owner, { repoId: REPO, view: {}, maintainers: [ALICE] })).rejects.toThrow(/newer Forge/)
+      expect(platform.writes).toBe(writes)
+    })
+
+    it('an empty version 1 share is written again in version 2 once when sharing stops, saying nothing', async () => {
+      const { platform, owner } = identities()
+      await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [] })
+      const existing = platform.shares.get(`${OWNER}/${REPO}`)!
+      const repo = decodeIdentifier(REPO)
+      const rsk = await repoStorageKey(owner.E, repo, NET, existing.fields.epoch)
+      await owner.port.writeShare(REPO, await sealShare(rsk, { network: NET, repoId: repo, epoch: existing.fields.epoch, keyId: owner.keyId }, { format: 'forge-user/share', version: 1, profiles: {}, policy: null }), existing)
+      const { [`repo:${REPO}`]: _own, ...defaultOnly } = VIEW
+      const done = await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [] })
+      expect(done.stopped).toBeUndefined()
+      expect(await openVersion(platform, owner)).toBe(2)
+      const writes = platform.writes
+      await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [] })
       expect(platform.writes).toBe(writes)
     })
 
