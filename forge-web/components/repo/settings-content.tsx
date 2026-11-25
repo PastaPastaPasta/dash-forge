@@ -44,8 +44,10 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
-import { RepoShareNotes, RotateCredentialsNote } from '@/components/storage/repo-share-notes'
-import { useRepoStorageShare } from '@/hooks/use-repo-share'
+import { RepoShareDetails, RepoShareNotes, RotateCredentialsNote, StoppedShareLine, storageCardView } from '@/components/storage/repo-share-notes'
+import { OwnerStorageUnsetLine } from '@/components/repo/merge-upload'
+import { useRepoGrant, useRepoStorageShare, useStoppedShareNotice } from '@/hooks/use-repo-share'
+import { useStorageConfig } from '@/hooks/use-storage-config'
 import { useUserSyncStatus } from '@/hooks/use-user-sync'
 import { PrivateMembers } from '@/components/repo/private-members'
 import { MemberEnvOutcomeView, MemberEnvPlanView, useMemberEnvFlow } from '@/components/repo/member-env-plan'
@@ -146,6 +148,13 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   // Settings sync carries this choice to the identity's other devices: the hint says so only then.
   const syncKind = useUserSyncStatus().kind
   const syncOn = syncKind === 'synced' || syncKind === 'syncing'
+  // Maintainers get only storage set for this repo (its own policy), never the owner's default.
+  const repoStorage = useStorageConfig()
+  const repoPolicy = repoStorage.config?.repoPolicies[repo.repoId]
+  const hasRepoStorage = repoPolicy !== undefined
+  const repoStorageShareable = repoPolicy?.targets.some((t) => repoStorage.config?.profiles.some((p) => p.name === t && p.settings.kind !== 'platform')) ?? false
+  const repoGrant = useRepoGrant(repo)
+  const card = storageCardView({ syncOn, owner: identity !== null && identity === repo.ownerId, hasRepoStorage, repoStorageShareable, maintainers: share.maintainers?.length ?? 0 })
   // A removed maintainer could have copied the shared credentials: say so once.
   const [rotate, setRotate] = useState(false)
   // The identity the owner tried to add before they accepted: the invite is pending on them.
@@ -247,6 +256,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const maintainer = viewerRole === 'maintainer'
   const showDanger = maintainer || isOwner
   const section = useSettingsSection(viewerRole !== null && !maintainer && !isOwner ? 'collaborators' : 'general', (s) => s !== 'danger' || showDanger)
+  const stopLine = useStoppedShareNotice(repo, section === 'storage')
   const memberManager = isOwner && repo.visibility !== 'private'
   return (
     <SettingsShell addr={{ owner: repo.ownerId, name: repo.name }} active={section} showDanger={showDanger}>
@@ -482,9 +492,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           </Card>
           {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
           {!(viewer.known && viewerRole === null) ? (
-            <Card title="Your browser pushes" hint={syncOn ? 'Only you see this.' : 'Only you see this: it stays in this browser.'}>
-              <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
-              <RepoShareNotes waiting={share.waiting} memberNeedsKey={share.memberNeedsKey} />
+            <Card title="Your browser pushes" hint={card.hint}>
+              {stopLine !== null ? <StoppedShareLine line={stopLine} /> : null}
+              <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} {...(card.shareAction !== undefined ? { shareAction: card.shareAction } : {})} />
+              {card.details ? <RepoShareDetails granted={share.granted} waiting={share.waiting} /> : null}
+              {repoGrant.status === 'none' ? <OwnerStorageUnsetLine /> : null}
+              <RepoShareNotes waiting={[]} memberNeedsKey={share.memberNeedsKey} />
             </Card>
           ) : null}
         </Section>
