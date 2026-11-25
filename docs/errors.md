@@ -59,6 +59,8 @@ Messages never include secrets. Storage credentials are referenced by `env:` or 
 
 **What to do:** follow the manual workaround the output describes.
 
+Making a private repository public (`dg repo make-public`, or the Danger zone in the web app) reports E103 on a network whose contract keeps a repository's visibility as it was created: "this network's Forge can't make a private repository public yet". Nothing was written. The web app also reports it for a repository too large to make public in the browser, and names the `dg repo make-public` command to use instead.
+
 ## E104
 
 **Checks failed.** `dg doctor` found at least one failing check.
@@ -130,6 +132,13 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 **Unsupported git operation.** `dash://` cannot serve shallow clones (`--depth`, `--shallow-since`, `--shallow-exclude`). It fails instead of quietly making a full clone.
 
 **What to do:** use a partial clone for a lightweight checkout: `git clone --filter=blob:none dash://…`.
+
+`dg` reports E205, before anything is signed, for a few other things this network or setup doesn't support:
+
+- **Organizations on mainnet.** `dg org …` and `dg repo create --owner <org>` stop with "Organizations are not available on mainnet yet." They work on testnet and devnets ([Organizations](guides/organizations.md)).
+- **Wallet sign-in on a network before Platform protocol 14.** `dg auth login` (with `--wallet`, or with no file) stops with "this network cannot sign in with a wallet yet". Sign in with `dg auth login <file>` or `dg auth login --mnemonic` there.
+- **Bot push access on a network whose contracts have none.** `dg bot allow --push` and the commands that change push access (`dg bot renew`, `suspend`, `resume`, `revoke --push`) stop with "Bots can't push to `<repo>` yet." A bot there pushes to its own fork and opens a pull request ([Bots](guides/bots.md)).
+- **An X.509 commit-signing key.** `dg profile key add` without `--ssh`/`--gpg`, when git's `gpg.format=x509`, stops: Forge verifies Ed25519 SSH and OpenPGP keys only ([Signed commits](guides/identity-and-keys.md#signed-commits-and-verified-badges)).
 
 ## E206
 
