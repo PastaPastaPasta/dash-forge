@@ -56,6 +56,7 @@ import {
   type PollStatus,
   type V2Grant,
   type V2LoginRequest,
+  wipeGrant,
 } from '@/lib/auth/app-connect-v2'
 import { connectionId } from '@/lib/auth/connection-id'
 import { callbackStatusCopy, connectCallbackUrl, listenForCallback } from '@/lib/auth/connect-callback'
@@ -196,8 +197,22 @@ export function WalletConnectFlow({
   /** The grant held for the confirm step. */
   const grant = useRef<V2Grant | null>(null)
   const dropGrant = useCallback(() => {
+    wipeGrant(grant.current)
     grant.current = null
   }, [])
+  /**
+   * Whether the request asks for forge-user's encryption key (settings sync, where deployed). A
+   * wallet that reports it cannot use such a request (`unsupported`, `invalid`), or a request that
+   * expired unanswered, is asked once more without it (docs/design/identity-synced-state.md §8).
+   */
+  const syncBinding = useRef(true)
+  const syncRetried = useRef(false)
+  const retryWithoutSync = useCallback((): boolean => {
+    if (syncRetried.current || forge?.user === undefined) return false
+    syncRetried.current = true
+    syncBinding.current = false
+    return true
+  }, [forge])
   const mobile = onMobile()
   // A renewal never weakens a key that had a passkey or passphrase.
   const heldMethods = vaults.find((v) => v.staged !== true && v.identityId === identity)?.methods ?? []
@@ -255,6 +270,7 @@ export function WalletConnectFlow({
     try {
       await adoptWalletKeys(g.identityId, [g.key], chosen, {
         origin: 'app-connect',
+        ...(g.syncKey ? { syncKey: g.syncKey } : {}),
         discardPendingRenewal: discard,
         ...(renewalUnlock ? { renewalUnlock } : {}),
         ...(drop ? { dropUnopened: true } : {}),
@@ -313,8 +329,10 @@ export function WalletConnectFlow({
         await runV2Login(sdk, forge, notice)
       } catch (e) {
         if (signal.aborted || isAbort(e)) return
-        if (e instanceof RequestExpired) setStep({ kind: 'expired' })
-        else {
+        if (e instanceof RequestExpired) {
+          if (retryWithoutSync()) setAttempt((a) => a + 1)
+          else setStep({ kind: 'expired' })
+        } else {
           // A request that failed is spent (its key is gone): it must not stay up to be scanned.
           setStep((cur) => (cur?.kind === 'request' ? null : cur))
           setError(errorMessage(e))
@@ -346,7 +364,14 @@ export function WalletConnectFlow({
         if (!signal.aborted) setStatus(s)
       },
       onReturn: (status) => {
-        if (!signal.aborted) setReported(status)
+        if (signal.aborted) return
+        if ((status === 'unsupported' || status === 'invalid') && retryWithoutSync()) {
+          abort.abort()
+          setStep(null)
+          setAttempt((a) => a + 1)
+          return
+        }
+        setReported(status)
       },
     })
 
@@ -366,6 +391,7 @@ export function WalletConnectFlow({
         connectionId: connectionId(ACTIVE_NETWORK.key),
         chainNow: timeMs,
         callbackUrl: connectCallbackUrl,
+        sync: syncBinding.current,
       })
       setStep(requestStep(req))
       const granted = await awaitGrantWithWake(sdk, req, pollOptions(forge))
@@ -380,7 +406,7 @@ export function WalletConnectFlow({
     async function runRenewal(sdk: Sdk, forge: ForgeIds): Promise<void> {
       if (!renewProtection.current) throw new Error('Choose how to protect the new key first.')
       const auth = latest.current.controller
-      const req = await auth.walletRenewalRequest({ callbackUrl: connectCallbackUrl })
+      const req = await auth.walletRenewalRequest({ callbackUrl: connectCallbackUrl, sync: syncBinding.current })
       let granted: V2Grant
       try {
         if (signal.aborted) {
@@ -407,7 +433,7 @@ export function WalletConnectFlow({
       dropGrant()
     }
     // `attempt` restarts the whole request (a new ephemeral key and QR).
-  }, [attempt, forge, mode, dropGrant, renewGo, needsUnlock])
+  }, [attempt, forge, mode, dropGrant, renewGo, needsUnlock, retryWithoutSync])
 
   const restart = useCallback(() => {
     // The spent request goes off screen; the next one replaces it.

@@ -39,6 +39,17 @@ describe('group trust: members', () => {
     expect(checkMembers(TRUST, members(['CORE', 'COLLAB', 'OLDCOLLAB']), new Map())).toEqual({ unknown: [], unchecked: [], notice: null })
   })
 
+  it('counts forge-user as a known member where the deployment records it', () => {
+    expect(checkMembers({ ...TRUST, user: 'USER' }, members(['CORE', 'COLLAB', 'USER']), new Map())).toEqual({ unknown: [], unchecked: [], notice: null })
+    expect(checkMembers(TRUST, members(['CORE', 'COLLAB', 'USER']), new Map([['USER', DEPLOYER]])).unknown).toEqual(['USER'])
+  })
+
+  it('reads forge-user from the testnet deployment into the trust root', () => {
+    const t = groupTrust(DEPLOYMENTS.testnet)!
+    expect(t.user).toBe('46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU')
+    expect(groupTrust(DEPLOYMENTS.mainnet)?.user).toBeUndefined()
+  })
+
   it('accepts an unknown member owned by the deployer, with a notice naming it', () => {
     const r = checkMembers(TRUST, members(['CORE', 'COLLAB', 'NEWCOLLAB']), new Map([['NEWCOLLAB', DEPLOYER]]))
     expect(r.unknown).toEqual(['NEWCOLLAB'])

@@ -231,6 +231,15 @@ function stagedKey(network: Network, identityId: string): string {
   return `vault-staged:${network}:${identityId}`
 }
 
+/**
+ * The forge-user encryption key a wallet delivers (`docs/design/identity-synced-state.md` §5),
+ * sealed under the storage-blob key. Its own entry, never `vault-enc`: an older build reads every
+ * key there as a private-repo key.
+ */
+function syncBlobKey(network: Network, identityId: string): string {
+  return `vault-sync:${network}:${identityId}`
+}
+
 /** The extra wallet grants ({@link ExtraKey}), sealed like the storage settings. */
 function extraBlobKey(network: Network, identityId: string): string {
   return `vault-extra:${network}:${identityId}`
@@ -1080,6 +1089,7 @@ export async function storeInVault(
   // Each key that opens is carried; any other is dropped, and reported by id.
   const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
   const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
+  const carriedSync = await readSyncKey(network, identityId).catch(() => null)
   const dataKey = random(32)
   let storageKey: CryptoKey
   let encryptionKey: CryptoKey
@@ -1094,6 +1104,7 @@ export async function storeInVault(
     const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
     encryptionKey = await deriveEncryptionKey(dataKey, network, identityId)
     const encBlob = await sealEncryptionBlobs(encryptionKey, network, identityId, carriedEnc)
+    const syncBlob = carriedSync !== null && !deviceOnly(protection) ? await sealSyncBlob(storageKey, network, identityId, carriedSync.keyId, carriedSync.secret) : undefined
     // One transaction: a crash between the writes must not leave settings sealed under a
     // data key no record holds any more. The key is now the main record, so a staged copy of
     // THIS key (the renewal that registered it) is done; a stage of another key (a renewal
@@ -1111,6 +1122,7 @@ export async function storeInVault(
           [storageBlobKey(network, identityId), blob],
           [extraBlobKey(network, identityId), extraBlob],
           [encryptionBlobKey(network, identityId), encBlob],
+          [syncBlobKey(network, identityId), syncBlob],
           ...(staged !== undefined && (staged.keyId === secret.keyId || staged.keyId === options.dropStagedKeyId) ? ([[at, undefined]] as const) : []),
         ]
       },
@@ -1121,12 +1133,14 @@ export async function storeInVault(
     readBackOk = await readsBack(network, key(network, identityId), main, dataKey).catch(() => false)
   } finally {
     dataKey.fill(0)
+    carriedSync?.secret.fill(0)
   }
   // A key kept by this browser alone opens for signing only: nothing else may be sealed under it.
   if (deviceOnly(protection)) {
     setUnlocked(network, main, null, { lockMarkerAt, scope: 'signing' })
     markDeviceOpened()
   } else setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
+  notifySyncKeyChange()
   // TS-17: ask the browser to keep the vault (Safari clears a site's storage after 7 days
   // without a visit otherwise). Most browsers answer without a prompt; a refusal is shown in
   // Settings → Devices & keys.
@@ -1347,6 +1361,7 @@ export async function forgetVault(network: Network, identityId: string): Promise
   await idbDelete('vault', storageBlobKey(network, identityId))
   await idbDelete('vault', extraBlobKey(network, identityId))
   await idbDelete('vault', encryptionBlobKey(network, identityId))
+  await idbDelete('vault', syncBlobKey(network, identityId))
   await idbDelete('vault', stagedKey(network, identityId))
   clearSignedWrites()
   notifyEncryptionKeyChange()
@@ -1385,6 +1400,8 @@ interface Unlocked {
   blobKeys: BlobKeys | null
   /** Tab-only sessions: the encryption key, sealed under a random per-session key. */
   sessionEnc?: { key: CryptoKey; blobs: readonly EncryptionBlob[] }
+  /** A session with no blob keys: the forge-user key, sealed under a random per-session key. */
+  sessionSync?: { key: CryptoKey; blob: EncryptionBlob }
   /**
    * `signing`: picked up from a kept session. Only the limited signing key is here; the
    * encryption key, storage settings and wallet grants need an interactive unlock
@@ -1442,6 +1459,7 @@ function setUnlocked(
   const at = opts.at ?? Date.now()
   unlocked = { network, secret, at, blobKeys, scope: opts.scope ?? 'full', lockMarkerAt: opts.lockMarkerAt ?? lockMarker() }
   if (switched) notifyEncryptionKeyChange()
+  if (switched) notifySyncKeyChange()
   if (lockTimer) clearTimeout(lockTimer)
   lockTimer = setTimeout(() => expire(network), Math.max(0, at + AUTO_LOCK_MS - Date.now()))
 }
@@ -1618,6 +1636,101 @@ export function releaseUnlocked(): void {
   if (wasUnlocked) for (const l of lockListeners) l()
   // Every private-repo session ends with the vault (its keys were opened with this unlock).
   if (wasUnlocked) notifyEncryptionKeyChange()
+  if (wasUnlocked) notifySyncKeyChange()
+}
+
+// ---------------------------------------------------------------------------
+// The forge-user encryption key (`docs/design/identity-synced-state.md` §5): settings sync
+// ---------------------------------------------------------------------------
+
+function syncAad(network: Network, identityId: string, keyId: number): Uint8Array {
+  return aad(network, identityId, `sync|${keyId}`)
+}
+
+async function sealSyncBlob(key: CryptoKey, network: Network, identityId: string, keyId: number, secret: Uint8Array): Promise<EncryptionBlob> {
+  if (secret.length !== 32 || !Number.isSafeInteger(keyId) || keyId < 0) throw new Error('not an encryption private key')
+  const iv = random(12)
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(syncAad(network, identityId, keyId)) }, key, buf(secret))
+  return { keyId, iv, ciphertext: new Uint8Array(ct) }
+}
+
+async function openSyncBlob(key: CryptoKey, network: Network, identityId: string, blob: EncryptionBlob): Promise<Uint8Array> {
+  const plain = new Uint8Array(
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(blob.iv), additionalData: buf(syncAad(network, identityId, blob.keyId)) }, key, buf(blob.ciphertext)),
+  )
+  if (plain.length !== 32) {
+    plain.fill(0)
+    throw new Error('bad length')
+  }
+  return plain
+}
+
+/** The forge-user key this tab holds open for (network, identity), or null (none, locked, or sealed under another key). */
+async function readSyncKey(network: Network, identityId: string): Promise<{ keyId: number; secret: Uint8Array } | null> {
+  const u = unlockedSecret(network, identityId) === null ? null : unlocked
+  if (u === null) return null
+  if (u.sessionSync !== undefined) return { keyId: u.sessionSync.blob.keyId, secret: await openSyncBlob(u.sessionSync.key, network, identityId, u.sessionSync.blob) }
+  const k = u.blobKeys?.storage
+  if (k === undefined) return null
+  const blob = await idbGet<EncryptionBlob>('vault', syncBlobKey(network, identityId))
+  if (blob === undefined) return null
+  try {
+    return { keyId: blob.keyId, secret: await openSyncBlob(k, network, identityId, blob) }
+  } catch {
+    // Sealed under a key an older build replaced: the next wallet sign-in delivers it again.
+    return null
+  }
+}
+
+/**
+ * Keep the forge-user encryption key (verified against the identity by the caller, who wipes
+ * `secret`) beside the unlocked record: sealed at rest when this session holds the blob keys,
+ * else in this tab's memory only. Never in the kept session.
+ */
+export async function storeSyncKey(network: Network, identityId: string, keyId: number, secret: Uint8Array): Promise<void> {
+  assertDedicatedOrigin()
+  const u = unlockedSecret(network, identityId) === null ? null : unlocked
+  if (u === null) throw new VaultLockedError('unlock this browser first')
+  if (u.blobKeys === null) {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+    u.sessionSync = { key, blob: await sealSyncBlob(key, network, identityId, keyId, secret) }
+  } else {
+    await idbPut('vault', syncBlobKey(network, identityId), await sealSyncBlob(u.blobKeys.storage, network, identityId, keyId, secret))
+  }
+  notifySyncKeyChange()
+}
+
+/**
+ * Run `use` with the forge-user key (a fresh copy, wiped afterwards); null when this tab holds
+ * none for (network, identity). Callers pass it only to `lib/user-sync`.
+ */
+export async function withSyncKey<T>(network: Network, identityId: string, use: (keyId: number, secret: Uint8Array) => Promise<T>): Promise<T | null> {
+  const held = await readSyncKey(network, identityId)
+  if (held === null) return null
+  try {
+    return await use(held.keyId, held.secret)
+  } finally {
+    held.secret.fill(0)
+  }
+}
+
+/** The forge-user key id this tab holds for (network, identity), or null. */
+export async function heldSyncKeyId(network: Network, identityId: string): Promise<number | null> {
+  return withSyncKey(network, identityId, async (keyId) => keyId)
+}
+
+const syncListeners = new Set<() => void>()
+
+/** Be told when the forge-user key is stored, or becomes unusable (lock, another identity). */
+export function onSyncKeyChange(listener: () => void): () => void {
+  syncListeners.add(listener)
+  return () => {
+    syncListeners.delete(listener)
+  }
+}
+
+function notifySyncKeyChange(): void {
+  for (const l of syncListeners) l()
 }
 
 // ---------------------------------------------------------------------------

@@ -88,16 +88,17 @@ describe('forge-user sync vectors', () => {
     })
   }
 
-  it('splits the big entry into three pieces, re-encrypting to the same bytes', async () => {
+  it('splits the big entry past one piece, re-encrypting to the same bytes', async () => {
     const big = vectors.state.find((s) => s.slot === 'big')!
+    const d2Hex = big.d2Hex as string | null
     const ct = hex(big.ciphertextHex)
     expect(ct.length).toBeGreaterThan(PIECE_BYTES)
-    const doc: StateFields = { slot: 'big', v: 1, keyId: vectors.ownerKeyId, n: hex(big.nonceHex), d0: hex(big.d0Hex), d1: hex(big.d1Hex!), ...(big.d2Hex ? { d2: hex(big.d2Hex) } : {}) }
+    const doc: StateFields = { slot: 'big', v: 1, keyId: vectors.ownerKeyId, n: hex(big.nonceHex), d0: hex(big.d0Hex), d1: hex(big.d1Hex!), ...(d2Hex ? { d2: hex(d2Hex) } : {}) }
     const compressed = await openStateBytes(ctx, doc)
     const again = await sealStateBytes(ctx, 'big', compressed, hex(big.nonceHex))
     expect(toHex(again.d0)).toBe(big.d0Hex)
     expect(toHex(again.d1!)).toBe(big.d1Hex)
-    expect(again.d2 === undefined ? null : toHex(again.d2)).toBe(big.d2Hex ?? null)
+    expect(again.d2 === undefined ? null : toHex(again.d2)).toBe(d2Hex)
     expect(decodePlain(compressed)).toEqual(big.plaintextJson)
   })
 

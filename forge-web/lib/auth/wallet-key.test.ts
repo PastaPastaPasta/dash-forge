@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { contractKind, type ForgeIds } from '../deployments'
 import { APP_CONNECT_CONTRACT_ID } from './app-connect-port'
 import { heldToDisable } from './limited-key'
-import { isUnlimited, keyScope, scopeCovers } from './wallet-key'
+import { isForgeContract, isSigningContract, isUnlimited, keyScope, scopeCovers } from './wallet-key'
 import { encodeWif } from './wif'
 
 const FORGE: ForgeIds = {
@@ -31,6 +31,16 @@ describe('which keys Forge signs with', () => {
     expect(scopeCovers(core, FORGE, 'SomeOtherContract')).toBe(false)
     // Even an unbounded key is only ever asked about Forge's two contracts.
     expect(scopeCovers(keyScope(bound(null), FORGE)!, FORGE, 'SomeOtherContract')).toBe(false)
+  })
+
+  it('lets a group-bound key sign on forge-user, never a key bound to one Forge contract', () => {
+    const synced = { ...FORGE, user: 'UserContractId1111111111111111111111111111' }
+    expect(scopeCovers(keyScope(bound({ $type: 'contractGroup', id: FORGE.group }), synced)!, synced, synced.user)).toBe(true)
+    expect(scopeCovers(keyScope(bound(null), synced)!, synced, synced.user)).toBe(true)
+    expect(scopeCovers(keyScope(bound({ $type: 'singleContract', id: FORGE.core }), synced)!, synced, synced.user)).toBe(false)
+    expect(isSigningContract(synced, synced.user)).toBe(true)
+    expect(isSigningContract(FORGE, synced.user)).toBe(false)
+    expect(isForgeContract(synced, synced.user)).toBe(false)
   })
 
   it('scopes keys over three contracts: a forge-community key covers forge-community only', () => {
