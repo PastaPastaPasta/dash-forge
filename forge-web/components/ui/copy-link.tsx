@@ -24,12 +24,15 @@ export function CopyLinkButton({
   target,
   visibility,
   className,
+  iconOnlyOnPhones = false,
 }: {
   repo: { readonly owner: string; readonly name: string; readonly repoId?: string }
   target?: ShortTarget
   /** The repo's visibility: only a public repo's link is a gateway share link. */
   visibility: 'public' | 'private'
   className?: string
+  /** Below `sm`, show only the icon (the label stays the button's accessible name). */
+  iconOnlyOnPhones?: boolean
 }): JSX.Element {
   const ownerName = useOwnerDpnsName(repo.owner)
   const gateway = visibility === 'public' ? GATEWAY : null
@@ -49,7 +52,7 @@ export function CopyLinkButton({
       )}
     >
       {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Link2 className="h-3.5 w-3.5" aria-hidden />}
-      {copied ? 'Copied' : 'Copy link'}
+      <span className={iconOnlyOnPhones ? 'max-sm:sr-only' : undefined}>{copied ? 'Copied' : 'Copy link'}</span>
     </button>
   )
 }
