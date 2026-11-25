@@ -320,15 +320,15 @@ fn keep_file(path: &std::path::Path, stamp: &str) -> Result<Option<PathBuf>> {
         .with_context(|| format!("{} names no file", path.display()))?
         .to_string_lossy()
         .into_owned();
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
     for n in 1..=BACKUP_NAMES {
         let backup = path.with_file_name(backup_name(&name, stamp, n));
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            opts.mode(0o600);
-        }
         let mut f = match opts.open(&backup) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
