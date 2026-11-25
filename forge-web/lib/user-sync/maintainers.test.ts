@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest'
 
 import type { StorageConfig } from '../storage/store'
 import { fakePlatform } from './fake-port'
-import { readGrantedStorage, reconcileRepoShare, sharePlain, withGrantedStorage } from './maintainers'
+import { NOTHING_SHARED, readGrantedStorage, reconcileRepoShare, shareMeaning, sharePlain, withGrantedStorage } from './maintainers'
+import { repoStorageKey, sealShare } from './crypto'
+import { decodeIdentifier } from '../auth/base58'
 
 const OWNER = '9oaYDFZ9n1zsuzMRdGLyUatghRj1zhTGJNi7uNQZzDjX'
 const ALICE = 'HeHGBRkJ9zWrJ6RNRx5vtSWEDizrY6eGbYMuBqK8GfRw'
@@ -15,6 +17,8 @@ const NET = 'testnet'
 const R2 = { name: 'r2-main', settings: { kind: 's3', provider: 'r2', endpoint: 'https://acct.r2.cloudflarestorage.com', region: 'auto', bucket: 'forge', pathStyle: true, publicUrl: 'https://packs.example.org', prefix: '' }, secrets: { accessKeyId: 'AKIDTEST', secretAccessKey: 'test-secret-not-real' } } as StorageConfig['profiles'][number]
 const PRIVATE = { ...R2, name: 'private-bucket', settings: { ...R2.settings, bucket: 'mine' } } as StorageConfig['profiles'][number]
 const CONFIG: StorageConfig = { version: 1, profiles: [PRIVATE, R2], defaultPolicy: { targets: ['private-bucket'], replicas: 1, platformFallback: false }, repoPolicies: { [REPO]: { targets: ['r2-main'], replicas: 1, platformFallback: true } }, lastTests: {} }
+
+const PLATFORM_ONLY: StorageConfig = { ...CONFIG, repoPolicies: { [REPO]: { targets: ['platform'], replicas: 1, platformFallback: false } }, profiles: [...CONFIG.profiles, { name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as StorageConfig['profiles'][number]] }
 
 function identities() {
   const platform = fakePlatform()
@@ -32,7 +36,7 @@ function identities() {
 describe('maintainers use the owner’s storage', () => {
   it('shares only the profiles this repo’s policy names', () => {
     expect(Object.keys(sharePlain(CONFIG, REPO)!.profiles)).toEqual(['r2-main'])
-    expect(sharePlain({ ...CONFIG, repoPolicies: {}, defaultPolicy: { targets: ['platform'], replicas: 1, platformFallback: false } }, REPO)).toBeNull()
+    expect(sharePlain({ ...CONFIG, repoPolicies: {}, defaultPolicy: { targets: ['platform'], replicas: 1, platformFallback: false } }, REPO)).toEqual(NOTHING_SHARED)
   })
 
   it('grants each maintainer with a key, and lists the rest as waiting', async () => {
@@ -95,14 +99,69 @@ describe('maintainers use the owner’s storage', () => {
     expect(await readGrantedStorage(member(BOB), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
   })
 
-  it('a repo switched to Platform only takes back the share and every grant (M2)', async () => {
+  it('a repo switched to Platform only shares nothing at the next epoch and revokes every grant, never deleting the share', async () => {
     const { platform, owner, member } = identities()
     await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE] })
-    const platformOnly: StorageConfig = { ...CONFIG, repoPolicies: { [REPO]: { targets: ['platform'], replicas: 1, platformFallback: false } }, profiles: [...CONFIG.profiles, { name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as StorageConfig['profiles'][number]] }
-    const done = await reconcileRepoShare(owner, { repoId: REPO, config: platformOnly, maintainers: [ALICE] })
+    const done = await reconcileRepoShare(owner, { repoId: REPO, config: PLATFORM_ONLY, maintainers: [ALICE] })
     expect(done.shared).toBe(true)
-    expect(platform.shares.size).toBe(0)
+    expect([...platform.shares.values()].map((s) => s.fields.epoch)).toEqual([1])
     expect(platform.grants.size).toBe(0)
+    // Already stopped: nothing more is written.
+    const writes = platform.writes
+    await reconcileRepoShare(owner, { repoId: REPO, config: PLATFORM_ONLY, maintainers: [ALICE] })
+    expect(platform.writes).toBe(writes)
     expect(await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
+  })
+
+  it('a share’s epoch never goes back: remove, stop, share again, each above every earlier one', async () => {
+    const { platform, owner, member } = identities()
+    const epochs: number[] = []
+    const shareEpoch = (): number => [...platform.shares.values()][0]!.fields.epoch
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE, BOB] })
+    epochs.push(shareEpoch())
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE], removed: [BOB] })
+    epochs.push(shareEpoch())
+    await reconcileRepoShare(owner, { repoId: REPO, config: PLATFORM_ONLY, maintainers: [ALICE] })
+    epochs.push(shareEpoch())
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE] })
+    epochs.push(shareEpoch())
+    expect(epochs).toEqual([0, 1, 2, 3])
+    expect((await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER }))?.epoch).toBe(3)
+    expect(await readGrantedStorage(member(BOB), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
+  })
+
+  it('with no share but grants left over, a first share starts above them', async () => {
+    const { platform, owner } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE] })
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE], removed: [BOB] })
+    for (const g of platform.grants.values()) platform.grants.set(`x/${g.id}`, { ...g, fields: { ...g.fields, epoch: 7 } })
+    platform.shares.clear()
+    const done = await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE] })
+    expect(done.epoch).toBe(8)
+  })
+
+  it('a share another client wrote with the same meaning is not rewritten', async () => {
+    const { platform, owner } = identities()
+    const plain = sharePlain(CONFIG, REPO)
+    const dgWritten = { ...plain, profiles: { 'r2-main': { dg: { note: 1 }, secrets: { ...R2.secrets, sessionToken: '' }, settings: R2.settings } } }
+    expect(shareMeaning(dgWritten)).toBe(shareMeaning(plain))
+    const rsk = await repoStorageKey(owner.E, decodeIdentifier(REPO), 'testnet', 0)
+    await platform.port(OWNER).writeShare(REPO, await sealShare(rsk, { network: 'testnet', repoId: decodeIdentifier(REPO), epoch: 0, keyId: owner.keyId }, dgWritten), null)
+    const writes = platform.writes
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [] })
+    expect(platform.writes).toBe(writes)
+  })
+
+  it('accepts a share whose policy names Platform without a profile (dg writes them)', async () => {
+    const { platform, owner, member } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE] })
+    const rsk = await repoStorageKey(owner.E, decodeIdentifier(REPO), 'testnet', 0)
+    const stored = [...platform.shares.values()][0]!
+    const plain = { ...sharePlain(CONFIG, REPO), policy: { targets: ['r2-main', 'platform'], replicas: 1, platformFallback: false } }
+    await platform.port(OWNER).writeShare(REPO, await sealShare(rsk, { network: 'testnet', repoId: decodeIdentifier(REPO), epoch: 0, keyId: owner.keyId }, plain), stored)
+    const got = await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })
+    expect(got?.policy.targets).toEqual(['r2-main', 'platform'])
+    const own: StorageConfig = { version: 1, profiles: [], defaultPolicy: null, repoPolicies: {}, lastTests: {} }
+    expect(withGrantedStorage(own, REPO, got).profiles.map((p) => p.name)).toEqual(['shared-r2-main', 'platform'])
   })
 })

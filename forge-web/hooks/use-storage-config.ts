@@ -19,7 +19,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { hasStorageBlob } from '@/lib/auth/vault'
-import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, updateStorageConfig, type StorageConfig } from '@/lib/storage'
+import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, saveStorageConfig, updateStorageConfig, type StorageConfig } from '@/lib/storage'
 import { deviceShortId } from '@/lib/user-sync/device'
 import { noteStorageDeletes } from '@/lib/user-sync/overlay'
 import { localAfterSave, storageDeletions } from '@/lib/user-sync/storage-slot'
@@ -80,6 +80,12 @@ export function useStorageConfig(): StorageConfigState {
   const save = useCallback(
     async (next: StorageConfig): Promise<void> => {
       if (!storable || identity === null) throw new Error('Storage settings are kept in the vault: sign in with a stored key (not a pasted one).')
+      // Without settings sync on this network: exactly the save before it.
+      if (ACTIVE_NETWORK.v2?.user === undefined) {
+        await saveStorageConfig(DEFAULT_NETWORK, identity, next)
+        reload()
+        return
+      }
       const shown = syncedStorage(identity)
       let before: StorageConfig | null = null
       // The local blob keeps what the merged view hides (nothing local is dropped unseen); one

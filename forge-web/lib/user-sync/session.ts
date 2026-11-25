@@ -21,6 +21,8 @@ interface State {
   readonly identityId: string | null
   readonly status: UserSyncStatus
   readonly storage: StorageConfig | null
+  /** The synced config alone (what a repo's share holds), from the last sync. */
+  readonly synced?: StorageConfig | null
 }
 
 let state: State = { identityId: null, status: { kind: 'off' }, storage: null }
@@ -58,10 +60,15 @@ export function syncedStorage(identityId: string): StorageConfig | null {
   return state.identityId === identityId ? state.storage : null
 }
 
+/** The synced storage config alone for `identityId` from this tab's last sync, or null (none yet). */
+export function syncedShareConfig(identityId: string): StorageConfig | null {
+  return state.identityId === identityId ? (state.synced ?? null) : null
+}
+
 /** Who sync is for now, and whether it can run (it holds the key); drops the last outcome on a change. */
 export function setSyncSubject(identityId: string | null, status: UserSyncStatus): void {
-  if (identityId !== state.identityId) set({ identityId, status, storage: null })
-  else if (state.status.kind !== 'syncing' && (status.kind !== state.status.kind || status.kind === 'off')) set({ ...state, status, ...(status.kind === 'off' || status.kind === 'local' ? { storage: null } : {}) })
+  if (identityId !== state.identityId) set({ identityId, status, storage: null, synced: null })
+  else if (state.status.kind !== 'syncing' && (status.kind !== state.status.kind || status.kind === 'off')) set({ ...state, status, ...(status.kind === 'off' || status.kind === 'local' ? { storage: null, synced: null } : {}) })
 }
 
 let running: Promise<void> | null = null
@@ -93,10 +100,10 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
           const outcome = await current()
           // Locked meanwhile: what the run decrypted is not kept.
           if (vaultLockGeneration() !== generation) {
-            if (state.identityId === identityId) set({ ...state, status: { kind: 'local', syncedAt }, storage: null })
+            if (state.identityId === identityId) set({ ...state, status: { kind: 'local', syncedAt }, storage: null, synced: null })
           } else if (state.identityId === identityId) {
             if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
-            else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage })
+            else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage, synced: outcome.synced ?? state.synced ?? null })
           }
         } catch (e) {
           if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
@@ -114,7 +121,7 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
 
 /** Forget the decrypted effective config (a lock). */
 export function dropSyncedStorage(): void {
-  if (state.storage !== null) set({ ...state, storage: null })
+  if (state.storage !== null || state.synced) set({ ...state, storage: null, synced: null })
 }
 
 const changeListeners = new Set<() => void>()

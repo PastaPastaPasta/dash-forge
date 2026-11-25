@@ -20,16 +20,43 @@ export interface SharePlain {
   readonly format: typeof SHARE_FORMAT
   readonly version: 1
   readonly profiles: Readonly<Record<string, { readonly settings: unknown; readonly secrets: unknown }>>
-  readonly policy: StoragePolicy
+  /** Null: nothing is shared (the repo stores on Platform only, or has no policy). */
+  readonly policy: StoragePolicy | null
 }
 
-/** What the owner shares for `repoId`: the profiles its policy names, or null when it names only Platform. */
-export function sharePlain(config: StorageConfig, repoId: string): SharePlain | null {
+/** The share that shares nothing: what stopping writes, at the next epoch. */
+export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: 1, profiles: {}, policy: null }
+
+/**
+ * What the owner shares for `repoId` (the rule dg follows too): the owner's synced effective policy
+ * for the repo (its `repo:<id>` policy, else the default) and the profiles it names, Platform
+ * needing none; {@link NOTHING_SHARED} when it names nothing but Platform. `config` is the synced
+ * config, never a device-local one.
+ */
+export function sharePlain(config: StorageConfig, repoId: string): SharePlain {
   const policy = policyForRepo(config, repoId)
-  if (policy === null) return null
-  const named = policy.targets.map((t) => config.profiles.find((p) => p.name === t)).filter((p): p is StorageProfile => p !== undefined)
-  if (!named.some((p) => p.settings.kind !== 'platform')) return null
+  if (policy === null) return NOTHING_SHARED
+  const named = policy.targets.map((t) => config.profiles.find((p) => p.name === t)).filter((p): p is StorageProfile => p !== undefined && p.settings.kind !== 'platform')
+  if (named.length === 0) return NOTHING_SHARED
   return { format: SHARE_FORMAT, version: 1, profiles: Object.fromEntries(named.map((p) => [p.name, { settings: p.settings, secrets: p.secrets }])), policy }
+}
+
+/**
+ * A share's content compared by meaning: the profile set, each one's settings and secrets (an empty
+ * secret is an absent one) and the policy. Anything else a writer adds (dg's `dg` object) and the
+ * key order do not count, so a share another client wrote is not rewritten for its bytes.
+ */
+export function shareMeaning(plain: unknown): string | null {
+  if (typeof plain !== 'object' || plain === null) return null
+  const r = plain as Record<string, unknown>
+  if (r['format'] !== SHARE_FORMAT || typeof r['profiles'] !== 'object' || r['profiles'] === null) return null
+  const profiles: Record<string, unknown> = {}
+  for (const [name, v] of Object.entries(r['profiles'] as Record<string, unknown>)) {
+    const value = (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>
+    const secrets = typeof value['secrets'] === 'object' && value['secrets'] !== null ? (value['secrets'] as Record<string, unknown>) : {}
+    profiles[name] = { settings: value['settings'] ?? null, secrets: Object.fromEntries(Object.entries(secrets).filter(([, x]) => x !== undefined && x !== null && x !== '')) }
+  }
+  return canonicalJson({ profiles, policy: r['policy'] ?? null })
 }
 
 export interface OwnerContext {
@@ -61,27 +88,42 @@ export async function reconcileRepoShare(ctx: OwnerContext, p: { readonly repoId
   const repo = decodeIdentifier(p.repoId)
   const removed = new Set(p.removed ?? [])
   const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId && !removed.has(m)).sort()
-  const grants = await ctx.port.grantsOf(ctx.ownerId, p.repoId)
-  const stale = grants.filter((g) => g.ownerId === ctx.ownerId && !members.includes(g.fields.memberId))
+  const grants = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
   const existing = await ctx.port.readShare(ctx.ownerId, p.repoId)
   const plain = sharePlain(p.config, p.repoId)
-  if (plain === null) {
-    // Nothing of the owner's to share now (Platform only, or no policy): the share and every grant go.
-    for (const g of grants.filter((g) => g.ownerId === ctx.ownerId)) await ctx.port.deleteGrant(g)
-    if (existing !== null) await ctx.port.deleteShare(existing)
-    return { granted: [], waiting: [], shared: existing !== null, epoch: null }
+  const nothing = plain.policy === null
+  const stale = grants.filter((g) => nothing || !members.includes(g.fields.memberId))
+  // Epochs only go up, whatever happened before: a share is never deleted, and a first one starts
+  // past every grant left over, so no repo storage key anyone ever held opens a later share.
+  const highest = Math.max(-1, ...grants.map((g) => g.fields.epoch))
+  const at = existing === null ? highest + 1 : Math.max(existing.fields.epoch, highest)
+  let current: unknown = null
+  if (existing !== null && existing.fields.keyId === ctx.keyId) {
+    const rsk = await repoStorageKey(ctx.E, repo, network, existing.fields.epoch)
+    try {
+      current = await openShare(rsk, { network, repoId: repo }, existing.fields).catch(() => null)
+    } finally {
+      rsk.fill(0)
+    }
   }
-  // A grant to anyone not a maintainer now (removed here, or found stale): the next epoch.
-  const bump = existing !== null && stale.length > 0
-  const epoch = existing === null ? 0 : existing.fields.epoch + (bump ? 1 : 0)
+  const shownNothing = existing === null || shareMeaning(current) === shareMeaning(NOTHING_SHARED)
+  if (nothing) {
+    // Stop sharing: the nothing share at the next epoch (unless it is already there), every grant revoked.
+    if (!shownNothing || (existing === null && grants.length > 0)) {
+      const epoch = existing === null ? at : at + 1
+      await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
+    }
+    for (const g of grants) await ctx.port.deleteGrant(g)
+    return { granted: [], waiting: [], shared: existing !== null, epoch: existing === null && grants.length === 0 ? null : at }
+  }
+  // A grant to anyone not a maintainer now (removed here, or found stale), or sharing again after a
+  // stop, or a grant past the share: the next epoch.
+  const bump = existing !== null && (stale.length > 0 || shownNothing || highest > existing.fields.epoch)
+  const epoch = bump ? at + 1 : at
   if (epoch > 0xffffffff) throw new Error('this repository changed its storage maintainers too often to share again')
   const rsk = await repoStorageKey(ctx.E, repo, network, epoch)
   try {
-    let same = false
-    if (existing !== null && !bump && existing.fields.keyId === ctx.keyId) {
-      const current = await openShare(rsk, { network, repoId: repo }, existing.fields).catch(() => null)
-      same = current !== null && canonicalJson(current) === canonicalJson(plain)
-    }
+    const same = !bump && existing !== null && existing.fields.epoch === epoch && current !== null && shareMeaning(current) === shareMeaning(plain)
     if (!same) await ctx.port.writeShare(p.repoId, await sealShare(rsk, { network, repoId: repo, epoch, keyId: ctx.keyId }, plain), existing)
     const granted: string[] = []
     const waiting: string[] = []
@@ -103,6 +145,16 @@ export async function reconcileRepoShare(ctx: OwnerContext, p: { readonly repoId
     }
     for (const g of stale) await ctx.port.deleteGrant(g)
     return { granted, waiting, shared: true, epoch }
+  } finally {
+    rsk.fill(0)
+  }
+}
+
+async function writeShare(ctx: OwnerContext, repoId: string, repo: Uint8Array, epoch: number, plain: SharePlain, existing: Awaited<ReturnType<UserSyncPort['readShare']>>): Promise<void> {
+  if (epoch > 0xffffffff) throw new Error('this repository changed its storage maintainers too often to share again')
+  const rsk = await repoStorageKey(ctx.E, repo, ctx.networkKey, epoch)
+  try {
+    await ctx.port.writeShare(repoId, await sealShare(rsk, { network: ctx.networkKey, repoId: repo, epoch, keyId: ctx.keyId }, plain), existing)
   } finally {
     rsk.fill(0)
   }
@@ -147,10 +199,13 @@ export async function readGrantedStorage(ctx: MemberContext, p: { readonly repoI
   try {
     const plain = (await openShare(rsk, { network, repoId: repo }, share.fields).catch(() => null)) as Record<string, unknown> | null
     if (plain === null || plain['format'] !== SHARE_FORMAT || typeof plain['profiles'] !== 'object' || plain['profiles'] === null) return null
+    // The nothing share: the owner stopped sharing.
+    if (plain['policy'] === null || plain['policy'] === undefined) return null
     const policy = policySchema.safeParse(plain['policy'])
     if (!policy.success) return null
     const profiles = Object.entries(plain['profiles'] as Record<string, unknown>).flatMap(([name, v]) => profileOf(name, v) ?? [])
-    if (!policy.data.targets.every((t) => profiles.some((x) => x.name === t))) return null
+    // Platform needs no profile (dg's shares name it without one).
+    if (!policy.data.targets.every((t) => t === PLATFORM_PROFILE || profiles.some((x) => x.name === t))) return null
     return { profiles, policy: policy.data, epoch: grant.fields.epoch }
   } finally {
     rsk.fill(0)
@@ -171,6 +226,9 @@ export function withGrantedStorage(config: StorageConfig, repoId: string, grante
   if (granted === null || config.repoPolicies[repoId] !== undefined) return config
   const own = new Set(config.profiles.map((p) => p.name))
   const added = granted.profiles.filter((p) => !(p.name === PLATFORM_PROFILE && own.has(PLATFORM_PROFILE))).map((p) => ({ ...p, name: sharedName(p.name) }) as StorageProfile)
+  if (granted.policy.targets.includes(PLATFORM_PROFILE) && !own.has(PLATFORM_PROFILE) && !added.some((p) => p.name === PLATFORM_PROFILE)) {
+    added.push({ name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as StorageProfile)
+  }
   const profiles = [...config.profiles.filter((p) => !added.some((a) => a.name === p.name)), ...added]
   const policy: StoragePolicy = { ...granted.policy, targets: granted.policy.targets.map(sharedName) }
   return { ...config, profiles, repoPolicies: { ...config.repoPolicies, [repoId]: policy } }

@@ -158,17 +158,27 @@ export function localAfterSave(local: StorageConfig, shown: StorageConfig, next:
   const visible = new Set(shown.profiles.map((p) => p.name))
   const nextNames = new Set(next.profiles.map((p) => p.name))
   const hidden = local.profiles.filter((p) => !visible.has(p.name) && !nextNames.has(p.name))
-  const repoPolicies = { ...next.repoPolicies }
-  for (const [repo, p] of Object.entries(local.repoPolicies)) {
-    if (shown.repoPolicies[repo] === undefined && repoPolicies[repo] === undefined) repoPolicies[repo] = p
+  // A policy or test result the page did not change keeps its local value: the synced one shown is
+  // not written over it (the local blob is what an older build here reads).
+  const edited = (a: unknown, b: unknown): boolean => canonicalJson(a ?? null) !== canonicalJson(b ?? null)
+  const fieldwise = <T>(l: Readonly<Record<string, T>>, s: Readonly<Record<string, T>>, n: Readonly<Record<string, T>>): Record<string, T> => {
+    const out: Record<string, T> = {}
+    for (const k of new Set([...Object.keys(l), ...Object.keys(s), ...Object.keys(n)])) {
+      const v = edited(s[k], n[k]) ? n[k] : l[k]
+      if (v !== undefined) out[k] = v
+    }
+    return out
   }
+  const repoPolicies = fieldwise(local.repoPolicies, shown.repoPolicies, next.repoPolicies)
+  const lastTests = fieldwise(local.lastTests, shown.lastTests, next.lastTests)
+  const defaultPolicy = edited(shown.defaultPolicy, next.defaultPolicy) ? next.defaultPolicy : local.defaultPolicy
   const profiles = [
     ...next.profiles.filter((p) => !dropCopies.has(p.name) && !keepLocal.has(p.name)),
     ...local.profiles.filter((p) => keepLocal.has(p.name)),
     ...hidden,
   ].sort((a, b) => a.name.localeCompare(b.name))
   if (profiles.length > LOCAL_PROFILE_CAP) throw new LocalProfileCapError(hidden.length)
-  return { ...next, profiles, repoPolicies }
+  return { ...next, profiles, defaultPolicy, repoPolicies, lastTests }
 }
 
 function sameProfile(a: StorageProfile, b: StorageProfile): boolean {

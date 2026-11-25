@@ -91,5 +91,16 @@ describe('the last-writer-wins slot', () => {
       expect(plan.next.entries['profile:nas']!.v).toEqual(newer)
     })
   })
-})
 
+  it('a first sync never brings back a profile deleted elsewhere (its tombstone)', () => {
+    const plan = planSlot({ slot: 'storage', local: { 'profile:a': 1 }, base: null, remote: doc({ 'profile:a': { at: 5, v: null } }), now: 10, tag, options: {} })
+    expect(plan.upload).toBe(false)
+    expect(plan.view).toEqual({})
+  })
+
+  it('keeps fields an entry carries beyond at and v, also when its value changes', () => {
+    const parsed = parseDoc({ format: 'forge-user/prefs', version: 1, entries: { a: { at: 1, v: 1, by: 'dg' } } }, 'prefs')
+    const plan = planSlot({ slot: 'prefs', local: { a: 2 }, base: baseOf({ a: 1 }, tag), remote: parsed, now: 10, tag, options: {} })
+    expect(plan.next.entries['a']).toEqual({ at: 10, v: 2, by: 'dg' })
+  })
+})

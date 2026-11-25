@@ -46,6 +46,7 @@ import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { RepoShareNotes, RotateCredentialsNote } from '@/components/storage/repo-share-notes'
 import { useRepoStorageShare } from '@/hooks/use-repo-share'
+import { useUserSyncStatus } from '@/hooks/use-user-sync'
 import { PrivateMembers } from '@/components/repo/private-members'
 import { MemberEnvOutcomeView, MemberEnvPlanView, useMemberEnvFlow } from '@/components/repo/member-env-plan'
 import type { MemberChange } from '@/lib/env/member-change'
@@ -142,6 +143,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const memberRows = members.data ?? []
   // Maintainers use the owner's storage (forge-user): the share and grants, and a removal's epoch.
   const share = useRepoStorageShare(repo)
+  // Settings sync carries this choice to the identity's other devices: the hint says so only then.
+  const syncKind = useUserSyncStatus().kind
+  const syncOn = syncKind === 'synced' || syncKind === 'syncing'
   // A removed maintainer could have copied the shared credentials: say so once.
   const [rotate, setRotate] = useState(false)
   // The identity the owner tried to add before they accepted: the invite is pending on them.
@@ -476,7 +480,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           </Card>
           {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
           {!(viewer.known && viewerRole === null) ? (
-            <Card title="Your browser pushes" hint="Only you see this.">
+            <Card title="Your browser pushes" hint={syncOn ? 'Only you see this.' : 'Only you see this: it stays in this browser.'}>
               <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
               <RepoShareNotes waiting={share.waiting} memberNeedsKey={share.memberNeedsKey} />
             </Card>

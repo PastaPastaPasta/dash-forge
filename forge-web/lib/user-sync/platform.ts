@@ -43,7 +43,6 @@ export interface UserSyncPort {
   writeState(fields: StateFields, existing: Stored<StateFields> | null): Promise<void>
   readShare(ownerId: string, repoId: string): Promise<Stored<ShareFields> | null>
   writeShare(repoId: string, fields: ShareFields, existing: Stored<ShareFields> | null): Promise<void>
-  deleteShare(existing: Stored<ShareFields>): Promise<void>
   /** The grants `ownerId` made for `repoId`. */
   grantsOf(ownerId: string, repoId: string): Promise<Stored<GrantFields>[]>
   /** `ownerId`'s grant to `memberId` for `repoId` (the unique index: grants by others cannot crowd it out). */
@@ -170,9 +169,6 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
     },
     async writeGrant(f, existing) {
       await put('grant', existing, { ...f }, { epoch: f.epoch, senderKeyId: f.senderKeyId, recipientKeyId: f.recipientKeyId, wrapped: f.wrapped })
-    },
-    async deleteShare(existing) {
-      await deleteDocumentIdempotent(sdk, signer(), { contractId, documentType: 'share', documentId: existing.id })
     },
     async deleteGrant(existing) {
       await deleteDocumentIdempotent(sdk, signer(), { contractId, documentType: 'grant', documentId: existing.id })
