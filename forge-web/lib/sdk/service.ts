@@ -1110,7 +1110,7 @@ async function seed(sdk: EvoSDK, snapshots: ContractSnapshots, outdated: Readonl
 }
 
 /** wasm-sdk's store of the protocol version it last learned (`protocol_version_store.rs`). */
-export const SDK_VERSION_KEY_PREFIX = 'dash-sdk.protocol-version.'
+const SDK_VERSION_KEY_PREFIX = 'dash-sdk.protocol-version.'
 
 /**
  * Start the next SDK for `network` at `floor` at least, before it is built. wasm-sdk seeds a new
@@ -1139,7 +1139,8 @@ export const LEARN_VERSION_MS = 5_000
 /**
  * Make sure `sdk` knows the network's protocol version before any page queries. A new SDK
  * starts at its built-in floor (rc.8: 13 on testnet) unless wasm-sdk's store in localStorage
- * has a learned one ({@link seedSdkVersion} raises it to the snapshots' version), and learns the real one from the first proved response. With every
+ * has a learned one ({@link seedSdkVersion} raises it to the snapshots' version), and learns
+ * the real one from the first proved response. With every
  * contract seeded, connecting sends none, so a page's first query is built at the floor, and
  * one the floor does not support (a `timeRange` query below 14) is refused before it is sent.
  * One proved request, only when the SDK is below `floor`, teaches it: the seeded contracts'
@@ -1392,6 +1393,10 @@ async function connectAndWarm(
   carry: Carry,
   signal: AbortSignal,
 ): Promise<Connection> {
+  const snapshots: ContractSnapshots = await loadContractSnapshots(NETWORKS[config.network].key).catch(() => ({}))
+  const floor = Math.max(0, ...Object.values(snapshots).map((s) => s.platformVersion))
+  seedSdkVersion(config.network, floor)
+  step(signal, null)
   // `banFailedAddress: false`: a failed attempt only drops the node from the SDK's sticky
   // rotation and the next attempt goes to another node (rs-dapi-client
   // `update_address_ban_status`); nothing is banned, so a burst of refusals can no longer
@@ -1407,10 +1412,6 @@ async function connectAndWarm(
   // EvoSDKOptions supports addresses AND trusted: true: connect() uses withAddresses then
   // withTrustedContext, retaining quorum verification while replacing the bootstrap list.
   // Mainnet's recorded endpoints are a quorum-key second source, not read endpoints.
-  const snapshots: ContractSnapshots = await loadContractSnapshots(NETWORKS[config.network].key).catch(() => ({}))
-  const floor = Math.max(0, ...Object.values(snapshots).map((s) => s.platformVersion))
-  seedSdkVersion(config.network, floor)
-  step(signal, null)
   const addresses = dapiReadAddresses(NETWORKS[config.network])
   const options = {
     settings: { timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false },
