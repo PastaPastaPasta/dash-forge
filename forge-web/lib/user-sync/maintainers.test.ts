@@ -179,7 +179,7 @@ describe('maintainers use the owner’s storage', () => {
     const done = await reconcileRepoShare(owner, { repoId: REPO, view: unsynced, maintainers: [ALICE, BOB] })
     expect(done).toEqual({ granted: [ALICE, BOB], waiting: [], shared: true, epoch: 0 })
     expect((await readGrantedStorage(member(BOB), { repoId: REPO, repoOwnerId: OWNER }))?.profiles.map((p) => p.name)).toEqual(['r2-main'])
-    const gone = await reconcileRepoShare(owner, { repoId: REPO, view: {}, maintainers: [ALICE], removed: [BOB] })
+    const gone = await reconcileRepoShare(owner, { repoId: REPO, view: { [`repo:${REPO}`]: { targets: [] } }, maintainers: [ALICE], removed: [BOB] })
     expect(gone.epoch).toBe(1)
     expect(await readGrantedStorage(member(BOB), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
     expect((await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER }))?.epoch).toBe(1)
@@ -247,5 +247,27 @@ describe('maintainers use the owner’s storage', () => {
     const cfg = withGrantedStorage(own, REPO, got)
     expect(cfg.profiles.find((p) => p.name === 'shared-r2-main')).toEqual(mine)
     expect(cfg.repoPolicies[REPO]?.targets).toEqual(['shared-r2-main-2', 'platform'])
+  })
+
+  it('a share of the default storage (no storage of the repo’s own) stops: nothing at the next epoch, every grant revoked, once', async () => {
+    const { platform, owner, member } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE, BOB] })
+    const { [`repo:${REPO}`]: _own, ...defaultOnly } = VIEW
+    expect(shareRule(defaultOnly, REPO)).toEqual({ kind: 'nothing', reason: 'no-repo-policy' })
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE, BOB] })
+    expect(done).toMatchObject({ granted: [], shared: true, epoch: 1, stopped: 'no-repo-policy' })
+    expect(platform.grants.size).toBe(0)
+    expect(await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
+    const writes = platform.writes
+    const again = await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE, BOB] })
+    expect(again.stopped).toBeUndefined()
+    expect(platform.writes).toBe(writes)
+  })
+
+  it('a repo with no storage of its own and no share writes nothing', async () => {
+    const { platform, owner } = identities()
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: { default: VIEW['default'], 'profile:r2-main': VIEW['profile:r2-main'] }, maintainers: [ALICE] })
+    expect(done).toEqual({ granted: [], waiting: [], shared: false, epoch: null })
+    expect(platform.writes).toBe(0)
   })
 })

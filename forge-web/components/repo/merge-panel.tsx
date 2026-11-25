@@ -245,7 +245,7 @@ export function MergePanel({
   const guard = useWriteGuard()
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
-  const { upload, question: storageQuestion, questionStep, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
+  const { upload, question: storageQuestion, questionStep, choiceFor, begin, storageNeedsUnlock, ownerStorageUnset } = useMergeUpload(repo)
   // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
   // With the method it was sized for (a squash packs none of the head's history): an estimate for
   // another method is no price for this one, and is sized again. A rebase's sizing check is also
@@ -896,7 +896,7 @@ export function MergePanel({
             <CostPreview cost={cost} />
             <span>plus the pack&apos;s storage (below)</span>
           </div>
-          <StorageRow choice={storage} allowed={allowPlatform} onAllow={setAllowTouched} disabled={busy} />
+          <StorageRow choice={storage} allowed={allowPlatform} onAllow={setAllowTouched} disabled={busy} ownerUnset={ownerStorageUnset} />
         </div>
       ) : null}
 

@@ -25,7 +25,7 @@ function liveView(entries: Readonly<Record<string, Entry>>): Record<string, unkn
 describe('the share rule both clients follow', () => {
   for (const c of fixture.cases) {
     it(c.name, () => {
-      const rule = shareRule(liveView(c.entries as Record<string, Entry>), fixture.repo)
+      const rule = shareRule(c.entries === null ? null : liveView(c.entries as Record<string, Entry>), fixture.repo)
       if (typeof c.expect === 'string') {
         expect(rule.kind).toBe(c.expect)
         return
@@ -44,7 +44,7 @@ describe('the share rule both clients follow', () => {
   })
 
   it('compares by meaning: dg extras, empty secrets and key order do not count, a rotated secret does', () => {
-    const view = liveView({ 'profile:web-r2': { at: 1, v: '@web-r2' }, default: { at: 1, v: { targets: ['web-r2'], replicas: 1, platformFallback: false } } })
+    const view = liveView({ 'profile:web-r2': { at: 1, v: '@web-r2' }, 'repo:@repo': { at: 1, v: { targets: ['web-r2'], replicas: 1, platformFallback: false } } })
     const rule = shareRule(view, fixture.repo)
     if (rule.kind !== 'content') throw new Error('expected a share')
     const base = fixture.profiles['web-r2']

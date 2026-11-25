@@ -34,7 +34,10 @@ export interface SharePlain {
 export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: 1, profiles: {}, policy: null }
 
 /** What a repository's share should hold: as it is (keep), nothing (stop sharing), or this. */
-export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing' } | { readonly kind: 'content'; readonly plain: SharePlain }
+/** Why nothing is shared: the repo has no storage of its own (`repo:<id>`), or it stores on Platform only. */
+export type NothingReason = 'no-repo-policy' | 'platform-only'
+
+export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing'; readonly reason: NothingReason } | { readonly kind: 'content'; readonly plain: SharePlain }
 
 const KEEP: ShareRule = { kind: 'keep' }
 
@@ -111,17 +114,19 @@ export function syncedProfileKind(v: unknown): 'platform' | 'storage' | null {
 
 /**
  * What the owner shares for `repoId`, by the rule dg follows too (forge-core `ShareRule::of`), over
- * the owner's synced storage slot (`view`: its live entries; null when it was not read): the
- * repo's `repo:<id>` policy, else (only when that entry is absent) the default, and the synced
- * profiles it names, as they are synced; a platform-kind profile is the `platform` target. No
- * usable policy, or one naming a profile that is not synced or does not read: keep the share as it
- * is (never a partial set). A policy naming only Platform: nothing.
+ * the owner's synced storage slot (`view`: its live entries; null when it was not read): only the
+ * storage set for this repo, its `repo:<id>` policy, and the synced profiles it names, as they are
+ * synced (a platform-kind profile is the `platform` target). Never the default or any other
+ * account-wide storage: no `repo:<id>` entry (or a tombstoned one) is nothing. A `repo:<id>` entry
+ * that does not parse, or one naming a profile that is not synced or does not read: keep the share
+ * as it is (never a partial set). A policy naming only Platform: nothing.
  */
 export function shareRule(view: Readonly<Record<string, unknown>> | null, repoId: string): ShareRule {
   if (view === null) return KEEP
   const repoKey = `repo:${repoId}`
-  const raw = Object.hasOwn(view, repoKey) ? view[repoKey] : view['default']
-  const policy = raw === undefined ? null : syncedPolicy(raw)
+  if (!Object.hasOwn(view, repoKey)) return { kind: 'nothing', reason: 'no-repo-policy' }
+  const raw = view[repoKey]
+  const policy = syncedPolicy(raw)
   if (policy === null) return KEEP
   const profiles: Record<string, { readonly settings: unknown; readonly secrets: unknown }> = {}
   const targets: string[] = []
@@ -140,7 +145,7 @@ export function shareRule(view: Readonly<Record<string, unknown>> | null, repoId
       targets.push(name)
     }
   }
-  if (Object.keys(profiles).length === 0) return { kind: 'nothing' }
+  if (Object.keys(profiles).length === 0) return { kind: 'nothing', reason: 'platform-only' }
   return { kind: 'content', plain: { format: SHARE_FORMAT, version: 1, profiles, policy: { ...(raw as object), targets } } }
 }
 
@@ -180,6 +185,8 @@ export interface Reconciled {
   /** Whether a share exists (so a removed maintainer may have seen its credentials). */
   readonly shared: boolean
   readonly epoch: number | null
+  /** This pass stopped a share that held storage (moved it to the nothing share), and why. */
+  readonly stopped?: NothingReason
 }
 
 /**
@@ -195,7 +202,9 @@ export async function reconcileRepoShare(ctx: OwnerContext, p: ReconcileInput): 
   const members = new Set(p.maintainers.filter((m) => m !== ctx.ownerId && !removed.has(m)))
   const after = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
   const unexpected = after.some((g) => !members.has(g.fields.memberId) || (done.epoch !== null && g.fields.epoch > done.epoch))
-  return unexpected ? reconcileOnce(ctx, p) : done
+  if (!unexpected) return done
+  const again = await reconcileOnce(ctx, p)
+  return done.stopped !== undefined ? { ...again, stopped: done.stopped } : again
 }
 
 type ReconcileInput = { readonly repoId: string; readonly view: Readonly<Record<string, unknown>> | null; readonly maintainers: readonly string[]; readonly removed?: readonly string[] }
@@ -242,7 +251,8 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     const epoch = existing === null ? at : at + 1
     if (write) await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
     for (const g of grants) await ctx.port.deleteGrant(g)
-    return { granted: [], waiting: [], shared: existing !== null, epoch: write ? epoch : (existing?.fields.epoch ?? null) }
+    const stopped = existing !== null && !shownNothing && rule.kind === 'nothing' ? { stopped: rule.reason } : {}
+    return { granted: [], waiting: [], shared: existing !== null, epoch: write ? epoch : (existing?.fields.epoch ?? null), ...stopped }
   }
   // A grant to anyone not a maintainer now (removed here, or found stale), or sharing again after a
   // stop, or a grant past the share: the next epoch.

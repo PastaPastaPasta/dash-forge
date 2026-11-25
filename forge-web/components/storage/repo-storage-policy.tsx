@@ -21,8 +21,14 @@ import { FiatNote } from '@/components/ui/fiat-note'
 export function RepoStoragePolicy({
   repoId,
   unlockAbove = false,
+  shareAction,
 }: {
   repoId: string
+  /**
+   * While this repo has no storage of its own: the one action that opens this editor (the owner
+   * sharing storage with maintainers, who get only storage set for the repo). Absent: the editor.
+   */
+  shareAction?: string
   /**
    * The page already offers this tab's unlock above (a locked private repo's Collaborators): one
    * unlock opens the encryption key and the storage settings alike, so say so instead of a second
@@ -36,6 +42,7 @@ export function RepoStoragePolicy({
   const [targets, setTargets] = useState<string[] | null>(null)
   const [choice, setChoice] = useState<ReplicationChoice | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  const [opened, setOpened] = useState(false)
 
   if (error) return <p className="text-dense text-danger-700 dark:text-danger-400">{error}</p>
   if (needsUnlock && unlockAbove) {
@@ -63,6 +70,13 @@ export function RepoStoragePolicy({
         No storage set up in this browser: browser pushes here would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB<FiatNote dash={PUSH_COST_DASH.perMib} />, asking first.{' '}
         <Link href="/settings/storage/" className="hit-area text-forge-700 underline dark:text-forge-400">Set up storage →</Link>
       </p>
+    )
+  }
+  if (shareAction !== undefined && override === null && !opened) {
+    return (
+      <Button size="sm" variant="primary" onClick={() => setOpened(true)} data-testid="share-repo-storage">
+        {shareAction}
+      </Button>
     )
   }
   const shown = targets ?? effective?.targets.slice() ?? []

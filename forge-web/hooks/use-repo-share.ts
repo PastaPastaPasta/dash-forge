@@ -34,6 +34,29 @@ export interface RepoShareState {
   readonly afterRemoval: (member: string) => Promise<boolean>
   /** Owner: `member` is a maintainer again (the add read back): this tab grants them again. */
   readonly afterAdd: (member: string) => void
+  /** Owner: the repo's maintainers (null until read). */
+  readonly maintainers: readonly string[] | null
+  /** Owner: maintainers holding a grant to the repo's storage. */
+  readonly granted: readonly string[]
+  /** Owner: this visit stopped a share of the default storage; said once per repo. */
+  readonly stoppedDefault: boolean
+}
+
+/** Where the one-time "stopped sharing your default storage" line was shown, per repo (additive). */
+export function stoppedDefaultKey(networkKey: string, repoId: string): string {
+  return `forge:user-sync:stopped-default:${networkKey}:${repoId}`
+}
+
+/** Whether the line was shown before; records it as shown when not. */
+export function firstStoppedNotice(networkKey: string, repoId: string): boolean {
+  try {
+    const store = typeof localStorage === 'undefined' ? null : localStorage
+    if (store === null || store.getItem(stoppedDefaultKey(networkKey, repoId)) !== null) return false
+    store.setItem(stoppedDefaultKey(networkKey, repoId), String(Date.now()))
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Members removed in this tab, per repo: never granted again from a node read that still lists them. */
@@ -60,6 +83,9 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const syncKind = useUserSyncStatus().kind
   const config = identity !== null && syncKind === 'synced' ? syncedShareView(identity) : null
   const [waiting, setWaiting] = useState<readonly string[]>([])
+  const [granted, setGranted] = useState<readonly string[]>([])
+  const [maintainers, setMaintainers] = useState<readonly string[] | null>(null)
+  const [stoppedDefault, setStoppedDefault] = useState(false)
   const [memberNeedsKey, setMemberNeedsKey] = useState(false)
   const isOwner = identity !== null && identity === repo.ownerId
 
@@ -84,9 +110,15 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     let stale = false
     void (async () => {
       if (isOwner) {
+        const listed = await readMaintainers(sdk, repo).catch(() => null)
+        if (!stale && listed !== null) setMaintainers(listed.filter((m) => m !== identity))
         if (config === null) return
         const done = await reconcile(config).catch(() => null)
-        if (!stale && done !== null) setWaiting(done.waiting)
+        if (stale || done === null) return
+        setWaiting(done.waiting)
+        setGranted(done.granted)
+        // A share of the default storage (from before only repo storage was shared) just stopped.
+        if (done.stopped === 'no-repo-policy' && firstStoppedNotice(ACTIVE_NETWORK.key, repo.repoId)) setStoppedDefault(true)
         return
       }
       const maintainers = await readMaintainers(sdk, repo).catch(() => [] as string[])
@@ -106,6 +138,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       const done = await reconcile(config).catch(() => null)
       if (done !== null) {
         setWaiting(done.waiting)
+        setGranted(done.granted)
         return done.shared
       }
       // Not reconciled here (no sync key in this tab): the next visit with one moves the epoch.
@@ -122,18 +155,30 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     [repoKey],
   )
 
-  return { waiting, memberNeedsKey, afterRemoval, afterAdd }
+  return { waiting, memberNeedsKey, afterRemoval, afterAdd, maintainers, granted, stoppedDefault }
+}
+
+/**
+ * A maintainer's grant to a repo's storage: `granted`, `none` (the owner shares nothing with this
+ * key), `no-key` (this browser holds no forge-user key), `not-maintainer`, or `off` (no sync on
+ * this network, or not read: the owner, signed out).
+ */
+export type RepoGrantStatus = 'off' | 'pending' | 'granted' | 'none' | 'no-key' | 'not-maintainer'
+
+interface GrantRead {
+  readonly status: Exclude<RepoGrantStatus, 'off' | 'pending'>
+  readonly grant: GrantedStorage | null
 }
 
 /** Grant reads in flight (one per repo and identity); a settled one is read again on the next visit. */
-const granted = new Map<string, Promise<GrantedStorage | null>>()
+const grantReads = new Map<string, Promise<GrantRead | null>>()
 /** Bumped on a lock or a key change: a grant opened before it is dropped, and a read begun before it ignored. */
 let grantGeneration = 0
 const generationListeners = new Set<() => void>()
 if (typeof window !== 'undefined') {
   const invalidate = (): void => {
     grantGeneration++
-    granted.clear()
+    grantReads.clear()
     for (const l of generationListeners) l()
   }
   onVaultLock(invalidate)
@@ -147,46 +192,58 @@ function onGrantInvalidated(listener: () => void): () => void {
   }
 }
 
+/** This maintainer's grant to `repo`'s storage, read once per visit (dropped on a lock or a key change). */
+export function useRepoGrant(repo: RepoRef | null): { readonly status: RepoGrantStatus; readonly grant: GrantedStorage | null } {
+  const { identity } = useAuth()
+  const { sdk } = useSdk()
+  const user = ACTIVE_NETWORK.v2?.user
+  // The read with the scope (network, identity, repo) and generation it was made for: used only for those.
+  const [read, setRead] = useState<{ readonly scope: string; readonly generation: number; readonly value: GrantRead | null } | null>(null)
+  const [generation, setGeneration] = useState(grantGeneration)
+  useEffect(() => onGrantInvalidated(() => setGeneration(grantGeneration)), [])
+  const scope = repo === null || identity === null ? null : `${ACTIVE_NETWORK.key}:${identity}:${repo.repoId}`
+  const applies = user !== undefined && repo !== null && identity !== null && identity !== repo.ownerId
+
+  useEffect(() => {
+    if (!applies || user === undefined || repo === null || identity === null || sdk === null || scope === null) return
+    let stale = false
+    const startedAt = grantGeneration
+    let pending = grantReads.get(scope)
+    if (pending === undefined) {
+      pending = (async (): Promise<GrantRead> => {
+        if (!(await readMaintainers(sdk, repo)).includes(identity)) return { status: 'not-maintainer', grant: null }
+        const got = await withSyncKey(DEFAULT_NETWORK, identity, async (keyId, E) => ({
+          grant: await readGrantedStorage({ port: forgeUserPort(sdk, user, null), networkKey: ACTIVE_NETWORK.key, memberId: identity, keyId, E }, { repoId: repo.repoId, repoOwnerId: repo.ownerId }),
+        }))
+        if (got === null) return { status: 'no-key', grant: null }
+        return got.grant === null ? { status: 'none', grant: null } : { status: 'granted', grant: got.grant }
+      })().catch(() => null)
+      const mine = pending
+      grantReads.set(scope, mine)
+      void mine.finally(() => {
+        if (grantReads.get(scope) === mine) grantReads.delete(scope)
+      })
+    }
+    void pending.then((value) => {
+      if (!stale && grantGeneration === startedAt) setRead((prev) => (prev !== null && prev.scope === scope && prev.generation === startedAt && prev.value === value ? prev : { scope, generation: startedAt, value }))
+    })
+    return () => {
+      stale = true
+    }
+  }, [applies, user, repo, identity, sdk, scope, generation])
+
+  if (!applies) return { status: 'off', grant: null }
+  const current = read !== null && read.scope === scope && read.generation === generation ? read.value : undefined
+  if (current === undefined) return { status: 'pending', grant: null }
+  if (current === null) return { status: 'off', grant: null }
+  return current
+}
+
 /**
  * `config` as pushes to `repo` use it: with the storage the repo's owner shared with this
  * maintainer (when this browser holds a grant to it), for this repo only.
  */
 export function useGrantedStorage(repo: RepoRef | null, config: StorageConfig | null): StorageConfig | null {
-  const { identity } = useAuth()
-  const { sdk } = useSdk()
-  const user = ACTIVE_NETWORK.v2?.user
-  // The grant with the scope (network, identity, repo) and generation it was read for: used only for those.
-  const [grant, setGrant] = useState<{ readonly scope: string; readonly generation: number; readonly value: GrantedStorage | null } | null>(null)
-  const [generation, setGeneration] = useState(grantGeneration)
-  useEffect(() => onGrantInvalidated(() => setGeneration(grantGeneration)), [])
-  const scope = repo === null || identity === null ? null : `${ACTIVE_NETWORK.key}:${identity}:${repo.repoId}`
-
-  useEffect(() => {
-    if (user === undefined || repo === null || identity === null || sdk === null || identity === repo.ownerId || scope === null) return
-    let stale = false
-    const startedAt = grantGeneration
-    let read = granted.get(scope)
-    if (read === undefined) {
-      read = (async () => {
-        if (!(await readMaintainers(sdk, repo)).includes(identity)) return null
-        return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
-          readGrantedStorage({ port: forgeUserPort(sdk, user, null), networkKey: ACTIVE_NETWORK.key, memberId: identity, keyId, E }, { repoId: repo.repoId, repoOwnerId: repo.ownerId }),
-        )
-      })().catch(() => null)
-      const mine = read
-      granted.set(scope, mine)
-      void mine.finally(() => {
-        if (granted.get(scope) === mine) granted.delete(scope)
-      })
-    }
-    void read.then((g) => {
-      if (!stale && grantGeneration === startedAt) setGrant((prev) => (prev !== null && prev.scope === scope && prev.generation === startedAt && prev.value === g ? prev : { scope, generation: startedAt, value: g }))
-    })
-    return () => {
-      stale = true
-    }
-  }, [user, repo, identity, sdk, scope, generation])
-
-  const current = grant !== null && grant.scope === scope && grant.generation === generation ? grant.value : null
-  return config === null || repo === null ? config : withGrantedStorage(config, repo.repoId, current)
+  const { grant } = useRepoGrant(repo)
+  return config === null || repo === null ? config : withGrantedStorage(config, repo.repoId, grant)
 }
