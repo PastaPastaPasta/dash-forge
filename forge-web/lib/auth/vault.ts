@@ -240,6 +240,15 @@ function syncBlobKey(network: Network, identityId: string): string {
   return `vault-sync:${network}:${identityId}`
 }
 
+/**
+ * A random id for the storage settings as sync last saw them (`lib/user-sync`): it goes whenever the
+ * blob does (discarded, dropped on a re-key, forgotten), so sync never compares a new blob with
+ * what an old one held.
+ */
+function storageSyncIdKey(network: Network, identityId: string): string {
+  return `vault-storage-sync:${network}:${identityId}`
+}
+
 /** The extra wallet grants ({@link ExtraKey}), sealed like the storage settings. */
 function extraBlobKey(network: Network, identityId: string): string {
   return `vault-extra:${network}:${identityId}`
@@ -1123,6 +1132,7 @@ export async function storeInVault(
           [extraBlobKey(network, identityId), extraBlob],
           [encryptionBlobKey(network, identityId), encBlob],
           [syncBlobKey(network, identityId), syncBlob],
+          ...(hadBlob && carried === null ? ([[storageSyncIdKey(network, identityId), undefined]] as const) : []),
           ...(staged !== undefined && (staged.keyId === secret.keyId || staged.keyId === options.dropStagedKeyId) ? ([[at, undefined]] as const) : []),
         ]
       },
@@ -1159,6 +1169,20 @@ export async function storeInVault(
  */
 export async function discardStorageBlob(network: Network, identityId: string): Promise<void> {
   await idbDelete('vault', storageBlobKey(network, identityId))
+  await idbDelete('vault', storageSyncIdKey(network, identityId))
+}
+
+/**
+ * The storage settings' sync id ({@link storageSyncIdKey}), made when `create` and none exists;
+ * null otherwise. Not secret.
+ */
+export async function storageSyncId(network: Network, identityId: string, create: boolean): Promise<string | null> {
+  const at = storageSyncIdKey(network, identityId)
+  const held = await idbGet<string>('vault', at)
+  if (typeof held === 'string' || !create) return typeof held === 'string' ? held : null
+  const id = Array.from(random(16), (b) => b.toString(16).padStart(2, '0')).join('')
+  await idbPut('vault', at, id)
+  return id
 }
 
 /**
@@ -1362,9 +1386,26 @@ export async function forgetVault(network: Network, identityId: string): Promise
   await idbDelete('vault', extraBlobKey(network, identityId))
   await idbDelete('vault', encryptionBlobKey(network, identityId))
   await idbDelete('vault', syncBlobKey(network, identityId))
+  await idbDelete('vault', storageSyncIdKey(network, identityId))
   await idbDelete('vault', stagedKey(network, identityId))
   clearSignedWrites()
+  forgetSyncRecords(identityId)
   notifyEncryptionKeyChange()
+}
+
+/** Drop this browser's settings-sync records of `identityId` (`lib/user-sync/overlay.ts`): its own keys only. */
+function forgetSyncRecords(identityId: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    const doomed: string[] = []
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i)
+      if (k?.startsWith('forge:user-sync:') && k.endsWith(`:${identityId}`)) doomed.push(k)
+    }
+    for (const k of doomed) window.localStorage.removeItem(k)
+  } catch {
+    /* storage disabled */
+  }
 }
 
 /** Drop signed-but-unconfirmed writes this browser kept for retry (no keys; still, tidy up). */

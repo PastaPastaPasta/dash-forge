@@ -82,4 +82,27 @@ describe('maintainers use the owner’s storage', () => {
     const chose = { ...own, repoPolicies: { [REPO]: own.defaultPolicy! } }
     expect(withGrantedStorage(chose, REPO, got)).toBe(chose)
   })
+
+  it('never grants a member removed here again, even when a stale read still lists them (H2)', async () => {
+    const { platform, owner, member } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE, BOB] })
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE, BOB], removed: [BOB] })
+    // A node a block behind still lists BOB: the tab's removed list keeps them out, and nothing moves again.
+    const writes = platform.writes
+    const again = await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE, BOB], removed: [BOB] })
+    expect(again).toEqual({ granted: [ALICE], waiting: [], shared: true, epoch: 1 })
+    expect(platform.writes).toBe(writes)
+    expect(await readGrantedStorage(member(BOB), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
+  })
+
+  it('a repo switched to Platform only takes back the share and every grant (M2)', async () => {
+    const { platform, owner, member } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, config: CONFIG, maintainers: [ALICE] })
+    const platformOnly: StorageConfig = { ...CONFIG, repoPolicies: { [REPO]: { targets: ['platform'], replicas: 1, platformFallback: false } }, profiles: [...CONFIG.profiles, { name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as StorageConfig['profiles'][number]] }
+    const done = await reconcileRepoShare(owner, { repoId: REPO, config: platformOnly, maintainers: [ALICE] })
+    expect(done.shared).toBe(true)
+    expect(platform.shares.size).toBe(0)
+    expect(platform.grants.size).toBe(0)
+    expect(await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
+  })
 })

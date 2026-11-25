@@ -50,12 +50,14 @@ export function parseDoc(raw: unknown, slot: string): LwwDoc {
   const rawEntries = r['entries']
   if (typeof rawEntries !== 'object' || rawEntries === null || Array.isArray(rawEntries)) throw new Error('the synced settings have no entries')
   for (const [key, e] of Object.entries(rawEntries as Record<string, unknown>)) {
-    if (typeof e !== 'object' || e === null) continue
-    const at = (e as Record<string, unknown>)['at']
-    if (typeof at !== 'number' || !Number.isFinite(at)) continue
-    entries[key] = { at, v: (e as Record<string, unknown>)['v'] ?? null }
+    // An entry this build cannot read is kept exactly as it is, and written back.
+    entries[key] = readable(e) ? { at: e.at, v: e.v ?? null } : (e as LwwEntry)
   }
   return { ...r, format: r['format'] as string, version, entries }
+}
+
+function readable(e: unknown): e is LwwEntry {
+  return typeof e === 'object' && e !== null && typeof (e as LwwEntry).at === 'number' && Number.isFinite((e as LwwEntry).at)
 }
 
 export function sameValue(a: unknown, b: unknown): boolean {
@@ -66,10 +68,8 @@ export function sameDoc(a: LwwDoc, b: LwwDoc): boolean {
   return canonicalJson(a) === canonicalJson(b)
 }
 
-/** How each key's local value is tagged for change detection, and how a local removal reads. */
+/** How a slot's keys merge. */
 export interface PlanOptions {
-  /** A key whose local value went missing since the last sync: a deletion (tombstone), or ignored. */
-  readonly tombstoneRemoved: boolean
   /**
    * List-valued keys merged element by element (by id): a local change adds and removes only
    * what changed here, keeping what another device added meanwhile.
@@ -100,8 +100,11 @@ export type Tagger = (key: string, value: unknown) => string
 
 /**
  * One slot's merge. `base` null is this device's first sync: a local key the synced copy holds with
- * another value keeps the synced value (the local one stays local), a local key it lacks, or holds
- * as a tombstone, is uploaded. Later syncs upload what changed here since `base`, at `now`.
+ * another value keeps the synced value (the local one stays local; a list is joined with it), a
+ * local key it lacks, or holds as a tombstone, is uploaded. Later syncs upload what changed here
+ * since `base`, at `now`. A key missing here is never a deletion by itself: only `deletions`, the
+ * keys the user deleted on this device (and when), become tombstones. `uploadLocal` false (values
+ * this identity never set, on a first sync) uploads nothing local.
  */
 export function planSlot(p: {
   readonly slot: string
@@ -111,34 +114,40 @@ export function planSlot(p: {
   readonly now: number
   readonly tag: Tagger
   readonly options: PlanOptions
+  readonly deletions?: Readonly<Record<string, number>>
+  readonly uploadLocal?: boolean
 }): SlotPlan {
   const remote = p.remote ?? emptyDoc(p.slot)
   const entries: Record<string, LwwEntry> = { ...remote.entries }
-  const keys = new Set([...Object.keys(p.local), ...Object.keys(p.base?.tags ?? {})])
-  for (const key of keys) {
-    const has = Object.hasOwn(p.local, key)
-    const lv = has ? p.local[key] : undefined
+  const deletions = p.deletions ?? {}
+  for (const key of new Set([...Object.keys(p.local), ...Object.keys(deletions)])) {
     const synced = entries[key]
+    if (synced !== undefined && !readable(synced)) continue
+    if (!Object.hasOwn(p.local, key)) {
+      const at = deletions[key]
+      // A delete loses to a value set elsewhere after it.
+      if (at !== undefined && synced !== undefined && synced.v !== null && at > synced.at) entries[key] = { at, v: null }
+      continue
+    }
+    if (p.base === null && p.uploadLocal === false) continue
+    const lv = p.local[key]
+    const idOf = p.options.lists?.[key]
+    const list = idOf !== undefined && synced !== undefined && Array.isArray(synced.v) && Array.isArray(lv)
     let changed: boolean
-    if (!has) changed = p.base !== null && p.options.tombstoneRemoved && synced !== undefined && synced.v !== null
-    else if (synced === undefined) changed = true
-    else if (p.base === null) changed = synced.v === null
+    if (synced === undefined) changed = true
+    else if (p.base === null) changed = synced.v === null || list
     else changed = p.base.tags[key] !== p.tag(key, lv)
     if (!changed) continue
-    const at = Math.max(p.now, (synced?.at ?? 0) + 1)
-    const idOf = p.options.lists?.[key]
-    const v = has && idOf && p.base !== null && synced?.v != null && Array.isArray(synced.v) && Array.isArray(lv)
-      ? mergeList(synced.v, lv, p.base.elements?.[key] ?? {}, idOf, (e) => p.tag(key, e))
-      : has ? lv : null
+    const v = list ? mergeList(synced!.v as unknown[], lv as unknown[], p.base?.elements?.[key] ?? {}, idOf!, (e) => p.tag(key, e)) : lv
     if (synced !== undefined && sameValue(synced.v, v)) continue
-    entries[key] = { at, v }
+    entries[key] = { at: Math.max(p.now, (synced?.at ?? 0) + 1), v }
   }
   const next: LwwDoc = { ...remote, entries }
   const view: Record<string, unknown> = {}
   const add: Record<string, unknown> = {}
   const collisions: string[] = []
   for (const [key, e] of Object.entries(entries)) {
-    if (e.v === null) continue
+    if (!readable(e) || e.v === null) continue
     view[key] = e.v
     const has = Object.hasOwn(p.local, key)
     if (!has) add[key] = e.v

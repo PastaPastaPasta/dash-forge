@@ -196,9 +196,6 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         } else {
           await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops, planned)
         }
-        if (action.role === 'maintainer' && (action.kind === 'revoke' || (action.kind === 'change' && action.to !== 'maintainer'))) {
-          setRotate(await share.afterRemoval(action.member).catch(() => false))
-        }
       }, async () => {
         // what would refuse an add before signing, checked before any environment is saved first
         if (action.kind !== 'revoke' && action.member !== repo.ownerId && (await findConsent(sdk, repo, action.member)) === null) consentMissing(new ConsentMissingError(action.member))
@@ -233,6 +230,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       invalidateMembers(repo, network)
       return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
     }, 8)
+    // Once the removal reads back: the owner's storage moves to a new epoch without them.
+    if (done.role === 'maintainer' && (done.kind === 'revoke' || (done.kind === 'change' && done.to !== 'maintainer'))) {
+      setRotate(await share.afterRemoval(done.member).catch(() => false))
+    }
     members.reload()
   }
   return (

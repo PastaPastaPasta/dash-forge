@@ -5,6 +5,7 @@
  */
 
 import type { StorageConfig } from '../storage/store'
+import { vaultLockGeneration } from '../auth/vault'
 import type { SyncOutcome } from './service'
 
 export type UserSyncStatus =
@@ -81,27 +82,39 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
   }
   const run = async (): Promise<void> => {
     let next: Request | null = { identityId, exec }
-    while (next) {
-      const { identityId, exec: current } = next
-      again = null
-      const syncedAt = 'syncedAt' in state.status ? state.status.syncedAt : null
-      try {
-        if (state.identityId === identityId) set({ ...state, status: { kind: 'syncing', syncedAt } })
-        const outcome = await current()
-        if (state.identityId === identityId) {
-          if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
-          else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage })
+    try {
+      while (next) {
+        const { identityId, exec: current } = next
+        again = null
+        const syncedAt = 'syncedAt' in state.status ? state.status.syncedAt : null
+        const generation = vaultLockGeneration()
+        try {
+          if (state.identityId === identityId) set({ ...state, status: { kind: 'syncing', syncedAt } })
+          const outcome = await current()
+          // Locked meanwhile: what the run decrypted is not kept.
+          if (vaultLockGeneration() !== generation) {
+            if (state.identityId === identityId) set({ ...state, status: { kind: 'local', syncedAt }, storage: null })
+          } else if (state.identityId === identityId) {
+            if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
+            else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage })
+          }
+        } catch (e) {
+          if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
         }
-      } catch (e) {
-        if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
+        next = again
       }
-      next = again
+    } finally {
+      // No await between the last check of `again` and this: a request made later starts a new run.
+      running = null
     }
   }
-  running = run().finally(() => {
-    running = null
-  })
+  running = run()
   return running
+}
+
+/** Forget the decrypted effective config (a lock). */
+export function dropSyncedStorage(): void {
+  if (state.storage !== null) set({ ...state, storage: null })
 }
 
 const changeListeners = new Set<() => void>()

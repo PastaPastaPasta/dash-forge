@@ -7,22 +7,21 @@
  * a minute). {@link useUserSyncStatus} is the one line Settings → Storage shows.
  */
 
-import { bytesToHex } from '@noble/hashes/utils.js'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
-import { connectionId } from '@/lib/auth/connection-id'
 import type { AuthController } from '@/lib/auth/controller'
 import type { WriteAuth } from '@/lib/sdk/write'
-import { heldSyncKeyId, onSyncKeyChange, withSyncKey } from '@/lib/auth/vault'
+import { heldSyncKeyId, onSyncKeyChange, onVaultLock, storageSyncId, withSyncKey } from '@/lib/auth/vault'
+import { deviceShortId } from '@/lib/user-sync/device'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { namedAction, spendAction } from '@/lib/spend-toast'
-import { loadStorageConfig, saveStorageConfig, type StorageConfig } from '@/lib/storage'
+import { loadStorageConfig, updateStorageConfig, type StorageConfig } from '@/lib/storage'
 import { setActive } from '@/lib/user-sync/overlay'
 import { forgeUserPort } from '@/lib/user-sync/platform'
 import { syncedAt, syncUserSettings } from '@/lib/user-sync/service'
-import { onLocalSettingsChange, requestUserSync, setSyncSubject, subscribeUserSync, userSyncStatus, type UserSyncStatus } from '@/lib/user-sync/session'
+import { dropSyncedStorage, onLocalSettingsChange, requestUserSync, setSyncSubject, subscribeUserSync, userSyncStatus, type UserSyncStatus } from '@/lib/user-sync/session'
 
 /** The least time between two syncs a tab switch starts. */
 const VISIBILITY_SYNC_MS = 60_000
@@ -40,6 +39,8 @@ export function UserSyncDriver(): null {
   useEffect(() => {
     const bump = (): void => setChanges((c) => c + 1)
     const offKey = onSyncKeyChange(bump)
+    // A lock ends this tab's access to the synced settings: the decrypted config goes with it.
+    const offLock = onVaultLock(dropSyncedStorage)
     const offLocal = onLocalSettingsChange(bump)
     let last = 0
     const onVisibility = (): void => {
@@ -50,6 +51,7 @@ export function UserSyncDriver(): null {
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       offKey()
+      offLock()
       offLocal()
       document.removeEventListener('visibilitychange', onVisibility)
     }
@@ -73,9 +75,13 @@ export function UserSyncDriver(): null {
       // The storage settings sync only where this tab can open them (a vault key, fully unlocked).
       const local =
         storage === 'vault' && unlockScope === 'full'
-          ? { load: () => loadStorageConfig(DEFAULT_NETWORK, identity), save: (c: StorageConfig) => saveStorageConfig(DEFAULT_NETWORK, identity, c) }
+          ? {
+              load: () => loadStorageConfig(DEFAULT_NETWORK, identity),
+              update: (change: (c: StorageConfig) => StorageConfig | null) => updateStorageConfig(DEFAULT_NETWORK, identity, change),
+              syncId: async () => (await storageSyncId(DEFAULT_NETWORK, identity, true))!,
+            }
           : null
-      const deviceId = bytesToHex(connectionId(ACTIVE_NETWORK.key)).slice(0, 4)
+      const deviceId = deviceShortId()
       void requestUserSync(identity, () =>
         withSyncKey(DEFAULT_NETWORK, identity, (kid, E) =>
           spendAction(namedAction('Settings synced'), (tag) =>

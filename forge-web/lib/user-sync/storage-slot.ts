@@ -9,6 +9,7 @@ import { z } from 'zod'
 
 import { policySchema, profilePublicSchema, profileSecretsSchema, validProfileName, type StoragePolicy, type StorageProfile } from '../storage/profiles'
 import type { StorageConfig } from '../storage/store'
+import { canonicalJson } from './crypto'
 
 /** The most profiles the local blob holds (`lib/storage/store.ts`): an older build refuses more. */
 export const LOCAL_PROFILE_CAP = 32
@@ -116,12 +117,36 @@ export function withAdditions(local: StorageConfig, add: Readonly<Record<string,
   return { version: 1, profiles, defaultPolicy, repoPolicies, lastTests }
 }
 
+/** A save past {@link LOCAL_PROFILE_CAP} with the profiles the view hides counted. */
+export class LocalProfileCapError extends Error {
+  constructor(hidden: number) {
+    super(`This browser keeps at most ${LOCAL_PROFILE_CAP} storage profiles, ${hidden} of them hidden here because another device deleted or replaced them. Remove a profile first.`)
+    this.name = 'LocalProfileCapError'
+  }
+}
+
 /**
  * What a Settings save of the effective config writes locally: `next`, plus the local profiles the
- * view hid (tombstoned elsewhere, or shown under a collision name) that the user did not touch.
- * `shown` is the effective config the user edited.
+ * view hid (deleted elsewhere, or replaced by a synced namesake) that the user did not touch. A
+ * local profile shown under its collision name and left as it was stays local under its own name
+ * (it is never uploaded as a copy). `shown` is the effective config the user edited.
  */
-export function localAfterSave(local: StorageConfig, shown: StorageConfig, next: StorageConfig): StorageConfig {
+export function localAfterSave(local: StorageConfig, shown: StorageConfig, next: StorageConfig, deviceId: string): StorageConfig {
+  const byName = (c: StorageConfig, name: string): StorageProfile | undefined => c.profiles.find((p) => p.name === name)
+  const keepLocal = new Set<string>()
+  const dropCopies = new Set<string>()
+  for (const own of local.profiles) {
+    const copy = collisionName(own.name, deviceId)
+    const shownCopy = byName(shown, copy)
+    if (byName(local, copy) !== undefined || shownCopy === undefined || !sameProfile(shownCopy, { ...own, name: copy })) continue
+    const nextCopy = byName(next, copy)
+    const synced = byName(shown, own.name)
+    const nextSynced = byName(next, own.name)
+    if (nextCopy === undefined || !sameProfile(nextCopy, shownCopy)) continue
+    dropCopies.add(copy)
+    // The synced namesake untouched (or removed) here: the local one keeps its name and settings.
+    if (synced === undefined || nextSynced === undefined || sameProfile(nextSynced, synced)) keepLocal.add(own.name)
+  }
   const visible = new Set(shown.profiles.map((p) => p.name))
   const nextNames = new Set(next.profiles.map((p) => p.name))
   const hidden = local.profiles.filter((p) => !visible.has(p.name) && !nextNames.has(p.name))
@@ -129,6 +154,23 @@ export function localAfterSave(local: StorageConfig, shown: StorageConfig, next:
   for (const [repo, p] of Object.entries(local.repoPolicies)) {
     if (shown.repoPolicies[repo] === undefined && repoPolicies[repo] === undefined) repoPolicies[repo] = p
   }
-  const profiles = [...next.profiles, ...hidden].slice(0, LOCAL_PROFILE_CAP).sort((a, b) => a.name.localeCompare(b.name))
+  const profiles = [
+    ...next.profiles.filter((p) => !dropCopies.has(p.name) && !keepLocal.has(p.name)),
+    ...local.profiles.filter((p) => keepLocal.has(p.name)),
+    ...hidden,
+  ].sort((a, b) => a.name.localeCompare(b.name))
+  if (profiles.length > LOCAL_PROFILE_CAP) throw new LocalProfileCapError(hidden.length)
   return { ...next, profiles, repoPolicies }
+}
+
+function sameProfile(a: StorageProfile, b: StorageProfile): boolean {
+  return a.name === b.name && canonicalJson(storageEntries({ ...EMPTY, profiles: [a] })) === canonicalJson(storageEntries({ ...EMPTY, profiles: [b] }))
+}
+
+const EMPTY: StorageConfig = { version: 1, profiles: [], defaultPolicy: null, repoPolicies: {}, lastTests: {} }
+
+/** The keys a Settings save removed (`before` to `after`): the only deletions sync turns into tombstones. */
+export function storageDeletions(before: StorageConfig, after: StorageConfig): string[] {
+  const kept = storageEntries(after)
+  return Object.keys(storageEntries(before)).filter((k) => !Object.hasOwn(kept, k))
 }

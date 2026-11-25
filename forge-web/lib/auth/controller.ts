@@ -38,7 +38,7 @@ import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, groupTrust, type ForgeIds, type Grou
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { ConsensusRefusal, KeyUnusableError, SECURITY_LEVEL, UnconfirmedWriteError, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS } from '../vendor/platform-auth/app-connect'
-import { newV2LoginRequest, readChainClock, type V2LoginRequest } from './app-connect-v2'
+import { grantedApp, newV2LoginRequest, readChainClock, type V2LoginRequest } from './app-connect-v2'
 import { clearWalletRenewal, connectionId, markWalletRenewal, walletRenewalInFlight } from './connection-id'
 import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, NAME_REGISTER_CREDITS, NAME_REGISTER_FLOOR_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
@@ -1441,7 +1441,8 @@ export class AuthController {
       chainNow: timeMs,
       identityHint: identityId,
       ...(options.callbackUrl ? { callbackUrl: options.callbackUrl } : {}),
-      ...(options.sync !== undefined ? { sync: options.sync } : {}),
+      // The same app as the grant it replaces: a wallet disables the previous key only for the same app.
+      sync: options.sync !== false && forge.user !== undefined && grantedApp(this.networkKey, identityId) === forge.user,
     })
     markWalletRenewal(this.networkKey, identityId, keyId, req.expiresAt + WALLET_RENEWAL_GRACE_MS)
     return { ...req, identityHint: identityId, replacesKeyId: keyId }

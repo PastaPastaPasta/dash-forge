@@ -43,10 +43,11 @@ export interface UserSyncPort {
   writeState(fields: StateFields, existing: Stored<StateFields> | null): Promise<void>
   readShare(ownerId: string, repoId: string): Promise<Stored<ShareFields> | null>
   writeShare(repoId: string, fields: ShareFields, existing: Stored<ShareFields> | null): Promise<void>
+  deleteShare(existing: Stored<ShareFields>): Promise<void>
   /** The grants `ownerId` made for `repoId`. */
   grantsOf(ownerId: string, repoId: string): Promise<Stored<GrantFields>[]>
-  /** The grants naming `memberId` for `repoId`, whoever made them (the reader checks the owner). */
-  grantsFor(memberId: string, repoId: string): Promise<Stored<GrantFields>[]>
+  /** `ownerId`'s grant to `memberId` for `repoId` (the unique index: grants by others cannot crowd it out). */
+  grantFor(ownerId: string, repoId: string, memberId: string): Promise<Stored<GrantFields> | null>
   writeGrant(fields: GrantFields, existing: Stored<GrantFields> | null): Promise<void>
   deleteGrant(existing: Stored<GrantFields>): Promise<void>
   /** `identityId`'s key `keyId` when it is a live forge-user ENCRYPTION key, else null. */
@@ -162,9 +163,16 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
       await put('share', existing, { repoId, ...changes }, changes)
     },
     grantsOf: (ownerId, repoId) => grants([['$ownerId', '==', ownerId], ['repoId', '==', repoId]], [['repoId', 'asc'], ['memberId', 'asc']]),
-    grantsFor: (memberId, repoId) => grants([['memberId', '==', memberId], ['repoId', '==', repoId]], [['memberId', 'asc'], ['repoId', 'asc']]),
+    async grantFor(ownerId, repoId, memberId) {
+      const doc = await one('grant', [['$ownerId', '==', ownerId], ['repoId', '==', repoId], ['memberId', '==', memberId]], [['repoId', 'asc'], ['memberId', 'asc']])
+      const g = doc ? grantOf(doc) : null
+      return g !== null && g.ownerId === ownerId && g.fields.repoId === repoId && g.fields.memberId === memberId ? g : null
+    },
     async writeGrant(f, existing) {
       await put('grant', existing, { ...f }, { epoch: f.epoch, senderKeyId: f.senderKeyId, recipientKeyId: f.recipientKeyId, wrapped: f.wrapped })
+    },
+    async deleteShare(existing) {
+      await deleteDocumentIdempotent(sdk, signer(), { contractId, documentType: 'share', documentId: existing.id })
     },
     async deleteGrant(existing) {
       await deleteDocumentIdempotent(sdk, signer(), { contractId, documentType: 'grant', documentId: existing.id })

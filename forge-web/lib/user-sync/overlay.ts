@@ -18,6 +18,8 @@ export interface SlotMeta {
   readonly keyId: number
   readonly syncedAt: number
   readonly base: SlotBase
+  /** The storage settings' sync id the base belongs to (`lib/auth/vault.ts` `storageSyncId`). */
+  readonly syncId?: string
 }
 
 export interface PrefsMeta extends SlotMeta {
@@ -31,6 +33,32 @@ export interface SyncRecord {
   readonly v: 1
   readonly storage?: SlotMeta
   readonly prefs?: PrefsMeta
+  /** Storage keys the user deleted here, and when: the only tombstones sync writes. */
+  readonly deletes?: Readonly<Record<string, number>>
+}
+
+/** Record that the user deleted `keys` from the storage settings here at `at`. */
+export function noteStorageDeletes(networkKey: string, identityId: string, keys: readonly string[], at: number): void {
+  if (keys.length === 0) return
+  const r = readRecord(networkKey, identityId)
+  updateRecord(networkKey, identityId, { deletes: { ...(r?.deletes ?? {}), ...Object.fromEntries(keys.map((k) => [k, at])) } })
+}
+
+const DEVICE_KEY = 'forge:user-sync:device'
+
+/**
+ * The identity whose first sync on this device took its preferences (they are this browser's, not
+ * any one identity's): another identity's first sync does not upload them as its own.
+ */
+export function prefsOwner(identityId: string): boolean {
+  try {
+    const s = store()
+    const first = s?.getItem(DEVICE_KEY) ?? null
+    if (first === null) s?.setItem(DEVICE_KEY, identityId)
+    return first === null || first === identityId
+  } catch {
+    return true
+  }
 }
 
 export function recordKey(networkKey: string, identityId: string): string {

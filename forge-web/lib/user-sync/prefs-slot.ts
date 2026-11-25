@@ -66,7 +66,6 @@ export function prefsEntries(raw: Readonly<Record<string, string | null>>, netwo
 
 /** List keys merge element by element: hosts and gateways by value, organizations by id. */
 export const PREFS_PLAN: PlanOptions = {
-  tombstoneRemoved: false,
   lists: {
     imageHosts: (e) => String(e),
     ipfsGateways: (e) => String(e),

@@ -17,10 +17,12 @@ import { useCallback, useSyncExternalStore } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
-import { DEFAULT_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { hasStorageBlob } from '@/lib/auth/vault'
-import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, saveStorageConfig, type StorageConfig } from '@/lib/storage'
-import { localAfterSave } from '@/lib/user-sync/storage-slot'
+import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, updateStorageConfig, type StorageConfig } from '@/lib/storage'
+import { deviceShortId } from '@/lib/user-sync/device'
+import { noteStorageDeletes } from '@/lib/user-sync/overlay'
+import { localAfterSave, storageDeletions } from '@/lib/user-sync/storage-slot'
 import { noteLocalSettingsChange, onSyncedStorage, setSyncedStorage, syncedStorage } from '@/lib/user-sync/session'
 
 const NO_SYNC = (): null => null
@@ -79,8 +81,15 @@ export function useStorageConfig(): StorageConfigState {
     async (next: StorageConfig): Promise<void> => {
       if (!storable || identity === null) throw new Error('Storage settings are kept in the vault: sign in with a stored key (not a pasted one).')
       const shown = syncedStorage(identity)
-      // The local blob keeps what the merged view hides (nothing local is dropped unseen).
-      await saveStorageConfig(DEFAULT_NETWORK, identity, shown === null ? next : localAfterSave(await loadStorageConfig(DEFAULT_NETWORK, identity), shown, next))
+      let before: StorageConfig | null = null
+      // The local blob keeps what the merged view hides (nothing local is dropped unseen); one
+      // update at a time, so a sync's additions and this save never overwrite each other.
+      await updateStorageConfig(DEFAULT_NETWORK, identity, (local) => {
+        before = local
+        return shown === null ? next : localAfterSave(local, shown, next, deviceShortId())
+      })
+      // What the user deleted here is what sync deletes everywhere (never what is merely missing).
+      noteStorageDeletes(ACTIVE_NETWORK.key, identity, storageDeletions(shown ?? before ?? EMPTY_STORAGE_CONFIG, next), Date.now())
       if (shown !== null) setSyncedStorage(identity, next)
       noteLocalSettingsChange()
       reload()

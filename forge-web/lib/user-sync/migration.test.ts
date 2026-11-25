@@ -10,12 +10,14 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { idbEntries, idbPut, resetMemoryStores } from '../idb'
-import { lockVault, storeInVault, unlockWithPassphrase } from '../auth/vault'
+import { forgetVault, lockVault, storageSyncId, storeInVault, unlockWithPassphrase } from '../auth/vault'
 import { encodeWif } from '../auth/wif'
-import { loadStorageConfig, saveStorageConfig, type StorageConfig } from '../storage/store'
+import { loadStorageConfig, saveStorageConfig, updateStorageConfig, type StorageConfig } from '../storage/store'
 import { parsePrefs, PREFS_KEY } from '../view/prefs'
 import { fakePlatform, memoryStorage } from './fake-port'
-import { readPref, recordKey, setActive } from './overlay'
+import { noteStorageDeletes, readPref, recordKey, setActive } from './overlay'
+import { openState } from './crypto'
+import { decodeIdentifier } from '../auth/base58'
 import { syncUserSettings, type SyncContext } from './service'
 import type { FakePlatform } from './fake-port'
 
@@ -79,7 +81,11 @@ function ctx(platform: FakePlatform, deviceId: string, local: Storage): SyncCont
     keyId: KEY_ID,
     E,
     deviceId,
-    storage: { load: () => loadStorageConfig(NETWORK, ID), save: (c) => saveStorageConfig(NETWORK, ID, c) },
+    storage: {
+      load: () => loadStorageConfig(NETWORK, ID),
+      update: (change) => updateStorageConfig(NETWORK, ID, change),
+      syncId: async () => (await storageSyncId(NETWORK, ID, true))!,
+    },
     localStore: local,
     now: () => 1764100000000,
   }
@@ -114,11 +120,14 @@ describe('first sync from master-format state', () => {
     const out = await syncUserSettings(ctx(platform, 'aaaa', a.local))
 
     expect(out.storage).toEqual(MASTER_CONFIG)
-    // The vault is byte-identical: nothing was added (the synced copy held nothing it lacked).
-    expect(snapshotVault(await idbEntries('vault'))).toBe(vaultBefore)
-    // localStorage: every key as it was; the only new key is sync's own record.
+    // The vault is byte-identical but for one addition, the storage settings' sync id: the sealed
+    // blob is untouched (the synced copy held nothing it lacked).
+    const after = await idbEntries('vault')
+    expect(snapshotVault(after.filter(([k]) => k !== `vault-storage-sync:${NETWORK}:${ID}`))).toBe(vaultBefore)
+    expect(after.map(([k]) => k).filter((k) => !vaultBefore.includes(JSON.stringify(k)))).toEqual([`vault-storage-sync:${NETWORK}:${ID}`])
+    // localStorage: every key as it was; the only new keys are sync's own record and device marker.
     for (const [k, v] of localBefore) expect(a.local.getItem(k)).toBe(v)
-    expect([...a.local.map.keys()].filter((k) => !localBefore.has(k))).toEqual([recordKey(NETWORK, ID)])
+    expect([...a.local.map.keys()].filter((k) => !localBefore.has(k)).sort()).toEqual(['forge:user-sync:device', recordKey(NETWORK, ID)].sort())
     // Uploaded, read back and compared before the sync was recorded.
     expect(platform.states.size).toBe(2)
     const record = JSON.parse(a.local.getItem(recordKey(NETWORK, ID))!)
@@ -203,9 +212,10 @@ describe('first sync from master-format state', () => {
     await use(b)
     await storeInVault(NETWORK, SECRET, { passphrase: 'another passphrase!' })
     await syncUserSettings(ctx(platform, 'bbbb', b.local))
-    // The user deletes home-kubo on device B (Settings removes it, and its policies, from the blob).
+    // The user deletes home-kubo on device B: Settings removes it, and its policies, and records the deletes.
     const local = await loadStorageConfig(NETWORK, ID)
     await saveStorageConfig(NETWORK, ID, { ...local, profiles: local.profiles.filter((p) => p.name !== 'home-kubo'), defaultPolicy: { targets: ['r2-main'], replicas: 1, platformFallback: false }, repoPolicies: {} })
+    noteStorageDeletes(NETWORK, ID, ['profile:home-kubo', `repo:${Object.keys(MASTER_CONFIG.repoPolicies)[0]}`], 1764100004000)
     await syncUserSettings({ ...ctx(platform, 'bbbb', b.local), now: () => 1764100005000 })
     await leave(b)
 
@@ -235,5 +245,60 @@ describe('first sync from master-format state', () => {
     expect(after.entries['trending']!.v).toBe(true)
     // ipfsPeer is not applied here.
     expect(a.local.getItem('forge.ipfsPeer')).toBe('off')
+  }, 60_000)
+
+  it('forget, then sign in again: nothing is deleted on Platform, everything comes back (C1)', async () => {
+    await syncUserSettings(ctx(platform, 'aaaa', a.local))
+    await forgetVault(NETWORK, ID)
+    await storeInVault(NETWORK, SECRET, { passphrase: 'correct horse battery' })
+    const out = await syncUserSettings({ ...ctx(platform, 'aaaa', a.local), now: () => 1764100009000 })
+    const sctx = { E, keyId: KEY_ID, identityId: decodeIdentifier(ID), network: NETWORK }
+    const synced = (await openState(sctx, platform.states.get(`${ID}/storage`)!.fields)) as { entries: Record<string, { v: unknown }> }
+    expect(Object.values(synced.entries).filter((e) => e.v === null)).toEqual([])
+    expect(out.storage).toEqual(MASTER_CONFIG)
+    expect(await loadStorageConfig(NETWORK, ID)).toEqual(MASTER_CONFIG)
+  }, 60_000)
+
+  it('a missing local blob with an old base (evicted, discarded) deletes nothing either (C1)', async () => {
+    await syncUserSettings(ctx(platform, 'aaaa', a.local))
+    await saveStorageConfig(NETWORK, ID, { version: 1, profiles: [], defaultPolicy: null, repoPolicies: {}, lastTests: {} })
+    const writes = platform.writes
+    const out = await syncUserSettings({ ...ctx(platform, 'aaaa', a.local), now: () => 1764100009000 })
+    expect(platform.writes).toBe(writes)
+    expect(out.storage).toEqual(MASTER_CONFIG)
+  }, 60_000)
+
+  it('a Settings save while a sync runs is kept, and synced next time (C2)', async () => {
+    await syncUserSettings(ctx(platform, 'aaaa', a.local))
+    await leave(a)
+    await use(b)
+    await storeInVault(NETWORK, SECRET, { passphrase: 'another passphrase!' })
+    const mine = { ...MASTER_CONFIG.profiles[1]!, name: 'mine' } as StorageConfig['profiles'][number]
+    const base = ctx(platform, 'bbbb', b.local)
+    let saved = false
+    const port = {
+      ...base.port,
+      readState: async (owner: string, slot: string) => {
+        const got = await base.port.readState(owner, slot)
+        if (slot === 'storage' && !saved) {
+          saved = true
+          await updateStorageConfig(NETWORK, ID, (c) => ({ ...c, profiles: [...c.profiles, mine] }))
+        }
+        return got
+      },
+    }
+    await syncUserSettings({ ...base, port })
+    const local = await loadStorageConfig(NETWORK, ID)
+    expect(local.profiles.map((p) => p.name)).toEqual(['home-kubo', 'mine', 'r2-main'])
+    const next = await syncUserSettings({ ...base, now: () => 1764100009000 })
+    expect(next.storage!.profiles.map((p) => p.name)).toContain('mine')
+  }, 120_000)
+
+  it('another identity’s first sync on this device does not upload this browser’s preferences as its own', async () => {
+    await syncUserSettings(ctx(platform, 'aaaa', a.local))
+    const OTHER = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
+    await storeInVault(NETWORK, { ...SECRET, identityId: OTHER }, { passphrase: 'correct horse battery' })
+    await syncUserSettings({ ...ctx(platform, 'aaaa', a.local), identityId: OTHER, port: platform.port(OTHER), storage: null })
+    expect(platform.states.has(`${OTHER}/prefs`)).toBe(false)
   }, 60_000)
 })

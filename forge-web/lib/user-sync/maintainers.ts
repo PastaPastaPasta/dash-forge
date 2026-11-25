@@ -59,17 +59,20 @@ export interface Reconciled {
 export async function reconcileRepoShare(ctx: OwnerContext, p: { readonly repoId: string; readonly config: StorageConfig; readonly maintainers: readonly string[]; readonly removed?: readonly string[] }): Promise<Reconciled> {
   const network = ctx.networkKey
   const repo = decodeIdentifier(p.repoId)
-  const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId).sort()
+  const removed = new Set(p.removed ?? [])
+  const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId && !removed.has(m)).sort()
   const grants = await ctx.port.grantsOf(ctx.ownerId, p.repoId)
   const stale = grants.filter((g) => g.ownerId === ctx.ownerId && !members.includes(g.fields.memberId))
   const existing = await ctx.port.readShare(ctx.ownerId, p.repoId)
   const plain = sharePlain(p.config, p.repoId)
   if (plain === null) {
-    // Nothing of the owner's to share now: grants to former maintainers still go.
-    for (const g of stale) await ctx.port.deleteGrant(g)
-    return { granted: [], waiting: [], shared: existing !== null, epoch: existing?.fields.epoch ?? null }
+    // Nothing of the owner's to share now (Platform only, or no policy): the share and every grant go.
+    for (const g of grants.filter((g) => g.ownerId === ctx.ownerId)) await ctx.port.deleteGrant(g)
+    if (existing !== null) await ctx.port.deleteShare(existing)
+    return { granted: [], waiting: [], shared: existing !== null, epoch: null }
   }
-  const bump = existing !== null && (stale.length > 0 || (p.removed ?? []).length > 0)
+  // A grant to anyone not a maintainer now (removed here, or found stale): the next epoch.
+  const bump = existing !== null && stale.length > 0
   const epoch = existing === null ? 0 : existing.fields.epoch + (bump ? 1 : 0)
   if (epoch > 0xffffffff) throw new Error('this repository changed its storage maintainers too often to share again')
   const rsk = await repoStorageKey(ctx.E, repo, network, epoch)
@@ -128,11 +131,8 @@ export interface GrantedStorage {
 export async function readGrantedStorage(ctx: MemberContext, p: { readonly repoId: string; readonly repoOwnerId: string }): Promise<GrantedStorage | null> {
   const network = ctx.networkKey
   const repo = decodeIdentifier(p.repoId)
-  const grants = (await ctx.port.grantsFor(ctx.memberId, p.repoId)).filter(
-    (g) => g.ownerId === p.repoOwnerId && g.fields.memberId === ctx.memberId && g.fields.repoId === p.repoId && g.fields.recipientKeyId === ctx.keyId,
-  )
-  const grant = grants.sort((a, b) => b.fields.epoch - a.fields.epoch)[0]
-  if (!grant) return null
+  const grant = await ctx.port.grantFor(p.repoOwnerId, p.repoId, ctx.memberId)
+  if (grant === null || grant.ownerId !== p.repoOwnerId || grant.fields.memberId !== ctx.memberId || grant.fields.recipientKeyId !== ctx.keyId) return null
   const share = await ctx.port.readShare(p.repoOwnerId, p.repoId)
   if (share === null || share.ownerId !== p.repoOwnerId || share.fields.epoch !== grant.fields.epoch || share.fields.keyId !== grant.fields.senderKeyId) return null
   const ownerKey = await ctx.port.syncKey(p.repoOwnerId, grant.fields.senderKeyId)

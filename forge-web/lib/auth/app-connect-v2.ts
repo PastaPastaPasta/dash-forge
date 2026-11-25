@@ -143,6 +143,30 @@ export function syncContract(forge: ForgeIds, sync = true): string | null {
   return sync && forge.user !== undefined ? forge.user : null
 }
 
+/** Where the app of this browser's wallet grant for an identity is noted (removed with the vault). */
+function grantedAppKey(networkKey: string, identityId: string): string {
+  return `forge:user-sync:app:${networkKey}:${identityId}`
+}
+
+/** Note the app a stored grant's request named (`syncContract`: forge-user, or null for forge-core). */
+export function recordGrantedApp(networkKey: string, identityId: string, syncContract: string | null): void {
+  try {
+    if (syncContract === null) localStorage.removeItem(grantedAppKey(networkKey, identityId))
+    else localStorage.setItem(grantedAppKey(networkKey, identityId), syncContract)
+  } catch {
+    /* storage refused: a renewal then asks as before sync */
+  }
+}
+
+/** The forge-user contract a stored grant's request named, or null (forge-core, or not noted). */
+export function grantedApp(networkKey: string, identityId: string): string | null {
+  try {
+    return localStorage.getItem(grantedAppKey(networkKey, identityId))
+  } catch {
+    return null
+  }
+}
+
 export interface V2LoginRequest {
   readonly request: AppConnectRequest
   /** forge-user, when the request asks for its encryption key; null otherwise. */

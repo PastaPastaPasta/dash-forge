@@ -56,6 +56,7 @@ import {
   type PollStatus,
   type V2Grant,
   type V2LoginRequest,
+  recordGrantedApp,
   wipeGrant,
 } from '@/lib/auth/app-connect-v2'
 import { connectionId } from '@/lib/auth/connection-id'
@@ -206,6 +207,8 @@ export function WalletConnectFlow({
    * expired unanswered, is asked once more without it (docs/design/identity-synced-state.md §8).
    */
   const syncBinding = useRef(true)
+  /** The app the held grant's request named: forge-user when it asked for the sync key. */
+  const grantApp = useRef<string | null>(null)
   const syncRetried = useRef(false)
   const retryWithoutSync = useCallback((): boolean => {
     if (syncRetried.current || forge?.user === undefined) return false
@@ -275,6 +278,7 @@ export function WalletConnectFlow({
         ...(renewalUnlock ? { renewalUnlock } : {}),
         ...(drop ? { dropUnopened: true } : {}),
       })
+      recordGrantedApp(ACTIVE_NETWORK.key, g.identityId, grantApp.current)
       dropGrant()
       // Stored: the controller already ended a wallet renewal's mark.
       renewalReq.current = null
@@ -396,6 +400,7 @@ export function WalletConnectFlow({
       setStep(requestStep(req))
       const granted = await awaitGrantWithWake(sdk, req, pollOptions(forge))
       if (signal.aborted) return
+      grantApp.current = req.syncContract
       grant.current = granted
       const profile = await responderProfile(sdk, granted.identityId, ACTIVE_NETWORK.network, latest.current.stored)
       if (signal.aborted) return
@@ -424,6 +429,7 @@ export function WalletConnectFlow({
       // The wallet has answered, so it has disabled the old key: store the new one now, even if
       // the sheet is closing. When that needs a decision or an unlock, the grant is held for it.
       renewalReq.current = req
+      grantApp.current = req.syncContract
       grant.current = granted
       setStep({ kind: 'renew-store' })
       await finishRef.current(false)
@@ -688,7 +694,15 @@ export function WalletConnectFlow({
       ) : null}
       <ErrorBox error={error} />
       {error ? (
-        <Button variant="primary" className="w-full" onClick={restart}>
+        <Button
+          variant="primary"
+          className="w-full"
+          onClick={() => {
+            // Once: the next request is the one without settings sync, which any wallet reads.
+            retryWithoutSync()
+            restart()
+          }}
+        >
           <RefreshCw className="h-4 w-4" aria-hidden /> Try again
         </Button>
       ) : null}

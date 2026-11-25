@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useStorageConfig } from '@/hooks/use-storage-config'
-import { heldSyncKeyId, withSyncKey } from '@/lib/auth/vault'
+import { heldSyncKeyId, onSyncKeyChange, onVaultLock, withSyncKey } from '@/lib/auth/vault'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import type { RepoRef } from '@/lib/repo'
 import { readMaintainers } from '@/lib/repo/members'
@@ -20,7 +20,7 @@ import { namedAction, spendAction } from '@/lib/spend-toast'
 import type { StorageConfig } from '@/lib/storage'
 import { readGrantedStorage, reconcileRepoShare, withGrantedStorage, type GrantedStorage, type Reconciled } from '@/lib/user-sync/maintainers'
 import { forgeUserPort } from '@/lib/user-sync/platform'
-import { quietSigner } from '@/hooks/use-user-sync'
+import { quietSigner, useUserSyncStatus } from '@/hooks/use-user-sync'
 
 export interface RepoShareState {
   /** Owner: maintainers with no forge-user key yet. */
@@ -34,26 +34,46 @@ export interface RepoShareState {
   readonly afterRemoval: (member: string) => Promise<boolean>
 }
 
+/** Members removed in this tab, per repo: never granted again from a node read that still lists them. */
+const removedHere = new Map<string, Set<string>>()
+/** One reconcile per repo at a time; the next waits for the last. */
+const reconciling = new Map<string, Promise<unknown>>()
+
+function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const next = (reconciling.get(key) ?? Promise.resolve()).catch(() => undefined).then(run)
+  reconciling.set(key, next)
+  void next.finally(() => {
+    if (reconciling.get(key) === next) reconciling.delete(key)
+  }).catch(() => undefined)
+  return next
+}
+
 export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const { identity, signer, controller } = useAuth()
   const { sdk } = useSdk()
   const { config } = useStorageConfig()
+  // The owner's effective config only once this tab's sync settled (not the local one before it).
+  const syncKind = useUserSyncStatus().kind
+  const settled = syncKind === 'synced' || syncKind === 'local' || syncKind === 'off'
   const user = ACTIVE_NETWORK.v2?.user
   const [waiting, setWaiting] = useState<readonly string[]>([])
   const [memberNeedsKey, setMemberNeedsKey] = useState(false)
   const isOwner = identity !== null && identity === repo.ownerId
 
+  const repoKey = `${ACTIVE_NETWORK.key}:${repo.repoId}`
   const reconcile = useCallback(
-    async (removed: readonly string[], cfg: StorageConfig): Promise<Reconciled | null> => {
-      if (user === undefined || identity === null || sdk === null || signer === null || !isOwner) return null
-      const maintainers = await readMaintainers(sdk, repo)
-      return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
-        spendAction(namedAction('Storage shared with maintainers'), (tag) =>
-          reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, config: cfg, maintainers: maintainers.filter((m) => !removed.includes(m)), removed }),
-        ),
-      )
-    },
-    [user, identity, sdk, signer, controller, isOwner, repo],
+    (cfg: StorageConfig): Promise<Reconciled | null> =>
+      oneAtATime(repoKey, async () => {
+        if (user === undefined || identity === null || sdk === null || signer === null || !isOwner) return null
+        const maintainers = await readMaintainers(sdk, repo)
+        const removed = [...(removedHere.get(repoKey) ?? [])]
+        return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
+          spendAction(namedAction('Storage shared with maintainers'), (tag) =>
+            reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, config: cfg, maintainers, removed }),
+          ),
+        )
+      }),
+    [user, identity, sdk, signer, controller, isOwner, repo, repoKey],
   )
 
   useEffect(() => {
@@ -61,8 +81,8 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     let stale = false
     void (async () => {
       if (isOwner) {
-        if (config === null) return
-        const done = await reconcile([], config).catch(() => null)
+        if (config === null || !settled) return
+        const done = await reconcile(config).catch(() => null)
         if (!stale && done !== null) setWaiting(done.waiting)
         return
       }
@@ -73,11 +93,12 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     return () => {
       stale = true
     }
-  }, [user, identity, sdk, isOwner, config, reconcile, repo])
+  }, [user, identity, sdk, isOwner, config, settled, reconcile, repo])
 
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
-      const done = config === null ? null : await reconcile([member], config).catch(() => null)
+      removedHere.set(repoKey, new Set([...(removedHere.get(repoKey) ?? []), member]))
+      const done = config === null ? null : await reconcile(config).catch(() => null)
       if (done !== null) {
         setWaiting(done.waiting)
         return done.shared
@@ -86,13 +107,18 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       if (user === undefined || sdk === null) return false
       return (await forgeUserPort(sdk, user, null).readShare(repo.ownerId, repo.repoId).catch(() => null)) !== null
     },
-    [config, reconcile, user, sdk, repo],
+    [config, reconcile, user, sdk, repo, repoKey],
   )
 
   return { waiting, memberNeedsKey, afterRemoval }
 }
 
 const granted = new Map<string, Promise<GrantedStorage | null>>()
+// The owner's credentials go with the unlock that opened them, and with the key.
+if (typeof window !== 'undefined') {
+  onVaultLock(() => granted.clear())
+  onSyncKeyChange(() => granted.clear())
+}
 
 /**
  * `config` as pushes to `repo` use it: with the storage the repo's owner shared with this
