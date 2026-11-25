@@ -47,9 +47,21 @@ export function RotateCredentialsNote(): JSX.Element {
 /** Said once per repo when the owner's reconcile stopped a share of the default storage. */
 export function StoppedShareLine({ line }: { readonly line: 'default' | 'removed' }): JSX.Element {
   return (
-    <p className="mb-3 text-dense text-anvil-700 dark:text-anvil-200" data-testid={line === 'default' ? 'stopped-default-share' : 'stopped-share'}>
-      {line === 'default' ? "Stopped sharing your default storage with this repo's maintainers. Set storage for this repo to share it." : "Stopped sharing storage with this repo's maintainers."}
-    </p>
+    <div className="mb-3 text-dense text-anvil-700 dark:text-anvil-200">
+      <p data-testid={line === 'default' ? 'stopped-default-share' : 'stopped-share'}>
+        {line === 'default' ? "Stopped sharing your default storage with this repo's maintainers. Set storage for this repo to share it." : "Stopped sharing storage with this repo's maintainers."}
+      </p>
+      <details className="mt-1" data-testid="stopped-share-rotate">
+        <summary className="cursor-pointer">The keys they saw</summary>
+        <p className="mt-1">
+          Maintainers could read the storage keys shared until now.{' '}
+          <a href={DOCS.rotateStorage} className="text-forge-700 underline dark:text-forge-400" target="_blank" rel="noreferrer">
+            Rotate them
+          </a>{' '}
+          if that matters to you.
+        </p>
+      </details>
+    </div>
   )
 }
 
@@ -110,15 +122,16 @@ export function storageCardView(p: {
   /** The repo's own storage names a place that is not Platform (something to share). */
   readonly repoStorageShareable: boolean
   readonly maintainers: number
+  /** Whether the share lends storage as it stands (a kept one too); null before it was reconciled: the policy says. */
+  readonly lends?: boolean | null
 }): {
   readonly hint: string
   readonly shareAction?: string
   readonly details: boolean
 } {
   if (!p.syncOn) return { hint: LOCAL_PUSHES_HINT, details: false }
-  if (p.owner && p.hasRepoStorage) {
-    return p.repoStorageShareable && p.maintainers > 0 ? { hint: "Shared with this repo's maintainers.", details: true } : { hint: 'Only you see this.', details: false }
-  }
-  if (p.owner && p.maintainers > 0) return { hint: 'Only you see this.', shareAction: SHARE_ACTION, details: false }
+  const lends = p.lends ?? (p.hasRepoStorage && p.repoStorageShareable)
+  if (p.owner && lends && p.maintainers > 0) return { hint: "Shared with this repo's maintainers.", details: true }
+  if (p.owner && !p.hasRepoStorage && p.maintainers > 0) return { hint: 'Only you see this.', shareAction: SHARE_ACTION, details: false }
   return { hint: 'Only you see this.', details: false }
 }

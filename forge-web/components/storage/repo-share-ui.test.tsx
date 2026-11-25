@@ -12,7 +12,8 @@ import { EMPTY_STORAGE_CONFIG, type StorageConfig } from '@/lib/storage'
 const state = vi.hoisted(() => ({ config: null as StorageConfig | null }))
 vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: state.config, storable: true, save: vi.fn(), error: null, needsUnlock: false }) }))
 
-import { LOCAL_PUSHES_HINT, SHARE_ACTION, storageCardView } from './repo-share-notes'
+import { LOCAL_PUSHES_HINT, SHARE_ACTION, StoppedShareLine, storageCardView } from './repo-share-notes'
+import { DOCS } from '@/lib/docs-links'
 import { RepoStoragePolicy } from './repo-storage-policy'
 import { OWNER_STORAGE_UNSET, StorageRow } from '@/components/repo/merge-upload'
 import { noteStopped, stoppedDefaultKey, takeStoppedNotice } from '@/hooks/use-repo-share'
@@ -49,6 +50,13 @@ describe('the "Your browser pushes" card by case', () => {
     expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 1 })).toEqual({ hint: "Shared with this repo's maintainers.", details: true })
   })
 
+  it('follows the share as it stands once reconciled: a kept share still shared, a stopped one not', () => {
+    const shared = { hint: "Shared with this repo's maintainers.", details: true }
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: false, maintainers: 2, lends: true })).toEqual(shared)
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 2, lends: false })).toEqual({ hint: 'Only you see this.', details: false })
+    expect(storageCardView({ syncOn: false, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 2, lends: true })).toEqual({ hint: LOCAL_PUSHES_HINT, details: false })
+  })
+
   it('says shared only with maintainers and a place that is not Platform', () => {
     const alone = { hint: 'Only you see this.', details: false }
     expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 0 })).toEqual(alone)
@@ -74,6 +82,17 @@ describe('the per-repo editor', () => {
     await act(async () => root.render(<RepoStoragePolicy repoId="r" shareAction={SHARE_ACTION} />))
     expect(host.querySelector('[data-testid="share-repo-storage"]')).toBeNull()
     expect(host.querySelector('[data-testid="repo-storage-policy"]')).not.toBeNull()
+  })
+})
+
+describe('the stop line', () => {
+  it('points, collapsed, to rotating the keys maintainers saw', async () => {
+    for (const line of ['default', 'removed'] as const) {
+      await act(async () => root.render(<StoppedShareLine line={line} />))
+      const more = host.querySelector('[data-testid="stopped-share-rotate"]') as HTMLDetailsElement
+      expect(more.open).toBe(false)
+      expect(more.querySelector('a')?.getAttribute('href')).toBe(DOCS.rotateStorage)
+    }
   })
 })
 

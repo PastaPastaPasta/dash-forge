@@ -28,7 +28,7 @@ vi.mock('@/lib/user-sync/maintainers', async (load) => {
   return { ...real, readGrantedStorage: fake.granted }
 })
 
-import { noteStopped, stoppedDefaultKey, useRepoGrant, useStoppedShareNotice } from './use-repo-share'
+import { noteStopped, stoppedDefaultKey, useRepoGrant, useRepoStorageShare, useStoppedShareNotice } from './use-repo-share'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const repo = { forge: { core: 'core' }, repoId: 'r', ownerId: 'owner', name: 'repo', visibility: 'public' } as RepoRef
@@ -119,5 +119,22 @@ describe('the stopped-sharing notice on the page', () => {
     fake.identity = repo.ownerId
     await act(async () => root.render(<Notice visible />))
     expect(line).toBe('default')
+  })
+})
+
+describe('the owner’s maintainer list', () => {
+  it('is read again after a maintainer is added while Settings stays open', async () => {
+    fake.identity = repo.ownerId
+    fake.maintainers.mockResolvedValue([])
+    let state: ReturnType<typeof useRepoStorageShare> | null = null
+    function Owner(): null {
+      state = useRepoStorageShare(repo)
+      return null
+    }
+    await act(async () => root.render(<Owner />))
+    expect(state!.maintainers).toEqual([])
+    fake.maintainers.mockResolvedValue(['m1'])
+    await act(async () => state!.afterAdd('m1'))
+    expect(state!.maintainers).toEqual(['m1'])
   })
 })

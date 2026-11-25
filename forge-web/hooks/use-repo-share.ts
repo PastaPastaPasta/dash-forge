@@ -38,6 +38,8 @@ export interface RepoShareState {
   readonly maintainers: readonly string[] | null
   /** Owner: maintainers holding a grant to the repo's storage. */
   readonly granted: readonly string[]
+  /** Owner: whether the share lends storage as it stands after this tab's last reconcile (null: not yet). */
+  readonly lends: boolean | null
 }
 
 /** Where the one-time "stopped sharing your default storage" line was shown, per repo (additive). */
@@ -154,6 +156,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const removedKeys = identity !== null && syncKind === 'synced' ? syncedRemovedKeys(identity) : null
   const [waiting, setWaiting] = useState<readonly string[]>([])
   const [granted, setGranted] = useState<readonly string[]>([])
+  const [lends, setLends] = useState<boolean | null>(null)
   const [maintainers, setMaintainers] = useState<readonly string[] | null>(null)
   const [memberNeedsKey, setMemberNeedsKey] = useState(false)
   const isOwner = identity !== null && identity === repo.ownerId
@@ -189,6 +192,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
         if (stale || done === null) return
         setWaiting(done.waiting)
         setGranted(done.granted)
+        setLends(done.lends)
         return
       }
       const maintainers = await readMaintainers(sdk, repo).catch(() => [] as string[])
@@ -200,6 +204,13 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     }
   }, [user, identity, sdk, isOwner, config, removedKeys, reconcile, repo])
 
+  // The owner's maintainers again, after this tab added or removed one (the card counts them).
+  const refreshMaintainers = useCallback(async (): Promise<void> => {
+    if (user === undefined || identity === null || sdk === null || !isOwner) return
+    const listed = await readMaintainers(sdk, repo).catch(() => null)
+    if (listed !== null) setMaintainers(listed.filter((m) => m !== identity))
+  }, [user, identity, sdk, isOwner, repo])
+
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
       removedHere.set(repoKey, new Set([...(removedHere.get(repoKey) ?? []), member]))
@@ -207,26 +218,39 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       // and the removed member's grant still goes, at the next epoch.
       const done = await reconcile(config, removedKeys).catch(() => null)
       if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
+      void refreshMaintainers()
       if (done !== null) {
         setWaiting(done.waiting)
         setGranted(done.granted)
+        setLends(done.lends)
         return done.shared
       }
       // Not reconciled here (no sync key in this tab): the next visit with one moves the epoch.
       if (user === undefined || sdk === null) return false
       return (await forgeUserPort(sdk, user, null).readShare(repo.ownerId, repo.repoId).catch(() => null)) !== null
     },
-    [config, removedKeys, reconcile, user, sdk, repo, repoKey],
+    [config, removedKeys, reconcile, user, sdk, repo, repoKey, refreshMaintainers],
   )
 
   const afterAdd = useCallback(
     (member: string): void => {
       removedHere.get(repoKey)?.delete(member)
+      void (async () => {
+        await refreshMaintainers()
+        // The new maintainer gets the repo's storage now (as `dg collab add` does), not on the next visit.
+        if (config === null) return
+        const done = await reconcile(config, removedKeys).catch(() => null)
+        if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
+        if (done === null) return
+        setWaiting(done.waiting)
+        setGranted(done.granted)
+        setLends(done.lends)
+      })()
     },
-    [repoKey],
+    [repoKey, refreshMaintainers, config, removedKeys, reconcile, repo],
   )
 
-  return { waiting, memberNeedsKey, afterRemoval, afterAdd, maintainers, granted }
+  return { waiting, memberNeedsKey, afterRemoval, afterAdd, maintainers, granted, lends }
 }
 
 /**
