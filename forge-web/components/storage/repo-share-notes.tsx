@@ -5,6 +5,8 @@
  * (docs/design/identity-synced-state.md §5): collapsed, and nothing when there is nothing to say.
  */
 
+import Link from 'next/link'
+
 import { Author } from '@/components/author'
 import { DOCS } from '@/lib/docs-links'
 
@@ -28,7 +30,7 @@ export function RepoShareNotes({ waiting, memberNeedsKey }: { waiting: readonly 
   if (memberNeedsKey) {
     return (
       <details className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="share-needs-key">
-        <summary className="cursor-pointer coarse:py-2">The owner&apos;s storage reaches you after you sign in with your Dash wallet once</summary>
+        <summary className="cursor-pointer coarse:py-2">If the owner shares storage for this repo, you get it after signing in with your Dash wallet once</summary>
         <p className="pt-1">Until then, your browser pushes here use your own storage settings.</p>
       </details>
     )
@@ -39,7 +41,7 @@ export function RepoShareNotes({ waiting, memberNeedsKey }: { waiting: readonly 
 export function RotateCredentialsNote(): JSX.Element {
   return (
     <p className="mt-3 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="rotate-credentials">
-      They could use your shared storage until now: <a href={DOCS.rotateStorage} className="text-forge-700 underline dark:text-forge-400" target="_blank" rel="noreferrer">rotate those storage keys</a>.
+      They could use your shared storage until now: <Link prefetch={false} href={DOCS.rotateStorage} className="text-forge-700 underline dark:text-forge-400" target="_blank" rel="noreferrer noopener">rotate those storage keys</Link>.
     </p>
   )
 }
@@ -59,9 +61,9 @@ export function StoppedShareLine({ line }: { readonly line: keyof typeof STOPPED
         <summary className="cursor-pointer">The keys they saw</summary>
         <p className="mt-1">
           Maintainers could read the storage keys shared until now.{' '}
-          <a href={DOCS.rotateStorage} className="text-forge-700 underline dark:text-forge-400" target="_blank" rel="noreferrer">
+          <Link prefetch={false} href={DOCS.rotateStorage} className="text-forge-700 underline dark:text-forge-400" target="_blank" rel="noreferrer noopener">
             Rotate them
-          </a>{' '}
+          </Link>{' '}
           if that matters to you.
         </p>
       </details>
@@ -100,9 +102,9 @@ export function RepoShareDetails({ granted, waiting }: { granted: readonly strin
         ) : null}
         <p>
           Removing a maintainer ends their access to it from then on. They could have copied the keys, so{' '}
-          <a href={DOCS.rotateStorage} className="text-forge-700 underline dark:text-forge-400" target="_blank" rel="noreferrer">
+          <Link prefetch={false} href={DOCS.rotateStorage} className="text-forge-700 underline dark:text-forge-400" target="_blank" rel="noreferrer noopener">
             rotate them
-          </a>{' '}
+          </Link>{' '}
           after.
         </p>
       </div>

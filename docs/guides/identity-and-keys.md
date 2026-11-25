@@ -369,7 +369,7 @@ On testnet, a wallet sign-in can carry your settings to every device where you s
 
 **What follows you.**
 
-- **Storage**: your storage profiles with their credentials and your default storage, in the web app and in `dg`, and the web app's per-repository choices. `dg` merges them with `storage.toml`, where `storage.toml`'s profile wins over a synced one of the same name, and never rewrites that file; `dg storage list` says where each profile comes from (`local`, `synced`, `local+synced`, …).
+- **Storage**: your storage profiles with their credentials and your default storage, in the web app and in `dg`, and the per-repository storage you set in the web app or with `dg storage share`. On a repository you own, that per-repository storage is also what its maintainers get ([Storage for maintainers](collaborating.md#storage-for-maintainers-testnet)); your default storage is never shared. `dg` merges them with `storage.toml`, where `storage.toml`'s profile wins over a synced one of the same name, and never rewrites that file; `dg storage list` says where each profile comes from (`local`, `synced`, `local+synced`, …).
 - **Display preferences**, in the web app only: diff layout, whitespace and colour palette, the merge commit name and email, fiat display, whether your stars count toward Trending, image hosts you allowed, IPFS gateways and the organizations you connected in this browser. Whether this browser reads packs from IPFS peers stays per device.
 
 Nothing local is deleted: the first sync uploads what this device has and keeps the local copy, and the web app uses the synced copy only once it reads back as written.

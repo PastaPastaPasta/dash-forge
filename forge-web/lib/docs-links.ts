@@ -34,7 +34,7 @@ export const DOCS = {
   /** What to do when a key may be compromised (disable all other keys, replace the encryption key). */
   revokeKeys: '/docs/revoke-keys/',
   /** After removing a maintainer who could use your storage: roll its keys and tokens. */
-  rotateStorage: `${REPO_URL}/blob/master/docs/guides/rotate-storage-credentials.md`,
+  rotateStorage: '/docs/rotate-storage-credentials/',
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
 } as const

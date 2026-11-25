@@ -51,7 +51,7 @@ Method:
 | 35 | All other `dg` invocations (≈1,930) in README, docs/, action/, check-action/, tools/, services/, integrations/, e2e/, crates/ | — | ok | No unknown subcommand, flag or extra positional argument after the hand review. |
 | 36 | Other `dg` help text (251 commands): summaries, flags, value names | `dg … --help` | ok | Nothing else stale, and no "gateway" for dash.site. "Gateway" means a git mirror (`verify-mirror`) or an IPFS gateway, both correct. `help_lint` covers the banned jargon. |
 | 37 | "On testnet it is the deployer … `3pjHayts…`" (group owner, testnet only) | `docs/guides/identity-and-keys.md:363` | stale (noted for guides-identity) | Mainnet is live; its group owner is `CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y` (`forge-contracts/deployments/mainnet.json:357`). The paragraph names only testnet's. |
-| 38 | Maintainer storage sharing in command docs | — | deferred | Another thread is changing it. No such passage was edited here. |
+| 38 | Maintainer storage sharing in command docs | — | deferred → see maintainer-sharing.md #18 | Another thread is changing it. No such passage was edited here. |
 
 ## Product questions
 
