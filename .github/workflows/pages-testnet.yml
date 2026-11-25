@@ -38,9 +38,11 @@ on:
 permissions:
   contents: read
 
+# Serialized and never cut off, like pages.yml: only the newest waiting run is kept, so the last
+# merge always deploys and two pushes never race on the site repository's gh-pages branch.
 concurrency:
   group: pages-testnet
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -131,6 +133,22 @@ jobs:
           path: site
       - name: Check the downloaded export
         run: test -s site/.well-known/security.txt && test -s site/forge-manifest.json
+      # A re-run of an old push run must not put an older commit back on the site.
+      - name: Refuse to deploy over a newer commit
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
+          SHA: ${{ github.sha }}
+        run: |
+          live="$(curl -fsSL --retry 3 --retry-all-errors -A 'Mozilla/5.0' "${SITE_URL%/}/forge-manifest.json" | jq -r '.commit // empty')" || live=""
+          if [ -n "$live" ] && [ "$live" != "$SHA" ]; then
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${SHA}...${live}" -q .status)" || status=""
+            if [ "$status" = ahead ]; then
+              echo "::error title=Older commit::${SITE_URL} serves ${live}, which is newer than ${SHA}"
+              exit 1
+            fi
+          fi
       - name: Push to the site repository
         env:
           DEPLOY_KEY: ${{ secrets.TESTNET_SITE_DEPLOY_KEY }}
@@ -179,18 +197,21 @@ jobs:
           git commit -q -m "deploy ${SHA}"
           git push -q origin gh-pages
           du -sh --exclude=.git .
-      - name: Check the live site
-        continue-on-error: true
+      # The deploy is done only when the site serves it. Pages' CDN caches for up to 10 minutes.
+      - name: Check the live site serves this commit
         env:
           SITE_URL: ${{ vars.TESTNET_SITE_URL || 'https://testnet-forge.dashhq.org' }}
           SHA: ${{ github.sha }}
         run: |
-          for _ in $(seq 1 30); do
-            if curl -fsSL "${SITE_URL%/}/forge-manifest.json" 2>/dev/null | grep -q "\"commit\": \"$SHA\""; then
-              echo "live: $SHA"
+          url="${SITE_URL%/}/forge-manifest.json"
+          for _ in $(seq 1 45); do
+            live="$(curl -fsSL -A 'Mozilla/5.0' "$url" 2>/dev/null | jq -r '.commit // empty' 2>/dev/null)" || live=""
+            if [ "$live" = "$SHA" ]; then
+              echo "live: $url serves $SHA"
               curl -fsSL "${SITE_URL%/}/.well-known/security.txt" | grep -q '^Contact: ' || echo "::warning title=security.txt not served::${SITE_URL}/.well-known/security.txt"
               exit 0
             fi
             sleep 20
           done
-          echo "::warning title=Testnet site not updated yet::${SITE_URL} does not serve ${SHA} after 10 minutes"
+          echo "::error title=Site not updated::$url serves ${live:-nothing}, not $SHA, after 15 minutes"
+          exit 1

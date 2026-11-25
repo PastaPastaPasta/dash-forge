@@ -65,9 +65,12 @@ on:
 permissions:
   contents: read
 
+# Deploys run one at a time and are never cut off. While one runs, GitHub keeps only the newest
+# waiting run (an older waiting run is cancelled before it starts; the newer commit includes it), so
+# the last merge always deploys and the site never moves back to an older commit.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -271,14 +274,44 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      contents: read # the compare API, for the guard below
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      SITE_URL: ${{ vars.PAGES_SITE_URL || 'https://forge.dashhq.org' }}
+      SHA: ${{ github.sha }}
     steps:
+      # A re-run of an old push run must not put an older commit back on the site. A
+      # workflow_dispatch is the operator's choice of ref, so it may roll back.
+      - name: Refuse to deploy over a newer commit
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          live="$(curl -fsSL --retry 3 --retry-all-errors -A 'Mozilla/5.0' "${SITE_URL%/}/forge-manifest.json" | jq -r '.commit // empty')" || live=""
+          if [ -n "$live" ] && [ "$live" != "$SHA" ]; then
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${SHA}...${live}" -q .status)" || status=""
+            if [ "$status" = ahead ]; then
+              echo "::error title=Older commit::${SITE_URL} serves ${live}, which is newer than ${SHA}"
+              exit 1
+            fi
+          fi
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+      # The deploy is done only when the site serves it. Pages' CDN caches for up to 10 minutes.
+      - name: Check the live site serves this commit
+        run: |
+          url="${SITE_URL%/}/forge-manifest.json"
+          for _ in $(seq 1 45); do
+            live="$(curl -fsSL -A 'Mozilla/5.0' "$url" 2>/dev/null | jq -r '.commit // empty' 2>/dev/null)" || live=""
+            if [ "$live" = "$SHA" ]; then echo "live: $url serves $SHA"; exit 0; fi
+            sleep 20
+          done
+          echo "::error title=Site not updated::$url serves ${live:-nothing}, not $SHA, after 15 minutes"
+          exit 1
       # The deployed site must serve security.txt (RFC 9116): a dot directory can be lost between
       # the export and the artifact. Reports only, like the check below: the deploy has happened.
       - name: Check the live site serves .well-known/security.txt
