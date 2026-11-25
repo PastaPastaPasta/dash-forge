@@ -347,14 +347,14 @@ export function wipeGrant(grant: V2Grant | null): void {
 }
 
 /**
- * Whether a granted encryption key is forge-user's sync key: ECDSA_SECP256K1, ENCRYPTION, bound to
+ * Whether a granted encryption key is forge-user's sync key: ECDSA_SECP256K1, ENCRYPTION, MEDIUM, bound to
  * forge-user alone, not disabled, and its public key is the private key's. (The vendored verifier
  * checked the same and that Platform resolves it as the contract's current key; checked again
  * here because this is what Forge relies on.)
  */
 export function isSyncKey(granted: AppConnectGrant['encryptionKeys'][number], contract: string): boolean {
   const k = granted.key
-  if (granted.role !== 'encryption' || k.purpose !== KeyPurpose.ENCRYPTION || k.type !== KeyType.ECDSA_SECP256K1) return false
+  if (granted.role !== 'encryption' || k.purpose !== KeyPurpose.ENCRYPTION || k.type !== KeyType.ECDSA_SECP256K1 || k.securityLevel !== KeySecurityLevel.MEDIUM) return false
   if (k.disabledAt !== undefined || k.bounds?.kind !== 'singleContract' || k.bounds.contractId !== contract) return false
   try {
     const pub = secp.getPublicKey(granted.privateKey, true)

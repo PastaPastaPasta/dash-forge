@@ -12,7 +12,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { decodeIdentifier } from '../auth/base58'
 import type { StorageConfig } from '../storage/store'
 import { canonicalJson, hkdf32, openState, sealState, type StateContext, type StateFields } from './crypto'
-import { baseOf, parseDoc, planSlot, sameDoc, type LwwDoc, type PlanOptions, type SlotBase, type SlotPlan, type Tagger } from './lww'
+import { LWW_VERSION, NewerSyncFormatError, baseOf, parseDoc, planSlot, sameDoc, type LwwDoc, type PlanOptions, type SlotBase, type SlotPlan, type Tagger } from './lww'
 import { prefsOwner, readRecord, store, updateRecord, type PrefsMeta, type SlotMeta, type SyncRecord } from './overlay'
 import type { Stored, UserSyncPort } from './platform'
 import { PREFS_PLAN, prefKeys, prefsEntries, prefsViewRaw } from './prefs-slot'
@@ -48,6 +48,8 @@ export interface SyncContext {
 export interface SyncOutcome {
   /** The effective storage config (null when the storage slot was not synced this run). */
   readonly storage: StorageConfig | null
+  /** The synced storage config alone (no device-local copies): what a repo's share holds. */
+  readonly synced: StorageConfig | null
   readonly syncedAt: number
 }
 
@@ -98,6 +100,8 @@ async function mergeSlot(
     const { stored, doc } = await readSlot(ctx, slot)
     const plan = planSlot({ slot, remote: doc, now: now(), ...p })
     if (!plan.upload) return plan
+    // Never written by this build: a newer format's document is read only.
+    if (plan.next.version > LWW_VERSION) throw new NewerSyncFormatError(slot, plan.next.version)
     try {
       await ctx.port.writeState(await sealState(stateCtx(ctx), slot, plan.next), stored)
     } catch (e) {
@@ -135,7 +139,7 @@ function baseAfter(snapshot: Record<string, unknown>, written: Record<string, un
   return baseOf({ ...snapshot, ...added }, tag, lists)
 }
 
-async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<{ config: StorageConfig; meta: SlotMeta; deletes: Readonly<Record<string, number>> } | null> {
+async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<{ config: StorageConfig; synced: StorageConfig; meta: SlotMeta; deletes: Readonly<Record<string, number>> } | null> {
   if (ctx.storage === null) return null
   const tag = await tagger(ctx.E, ctx.identityId, ctx.networkKey, 'storage')
   const syncId = await ctx.storage.syncId()
@@ -151,6 +155,7 @@ async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: numb
   const addedHere = Object.fromEntries(Object.entries(storageEntries(written)).filter(([k]) => Object.hasOwn(plan.add, k) && !Object.hasOwn(snapshot, k)))
   return {
     config: storageView(plan.view, plan.collisions, written, ctx.deviceId),
+    synced: storageView(plan.view, [], written, ctx.deviceId),
     meta: { keyId: ctx.keyId, syncedAt: at, syncId, base: baseAfter(snapshot, addedHere, tag) },
     deletes,
   }
@@ -196,7 +201,7 @@ export async function syncUserSettings(ctx: SyncContext): Promise<SyncOutcome> {
     const left = Object.entries(readRecord(ctx.networkKey, ctx.identityId)?.deletes ?? {}).filter(([k, t]) => storage.deletes[k] !== t)
     updateRecord(ctx.networkKey, ctx.identityId, { storage: storage.meta, deletes: Object.fromEntries(left) })
   }
-  return { storage: storage?.config ?? null, syncedAt: at }
+  return { storage: storage?.config ?? null, synced: storage?.synced ?? null, syncedAt: at }
 }
 
 /** When this device last synced for (network, identity), or null. */

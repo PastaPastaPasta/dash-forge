@@ -51,7 +51,8 @@ export function parseDoc(raw: unknown, slot: string): LwwDoc {
   if (typeof rawEntries !== 'object' || rawEntries === null || Array.isArray(rawEntries)) throw new Error('the synced settings have no entries')
   for (const [key, e] of Object.entries(rawEntries as Record<string, unknown>)) {
     // An entry this build cannot read is kept exactly as it is, and written back.
-    entries[key] = readable(e) ? { at: e.at, v: e.v ?? null } : (e as LwwEntry)
+    // Fields an entry carries beyond `at` and `v` are kept, and written back.
+    entries[key] = readable(e) ? { ...e, at: e.at, v: e.v ?? null } : (e as LwwEntry)
   }
   return { ...r, format: r['format'] as string, version, entries }
 }
@@ -105,8 +106,9 @@ export type Tagger = (key: string, value: unknown) => string
 
 /**
  * One slot's merge. `base` null is this device's first sync: a local key the synced copy holds with
- * another value keeps the synced value (the local one stays local; a list is joined with it), a
- * local key it lacks, or holds as a tombstone, is uploaded. Later syncs upload what changed here
+ * another value keeps the synced value (the local one stays local; a list is joined with it), one it
+ * holds as a tombstone stays hidden (deleted elsewhere: never brought back), and one it lacks is
+ * uploaded. Later syncs upload what changed here
  * since `base`, at `now`. A key missing here is never a deletion by itself: only `deletions`, the
  * keys the user deleted on this device (and when), become tombstones. `uploadLocal` false (values
  * this identity never set, on a first sync) uploads nothing local.
@@ -131,7 +133,7 @@ export function planSlot(p: {
     if (!Object.hasOwn(p.local, key)) {
       const at = deletions[key]
       // A delete loses to a value set elsewhere after it.
-      if (at !== undefined && synced !== undefined && synced.v !== null && at > synced.at) entries[key] = { at, v: null }
+      if (at !== undefined && synced !== undefined && synced.v !== null && at > synced.at) entries[key] = { ...synced, at, v: null }
       continue
     }
     if (p.base === null && p.uploadLocal === false) continue
@@ -140,12 +142,12 @@ export function planSlot(p: {
     const list = idOf !== undefined && synced !== undefined && Array.isArray(synced.v) && Array.isArray(lv)
     let changed: boolean
     if (synced === undefined) changed = true
-    else if (p.base === null) changed = synced.v === null || list
+    else if (p.base === null) changed = list
     else changed = p.base.tags[key] !== p.tag(key, p.local[key])
     if (!changed) continue
     const v = list ? mergeList(synced!.v as unknown[], lv as unknown[], p.base?.elements?.[key] ?? {}, idOf!, (e) => p.tag(key, e)) : lv
     if (synced !== undefined && sameValue(synced.v, v)) continue
-    entries[key] = { at: Math.max(p.now, (synced?.at ?? 0) + 1), v }
+    entries[key] = { ...synced, at: Math.max(p.now, (synced?.at ?? 0) + 1), v }
   }
   const next: LwwDoc = { ...remote, entries }
   const view: Record<string, unknown> = {}

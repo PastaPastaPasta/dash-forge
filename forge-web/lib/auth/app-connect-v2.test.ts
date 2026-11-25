@@ -26,6 +26,7 @@ import {
   WalletGrantRefused,
   awaitV2Grant,
   forgeV2Request,
+  isSyncKey,
   newV2LoginRequest,
   type V2LoginRequest,
 } from './app-connect-v2'
@@ -310,6 +311,19 @@ describe('settings sync: the forge-user encryption binding', () => {
     const asked = newV2LoginRequest('devnet', SYNCED, { connectionId: CONNECTION, chainNow: Date.now(), identityHint: ALICE })
     await chain.approve(asked.qrUri, ALICE)
     await expect(awaitV2Grant(chain.sdk, { ...asked, syncContract: null }, syncFast)).rejects.toBeInstanceOf(WalletGrantRefused)
+  })
+})
+
+describe('isSyncKey', () => {
+  it('takes only a MEDIUM ENCRYPTION SECP256K1 key bound to forge-user alone, whose public key is the private key', () => {
+    const priv = secp.utils.randomSecretKey()
+    const key = { id: 3, type: 0, purpose: 1, securityLevel: 3, data: secp.getPublicKey(priv, true), bounds: { kind: 'singleContract' as const, contractId: USER } }
+    const granted = { role: 'encryption' as const, bindingIndex: 0, privateKey: priv, key }
+    expect(isSyncKey(granted, USER)).toBe(true)
+    expect(isSyncKey({ ...granted, key: { ...key, securityLevel: 2 } }, USER)).toBe(false)
+    expect(isSyncKey({ ...granted, key: { ...key, bounds: { kind: 'singleContract', contractId: FORGE.core } } }, USER)).toBe(false)
+    expect(isSyncKey({ ...granted, key: { ...key, disabledAt: 1 } }, USER)).toBe(false)
+    expect(isSyncKey({ ...granted, privateKey: secp.utils.randomSecretKey() }, USER)).toBe(false)
   })
 })
 

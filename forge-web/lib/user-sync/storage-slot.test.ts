@@ -26,4 +26,14 @@ describe('a Settings save over the merged view', () => {
   it('records only what the user deleted', () => {
     expect(storageDeletions(config([s3('a'), s3('b')]), config([s3('b')]))).toEqual(['profile:a'])
   })
+
+  it('keeps the local default, repo policies and test results the page did not edit', () => {
+    const local: StorageConfig = { ...config([s3('a')]), defaultPolicy: { targets: ['a'], replicas: 1, platformFallback: false }, repoPolicies: { r1: { targets: ['a'], replicas: 1, platformFallback: false } }, lastTests: { a: { at: 1, ok: true } } }
+    const shown: StorageConfig = { ...config([s3('a'), s3('b')]), defaultPolicy: { targets: ['b'], replicas: 1, platformFallback: false }, repoPolicies: { r1: { targets: ['b'], replicas: 1, platformFallback: true }, r2: { targets: ['b'], replicas: 1, platformFallback: false } }, lastTests: { a: { at: 9, ok: false } } }
+    const next: StorageConfig = { ...shown, repoPolicies: { ...shown.repoPolicies, r2: { targets: ['a'], replicas: 1, platformFallback: false } } }
+    const saved = localAfterSave(local, shown, next, 'dddd')
+    expect(saved.defaultPolicy).toEqual(local.defaultPolicy)
+    expect(saved.repoPolicies).toEqual({ r1: local.repoPolicies['r1'], r2: { targets: ['a'], replicas: 1, platformFallback: false } })
+    expect(saved.lastTests).toEqual(local.lastTests)
+  })
 })

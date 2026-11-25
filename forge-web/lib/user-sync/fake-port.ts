@@ -36,11 +36,6 @@ export function fakePlatform(): FakePlatform {
         writeShare: async (repoId, fields, existing) => bump(existing, fields, p.shares, `${signer}/${repoId}`),
         grantsOf: async (ownerId, repoId) => [...p.grants.values()].filter((g) => g.ownerId === ownerId && g.fields.repoId === repoId),
         grantFor: async (ownerId, repoId, memberId) => p.grants.get(`${ownerId}/${repoId}/${memberId}`) ?? null,
-        deleteShare: async (existing) => {
-          if (existing.ownerId !== signer) throw new Error('not the owner')
-          for (const [k, v] of p.shares) if (v.id === existing.id) p.shares.delete(k)
-          p.writes++
-        },
         writeGrant: async (fields, existing) => bump(existing, fields, p.grants, `${signer}/${fields.repoId}/${fields.memberId}`),
         deleteGrant: async (existing) => {
           if (existing.ownerId !== signer) throw new Error('not the owner')

@@ -11,7 +11,6 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
-import { useStorageConfig } from '@/hooks/use-storage-config'
 import { heldSyncKeyId, onSyncKeyChange, onVaultLock, withSyncKey } from '@/lib/auth/vault'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import type { RepoRef } from '@/lib/repo'
@@ -20,6 +19,7 @@ import { namedAction, spendAction } from '@/lib/spend-toast'
 import type { StorageConfig } from '@/lib/storage'
 import { readGrantedStorage, reconcileRepoShare, withGrantedStorage, type GrantedStorage, type Reconciled } from '@/lib/user-sync/maintainers'
 import { forgeUserPort } from '@/lib/user-sync/platform'
+import { syncedShareConfig } from '@/lib/user-sync/session'
 import { quietSigner, useUserSyncStatus } from '@/hooks/use-user-sync'
 
 export interface RepoShareState {
@@ -51,11 +51,12 @@ function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
 export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const { identity, signer, controller } = useAuth()
   const { sdk } = useSdk()
-  const { config } = useStorageConfig()
-  // The owner's effective config only once this tab's sync settled (not the local one before it).
-  const syncKind = useUserSyncStatus().kind
-  const settled = syncKind === 'synced' || syncKind === 'local' || syncKind === 'off'
   const user = ACTIVE_NETWORK.v2?.user
+  // What the share holds is the owner's synced config, once this tab's sync finished: never the
+  // device-local one, nor what a tab has before its first sync ('off' is also the state before the
+  // driver ran).
+  const syncKind = useUserSyncStatus().kind
+  const config = identity !== null && syncKind === 'synced' ? syncedShareConfig(identity) : null
   const [waiting, setWaiting] = useState<readonly string[]>([])
   const [memberNeedsKey, setMemberNeedsKey] = useState(false)
   const isOwner = identity !== null && identity === repo.ownerId
@@ -81,7 +82,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     let stale = false
     void (async () => {
       if (isOwner) {
-        if (config === null || !settled) return
+        if (config === null) return
         const done = await reconcile(config).catch(() => null)
         if (!stale && done !== null) setWaiting(done.waiting)
         return
@@ -93,7 +94,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     return () => {
       stale = true
     }
-  }, [user, identity, sdk, isOwner, config, settled, reconcile, repo])
+  }, [user, identity, sdk, isOwner, config, reconcile, repo])
 
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
