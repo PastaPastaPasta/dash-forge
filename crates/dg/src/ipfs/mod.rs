@@ -663,9 +663,19 @@ async fn run_opener(mut command: tokio::process::Command, grace: Duration) -> bo
 
 fn print_connection(connection: &pair::Connection, opened: bool) {
     println!();
-    println!("Connect it to Forge: open this link{}", if opened { " (opened in your browser)" } else { "" });
+    println!(
+        "Connect it to Forge: open this link{}",
+        if opened {
+            " (opened in your browser)"
+        } else {
+            ""
+        }
+    );
     println!("  {}", connection.link);
-    println!("or paste this code on the Storage page: {}", connection.code);
+    println!(
+        "or paste this code on the Storage page: {}",
+        connection.code
+    );
     println!(
         "The code works once and expires in {} minutes. For a new one: dg ipfs connect",
         pair::CODE_LIFETIME_SECS / 60
