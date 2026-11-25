@@ -310,6 +310,7 @@ Private repositories need more care:
 | Windows: `could not start the logon task` | The task is best effort. Run `dg ipfs serve` yourself. |
 | The page says `Safari can't reach a node on this computer from a secure site` | Safari blocks it. Use `dg` to push, or Chrome, Firefox or Brave. |
 | `The IPFS node on this computer isn't running` | Run `dg ipfs up` (or `dg ipfs status` to see why it stopped), then press **Connect**. |
+| `This site needs your OK to reach the node on this computer` | You closed the browser's prompt without answering. Press **Connect** and choose **Allow**. |
 | `Your browser isn't letting this site reach apps on this device` | You blocked the browser's prompt. Allow it in the site's settings, then press **Connect**. |
 | `The node on this computer doesn't accept this site yet` | The node was set up by an older `dg`. Update `dg` and run `dg ipfs up`; it adds the site and keeps your data. |
 | `The node on this computer doesn't accept this site. Run dg ipfs up --origin …` | Your own copy of the web app isn't on the allow-list. Run the command it shows, then connect again. |

@@ -169,11 +169,7 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
             });
             Ok(())
         }
-        IpfsCommand::Connect {
-            open,
-            no_open: _,
-            origin,
-        } => {
+        IpfsCommand::Connect { open, origin, .. } => {
             let mut node = Node::load()?;
             if let Some(origin) = origin {
                 node.config.set_link_origin(Some(origin))?;
@@ -474,7 +470,7 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
         OriginCommand::Remove { origin } => (origin, false),
     };
     let origin = config::validate_origin(origin)?;
-    if origin == config::DEFAULT_ORIGIN && !add {
+    if config::FORGE_ORIGINS.contains(&origin.as_str()) && !add {
         return Err(crate::errors::usage(
             "the Forge website must remain an allowed origin",
         ));

@@ -79,15 +79,16 @@ const PERMISSION_DISMISSED = 'This site needs your OK to reach the node on this 
 const NOT_RUNNING = "The IPFS node on this computer isn't running. Run dg ipfs up, then press Connect."
 
 function notAllowedHere(origin: string): string {
-  return FORGE_ORIGINS.includes(origin)
-    ? "The node on this computer doesn't accept this site yet. Update dg, run dg ipfs up, then press Connect."
-    : `The node on this computer doesn't accept this site. Run ${kuboUpCommand(origin, '/') ?? 'dg ipfs up'}, then press Connect.`
+  if (origin === FORGE_ORIGINS[0]) return "The node on this computer doesn't accept this site yet. Update dg, run dg ipfs up, then press Connect."
+  if (FORGE_ORIGINS.includes(origin)) return `The node on this computer doesn't accept this site yet. Update dg and run dg ipfs up (with dg 0.2.0: dg ipfs up --origin ${origin}), then press Connect.`
+  return `The node on this computer doesn't accept this site. Run ${kuboUpCommand(origin, '/') ?? 'dg ipfs up'}, then press Connect.`
 }
 
 /**
  * Swap a one-time code for the node's settings. A first visit makes the browser ask before the
- * page may reach this computer, and the request waits on that prompt. A timeout runs only once
- * access is known to be granted, so a late Allow is never mistaken for the node refusing this site.
+ * page may reach this computer, and the request waits on that prompt. The short timeout runs only
+ * once access is known to be granted, so a late Allow is never mistaken for the node refusing this
+ * site. A refused connection fails before any prompt shows, so a fast failure means a stopped node.
  */
 export async function pairWithNode(input: KuboCode, onAsk?: () => void): Promise<PairedNode> {
   const parsed = parseKuboCode(input.code, input.port)
@@ -96,18 +97,19 @@ export async function pairWithNode(input: KuboCode, onAsk?: () => void): Promise
   const before = await loopbackAccess()
   if (before === 'denied') throw new Error(PERMISSION_DENIED)
   if (before === 'prompt') onAsk?.()
+  const started = Date.now()
   let response: Response
   try {
     response = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: parsed.code }),
       credentials: 'omit', redirect: 'error', targetAddressSpace: 'loopback',
-      ...(before === 'granted' ? { signal: AbortSignal.timeout(15_000) } : {}),
+      signal: AbortSignal.timeout(before === 'granted' ? 15_000 : 120_000),
     } as RequestInit)
   } catch {
     if (isSafari() && safariNeedsNotice(location.origin)) throw new Error(SAFARI_NOTICE)
     const after = await loopbackAccess()
     if (after === 'denied') throw new Error(PERMISSION_DENIED)
-    if (after === 'prompt') throw new Error(PERMISSION_DISMISSED)
+    if (after === 'prompt') throw new Error(Date.now() - started < 1_500 ? NOT_RUNNING : PERMISSION_DISMISSED)
     throw new Error((await whyBlocked(url)) === 'down' ? NOT_RUNNING : notAllowedHere(location.origin))
   }
   if (response.status === 403) throw new Error("That code isn't right. Check it against what dg printed and try again (five tries).")

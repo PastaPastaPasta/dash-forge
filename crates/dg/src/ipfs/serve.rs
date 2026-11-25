@@ -77,7 +77,6 @@ pub async fn run(ctx: &Ctx, node: Node) -> Result<()> {
         tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, node.config.gateway_port))
             .await
             .context("could not bind the IPFS gateway port")?;
-    // IPv6 loopback is best effort: hosts without it, or with the port taken there, keep IPv4.
     let api6 = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, node.config.api_port))
         .await
         .ok();

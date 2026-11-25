@@ -55,7 +55,7 @@ impl Default for NodeConfig {
             internal_api_port: 5101,
             internal_gateway_port: 8180,
             swarm_port: None,
-            origins: FORGE_ORIGINS.iter().map(|o| (*o).to_owned()).collect(),
+            origins: FORGE_ORIGINS.map(String::from).to_vec(),
             link_origin: default_link_origin(),
             kubo_version: KUBO_VERSION.into(),
             service: false,
@@ -168,7 +168,6 @@ impl NodeConfig {
         Ok(())
     }
 
-    /// Adds the Forge websites a node saved by an older `dg` lacks; never removes an origin.
     pub fn add_forge_origins(&mut self) {
         for origin in FORGE_ORIGINS {
             if !self.origins.iter().any(|o| o == origin) {
