@@ -128,3 +128,39 @@ The removed member can no longer read the current share. **What cannot be revoke
 ## 9. Mainnet decision (owner)
 
 Registering `forge-user` on mainnet from the deployer `CL4UTHLA…` costs the amount measured by its testnet registration (recorded in `deployments/testnet.json` `user.costCredits`). Fees are protocol constants, so mainnet costs the same in credits. It needs the deployer key, which is only on the owner's machine. Until then, mainnet keeps device-local settings.
+
+## 10. As built (where the code differs from the plan above)
+
+- **Sign-in fallback.**
+  - The web app retries once without the encryption binding, and with the old `appId`, when the wallet reports `unsupported` or `invalid`, when the request expires unanswered, or when the user taps "Try again" after an error.
+  - dg can't see a wallet's refusal, because the request just expires. It offers `dg auth login --wallet --no-sync` instead, and the expiry message says so.
+  - A renewal asks with the same `appId` as the grant it replaces, so the wallet's same-connection disable still matches.
+- **Where `E` is kept.**
+  - **Web:** its own sealed vault entry, `vault-sync:<network>:<identity>`. It isn't stored in `vault-enc`, because older builds treat the highest key there as the private-repo key. It is never kept in the 12-hour resume record.
+  - **dg:** a new key slot, keychain `dash-forge/<network>/<identity>.sync`, else a sealed `.key.sync` file. Older dg never reads either.
+- **dg holds synced secrets in memory only.** There is no `keychain:dash-forge-sync/…` cache. A new `SecretRef::Value` refuses to serialize, so a synced secret can't reach `storage.toml`. First-sync state lives in `user-sync.toml`.
+- **Name clashes.** On a dg device the local profile keeps its name, because `storage.toml` wins, and it is uploaded as `<name>-<device>`. The web app shows the local copy as `<name>-<device>`. dg-only profile fields (`allowPrivateUri`, `pinTimeoutSecs`) travel in a sibling `dg` object, which the web app keeps when it edits that profile.
+- **Shared storage on the maintainer's side.**
+  - dg names a shared profile `share.<owner8>.<name>`, and the web app names it `shared-<name>`.
+  - It is used for that repo when the clone sets no `dash.storage` of its own. A repo's own setting always wins.
+  - A repo the owner switches to Platform-only has its share emptied, and all its grants are revoked.
+  - The owner side reconciles on owner pushes (dg), on `dg collab add/remove`, and on visits to the repo's settings (web).
+  - A removal writes the share at the new epoch first, then the remaining grants, and deletes the revoked grants last, so an interrupted removal never leaves new credentials at an epoch the removed member can open.
+- **Preferences** sync in the web app only: diff view, merge identity, fiat, trending, image hosts, IPFS gateways and organizations. The IPFS peer setting stays per device. A local value is never overwritten. A device reads the synced value only while its own copy is unchanged since the last sync.
+- **`dg storage use --global`** still writes `dash.storage` to the global git config, which never syncs. On a second machine the synced profiles appear, but the policy naming them has to be set there too (or in the web app's synced default).
+
+## 11. Testnet proof (2026-11-25)
+
+The proof used builds of this branch, the testnet `forge-user` contract, and a RustFS S3 bucket on a public https URL (a temporary boat.dev sandbox). Evidence is in `forge-contracts/evidence/testnet/user-sync-2026-11-25.md`. Steps, all passing:
+
+1. **Box A, real wallet.** `dg auth login --wallet` with DashPay Android 11.9.2 (testnet build), identity `G1SAVd3…`. The approval screen shows App ID `forge-user` and "Receive messages encrypted to you in Dash Forge". dg reports "storage settings sync with your identity across devices".
+2. **Box A, storage.** `dg storage add proof-s3 … --secret-access-key env:…` lists the profile as `[local+synced]`. `storage.toml` still holds only the `env:` reference.
+3. **Box B, same wallet, fresh config.** `dg storage list` shows `proof-s3 [synced]` with both credentials. `dg storage test proof-s3` passes every row (signed put, get, public read, CORS, delete) with nothing configured locally, and no `storage.toml` is written.
+4. **Web, same wallet, fresh browser.** Settings → Storage shows `proof-s3` as the saved default for browser pushes, with "Synced with your identity" collapsed underneath, and no duplicate.
+5. **Maintainer shares the owner's storage.**
+   - The owner creates `usersync-proof` and pushes; the pack lands on `proof-s3`, and the share is written (epoch 0).
+   - Maintainer `HJu2c168…` signs in through dg, answered by the scripted App Connect wallet (`forge-web/e2e/wallet-responder-v2.ts`). That wallet registers a `forge-user`-bound ENCRYPTION key just as the wallets do.
+   - The maintainer runs `collab accept`, and the owner runs `collab add --role maintain`.
+   - The maintainer's push stores its pack on `share.G1SAVd3d.proof-s3`. Platform fees come from the maintainer's balance.
+6. **Removal.** `dg collab remove --role maintainer` prints the line about rotating credentials. On-chain, the share is at epoch 1 and no grants remain. The maintainer's next push is refused before anything is stored.
+
