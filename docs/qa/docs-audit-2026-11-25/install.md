@@ -32,12 +32,12 @@ There is no mainnet binary release. On mainnet, a terminal user builds `dg` and 
 | 9 | "DashPay for Android (11.9.2+) or Dash Wallet for iOS (9.1.4+)" | README.md:18 | ok | `forge-web/components/login-modal.tsx:346-350` |
 | 10 | "Platform … up to about 0.39 DASH per MiB" | README.md:62 | ok | master dg `dg doctor`: "~0.39 DASH/MiB" |
 | 11 | "Readers try the repository's own gateway, then ipfs.dashhq.org, then public gateways" | README.md:60 | deferred (storage lane) | #702 |
-| 12 | `git clone -c dash.network=mainnet dash://forg3/dash-forge` | README.md:75 | see cleanroom step G | cleanroom log |
+| 12 | `git clone -c dash.network=mainnet dash://forg3/dash-forge` | README.md:75 | ok | cleanroom, source-built `git-remote-dash`: clone succeeded, `git log -1` = 1b547336 (the master merge of #729) |
 | 13 | "Build with `cargo build --workspace` (with `protoc` on `PATH`)" | README.md:96 | missing (fixed) | same as #4; now links BUILDING prerequisites |
 | 14 | "Every release … ships prebuilt binaries … Each archive contains" (table without README/INSTALL) | INSTALL.md:19-31 | missing (fixed) | `tar -tzf dash-forge-0.2.0-x86_64-unknown-linux-gnu.tar.gz`: also `INSTALL.md`, `README.md` |
 | 15 | Supported platforms: five targets; "Windows: use WSL" | INSTALL.md:33-50 | stale (fixed) | v0.2.0 assets include `dash-forge-0.2.0-x86_64-pc-windows-msvc.zip`; `release.yml:273` builds it; install.sh:107 and :286 refuse Windows. Kept WSL as the advice, noted the untested zip |
 | 16 | "Make sure all six targets are green" vs five listed | INSTALL.md (maintainers) | stale (fixed) | `release.yml:252-274` six matrix targets |
-| 17 | install.sh: detects OS/CPU/libc, downloads latest `SHA256SUMS`, checks sha256, `gh attestation verify` when available, test-runs `dg`, installs to `~/.local/bin`, never sudo | INSTALL.md:56-80 | ok | `install.sh:80-110, 281-330`; release has `SHA256SUMS`; "latest" = v0.2.0 (`gh release list`) |
+| 17 | install.sh: detects OS/CPU/libc, downloads latest `SHA256SUMS`, checks sha256, `gh attestation verify` when available, test-runs `dg`, installs to `~/.local/bin`, never sudo | INSTALL.md:56-80 | ok | `install.sh:80-110, 281-330`; cleanroom: `curl … install.sh \| DASH_FORGE_INSTALL_DIR=/tmp/ibin sh` fetched latest SHA256SUMS → v0.2.0, "Checksum verified", said provenance was not checked without gh, installed dg + git-remote-dash, warned that another dg comes first on PATH |
 | 18 | `DASH_FORGE_*` variables table | INSTALL.md:82-90 | ok | `install.sh:15-30` header and option handling |
 | 19 | "dg --version # dg 0.2.0 (<commit> <target>)" | INSTALL.md:100 | missing (fixed) | it also prints the Forge contracts per network; v0.2.0 shows `mainnet not deployed` |
 | 20 | `cargo binstall --git … dg git-remote-dash` uses the release archives | INSTALL.md:142-150 | ok | `crates/dg/Cargo.toml:68-71`, `crates/git-remote-dash/Cargo.toml:37-44`; master `Cargo.toml` version 0.2.0 → v0.2.0 archives (testnet only) |
@@ -95,6 +95,7 @@ There is no mainnet binary release. On mainnet, a terminal user builds `dg` and 
 | 72 | Maintainer storage sharing (#729 part 2) | CHANGELOG, guides | deferred | another thread is changing it; the new CHANGELOG entry for #729 covers only your own devices |
 | 73 | Lane rule: dash.site called "static site", publishing via dash.site/new | lane files | ok | no "gateway" wording for dash.site and no `/publish` link in this lane's files |
 | 74 | Dual stack in hosting text | lane files | ok | no IPv4-only instructions in this lane's files |
+| 75 | In-app help link `DOCS.selfHost` (Pin button) | forge-web/lib/docs-links.ts:39 | stale (other lane) | it points at `self-host-backend.md` on GitHub, though the catalog serves it as `/docs/self-host-backend/` (`DOCS.selfHostBackend`); left for the webcopy-repo lane |
 
 ## Product questions
 

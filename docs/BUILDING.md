@@ -19,7 +19,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 |---|---|---|
 | Rust | pinned by `rust-toolchain.toml` (1.98.0) | install [rustup](https://rustup.rs); it installs the pinned toolchain automatically. MSRV floor is 1.98, which the pinned Platform packages (v5.0.0-rc.8) require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
-| C compiler, `pkg-config`, OpenSSL headers | any | on Linux, several dependencies build C code, and `openssl-sys` links the system OpenSSL. On Debian or Ubuntu: `sudo apt-get install build-essential pkg-config libssl-dev` |
+| C compiler, `pkg-config`, OpenSSL headers | any | on Linux, several dependencies build C code, and `openssl-sys` links the system OpenSSL. On Debian or Ubuntu: `sudo apt-get install build-essential pkg-config libssl-dev` (plus `curl unzip git ca-certificates` for the protoc recipe and the clone) |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
 
@@ -34,9 +34,6 @@ error: failed to run custom build command for `tenderdash-proto`
 ```sh
 brew install protobuf                          # macOS
 ```
-
-Without `pkg-config` or the OpenSSL headers the build stops in `openssl-sys` ("Could not find
-openssl via pkg-config"); install the packages in the table above.
 
 **The version matters, and distro packages are often too old.** The floor is 25 —
 `DEP_PROTOC_VERSION` in rs-tenderdash-abci's proto-compiler — and it is enforced two
@@ -61,6 +58,9 @@ curl -sSLo /tmp/protoc.zip \
 sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
 protoc --version   # libprotoc 28.3
 ```
+
+Without `pkg-config` or the OpenSSL headers the build stops in `openssl-sys` ("Could not find
+openssl via pkg-config"); install the packages in the table above.
 
 ## The pinned toolchain
 

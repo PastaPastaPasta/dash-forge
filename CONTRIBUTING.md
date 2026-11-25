@@ -45,7 +45,7 @@ Forge has two implementations of its client rules: Rust in `crates/forge-core/sr
 
 A pull request that changes one side alone, or a rule without a vector, is not merged.
 
-The contracts are registered on mainnet and testnet, and a change to them (a new index, rule or required field) needs the maintainers to update every registration. Build on the existing document types and the conventions in [forge-v2.md](docs/contracts/forge-v2.md).
+The contracts are registered on mainnet and testnet, and Platform freezes them: an update cannot add an index, a rule or a required field to an existing type ([forge-v2.md §9](docs/contracts/forge-v2.md#9-frozen-at-mainnet)). Build on the existing document types and the conventions in [forge-v2.md](docs/contracts/forge-v2.md).
 
 ## End-to-end tests
 
@@ -59,7 +59,7 @@ The unit tests need no network. The end-to-end suites write to a live network an
    Repeat with `--label COLLAB` and `--label CONTRIB`.
 2. Run the CLI suite with `E2E_LIVE_TARGET=1 DASH_FORGE_NETWORK=testnet E2E_IDENTITY_DIR=~/forge-e2e make e2e`. Scenarios that mint their own identity also need a funding key in `E2E_MINT_FUNDING`; [e2e/cli/config.sh](e2e/cli/config.sh) lists every variable.
 3. For the browser suite, `(cd forge-web && E2E_NETWORK=testnet pnpm test:e2e)` runs the read-only specs against the shared read fixture, with no identities.
-4. The browser write specs need `E2E_WRITE=1`, `E2E_LIVE_TARGET=1` and a copy of the read fixture your identities own: [e2e/README.md](e2e/README.md#the-whole-browser-suite-under-identities-of-your-own).
+4. The browser write specs have no network a contributor can use today: they need a copy of the read fixture your identities own, the seed script writes to testnet only against a scratch `--deployment` registration of your own, and none of them has been run on testnet yet ([e2e/README.md](e2e/README.md#running-on-testnet)).
 
 Write only to repositories your own identities created.
 

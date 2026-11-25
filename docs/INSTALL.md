@@ -96,7 +96,7 @@ dg --version      # dg 0.2.0 (<commit> <target>), then the Forge contracts built
 dg doctor         # git, git-remote-dash (same version as dg), network, identity
 ```
 
-`dg --version` from v0.2.0 lists `mainnet  not deployed`: that build cannot use mainnet.
+`dg --version` from v0.2.0 lists mainnet as `not deployed`: that build cannot use mainnet.
 
 ## Manual download and verification
 
@@ -201,7 +201,8 @@ terminal until a release after v0.2.0. You need:
 - `protoc` 25 or newer. Distribution packages are often older (Ubuntu's is 3.21 and fails), so
   install a release from GitHub as [BUILDING.md](BUILDING.md#prerequisites) shows;
 - on Linux, a C compiler, `pkg-config` and the OpenSSL headers. On Debian or Ubuntu:
-  `sudo apt-get install build-essential pkg-config libssl-dev`.
+  `sudo apt-get install build-essential pkg-config libssl-dev`, plus `curl unzip git ca-certificates`
+  on a minimal system.
 
 ```sh
 git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
