@@ -24,12 +24,15 @@ export function CopyLinkButton({
   target,
   visibility,
   className,
+  iconOnlyOnPhones = false,
 }: {
   repo: { readonly owner: string; readonly name: string; readonly repoId?: string }
   target?: ShortTarget
   /** The repo's visibility: only a public repo's link is a gateway share link. */
   visibility: 'public' | 'private'
   className?: string
+  /** Below `sm`, show only the icon (the label stays the button's accessible name). */
+  iconOnlyOnPhones?: boolean
 }): JSX.Element {
   const ownerName = useOwnerDpnsName(repo.owner)
   const gateway = visibility === 'public' ? GATEWAY : null
@@ -42,14 +45,15 @@ export function CopyLinkButton({
       onClick={copy}
       data-testid="copy-link"
       data-href={href}
-      title={card !== null && gateway !== null ? `Copies a link that shows a preview card when shared (via ${gateway.label}) and opens this page` : undefined}
+      title={card !== null && gateway !== null ? `Copies a link that shows a preview card when shared (via ${gateway.label}) and opens this page` : iconOnlyOnPhones ? 'Copy link' : undefined}
       className={cn(
         'inline-flex h-7 items-center gap-1 rounded-md border coarse:h-11 coarse:px-3 border-anvil-300 px-2 text-[12px] text-anvil-700 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-200 dark:hover:bg-anvil-800',
+        iconOnlyOnPhones && 'coarse:min-w-11 coarse:justify-center',
         className,
       )}
     >
       {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Link2 className="h-3.5 w-3.5" aria-hidden />}
-      {copied ? 'Copied' : 'Copy link'}
+      <span className={iconOnlyOnPhones ? 'max-sm:sr-only' : undefined}>{copied ? 'Copied' : 'Copy link'}</span>
     </button>
   )
 }

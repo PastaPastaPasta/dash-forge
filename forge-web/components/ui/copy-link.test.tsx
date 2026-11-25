@@ -70,4 +70,16 @@ describe('CopyLinkButton', () => {
     // No gateway: the plain link, exactly as before.
     expect(href(ID)).toBe(`${window.location.origin}/alice/project/issues`)
   })
+
+  it('can drop its visible label on phones while keeping it as the accessible name', () => {
+    act(() => root.render(<CopyLinkButton repo={{ owner: ID, name: 'project' }} visibility="public" iconOnlyOnPhones />))
+    const b = el.querySelector('[data-testid="copy-link"]')!
+    expect(b.textContent).toBe('Copy link')
+    expect(b.querySelector('span')!.className).toContain('max-sm:sr-only')
+    expect(b.className).toContain('coarse:min-w-11')
+    expect(b.getAttribute('title')).toBe('Copy link')
+    act(() => root.render(<CopyLinkButton repo={{ owner: ID, name: 'project' }} visibility="public" />))
+    expect(el.querySelector('[data-testid="copy-link"] span')!.className).toBe('')
+    expect(el.querySelector('[data-testid="copy-link"]')!.className).not.toContain('coarse:min-w-11')
+  })
 })
