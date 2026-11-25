@@ -167,7 +167,7 @@ Work:
 - [ ] Web editing (CodeMirror → commit → push). *Not started. Web commits to a PR's branch exist for suggestions and Update branch (public repositories).*
 - [x] In-repo code search (#345): `forge-web/app/repo/search` builds the index in the browser (`lib/view/code-search.worker.ts`). Search across repositories stays name prefix, topic and owner.
 - [x] Relay: users run it (Docker), with `encryptedFor` webhook secrets and a check-run write-back Action.
-- [x] Parity wave P1 (#343–#356): `dg` parity with `gh` and `dg status` / `dg search` (#343, #356), fork sync (#344), code search (#345), profiles and signed-commit badges (#346, #348), branch and tag admin (#347), long bodies (#350), CI re-run and schedules (#351, #354), CODEOWNERS (#352), issue and PR templates (#353), rebase merge (#355).
+- [x] Parity wave P1 (#343–#356): `dg` parity with `gh` and `dg pr status` / `dg issue status` / `dg search` (#343, #356), fork sync (#344), code search (#345), profiles and signed-commit badges (#346, #348), branch and tag admin (#347), long bodies (#350), CI re-run and schedules (#351, #354), CODEOWNERS (#352), issue and PR templates (#353), rebase merge (#355).
 
 ### Phase 5b — Mixed visibility (members-only content in public repositories) (L) · *gate: no screen claims more than was verified; the beta features are labelled*
 

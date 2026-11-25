@@ -613,12 +613,12 @@ Pushing a members-only branch with `-o public` is refused with this code too: th
 ```
 error: E806 can't check for members-only commits: your encryption key isn't available
        this clone has fetched members-only branches, so a public push can't be checked without it
-  fix: dg auth unlock, then push again
+  fix: run `dg auth status`: its Private line says how to store your encryption key; then push again
 ```
 
 It has two triggers. A **push** to a public branch is refused when the repository has members-only branches, your key isn't available and this clone has no record of what it holds (`.git/dash/sealed-ledger`, which every clone made by a current `git-remote-dash` has). A **fetch** is refused when this clone has fetched members-only branches before and your key can't open them now: fetching only the public view would let `git fetch --prune` delete them. A push that would delete a members-only branch, or reuse its name for a public one, while your key isn't available is refused the same way: written without the key, it would publish the branch's name. A record from a newer version of Forge that this one can't read is refused the same way.
 
-**What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
+**What to do:** run `dg auth status`: its `Private:` line says whether your encryption key is stored on this computer and, if not, the command that stores it. Then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
 
 Even with the members key unlocked, a fetch refuses with E806 if a remote-tracking branch's tip is recorded as narrower in this clone's readable sealed-object ledger and its name is absent, or deleted by an update you can't authenticate with its branch key. It says `can't fetch: no key for previously fetched branches is available (sec/example)`, explains that the branch no longer opens with your keys, and offers `git branch -dr origin/sec/example` to forget it here or asks you to have its maintainer share its branch key again. Because the members key is already unlocked, this refusal does not suggest unlocking it. Public names in any state and deletions opened with the members key are covered, as are deletions opened with the branch key. URL fetches skip this local coverage check because they write no remote-tracking refs. This check uses local names and recorded tips; it does not link unreadable generations or claim that a newer generation exists.
 

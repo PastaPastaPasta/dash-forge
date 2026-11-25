@@ -44,9 +44,9 @@ const WALLET_MAX_BUDGET_DASH: f64 = 5.0;
 /// ... and 365 days.
 const WALLET_MAX_DAYS: u64 = 365;
 
-/// Where to find the scanner in DashPay.
+/// Where to find the scanner in DashPay (Android) or Dash Wallet (iOS).
 const SCAN_HOW: &str =
-    "open DashPay → More → Tools → Connections → Scan QR, or open the link on the phone";
+    "open DashPay or Dash Wallet → More → Tools → Connections → Scan QR, or open the link on the phone";
 /// Testnet needs DashPay's testnet build.
 const TESTNET_WALLET: &str = "on testnet, use DashPay's testnet build: the `-testnet.apk` on https://github.com/dashpay/dash-wallet/releases/latest (installs beside the store app)";
 /// The fix a JSON field and `dg auth status` name for a wallet key.

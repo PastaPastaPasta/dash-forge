@@ -42,7 +42,7 @@ Dropped: the backend had no callers and was removed. Mirroring a git hoster into
 
 ## Operational UX
 
-- `dg repo backend set <mode>`; `dg storage status` (availability matrix, at-risk packs, suggested reseed); `dg reseed [--to …]`; cost comparison in `dg cost estimate --backend …`.
+- `dg repo backend set <repo> <mode>`; `dg storage status` (availability matrix, at-risk packs, suggested reseed); `dg reseed [--to …]`; cost comparison in `dg cost estimate --backend …`.
 - forge-web settings: backend switch with cost/tradeoff explainer; verification chips always show actual byte source.
 
 ## As built: bring-your-own storage on `git push` (2026-09-25)
