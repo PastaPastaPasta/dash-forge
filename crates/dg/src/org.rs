@@ -332,10 +332,10 @@ struct Row {
 
 impl Row {
     async fn of(org: &Org, client: Option<&PlatformClient>, req: Request) -> Self {
-        let mut status = request::status(&org.state, &req, None);
+        let mut status = org.status(&req, None);
         if let (Some(client), true) = (client, status.is_open() || status == RequestStatus::Done) {
             if let Ok(view) = org.chain_view(client, &req).await {
-                status = request::status(&org.state, &req, Some(&view));
+                status = org.status(&req, Some(&view));
             }
         }
         let (collected, threshold) = org.progress(&req);
@@ -390,6 +390,7 @@ impl Row {
             ),
             RequestStatus::Collecting => format!("{} of {} signed", self.collected, self.threshold),
             RequestStatus::Ready => "signed, not on Platform yet".into(),
+            RequestStatus::Declined => "declined by too many members".into(),
             other => other.label().into(),
         }
     }
@@ -650,22 +651,33 @@ async fn finish(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
     let finished = org.finish(&client, &forge, &keys, &req).await?;
     let req = org.find(&req.id)?;
     let (collected, threshold) = org.progress(&req);
+    if !finished.done {
+        let err = match org.status(&req, None) {
+            RequestStatus::Collecting => UserError::new(
+                codes::USAGE,
+                format!("not ready: {collected} of {threshold} signatures collected"),
+            )
+            .fix(format!(
+                "ask another member to run `dg org sign {}`, or to sign it on the web",
+                req.id
+            )),
+            status => UserError::new(
+                codes::USAGE,
+                format!("this request can't be finished: it is {}", status.label()),
+            ),
+        };
+        return Err(err.into());
+    }
     ctx.emit(
         json!({
-            "status": if finished.done { "done" } else { "collecting" },
+            "status": "done",
             "org": org.record.label,
             "id": req.id,
             "broadcast": finished.broadcast,
             "collected": collected,
             "threshold": threshold,
         }),
-        || {
-            if finished.done {
-                println!("Done: {} is on Platform.", title_of(&req));
-            } else {
-                println!("Not ready: {collected} of {threshold} signatures collected.");
-            }
-        },
+        || println!("Done: {} is on Platform.", title_of(&req)),
     );
     Ok(())
 }

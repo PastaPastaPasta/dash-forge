@@ -103,7 +103,7 @@ function OrgPage({ orgId }: { orgId: string }): JSX.Element {
         <h2 className="text-prose">Open requests</h2>
         {view === null && error === null ? <LoadingBlock label="Reading the organization's requests" /> : null}
         {error !== null && view === null ? <ErrorState message={error} onRetry={reload} /> : null}
-        {view !== null && open.length === 0 ? <p className="text-dense text-anvil-500 dark:text-anvil-400">Nothing waiting.</p> : null}
+        {view !== null && open.length === 0 && focused === null ? <p className="text-dense text-anvil-500 dark:text-anvil-400">Nothing waiting.</p> : null}
         {view !== null && focused !== null && !open.includes(focused) ? <RequestCard view={view} request={focused} highlight /> : null}
         {view !== null ? open.map((r) => <RequestCard key={r.request.id} view={view} request={r} highlight={r.request.id === requestId} />) : null}
         {view !== null && earlier.length > 0 ? (

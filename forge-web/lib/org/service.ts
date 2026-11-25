@@ -208,7 +208,8 @@ async function writtenOnChain(sdk: EvoSDK, d: DecodedTransition): Promise<boolea
 export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions): Promise<OrgView> {
   const state = await syncRoom(record.relay, record.room)
   const identity = await orgIdentityOf(sdk, record, state)
-  const requests = groupRequests(state, identity.ceremony.cid, ceremonyMembers(identity.ceremony))
+  const members = ceremonyMembers(identity.ceremony)
+  const requests = groupRequests(state, identity.ceremony.cid, members)
   const decoded = new Map<string, DecodedTransition | null>()
   await Promise.all(requests.flatMap((r) => r.proposals.map(async (p) => decoded.set(p.id, await decodeCached(p.body.unsigned)))))
   const currentNonce = await nonceReader(
@@ -237,7 +238,8 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
   const repoNames = new Map<string, string | null>()
   const views: RequestView[] = []
   for (const r of requests) {
-    const status = requestStatus(r, (id) => facts.get(id), currentNonce)
+    const found = requestStatus(r, (id) => facts.get(id), currentNonce)
+    const status = found === 'collecting' && unreachable(r, members, identity.ceremony.config.threshold) ? 'declined' : found
     const proposals: ProposalView[] = []
     for (const p of r.proposals) {
       const d = decoded.get(p.id) ?? null

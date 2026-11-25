@@ -118,7 +118,7 @@ Protocol reference: `dash-threshold-identity` `docs/PROTOCOL.md` and `src/{util,
 4. The identity-contract nonce is above the current one.
 5. The (document type, action) pair is one Forge recognises: `repo` create/replace, `maintainer` create/delete, `writer` create/delete, `config` create, `profile` create/replace, `topic` create/delete, `runner` create/delete. A delete is described from the stored document (proved read).
 
-**Request status.** `collecting` (fewer than N valid shares on some proposal), `ready`, `done` (every proposal has a member's `broadcast` with `ok: true` and its nonce is spent, or its document write is visible on chain: a broadcast record whose nonce is still free is a claim, and Finish broadcasts it), `expired` (a proposal's nonce is spent, Platform's skipped-nonce window included, and its write is not on chain), `invalid`.
+**Request status.** `collecting` (fewer than N valid shares on some proposal), `ready`, `done` (every proposal has a member's `broadcast` with `ok: true` and its nonce is spent, or its document write is visible on chain: a broadcast record whose nonce is still free is a claim, and Finish broadcasts it), `expired` (a proposal's nonce is spent, Platform's skipped-nonce window included, and its write is not on chain), `declined` (still collecting, but more members declined it without approving than M−N, so the rest cannot reach the threshold; nobody can sign it any more), `invalid`.
 
 **Signing a request** posts one `approve` per proposal the member has not approved. If that makes the request `ready`, the same client finishes it.
 

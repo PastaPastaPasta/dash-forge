@@ -28,7 +28,7 @@ Maintainers and writers of an organization's repository push, merge and change s
 
 The header shows how many requests wait for your signature, and the Notifications page lists them under **Needs your signature**. Each request reads as a sentence that Forge builds from the transition it would sign, never from the text its creator typed. Forge refuses to sign a request that writes as another owner, to a contract that is not one of this network's Forge contracts, with a nonce already used, or an action it does not recognise.
 
-**Sign** adds your share. The signature that completes the threshold also combines the shares, broadcasts the transitions in order, and confirms each with a proved read; the request then reads **Done**. **Decline** records that you declined; it does not block the others. A request overtaken by another change of the organization reads as expired.
+**Sign** adds your share. The signature that completes the threshold also combines the shares, broadcasts the transitions in order, and confirms each with a proved read; the request then reads **Done**. **Decline** records that you declined; it does not block the others unless so many members decline that the rest can no longer reach the threshold, and then the request reads **Declined** and its nonces are free for new requests. A request overtaken by another change of the organization reads as expired.
 
 ## From the command line (dg)
 

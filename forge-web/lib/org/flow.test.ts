@@ -163,4 +163,26 @@ describe('organization request flow', () => {
     const r1 = connect(await verifyInvite(sdk, V.room, 'testnet'), 'testnet', people[0]!.keys.authPub)
     await expect(createRequest(sdk, r1, people[1]!, { title: 'z', specs: [] }, opts)).rejects.toThrow(/unlock/)
   })
+
+  it('a request declined by more than M-N members reads declined and frees its nonce', async () => {
+    const r1 = connect(await verifyInvite(sdk, V.room, 'testnet'), 'testnet', people[0]!.keys.authPub)
+    const group = await createRequest(sdk, r1, people[0]!, { title: 'w', specs: [{ action: 'delete', contractId: forge.core, documentType: 'writer', documentId: ALICE }] }, opts)
+    const r2 = { ...r1, authPub: people[1]!.keys.authPub }
+    const r3 = { ...r1, authPub: people[2]!.keys.authPub }
+    const v2 = await loadOrg(sdk, r2, opts)
+    await declineRequest(v2, v2.requests.find((r) => r.request.id === group)!, people[1]!)
+    const v3 = await loadOrg(sdk, r3, opts)
+    const before = v3.requests.find((r) => r.request.id === group)!
+    expect(before.status).toBe('collecting')
+    const held = before.proposals[0]!.decoded!.nonce
+    await declineRequest(v3, before, people[2]!)
+    const v1 = await loadOrg(sdk, r1, opts)
+    const req = v1.requests.find((r) => r.request.id === group)!
+    expect(req.status).toBe('declined')
+    expect(req.card).toEqual({ kind: 'declined' })
+    await expect(signRequest(sdk, v1, req, people[0]!, opts)).rejects.toThrow(/no longer open/)
+    const next = await createRequest(sdk, r1, people[0]!, { title: 'v', specs: [{ action: 'delete', contractId: forge.core, documentType: 'writer', documentId: ALICE }] }, opts)
+    const fresh = (await loadOrg(sdk, r1, opts)).requests.find((r) => r.request.id === next)!
+    expect(fresh.proposals[0]!.decoded!.nonce).toBe(held)
+  })
 })

@@ -16,7 +16,7 @@ use super::derive::{MemberKeys, Seed};
 use super::envelope::{now_iso, seal};
 use super::request::{self, ChainView, Note, Request, RequestStatus};
 use super::review::{self, Expect, Names, Reviewed};
-use super::state::{reduce, Ceremony, Proposal, ProposalStatus, RoomState};
+use super::state::{reduce, Ceremony, ProposalStatus, RoomState};
 use super::{member, signing_ceremonies, signing_slot, MemberRecord, OrgError, OrgRecord, Relay};
 
 const CONFIRM_ATTEMPTS: usize = 8;
@@ -222,7 +222,7 @@ impl Org {
         if let Some(problem) = &req.problem {
             return Err(refused(what, std::slice::from_ref(problem)));
         }
-        let status = request::status(&self.state, req, None);
+        let status = self.status(req, None);
         if status.is_open() {
             Ok(())
         } else {
@@ -243,9 +243,20 @@ impl Org {
         self.requests()
             .into_iter()
             .filter(|r| {
-                request::waits_for(&self.state, r, &self.record.auth_pub) && self.writes_as_org(r)
+                request::waits_for(&self.state, r, &self.record.auth_pub)
+                    && !self.unreachable(r)
+                    && self.writes_as_org(r)
             })
             .collect()
+    }
+
+    /// The request's status, `declined` when it is collecting but can no longer reach the
+    /// threshold (§9 "Request status").
+    pub fn status(&self, req: &Request, chain: Option<&ChainView>) -> RequestStatus {
+        match request::status(&self.state, req, chain) {
+            RequestStatus::Collecting if self.unreachable(req) => RequestStatus::Declined,
+            s => s,
+        }
     }
 
     /// The nonces per contract that the organization's requests hold: every proposal a member
@@ -313,31 +324,8 @@ impl Org {
     /// Whether `req` is still collecting and so many members declined it, without approving,
     /// that the rest cannot reach the threshold.
     fn unreachable(&self, req: &Request) -> bool {
-        let ps: Vec<&Proposal> = req
-            .proposals
-            .iter()
-            .filter_map(|id| self.state.proposals.get(id))
-            .collect();
-        if ps
-            .iter()
-            .any(|p| matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed))
-        {
-            return false;
-        }
-        let approved: BTreeSet<&str> = ps
-            .iter()
-            .flat_map(|p| p.approvals.keys().map(String::as_str))
-            .collect();
-        let declined = ps
-            .iter()
-            .flat_map(|p| p.rejections.keys().map(String::as_str))
-            .filter(|k| self.is_member(k) && !approved.contains(k))
-            .collect::<BTreeSet<_>>()
-            .len();
-        let (size, threshold) = self.ceremony().map_or((0, 0), |c| {
-            (c.config.participants.len(), c.config.threshold)
-        });
-        declined > size.saturating_sub(threshold)
+        self.ceremony()
+            .is_some_and(|c| request::declined_out(&self.state, req, c))
     }
 
     pub fn decoded(&self, proposal_id: &str) -> Option<DecodedWrite> {

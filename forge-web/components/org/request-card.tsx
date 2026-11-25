@@ -140,6 +140,7 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
           </span>
         ) : null}
         {card.kind === 'expired' ? <span className="text-dense text-anvil-600 dark:text-anvil-300">Expired: the organization made another change first. Ask again if it is still needed.</span> : null}
+        {card.kind === 'declined' ? <span className="text-dense text-anvil-600 dark:text-anvil-300">Declined: too many members declined it, so it can no longer collect enough signatures.</span> : null}
         {card.kind === 'invalid' ? <span className="text-dense text-anvil-600 dark:text-anvil-300">Forge won&apos;t sign this: {card.reason || 'it is not an action Forge recognises'}.</span> : null}
       </div>
       {problem ? (

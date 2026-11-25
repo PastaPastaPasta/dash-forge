@@ -83,7 +83,7 @@ export function groupRequests(state: RoomState, cid: string, members: ReadonlySe
   return out.sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id))
 }
 
-export type RequestStatus = 'collecting' | 'ready' | 'done' | 'expired' | 'invalid'
+export type RequestStatus = 'collecting' | 'ready' | 'done' | 'expired' | 'declined' | 'invalid'
 
 export interface ProposalFacts {
   readonly reviewProblems: readonly string[]
@@ -140,6 +140,7 @@ export type CardState =
   | { readonly kind: 'finish' }
   | { readonly kind: 'done' }
   | { readonly kind: 'expired' }
+  | { readonly kind: 'declined' }
   | { readonly kind: 'invalid'; readonly reason: string }
 
 export function cardState(status: RequestStatus, collected: number, needed: number, viewerSigned: boolean, reason = ''): CardState {
@@ -148,6 +149,8 @@ export function cardState(status: RequestStatus, collected: number, needed: numb
       return { kind: 'done' }
     case 'expired':
       return { kind: 'expired' }
+    case 'declined':
+      return { kind: 'declined' }
     case 'invalid':
       return { kind: 'invalid', reason }
     case 'ready':

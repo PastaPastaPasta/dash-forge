@@ -79,6 +79,8 @@ export interface ConfirmDialogProps {
    * an action of one write ends under that write's own title.
    */
   toast?: SpendActionLabels
+  /** An organization request: it only collects signatures, so no cost line and no write steps. */
+  request?: boolean
 }
 
 export function ConfirmDialog({
@@ -95,6 +97,7 @@ export function ConfirmDialog({
   onConfirm,
   successNote,
   toast,
+  request = false,
 }: ConfirmDialogProps): JSX.Element {
   const { identity, balance, keyLimits } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
@@ -202,14 +205,14 @@ export function ConfirmDialog({
         <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 space-y-3 border-0 p-0 empty:hidden">
           {children}
         </fieldset>
-        {costPending ? null : cost ? (
+        {costPending || request ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>
         )}
 
         <div role="status" aria-live="polite" className="empty:absolute">
-          {pending ? <WriteProgressSteps /> : null}
+          {pending && !request ? <WriteProgressSteps /> : null}
           {unconfirmed !== null && !pending && !done ? (
             <div data-testid="write-unconfirmed" className="flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-750 dark:bg-anvil-850 dark:text-anvil-200">
               <Clock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
