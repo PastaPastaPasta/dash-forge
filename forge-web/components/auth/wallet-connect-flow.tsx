@@ -810,7 +810,7 @@ function ProtectStep({ onPick, busy }: { onPick: (p: Protection) => void; busy: 
 }
 
 /** Why the wallet flow cannot start here: App Connect v2 is not on offer. */
-const NOT_OFFERED = `Wallet sign-in isn't available on ${ACTIVE_NETWORK.key} right now. Go back and choose another way to sign in.`
+const NOT_OFFERED = `Wallet sign-in isn't available on ${ACTIVE_NETWORK.key} right now. Choose another way.`
 
 /** Platform did not answer the protocol check in time. */
 const UNREAD = "Couldn't read Platform to check what your wallet can answer. Try again."

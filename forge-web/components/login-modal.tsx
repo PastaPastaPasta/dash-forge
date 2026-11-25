@@ -322,7 +322,7 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
                   : 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
                 : network === 'devnet'
                   ? `Test wallets only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps carry no devnet's settings.`
-                  : "Wallet sign-in isn't available here right now. Use another way for now."
+                  : "Wallet sign-in isn't available here right now. Use another way."
             }
             muted={!walletFirst}
             badge={walletFirst ? (isRecommended ? recommended : null) : { label: 'Not available yet', tone: 'waiting' }}
