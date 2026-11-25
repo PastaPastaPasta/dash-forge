@@ -29,10 +29,10 @@ export function UsernameHint({ show, className }: { show: boolean; className?: s
       {show ? (
         <div className={className} data-testid="username-hint">
           <p className="text-dense text-anvil-700 dark:text-anvil-200">
-            No username yet. A DPNS username makes your addresses readable (<span className="font-mono">forge.dashhq.org/alice/project</span>,{' '}
+            No username yet. A Dash username makes your addresses readable (<span className="font-mono">/alice/project</span>,{' '}
             <span className="font-mono">@alice</span>).
           </p>
-          {phraseIsAdvanced() ? <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="username-in-dashpay">Choose one in your DashPay wallet.</p> : null}
+          {phraseIsAdvanced() ? <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="username-in-dashpay">Choose one in your Dash wallet app.</p> : null}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <PhraseAdvanced label="Advanced: register it here with your recovery phrase" testId="username-advanced">
               <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="username-choose">

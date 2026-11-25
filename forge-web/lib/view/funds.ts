@@ -124,7 +124,7 @@ export function renewsInWallet(origin: string | null | undefined, network: strin
 export function keyOriginLabel(storage: 'vault' | 'session' | null, origin: string | null | undefined, unlimited: boolean): string | null {
   if (storage === null) return null
   if (storage === 'session') return 'A pasted key (this tab only)'
-  if (origin === 'app-connect') return 'Your DashPay wallet (App Connect)'
+  if (origin === 'app-connect') return 'Your Dash wallet (App Connect)'
   if (origin === 'dg') return 'Handed over by dg on your computer'
   if (origin === 'passkey') return 'Restored from a passkey'
   if (origin) return 'Stored in this browser'
@@ -174,7 +174,7 @@ export function fundsNotice(
       fix: renewFix(origin, network, unlimited),
       message: empty
         ? "This browser's key has spent its budget: writes are off until you renew it. Reading still works."
-        : "This browser's key has less than 20 % of its budget left. Renew it (or top up its budget in Settings).",
+        : "This browser's key has less than 20 % of its budget left. Renew it to keep writing.",
     }
   }
   return {
