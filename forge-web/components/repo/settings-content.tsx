@@ -44,6 +44,8 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
+import { RepoShareNotes, RotateCredentialsNote } from '@/components/storage/repo-share-notes'
+import { useRepoStorageShare } from '@/hooks/use-repo-share'
 import { PrivateMembers } from '@/components/repo/private-members'
 import { MemberEnvOutcomeView, MemberEnvPlanView, useMemberEnvFlow } from '@/components/repo/member-env-plan'
 import type { MemberChange } from '@/lib/env/member-change'
@@ -136,6 +138,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     { enabled: ready && sdk !== null },
   )
   const memberRows = members.data ?? []
+  // Maintainers use the owner's storage (forge-user): the share and grants, and a removal's epoch.
+  const share = useRepoStorageShare(repo)
+  // A removed maintainer could have copied the shared credentials: say so once.
+  const [rotate, setRotate] = useState(false)
   // The identity the owner tried to add before they accepted: the invite is pending on them.
   const [awaiting, setAwaiting] = useState<string | null>(null)
   // A member added to a repo with members-only content before they have an encryption key.
@@ -189,6 +195,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           setNoKeyYet(granted.keyShared === false && action.role !== 'bot' ? action.member : null)
         } else {
           await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops, planned)
+        }
+        if (action.role === 'maintainer' && (action.kind === 'revoke' || (action.kind === 'change' && action.to !== 'maintainer'))) {
+          setRotate(await share.afterRemoval(action.member).catch(() => false))
         }
       }, async () => {
         // what would refuse an add before signing, checked before any environment is saved first
@@ -429,6 +438,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         </ConfirmDialog>
         {org.dialog}
         <MemberEnvOutcomeView home={home} flow={envFlow} />
+        {rotate ? <RotateCredentialsNote /> : null}
         </>
         )}
       </Section>
@@ -442,6 +452,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
             </h3>
             <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
+            <RepoShareNotes waiting={share.waiting} memberNeedsKey={share.memberNeedsKey} />
           </>
         ) : null}
       </Section>

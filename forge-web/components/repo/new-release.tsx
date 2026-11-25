@@ -66,6 +66,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useIntent } from '@/hooks/use-intent'
 import { useStorageConfig } from '@/hooks/use-storage-config'
+import { useGrantedStorage } from '@/hooks/use-repo-share'
 import { repoHref, useRepoAddress } from '@/hooks/use-query-param'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -229,7 +230,9 @@ function NewReleaseDialog({
   const { sdk, network } = useSdk()
   const { signer } = useAuth()
   const guard = useWriteGuard()
-  const { config, needsUnlock: storageNeedsUnlock } = useStorageConfig()
+  const { config: ownConfig, needsUnlock: storageNeedsUnlock } = useStorageConfig()
+  // A maintainer's assets here also reach the storage the owner shared with them (this repo only).
+  const config = useGrantedStorage(repo, ownConfig)
   const [tag, setTag] = useState(fixedTag ?? '')
   // The branch a new tag is made on (GitHub's release "Target"): the default branch until picked.
   const [tagTarget, setTagTarget] = useState(`${BRANCH_PREFIX}${home.defaultBranch}`)

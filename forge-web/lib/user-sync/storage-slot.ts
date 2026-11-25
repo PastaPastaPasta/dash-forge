@@ -26,7 +26,7 @@ export function storageEntries(config: StorageConfig): Record<string, unknown> {
   return out
 }
 
-function profileOf(name: string, v: unknown): StorageProfile | null {
+export function profileOf(name: string, v: unknown): StorageProfile | null {
   if (!validProfileName(name)) return null
   const parsed = profileValue.safeParse(v)
   return parsed.success ? ({ name, settings: parsed.data.settings, secrets: parsed.data.secrets } as StorageProfile) : null
