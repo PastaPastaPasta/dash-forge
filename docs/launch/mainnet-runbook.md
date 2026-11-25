@@ -60,7 +60,7 @@ Prepared overnight. The launch thread checks each item again at T-60.
 - [x] The testnet rehearsal of these exact steps passed ([§8](#8-testnet-rehearsal)): 2026-11-24 06:15 to 07:05Z.
 - [ ] The testnet site serves the testnet build at `https://testnet-forge.dashhq.org` (after P1), and its `/forge-manifest.json` says `"network": "testnet"`.
 - [ ] The launch-day docs PR (mainnet live, v0.3.0 bumps, `RELEASE_NETWORK='mainnet'`) is open as a draft.
-- [ ] No other PR is about to merge: **freeze merges to `master` from step 7 until the flip is live** (step 9). The Pages guard reads the live manifest, which GitHub's CDN caches for up to 10 minutes, and `cancel-in-progress` would let a merge cancel the flip run.
+- [ ] No other PR is about to merge: **freeze merges to `master` from step 7 until the flip is live** (step 9). The Pages guard reads the live manifest, which GitHub's CDN caches for up to 10 minutes, and Pages runs keep only the newest waiting run, so a merge pushed while the flip run is still waiting to start would replace it.
 
 ## 4. The steps, in order
 
@@ -253,7 +253,7 @@ The fastest full rollback to "testnet-only" is **R1**: three variables, two disp
 | **v0.2.0 binaries on mainnet** say "not deployed" until v0.3.0 | certain, until step 11 | The CLI can't reach mainnet for a few hours. | Release the same day. The web `/mirror` wizard pins the Action to the deployed commit with a source install, so mirrors set up from the mainnet site work without the release. |
 | **DNS / certificate delay** on testnet-forge.dashhq.org | low | Testnet users have no site for a while. | Do P1 now, and step 8 checks it before the flip. |
 | **Platform reset on mainnet** | very low | Contracts are gone. | The escrowed deployer (mnemonic + asset-lock txid + height) restores the same ids: `mint.mjs restore` (testnet-only today, so a mainnet restore needs that tool extended first) and `deploy-v2 --replay`. |
-| **A merge cancels the flip run** (`cancel-in-progress`), or the guard reads a stale manifest | low | The flip run fails or is cancelled, and the site stays on testnet. | The merge freeze (step 7). Re-run the dispatch. |
+| **A merge replaces the flip run while it waits to start**, or the guard reads a stale manifest | low | The flip run fails or is cancelled, and the site stays on testnet. | The merge freeze (step 7). Re-run the dispatch. |
 
 ## 8. Testnet rehearsal
 
