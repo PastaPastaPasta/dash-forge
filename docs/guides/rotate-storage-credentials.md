@@ -10,7 +10,7 @@ Sharing and settings sync use the forge-user contract, which is registered on te
 Rotating takes three steps:
 
 1. Make a new credential at the provider.
-2. Update the profile with it.
+2. Update the profile with it. In dg, put the new secret in place first, then run `dg storage add <name> …` again with the same name and all its settings (any flag you leave out changes the profile everywhere).
 3. Revoke the old credential at the provider.
 
 The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So do `dg collab add`, `dg collab remove`, `dg storage share` and opening the repo's **Settings** in the web app: they refresh the shared profiles from the storage you set for that repository. Maintainers only ever get storage set for their repository, never your default storage.
@@ -30,7 +30,7 @@ The shared copy follows automatically. Your next push to the repository re-encry
        --bucket forge --public-url <public URL> \
        --access-key-id <new key id> --secret-access-key keychain:dash-forge/nas
      ```
-     Add `--session-token` if your provider uses one.
+     Add `--session-token` if your provider uses one. Changing only the keychain entry or the environment variable changes this computer, not the synced copy: maintainers keep getting the old key, and `dg storage share` stops with E502. Re-run `dg storage add` as above to update it.
    - **Web app:** open **Settings → Storage**, edit the profile, and paste the new keys.
 3. Delete the old key: `g key delete --yes forge-key` on Garage, remove the old user (`forge`) on RustFS, or delete it in the provider's dashboard.
 
@@ -52,7 +52,7 @@ The shared copy follows automatically. Your next push to the repository re-encry
 dg storage test nas
 ```
 
-A green test means the new credential works. Run one push to each repository whose maintainers changed. It shares the updated profile with the remaining maintainers; the removed one gets nothing.
+A green test means the new credential works on this computer. `dg storage list` must not mark the profile "local (synced copy differs)": that means maintainers still get the old key, so run `dg storage add` again as in step 2. Run one push to each repository whose maintainers changed. It shares the updated profile with the remaining maintainers; the removed one gets nothing.
 
 ## What happens to existing testnet maintainers
 

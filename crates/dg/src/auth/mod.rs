@@ -1075,6 +1075,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "storage": stored.kind(),
                 "storedAt": stored.describe(),
                 "source": stored.source(),
+                "previousKeyKeptAt": store::kept_this_run(),
                 "balanceCredits": balance,
                 "balanceDash": credits_to_dash(balance),
                 "cost": key_id.map(|_| crate::fmt::cost_json(spent, price)),

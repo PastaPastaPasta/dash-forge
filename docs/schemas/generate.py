@@ -189,6 +189,9 @@ cmd('auth login', 'Signed in: the identity and the key stored for it.', {
     'renew': D('With `--wallet`: the command that renews the key.', S),
     'previousKeyLeftLive': D('With `--wallet`: the limited key this computer held before, which stays live on '
                              'Platform, and how to disable it; else null.', nl(S)),
+    'previousKeyKeptAt': D('Where the keys this sign-in replaced were kept, as key sources `--identity` '
+                           'takes: a `.bak-<UTC time>` copy of the key file, or a `keychain:` entry of that '
+                           'name. Empty when nothing was replaced.', SA),
 }, ['status', 'identityId', 'network'])
 cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', {
     'network': S, 'authenticated': B, 'identityId': S, 'names': SA, 'keyId': nl(I), 'keyDisabled': nl(B),

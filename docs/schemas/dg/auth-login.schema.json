@@ -122,6 +122,13 @@
         "null"
       ],
       "description": "With `--wallet`: the limited key this computer held before, which stays live on Platform, and how to disable it; else null."
+    },
+    "previousKeyKeptAt": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Where the keys this sign-in replaced were kept, as key sources `--identity` takes: a `.bak-<UTC time>` copy of the key file, or a `keychain:` entry of that name. Empty when nothing was replaced."
     }
   },
   "required": [
