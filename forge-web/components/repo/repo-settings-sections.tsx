@@ -24,6 +24,8 @@ import { Archive, Globe, Info, Lock, Plus, ShieldCheck, Trash2 } from 'lucide-re
 import { RowMenu } from '@/components/ui/row-menu'
 import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
+import { dgNetworkFlags } from '@/lib/view/repo-commands'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import {
   CONFIG_LAG_MS,
   DEFAULT_CONFIG,
@@ -326,7 +328,7 @@ export function GeneralSettings({
           </select>
         </div>
         {live.length === 0 ? <Note>Push a branch first: the default is picked from the repo&apos;s branches.</Note> : null}
-        {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch>`} /> : null}
+        {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch> ${dgNetworkFlags(ACTIVE_NETWORK)}`} /> : null}
         {canEdit && branchChanged ? (
           <div className="mt-3">
             <SaveBar
@@ -612,7 +614,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
         ) : canEdit ? (
           <Note>{MAX_PROTECTED_PATTERNS} patterns is the most a repo holds: unprotect one to add another.</Note>
         ) : cfg.sealed ? (
-          <SealedNote command={`dg repo protect add ${home.repo.ownerId}/${home.repo.name} <pattern>`} />
+          <SealedNote command={`dg repo protect add ${home.repo.ownerId}/${home.repo.name} <pattern> ${dgNetworkFlags(ACTIVE_NETWORK)}`} />
         ) : null}
       </Card>
       <PolicyEditor home={home} maintainer={maintainer} />
@@ -699,7 +701,7 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
       <div className="flex shrink-0 items-center gap-1.5">
         {cfg.sealed ? (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
-            Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name}</span>
+            Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name} {dgNetworkFlags(ACTIVE_NETWORK)}</span>
           </p>
         ) : offer.length > 0 && full === null ? (
           <Button
@@ -1091,7 +1093,7 @@ export function DangerZone({ home, maintainer, owner = false, onSaved }: { home:
         ) : null}
       </div>
       {cfg.sealed ? (
-        <SealedNote command={`dg repo ${archived ? 'unarchive' : 'archive'} ${home.repo.ownerId}/${home.repo.name}`} />
+        <SealedNote command={`dg repo ${archived ? 'unarchive' : 'archive'} ${home.repo.ownerId}/${home.repo.name} ${dgNetworkFlags(ACTIVE_NETWORK)}`} />
       ) : null}
       {cfg.dialog}
     </Section>

@@ -25,6 +25,8 @@ import {
   type UnavailablePack,
 } from '@/lib/view'
 import { clearUnreachable } from '@/lib/view/content-checks'
+import { dgNetworkFlags } from '@/lib/view/repo-commands'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 
 export function StorageUnreachableCard({
   repo,
@@ -93,7 +95,8 @@ export function StorageUnreachableCard({
               </p>
               <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200">
                 The owner can fix this for everyone: set a public gateway on their IPFS storage
-                (<code className="font-mono text-[12px]">dg storage add … --public-gateway &lt;url&gt;</code>) and push again.
+                (<code className="font-mono text-[12px]">dg storage add … --public-gateway &lt;url&gt;</code>), then run{' '}
+                <code className="break-words font-mono text-[12px]">dg storage advertise {slug} {dgNetworkFlags(ACTIVE_NETWORK)}</code>.
               </p>
             </>
           ) : null}
@@ -126,7 +129,7 @@ export function StorageUnreachableCard({
           {capabilitiesOf(role).canPush ? (
             <div className="mt-4">
               <p className="mb-1 text-dense text-anvil-600 dark:text-anvil-300">Have a clone? This restores it:</p>
-              <CopyRow text={`dg reseed ${slug} --from-local`} label="Copy the reseed command" />
+              <CopyRow text={`dg reseed ${slug} --from-local ${dgNetworkFlags(ACTIVE_NETWORK)}`} label="Copy the reseed command" />
             </div>
           ) : null}
         </div>

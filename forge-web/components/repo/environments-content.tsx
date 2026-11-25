@@ -21,6 +21,8 @@ import { flushSync } from 'react-dom'
 import { AlertTriangle, Eye, EyeOff, KeyRound, Lock, Pencil, Plus, Users } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
+import { dgNetworkFlags } from '@/lib/view/repo-commands'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { ACCESS_SENTENCE } from '@/lib/env'
 import { shortHead, type Head } from '@/lib/env/loader'
 import {
@@ -98,8 +100,8 @@ function Environments({ home }: { home: RepoHome }): JSX.Element {
         ) : (
           <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-edit-hint">
             {editHint(maintainer, state.data?.encryption)}
-            <code className="font-mono text-[12px]">
-              dg env set {home.repo.ownerId}/{home.repo.name} NAME --env production
+            <code className="break-words font-mono text-[12px]">
+              dg env set {home.repo.ownerId}/{home.repo.name} NAME --env production {dgNetworkFlags(ACTIVE_NETWORK)}
             </code>
           </p>
         )}
@@ -460,8 +462,8 @@ function Conflict({
         ))}
       </ol>
       <p className="text-dense text-anvil-700 dark:text-anvil-200">
-        Compare them with <code className="font-mono text-[12px]">dg env history {repo} --env {env}</code>, then a maintainer keeps one:{' '}
-        <code className="break-words font-mono text-[12px]">dg env edit {repo} --env {env} --keep &lt;id&gt;</code>
+        Compare them with <code className="break-words font-mono text-[12px]">dg env history {repo} --env {env} {dgNetworkFlags(ACTIVE_NETWORK)}</code>, then a maintainer keeps one:{' '}
+        <code className="break-words font-mono text-[12px]">dg env edit {repo} --env {env} --keep &lt;id&gt; {dgNetworkFlags(ACTIVE_NETWORK)}</code>
       </p>
     </div>
   )

@@ -7,6 +7,8 @@
  */
 
 import { holdsMembersKey } from '../rules/roles'
+import { ACTIVE_NETWORK } from '../constants'
+import { dgNetworkFlags } from '../view/repo-commands'
 import type { Role } from '../rules/v2'
 import type { Exposure } from './chain'
 import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE, audienceLabel, compareStrings as cmp, membersKey, type Audience, type Group, type Snapshot, type VarType } from './format'
@@ -224,7 +226,7 @@ export function staleLine(env: string, item: StaleItem, name: string): string {
 
 /** The command that saves `env` of `repo` again. */
 export function resaveCommand(repo: string, env: string): string {
-  return `dg env resave ${repo} --env ${env}`
+  return `dg env resave ${repo} --env ${env} ${dgNetworkFlags(ACTIVE_NETWORK)}`
 }
 
 /** The old-format banner of `env`, when it needs one (forge-core `old_format_line`). */
@@ -232,7 +234,7 @@ export function oldFormatView(book: EnvBook, env: string, repo: string): OldForm
   const old = oldFormatOf(book, env)
   if (old === null || !needsAttention(old)) return null
   if (old.latest) return { latest: true, sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: resaveCommand(repo, env) }
-  return { latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed ${repo} --env ${env}` }
+  return { latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed ${repo} --env ${env} ${dgNetworkFlags(ACTIVE_NETWORK)}` }
 }
 
 function cardAudienceLabel(s: Snapshot): string {

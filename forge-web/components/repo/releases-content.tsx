@@ -17,6 +17,8 @@ import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Lock, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { formatBytes, plural, tipOidOf } from '@/lib/view'
+import { dgNetworkFlags } from '@/lib/view/repo-commands'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import type { ReleaseAssetView, ReleaseView, RepoRef } from '@/lib/repo'
 import {
   AssetHashMismatchError,
@@ -111,7 +113,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
           <EmptyState
             icon={Tag}
             title={unpublished.length > 0 ? 'No published releases' : 'No releases yet'}
-            body={`Publish one with New release, or with dg release create ${home.repo.ownerId}/${home.repo.name} --tag v1 --asset ./dist/app.tar.gz.`}
+            body={`Publish one with New release, or with dg release create ${home.repo.ownerId}/${home.repo.name} --tag v1 --asset ./dist/app.tar.gz ${dgNetworkFlags(ACTIVE_NETWORK)}.`}
           />
           <SealedListNotes list={data} />
         </>
@@ -156,7 +158,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
             {home.repo.visibility === 'public' ? (
               <>
                 {' '}
-                (<code className="font-mono">dg release create {home.repo.ownerId}/{home.repo.name} --tag &lt;tag&gt;</code>)
+                (<code className="font-mono">dg release create {home.repo.ownerId}/{home.repo.name} --tag &lt;tag&gt; {dgNetworkFlags(ACTIVE_NETWORK)}</code>)
               </>
             ) : null}
             .

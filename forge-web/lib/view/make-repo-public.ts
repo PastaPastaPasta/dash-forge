@@ -9,6 +9,8 @@ import { COPY, MAKE_PUBLIC_TOTAL_STEPS, MakePublicError, type MakePublicCheck, t
 import { shortRef } from '../repo/ref-admin'
 import { errorMessage } from '../utils'
 import { plural } from './format'
+import { ACTIVE_NETWORK } from '../constants'
+import { dgNetworkFlags } from './repo-commands'
 
 /** How the dialog names each mode. */
 export const MODE_LABEL: Readonly<Record<MakePublicMode, string>> = { codeOnly: 'Code only', everything: 'Everything' }
@@ -112,7 +114,8 @@ export function oldFormatLine(env: string): string {
   return `Can't make everything public: environment ${env} has values saved in the old format, which would become public.`
 }
 export function oldFormatFix(repo: string, env: string): { readonly resave: string; readonly markChanged: string } {
-  return { resave: `dg env resave ${repo} --env ${env}`, markChanged: `dg env mark-changed ${repo} --env ${env}` }
+  const flags = dgNetworkFlags(ACTIVE_NETWORK)
+  return { resave: `dg env resave ${repo} --env ${env} ${flags}`, markChanged: `dg env mark-changed ${repo} --env ${env} ${flags}` }
 }
 
 /** Code only with no branch or tag ticked. */

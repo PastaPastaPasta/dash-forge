@@ -238,7 +238,7 @@ describe('EnvironmentsView', () => {
     expect(c.textContent).toContain("2 people changed production at the same time, so its values can't be used until a maintainer keeps one.")
     expect(byTestId('env-version').map((v) => v.querySelector('code')?.textContent)).toEqual(['8V2UnsMbU1', 'ByFFj1bXro'])
     expect(byTestId('env-version')[1]?.textContent).toContain("You can't read this version here.")
-    expect(c.textContent).toContain('Compare them with dg env history carol/shop --env production, then a maintainer keeps one: dg env edit carol/shop --env production --keep <id>')
+    expect(c.textContent).toContain('Compare them with dg env history carol/shop --env production --network testnet, then a maintainer keeps one: dg env edit carol/shop --env production --keep <id> --network testnet')
     expect(host.innerHTML).not.toContain('QAMARK-x')
   })
 
