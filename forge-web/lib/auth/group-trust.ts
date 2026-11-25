@@ -12,7 +12,8 @@
  *    records, and the group has no admins. Consensus then guarantees every member was
  *    created by that owner;
  * 2. forge-core, forge-collab, forge-community and, on a four-contract set (D44), forge-meta are
- *    whole-contract members (checked before anything else is read);
+ *    whole-contract members (checked before anything else is read); forge-user, where the
+ *    deployment file records it, is a known member too (not required);
  * 3. cross-check: each member contract this build does not know is read with proofs, and an
  *    `$ownerId` other than the pinned owner is refused. A contract that cannot be read (a
  *    format newer than this build) is accepted and named, since rule 1 already bounds it;
@@ -58,7 +59,7 @@ function refuse(cause: string): Error {
 }
 
 function isKnown(trust: GroupTrust, contractId: string): boolean {
-  return forgeContractIds(trust).includes(contractId) || trust.superseded.includes(contractId)
+  return forgeContractIds(trust).includes(contractId) || trust.user === contractId || trust.superseded.includes(contractId)
 }
 
 /** Every member contract (whole, or through a document type or token) Forge does not know. */

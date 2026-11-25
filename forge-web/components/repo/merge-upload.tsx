@@ -20,6 +20,7 @@ import { fragmentBytes, remainingPreAgreement, storageChoice, type PackEstimate,
 import type { UploadPack } from '@/lib/merge/runner'
 import { formatBytes, plural } from '@/lib/view'
 import { useStorageConfig } from '@/hooks/use-storage-config'
+import { useGrantedStorage } from '@/hooks/use-repo-share'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -75,7 +76,8 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
 
   // The settings the upload uses: after a reload with none stored in this browser, the empty
   // ones (Platform, asked for) with no unlock; stored ones only once this tab is unlocked.
-  const config = storage.usable
+  // A maintainer's pushes here also reach the storage the owner shared with them (this repo only).
+  const config = useGrantedStorage(repo, storage.usable)
   const { storedSince } = storage
   const policy = config === null ? null : policyForRepo(config, repo.repoId)
   const upload = useCallback<UploadPack>(

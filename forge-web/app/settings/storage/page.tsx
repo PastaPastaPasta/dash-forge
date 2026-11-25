@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/ui/states'
 import { KuboConnectView } from '@/components/storage/kubo-connect'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { StorageWizardView } from '@/components/storage/storage-wizard'
+import { SyncNote } from '@/components/storage/sync-note'
 import { useAuth } from '@/contexts/auth-context'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -35,7 +36,10 @@ export default function StorageSettingsPage(): JSX.Element {
         </p>
         <KuboConnectView storage={storage} fragmentOnly showUnlock={false} />
         {identity ? (
-          <StorageWizardView storage={storage} />
+          <>
+            <StorageWizardView storage={storage} />
+            <SyncNote />
+          </>
         ) : (
           <EmptyState
             icon={HardDrive}

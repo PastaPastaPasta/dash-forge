@@ -9,6 +9,7 @@
 import { useCallback, useSyncExternalStore } from 'react'
 
 import { DEFAULT_PREFS, PREFS_KEY, parsePrefs, type Prefs } from '@/lib/view/prefs'
+import { effectiveRaw } from '@/lib/user-sync/overlay'
 
 const listeners = new Set<() => void>()
 let cachedRaw: string | null | undefined
@@ -24,6 +25,7 @@ function read(): Prefs {
   } catch {
     raw = null
   }
+  raw = effectiveRaw(PREFS_KEY, raw)
   if (raw !== cachedRaw) {
     cachedRaw = raw
     cached = parsePrefs(raw)

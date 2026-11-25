@@ -9,6 +9,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { IMAGE_HOSTS_KEY, parseImageHosts } from '@/lib/view/markdown-links'
+import { effectiveRaw } from '@/lib/user-sync/overlay'
 
 const EMPTY_HOSTS: readonly string[] = []
 const hostListeners = new Set<() => void>()
@@ -24,6 +25,7 @@ function readHosts(): readonly string[] {
   } catch {
     raw = null
   }
+  raw = effectiveRaw(IMAGE_HOSTS_KEY, raw)
   if (raw !== hostsRaw) {
     hostsRaw = raw
     hostsCached = parseImageHosts(raw)

@@ -1,4 +1,5 @@
 import { fiatProviders, isCurrency, validRate, type Currency, type FiatSource, type Rates } from './providers'
+import { readPref } from '../user-sync/overlay'
 
 export const FIAT_SETTINGS_KEY = 'forge:fiat:v1'
 export const FIAT_RATES_KEY = 'forge:fiat-rates:v1'
@@ -30,7 +31,8 @@ function write(key: string, value: unknown): void {
 }
 
 function readSettings(): FiatSettings {
-  const value = read(FIAT_SETTINGS_KEY)
+  let value: unknown = null
+  try { value = JSON.parse(readPref(FIAT_SETTINGS_KEY) ?? 'null') } catch { /* unreadable: the defaults */ }
   if (value && typeof value === 'object' && 'v' in value && value.v === 1 && 'enabled' in value && typeof value.enabled === 'boolean' && 'currency' in value && isCurrency(value.currency)) {
     return { enabled: value.enabled, currency: value.currency }
   }

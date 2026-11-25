@@ -38,7 +38,7 @@ import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, groupTrust, type ForgeIds, type Grou
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { ConsensusRefusal, KeyUnusableError, SECURITY_LEVEL, UnconfirmedWriteError, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { APP_CONNECT_SIGNING_EXPIRY_MARGIN_MS } from '../vendor/platform-auth/app-connect'
-import { newV2LoginRequest, readChainClock, type V2LoginRequest } from './app-connect-v2'
+import { grantedApp, newV2LoginRequest, readChainClock, type V2LoginRequest } from './app-connect-v2'
 import { clearWalletRenewal, connectionId, markWalletRenewal, walletRenewalInFlight } from './connection-id'
 import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, NAME_REGISTER_CREDITS, NAME_REGISTER_FLOOR_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
@@ -60,7 +60,7 @@ import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
 import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, readLastIdentity, rememberLastIdentity } from './last-identity'
-import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './wallet-key'
+import { checkWalletKey, hasNoLimits, isSigningContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './wallet-key'
 import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
 import { acknowledgeKeys, checkKeys, forgetKeySnapshot, type WatchedKey } from './key-watch'
@@ -143,6 +143,7 @@ import {
   watchOtherTabs,
   clearSignedWrites,
   storeInVault,
+  storeSyncKey,
   storedOrigin,
   isKeyOrigin,
   VaultChangedError,
@@ -630,7 +631,7 @@ export class AuthController {
       if (current.storage !== 'vault') return secret.wif
       // A vault key only ever signs on Forge's contracts, named by the write.
       const forge = NETWORKS[network].v2
-      if (forge === null || !isForgeContract(forge, contractId)) {
+      if (forge === null || !isSigningContract(forge, contractId)) {
         throw new WriteAuthError(`this browser's key signs only Dash Forge writes${contractId ? ` (not ${contractId})` : ''}`)
       }
       if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) {
@@ -1301,6 +1302,8 @@ export class AuthController {
       readonly renewalUnlock?: UnlockMethod
       /** Give it up even though it cannot be opened (its key then stays live until it expires). */
       readonly dropUnopened?: boolean
+      /** forge-user's encryption key from the same grant (settings sync); the caller wipes it. */
+      readonly syncKey?: { readonly keyId: number; readonly secret: Uint8Array }
     } = {},
   ): Promise<AuthSession> {
     return this.run(async () => {
@@ -1392,6 +1395,8 @@ export class AuthController {
     // The new key is this browser's now: another tab that finds the old one disabled has been
     // superseded by the stored key id alone.
     if (appConnect) clearWalletRenewal(this.networkKey, identityId, previousKeyId)
+    // Sync is optional: a key that cannot be kept leaves the session as it would be without it.
+    if (options.syncKey) await storeSyncKey(this.network, identityId, options.syncKey.keyId, options.syncKey.secret).catch(() => undefined)
     this.noteDropped(stored, 'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.')
     try {
       return this.keyChanged(await this.open(secret, 'vault', main.limits ?? undefined, true))
@@ -1419,7 +1424,7 @@ export class AuthController {
    * code, so that window stays short; the mark lapses on its own a while after the request does.
    * Needs the whole vault open in this tab, as storing the new key does.
    */
-  async walletRenewalRequest(options: { readonly callbackUrl?: (requestHash: Uint8Array) => string | null } = {}): Promise<WalletRenewalRequest> {
+  async walletRenewalRequest(options: { readonly callbackUrl?: (requestHash: Uint8Array) => string | null; readonly sync?: boolean } = {}): Promise<WalletRenewalRequest> {
     const session = this.state.session
     if (!session || session.storage !== 'vault' || !renewsInWallet(session.origin, this.network, session.unlimited === true) || session.keyId === undefined) {
       throw new Error('Only a key your wallet granted can be renewed in your wallet. Renew it with your identity file or recovery phrase instead.')
@@ -1436,6 +1441,8 @@ export class AuthController {
       chainNow: timeMs,
       identityHint: identityId,
       ...(options.callbackUrl ? { callbackUrl: options.callbackUrl } : {}),
+      // The same app as the grant it replaces: a wallet disables the previous key only for the same app.
+      sync: options.sync !== false && forge.user !== undefined && grantedApp(this.networkKey, identityId) === forge.user,
     })
     markWalletRenewal(this.networkKey, identityId, keyId, req.expiresAt + WALLET_RENEWAL_GRACE_MS)
     return { ...req, identityHint: identityId, replacesKeyId: keyId }
