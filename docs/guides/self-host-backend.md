@@ -98,7 +98,7 @@ Anyone can then clone the repository. `git-remote-dash` reads the packs through 
 
 ## An https address and the web app
 
-With a host name whose DNS (A and/or AAAA record) points at the machine, and ports 80 and 443 open to it:
+With a host name whose DNS points at the machine (an A record for its IPv4 address and an AAAA record for its IPv6 address: Caddy and kubo listen on both), and ports 80 and 443 open to it over both:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/backend.sh | sudo sh -s -- --domain ipfs.example.org
@@ -121,9 +121,9 @@ Other nodes and the public gateways must be able to dial your node to fetch from
   Public addresses ip4 203.0.113.7 ip6 2001:db8::7
 ```
 
-If it says `none yet`, nobody outside your network can fetch from you: forward the port. If browser dialing says `not yet`, the certificate comes a few minutes after the node becomes reachable. Run the status command again later.
+If it says `none yet`, nobody outside your network can fetch from you: forward the port for IPv4, and allow it in the router's IPv6 firewall too. If browser dialing says `not yet`, the certificate comes a few minutes after the node becomes reachable. Run the status command again later.
 
-Your bytes are safe on your disk either way. Keep a second copy elsewhere too (`dg storage use forge-backend,r2-main`, see [Bring your own storage](bring-your-own-storage.md#choosing-where-a-repo-pushes)): when this machine is off, packs stored only here can't be read.
+Your bytes are safe on your disk either way. Keep a second copy elsewhere too (`dg storage use forge-backend,nas`, see [Bring your own storage](bring-your-own-storage.md#choosing-where-a-repo-pushes)): when this machine is off, packs stored only here can't be read.
 
 ## Day to day
 

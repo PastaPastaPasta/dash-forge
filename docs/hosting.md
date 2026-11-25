@@ -224,10 +224,12 @@ The same rules apply:
 
 Build with `NEXT_PUBLIC_SITE_URL=https://<your host>` so link previews (`og:image`) point at your copy, not forge.dashhq.org, and the wallet sign-in tells users to scan only codes shown on your host. A build under `NEXT_PUBLIC_BASE_PATH` adds that path to it.
 
-For nginx. A self-hosted copy has no analytics beacon unless its build sets `NEXT_PUBLIC_CF_BEACON_TOKEN`; if it does, use `Referrer-Policy: strict-origin` (section 6). `add_header` in a `location` replaces every `add_header` inherited from the `server`, so a location that sets Cache-Control must repeat the other headers the site sends:
+For nginx (IPv4 and IPv6: give the host name an A and an AAAA record, and keep both `listen` lines; add your certificate and a port-80 redirect as usual). A self-hosted copy has no analytics beacon unless its build sets `NEXT_PUBLIC_CF_BEACON_TOKEN`; if it does, use `Referrer-Policy: strict-origin` (section 6). `add_header` in a `location` replaces every `add_header` inherited from the `server`, so a location that sets Cache-Control must repeat the other headers the site sends:
 
 ```nginx
 server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
   # The section 7 headers, plus COOP/COEP (section 5).
   add_header Cross-Origin-Opener-Policy "same-origin" always;
   add_header Cross-Origin-Embedder-Policy "credentialless" always;

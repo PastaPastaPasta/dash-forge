@@ -1,6 +1,6 @@
 # Members-only content and the notification service
 
-A note for whoever runs the hosted notification service (forge-notify, run by dashhq) or any
+A note for whoever runs a notification service (forge-notify, which dashhq plans to host) or any
 other service that turns Forge activity into email, push or chat notices, including a
 self-hosted `forge-relay` with sinks.
 
