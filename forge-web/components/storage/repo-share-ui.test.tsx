@@ -15,7 +15,7 @@ vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config
 import { LOCAL_PUSHES_HINT, SHARE_ACTION, storageCardView } from './repo-share-notes'
 import { RepoStoragePolicy } from './repo-storage-policy'
 import { OWNER_STORAGE_UNSET, StorageRow } from '@/components/repo/merge-upload'
-import { firstStoppedNotice, noteStoppedDefault, stoppedDefaultKey, takeStoppedNotice } from '@/hooks/use-repo-share'
+import { noteStopped, stoppedDefaultKey, takeStoppedNotice } from '@/hooks/use-repo-share'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const kubo = { name: 'kubo', settings: { kind: 'ipfs-kubo', provider: 'kubo', api: 'http://127.0.0.1:5001', gateway: '', publicGateway: '', pinningEndpoint: '' }, secrets: {} } as StorageConfig['profiles'][number]
@@ -88,21 +88,32 @@ describe('the maintainer line', () => {
   })
 })
 
-describe('the stopped-default notice', () => {
-  it('is shown once per repo, recorded under its own key', () => {
-    expect(firstStoppedNotice('testnet', 'r')).toBe(true)
-    expect(localStorage.getItem(stoppedDefaultKey('testnet', 'r'))).not.toBeNull()
-    expect(firstStoppedNotice('testnet', 'r')).toBe(false)
-    expect(firstStoppedNotice('testnet', 'other')).toBe(true)
+describe('the stopped-sharing notice', () => {
+  it('says the default-storage stop once per repo, recorded under its own key', () => {
+    expect(takeStoppedNotice('testnet', 'r')).toBeNull()
+    noteStopped('testnet', 'r', 'default')
+    expect(localStorage.getItem(stoppedDefaultKey('testnet', 'r'))).toBe('pending')
+    expect(takeStoppedNotice('testnet', 'r')).toBe('default')
+    expect(Number(localStorage.getItem(stoppedDefaultKey('testnet', 'r')))).toBeGreaterThan(0)
+    expect(takeStoppedNotice('testnet', 'r')).toBeNull()
+    noteStopped('testnet', 'r', 'default')
+    expect(takeStoppedNotice('testnet', 'r')).toBeNull()
+    noteStopped('testnet', 'other', 'default')
+    expect(takeStoppedNotice('testnet', 'other')).toBe('default')
   })
 
-  it('waits for a page to say it, even after the visit that stopped it is gone, then never again', () => {
-    expect(takeStoppedNotice('testnet', 'late')).toBe(false)
-    noteStoppedDefault('testnet:late')
-    expect(localStorage.getItem(stoppedDefaultKey('testnet', 'late'))).toBeNull()
-    expect(takeStoppedNotice('testnet', 'late')).toBe(true)
-    expect(takeStoppedNotice('testnet', 'late')).toBe(false)
-    noteStoppedDefault('testnet:late')
-    expect(takeStoppedNotice('testnet', 'late')).toBe(false)
+  it('keeps a default-storage stop not yet said across a reload (its key waits)', () => {
+    localStorage.setItem(stoppedDefaultKey('testnet', 'reloaded'), 'pending')
+    expect(takeStoppedNotice('testnet', 'reloaded')).toBe('default')
+    expect(takeStoppedNotice('testnet', 'reloaded')).toBeNull()
+  })
+
+  it('says an explicit stop plainly, each time, and records nothing', () => {
+    noteStopped('testnet', 'stop', 'removed')
+    expect(takeStoppedNotice('testnet', 'stop')).toBe('removed')
+    expect(takeStoppedNotice('testnet', 'stop')).toBeNull()
+    expect(localStorage.getItem(stoppedDefaultKey('testnet', 'stop'))).toBeNull()
+    noteStopped('testnet', 'stop', 'removed')
+    expect(takeStoppedNotice('testnet', 'stop')).toBe('removed')
   })
 })

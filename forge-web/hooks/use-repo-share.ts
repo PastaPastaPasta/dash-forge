@@ -17,9 +17,9 @@ import type { RepoRef } from '@/lib/repo'
 import { readMaintainers } from '@/lib/repo/members'
 import { namedAction, spendAction } from '@/lib/spend-toast'
 import type { StorageConfig } from '@/lib/storage'
-import { readGrantedStorage, reconcileRepoShare, withGrantedStorage, type GrantedStorage, type Reconciled } from '@/lib/user-sync/maintainers'
+import { readGrantedStorage, reconcileRepoShare, withGrantedStorage, type GrantedStorage, type Reconciled, type StopLine } from '@/lib/user-sync/maintainers'
 import { forgeUserPort } from '@/lib/user-sync/platform'
-import { syncedShareView } from '@/lib/user-sync/session'
+import { syncedRemovedKeys, syncedShareView } from '@/lib/user-sync/session'
 import { quietSigner, useUserSyncStatus } from '@/hooks/use-user-sync'
 
 export interface RepoShareState {
@@ -38,8 +38,6 @@ export interface RepoShareState {
   readonly maintainers: readonly string[] | null
   /** Owner: maintainers holding a grant to the repo's storage. */
   readonly granted: readonly string[]
-  /** Owner: this visit stopped a share of the default storage; said once per repo. */
-  readonly stoppedDefault: boolean
 }
 
 /** Where the one-time "stopped sharing your default storage" line was shown, per repo (additive). */
@@ -47,34 +45,80 @@ export function stoppedDefaultKey(networkKey: string, repoId: string): string {
   return `forge:user-sync:stopped-default:${networkKey}:${repoId}`
 }
 
-/** Repos (network:repo) whose default-storage share a reconcile here stopped, waiting to be said. */
-const stopsToSay = new Set<string>()
+/** The key's value from a stop until the line is shown (then the time it was). */
+const STOP_PENDING = 'pending'
+
+/** Stops a reconcile in this tab made, per network:repo, waiting to be said. */
+const stopsToSay = new Map<string, StopLine>()
 const stopListeners = new Set<() => void>()
 
-/** A reconcile stopped `repoKey`'s default-storage share: say it, whatever became of the visit that ran it. */
-export function noteStoppedDefault(repoKey: string): void {
-  stopsToSay.add(repoKey)
+function stopStore(): Pick<Storage, 'getItem' | 'setItem'> | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A reconcile stopped sharing (networkKey, repoId): to be said whatever became of the visit that ran
+ * it. The default-storage line also waits in its key, so a reload before it shows keeps it.
+ */
+export function noteStopped(networkKey: string, repoId: string, line: StopLine): void {
+  if (line === 'default') {
+    try {
+      const store = stopStore()
+      if (store !== null && store.getItem(stoppedDefaultKey(networkKey, repoId)) === null) store.setItem(stoppedDefaultKey(networkKey, repoId), STOP_PENDING)
+    } catch {
+      // Said in this tab only.
+    }
+  }
+  stopsToSay.set(`${networkKey}:${repoId}`, line)
   for (const l of stopListeners) l()
 }
 
-/** Whether to say it now for (network, repo): once per repo, recorded as said when it is. */
-export function takeStoppedNotice(networkKey: string, repoId: string): boolean {
-  const key = `${networkKey}:${repoId}`
-  if (!stopsToSay.has(key)) return false
-  stopsToSay.delete(key)
-  return firstStoppedNotice(networkKey, repoId)
+/** The line to say now for (network, repo), if any: the default-storage one once per repo, recorded as said. */
+export function takeStoppedNotice(networkKey: string, repoId: string): StopLine | null {
+  const noted = stopsToSay.get(`${networkKey}:${repoId}`)
+  stopsToSay.delete(`${networkKey}:${repoId}`)
+  if (noted === 'removed') return 'removed'
+  const key = stoppedDefaultKey(networkKey, repoId)
+  try {
+    const store = stopStore()
+    const stored = store?.getItem(key) ?? null
+    if (stored === STOP_PENDING) {
+      store?.setItem(key, String(Date.now()))
+      return 'default'
+    }
+    // Noted here but not recordable (storage blocked): said in this tab.
+    return noted === 'default' && stored === null ? 'default' : null
+  } catch {
+    return noted === 'default' ? 'default' : null
+  }
 }
 
-/** Whether the line was shown before; records it as shown when not. */
-export function firstStoppedNotice(networkKey: string, repoId: string): boolean {
-  try {
-    const store = typeof localStorage === 'undefined' ? null : localStorage
-    if (store === null || store.getItem(stoppedDefaultKey(networkKey, repoId)) !== null) return false
-    store.setItem(stoppedDefaultKey(networkKey, repoId), String(Date.now()))
-    return true
-  } catch {
-    return false
-  }
+/**
+ * The owner's line for a share a reconcile stopped (see `StopLine`), taken only while `visible`
+ * (the Storage section shows): a stop made on another section is said there, not lost.
+ */
+export function useStoppedShareNotice(repo: RepoRef, visible: boolean): StopLine | null {
+  const [line, setLine] = useState<StopLine | null>(null)
+  const [tick, setTick] = useState(0)
+  const on = ACTIVE_NETWORK.v2?.user !== undefined
+  useEffect(() => {
+    if (!on) return
+    const bump = (): void => setTick((t) => t + 1)
+    stopListeners.add(bump)
+    return () => {
+      stopListeners.delete(bump)
+    }
+  }, [on])
+  useEffect(() => {
+    if (!on || !visible) return
+    const taken = takeStoppedNotice(ACTIVE_NETWORK.key, repo.repoId)
+    if (taken !== null) setLine(taken)
+  }, [on, visible, repo.repoId, tick])
+  return line
 }
 
 /** Members removed in this tab, per repo: never granted again from a node read that still lists them. */
@@ -103,7 +147,6 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const [waiting, setWaiting] = useState<readonly string[]>([])
   const [granted, setGranted] = useState<readonly string[]>([])
   const [maintainers, setMaintainers] = useState<readonly string[] | null>(null)
-  const [stoppedDefault, setStoppedDefault] = useState(false)
   const [memberNeedsKey, setMemberNeedsKey] = useState(false)
   const isOwner = identity !== null && identity === repo.ownerId
 
@@ -114,9 +157,10 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
         if (user === undefined || identity === null || sdk === null || signer === null || !isOwner) return null
         const maintainers = await readMaintainers(sdk, repo)
         const removed = [...(removedHere.get(repoKey) ?? [])]
+        const repoPolicyRemoved = view !== null && (syncedRemovedKeys(identity) ?? []).includes(`repo:${repo.repoId}`)
         return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
           spendAction(namedAction('Storage shared with maintainers'), (tag) =>
-            reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, view, maintainers, removed }),
+            reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, view, maintainers, removed, repoPolicyRemoved }),
           ),
         )
       }),
@@ -132,9 +176,8 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
         if (!stale && listed !== null) setMaintainers(listed.filter((m) => m !== identity))
         if (config === null || stale) return
         const done = await reconcile(config).catch(() => null)
-        // A share of the default storage (from before only repo storage was shared) just stopped:
-        // said even if this visit moved on meanwhile (a later pass finds nothing left to stop).
-        if (done?.stopped === 'default') noteStoppedDefault(repoKey)
+        // Sharing just stopped: said even if this visit moved on meanwhile (a later pass finds nothing left to stop).
+        if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
         if (stale || done === null) return
         setWaiting(done.waiting)
         setGranted(done.granted)
@@ -147,19 +190,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     return () => {
       stale = true
     }
-  }, [user, identity, sdk, isOwner, config, reconcile, repo, repoKey])
-
-  const [stopTick, setStopTick] = useState(0)
-  useEffect(() => {
-    const bump = (): void => setStopTick((t) => t + 1)
-    stopListeners.add(bump)
-    return () => {
-      stopListeners.delete(bump)
-    }
-  }, [])
-  useEffect(() => {
-    if (isOwner && takeStoppedNotice(ACTIVE_NETWORK.key, repo.repoId)) setStoppedDefault(true)
-  }, [isOwner, repo.repoId, stopTick])
+  }, [user, identity, sdk, isOwner, config, reconcile, repo])
 
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
@@ -167,6 +198,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       // Before this tab's sync settled too: with no synced view the share keeps what it holds,
       // and the removed member's grant still goes, at the next epoch.
       const done = await reconcile(config).catch(() => null)
+      if (done?.stopped !== undefined) noteStopped(ACTIVE_NETWORK.key, repo.repoId, done.stopped)
       if (done !== null) {
         setWaiting(done.waiting)
         setGranted(done.granted)
@@ -186,7 +218,7 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     [repoKey],
   )
 
-  return { waiting, memberNeedsKey, afterRemoval, afterAdd, maintainers, granted, stoppedDefault }
+  return { waiting, memberNeedsKey, afterRemoval, afterAdd, maintainers, granted }
 }
 
 /**

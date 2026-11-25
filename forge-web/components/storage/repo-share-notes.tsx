@@ -45,10 +45,10 @@ export function RotateCredentialsNote(): JSX.Element {
 }
 
 /** Said once per repo when the owner's reconcile stopped a share of the default storage. */
-export function StoppedDefaultShareLine(): JSX.Element {
+export function StoppedShareLine({ line }: { readonly line: 'default' | 'removed' }): JSX.Element {
   return (
-    <p className="mb-3 text-dense text-anvil-700 dark:text-anvil-200" data-testid="stopped-default-share">
-      Stopped sharing your default storage with this repo&apos;s maintainers. Set storage for this repo to share it.
+    <p className="mb-3 text-dense text-anvil-700 dark:text-anvil-200" data-testid={line === 'default' ? 'stopped-default-share' : 'stopped-share'}>
+      {line === 'default' ? "Stopped sharing your default storage with this repo's maintainers. Set storage for this repo to share it." : "Stopped sharing storage with this repo's maintainers."}
     </p>
   )
 }

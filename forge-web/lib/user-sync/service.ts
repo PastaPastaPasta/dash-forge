@@ -52,6 +52,8 @@ export interface SyncOutcome {
   readonly storage: StorageConfig | null
   /** The synced storage slot's live entries (no device-local copies): what a repo's share is taken from. */
   readonly synced: Readonly<Record<string, unknown>> | null
+  /** The synced storage slot's tombstoned keys (with `synced`). */
+  readonly syncedRemoved?: readonly string[] | null
   readonly syncedAt: number
 }
 
@@ -141,7 +143,7 @@ function baseAfter(snapshot: Record<string, unknown>, written: Record<string, un
   return baseOf({ ...snapshot, ...added }, tag, lists)
 }
 
-async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<{ config: StorageConfig; synced: Readonly<Record<string, unknown>>; meta: SlotMeta; deletes: Readonly<Record<string, number>>; edits: Readonly<Record<string, number>> } | null> {
+async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: number): Promise<{ config: StorageConfig; synced: Readonly<Record<string, unknown>>; removed: readonly string[]; meta: SlotMeta; deletes: Readonly<Record<string, number>>; edits: Readonly<Record<string, number>> } | null> {
   if (ctx.storage === null) return null
   const tag = await tagger(ctx.E, ctx.identityId, ctx.networkKey, 'storage')
   const syncId = await ctx.storage.syncId()
@@ -165,6 +167,7 @@ async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: numb
   return {
     config: storageView(plan.view, plan.collisions, written, ctx.deviceId),
     synced: plan.view,
+    removed: plan.removed,
     meta: { keyId: ctx.keyId, syncedAt: at, syncId, base: baseAfter(snapshot, addedHere, tag) },
     deletes,
     edits,
@@ -217,7 +220,7 @@ export async function syncUserSettings(ctx: SyncContext): Promise<SyncOutcome> {
     const editsLeft = Object.entries(now?.edits ?? {}).filter(([k, t]) => storage.edits[k] !== t)
     updateRecord(ctx.networkKey, ctx.identityId, { storage: storage.meta, deletes: Object.fromEntries(left), edits: Object.fromEntries(editsLeft) })
   }
-  return { storage: storage?.config ?? null, synced: storage?.synced ?? null, syncedAt: at }
+  return { storage: storage?.config ?? null, synced: storage?.synced ?? null, syncedRemoved: storage?.removed ?? null, syncedAt: at }
 }
 
 /** When this device last synced for (network, identity), or null. */

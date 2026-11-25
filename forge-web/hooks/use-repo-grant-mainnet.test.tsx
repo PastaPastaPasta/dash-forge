@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import type { RepoRef } from '@/lib/repo/contract'
 
 const reads = vi.hoisted(() => ({ maintainers: vi.fn() }))
@@ -16,7 +17,7 @@ vi.mock('./use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'm
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'maintainer', signer: null, controller: null }) }))
 vi.mock('@/lib/repo/members', () => ({ readMaintainers: reads.maintainers }))
 
-import { useRepoGrant } from './use-repo-share'
+import { stoppedDefaultKey, useRepoGrant, useStoppedShareNotice } from './use-repo-share'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const repo = { forge: { core: 'core' }, repoId: 'r', ownerId: 'owner', name: 'repo', visibility: 'public' } as RepoRef
@@ -43,5 +44,19 @@ describe('useRepoGrant without forge-user', () => {
     await act(async () => root.render(<Probe />))
     expect(status).toBe('off')
     expect(reads.maintainers).not.toHaveBeenCalled()
+  })
+
+  it('says no stopped-sharing line and touches no key', async () => {
+    const key = stoppedDefaultKey(ACTIVE_NETWORK.key, repo.repoId)
+    localStorage.setItem(key, 'pending')
+    let line: string | null = 'unset'
+    function Notice(): null {
+      line = useStoppedShareNotice(repo, true)
+      return null
+    }
+    await act(async () => root.render(<Notice />))
+    expect(line).toBeNull()
+    expect(localStorage.getItem(key)).toBe('pending')
+    localStorage.removeItem(key)
   })
 })

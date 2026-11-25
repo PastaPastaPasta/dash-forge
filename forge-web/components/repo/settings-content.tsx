@@ -44,9 +44,9 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
-import { RepoShareDetails, RepoShareNotes, RotateCredentialsNote, StoppedDefaultShareLine, storageCardView } from '@/components/storage/repo-share-notes'
+import { RepoShareDetails, RepoShareNotes, RotateCredentialsNote, StoppedShareLine, storageCardView } from '@/components/storage/repo-share-notes'
 import { OwnerStorageUnsetLine } from '@/components/repo/merge-upload'
-import { useRepoGrant, useRepoStorageShare } from '@/hooks/use-repo-share'
+import { useRepoGrant, useRepoStorageShare, useStoppedShareNotice } from '@/hooks/use-repo-share'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { useUserSyncStatus } from '@/hooks/use-user-sync'
 import { PrivateMembers } from '@/components/repo/private-members'
@@ -256,6 +256,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const maintainer = viewerRole === 'maintainer'
   const showDanger = maintainer || isOwner
   const section = useSettingsSection(viewerRole !== null && !maintainer && !isOwner ? 'collaborators' : 'general', (s) => s !== 'danger' || showDanger)
+  const stopLine = useStoppedShareNotice(repo, section === 'storage')
   const memberManager = isOwner && repo.visibility !== 'private'
   return (
     <SettingsShell addr={{ owner: repo.ownerId, name: repo.name }} active={section} showDanger={showDanger}>
@@ -492,7 +493,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
           {!(viewer.known && viewerRole === null) ? (
             <Card title="Your browser pushes" hint={card.hint}>
-              {share.stoppedDefault ? <StoppedDefaultShareLine /> : null}
+              {stopLine !== null ? <StoppedShareLine line={stopLine} /> : null}
               <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} {...(card.shareAction !== undefined ? { shareAction: card.shareAction } : {})} />
               {card.details ? <RepoShareDetails granted={share.granted} waiting={share.waiting} /> : null}
               {repoGrant.status === 'none' ? <OwnerStorageUnsetLine /> : null}

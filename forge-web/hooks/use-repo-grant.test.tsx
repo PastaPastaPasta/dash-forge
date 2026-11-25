@@ -28,7 +28,7 @@ vi.mock('@/lib/user-sync/maintainers', async (load) => {
   return { ...real, readGrantedStorage: fake.granted }
 })
 
-import { useRepoGrant } from './use-repo-share'
+import { noteStopped, stoppedDefaultKey, useRepoGrant, useStoppedShareNotice } from './use-repo-share'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const repo = { forge: { core: 'core' }, repoId: 'r', ownerId: 'owner', name: 'repo', visibility: 'public' } as RepoRef
@@ -73,10 +73,37 @@ describe('useRepoGrant with forge-user', () => {
     expect(status).toBe('unusable')
   })
 
-  it('is not-maintainer for anyone else', async () => {
+  it('is not-maintainer for anyone else (and reads no grant)', async () => {
     fake.maintainers.mockResolvedValue([])
     await act(async () => root.render(<Probe />))
     expect(status).toBe('not-maintainer')
     expect(fake.granted).not.toHaveBeenCalled()
+  })
+})
+
+describe('the stopped-sharing notice on the page', () => {
+  let line: string | null = null
+  function Notice({ visible }: { readonly visible: boolean }): null {
+    line = useStoppedShareNotice(repo, visible)
+    return null
+  }
+
+  it('waits while the Storage section is hidden, then is said once it shows', async () => {
+    localStorage.clear()
+    await act(async () => root.render(<Notice visible={false} />))
+    await act(async () => noteStopped('testnet', repo.repoId, 'default'))
+    expect(line).toBeNull()
+    expect(localStorage.getItem(stoppedDefaultKey('testnet', repo.repoId))).toBe('pending')
+    await act(async () => root.render(<Notice visible />))
+    expect(line).toBe('default')
+    expect(localStorage.getItem(stoppedDefaultKey('testnet', repo.repoId))).not.toBe('pending')
+  })
+
+  it('says a stop made while the section shows', async () => {
+    localStorage.clear()
+    await act(async () => root.render(<Notice visible />))
+    expect(line).toBeNull()
+    await act(async () => noteStopped('testnet', repo.repoId, 'removed'))
+    expect(line).toBe('removed')
   })
 })

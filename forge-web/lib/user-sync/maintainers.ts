@@ -37,8 +37,12 @@ export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: 1, pr
 /** Why nothing is shared: the repo has no storage of its own (`repo:<id>`), or it stores on Platform only. */
 export type NothingReason = 'no-repo-policy' | 'platform-only'
 
-/** Why a pass stopped a share: the share held the owner's default storage (shared before only repo storage was), or other. */
-export type StopReason = 'default' | 'other'
+/**
+ * The owner's line for a pass that stopped sharing a repo with no storage of its own (forge-core
+ * `stopped_line`): `default` when it never had any (a share made from the default storage before
+ * repo-only sharing), `removed` when the owner removed it.
+ */
+export type StopLine = 'default' | 'removed'
 
 export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing'; readonly reason: NothingReason } | { readonly kind: 'content'; readonly plain: SharePlain }
 
@@ -188,8 +192,8 @@ export interface Reconciled {
   /** Whether a share exists (so a removed maintainer may have seen its credentials). */
   readonly shared: boolean
   readonly epoch: number | null
-  /** This pass stopped a share that held storage (moved it to the nothing share), and what it held. */
-  readonly stopped?: StopReason
+  /** This pass stopped sharing (wrote the nothing share or revoked grants) for want of repo storage: the owner's line. */
+  readonly stopped?: StopLine
 }
 
 /**
@@ -210,7 +214,14 @@ export async function reconcileRepoShare(ctx: OwnerContext, p: ReconcileInput): 
   return done.stopped !== undefined ? { ...again, stopped: done.stopped } : again
 }
 
-type ReconcileInput = { readonly repoId: string; readonly view: Readonly<Record<string, unknown>> | null; readonly maintainers: readonly string[]; readonly removed?: readonly string[] }
+type ReconcileInput = {
+  readonly repoId: string
+  readonly view: Readonly<Record<string, unknown>> | null
+  readonly maintainers: readonly string[]
+  readonly removed?: readonly string[]
+  /** The owner removed this repo's storage (its synced `repo:<id>` entry is a tombstone). */
+  readonly repoPolicyRemoved?: boolean
+}
 
 async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reconciled> {
   const network = ctx.networkKey
@@ -254,7 +265,8 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     const epoch = existing === null ? at : at + 1
     if (write) await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
     for (const g of grants) await ctx.port.deleteGrant(g)
-    const stopped = existing !== null && !shownNothing && rule.kind === 'nothing' ? { stopped: heldDefault(current, p.view) ? ('default' as const) : ('other' as const) } : {}
+    // Said once, as the share is empty after; not for Platform-only storage the owner did set.
+    const stopped = rule.kind === 'nothing' && rule.reason === 'no-repo-policy' && (write || grants.length > 0) ? { stopped: p.repoPolicyRemoved === true ? ('removed' as const) : ('default' as const) } : {}
     return { granted: [], waiting: [], shared: existing !== null, epoch: write ? epoch : (existing?.fields.epoch ?? null), ...stopped }
   }
   // A grant to anyone not a maintainer now (removed here, or found stale), or sharing again after a
@@ -269,12 +281,15 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     const granted: string[] = []
     const waiting: string[] = []
     for (const member of members) {
+      const own = grants.find((g) => g.fields.memberId === member) ?? null
+      // A share kept as it is (no usable repo setting) may hold what an older build shared from the
+      // default storage: it is never lent to anyone new, only refreshed for those who hold it.
+      if (rule.kind === 'keep' && own === null) continue
       const key = await ctx.port.syncKey(member)
       if (key === null) {
         waiting.push(member)
         continue
       }
-      const own = grants.find((g) => g.fields.memberId === member) ?? null
       // An envelope of another size (a later format) is rewritten in this one.
       if (own !== null && own.fields.epoch === epoch && own.fields.senderKeyId === ctx.keyId && own.fields.recipientKeyId === key.keyId && own.fields.wrapped.length === WRAPPED_BYTES) {
         granted.push(member)
@@ -290,16 +305,6 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   } finally {
     rsk.fill(0)
   }
-}
-
-/** Whether a share's policy names the same places as the owner's default policy (what the old rule shared). */
-function heldDefault(current: unknown, view: Readonly<Record<string, unknown>> | null): boolean {
-  if (view === null || typeof current !== 'object' || current === null) return false
-  const held = syncedPolicy((current as Record<string, unknown>)['policy'])
-  const fallback = syncedPolicy(view['default'])
-  if (held === null || fallback === null) return false
-  const named = (p: SyncedPolicy): string => [...new Set(p.targets)].sort().join('\u0000')
-  return named(held) === named(fallback)
 }
 
 async function writeShare(ctx: OwnerContext, repoId: string, repo: Uint8Array, epoch: number, plain: SharePlain, existing: Awaited<ReturnType<UserSyncPort['readShare']>>): Promise<void> {

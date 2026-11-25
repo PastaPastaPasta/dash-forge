@@ -107,6 +107,8 @@ export interface SlotPlan {
   readonly collisions: readonly string[]
   /** Merged values of keys missing locally: added locally (write-through). */
   readonly add: Readonly<Record<string, unknown>>
+  /** Keys a tombstone hides in the merged document (removed on purpose, not just absent). */
+  readonly removed: readonly string[]
 }
 
 export type Tagger = (key: string, value: unknown) => string
@@ -165,14 +167,16 @@ export function planSlot(p: {
   const view = dict<unknown>()
   const add = dict<unknown>()
   const collisions: string[] = []
+  const removed: string[] = []
   for (const [key, e] of Object.entries(entries)) {
+    if (readable(e) && e.v === null) removed.push(key)
     if (!readable(e) || e.v === null) continue
     view[key] = e.v
     const has = Object.hasOwn(p.local, key)
     if (!has) add[key] = e.v
     else if (!sameValue(p.options.carry ? p.options.carry(key, e.v, p.local[key]) : p.local[key], e.v)) collisions.push(key)
   }
-  return { next, upload: p.remote === null ? Object.keys(entries).length > 0 : !sameDoc(next, remote), view, collisions: collisions.sort(), add }
+  return { next, upload: p.remote === null ? Object.keys(entries).length > 0 : !sameDoc(next, remote), view, collisions: collisions.sort(), add, removed: removed.sort() }
 }
 
 /**
