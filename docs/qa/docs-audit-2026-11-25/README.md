@@ -11,7 +11,7 @@ On 2026-11-25 every claim the docs and the in-app copy make about Dash Forge was
 | Guides: migration, verification, operators | [guides-ops.md](guides-ops.md) | [#734](https://github.com/PastaPastaPasta/dash-forge/pull/734) |
 | Web copy: sign-in, keys, settings | [webcopy-identity.md](webcopy-identity.md) | [#731](https://github.com/PastaPastaPasta/dash-forge/pull/731) |
 | Web copy: repository pages | [webcopy-repo.md](webcopy-repo.md) | [#737](https://github.com/PastaPastaPasta/dash-forge/pull/737) |
-| Maintainer storage sharing (after [#740](https://github.com/PastaPastaPasta/dash-forge/pull/740)) | [maintainer-sharing.md](maintainer-sharing.md) | this lane's PR |
+| Maintainer storage sharing (after [#740](https://github.com/PastaPastaPasta/dash-forge/pull/740)) | [maintainer-sharing.md](maintainer-sharing.md) | [#743](https://github.com/PastaPastaPasta/dash-forge/pull/743) |
 | dash-sites and dash.site | [audit-2026-11-25.md](https://github.com/PastaPastaPasta/dash-sites/blob/main/docs/audit-2026-11-25.md) | [dash-sites #27](https://github.com/PastaPastaPasta/dash-sites/pull/27) |
 
 **Verdicts.** `ok` matches the code; `stale` was true once and isn't now; `wrong` never matched; `missing` is shipped behaviour the docs didn't cover; `fixed` (or `(fixed)`) means the lane's PR changed it. `deferred` rows were about maintainer storage sharing while #740 was changing it; each now points to its row in [maintainer-sharing.md](maintainer-sharing.md). Code problems were recorded as product questions at the end of each table, not changed.
