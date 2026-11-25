@@ -63,6 +63,19 @@ fn set_secrets() {
     crate::keychain::set_test_entry("dash-forge", "kubo-auth", "Basic a3Vibw==");
 }
 
+/// The share [`ShareRule`] makes when `profiles` and the default `policy` are synced.
+fn share_of(profiles: &StorageProfiles, policy: &StoragePolicy) -> ShareContent {
+    let mut doc = SlotDoc::new(SLOT_STORAGE);
+    for (n, p) in &profiles.profiles {
+        doc.set(&storage::profile_key(n), 1, resolved(p));
+    }
+    doc.set(storage::DEFAULT_KEY, 1, storage::policy_to_synced(policy));
+    match ShareRule::of(Some(&doc), &id("any repo")) {
+        ShareRule::Content(c) => c,
+        other => panic!("expected a share, got {other:?}"),
+    }
+}
+
 fn default_policy() -> StoragePolicy {
     StoragePolicy::from_git_values(Some("r2-main,chain"), Some("1"), None).unwrap()
 }
@@ -296,7 +309,7 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
 
     let profiles = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
     let policy = StoragePolicy::from_git_values(Some("r2-main,chain"), Some("1"), None).unwrap();
-    let content = ShareContent::for_resolved(&policy.resolve(&profiles).unwrap()).unwrap();
+    let content = share_of(&profiles, &policy);
     assert_eq!(content.profiles.keys().collect::<Vec<_>>(), ["r2-main"]);
     let maintainers: BTreeSet<String> = [member.clone()].into();
 
@@ -357,8 +370,6 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
         .await
         .unwrap()
         .is_none());
-    // The owner's share never re-shares a maintainer's borrowed profiles.
-    assert!(ShareContent::for_resolved(&resolved_push).is_none());
 
     // A share and grant someone other than the owner writes for the repository are ignored.
     let mallory = id("mallory");
@@ -443,7 +454,7 @@ fn repo_with_one_maintainer() -> Shared {
     store.add_key(&member, 9, e_member.public_key().to_vec());
     let profiles = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
     let policy = StoragePolicy::from_git_values(Some("r2-main"), None, None).unwrap();
-    let content = ShareContent::for_resolved(&policy.resolve(&profiles).unwrap()).unwrap();
+    let content = share_of(&profiles, &policy);
     Shared {
         owner,
         member,
@@ -623,7 +634,7 @@ async fn a_synced_policy_naming_a_profile_that_is_gone_is_skipped() {
     // A Platform-kind name in an owner's policy becomes `platform` in the share.
     let local = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
     let p = StoragePolicy::from_git_values(Some("r2-main,chain"), None, None).unwrap();
-    let share = ShareContent::for_policy(&p, &local).unwrap();
+    let share = share_of(&local, &p);
     assert_eq!(share.policy["targets"], json!(["r2-main", "platform"]));
     let (profiles, policy) = share.as_profiles(&erin);
     let set = StorageProfiles {
@@ -674,4 +685,118 @@ async fn an_interrupted_removal_finishes_at_a_newer_epoch_and_never_reuses_one()
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn a_deleted_share_never_restarts_at_an_earlier_epoch() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    // An older web build deleted the share; the member's grant at epoch 0 survives.
+    r.store.delete_share(&r.owner, &r.repo);
+    let again = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(again.epoch, 1, "past every surviving grant's epoch");
+    assert_eq!(
+        r.store
+            .share(&r.owner, &r.repo)
+            .await
+            .unwrap()
+            .unwrap()
+            .epoch,
+        1
+    );
+    assert!(r.store.all_grants().iter().all(|g| g.epoch == 1));
+    // Stopping writes an empty share one epoch on, once.
+    let stopped = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(stopped.epoch, 2);
+    let writes = r.store.writes();
+    let still = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!((still.epoch, r.store.writes()), (2, writes));
+}
+
+#[test]
+fn the_share_rule_follows_the_synced_policy_only() {
+    set_secrets();
+    let local = StorageProfiles::parse(MASTER_STORAGE_TOML).unwrap();
+    let repo = id("rule repo");
+    let mut doc = SlotDoc::new(SLOT_STORAGE);
+    // No synced policy: keep the share as it is.
+    assert!(matches!(ShareRule::of(Some(&doc), &repo), ShareRule::Keep));
+    assert!(matches!(ShareRule::of(None, &repo), ShareRule::Keep));
+    // A web profile on a custom endpoint stays `r2`, and its synced value is shared as is.
+    let web = json!({"settings": {"kind": "s3", "provider": "r2", "endpoint": "https://files.example.org", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "https://pub.example.org", "prefix": ""}, "secrets": {"accessKeyId": "AK", "secretAccessKey": "SK", "sessionToken": ""}});
+    doc.set("profile:web-r2", 1, web.clone());
+    doc.set(
+        storage::DEFAULT_KEY,
+        1,
+        json!({"targets": ["web-r2"], "replicas": 1, "platformFallback": false}),
+    );
+    let ShareRule::Content(c) = ShareRule::of(Some(&doc), &repo) else {
+        panic!("default policy shares")
+    };
+    assert_eq!(c.profiles["web-r2"]["settings"]["provider"], "r2");
+    // The repository's own entry wins; naming a profile that is not synced keeps the share.
+    doc.set(
+        &storage::repo_key(&repo),
+        2,
+        json!({"targets": ["r2-main"], "replicas": 1, "platformFallback": false}),
+    );
+    assert!(matches!(ShareRule::of(Some(&doc), &repo), ShareRule::Keep));
+    // Platform only (built in, or a platform-kind profile): sharing stops.
+    doc.set("profile:chain", 1, resolved(&local.profiles["chain"]));
+    doc.set(
+        &storage::repo_key(&repo),
+        3,
+        json!({"targets": ["chain", "platform"], "replicas": 1, "platformFallback": false}),
+    );
+    assert!(matches!(
+        ShareRule::of(Some(&doc), &repo),
+        ShareRule::Nothing
+    ));
+    // Compared by meaning: the `dg` extras, empty secrets and key order do not count.
+    let mut b = c.clone();
+    let p = b.profiles.get_mut("web-r2").unwrap();
+    p["dg"] = json!({"allowPrivateUri": false});
+    p["secrets"].as_object_mut().unwrap().remove("sessionToken");
+    b.policy = json!({"platformFallback": false, "replicas": 1, "targets": ["web-r2"]});
+    assert!(c.same_as(&b));
+    b.profiles.get_mut("web-r2").unwrap()["secrets"]["secretAccessKey"] = json!("rotated");
+    assert!(!c.same_as(&b));
+}
+
+#[tokio::test]
+async fn a_slot_written_by_a_newer_version_is_read_but_not_rewritten() {
+    let frank = id("frank");
+    let store = MemoryStore::new();
+    store.as_signer(&frank);
+    let e = key(&frank, 1, "frank E");
+    let sync = UserSync::new(&e, &store);
+    let mut newer = SlotDoc::new(SLOT_STORAGE);
+    newer.version = 2;
+    newer.set(
+        "profile:x",
+        1,
+        json!({"settings": {"kind": "platform", "provider": "platform"}, "secrets": {}}),
+    );
+    sync.write_slot(SLOT_STORAGE, &newer, None).await.unwrap();
+    let read = sync.read_slot(SLOT_STORAGE).await.unwrap().unwrap();
+    assert_eq!(read.doc.version, 2);
+    let mut change = SlotDoc::new(SLOT_STORAGE);
+    change.set("profile:y", 2, json!(null));
+    assert!(sync.merge_into(SLOT_STORAGE, &change).await.is_err());
+    assert_eq!(store.writes(), 1);
 }

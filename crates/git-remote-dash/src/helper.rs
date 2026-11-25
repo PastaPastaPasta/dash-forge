@@ -174,11 +174,8 @@ pub struct Helper {
     /// was.
     first_members_fetch: Option<FirstMembersFetch>,
     /// Whether this push reconciles the repository's shared storage once it has landed
-    /// (`identity-synced-state.md` §5), and what its policy lends the maintainers.
+    /// (`identity-synced-state.md` §5).
     reconcile_after_push: bool,
-    share_plan: Option<forge_core::user_sync::ShareContent>,
-    /// The push's policy is set and names no storage to share: sharing stops.
-    share_stop: bool,
 }
 
 /// What a clone's first fetch of members-only or shared branches does before anything else,
@@ -566,8 +563,6 @@ impl Helper {
             in_clone,
             first_members_fetch: None,
             reconcile_after_push: false,
-            share_plan: None,
-            share_stop: false,
         })
     }
 
@@ -1623,17 +1618,13 @@ impl Helper {
         }
     }
 
-    /// As the repository's owner, after a push: lend the storage its policy names to the current
-    /// maintainers who have a forge-user key, and revoke anyone else (`identity-synced-state.md`
-    /// §5). Writes only what changed; a failure is a note, never a failed push.
+    /// As the repository's owner, after a push: lend the storage the owner's synced policy for
+    /// the repository names ([`forge_core::user_sync::ShareRule`]: never this clone's git config)
+    /// to the current maintainers who have a forge-user key, and revoke anyone else
+    /// (`identity-synced-state.md` §5). Writes only what changed; a failure is a note, never a
+    /// failed push.
     async fn reconcile_share(&mut self) {
         use forge_core::user_sync::{key, platform::PlatformUserStore, repo, UserSync};
-        let plan = self.share_plan.take();
-        let wanted = match (&plan, std::mem::take(&mut self.share_stop)) {
-            (Some(c), _) => forge_core::user_sync::Wanted::Content(c),
-            (None, true) => forge_core::user_sync::Wanted::Nothing,
-            (None, false) => forge_core::user_sync::Wanted::Keep,
-        };
         let Some(contract) = self.target.v2.as_ref().and_then(|f| f.user.clone()) else {
             return;
         };
@@ -1660,7 +1651,7 @@ impl Helper {
             )?;
             let store = PlatformUserStore::open(&conn.client, &contract, Some(&engine)).await?;
             UserSync::new(&key, &store)
-                .reconcile_repo(conn.repo.id(), wanted, &maintainers)
+                .reconcile_repo_by_rule(conn.repo.id(), &maintainers)
                 .await
         };
         match run.await {
@@ -1712,22 +1703,7 @@ impl Helper {
                 None => local,
             }
             .context("reading the storage policy (dash.storage / dash.replicas)")?;
-            if has_user {
-                self.reconcile_after_push = true;
-                self.share_plan =
-                    forge_core::user_sync::ShareContent::for_resolved(&policy.resolved);
-                // Stop sharing only for this repository's own choice of Platform, never a global or
-                // default one (which a push from another clone may not share).
-                let own_choice = crate::policy::storage_set_in_repo(self.remote.as_deref())
-                    || (crate::policy::config_value(
-                        self.remote.as_deref(),
-                        "dashStorage",
-                        "storage",
-                    )
-                    .is_none()
-                        && synced.as_ref().is_some_and(|v| v.policy_is_repos_own));
-                self.share_stop = policy.resolved.external.is_empty() && own_choice;
-            }
+            self.reconcile_after_push = has_user;
             policy
         } else {
             PushPolicy::guard_only(self.remote.as_deref()).context(

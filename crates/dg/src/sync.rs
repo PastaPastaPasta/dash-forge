@@ -297,11 +297,15 @@ pub async fn after_profile_change(
     name: &str,
     profile: Option<&forge_core::storage::Profile>,
 ) -> bool {
+    // Secrets are resolved (a keychain read) only when sync is on for this network and session.
+    if !matches!(state(ctx), SyncState::On { .. }) {
+        return false;
+    }
     let value = match profile.map(user_sync::storage::profile_to_synced) {
         None => None,
         Some(Ok(v)) => Some(v),
         Some(Err(e)) => {
-            if !ctx.json && !matches!(state(ctx), SyncState::Unavailable | SyncState::Off) {
+            if !ctx.json {
                 eprintln!("note: {name} stays on this computer only ({e})");
             }
             return false;
@@ -351,10 +355,8 @@ pub fn rotate_line(member: &str) -> String {
 
 /// As the owner of the session's repository, after its members changed: lend its shared
 /// storage to the current maintainers that have a forge-user key and revoke anyone else
-/// (`identity-synced-state.md` §5). The share holds what the owner's synced policy for this
-/// repository names when there is one; with no share yet, what the synced default names; else
-/// what it holds now. `None` when sync is off, the signer is not the owner, or it failed
-/// (a note says so).
+/// (`identity-synced-state.md` §5), the share holding what [`user_sync::ShareRule`] says. `None`
+/// when sync is off, the signer is not the owner, or it failed (a note says so).
 pub async fn after_membership_change(
     ctx: &Ctx,
     s: &crate::common::Session,
@@ -370,29 +372,8 @@ pub async fn after_membership_change(
         let maintainers = user_sync::repo::current_maintainers(&s.client, &s.repo).await?;
         Writer::new(&s.client, &s.bridge, &s.identity)
             .with_store(&contract, async |store| {
-                let sync = UserSync::new(&key, store);
-                let own = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
-                let local = StorageProfiles::load().unwrap_or_default();
-                let first = store.share(&me, s.repo.id()).await?.is_none();
-                let content = own.as_ref().and_then(|doc| {
-                    let own_repo = doc
-                        .get(&user_sync::storage::repo_key(s.repo.id()))
-                        .and_then(user_sync::storage::policy_from_synced);
-                    let policy = match own_repo {
-                        Some(p) => p,
-                        None if first => user_sync::synced_policy(doc, None)?,
-                        None => return None,
-                    };
-                    user_sync::ShareContent::for_policy(
-                        &policy,
-                        &user_sync::effective(&local, Some(doc)).profiles,
-                    )
-                });
-                let wanted = content
-                    .as_ref()
-                    .map_or(user_sync::Wanted::Keep, user_sync::Wanted::Content);
-                Ok(sync
-                    .reconcile_repo(s.repo.id(), wanted, &maintainers)
+                Ok(UserSync::new(&key, store)
+                    .reconcile_repo_by_rule(s.repo.id(), &maintainers)
                     .await?)
             })
             .await

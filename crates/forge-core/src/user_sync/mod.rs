@@ -152,6 +152,14 @@ impl<'a> UserSync<'a> {
         let mut last = None;
         for _ in 0..2 {
             let current = self.read_slot(slot).await?;
+            if current
+                .as_ref()
+                .is_some_and(|r| r.doc.version > doc::DOC_VERSION)
+            {
+                return Err(Error::InvalidInput(format!(
+                    "your synced {slot} settings were written by a newer Forge; update dg to change them"
+                )));
+            }
             let mut merged = current
                 .as_ref()
                 .map_or_else(|| SlotDoc::new(slot), |r| r.doc.clone());
@@ -204,8 +212,7 @@ pub struct Effective {
 }
 
 fn same_profile(local: &Profile, synced: &Value) -> bool {
-    storage::profile_to_synced(local)
-        .is_ok_and(|l| doc::canonical_json(&l) == doc::canonical_json(synced))
+    storage::profile_to_synced(local).is_ok_and(|l| storage::same_profile_value(&l, synced))
 }
 
 /// The live synced profiles of `doc`, by name.
@@ -305,7 +312,7 @@ pub fn upload_plan(
             None => name.clone(),
             Some(e) => match &e.v {
                 None => continue,
-                Some(v) if doc::canonical_json(v) == doc::canonical_json(&value) => continue,
+                Some(v) if storage::same_profile_value(v, &value) => continue,
                 Some(_) => {
                     let alt = format!("{name}-{device}");
                     if !valid_profile_name(&alt) {
@@ -314,9 +321,7 @@ pub fn upload_plan(
                         continue;
                     }
                     match synced.get(&storage::profile_key(&alt)) {
-                        Some(v) if doc::canonical_json(v) == doc::canonical_json(&value) => {
-                            continue
-                        }
+                        Some(v) if storage::same_profile_value(v, &value) => continue,
                         _ => alt,
                     }
                 }
@@ -410,32 +415,6 @@ impl std::fmt::Debug for ShareContent {
 }
 
 impl ShareContent {
-    /// The share for `policy` over `profiles` (the effective set): the non-Platform profiles it
-    /// names, and the policy with any Platform-kind name as `platform`. `None` when it names no
-    /// other profile, or one that is not there or does not resolve.
-    pub fn for_policy(policy: &StoragePolicy, profiles: &StorageProfiles) -> Option<Self> {
-        let mut out = BTreeMap::new();
-        let mut targets = Vec::new();
-        for name in &policy.targets {
-            let p = profiles.get(name)?;
-            if p.is_platform() {
-                targets.push(crate::storage::PLATFORM_PROFILE.to_string());
-                continue;
-            }
-            out.insert(name.clone(), storage::profile_to_synced(&p).ok()?);
-            targets.push(name.clone());
-        }
-        let policy = StoragePolicy {
-            targets,
-            ..policy.clone()
-        };
-        (!out.is_empty()).then(|| Self {
-            profiles: out,
-            policy: storage::policy_to_synced(&policy),
-            extra: Map::new(),
-        })
-    }
-
     /// Nothing shared: what a share holds once its owner stops sharing.
     fn nothing() -> Self {
         Self {
@@ -445,9 +424,27 @@ impl ShareContent {
         }
     }
 
-    /// Whether `self` holds what `other` holds (the fields dg writes; others are carried along).
+    /// Whether `self` holds what `other` holds, as both clients read it: the same profiles with
+    /// the same settings and secrets (an empty secret is an absent one; the `dg` extras and key
+    /// order do not count) and the same policy. Fields this build does not know are carried along.
     fn same_as(&self, other: &Self) -> bool {
-        self.profiles == other.profiles && self.policy == other.policy
+        let profiles = |c: &Self| {
+            c.profiles
+                .iter()
+                .map(|(n, v)| (n.clone(), storage::profile_meaning(v, true)))
+                .collect::<BTreeMap<_, _>>()
+        };
+        profiles(self) == profiles(other)
+            && storage::policy_from_synced(&self.policy)
+                == storage::policy_from_synced(&other.policy)
+    }
+
+    /// The version a share was written in (1 when it says nothing else).
+    fn version(&self) -> u64 {
+        self.extra
+            .get("version")
+            .and_then(Value::as_u64)
+            .unwrap_or(doc::DOC_VERSION)
     }
 
     fn to_json(&self) -> Vec<u8> {
@@ -473,7 +470,9 @@ impl ShareContent {
         if m.remove("format").as_ref().and_then(Value::as_str) != Some(SHARE_FORMAT) {
             return Err(bad());
         }
-        m.remove("version");
+        if m.get("version").and_then(Value::as_u64) == Some(doc::DOC_VERSION) {
+            m.remove("version");
+        }
         let profiles = match m.remove("profiles") {
             Some(Value::Object(p)) => p.into_iter().collect(),
             _ => return Err(bad()),
@@ -523,6 +522,75 @@ impl ShareContent {
     }
 }
 
+/// What a repository's share holds, by the rule both clients follow: the owner's synced
+/// effective policy for it (its `repo:<id>` entry, else the synced default) and the synced
+/// profiles that policy names, as they are synced. No synced policy, or one naming a profile
+/// that is not synced or not usable: the share stays as it is. A policy naming only Platform:
+/// sharing stops.
+#[derive(Debug, Clone)]
+pub enum ShareRule {
+    /// Keep the share as it is (grants are still reconciled).
+    Keep,
+    /// These profiles and policy.
+    Content(ShareContent),
+    /// Stop sharing.
+    Nothing,
+}
+
+impl ShareRule {
+    /// The rule over the owner's synced storage slot `doc`.
+    pub fn of(doc: Option<&SlotDoc>, repo_id: &str) -> Self {
+        let Some(doc) = doc else { return Self::Keep };
+        let raw = doc
+            .get(&storage::repo_key(repo_id))
+            .or_else(|| doc.get(storage::DEFAULT_KEY));
+        let Some((raw, policy)) = raw.and_then(|v| Some((v, storage::policy_from_synced(v)?)))
+        else {
+            return Self::Keep;
+        };
+        let mut profiles = BTreeMap::new();
+        let mut targets = Vec::new();
+        for name in &policy.targets {
+            if name == crate::storage::PLATFORM_PROFILE {
+                targets.push(name.clone());
+                continue;
+            }
+            let Some(value) = doc.get(&storage::profile_key(name)) else {
+                return Self::Keep;
+            };
+            match storage::profile_from_synced(value) {
+                Ok(Some(p)) if p.is_platform() => {
+                    targets.push(crate::storage::PLATFORM_PROFILE.to_string());
+                }
+                Ok(Some(_)) => {
+                    profiles.insert(name.clone(), value.clone());
+                    targets.push(name.clone());
+                }
+                _ => return Self::Keep,
+            }
+        }
+        if profiles.is_empty() {
+            return Self::Nothing;
+        }
+        let mut policy = raw.clone();
+        policy["targets"] = json!(targets);
+        Self::Content(ShareContent {
+            profiles,
+            policy,
+            extra: Map::new(),
+        })
+    }
+
+    /// As a [`Wanted`].
+    pub fn wanted(&self) -> Wanted<'_> {
+        match self {
+            Self::Keep => Wanted::Keep,
+            Self::Content(c) => Wanted::Content(c),
+            Self::Nothing => Wanted::Nothing,
+        }
+    }
+}
+
 /// What an owner's reconcile makes the share hold.
 #[derive(Debug, Clone, Copy)]
 pub enum Wanted<'a> {
@@ -532,6 +600,21 @@ pub enum Wanted<'a> {
     Content(&'a ShareContent),
     /// Nothing: the policy names no storage to share, so sharing stops.
     Nothing,
+}
+
+/// The epoch a reconcile writes at: the share's, one past it when a key loses access or sharing
+/// stops. With no share (one an older client deleted), past every epoch a surviving grant names,
+/// so an epoch never goes back and no key that held an earlier one reads a later one.
+fn share_epoch(existing: Option<&ShareDoc>, grants: &[GrantDoc], bump: bool) -> Result<u32> {
+    let next = |e: u32| e.checked_add(1).ok_or(Error::Integrity);
+    match existing {
+        Some(s) if bump => next(s.epoch),
+        Some(s) => Ok(s.epoch),
+        None => grants
+            .iter()
+            .map(|g| next(g.epoch))
+            .try_fold(0, |a, e| e.map(|e| a.max(e))),
+    }
 }
 
 /// What an owner's reconcile did.
@@ -672,16 +755,23 @@ impl UserSync<'_> {
                     .is_none_or(|ks| !ks.iter().any(|k| k.id == g.recipient_key_id))
             })
             .collect();
-        let mut out = Reconciled {
-            epoch: existing.as_ref().map_or(0, |s| s.epoch),
-            ..Reconciled::default()
-        };
-        if !revoked.is_empty() && existing.is_some() {
-            out.epoch = out.epoch.checked_add(1).ok_or(Error::Integrity)?;
-        }
         let current = existing
             .as_ref()
             .and_then(|s| self.open_share(s, &self.rsk(&repo, s.epoch)).ok());
+        if current
+            .as_ref()
+            .is_some_and(|c| c.version() > doc::DOC_VERSION)
+        {
+            return Err(Error::InvalidInput(
+                "this repository's shared storage was written by a newer Forge; update dg to change it"
+                    .into(),
+            ));
+        }
+        let stopping = stop && current.as_ref().is_none_or(|c| !c.profiles.is_empty());
+        let mut out = Reconciled {
+            epoch: share_epoch(existing.as_ref(), &all, !revoked.is_empty() || stopping)?,
+            ..Reconciled::default()
+        };
         let content = match (wanted, &current) {
             (Wanted::Content(c), _) | (Wanted::Keep, Some(c)) => Some(c.clone()),
             (Wanted::Nothing, _) | (Wanted::Keep, None)
@@ -741,6 +831,19 @@ impl UserSync<'_> {
             out.revoked.push(g.member_id.clone());
         }
         Ok(out)
+    }
+
+    /// [`Self::reconcile_repo`] with the share [`ShareRule`] derives from this owner's synced
+    /// storage slot.
+    pub async fn reconcile_repo_by_rule(
+        &self,
+        repo_id: &str,
+        maintainers: &BTreeSet<String>,
+    ) -> Result<Reconciled> {
+        let own = self.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
+        let rule = ShareRule::of(own.as_ref(), repo_id);
+        self.reconcile_repo(repo_id, rule.wanted(), maintainers)
+            .await
     }
 
     /// As a maintainer of `repo_id`, owned by `owner_id`: the storage its owner shared with this

@@ -886,6 +886,9 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             );
             super::print_kept_encryption(&kept_ids);
             println!("  stored in {}", stored.describe());
+            if grant.encryption_dropped {
+                println!("  your wallet's settings-sync key could not be used, so this computer signed in without sync");
+            }
             match sync_label {
                 "on" => println!("  storage settings sync with your identity across devices"),
                 "off" => println!("  {}", crate::sync::OFF_HINT),

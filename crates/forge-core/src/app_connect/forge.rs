@@ -189,6 +189,9 @@ pub struct WalletGrant {
     pub expires_at_ms: u64,
     /// forge-user's encryption key `E`, when the request asked for it and the wallet sent it.
     pub encryption: Option<GrantedEncryption>,
+    /// The wallet sent an encryption key Forge did not take (not forge-user's, or not as asked):
+    /// signed in without sync.
+    pub encryption_dropped: bool,
     secret: SecretBytes,
 }
 
@@ -229,33 +232,25 @@ pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, Reject
     else {
         return Err(RejectReason::Framing);
     };
-    let encryption = match encryption {
-        None => None,
-        Some(e) => {
-            let user = forge
-                .user
-                .as_deref()
-                .and_then(decode_id)
-                .ok_or(RejectReason::Framing)?;
-            if e.role != verify::KeyRole::Encryption
-                || e.key.purpose != purpose::ENCRYPTION
-                || e.key.security_level != level::MEDIUM
-                || e.key.key_type != super::key_type::ECDSA_SECP256K1
-                || e.key.disabled
-                || e.key.bounds != Some(KeyBounds::SingleContract { contract_id: user })
-                || public_key_of(e.private_key.expose())
-                    .as_ref()
-                    .map(<[u8; 33]>::as_slice)
-                    != Some(e.key.data.as_slice())
-            {
-                return Err(RejectReason::KeyUnmatched);
-            }
-            Some(GrantedEncryption {
-                key_id: e.key.id,
-                secret: e.private_key,
-            })
-        }
-    };
+    let encryption_dropped = encryption.is_some();
+    let encryption = encryption.and_then(|e| {
+        let user = forge.user.as_deref().and_then(decode_id)?;
+        let usable = e.role == verify::KeyRole::Encryption
+            && e.key.purpose == purpose::ENCRYPTION
+            && e.key.security_level == level::MEDIUM
+            && e.key.key_type == super::key_type::ECDSA_SECP256K1
+            && !e.key.disabled
+            && e.key.bounds == Some(KeyBounds::SingleContract { contract_id: user })
+            && public_key_of(e.private_key.expose())
+                .as_ref()
+                .map(<[u8; 33]>::as_slice)
+                == Some(e.key.data.as_slice());
+        usable.then_some(GrantedEncryption {
+            key_id: e.key.id,
+            secret: e.private_key,
+        })
+    });
+    let encryption_dropped = encryption_dropped && encryption.is_none();
     if main.role != verify::KeyRole::ContractGroup {
         return Err(RejectReason::Framing);
     }
@@ -286,6 +281,7 @@ pub fn forge_grant(grant: Grant, forge: &ForgeIds) -> Result<WalletGrant, Reject
         remaining_budget,
         expires_at_ms,
         encryption,
+        encryption_dropped,
         secret: main.private_key,
     })
 }
@@ -384,7 +380,30 @@ async fn check_answer<P: IdentityPort>(
         now_ms: chain_now_ms,
         expiry_margin_ms: verify::EXPIRY_MARGIN_MS,
     };
-    match verify::verify_candidate(&ctx, &req.secret, candidate).await {
+    let mut verdict = verify::verify_candidate(&ctx, &req.secret, candidate).await;
+    let mut enc_dropped = false;
+    // An encryption key the verifier will not take, for good, costs only sync: the signing key
+    // alone is verified again (the wallet sends the signing keys first).
+    let auth_slots = req.request.auth_bindings.len();
+    if let Ok(Err(r)) = &verdict {
+        if !r.retryable() && r.slot.is_some_and(|slot| slot >= auth_slots) {
+            if let Ok(mut slots) = super::crypto::open(
+                &req.secret,
+                &candidate.owner_id,
+                &candidate.wallet_ephemeral_pub_key,
+                &candidate.encrypted_payload,
+            ) {
+                slots.truncate(auth_slots);
+                verdict = verify::verify_keys(&ctx, &candidate.owner_id, slots).await;
+                enc_dropped = true;
+            }
+        }
+    }
+    match verdict {
+        Ok(Ok(grant)) => Some(Some(forge_grant(grant, forge).map(|mut g| {
+            g.encryption_dropped |= enc_dropped;
+            g
+        }))),
         Ok(Err(r))
             if matches!(
                 r.reason,
@@ -393,7 +412,6 @@ async fn check_answer<P: IdentityPort>(
         {
             None
         }
-        Ok(Ok(grant)) => Some(Some(forge_grant(grant, forge))),
         Ok(Err(r)) if !r.retryable() => Some(Some(Err(r.reason))),
         // A lagging read, or a read that failed past the decryption: check it again.
         Ok(Err(_)) | Err(_) => Some(None),
@@ -1112,23 +1130,24 @@ mod tests {
         assert_eq!(held.key_id, 9);
         assert_eq!(held.secret.expose(), e.expose());
         assert!(!format!("{ok:?}").contains(&hex::encode(seed("alice enc"))));
-        assert_eq!(
-            forge_grant(grant(enc_key.clone()), &forge()),
-            Err(RejectReason::Framing)
-        );
+        assert!(!ok.encryption_dropped);
         let mut other = enc_key.clone();
         other.bounds = Some(KeyBounds::SingleContract {
             contract_id: seed("other app"),
         });
-        assert_eq!(
-            forge_grant(grant(other), &forge_user()),
-            Err(RejectReason::KeyUnmatched)
-        );
-        let mut wrong = enc_key;
+        let mut wrong = enc_key.clone();
         wrong.data = public_key_of(&seed("someone else")).unwrap().to_vec();
-        assert_eq!(
-            forge_grant(grant(wrong), &forge_user()),
-            Err(RejectReason::KeyUnmatched)
-        );
+        let mut high = enc_key.clone();
+        high.security_level = level::HIGH;
+        for (forge, key) in [
+            (forge(), enc_key),
+            (forge_user(), other),
+            (forge_user(), wrong),
+            (forge_user(), high),
+        ] {
+            let g = forge_grant(grant(key), &forge).expect("the signing key still signs in");
+            assert!(g.encryption.is_none() && g.encryption_dropped);
+            assert_eq!(g.key_id, ok.key_id);
+        }
     }
 }

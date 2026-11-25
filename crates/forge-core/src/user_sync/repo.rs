@@ -2,14 +2,14 @@
 //! current maintainer, the storage the repository's owner shared with them (for that repository
 //! only).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use super::{effective, storage, Effective, Origin, ShareContent, UserSync, SLOT_STORAGE};
+use super::{effective, storage, Effective, Origin, UserSync, SLOT_STORAGE};
 use crate::error::Result;
 use crate::platform::PlatformClient;
 use crate::rules::v2::Role;
 use crate::scope::RepoRef;
-use crate::storage::policy::{ResolvedPolicy, StoragePolicy};
+use crate::storage::policy::StoragePolicy;
 use crate::storage::StorageProfiles;
 
 /// The current maintainers of `repo` (members' documents through the role oracle), without
@@ -39,8 +39,6 @@ pub struct PushStorage {
     pub policy: Option<StoragePolicy>,
     /// The owner whose storage this push may use, when it is shared with the pusher.
     pub shared_by: Option<String>,
-    /// Whether [`Self::policy`] is the pusher's own synced policy for this repository.
-    pub policy_is_repos_own: bool,
 }
 
 /// [`PushStorage`] for `sync`'s identity pushing to `repo_id`, owned by `owner_id`, over
@@ -88,34 +86,6 @@ pub async fn push_storage(
         usable(&shared_policy),
         usable(&own_default),
     );
-    out.policy_is_repos_own = own_repo.is_some();
     out.policy = own_repo.or(shared_policy).or(own_default);
     Ok(out)
-}
-
-impl ShareContent {
-    /// The share a push's resolved policy makes: its external targets and the policy over them.
-    /// `None` when it names none (Platform only) or one that is itself shared with this owner.
-    pub fn for_resolved(policy: &ResolvedPolicy) -> Option<Self> {
-        let mut profiles = BTreeMap::new();
-        for (name, p) in &policy.external {
-            if name.starts_with("share.") {
-                return None;
-            }
-            profiles.insert(name.clone(), storage::profile_to_synced(p).ok()?);
-        }
-        if profiles.is_empty() {
-            return None;
-        }
-        let raw = StoragePolicy {
-            targets: policy.target_names(),
-            replicas: Some(policy.replicas),
-            platform_fallback: policy.platform_fallback,
-        };
-        Some(Self {
-            profiles,
-            policy: storage::policy_to_synced(&raw),
-            extra: serde_json::Map::new(),
-        })
-    }
 }
