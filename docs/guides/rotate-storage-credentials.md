@@ -8,7 +8,7 @@ Rotating takes three steps:
 2. Update the profile with it.
 3. Revoke the old credential at the provider.
 
-The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So does `dg collab add` or `dg collab remove` on it when the repository has its own storage policy synced with your identity (set in the web app's repository settings); otherwise they re-encrypt the share as it is, and your next push brings it up to date.
+The shared copy follows automatically. Your next push to the repository re-encrypts the share with the updated profile for the remaining maintainers. So does `dg collab add` or `dg collab remove` on it: both refresh the shared profiles from your synced policy for the repository (its own synced policy, else your synced default). When neither exists they re-encrypt the share as it is.
 
 ## Cloudflare R2
 

@@ -56,17 +56,38 @@ async function main() {
   const sdk = new EvoSDK({ network, addresses: dep.dapiAddresses, trusted: true, settings: PUT_SETTINGS, version: PROTOCOL_VERSION });
   await sdk.connect();
 
-  if (dep.user?.contractId && (await sdk.contracts.fetch(dep.user.contractId))) {
-    log(`already registered: ${dep.user.contractId}`);
-    console.log(JSON.stringify(dep.user, null, 2));
-    return;
+  const fetchSettled = async (id) => {
+    for (let i = 0; i < 10; i++) {
+      const c = await sdk.contracts.fetch(id);
+      if (c) return c;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    return null;
+  };
+  if (dep.user?.contractId && dep.user.contractGroupId === groupId) {
+    if (await fetchSettled(dep.user.contractId)) {
+      if (dep.user.status === 'broadcasting') {
+        const fresh = JSON.parse(readFileSync(depFile, 'utf8'));
+        fresh.user = { ...dep.user, status: 'registered', confirmedAt: new Date().toISOString() };
+        writeDep(depFile, fresh);
+      }
+      log(`already registered: ${dep.user.contractId}`);
+      console.log(JSON.stringify(dep.user, null, 2));
+      return;
+    }
+    if (dep.user.status === 'broadcasting') {
+      const chainNonce = BigInt((await sdk.identities.nonce(ownerId)) ?? 0n) & 0xFFFFFFFFFFn;
+      if (chainNonce >= BigInt(dep.user.identityNonce)) {
+        throw new Error(`the reservation ${dep.user.contractId} (nonce ${dep.user.identityNonce}) was broadcast and its nonce is used, but the contract cannot be fetched yet: check it before registering again`);
+      }
+    }
   }
   const group = await sdk.contractGroups.info(groupId);
   if (!group || group.ownerId !== ownerId) throw new Error(`group ${groupId} not found or not owned by ${ownerId}`);
   if (Array.isArray(group.adminIds) && group.adminIds.length > 0) throw new Error(`group ${groupId} has admins`);
 
   const schema = JSON.parse(readFileSync(join(ROOT, 'contracts', 'user', 'forge-user.json'), 'utf8'));
-  const nonce = ((await sdk.identities.nonce(ownerId)) ?? 0n) + 1n;
+  const nonce = (BigInt((await sdk.identities.nonce(ownerId)) ?? 0n) & 0xFFFFFFFFFFn) + 1n;
   const id = contractId(ownerId, nonce);
   const contract = DataContract.fromJSON(userContractJson(schema, id, ownerId), true, PROTOCOL_VERSION);
   const transition = new DataContractCreateTransition(contract, nonce, PROTOCOL_VERSION);
@@ -80,19 +101,24 @@ async function main() {
   if (args['dry-run']) return;
 
   const before = await sdk.identities.balance(ownerId);
-  await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
-  if (!(await sdk.contracts.fetch(id))) throw new Error(`broadcast confirmed but ${id} cannot be fetched`);
-  let after = await sdk.identities.balance(ownerId);
-  for (let i = 0; after === before && i < 10; i++) { await new Promise((r) => setTimeout(r, 2000)); after = await sdk.identities.balance(ownerId); }
-  const record = {
+  const reservation = {
     contractId: id,
     ownerId,
     identityNonce: nonce.toString(),
     contractGroupId: groupId,
     sizeBytes: st.toBytes().length,
-    deployedAt: new Date().toISOString(),
-    costCredits: (before - after).toString(),
+    status: 'broadcasting',
+    reservedAt: new Date().toISOString(),
   };
+  const reserved = JSON.parse(readFileSync(depFile, 'utf8'));
+  if (reserved.user && reserved.user.contractGroupId !== groupId) reserved.userSuperseded = [...(reserved.userSuperseded ?? []), reserved.user];
+  reserved.user = reservation;
+  writeDep(depFile, reserved);
+  await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
+  if (!(await fetchSettled(id))) throw new Error(`broadcast confirmed but ${id} cannot be fetched yet: rerun to confirm the reservation`);
+  let after = await sdk.identities.balance(ownerId);
+  for (let i = 0; after === before && i < 10; i++) { await new Promise((r) => setTimeout(r, 2000)); after = await sdk.identities.balance(ownerId); }
+  const record = { ...reservation, status: 'registered', deployedAt: new Date().toISOString(), costCredits: (before - after).toString() };
   const fresh = JSON.parse(readFileSync(depFile, 'utf8'));
   fresh.user = record;
   writeDep(depFile, fresh);

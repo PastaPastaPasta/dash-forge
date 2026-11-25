@@ -98,7 +98,7 @@ The removed member can no longer read the current share. **What cannot be revoke
 | A removed maintainer | what they saw before removal (rotate it, §5) | anything shared after removal |
 | XSS in the Forge origin, with a session unlocked | `E`, and through it the synced config. This is the same exposure as today's vault blob and private-repo key | the wallet seed, other apps' keys |
 | Malware on a device running dg | `E` from the keychain or sealed file. This is equivalent to today's storage.toml secrets | the seed |
-| A phishing page that gets a wallet approval | `E` (as with any approval today, SECU-08) | nothing more than an auth-key phish already gives |
+| A phishing page that gets a wallet approval | `E` (SECU-08), and with it this identity's synced settings, including storage credentials, and every repo share the identity can open. That's more than an auth-key phish gives. | the seed, and other apps' keys |
 | Disabling `E` on-chain | blocks new grants to it | old ciphertext. The rotation path is a new rotation index, which the wallets do not offer yet |
 
 `E` is bound to `forge-user` only. It can't open private-repo content (that uses the separate encryption key from Settings) and can't sign anything.
