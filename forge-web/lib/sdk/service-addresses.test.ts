@@ -14,6 +14,7 @@ const recorded = vi.hoisted(() => ({
   gate: vi.fn(),
   version: 14,
   latest: vi.fn(async (_q: { contractIds: string[] }) => new Map()),
+  storeAtBuild: [] as (string | null)[],
 }))
 vi.mock('./budget', () => ({ installDapiFetchGate: recorded.gate, dapiBudget: { retryAfterMs: () => 0 } }))
 vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmProgress: () => () => undefined }))
@@ -34,7 +35,11 @@ vi.mock('@dashevo/evo-sdk', () => ({
   ensureInitialized: async () => undefined,
   DataContract: { fromBase64: () => ({}) },
   EvoSDK: class {
-    constructor(options: EvoSDKOptions) { recorded.options.push(options) }
+    constructor(options: EvoSDKOptions) {
+      recorded.options.push(options)
+      const storage = (globalThis as { localStorage?: Storage }).localStorage
+      recorded.storeAtBuild.push(storage?.getItem(`dash-sdk.protocol-version.${options.network}`) ?? null)
+    }
     connect = async () => undefined
     contracts = { fetch: recorded.fetch, getLatestVersions: recorded.latest, addKnown: async () => true }
     wasm = { free: recorded.free }
@@ -44,12 +49,13 @@ vi.mock('@dashevo/evo-sdk', () => ({
 
 import testnetDeployment from '../../../forge-contracts/deployments/testnet.json'
 import { NETWORKS, type Network } from '../constants'
-import { EvoSdkService, LEARN_VERSION_MS } from './service'
+import { EvoSdkService, LEARN_VERSION_MS, seedSdkVersion } from './service'
 
 const services: EvoSdkService[] = []
 beforeEach(() => {
   vi.useFakeTimers()
   recorded.options.length = 0
+  recorded.storeAtBuild.length = 0
   recorded.emptyTestnet = false
   recorded.fetch.mockReset().mockResolvedValue({})
   recorded.snapshots.mockReset().mockResolvedValue({})
@@ -186,5 +192,43 @@ describe('the protocol version before the first query', () => {
     expect(recorded.free).not.toHaveBeenCalled()
     answer()
     await vi.waitFor(() => expect(recorded.free).toHaveBeenCalledTimes(1))
+  })
+
+  it.each(['testnet', 'mainnet'] as const)('a %s SDK is built with the snapshots\' version in its store, so a slow first read cannot leave it at 13 (#682)', async (network) => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) })
+    recorded.version = 14
+    await connect(network)
+    expect(recorded.storeAtBuild).toEqual(['14'])
+  })
+})
+
+describe('seedSdkVersion', () => {
+  function storage(initial: Record<string, string> = {}): Map<string, string> {
+    const store = new Map(Object.entries(initial))
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) })
+    return store
+  }
+
+  it('raises a missing, lower or unreadable stored version to the floor', () => {
+    for (const before of [undefined, '13', ' 12 ', 'garbage', '14abc', '']) {
+      const store = storage(before === undefined ? {} : { 'dash-sdk.protocol-version.testnet': before })
+      seedSdkVersion('testnet', 14)
+      expect(store.get('dash-sdk.protocol-version.testnet')).toBe('14')
+    }
+  })
+
+  it('never lowers a stored version and leaves other networks alone', () => {
+    const store = storage({ 'dash-sdk.protocol-version.mainnet': '15', 'dash-sdk.protocol-version.testnet': '14' })
+    seedSdkVersion('mainnet', 14)
+    seedSdkVersion('testnet', 14)
+    seedSdkVersion('devnet', 14)
+    seedSdkVersion('testnet', 0)
+    expect(Object.fromEntries(store)).toEqual({ 'dash-sdk.protocol-version.mainnet': '15', 'dash-sdk.protocol-version.testnet': '14' })
+  })
+
+  it('does nothing when storage is blocked', () => {
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('SecurityError') }, setItem: () => { throw new Error('SecurityError') } })
+    expect(() => seedSdkVersion('testnet', 14)).not.toThrow()
   })
 })

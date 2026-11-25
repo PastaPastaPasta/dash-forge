@@ -49,7 +49,7 @@ import { installQuorumFetch } from './quorum-fetch'
 import { dapiBudget, installDapiFetchGate } from './budget'
 import { ContractReadRefusedError, isContractMissingError } from './contract-missing'
 import { isQuorumMiss, isStaleConnectionError } from './unreachable'
-import { loadContractSnapshots } from './contract-seed'
+import { loadContractSnapshots, type ContractSnapshots } from './contract-seed'
 import { followSdkVersion, setStaleContractHandler, shareInFlight, type StaleContractCause } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
 import { setWriteHold } from './write'
@@ -1089,16 +1089,14 @@ async function preload(sdk: EvoSDK, contractIds: readonly string[]): Promise<voi
  * Add the deployment's contract snapshots (`contract-seed.ts`) to the SDK's contract cache,
  * so no page spends a `getDataContract` request on them. `outdated` snapshots (an earlier
  * connection found the network had moved on) and any that fail to decode are skipped:
- * {@link preload} fetches those. Also returns the protocol version the snapshots were
- * serialized at, the one the deployment needs (deploy-v2 registers only on a network at it):
- * the network runs at least that one ({@link learnVersion}).
+ * {@link preload} fetches those. The version the snapshots were serialized at is the one the
+ * deployment needs (deploy-v2 registers only on a network at it), so the network runs at least
+ * that one ({@link seedSdkVersion}, {@link learnVersion}).
  */
-async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<string>): Promise<{ seeded: Map<string, number>; floor: number }> {
+async function seed(sdk: EvoSDK, snapshots: ContractSnapshots, outdated: ReadonlySet<string>): Promise<Map<string, number>> {
   const seeded = new Map<string, number>()
-  const snapshots = await loadContractSnapshots(deploymentKey).catch(() => ({}))
-  const floor = Math.max(0, ...Object.values(snapshots).map((s) => s.platformVersion))
   const entries = Object.entries(snapshots).filter(([id]) => !outdated.has(id))
-  if (entries.length === 0) return { seeded, floor }
+  if (entries.length === 0) return seeded
   const { DataContract } = await import('@dashevo/evo-sdk')
   for (const [id, snapshot] of entries) {
     try {
@@ -1108,7 +1106,31 @@ async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<st
       // Fall back to fetching this one.
     }
   }
-  return { seeded, floor }
+  return seeded
+}
+
+/** wasm-sdk's store of the protocol version it last learned (`protocol_version_store.rs`). */
+export const SDK_VERSION_KEY_PREFIX = 'dash-sdk.protocol-version.'
+
+/**
+ * Start the next SDK for `network` at `floor` at least, before it is built. wasm-sdk seeds a new
+ * SDK from its store (`dash-sdk.protocol-version.<network>`, mainnet and testnet only) with
+ * auto-detect left on; without a stored value it starts at its built-in floor (rc.8: 13), and a
+ * first query the floor does not support (a `timeRange` query below 14) is refused before it is
+ * sent. On a link slower than {@link LEARN_VERSION_MS} the warm-up's read cannot teach it in
+ * time (#682). The snapshots prove the network runs `floor`, so the store is raised to it;
+ * a stored version at or above it is kept, and nothing is ever lowered.
+ */
+export function seedSdkVersion(network: Network, floor: number): void {
+  if ((network !== 'mainnet' && network !== 'testnet') || !Number.isInteger(floor) || floor <= 0) return
+  try {
+    const key = SDK_VERSION_KEY_PREFIX + network
+    const stored = Number((localStorage.getItem(key) ?? '').trim())
+    if (Number.isInteger(stored) && stored >= floor) return
+    localStorage.setItem(key, String(floor))
+  } catch {
+    // No storage (blocked site data): learnVersion still teaches the SDK.
+  }
 }
 
 /** How long the warm-up waits for {@link learnVersion}'s request before going live without it. */
@@ -1117,7 +1139,7 @@ export const LEARN_VERSION_MS = 5_000
 /**
  * Make sure `sdk` knows the network's protocol version before any page queries. A new SDK
  * starts at its built-in floor (rc.8: 13 on testnet) unless wasm-sdk's store in localStorage
- * has a learned one, and learns the real one from the first proved response. With every
+ * has a learned one ({@link seedSdkVersion} raises it to the snapshots' version), and learns the real one from the first proved response. With every
  * contract seeded, connecting sends none, so a page's first query is built at the floor, and
  * one the floor does not support (a `timeRange` query below 14) is refused before it is sent.
  * One proved request, only when the SDK is below `floor`, teaches it: the seeded contracts'
@@ -1385,6 +1407,10 @@ async function connectAndWarm(
   // EvoSDKOptions supports addresses AND trusted: true: connect() uses withAddresses then
   // withTrustedContext, retaining quorum verification while replacing the bootstrap list.
   // Mainnet's recorded endpoints are a quorum-key second source, not read endpoints.
+  const snapshots: ContractSnapshots = await loadContractSnapshots(NETWORKS[config.network].key).catch(() => ({}))
+  const floor = Math.max(0, ...Object.values(snapshots).map((s) => s.platformVersion))
+  seedSdkVersion(config.network, floor)
+  step(signal, null)
   const addresses = dapiReadAddresses(NETWORKS[config.network])
   const options = {
     settings: { timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false },
@@ -1417,7 +1443,7 @@ async function connectAndWarm(
   step(signal, sdk)
   // Seed the bundled contracts, then preload what is still missing, BEFORE the connection goes
   // live so callers never see an unwarmed SDK.
-  const { seeded, floor } = await seed(sdk, NETWORKS[config.network].key, carry.outdated)
+  const seeded = await seed(sdk, snapshots, carry.outdated)
   step(signal, sdk)
   await preload(sdk, config.contractIds.filter((id) => !seeded.has(id)))
   step(signal, sdk)
