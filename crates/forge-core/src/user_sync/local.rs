@@ -44,7 +44,7 @@ fn load_checked(path: &Path) -> Result<LocalState> {
     }
 }
 
-/// Run `f` on the file's contents under its lock, then save them.
+/// Run `f` on the file's contents under its lock, then save them when they changed.
 fn update<T>(f: impl FnOnce(&mut LocalState) -> T) -> Result<T> {
     let path = path().ok_or_else(|| Error::Config("no config directory".into()))?;
     update_at(&path, f)
@@ -63,10 +63,16 @@ fn update_at<T>(path: &Path, f: impl FnOnce(&mut LocalState) -> T) -> Result<T> 
         .and_then(|f| f.lock().map(|()| f))
         .map_err(|e| Error::Io(format!("locking {}: {e}", path.display())))?;
     let mut state = load_checked(path)?;
+    let serialize = |s: &LocalState| {
+        toml::to_string_pretty(s)
+            .map_err(|e| Error::Config(format!("serializing user-sync.toml: {e}")))
+    };
+    let before = serialize(&state)?;
     let out = f(&mut state);
-    let raw = toml::to_string_pretty(&state)
-        .map_err(|e| Error::Config(format!("serializing user-sync.toml: {e}")))?;
-    crate::keystore::write_private_file(path, raw.as_bytes())?;
+    let raw = serialize(&state)?;
+    if raw != before {
+        crate::keystore::write_private_file(path, raw.as_bytes())?;
+    }
     drop(lock);
     Ok(out)
 }
@@ -141,6 +147,21 @@ pub fn note_once_at(path: &Path, what: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_changed_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user-sync.toml");
+        update_at(&path, |_| ()).unwrap();
+        assert!(!path.exists());
+        assert!(note_once_at(&path, "x"));
+        let raw = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{raw}\n# kept\n")).unwrap();
+        assert!(!note_once_at(&path, "x"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .ends_with("# kept\n"));
+    }
 
     #[test]
     fn a_file_that_does_not_parse_is_never_written_over() {

@@ -397,11 +397,13 @@ fn share_changes(
         .fix("to stop sharing, run `dg storage share <repo> --stop`")
         .into());
     }
-    if copies.is_some_and(|c| c == 0 || c > names.len()) {
+    let most = names.len().min(8);
+    if copies.is_some_and(|c| c == 0 || c > most) {
         return Err(UserError::new(
             codes::STORAGE_POLICY,
-            format!("--copies must be 1 to {}", names.len()),
+            format!("--copies must be 1 to {most}"),
         )
+        .cause("a copy goes to a different profile named here, and 8 copies is the most")
         .into());
     }
     let policy = StoragePolicy {
@@ -478,14 +480,13 @@ async fn share(
             let sync = UserSync::new(&key, store);
             let current = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
             let at = us::now_ms();
+            let had_entry = current
+                .as_ref()
+                .is_some_and(|d| d.get(&us::storage::repo_key(&repo_id)).is_some());
             let changes = if stop {
+                // Always a tombstone: an older entry another device merges later loses to it.
                 let mut c = SlotDoc::new(SLOT_STORAGE);
-                if current
-                    .as_ref()
-                    .is_some_and(|d| d.get(&us::storage::repo_key(&repo_id)).is_some())
-                {
-                    c.remove(&us::storage::repo_key(&repo_id), at);
-                }
+                c.remove(&us::storage::repo_key(&repo_id), at);
                 c
             } else {
                 share_changes(&names, copies, &repo_id, &local, current.as_ref(), at)?
@@ -493,9 +494,13 @@ async fn share(
             if !changes.entries.is_empty() {
                 sync.merge_into(SLOT_STORAGE, &changes).await?;
             }
-            Ok(sync.reconcile_repo_by_rule(&repo_id, &maintainers).await?)
+            Ok((
+                sync.reconcile_repo_by_rule(&repo_id, &maintainers).await?,
+                had_entry,
+            ))
         })
         .await?;
+    let (done, had_entry) = done;
     let shown = s.repo.display();
     if !stop && !done.shared {
         return Err(UserError::new(
@@ -517,10 +522,18 @@ async fn share(
             "revoked": done.revoked,
         }),
         || {
-            if stop {
-                println!("Stopped sharing storage with {shown}'s maintainers; your own pushes to it use your default storage again.");
+            if stop && !done.stopped {
+                println!("Nothing was shared with this repo's maintainers.");
+                if had_entry {
+                    println!("Your own pushes to {shown} use your default storage again.");
+                }
+            } else if stop {
+                println!(
+                    "Stopped sharing storage with {shown}'s maintainers; your own pushes to it use your default storage again. {}",
+                    forge_core::user_sync::rotate_pointer()
+                );
                 for m in &done.revoked {
-                    println!("  {}", crate::sync::rotate_line(m));
+                    println!("  {m} lost access.");
                 }
             } else {
                 println!(
@@ -2144,6 +2157,19 @@ public_gateway = "https://gw.example.org"
         let one = vec!["nas".to_string()];
         assert!(share_changes(&one, Some(2), "REPO", &local, None, 5).is_err());
         assert!(share_changes(&one, Some(0), "REPO", &local, None, 5).is_err());
+        // Never more than 8 copies, however many profiles are named.
+        let mut many = synced.clone();
+        let mut nine = Vec::new();
+        for i in 0..9 {
+            let name = format!("r2-{i}");
+            many.set(&format!("profile:{name}"), 1, web.clone());
+            nine.push(name);
+        }
+        let err = share_changes(&nine, Some(9), "REPO", &local, Some(&many), 5).unwrap_err();
+        assert!(err.to_string().contains("1 to 8"), "{err}");
+        let eight = share_changes(&nine, Some(8), "REPO", &local, Some(&many), 5).unwrap();
+        let policy = us::policy_from_synced(eight.get(&us::repo_key("REPO")).unwrap()).unwrap();
+        assert_eq!(policy.replicas, Some(8));
     }
 
     pub(crate) fn add_args(argv: &[&str]) -> StorageAddArgs {

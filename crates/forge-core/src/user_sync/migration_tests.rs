@@ -388,6 +388,7 @@ async fn a_maintainer_gets_the_owners_storage_for_that_repo_until_removed() {
         )]
         .into(),
         policy: json!({"targets": ["trap"], "replicas": 1, "platformFallback": false}),
+        version: SHARE_VERSION,
         extra: serde_json::Map::new(),
     };
     for r in [&repo, &other_repo] {
@@ -597,6 +598,7 @@ fn a_shared_profile_never_records_a_private_address_and_bad_names_are_dropped() 
         ]
         .into(),
         policy: json!({"targets": ["lan"], "replicas": 1, "platformFallback": false}),
+        version: SHARE_VERSION,
         extra: serde_json::Map::new(),
     };
     let owner = id("owner3");
@@ -740,7 +742,7 @@ fn the_share_rule_follows_the_synced_policy_only() {
     let repo = id("rule repo");
     let mut doc = SlotDoc::new(SLOT_STORAGE);
     // No synced slot: keep the share as it is. A slot with no entry for this repository: stop.
-    assert!(matches!(ShareRule::of(None, &repo), ShareRule::Keep));
+    assert!(matches!(ShareRule::of(None, &repo), ShareRule::Unread));
     assert!(matches!(
         ShareRule::of(Some(&doc), &repo),
         ShareRule::Nothing
@@ -902,9 +904,28 @@ fn the_share_rule_matches_the_shared_fixture() {
         }
         let expect = &case["expect"];
         let slot = (!absent).then_some(&doc);
-        match (ShareRule::of(slot, repo), expect.as_str()) {
-            (ShareRule::Keep, Some("keep")) | (ShareRule::Nothing, Some("nothing")) => {}
-            (ShareRule::Content(c), None) => {
+        let share = case.get("share").map(|s| ShareContent {
+            version: s["version"].as_u64().unwrap(),
+            ..if s["lends"].as_bool().unwrap() {
+                ShareContent {
+                    profiles: [("web-r2".to_string(), fixture["profiles"]["web-r2"].clone())]
+                        .into(),
+                    policy: json!({"targets": ["web-r2"], "replicas": 1, "platformFallback": false}),
+                    ..ShareContent::nothing()
+                }
+            } else {
+                ShareContent::nothing()
+            }
+        });
+        let granted = case
+            .get("share")
+            .and_then(|s| s.get("grants"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let rule = ShareRule::of(slot, repo);
+        match (rule.wanted().over(share.as_ref(), granted), expect.as_str()) {
+            (Wanted::Keep, Some("keep")) | (Wanted::Nothing, Some("nothing")) => {}
+            (Wanted::Content(c), None) => {
                 let names: Vec<&str> = c.profiles.keys().map(String::as_str).collect();
                 let want: Vec<&str> = expect["profiles"]
                     .as_array()
@@ -919,7 +940,7 @@ fn the_share_rule_matches_the_shared_fixture() {
                     assert_eq!(&c.profiles[*n], synced, "{name}: {n} is shared as synced");
                 }
             }
-            (got, _) => panic!("{name}: expected {expect}, got {got:?}"),
+            (got, _) => panic!("{name}: expected {expect}, got {got:?} from {rule:?}"),
         }
     }
 }
@@ -1180,9 +1201,24 @@ fn the_stop_line_names_the_default_only_when_the_repo_never_had_storage() {
     };
     assert_eq!(
         stopped_line("o/r", &removed).unwrap(),
-        "Stopped sharing storage with o/r's maintainers."
+        "Stopped sharing storage with o/r's maintainers. Rotate credentials they saw: docs/guides/rotate-storage-credentials.md"
     );
     assert!(stopped_line("o/r", &Reconciled::default()).is_none());
+    // A version 1 share stopped because the repository's own setting is unusable: the default.
+    let unscoped = Reconciled {
+        repo_policy_set: true,
+        stopped_unscoped: true,
+        ..done.clone()
+    };
+    assert_eq!(
+        stopped_line("o/r", &unscoped).unwrap(),
+        "Stopped sharing your default storage with o/r's maintainers. This repo's own storage setting can't be used; set it again to share it. Rotate credentials they saw: docs/guides/rotate-storage-credentials.md"
+    );
+    let set = Reconciled {
+        repo_policy_set: true,
+        ..done
+    };
+    assert!(stopped_line("o/r", &set).is_none());
 }
 
 /// A grant put straight into the store, as one a run that stopped part-way left behind.
@@ -1304,4 +1340,275 @@ async fn remove_stop_and_share_again_keeps_epochs_moving_forward() {
     }
     // Sharing again stays at the stop's epoch: no grant ever went to it.
     assert_eq!(epochs, [0, 1, 2, 2]);
+}
+
+/// A slot whose `repo:<id>` entry for `repo` does not parse: the rule keeps the share.
+async fn unusable_repo_entry(owner: &UserSync<'_>, repo: &str) {
+    let mut slot = SlotDoc::new(SLOT_STORAGE);
+    slot.set(&storage::repo_key(repo), now_ms(), json!({"targets": []}));
+    owner.merge_into(SLOT_STORAGE, &slot).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_kept_version_1_share_that_lends_storage_stops_once() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    // What an older build wrote: version 1, maybe from the default storage.
+    let v1 = ShareContent {
+        version: 1,
+        ..r.content.clone()
+    };
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&v1), &maintainers)
+        .await
+        .unwrap();
+    unusable_repo_entry(&owner, &r.repo).await;
+    let stopped = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(stopped.stopped && stopped.stopped_unscoped && !stopped.shared);
+    assert!(stopped.repo_policy_set);
+    assert_eq!(
+        (stopped.epoch, stopped.revoked.clone()),
+        (1, vec![r.member.clone()])
+    );
+    assert_eq!(
+        stopped_line("o/r", &stopped),
+        Some(stopped_legacy_line("o/r"))
+    );
+    assert!(r.store.all_grants().is_empty());
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    let now = owner.open_share(&share, &owner.rsk(&repo, 1)).unwrap();
+    assert!(now.profiles.is_empty());
+    assert_eq!(now.version, SHARE_VERSION);
+    let writes = r.store.writes();
+    let again = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(!again.stopped && !again.share_written && again.revoked.is_empty());
+    assert_eq!(r.store.writes(), writes);
+}
+
+#[tokio::test]
+async fn a_kept_version_2_share_stays_and_lends_to_no_one_new() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    unusable_repo_entry(&owner, &r.repo).await;
+    let writes = r.store.writes();
+    let kept = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(kept.shared && !kept.stopped && !kept.share_written);
+    assert_eq!((kept.epoch, r.store.writes()), (0, writes));
+}
+
+#[tokio::test]
+async fn no_slot_read_keeps_a_version_1_share_as_version_1() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let v1 = ShareContent {
+        version: 1,
+        ..r.content.clone()
+    };
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&v1), &maintainers)
+        .await
+        .unwrap();
+    // The member leaves: re-encrypted at the next epoch, never relabelled version 2.
+    let moved = owner
+        .reconcile_repo_by_rule(&r.repo, &BTreeSet::new())
+        .await
+        .unwrap();
+    assert!(moved.share_written && !moved.stopped);
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    let back = owner
+        .open_share(&share, &owner.rsk(&repo, moved.epoch))
+        .unwrap();
+    assert_eq!((back.version, back.profiles.len()), (1, 1));
+}
+
+#[tokio::test]
+async fn a_repository_entry_rewrites_a_version_1_share_as_version_2_once() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let v1 = ShareContent {
+        version: 1,
+        ..r.content.clone()
+    };
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&v1), &maintainers)
+        .await
+        .unwrap();
+    let up = owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert!(up.share_written && up.shared);
+    assert_eq!(up.epoch, 0);
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    assert_eq!(
+        owner
+            .open_share(&share, &owner.rsk(&repo, 0))
+            .unwrap()
+            .version,
+        SHARE_VERSION
+    );
+    let writes = r.store.writes();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(r.store.writes(), writes);
+}
+
+#[tokio::test]
+async fn a_share_newer_than_this_build_is_not_rewritten() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let v3 = ShareContent {
+        version: SHARE_VERSION + 1,
+        ..r.content.clone()
+    };
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&v3), &maintainers)
+        .await
+        .unwrap();
+    let writes = r.store.writes();
+    let err = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("newer Forge"), "{err}");
+    assert_eq!(r.store.writes(), writes);
+    // As read: a version that is not a count is newer too.
+    let odd = br#"{"format":"forge-user/share","version":"x","profiles":{},"policy":null}"#;
+    assert_eq!(ShareContent::parse(odd).unwrap().version, u64::MAX);
+    let none = br#"{"format":"forge-user/share","profiles":{},"policy":null}"#;
+    assert_eq!(ShareContent::parse(none).unwrap().version, 1);
+}
+
+#[tokio::test]
+async fn an_empty_share_under_a_new_key_id_does_not_stop_again() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    let first = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert!(first.stopped);
+    // The same key under a new key id: the empty share is written again, nothing stops.
+    let renumbered = key(&r.owner, 8, "owner2 E");
+    r.store
+        .add_key(&r.owner, 8, renumbered.public_key().to_vec());
+    let again = UserSync::new(&renumbered, &r.store)
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert!(again.share_written && !again.stopped);
+    assert_eq!(again.epoch, first.epoch);
+    assert!(stopped_line("o/r", &again).is_none());
+}
+
+#[tokio::test]
+async fn an_interrupted_legacy_stop_finishes_at_the_next_reconcile() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&r.content), &maintainers)
+        .await
+        .unwrap();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    // What a stop left when it wrote the empty share and failed before deleting the grant.
+    leftover_grant(&r, 0, 9).await;
+    unusable_repo_entry(&owner, &r.repo).await;
+    let done = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(done.stopped && done.stopped_unscoped);
+    assert_eq!(done.revoked, vec![r.member.clone()]);
+    assert_eq!(stopped_line("o/r", &done), Some(stopped_legacy_line("o/r")));
+    assert!(r.store.all_grants().is_empty());
+    let writes = r.store.writes();
+    let again = owner
+        .reconcile_repo_by_rule(&r.repo, &maintainers)
+        .await
+        .unwrap();
+    assert!(!again.stopped && stopped_line("o/r", &again).is_none());
+    assert_eq!(r.store.writes(), writes);
+}
+
+#[tokio::test]
+async fn an_empty_version_1_share_is_written_as_version_2_once_when_sharing_stops() {
+    let r = repo_with_one_maintainer();
+    let maintainers: BTreeSet<String> = [r.member.clone()].into();
+    r.store.as_signer(&r.owner);
+    let owner = UserSync::new(&r.e_owner, &r.store);
+    let empty_v1 = ShareContent {
+        version: 1,
+        ..ShareContent::nothing()
+    };
+    owner
+        .reconcile_repo(&r.repo, Wanted::Content(&empty_v1), &maintainers)
+        .await
+        .unwrap();
+    // Kept with no slot read: it stays as it is.
+    let writes = r.store.writes();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Keep, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(r.store.writes(), writes);
+    let up = owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert!(up.share_written && !up.stopped);
+    assert_eq!(up.epoch, 0);
+    let share = r.store.share(&r.owner, &r.repo).await.unwrap().unwrap();
+    let repo = crate::platform::decode_identifier(&r.repo).unwrap();
+    assert_eq!(
+        owner
+            .open_share(&share, &owner.rsk(&repo, 0))
+            .unwrap()
+            .version,
+        SHARE_VERSION
+    );
+    let writes = r.store.writes();
+    owner
+        .reconcile_repo(&r.repo, Wanted::Nothing, &maintainers)
+        .await
+        .unwrap();
+    assert_eq!(r.store.writes(), writes);
 }
