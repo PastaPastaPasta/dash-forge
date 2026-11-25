@@ -248,8 +248,8 @@ pub fn status(state: &RoomState, req: &Request, chain: Option<&ChainView>) -> Re
     }
 }
 
-/// Whether `req` is still collecting and more of `ceremony`'s participants declined it, without
-/// approving, than M−N: the rest cannot reach the threshold.
+/// Whether no part of `req` is ready or executed and more of `ceremony`'s participants declined
+/// it, without approving, than M−N: the rest cannot reach the threshold.
 pub fn declined_out(state: &RoomState, req: &Request, ceremony: &Ceremony) -> bool {
     let ps: Vec<&Proposal> = req
         .proposals

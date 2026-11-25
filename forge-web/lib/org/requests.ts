@@ -155,7 +155,7 @@ export function cardState(status: RequestStatus, collected: number, needed: numb
       return { kind: 'invalid', reason }
     case 'ready':
       return { kind: 'finish' }
-    default:
+    case 'collecting':
       return viewerSigned ? { kind: 'signed', missing: Math.max(needed - collected, 0) } : { kind: 'sign', collected, needed }
   }
 }

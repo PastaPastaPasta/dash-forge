@@ -31,6 +31,7 @@
         "ready",
         "done",
         "expired",
+        "declined",
         "invalid"
       ]
     },

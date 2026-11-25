@@ -166,7 +166,7 @@ describe('organization request flow', () => {
 
   it('a request declined by more than M-N members reads declined and frees its nonce', async () => {
     const r1 = connect(await verifyInvite(sdk, V.room, 'testnet'), 'testnet', people[0]!.keys.authPub)
-    const group = await createRequest(sdk, r1, people[0]!, { title: 'w', specs: [{ action: 'delete', contractId: forge.core, documentType: 'writer', documentId: ALICE }] }, opts)
+    const group = await createRequest(sdk, r1, people[0]!, { title: 'w', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, base58Encode(new Uint8Array(32).fill(7)), { role: 1 }) }] }, opts)
     const r2 = { ...r1, authPub: people[1]!.keys.authPub }
     const r3 = { ...r1, authPub: people[2]!.keys.authPub }
     const v2 = await loadOrg(sdk, r2, opts)
@@ -181,8 +181,13 @@ describe('organization request flow', () => {
     expect(req.status).toBe('declined')
     expect(req.card).toEqual({ kind: 'declined' })
     await expect(signRequest(sdk, v1, req, people[0]!, opts)).rejects.toThrow(/no longer open/)
-    const next = await createRequest(sdk, r1, people[0]!, { title: 'v', specs: [{ action: 'delete', contractId: forge.core, documentType: 'writer', documentId: ALICE }] }, opts)
+    const next = await createRequest(sdk, r1, people[0]!, { title: 'v', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, base58Encode(new Uint8Array(32).fill(7)), { role: 1 }) }] }, opts)
     const fresh = (await loadOrg(sdk, r1, opts)).requests.find((r) => r.request.id === next)!
     expect(fresh.proposals[0]!.decoded!.nonce).toBe(held)
+    const v3again = await loadOrg(sdk, r3, opts)
+    await signRequest(sdk, v3again, v3again.requests.find((r) => r.request.id === next)!, people[2]!, opts)
+    const after = await loadOrg(sdk, r1, opts)
+    expect(after.requests.find((r) => r.request.id === next)!.status).toBe('done')
+    expect(after.requests.find((r) => r.request.id === group)!.status).toBe('declined')
   })
 })

@@ -333,7 +333,10 @@ struct Row {
 impl Row {
     async fn of(org: &Org, client: Option<&PlatformClient>, req: Request) -> Self {
         let mut status = org.status(&req, None);
-        if let (Some(client), true) = (client, status.is_open() || status == RequestStatus::Done) {
+        if let (Some(client), true) = (
+            client,
+            status.is_open() || matches!(status, RequestStatus::Done | RequestStatus::Declined),
+        ) {
             if let Ok(view) = org.chain_view(client, &req).await {
                 status = org.status(&req, Some(&view));
             }
@@ -652,15 +655,22 @@ async fn finish(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
     let req = org.find(&req.id)?;
     let (collected, threshold) = org.progress(&req);
     if !finished.done {
-        let err = match org.status(&req, None) {
+        let view = org.chain_view(&client, &req).await.ok();
+        let err = match org.status(&req, view.as_ref()) {
             RequestStatus::Collecting => UserError::new(
                 codes::USAGE,
                 format!("not ready: {collected} of {threshold} signatures collected"),
             )
-            .fix(format!(
-                "ask another member to run `dg org sign {}`, or to sign it on the web",
-                req.id
-            )),
+            .fix(
+                if request::approved_by(&org.state, &req, &org.record.auth_pub) {
+                    format!(
+                        "ask another member to run `dg org sign {}`, or to sign it on the web",
+                        req.id
+                    )
+                } else {
+                    format!("sign it first: `dg org sign {}`", req.id)
+                },
+            ),
             status => UserError::new(
                 codes::USAGE,
                 format!("this request can't be finished: it is {}", status.label()),

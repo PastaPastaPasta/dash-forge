@@ -250,11 +250,12 @@ impl Org {
             .collect()
     }
 
-    /// The request's status, `declined` when it is collecting but can no longer reach the
-    /// threshold (§9 "Request status").
+    /// The request's status (§9 "Request status"): `declined` before anything Platform says,
+    /// since a later request may reuse its freed nonces.
     pub fn status(&self, req: &Request, chain: Option<&ChainView>) -> RequestStatus {
         match request::status(&self.state, req, chain) {
-            RequestStatus::Collecting if self.unreachable(req) => RequestStatus::Declined,
+            RequestStatus::Invalid => RequestStatus::Invalid,
+            _ if self.unreachable(req) => RequestStatus::Declined,
             s => s,
         }
     }

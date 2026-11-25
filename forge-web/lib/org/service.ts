@@ -239,7 +239,8 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
   const views: RequestView[] = []
   for (const r of requests) {
     const found = requestStatus(r, (id) => facts.get(id), currentNonce)
-    const status = found === 'collecting' && unreachable(r, members, identity.ceremony.config.threshold) ? 'declined' : found
+    // Declined before anything Platform says: a later request may reuse its freed nonces.
+    const status = found !== 'invalid' && unreachable(r, members, identity.ceremony.config.threshold) ? 'declined' : found
     const proposals: ProposalView[] = []
     for (const p of r.proposals) {
       const d = decoded.get(p.id) ?? null
