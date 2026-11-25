@@ -229,6 +229,9 @@ impl Storer {
                                 source: keychain_source(&acct),
                             })
                         }
+                        // The sync key's entry, which its loader reads first, may still be
+                        // there: a file beside it would never be read.
+                        Err(e) if slot == Slot::Sync => return Err(e.into()),
                         Err(e) => {
                             eprintln!("note: the keychain refused the key ({e}); using a file");
                         }
@@ -270,9 +273,7 @@ impl Storer {
         }
         let pass = self.pass.as_ref().context("no passphrase")?;
         let sealed_text = sealed::seal(text.expose().as_bytes(), pass.expose())?;
-        if !sealed_holds(&path, pass, text) {
-            keep_replaced_file(&path, sealed_text.as_bytes(), slot)?;
-        }
+        keep_before_sealing(&path, pass, text, sealed_text.as_bytes(), slot)?;
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
         Ok(Stored::Sealed(path))
     }
@@ -515,6 +516,21 @@ fn discard(stored: &Stored, key: &Secret, pass: Option<&Secret>) {
             }
         }
     }
+}
+
+/// Before the sealed file `path` is replaced by `sealed_text` (`text` sealed with `pass`), keep
+/// a copy of it, unless it already opens with `pass` to `text`.
+fn keep_before_sealing(
+    path: &std::path::Path,
+    pass: &Secret,
+    text: &Secret,
+    sealed_text: &[u8],
+    slot: Slot,
+) -> Result<()> {
+    if sealed_holds(path, pass, text) {
+        return Ok(());
+    }
+    keep_replaced_file(path, sealed_text, slot)
 }
 
 /// Whether the sealed file `path` opens with `pass` to exactly `key`.
@@ -805,6 +821,37 @@ mod tests {
         assert_eq!(kept.len(), 1);
         assert_eq!(std::fs::read(&kept[0]).unwrap(), b"same");
         assert!(kept_this_run().contains(&kept[0].display().to_string()));
+    }
+
+    /// The sealed path: storing the same key again under the same passphrase keeps no copy;
+    /// a different key, or a file the passphrase doesn't open, is copied first.
+    #[test]
+    fn a_sealed_key_is_copied_unless_it_is_the_same_key() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("testnet-S.key");
+        let pass = Secret::new("test-passphrase");
+        let key = Secret::new("dfk1:testnet:S:5:cKEY");
+        let sealed_key = sealed::seal(key.expose().as_bytes(), pass.expose()).unwrap();
+        std::fs::write(&file, &sealed_key).unwrap();
+        let again = sealed::seal(key.expose().as_bytes(), pass.expose()).unwrap();
+        keep_before_sealing(&file, &pass, &key, again.as_bytes(), Slot::Main).unwrap();
+        assert!(
+            backups_of(&file).is_empty(),
+            "a repeated import keeps no copy"
+        );
+
+        let other = sealed::seal(b"another key", "another-passphrase").unwrap();
+        std::fs::write(&file, &other).unwrap();
+        keep_before_sealing(&file, &pass, &key, again.as_bytes(), Slot::Main).unwrap();
+        let kept = backups_of(&file);
+        assert_eq!(kept.len(), 1, "a file this passphrase can't open is copied");
+        assert_eq!(std::fs::read_to_string(&kept[0]).unwrap(), other);
+
+        std::fs::write(&file, &sealed_key).unwrap();
+        let new_key = Secret::new("dfk1:testnet:S:6:cNEW");
+        let sealed_new = sealed::seal(new_key.expose().as_bytes(), pass.expose()).unwrap();
+        keep_before_sealing(&file, &pass, &new_key, sealed_new.as_bytes(), Slot::Main).unwrap();
+        assert_eq!(backups_of(&file).len(), 2, "a different key is copied");
     }
 
     /// The stamp backups are named after is a UTC time that sorts.
