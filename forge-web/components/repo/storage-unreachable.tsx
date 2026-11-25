@@ -82,14 +82,20 @@ export function StorageUnreachableCard({
             </p>
           ) : null}
           {gatewaysOnly ? (
-            <p data-testid="gateway-advice" className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
-              None of the IPFS gateways this browser tried could serve this repo.
-              Add one that can reach the owner&apos;s node below (or in{' '}
-              <Link href="/settings/" className="underline underline-offset-2">
-                Settings → Your IPFS gateways
-              </Link>
-              ), then try again. The owner can fix this for everyone with <code className="font-mono text-[12px]">--public-gateway</code>.
-            </p>
+            <>
+              <p data-testid="gateway-advice" className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
+                None of the IPFS gateways this browser tried could serve this repo.
+                Add one that can reach the owner&apos;s node below (or in{' '}
+                <Link href="/settings/" className="underline underline-offset-2">
+                  Settings → Your IPFS gateways
+                </Link>
+                ), then try again.
+              </p>
+              <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200">
+                The owner can fix this for everyone: set a public gateway on their IPFS storage
+                (<code className="font-mono text-[12px]">dg storage add … --public-gateway &lt;url&gt;</code>) and push again.
+              </p>
+            </>
           ) : null}
           <p className="mt-2 text-dense text-anvil-600 dark:text-anvil-300">
             Branches, issues and pull requests are unaffected.

@@ -768,7 +768,7 @@ export function WorkflowStep({
               <CopyBlock text={yaml.text} label="Copy the workflow file" />
             </div>
             <Hint>
-              The first run builds the tools from this site&apos;s commit, which takes a few minutes. Later runs reuse the cache. To use prebuilt binaries instead, pin a release tag (<span className="font-mono">action@v&lt;version&gt;</span>) and remove the <span className="font-mono">install</span> line.
+              The first run builds the tools from this site&apos;s commit, which takes a few minutes. Later runs reuse the cache. On testnet you can use prebuilt binaries instead: pin a release tag (<span className="font-mono">action@v&lt;version&gt;</span>) and remove the <span className="font-mono">install</span> line.
             </Hint>
           </>
         ) : null}
@@ -1035,10 +1035,10 @@ export function CliStep({ github, settings, onSettings, ownerId }: {
         <>
           <section className="space-y-2" aria-label="Install and sign in">
             <Heading className="text-dense font-medium">a. Once: install and sign in</Heading>
-            <p className="text-dense">You need dg and git-remote-dash (<Link href={DOCS.quickStart} className="underline">install</Link>), and the GitHub CLI, signed in.</p>
+            <p className="text-dense">You need dg and git-remote-dash (<Link href={DOCS.install} className="underline">install</Link>), and the GitHub CLI, signed in.</p>
             {ownerId ? <Hint>Sign dg in as {shortIdentity(ownerId)} to fill this repo.</Hint> : null}
             <CopyRow text={commands.login} label="Copy the dg sign-in command" />
-            <Hint>New to Dash? <code>{commands.newIdentity}</code> makes an identity.</Hint>
+            <Hint>Scan its QR code with your Dash wallet, or add --mnemonic to type your 12 words. New to Dash? <code>{commands.newIdentity}</code> makes an identity.</Hint>
             <CopyRow text={commands.githubLogin} label="Copy the GitHub sign-in command" />
           </section>
           <section className="space-y-2" aria-label="Copy the repo">

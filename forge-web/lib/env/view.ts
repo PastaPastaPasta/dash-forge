@@ -42,6 +42,8 @@ export interface VersionView {
 /** One environment this reader can name. */
 export interface EnvCardView {
   readonly env: string
+  /** The repository (`owner/name`) the card's `dg` commands name. */
+  readonly repo: string
   readonly kind: 'current' | 'conflict' | 'unreadable'
   /** Who can read it (the newest readable version's audience). */
   readonly audience: Audience | null
@@ -76,7 +78,7 @@ export interface OldFormatView {
   readonly sentence: string
   /** Names held in old-format versions not marked changed yet (only when the latest version is not old). */
   readonly unmarked: readonly string[]
-  /** What to run: `dg env resave --env <name>` or `dg env mark-changed --env <name>`. */
+  /** What to run: `dg env resave <repo> --env <name>` or `dg env mark-changed <repo> --env <name>`. */
   readonly command: string
 }
 
@@ -103,6 +105,8 @@ export interface ViewContext {
   readonly viewer?: string | null
   /** The repo's people: a maintainer's precise list needs them. */
   readonly people?: PeopleView | null
+  /** The repository (`owner/name`) the page's `dg` commands name. */
+  readonly repo?: string
 }
 
 export interface EnvPageView {
@@ -218,17 +222,17 @@ export function staleLine(env: string, item: StaleItem, name: string): string {
     : `${name} isn't in its audience any more, but can read ${env} until it's saved again.`
 }
 
-/** The command that saves `env` again. */
-export function resaveCommand(env: string): string {
-  return `dg env resave --env ${env}`
+/** The command that saves `env` of `repo` again. */
+export function resaveCommand(repo: string, env: string): string {
+  return `dg env resave ${repo} --env ${env}`
 }
 
 /** The old-format banner of `env`, when it needs one (forge-core `old_format_line`). */
-export function oldFormatView(book: EnvBook, env: string): OldFormatView | null {
+export function oldFormatView(book: EnvBook, env: string, repo: string): OldFormatView | null {
   const old = oldFormatOf(book, env)
   if (old === null || !needsAttention(old)) return null
-  if (old.latest) return { latest: true, sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: resaveCommand(env) }
-  return { latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed --env ${env}` }
+  if (old.latest) return { latest: true, sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: resaveCommand(repo, env) }
+  return { latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed ${repo} --env ${env}` }
 }
 
 function cardAudienceLabel(s: Snapshot): string {
@@ -239,6 +243,7 @@ function cardAudienceLabel(s: Snapshot): string {
 export function environmentsView(book: EnvBook, ctx: ViewContext = {}): EnvPageView {
   const viewer = ctx.viewer ?? null
   const viewerMaintainer = viewer !== null && book.maintainers.has(viewer)
+  const repo = ctx.repo ?? '<owner>/<name>'
   const cards = book.resolution.environments.map((state): EnvCardView => {
     const env = state.env
     const ignoredList = ignoredNewerOf(book, env)
@@ -249,11 +254,12 @@ export function environmentsView(book: EnvBook, ctx: ViewContext = {}): EnvPageV
     const old = newest !== null && membersKey(newest)
     const base = {
       env,
+      repo,
       audience: newest?.audience ?? null,
       audienceLabel: newest === null ? null : cardAudienceLabel(newest),
       membersKey: old,
       readers: newest?.to ?? [],
-      oldFormat: oldFormatView(book, env),
+      oldFormat: oldFormatView(book, env, repo),
       stale: viewerMaintainer && ctx.people ? staleOf(book, env, ctx.people) : [],
       ignored,
     }

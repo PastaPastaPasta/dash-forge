@@ -481,7 +481,7 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
           orgOwned && org.record
             ? `Replaces the description and topics once ${org.record.threshold} of ${org.record.members.length} members of ${org.record.label} sign. You sign first; the organization pays the fee.`
             : home.repo.visibility === 'private'
-            ? "Replaces the description and topics. The repo's name and visibility can't change."
+            ? "Replaces the description and topics. The repo's name can't change."
             : "Replaces the description and topics. Each topic added or removed costs a little extra so Explore can count it. The repo's name and visibility can't change."
         }
         cost={pending && !orgOwned ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}

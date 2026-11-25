@@ -111,8 +111,8 @@ export function oldClientsLine(minClientVersion: string): string {
 export function oldFormatLine(env: string): string {
   return `Can't make everything public: environment ${env} has values saved in the old format, which would become public.`
 }
-export function oldFormatFix(env: string): { readonly resave: string; readonly markChanged: string } {
-  return { resave: `dg env resave --env ${env}`, markChanged: `dg env mark-changed --env ${env}` }
+export function oldFormatFix(repo: string, env: string): { readonly resave: string; readonly markChanged: string } {
+  return { resave: `dg env resave ${repo} --env ${env}`, markChanged: `dg env mark-changed ${repo} --env ${env}` }
 }
 
 /** Code only with no branch or tag ticked. */

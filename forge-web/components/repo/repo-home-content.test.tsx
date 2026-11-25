@@ -108,7 +108,7 @@ describe('the empty repo’s first-push steps', () => {
     expect(lines[0]).toMatch(/^git remote add origin dash:\/\//)
     expect(lines).toContainEqual(expect.stringMatching(/^dg auth login --network /))
     const signIn = host.querySelector('[data-testid="empty-repo-sign-in"]')?.textContent ?? ''
-    expect(signIn).toContain('Scan the QR code with DashPay Wallet')
+    expect(signIn).toContain('Scan the QR code with DashPay for Android')
     expect(signIn).toMatch(/dg auth login --mnemonic --network /)
     expect(lines).toContainEqual(expect.stringMatching(/> README\.md && git add README\.md && git commit -m 'First commit' && git push -u origin HEAD:main$/))
     expect(host.textContent).toContain('Push your code to get started.')

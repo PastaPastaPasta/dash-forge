@@ -74,7 +74,7 @@ function Environments({ home }: { home: RepoHome }): JSX.Element {
   const writer = useEnvWriter(home)
   const [change, setChange] = useState<EnvChangeMode | null>(null)
   // A locked tab opens nothing, so it is told to unlock rather than that nothing was shared.
-  const view = book === null ? null : environmentsView(book, { viewer: locked ? null : viewer, people })
+  const view = book === null ? null : environmentsView(book, { viewer: locked ? null : viewer, people, repo: `${home.repo.ownerId}/${home.repo.name}` })
   // Only a maintainer whose tab holds their encryption key changes environments here (the saver
   // checks the role again before sealing): anyone else is refused before anything is signed.
   const canWrite = maintainer && !locked && state.data?.encryption === 'open' && writer !== null
@@ -98,7 +98,9 @@ function Environments({ home }: { home: RepoHome }): JSX.Element {
         ) : (
           <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-edit-hint">
             {editHint(maintainer, state.data?.encryption)}
-            <code className="font-mono text-[12px]">dg env set NAME --env production</code>
+            <code className="font-mono text-[12px]">
+              dg env set {home.repo.ownerId}/{home.repo.name} NAME --env production
+            </code>
           </p>
         )}
       </div>
@@ -235,7 +237,7 @@ function EnvCard({
       <div className="space-y-3 px-4 py-3">
         {card.audience !== null ? <WhoCanRead card={card} /> : null}
         {card.oldFormat !== null ? <OldFormatNote env={card.env} old={card.oldFormat} actions={card.kind === 'current' ? actions : null} /> : null}
-        {card.stale.length > 0 ? <StaleList env={card.env} items={card.stale} actions={card.kind === 'current' ? actions : null} /> : null}
+        {card.stale.length > 0 ? <StaleList env={card.env} repo={card.repo} items={card.stale} actions={card.kind === 'current' ? actions : null} /> : null}
         {card.ignored !== null ? <IgnoredNote env={card.env} ignored={card.ignored} /> : null}
         {card.kind === 'current' ? (
           <>
@@ -243,7 +245,7 @@ function EnvCard({
             {card.updated !== null ? <Updated head={card.updated} savedFor={card.savedFor} /> : null}
           </>
         ) : card.kind === 'conflict' && card.conflict !== null ? (
-          <Conflict env={card.env} conflict={card.conflict} shown={shown} toggle={toggle} actions={actions} />
+          <Conflict env={card.env} repo={card.repo} conflict={card.conflict} shown={shown} toggle={toggle} actions={actions} />
         ) : card.unreadable !== null ? (
           <div role="note" className="space-y-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-unreadable">
             <p>
@@ -324,7 +326,7 @@ function OldFormatNote({ env, old, actions }: { env: string; old: NonNullable<En
 }
 
 /** A maintainer's precise list (DESIGN §10): who an environment's latest save misses or still includes. */
-function StaleList({ env, items, actions }: { env: string; items: readonly StaleItem[]; actions: EnvActions | null }): JSX.Element {
+function StaleList({ env, repo, items, actions }: { env: string; repo: string; items: readonly StaleItem[]; actions: EnvActions | null }): JSX.Element {
   return (
     <div role="note" className="space-y-1 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-stale">
       {items.map((item) => (
@@ -336,7 +338,7 @@ function StaleList({ env, items, actions }: { env: string; items: readonly Stale
         </Button>
       ) : (
         <p>
-          Save it again: <code className="break-words font-mono text-[12px]">{resaveCommand(env)}</code>
+          Save it again: <code className="break-words font-mono text-[12px]">{resaveCommand(repo, env)}</code>
         </p>
       )}
     </div>
@@ -417,12 +419,14 @@ function IgnoredNote({ env, ignored }: { env: string; ignored: NonNullable<EnvCa
 
 function Conflict({
   env,
+  repo,
   conflict,
   shown,
   toggle,
   actions,
 }: {
   env: string
+  repo: string
   conflict: NonNullable<EnvCardView['conflict']>
   shown: ReadonlySet<string>
   toggle: (k: string) => void
@@ -456,8 +460,8 @@ function Conflict({
         ))}
       </ol>
       <p className="text-dense text-anvil-700 dark:text-anvil-200">
-        Compare them with <code className="font-mono text-[12px]">dg env history --env {env}</code>, then a maintainer keeps one:{' '}
-        <code className="break-words font-mono text-[12px]">dg env edit --env {env} --keep &lt;id&gt;</code>
+        Compare them with <code className="font-mono text-[12px]">dg env history {repo} --env {env}</code>, then a maintainer keeps one:{' '}
+        <code className="break-words font-mono text-[12px]">dg env edit {repo} --env {env} --keep &lt;id&gt;</code>
       </p>
     </div>
   )

@@ -221,7 +221,7 @@ export default function LandingPage(): JSX.Element {
             <Step
               icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />}
               title="1. Get a Dash identity"
-              body="A 12-word recovery phrase is your account. Reading needs none."
+              body="Your identity is your account. A Dash wallet app or a 12-word recovery phrase holds it. Reading needs none."
               link={{ href: DOCS.identity, label: 'Identities and keys' }}
             />
             <Step

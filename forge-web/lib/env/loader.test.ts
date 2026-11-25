@@ -235,7 +235,7 @@ async function save(who: typeof alice, b: number, kid: number, others: (typeof a
 }
 
 describe('the old format', () => {
-  const OLD = (n: string) => `dg env ${n} --env dev`
+  const OLD = (n: string) => `dg env ${n} <owner>/<name> --env dev`
 
   it('flags an environment whose latest version is an old-format Members snapshot', async () => {
     const { dev1, all } = await fixture()
