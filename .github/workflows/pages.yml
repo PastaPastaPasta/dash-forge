@@ -73,11 +73,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Only master's head deploys. GitHub does not promise to start queued runs in merge order, and
-  # a re-run can take the slot of a newer merge's waiting run, so a push run whose commit is no
-  # longer master's head (read from the API, never the cached site) starts this workflow on
-  # master instead and builds nothing; that run deploys the newest commit. The lookup fails
-  # closed. A workflow_dispatch is the operator's choice of ref, so it may roll back.
+  # Only master's head deploys from master. GitHub does not promise to start queued runs in merge
+  # order, and a re-run (of a push or a dispatch) can take the slot of a newer merge's waiting
+  # run, so a run whose commit is no longer master's head (read from the API, never the cached
+  # site) starts this workflow on master instead and builds nothing; that run deploys the newest
+  # commit. The lookup fails closed. A rollback is a dispatch from another ref, which is not
+  # checked.
   current:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -89,21 +90,24 @@ jobs:
     steps:
       - id: head
         name: Hand a superseded commit to master
-        if: github.event_name != 'workflow_dispatch'
+        if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
+          CONFIRM: ${{ inputs.confirm_network }}
         run: |
           head=""
-          for _ in 1 2 3; do
-            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)" && break
-            sleep 10
+          for try in 1 2 3; do
+            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha 2>/dev/null)" || head=""
+            [[ $head =~ ^[0-9a-f]{40}$ ]] && break
+            head=""
+            [ "$try" = 3 ] || sleep 10
           done
           [ -n "$head" ] || { echo "::error::could not read master's head"; exit 1; }
           if [ "$head" = "$SHA" ]; then
             echo "superseded=false" >> "$GITHUB_OUTPUT"
           else
-            gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+            gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref master -f confirm_network="$CONFIRM"
             echo "superseded=true" >> "$GITHUB_OUTPUT"
             echo "::notice title=Superseded::master is at ${head}, past ${SHA}; started pages.yml on master to deploy it"
           fi
@@ -325,11 +329,12 @@ jobs:
       # "Re-run failed jobs" skips the `current` job that already passed, so check again; the
       # `recover` job below starts the run on master.
       - name: Refuse a re-run of a superseded commit
-        if: github.event_name != 'workflow_dispatch' && github.run_attempt != '1'
+        if: github.ref == 'refs/heads/master' && github.run_attempt != '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+          [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not read master's head"; exit 1; }
           if [ "$head" != "$SHA" ]; then
             echo "::error title=Old commit::this re-run is for ${SHA}, but master is at ${head}"
             exit 1
@@ -347,7 +352,7 @@ jobs:
         run: |
           url="${SITE_URL%/}/forge-manifest.json"
           want="$(jq -S -c . built/forge-manifest.json)"
-          for _ in $(seq 1 45); do
+          while [ "$SECONDS" -lt 900 ]; do
             got="$(curl -fsSL --max-time 20 -A 'Mozilla/5.0' "$url" 2>/dev/null | jq -S -c . 2>/dev/null)" || got=""
             if [ "$got" = "$want" ]; then echo "live: $url serves $SHA"; exit 0; fi
             sleep 20
@@ -405,7 +410,7 @@ jobs:
   # workflow on master so the newest commit deploys.
   recover:
     needs: [current, build, deploy]
-    if: always() && github.event_name != 'workflow_dispatch' && github.run_attempt != '1' && needs.current.outputs.superseded != 'true'
+    if: always() && github.ref == 'refs/heads/master' && github.run_attempt != '1' && needs.current.outputs.superseded != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -416,9 +421,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
+          CONFIRM: ${{ inputs.confirm_network }}
         run: |
           head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" -q .sha)"
+          [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not read master's head"; exit 1; }
           if [ "$head" != "$SHA" ]; then
-            gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+            gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref master -f confirm_network="$CONFIRM"
             echo "::notice title=Superseded::master is at ${head}, past ${SHA}; started pages.yml on master to deploy it"
           fi
