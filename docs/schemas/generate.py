@@ -716,7 +716,7 @@ ORG_MEMBER = O({'index': I, 'name': S, 'authPub': S}, ['index', 'name', 'authPub
 ORG_REQUEST = {
     'org': S, 'orgId': S, 'id': S, 'title': S,
     'forge': D('Made by Forge; false for a proposal made elsewhere (in multisig.dashhq.org).', B),
-    'status': E('collecting', 'ready', 'done', 'expired', 'invalid'),
+    'status': E('collecting', 'ready', 'done', 'expired', 'declined', 'invalid'),
     'collected': D('Valid signatures (the fewest any part of the request has).', I),
     'threshold': I, 'signedByYou': B, 'declinedByYou': B,
 }
@@ -747,8 +747,8 @@ cmd('org sign', 'A request signed (and put on Platform when this signature compl
 cmd('org decline', 'A request declined.', {
     'status': E('declined'), 'org': S, 'id': S, 'posted': I,
 }, ['status', 'id'])
-cmd('org finish', 'A fully signed request put on Platform, or why it is not ready.', {
-    'status': E('done', 'collecting'), 'org': S, 'id': S, 'broadcast': I, 'collected': I, 'threshold': I,
+cmd('org finish', 'A fully signed request put on Platform. A request that cannot finish yet exits with an error instead.', {
+    'status': E('done'), 'org': S, 'id': S, 'broadcast': I, 'collected': I, 'threshold': I,
 }, ['status', 'id'])
 
 # -- branches and publishing ------------------------------------------------------------------
