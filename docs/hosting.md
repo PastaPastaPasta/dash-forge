@@ -64,6 +64,8 @@ Leave HTML (`/`, `/repo/…`) at the origin's `max-age=600`, or shorter. A deplo
 
 The app sets its CSP in a `<meta>` tag. COOP and COEP are not required: the SDK runs without threads.
 
+Its `connect-src` allows `https:`, which covers the organizations relay at `https://multisig.dashhq.org` that testnet and devnet builds poll. Mainnet builds have no organization features and never contact the relay. A host that sends its own stricter `Content-Security-Policy` header must allow that origin on non-mainnet sites.
+
 A host may still send them. If it does, use these values on every response, since a stricter COEP stops the app loading cross-origin images:
 - `Cross-Origin-Opener-Policy: same-origin`
 - `Cross-Origin-Embedder-Policy: credentialless`

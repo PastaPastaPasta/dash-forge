@@ -45,6 +45,7 @@ mod make_public_keep;
 mod meta;
 mod milestone;
 mod narrow;
+mod org;
 mod pack_mirror;
 mod pin;
 mod pr;
@@ -237,6 +238,12 @@ pub enum Command {
     /// Repository members and their access (Read, Triage, Write, Maintain).
     #[command(subcommand)]
     Collab(CollabCommand),
+    /// Organizations: repository owners that several people sign for together (N of M).
+    ///
+    /// Create the organization in multisig.dashhq.org, then connect it here. Owner actions on
+    /// its repositories become requests its members sign with `dg org sign`.
+    #[command(subcommand)]
+    Org(org::OrgCommand),
     /// Make members-only posts public: issues, comments and reviews.
     /// Your own posts are edited to Public; a maintainer makes anyone's public, and their authors
     /// are told. Everyone can read them from then on. This can't be undone.
@@ -456,8 +463,14 @@ pub struct RepoCreateArgs {
     /// the current branch with `-u`.
     #[arg(long)]
     pub push: bool,
+    /// Create it for an organization you connected (`dg org list`): its identity id or name.
+    /// The repository exists once enough of its members sign the request this makes.
+    #[arg(long, value_name = "ORG")]
+    pub owner: Option<String>,
     #[command(flatten)]
     pub opts: CreateOptions,
+    #[command(flatten)]
+    pub phrase: org::PhraseArgs,
 }
 
 /// `dg init` arguments.
@@ -2221,6 +2234,8 @@ pub enum CollabCommand {
         /// adding them. Without it, an add the member has not accepted yet is refused.
         #[arg(long, value_name = "SECONDS")]
         wait: Option<u64>,
+        #[command(flatten)]
+        phrase: org::PhraseArgs,
     },
     /// Accept membership of a repository (write your consent), so its owner can add you.
     Accept {
@@ -2245,6 +2260,8 @@ pub enum CollabCommand {
         /// then go back to the version before it).
         #[arg(long)]
         no_resave: bool,
+        #[command(flatten)]
+        phrase: org::PhraseArgs,
     },
     /// List members.
     List {
@@ -2880,6 +2897,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         }
         Command::VerifyMirror { url, strict } => verify_mirror::run(ctx, url, *strict).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
+        Command::Org(cmd) => Box::pin(org::run(ctx, cmd)).await,
         Command::MakePublic {
             repo,
             posts,

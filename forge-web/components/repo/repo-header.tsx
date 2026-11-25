@@ -6,6 +6,7 @@
  * `(owner, name)` address.
  */
 
+import { OrgConnectNote, OwnerChip } from '@/components/org/owner-chip'
 import { useRef, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { Archive, Code2, GitFork, GitPullRequest, KanbanSquare, Lock, MessageSquare, MoreHorizontal, Settings, ShieldCheck, Tag, Users } from 'lucide-react'
@@ -161,6 +162,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           </TitleTag>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <MembersChip home={home} />
+          <OwnerChip ownerId={home.repo.ownerId} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <CodeSearchBox addr={addr} />
@@ -182,6 +184,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       {home.v2.forkOf ? <ForkedFrom home={home} /> : null}
 
       <LookalikeNote subjects={lookalikes} className="mt-2" />
+      <OrgConnectNote ownerId={home.repo.ownerId} />
 
       {home.description ? (
         <p className="mt-2 max-w-3xl text-dense text-anvil-600 dark:text-anvil-300">{home.description}</p>

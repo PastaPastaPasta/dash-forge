@@ -61,6 +61,9 @@ const PRIVATE_FACTS: &[&str] = &[
 ];
 
 pub async fn create(ctx: &Ctx, args: &RepoCreateArgs) -> Result<()> {
+    if let Some(owner) = &args.owner {
+        return Box::pin(crate::org::request_repo_create(ctx, owner, args)).await;
+    }
     if !args.push && args.opts.remote.is_some() {
         return Err(crate::errors::usage(
             "--remote only applies with --push (or `dg init`), which add the remote",

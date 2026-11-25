@@ -16,6 +16,9 @@
  *   as is; the description and topics are public by design (`private-repos.md` §7).
  */
 
+import { OrgManagesAccess, useOwnerKind } from '@/components/org/owner-chip'
+import { useOrgRequester } from '@/components/org/use-org-requester'
+import { listingRequest } from '@/lib/org/actions'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Archive, Globe, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
@@ -368,6 +371,9 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
   const held = useAsync(() => readTopicDocNames(sdk!, home.repo), [ready, repoKey(home.repo)], { enabled: owner && ready && sdk !== null })
   const { signer } = useAuth()
   const guard = useWriteGuard()
+  const org = useOrgRequester(home.repo.ownerId)
+  const orgOwned = org.record !== null
+  const orgKind = useOwnerKind(home.repo.ownerId)
   const [description, setDescription] = useState(home.v2.description)
   const [topicsText, setTopicsText] = useState(home.v2.topics.join(', '))
   const [pending, setPending] = useState<RepoDocEdit | null>(null)
@@ -380,6 +386,11 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
   const cost = previewRepoEdit(edit, held.data, home.repo.visibility, home.repo.forge)
   const run = async (): Promise<void> => {
+    if (orgOwned && pending !== null) {
+      const edit = pending
+      await org.submit((s) => listingRequest(s, home.repo, edit))
+      return
+    }
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     await editRepoDoc(sdk, signer, home.repo, pending)
     await retryWhileMissing(async () => {
@@ -422,8 +433,12 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
           <Button
             variant="primary"
             size="sm"
-            disabled={!changed || problem !== null || guard.disabledReason !== null}
+            disabled={!changed || problem !== null || (!orgOwned && guard.disabledReason !== null)}
             onClick={() => {
+              if (orgOwned) {
+                setPending(edit)
+                return
+              }
               const topicDocs = edit.topics !== undefined && home.repo.visibility !== 'private'
               if (guard.check(cost, topicDocs ? ['core', writeContractKind(home.repo.forge, DOC.topic)] : 'core')) setPending(edit)
             }}
@@ -433,20 +448,23 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
           {changed ? <CostPreview cost={cost} /> : null}
         </div>
       ) : maintainer ? (
-        <OwnerOnlyNote />
+        orgKind.isOrg ? <OrgManagesAccess what="details" /> : <OwnerOnlyNote />
       ) : null}
+      {org.dialog}
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
         title="Edit the repo details"
         description={
-          home.repo.visibility === 'private'
+          orgOwned && org.record
+            ? `Replaces the description and topics once ${org.record.threshold} of ${org.record.members.length} members of ${org.record.label} sign. You sign first; the organization pays the fee.`
+            : home.repo.visibility === 'private'
             ? "Replaces the description and topics. The repo's name and visibility can't change."
             : "Replaces the description and topics. Each topic added or removed costs a little extra so Explore can count it. The repo's name and visibility can't change."
         }
-        cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
-        confirmLabel="Sign & save"
-        toast={{ running: 'Saving the repo details…', done: 'Repository details saved' }}
+        cost={pending && !orgOwned ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
+        confirmLabel={orgOwned ? 'Sign & ask co-signers' : 'Sign & save'}
+        {...(orgOwned ? {} : { toast: { running: 'Saving the repo details…', done: 'Repository details saved' } })}
         onConfirm={run}
       />
     </div>

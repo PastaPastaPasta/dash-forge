@@ -14,6 +14,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [archite
 | [Run your own backend](self-host-backend.md) | turn a Linux server, PC or NAS with Docker into storage your repositories push to, with one command (`backend.sh`) |
 | [Pin or fork a repository](pin-and-fork.md) | keep a copy of someone else's repository on your own storage: fork it to push your own work, or pin it to help host it (`dg repo pin`) |
 | [Collaborating](collaborating.md) | add members, work with issues, pull requests, reviews, merges, releases and webhooks |
+| [Organizations](organizations.md) | own repositories with an N-of-M multisig identity from multisig.dashhq.org: connect it, make requests and sign them with `dg org` (testnet) |
 | [Boards](boards.md) | plan issues and pull requests on a board: columns, fields, iterations and views, from `dg board` |
 | [Bots and agents](bots.md) | add a bot, say what it may do, ask an agent to work on an issue or pull request, and give it push access to chosen branches (beta) |
 | [Who can read what](../security/audiences.md) | keep issues, comments and reviews of a public repository members-only, and know who can read them, what everyone still sees and what can still leak |

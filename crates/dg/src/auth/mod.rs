@@ -1333,14 +1333,16 @@ pub(crate) async fn key_report(
 async fn status(ctx: &Ctx) -> Result<()> {
     let config = Config::load()?;
     let network = ctx.network_label();
+    let org_waiting = crate::org::waiting_count(ctx).await;
     let Some(source) = ctx.identity_path.clone() else {
         ctx.emit(
-            json!({ "network": network, "authenticated": false, "keyOrigin": null, "renew": null }),
+            json!({ "network": network, "authenticated": false, "keyOrigin": null, "renew": null, "orgRequestsWaiting": org_waiting }),
             || {
                 println!("Network:  {network}");
                 println!(
                     "Identity: none — `dg auth login` signs in with your wallet, `dg auth new` creates one"
                 );
+                org_waiting_line(org_waiting);
             },
         );
         return Ok(());
@@ -1416,6 +1418,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "keyUnopened": unopened,
             "keyOrigin": key_origin.map(origin::KeyOrigin::as_str),
             "renew": (from_wallet || key_origin == Some(origin::KeyOrigin::Wallet)).then_some(wallet::RENEW),
+            "orgRequestsWaiting": org_waiting,
         }),
         || {
             println!("Network:  {network}");
@@ -1452,9 +1455,21 @@ async fn status(ctx: &Ctx) -> Result<()> {
                     println!("          warning: an older dg put this master key in the keychain, where any program running as you can read it; `dg auth login --full-key <file>` moves it to a sealed file");
                 }
             }
+            org_waiting_line(org_waiting);
         },
     );
     Ok(())
+}
+
+/// One line when requests in the connected organizations wait for this member's signature.
+fn org_waiting_line(waiting: Option<usize>) {
+    match waiting {
+        Some(1) => println!("Orgs:     1 request waits for your signature: `dg org requests`"),
+        Some(n) if n > 1 => {
+            println!("Orgs:     {n} requests wait for your signature: `dg org requests`");
+        }
+        _ => {}
+    }
 }
 
 /// Where the status's key came from (nothing for a pasted key): a wallet grant, an inline `dfk1`,

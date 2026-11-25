@@ -39,6 +39,8 @@ import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, t
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite, refreshStaleContract, retryOnStaleContract, staleContractCause } from './query'
 import { currentSpendAction } from './spend-scope'
 import { setWritePhase, trackWrite } from './write-progress'
+import { isNonceSpent, nonceTip } from './nonce'
+import { sameFields } from '../org/util'
 
 export type { CostPreview } from './cost'
 
@@ -747,24 +749,7 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, contractId: string
   }
 }
 
-const SEQUENCE_MASK = (1n << 40n) - 1n
-const MAX_MISSING_REVISIONS = 24n
-
-/**
- * Whether `nonce` can no longer be used, given the identity-contract nonce Platform holds
- * (`current`, raw: the low 40 bits are the sequence, the high 24 a bitmap of skipped ones).
- * Mirrors Drive's `validate_identity_nonce_update`: the tip itself, anything more than 24
- * behind it, and a skipped one that was since filled are spent.
- */
-export function isNonceSpent(current: bigint, nonce: bigint): boolean {
-  const tip = current & SEQUENCE_MASK
-  if (nonce > tip) return false
-  if (nonce === tip) return true
-  const behind = tip - nonce
-  if (behind > MAX_MISSING_REVISIONS) return true
-  // Bit 40 + (behind - 1) marks a skipped nonce that is still free.
-  return (current & (1n << (behind + 39n))) === 0n
-}
+export { isNonceSpent }
 
 /** Whether Platform's nonce says `nonce` is spent; `false` when the read fails. */
 async function nonceSpent(sdk: EvoSDK, identityId: string, contractId: string, nonce: bigint): Promise<boolean> {
@@ -1152,7 +1137,7 @@ const lastUsedNonce = new Map<string, bigint>()
 
 async function nextContractNonce(sdk: EvoSDK, identityId: string, contractId: string): Promise<bigint> {
   const raw = (await facades(sdk).identities.contractNonce(identityId, contractId)) ?? 0n
-  const platform = raw & SEQUENCE_MASK
+  const platform = nonceTip(raw)
   const used = lastUsedNonce.get(`${identityId}:${contractId}`) ?? 0n
   return (platform > used ? platform : used) + 1n
 }
@@ -2021,6 +2006,93 @@ async function replaceDocumentUnlocked(
     signer.free()
   }
   return { result: { documentId, revision: next, cost, actualCredits: null }, spend: spend('replace') }
+}
+
+/** What a transition signed elsewhere (an organization's threshold signature) writes. */
+export interface PresignedWrite {
+  readonly identityId: string
+  readonly contractId: string
+  readonly documentType: string
+  readonly documentId: string
+  readonly action: 'create' | 'replace' | 'delete'
+  /** The revision a replace writes. */
+  readonly revision?: bigint
+  /** The fields a replace writes: a competing edit at the same revision is not this one. */
+  readonly data?: Readonly<Record<string, unknown>>
+  readonly nonce: bigint
+  readonly confirmTimeoutMs?: number
+}
+
+/**
+ * Whether a replace is on Platform: the document is at its revision with its fields, or already
+ * past it and its nonce is spent. A competing edit at the same revision is not this replace.
+ */
+export async function replaceLanded(
+  revision: bigint,
+  stored: Readonly<Record<string, unknown>>,
+  w: { readonly revision?: bigint; readonly data?: Readonly<Record<string, unknown>> },
+  nonceSpent: () => Promise<boolean>,
+): Promise<boolean> {
+  const want = w.revision ?? 0n
+  if (revision === want) return w.data === undefined || sameFields(w.data, stored)
+  return revision > want && (await nonceSpent())
+}
+
+/**
+ * Broadcast a transition that is already signed, and confirm it with a proved read: a create or
+ * replace is there (a replace at `revision` or later), a delete is gone. Resolves once confirmed;
+ * a refusal throws {@link ConsensusRefusal}, an unseen write {@link UnconfirmedWriteError}. A
+ * rebroadcast of the same bytes is the same transition, so this is safe to run again.
+ */
+export function broadcastPresigned(sdk: EvoSDK, st: StateTransition, w: PresignedWrite): Promise<void> {
+  try {
+    assertWritesAllowed()
+  } catch (e) {
+    return Promise.reject(e)
+  }
+  followSdkVersion(sdk)
+  const confirmTimeoutMs = w.confirmTimeoutMs ?? 30_000
+  const there = async (): Promise<boolean> => {
+    if (w.action === 'delete') return definitelyAbsent(sdk, w.contractId, w.documentType, w.documentId)
+    const doc = (await getDocument(sdk, w.contractId, w.documentType, w.documentId).catch(() => null)) as { revision?: bigint; toObject?: () => Record<string, unknown> } | null
+    if (doc === null || doc === undefined) return false
+    if (w.action === 'create') return true
+    return replaceLanded(doc.revision ?? 0n, doc.toObject?.() ?? {}, w, () => nonceSpent(sdk, w.identityId, w.contractId, w.nonce))
+  }
+  const landed = (ms: number): Promise<boolean> => pollUntil(there, ms)
+  return serialized(w.identityId, () =>
+    trackWrite(() =>
+      wrote(
+        sdk,
+        (async () => {
+          if (await there()) return
+          try {
+            await facades(sdk).stateTransitions.broadcastStateTransition(st)
+          } catch (e) {
+            const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
+            if (refusal) throw refusal.atBroadcast()
+            setWritePhase('rechecking')
+            if (await landed(confirmTimeoutMs)) return
+            throw isNonceUsedError(e) || isAlreadyExistsError(e) ? new UnconfirmedWriteError(w.documentId) : e
+          }
+          let outcome = await awaitOutcome(sdk, st, w.contractId, false)
+          if (outcome === 'unknown') {
+            outcome = await settleUnanswered(
+              sdk,
+              st,
+              { identityId: w.identityId, contractId: w.contractId, nonce: w.nonce },
+              false,
+              landed,
+              async () => !(await there()),
+              confirmTimeoutMs,
+            ).then((o) => (o === 'lost' ? 'unknown' : o))
+          }
+          setWritePhase('rechecking')
+          if (!(await landed(confirmTimeoutMs))) throw new UnconfirmedWriteError(w.documentId)
+        })(),
+      ),
+    ),
+  )
 }
 
 /** Read an identity's credit balance (for the auth surface / cost affordability checks). */
