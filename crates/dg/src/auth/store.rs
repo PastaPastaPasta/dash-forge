@@ -157,6 +157,8 @@ pub struct Storer {
     /// Never use the keychain (a full identity with its master key).
     pub no_keychain: bool,
     pass: Option<Secret>,
+    /// Where this storer last put a pending key, the one copy [`promote`] removes.
+    staged: Option<Stored>,
 }
 
 impl Storer {
@@ -187,17 +189,31 @@ impl Storer {
         text: &Secret,
         slot: Slot,
     ) -> Result<Stored> {
+        let stored = self.write(network, identity_id, text, slot)?;
+        if slot == Slot::Pending {
+            self.staged = Some(stored.clone());
+        }
+        Ok(stored)
+    }
+
+    fn write(
+        &mut self,
+        network: &str,
+        identity_id: &str,
+        text: &Secret,
+        slot: Slot,
+    ) -> Result<Stored> {
         if !self.no_keychain && keychain::available() {
             let acct = account(network, identity_id, slot);
             // An entry that can't be read is left as it is (it can't be copied first), and the
             // key goes to a file instead.
-            match keep_keychain_entry(&acct, &backup_stamp()) {
+            match keep_keychain_entry(&acct, &backup_stamp(), text.expose()) {
                 Err(e) => eprintln!(
-                    "note: the keychain entry could not be read ({e:#}), so it is left as it is; using a file"
+                    "note: the keychain entry could not be copied first ({e:#}), so it is left as it is; using a file"
                 ),
                 Ok(kept) => {
                     if let Some(kept) = kept {
-                        kept_one(keychain_source(&kept));
+                        kept_one(keychain_source(&kept), slot);
                     }
                     // keychain::set reads the value back before it reports success.
                     match keychain::set(keychain::SERVICE, &acct, text.expose()) {
@@ -215,7 +231,7 @@ impl Storer {
         }
         let path = slot_file(network, identity_id, slot)?;
         if self.insecure_plaintext && !self.no_keychain {
-            keep_replaced_file(&path)?;
+            keep_replaced_file(&path, text.expose().as_bytes(), slot)?;
             keystore::write_private_file(&path, text.expose().as_bytes())?;
             return Ok(Stored::Plaintext(path));
         }
@@ -247,7 +263,7 @@ impl Storer {
         }
         let pass = self.pass.as_ref().context("no passphrase")?;
         let sealed_text = sealed::seal(text.expose().as_bytes(), pass.expose())?;
-        keep_replaced_file(&path)?;
+        keep_replaced_file(&path, sealed_text.as_bytes(), slot)?;
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
         Ok(Stored::Sealed(path))
     }
@@ -267,17 +283,27 @@ pub fn kept_this_run() -> Vec<String> {
     KEPT.lock().map(|k| k.clone()).unwrap_or_default()
 }
 
-fn kept_one(at: String) {
-    eprintln!("The key this computer held is kept at {at} (`--identity {at}` uses it)");
-    if let Ok(mut k) = KEPT.lock() {
-        k.push(at);
+/// Say where a replaced key was kept. An identity key's copy is a key source and goes to
+/// `previousKeyKeptAt`; a sync key's is not one.
+fn kept_one(at: String, slot: Slot) {
+    if slot == Slot::Sync {
+        eprintln!("The settings-sync key this computer held is kept at {at}");
+        return;
     }
+    eprintln!("The key this computer held is kept at {at} (`--identity {at}` uses it)");
+    KEPT.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(at);
 }
 
-/// Before a key file is replaced, keep a copy of it ([`keep_file`]).
-fn keep_replaced_file(path: &std::path::Path) -> Result<()> {
+/// Before a key file is replaced by `new`, keep a copy of it ([`keep_file`]), unless it
+/// already holds exactly `new`.
+fn keep_replaced_file(path: &std::path::Path, new: &[u8], slot: Slot) -> Result<()> {
+    if std::fs::read(path).is_ok_and(|old| zeroize::Zeroizing::new(old).as_slice() == new) {
+        return Ok(());
+    }
     if let Some(kept) = keep_file(path, &backup_stamp())? {
-        kept_one(kept.display().to_string());
+        kept_one(kept.display().to_string(), slot);
     }
     Ok(())
 }
@@ -304,7 +330,7 @@ fn backup_name(name: &str, stamp: &str, n: u32) -> String {
 fn keep_file(path: &std::path::Path, stamp: &str) -> Result<Option<PathBuf>> {
     use std::io::Write as _;
     let bytes = match std::fs::read(path) {
-        Ok(b) => b,
+        Ok(b) => zeroize::Zeroizing::new(b),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(e).with_context(|| {
@@ -351,12 +377,15 @@ fn keep_file(path: &std::path::Path, stamp: &str) -> Result<Option<PathBuf>> {
 
 /// Copy dg's keychain entry `acct` to a new account `<acct>.bak-<stamp>`, never over an existing
 /// entry. `None` when there is no entry. Fails when it can't be read or copied.
-fn keep_keychain_entry(acct: &str, stamp: &str) -> Result<Option<String>> {
+fn keep_keychain_entry(acct: &str, stamp: &str, new: &str) -> Result<Option<String>> {
     let Some(value) = keychain::get(keychain::SERVICE, acct)
         .context("reading the keychain entry to keep a copy before replacing it")?
     else {
         return Ok(None);
     };
+    if value.expose() == new {
+        return Ok(None);
+    }
     for n in 1..=BACKUP_NAMES {
         let backup = backup_name(acct, stamp, n);
         if keychain::get(keychain::SERVICE, &backup)?.is_some() {
@@ -435,7 +464,8 @@ pub fn store(
 }
 
 /// Move a key from the pending slot to the main slot (the chain has confirmed it), then drop
-/// the pending copy. Returns where the main copy is.
+/// the pending copy this storer staged (only that one: a pending key an earlier run left in
+/// the other place may be live on chain). Returns where the main copy is.
 pub fn promote(
     storer: &mut Storer,
     network: &str,
@@ -443,18 +473,23 @@ pub fn promote(
     text: &Secret,
 ) -> Result<Stored> {
     let main = storer.store(network, identity_id, text, Slot::Main)?;
-    discard_pending(network, identity_id);
+    if let Some(staged) = storer.staged.take() {
+        discard(&staged);
+    }
     Ok(main)
 }
 
-/// Delete the pending slot (keychain entry and file), best effort.
-pub fn discard_pending(network: &str, identity_id: &str) {
-    let _ = keychain::delete(
-        keychain::SERVICE,
-        &account(network, identity_id, Slot::Pending),
-    );
-    if let Ok(p) = slot_file(network, identity_id, Slot::Pending) {
-        let _ = std::fs::remove_file(p);
+/// Delete one stored copy, best effort.
+fn discard(stored: &Stored) {
+    match stored {
+        Stored::Keychain { source } => {
+            if let Some((svc, acct)) = keystore::parse_keychain_source(source) {
+                let _ = keychain::delete(svc, acct);
+            }
+        }
+        Stored::Sealed(p) | Stored::Plaintext(p) => {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }
 
@@ -649,6 +684,43 @@ mod tests {
         }
         assert!(keep_file(&file, "20261125T120000Z").is_err());
         assert!(backups_of(&file).is_empty());
+    }
+
+    /// Promotion deletes only the pending copy this run staged: a pending key an earlier run
+    /// left in the other place (possibly live on chain) stays.
+    #[test]
+    fn promotion_discards_only_the_staged_copy() {
+        let t = tempfile::tempdir().unwrap();
+        let staged = t.path().join("testnet-X.key.pending");
+        let earlier = t.path().join("testnet-Y.key.pending");
+        std::fs::write(&staged, b"this run").unwrap();
+        std::fs::write(&earlier, b"an earlier run").unwrap();
+        discard(&Stored::Sealed(staged.clone()));
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read(&earlier).unwrap(), b"an earlier run");
+    }
+
+    /// Writing the same bytes again keeps no copy; different bytes do. A sync key's copy is not
+    /// an identity key source, so it stays out of `previousKeyKeptAt`.
+    #[test]
+    fn only_a_different_key_is_copied() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("testnet-X.key");
+        std::fs::write(&file, b"same").unwrap();
+        keep_replaced_file(&file, b"same", Slot::Main).unwrap();
+        assert!(backups_of(&file).is_empty());
+        let sync = t.path().join("testnet-X.key.sync");
+        std::fs::write(&sync, b"fue1:old").unwrap();
+        keep_replaced_file(&sync, b"fue1:new", Slot::Sync).unwrap();
+        assert_eq!(backups_of(&sync).len(), 1);
+        assert!(!kept_this_run()
+            .iter()
+            .any(|k| k.contains("testnet-X.key.sync")));
+        keep_replaced_file(&file, b"different", Slot::Main).unwrap();
+        let kept = backups_of(&file);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read(&kept[0]).unwrap(), b"same");
+        assert!(kept_this_run().contains(&kept[0].display().to_string()));
     }
 
     /// The stamp backups are named after is a UTC time that sorts.
