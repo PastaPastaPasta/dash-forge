@@ -81,7 +81,7 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
   const starred = page.getByTestId('explore-most-starred')
   // A ranking that settles empty hides its section.
-  await expect(starred.locator('a[href*="/repo"]').first().or(starred.and(page.locator('[data-empty-section]')))).toBeAttached({ timeout: 60_000 })
+  await expect(starred.locator('a[href*="/repo"], [data-empty]').first().or(starred.and(page.locator('[data-empty-section]')))).toBeAttached({ timeout: 60_000 })
   // Every ranked card shows its exact star count.
   const cards = starred.locator('a[href*="/repo"]')
   if ((await cards.count()) > 0) await expect(starred.locator('[title="Stars (provable count)"]').first()).toBeVisible()

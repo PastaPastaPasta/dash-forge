@@ -181,12 +181,14 @@ test('x5. the header fits a 390 px phone', async ({ browser }) => {
 
 /**
  * Wait for an Explore list that hides itself when it settles empty (`data-empty-section`) to
- * settle: true when it shows rows (`rowTestId`), false when it settled empty and is hidden.
+ * settle: true when it shows rows (`rowTestId`); false when it settled empty, hidden or kept
+ * visible with its empty line because a partial-read note says something is missing.
  */
 async function shownOnceSettled(section: Locator, rowTestId: string): Promise<boolean> {
   const hidden = section.and(section.page().locator('[data-empty-section]'))
-  await expect(section.getByTestId(rowTestId).first().or(hidden)).toBeAttached({ timeout: 60_000 })
-  if ((await hidden.count()) > 0) return false
+  const emptyLine = section.locator('[data-empty]')
+  await expect(section.getByTestId(rowTestId).first().or(hidden).or(emptyLine)).toBeAttached({ timeout: 60_000 })
+  if ((await hidden.count()) > 0 || (await emptyLine.count()) > 0) return false
   await expect(section.getByTestId(rowTestId).first()).toBeVisible()
   return true
 }
