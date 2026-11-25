@@ -104,11 +104,11 @@ impl AuthCommand {
 #[derive(Debug, Clone, clap::Args)]
 pub struct KeyLimitArgs {
     /// The key's total budget in DASH (default 0.25; 0.5 with `dg auth export --new-key`, 0.05
-    /// with --for-browser).
+    /// with `dg auth keys add --for-browser`).
     #[arg(long, value_name = "DASH")]
     pub budget: Option<f64>,
     /// How long the key lives: `180d`, `12w`, `6m`, `1y` (default 180d; 365d with `dg auth
-    /// export --new-key`, 90d with --for-browser).
+    /// export --new-key`, 90d with `dg auth keys add --for-browser`).
     #[arg(long, value_name = "DURATION")]
     pub expires: Option<String>,
     /// Refuse to bind the key if the forge contract group holds any contract this dg does not

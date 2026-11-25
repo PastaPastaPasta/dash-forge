@@ -42,7 +42,7 @@ Options:
       --json                    Emit machine-readable JSON instead of human output
       --fiat <CODE|off>         Show fiat equivalents in this currency, or off (off in any setting wins)
   -y, --yes                     Skip confirmation prompts (for automation/CI)
-      --network <NETWORK>       Target network (default: this clone's, else the one `dg auth` saved, else DASH_FORGE_NETWORK, else the key's, else testnet) [possible values: testnet, mainnet, devnet]
+      --network <NETWORK>       Target network (default: this clone's, else the one `dg auth` saved, else DASH_FORGE_NETWORK, else the key's network, else testnet) [possible values: testnet, mainnet, devnet]
       --devnet-name <NAME>      Devnet name (e.g. `my-devnet`); implies `--network devnet`
       --dapi-addresses <ADDRS>  Testnet/devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults to the network's embedded deployment list
       --quorum-url <URL>        Check proofs against quorum keys from this service instead of the network's, for when that one is down or blocked. Also DASH_FORGE_QUORUM_URL or git config dash.quorumUrl

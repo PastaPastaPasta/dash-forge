@@ -604,7 +604,7 @@ Pushing a members-only branch with `-o public` is refused with this code too: th
 ```
 error: E806 can't check for members-only commits: your encryption key isn't available
        this clone has fetched members-only branches, so a public push can't be checked without it
-  fix: dg auth status shows whether your encryption key is stored and how to store it; then push again
+  fix: run `dg auth status`: its Private line says how to store your encryption key; then push again
 ```
 
 It has two triggers. A **push** to a public branch is refused when the repository has members-only branches, your key isn't available and this clone has no record of what it holds (`.git/dash/sealed-ledger`, which every clone made by a current `git-remote-dash` has). A **fetch** is refused when this clone has fetched members-only branches before and your key can't open them now: fetching only the public view would let `git fetch --prune` delete them. A push that would delete a members-only branch, or reuse its name for a public one, while your key isn't available is refused the same way: written without the key, it would publish the branch's name. A record from a newer version of Forge that this one can't read is refused the same way.

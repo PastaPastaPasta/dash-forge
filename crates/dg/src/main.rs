@@ -132,7 +132,7 @@ pub struct Cli {
     pub yes: bool,
 
     /// Target network (default: this clone's, else the one `dg auth` saved, else
-    /// DASH_FORGE_NETWORK, else the key's, else testnet).
+    /// DASH_FORGE_NETWORK, else the key's network, else testnet).
     #[arg(long, global = true, value_enum)]
     pub network: Option<NetworkArg>,
 

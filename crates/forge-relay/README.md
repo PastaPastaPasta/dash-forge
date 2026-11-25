@@ -104,7 +104,7 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 | `--listen <addr>` | off | Health endpoint: `200` with `{"status":"ok","durable":true}` (`durable` is false when the retry queue fell back to memory). Also serves runner wake-ups (`GET /v1/wake`) when `[wake]` is configured: see [Wake a runner](#wake-a-runner). Don't expose it to the public internet without a proxy that limits connections: anyone who can reach it can use up its connection slots and make health checks fail. |
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
 | `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`: a real directory owned by the relay user, created or tightened to mode 0700). Setting it explicitly makes an unusable dir fatal instead of a fallback to memory. One relay per state dir: a second relay on the same dir refuses to start. |
-| `--web-base-url <url>` | the network's web app: `https://forge.dashhq.org` on mainnet, `https://testnet-forge.dashhq.org` on testnet | The forge-web origin that the payloads' `html_url`, `compare` and profile links point at. Include the base path of a sub-path deploy (`https://<owner>.github.io/dash-forge`). File key: `web-base-url`. See [Payloads](#payloads). |
+| `--web-base-url <url>` | the network's web app: `https://testnet-forge.dashhq.org` on testnet, else `https://forge.dashhq.org` | The forge-web origin that the payloads' `html_url`, `compare` and profile links point at. Include the base path of a sub-path deploy (`https://<owner>.github.io/dash-forge`). File key: `web-base-url`. See [Payloads](#payloads). |
 | `--config <toml>` | none | The same settings as a file, plus `[wake]` ([Wake a runner](#wake-a-runner)), `[[sink]]` and `[watch]` ([Sinks and watch mode](#sinks-and-watch-mode)), static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing or a URL that must stay private ([Chat services](#chat-services)), and `retry-schedule-secs = [60, 300, ...]`. |
 
 ## Chat services
@@ -144,7 +144,7 @@ machine), so it works behind NAT. There is no central service: you run the relay
 runner subscribes to it.
 
 ```toml
-# relay.toml (forge-relay run --config relay.toml --listen [::]:8080)   # IPv6 and IPv4; 0.0.0.0:8080 where the host has no IPv6
+# relay.toml (forge-relay run --config relay.toml --listen [::]:8080)
 [wake]
 repos = ["alice/project"]            # owner/name or repo ids; polled even without a webhook
 secret-file = "/run/secrets/wake"    # or secret = "…": 32–96 printable ASCII characters
@@ -156,6 +156,9 @@ secret-file = "/run/secrets/wake"    # or secret = "…": 32–96 printable ASCI
 url = "http://relay:8080"            # the relay's --listen address (http or https, no path)
 secret_file = "/etc/forge-runner/relay.secret"   # the same secret
 ```
+
+`--listen [::]:8080` takes IPv6 and IPv4 on Linux. On a host without IPv6 use `0.0.0.0:8080`;
+on a BSD, where `[::]` is IPv6 only, put a proxy that listens on both in front.
 
 `openssl rand -hex 32` makes a good secret. `[wake]` needs `--listen`: the wake endpoint is
 `GET /v1/wake` on the same listener as the health check.
