@@ -103,6 +103,14 @@ fn set_unless(disabled: bool, service: &str, account: &str, secret: &str) -> Res
 /// `security` process is killed) instead of hanging the command. It blocks: call it from
 /// async code through `spawn_blocking`, or accept blocking one worker for that long.
 pub fn get(service: &str, account: &str) -> Result<Option<Secret>> {
+    #[cfg(feature = "test-hooks")]
+    if let Some(v) = test_entries()
+        .lock()
+        .expect("test keychain")
+        .get(&(service.to_string(), account.to_string()))
+    {
+        return Ok(Some(Secret::new(v.as_str())));
+    }
     platform::get(service, account)
         .map(|v| v.map(|z| Secret::new(z.as_str())))
         .map_err(|why| {
@@ -110,6 +118,25 @@ pub fn get(service: &str, account: &str) -> Result<Option<Secret>> {
                 "could not read keychain entry {service}/{account}: {why}"
             ))
         })
+}
+
+#[cfg(feature = "test-hooks")]
+type TestEntries = std::sync::Mutex<std::collections::BTreeMap<(String, String), String>>;
+
+#[cfg(feature = "test-hooks")]
+fn test_entries() -> &'static TestEntries {
+    static ENTRIES: std::sync::OnceLock<TestEntries> = std::sync::OnceLock::new();
+    ENTRIES.get_or_init(Default::default)
+}
+
+/// Test affordance, compiled only with `--features test-hooks`: an entry [`get`] returns
+/// without touching the OS keychain.
+#[cfg(feature = "test-hooks")]
+pub fn set_test_entry(service: &str, account: &str, secret: &str) {
+    test_entries().lock().expect("test keychain").insert(
+        (service.to_string(), account.to_string()),
+        secret.to_string(),
+    );
 }
 
 /// Delete the entry under `(service, account)`. `Ok(false)` when there was none.

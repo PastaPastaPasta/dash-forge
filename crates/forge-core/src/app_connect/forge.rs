@@ -1044,4 +1044,90 @@ mod tests {
         two.auth_keys.push(two.auth_keys[0].clone());
         assert_eq!(forge_grant(two, &forge()), Err(RejectReason::Framing));
     }
+
+    fn forge_user() -> ForgeIds {
+        ForgeIds {
+            user: Some(encode_base58(&seed("forge user"))),
+            ..forge()
+        }
+    }
+
+    #[test]
+    fn where_forge_user_exists_the_request_names_it_and_asks_for_its_key() {
+        let mut p = params(None);
+        let app = public_key_of(&seed("forge app ephemeral")).unwrap();
+        let r = forge_request(&forge_user(), app, &p).unwrap();
+        assert_eq!(r.app_id, seed("forge user"));
+        assert_eq!(
+            r.enc_bindings,
+            vec![request::EncBinding {
+                contract_id: seed("forge user"),
+                purpose: purpose::ENCRYPTION,
+            }]
+        );
+        let before = forge_request(&forge(), app, &p).unwrap();
+        assert_eq!(r.auth_bindings, before.auth_bindings);
+        request::validate(&r).unwrap();
+        assert_eq!(request::decode(&request::encode(&r).unwrap()).unwrap(), r);
+        p.sync = false;
+        assert_eq!(forge_request(&forge_user(), app, &p).unwrap(), before);
+    }
+
+    #[test]
+    fn a_verified_forge_user_key_rides_along_and_nothing_else_does() {
+        let e = SecretBytes::new(seed("alice enc"));
+        let enc_key = ChainKey {
+            id: 9,
+            key_type: super::super::key_type::ECDSA_SECP256K1,
+            purpose: purpose::ENCRYPTION,
+            security_level: level::MEDIUM,
+            data: public_key_of(e.expose()).unwrap().to_vec(),
+            disabled: false,
+            bounds: Some(KeyBounds::SingleContract {
+                contract_id: seed("forge user"),
+            }),
+            total_budget: None,
+            expires_at_ms: None,
+        };
+        let grant = |enc: ChainKey| Grant {
+            identity_id: seed("alice"),
+            auth_keys: vec![verify::GrantedKey {
+                role: verify::KeyRole::ContractGroup,
+                binding_index: 0,
+                private_key: SecretBytes::new(seed("alice key")),
+                key: wallet_key("alice"),
+                remaining_budget: Some(1),
+            }],
+            encryption_keys: vec![verify::GrantedKey {
+                role: verify::KeyRole::Encryption,
+                binding_index: 0,
+                private_key: e.clone(),
+                key: enc,
+                remaining_budget: None,
+            }],
+        };
+        let ok = forge_grant(grant(enc_key.clone()), &forge_user()).unwrap();
+        let held = ok.encryption.as_ref().unwrap();
+        assert_eq!(held.key_id, 9);
+        assert_eq!(held.secret.expose(), e.expose());
+        assert!(!format!("{ok:?}").contains(&hex::encode(seed("alice enc"))));
+        assert_eq!(
+            forge_grant(grant(enc_key.clone()), &forge()),
+            Err(RejectReason::Framing)
+        );
+        let mut other = enc_key.clone();
+        other.bounds = Some(KeyBounds::SingleContract {
+            contract_id: seed("other app"),
+        });
+        assert_eq!(
+            forge_grant(grant(other), &forge_user()),
+            Err(RejectReason::KeyUnmatched)
+        );
+        let mut wrong = enc_key;
+        wrong.data = public_key_of(&seed("someone else")).unwrap().to_vec();
+        assert_eq!(
+            forge_grant(grant(wrong), &forge_user()),
+            Err(RejectReason::KeyUnmatched)
+        );
+    }
 }

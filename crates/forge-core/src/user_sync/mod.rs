@@ -323,6 +323,58 @@ pub fn upload_plan(
     out
 }
 
+/// What a first sync did.
+#[derive(Debug, Default)]
+pub struct FirstSync {
+    /// Profiles uploaded, as `(local name, synced name)`.
+    pub uploaded: Vec<(String, String)>,
+    /// Profiles left on this computer only, with why.
+    pub skipped: Vec<(String, String)>,
+    /// Whether the check passed and `syncedAt` was recorded.
+    pub recorded: bool,
+}
+
+/// Bring this computer's `storage.toml` profiles (and global default policy) into the synced
+/// copy without changing either: upload what it lacks, read it back, decrypt it, and check every
+/// uploaded profile is there as sent before recording `syncedAt`. Runs again until it passes.
+pub async fn first_sync(
+    store: &dyn UserStore,
+    key: &SyncKey,
+    local: &StorageProfiles,
+    default_policy: Option<&StoragePolicy>,
+    device: &str,
+) -> Result<FirstSync> {
+    let sync = UserSync::new(key, store);
+    let current = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
+    let plan = upload_plan(local, default_policy, current.as_ref(), device, now_ms());
+    let back = match &plan.changes {
+        Some(changes) => sync.merge_into(SLOT_STORAGE, changes).await?,
+        None => current.unwrap_or_else(|| SlotDoc::new(SLOT_STORAGE)),
+    };
+    let checked = plan.uploaded.iter().all(|(local_name, synced_name)| {
+        let sent = local
+            .profiles
+            .get(local_name)
+            .and_then(|p| storage::profile_to_synced(p).ok());
+        let got = back.get(&storage::profile_key(synced_name));
+        match (sent, got) {
+            (Some(s), Some(g)) => doc::canonical_json(&s) == doc::canonical_json(g),
+            _ => false,
+        }
+    });
+    if !checked {
+        return Err(Error::Platform(
+            "the synced storage settings did not read back as uploaded; nothing local was changed"
+                .into(),
+        ));
+    }
+    Ok(FirstSync {
+        recorded: plan.skipped.is_empty(),
+        uploaded: plan.uploaded,
+        skipped: plan.skipped,
+    })
+}
+
 // ---------------------------------------------------------------------------------------
 // Maintainers: share + grants
 // ---------------------------------------------------------------------------------------

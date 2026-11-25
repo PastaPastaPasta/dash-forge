@@ -18,7 +18,7 @@ mod new;
 pub(crate) mod origin;
 mod rekey;
 pub mod store;
-mod wallet;
+pub(crate) mod wallet;
 
 use std::path::PathBuf;
 
@@ -157,6 +157,11 @@ pub struct LoginArgs {
     /// Replace this limited key (disable it in the same update), e.g. the one a lost laptop held.
     #[arg(long, value_name = "KEY_ID", conflicts_with = "full_key")]
     pub replace: Option<u32>,
+    /// With --wallet: don't ask the wallet for the key that syncs your storage settings across
+    /// devices (for a wallet that shows an error for the sign-in code). Settings then stay on
+    /// this computer.
+    #[arg(long)]
+    pub no_sync: bool,
     #[command(flatten)]
     pub limits: KeyLimitArgs,
     #[command(flatten)]
