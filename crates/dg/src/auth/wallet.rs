@@ -806,20 +806,16 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .map_err(|e| not_default(&e, &grant.identity_id, grant.key_id, &stored))?;
 
     let kept_ids: Vec<u32> = encryption.iter().map(|k| k.id).collect();
-    let sync_on = match (&sync_key, forge.user.as_deref()) {
+    let sync_label = match (&sync_key, forge.user.as_deref()) {
+        (_, None) => "unavailable",
+        (None, Some(_)) => "off",
         (Some(key), Some(contract)) => {
             if let Ok(bridge) = BridgeIdentity::from_source_text(text.expose()) {
-                let writer = crate::sync::Writer::from_parts(&client, bridge, identity.clone());
+                let writer = crate::sync::Writer::new(&client, &bridge, &identity);
                 crate::sync::ensure_first_sync(ctx, &writer, key, contract).await;
             }
-            true
+            "on"
         }
-        _ => false,
-    };
-    let sync_label = match (forge.user.is_some(), sync_on) {
-        (false, _) => "unavailable",
-        (true, true) => "on",
-        (true, false) => "off",
     };
     let balance = identity.balance();
     ctx.emit(

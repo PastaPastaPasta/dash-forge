@@ -335,7 +335,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
     let path = StorageProfiles::default_path()?;
     let local = StorageProfiles::load_from(&path)?;
     let sync = crate::sync::state(ctx);
-    let (effective, _) = crate::sync::merged(ctx, &local, None).await;
+    let effective = crate::sync::merged(ctx, &local).await;
     let profiles = &effective.profiles;
     let origin_word = |name: &str| match effective.origin.get(name) {
         Some(Origin::Synced) => "synced",
@@ -422,7 +422,7 @@ async fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     let path = StorageProfiles::default_path()?;
     let mut profiles = StorageProfiles::load_from(&path)?;
     let Some(removed) = profiles.profiles.remove(name) else {
-        let (effective, _) = crate::sync::merged(ctx, &profiles, None).await;
+        let effective = crate::sync::merged(ctx, &profiles).await;
         if effective.origin.get(name) == Some(&forge_core::user_sync::Origin::Synced) {
             crate::sync::after_profile_change(ctx, name, None).await;
             ctx.emit(
@@ -1257,7 +1257,7 @@ async fn use_profiles(
     platform_fallback: bool,
     global: bool,
 ) -> Result<()> {
-    let (effective, _) = crate::sync::merged(ctx, &StorageProfiles::load()?, None).await;
+    let effective = crate::sync::merged(ctx, &StorageProfiles::load()?).await;
     let profiles = effective.profiles;
     let replicas_s = replicas.map(|r| r.to_string());
     let fallback_s = platform_fallback.then_some("true");

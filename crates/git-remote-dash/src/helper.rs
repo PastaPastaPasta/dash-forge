@@ -1570,8 +1570,7 @@ impl Helper {
             && !options.dry_run
             && outcomes.iter().any(|o| matches!(o, PushOutcome::Ok(_)))
         {
-            let plan = self.share_plan.take();
-            self.reconcile_share(plan).await;
+            self.reconcile_share().await;
         }
         Ok(outcomes)
     }
@@ -1624,8 +1623,9 @@ impl Helper {
     /// As the repository's owner, after a push: lend the storage its policy names to the current
     /// maintainers who have a forge-user key, and revoke anyone else (`identity-synced-state.md`
     /// §5). Writes only what changed; a failure is a note, never a failed push.
-    async fn reconcile_share(&mut self, plan: Option<forge_core::user_sync::ShareContent>) {
+    async fn reconcile_share(&mut self) {
         use forge_core::user_sync::{key, platform::PlatformUserStore, repo, UserSync};
+        let plan = self.share_plan.take();
         let Some(contract) = self.target.v2.as_ref().and_then(|f| f.user.clone()) else {
             return;
         };
@@ -1690,8 +1690,8 @@ impl Helper {
         // settings still apply.
         let push_policy = if specs.iter().any(|s| !s.src.is_empty()) {
             let local = PushPolicy::load_for_push(self.remote.as_deref(), options);
-            let sync_may_help = self.target.v2.as_ref().is_some_and(|f| f.user.is_some())
-                && local.as_ref().map_or(true, |p| !p.storage_configured);
+            let has_user = self.target.v2.as_ref().is_some_and(|f| f.user.is_some());
+            let sync_may_help = has_user && local.as_ref().map_or(true, |p| !p.storage_configured);
             let synced = if sync_may_help {
                 self.synced_storage().await
             } else {
@@ -1704,7 +1704,7 @@ impl Helper {
                 None => local,
             }
             .context("reading the storage policy (dash.storage / dash.replicas)")?;
-            if self.target.v2.as_ref().is_some_and(|f| f.user.is_some()) {
+            if has_user {
                 self.reconcile_after_push = true;
                 self.share_plan =
                     forge_core::user_sync::ShareContent::for_resolved(&policy.resolved);

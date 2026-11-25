@@ -1,12 +1,16 @@
 //! Reading and writing forge-user documents: the [`UserStore`] port, with the Platform
-//! implementation in [`super::platform`] and an in-memory one ([`MemoryStore`]) for tests.
+//! implementation in [`super::platform`] and an in-memory one (`MemoryStore`) for tests.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::error::{Error, Result};
+#[cfg(test)]
+use crate::error::Error;
+use crate::error::Result;
 
 /// A `state` document.
 #[derive(Clone, PartialEq, Eq)]
@@ -126,13 +130,15 @@ pub trait UserStore: Send + Sync {
     ) -> Result<Option<EncKeyInfo>>;
 }
 
-/// An in-memory [`UserStore`] playing one signer at a time ([`MemoryStore::as_signer`]), which
+/// An in-memory [`UserStore`] playing one signer at a time (`MemoryStore::as_signer`), which
 /// enforces Platform's owner rule and the unique indexes.
+#[cfg(test)]
 #[derive(Default)]
 pub struct MemoryStore {
     inner: Mutex<Memory>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Memory {
     signer: String,
@@ -144,6 +150,7 @@ struct Memory {
     writes: u64,
 }
 
+#[cfg(test)]
 impl MemoryStore {
     /// An empty store.
     pub fn new() -> Self {
@@ -183,10 +190,12 @@ impl MemoryStore {
     }
 }
 
+#[cfg(test)]
 fn not_owner() -> Error {
     Error::Platform("only the owner of a document can change it".into())
 }
 
+#[cfg(test)]
 impl Memory {
     fn id(&mut self) -> String {
         self.next += 1;
@@ -224,6 +233,7 @@ impl Memory {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl UserStore for MemoryStore {
     async fn state(&self, owner: &str, slot: &str) -> Result<Option<StateDoc>> {

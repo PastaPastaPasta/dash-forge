@@ -64,6 +64,7 @@ impl SyncKey {
     }
 
     /// The compressed public key.
+    #[cfg(test)]
     pub fn public_key(&self) -> [u8; 33] {
         super::crypto::public_key(&self.secret).expect("checked in new")
     }

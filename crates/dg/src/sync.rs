@@ -155,58 +155,24 @@ pub fn global_default_policy() -> Option<StoragePolicy> {
     .filter(|p| !p.is_platform_only())
 }
 
-/// The decrypted storage slot (`None` when the identity has none).
-pub async fn read_storage(store: &dyn UserStore, key: &SyncKey) -> Result<Option<SlotDoc>> {
-    Ok(UserSync::new(key, store)
-        .read_slot(SLOT_STORAGE)
-        .await
-        .context("reading your synced storage settings")?
-        .map(|r| r.doc))
-}
-
-/// A connected writer for the context's identity.
+/// A writer for an identity a command already holds.
 pub struct Writer<'c> {
-    client: Client<'c>,
-    identity: LoadedIdentity,
-    bridge: forge_core::keystore::BridgeIdentity,
-}
-
-enum Client<'c> {
-    Owned(Box<PlatformClient>),
-    Borrowed(&'c PlatformClient),
-}
-
-impl Writer<'static> {
-    /// Connect as the context's identity.
-    pub async fn connect(ctx: &Ctx) -> Result<Self> {
-        let (client, bridge, identity) = ctx.connect_with_identity().await?;
-        Ok(Self {
-            client: Client::Owned(Box::new(client)),
-            identity,
-            bridge,
-        })
-    }
+    client: &'c PlatformClient,
+    bridge: &'c forge_core::keystore::BridgeIdentity,
+    identity: &'c LoadedIdentity,
 }
 
 impl<'c> Writer<'c> {
     /// Over a client and identity a command already holds.
-    pub fn from_parts(
+    pub fn new(
         client: &'c PlatformClient,
-        bridge: forge_core::keystore::BridgeIdentity,
-        identity: LoadedIdentity,
+        bridge: &'c forge_core::keystore::BridgeIdentity,
+        identity: &'c LoadedIdentity,
     ) -> Self {
         Self {
-            client: Client::Borrowed(client),
-            identity,
+            client,
             bridge,
-        }
-    }
-
-    /// The client.
-    pub fn client(&self) -> &PlatformClient {
-        match &self.client {
-            Client::Owned(c) => c,
-            Client::Borrowed(c) => c,
+            identity,
         }
     }
 
@@ -216,9 +182,8 @@ impl<'c> Writer<'c> {
         contract: &str,
         f: impl AsyncFnOnce(&dyn UserStore) -> Result<T>,
     ) -> Result<T> {
-        let client = self.client();
-        let engine = WriteEngine::new(client, &self.identity, self.bridge.doc_op_key()?)?;
-        let store = PlatformUserStore::open(client, contract, Some(&engine)).await?;
+        let engine = WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?;
+        let store = PlatformUserStore::open(self.client, contract, Some(&engine)).await?;
         f(&store).await
     }
 }
@@ -285,10 +250,9 @@ async fn record_change(ctx: &Ctx, entry: String, value: Option<serde_json::Value
         return;
     };
     let run = async {
-        let writer = Writer::connect(ctx).await?;
-        if synced_at(&key).is_none() {
-            ensure_first_sync(ctx, &writer, &key, &contract).await;
-        }
+        let (client, bridge, identity) = ctx.connect_with_identity().await?;
+        let writer = Writer::new(&client, &bridge, &identity);
+        ensure_first_sync(ctx, &writer, &key, &contract).await;
         writer
             .with_store(&contract, async |store| {
                 let sync = UserSync::new(&key, store);
@@ -343,32 +307,22 @@ pub async fn after_default_policy(ctx: &Ctx, policy: &StoragePolicy) {
     .await;
 }
 
-/// `local` plus the synced profiles (when sync is on and readable), and the synced storage
-/// slot. Never fails on account of sync: a read that fails leaves `local` as it is.
-pub async fn merged(
-    ctx: &Ctx,
-    local: &StorageProfiles,
-    client: Option<&PlatformClient>,
-) -> (Effective, Option<SlotDoc>) {
+/// `local` plus the synced profiles (when sync is on and readable). Never fails on account of
+/// sync: a read that fails leaves `local` as it is.
+pub async fn merged(ctx: &Ctx, local: &StorageProfiles) -> Effective {
     let SyncState::On { key, contract } = state(ctx) else {
-        return (user_sync::effective(local, None), None);
+        return user_sync::effective(local, None);
     };
-    let owned;
-    let client = match client {
-        Some(c) => c,
-        None => match ctx.connect().await {
-            Ok(c) => {
-                owned = c;
-                &owned
-            }
-            Err(_) => return (user_sync::effective(local, None), None),
-        },
-    };
-    let doc = match PlatformUserStore::open(client, &contract, None).await {
-        Ok(store) => read_storage(&store, &key).await.ok().flatten(),
-        Err(_) => None,
-    };
-    (user_sync::effective(local, doc.as_ref()), doc)
+    let doc = async {
+        let client = ctx.connect().await?;
+        let store = PlatformUserStore::open(&client, &contract, None).await?;
+        let read = UserSync::new(&key, &store).read_slot(SLOT_STORAGE).await?;
+        anyhow::Ok(read.map(|r| r.doc))
+    }
+    .await
+    .ok()
+    .flatten();
+    user_sync::effective(local, doc.as_ref())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -400,26 +354,27 @@ pub async fn after_membership_change(
     }
     let run = async {
         let maintainers = user_sync::repo::current_maintainers(&s.client, &s.repo).await?;
-        let engine = WriteEngine::new(&s.client, &s.identity, s.bridge.doc_op_key()?)?;
-        let store = PlatformUserStore::open(&s.client, &contract, Some(&engine)).await?;
-        let sync = UserSync::new(&key, &store);
-        let wanted = if store.share(&me, s.repo.id()).await?.is_some() {
-            None
-        } else {
-            let own = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
-            let local = StorageProfiles::load().unwrap_or_default();
-            own.as_ref().and_then(|doc| {
-                let policy = user_sync::synced_policy(doc, Some(s.repo.id()))?;
-                user_sync::ShareContent::for_policy(
-                    &policy,
-                    &user_sync::effective(&local, Some(doc)).profiles,
-                )
+        Writer::new(&s.client, &s.bridge, &s.identity)
+            .with_store(&contract, async |store| {
+                let sync = UserSync::new(&key, store);
+                let wanted = if store.share(&me, s.repo.id()).await?.is_some() {
+                    None
+                } else {
+                    let own = sync.read_slot(SLOT_STORAGE).await?.map(|r| r.doc);
+                    let local = StorageProfiles::load().unwrap_or_default();
+                    own.as_ref().and_then(|doc| {
+                        let policy = user_sync::synced_policy(doc, Some(s.repo.id()))?;
+                        user_sync::ShareContent::for_policy(
+                            &policy,
+                            &user_sync::effective(&local, Some(doc)).profiles,
+                        )
+                    })
+                };
+                Ok(sync
+                    .reconcile_repo(s.repo.id(), wanted.as_ref(), &maintainers)
+                    .await?)
             })
-        };
-        anyhow::Ok(
-            sync.reconcile_repo(s.repo.id(), wanted.as_ref(), &maintainers)
-                .await?,
-        )
+            .await
     };
     match run.await {
         Ok(done) => Some(done),

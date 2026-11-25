@@ -113,11 +113,11 @@ impl PushPolicy {
     /// profiles are added to storage.toml's (which wins on a name), and its policy is used when
     /// git config sets no `dash.storage`.
     pub fn load_with(remote: Option<&str>, synced: Option<&PushStorage>) -> Result<Self> {
-        let storage =
-            config_value(remote, "dashStorage", "storage").filter(|v| !v.trim().is_empty());
+        let storage = config_value(remote, "dashStorage", "storage");
+        let storage_set = storage.as_ref().is_some_and(|v| !v.trim().is_empty());
         let synced_policy = synced
             .and_then(|s| s.policy.clone())
-            .filter(|_| storage.is_none());
+            .filter(|_| !storage_set);
         let raw = match &synced_policy {
             Some(p) => p.clone(),
             None => StoragePolicy::from_git_values(
@@ -135,7 +135,7 @@ impl PushPolicy {
         };
         let resolved = raw.resolve(&profiles)?;
         let cost_warn_threshold = cost_warn_threshold(remote)?;
-        let storage_configured = storage.is_some() || synced_policy.is_some();
+        let storage_configured = storage_set || synced_policy.is_some();
         let confirm = confirm_mode(remote)?;
         let allow_private_uri = config_value(remote, "dashAllowPrivateUri", "allowPrivateUri")
             .map(|v| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))

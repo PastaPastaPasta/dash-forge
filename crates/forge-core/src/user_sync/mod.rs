@@ -27,7 +27,9 @@ use crate::storage::profiles::{valid_profile_name, Profile, StorageProfiles};
 
 pub use doc::{Entry, SlotDoc};
 pub use key::{LocalKey, SyncKey};
-pub use store::{EncKeyInfo, GrantDoc, MemoryStore, ShareDoc, StateDoc, UserStore};
+#[cfg(test)]
+pub use store::MemoryStore;
+pub use store::{EncKeyInfo, GrantDoc, ShareDoc, StateDoc, UserStore};
 
 /// The `state` document type.
 pub const DOC_STATE: &str = "state";
@@ -37,8 +39,6 @@ pub const DOC_SHARE: &str = "share";
 pub const DOC_GRANT: &str = "grant";
 /// The storage slot.
 pub const SLOT_STORAGE: &str = "storage";
-/// The preferences slot.
-pub const SLOT_PREFS: &str = "prefs";
 /// The share plaintext's format.
 pub const SHARE_FORMAT: &str = "forge-user/share";
 
@@ -68,11 +68,6 @@ impl<'a> UserSync<'a> {
     /// `key`'s sync through `store`.
     pub fn new(key: &'a SyncKey, store: &'a dyn UserStore) -> Self {
         Self { key, store }
-    }
-
-    /// The key.
-    pub fn key(&self) -> &SyncKey {
-        self.key
     }
 
     /// The slot, decrypted; `None` when the identity has none.
@@ -139,15 +134,12 @@ impl<'a> UserSync<'a> {
             if merged.to_json()? == before && current.is_some() {
                 return Ok(merged);
             }
-            match self
+            if let Err(e) = self
                 .write_slot(slot, &merged, current.as_ref().map(|r| &r.stored))
                 .await
             {
-                Ok(()) => {}
-                Err(e) => {
-                    last = Some(e);
-                    continue;
-                }
+                last = Some(e);
+                continue;
             }
             let back = self
                 .read_slot(slot)
@@ -597,6 +589,50 @@ impl UserSync<'_> {
             .await
     }
 
+    /// [`Self::reconcile_repo`]'s writes: the share holding `content` at `out.epoch`, then a
+    /// grant to every maintainer with a forge-user key that lacks a current one.
+    #[allow(clippy::too_many_arguments)]
+    async fn share_and_grant(
+        &self,
+        repo_id: &str,
+        existing: Option<&ShareDoc>,
+        current: Option<&ShareContent>,
+        content: &ShareContent,
+        grants: &[GrantDoc],
+        maintainers: &BTreeSet<String>,
+        out: &mut Reconciled,
+    ) -> Result<()> {
+        let me = &self.key.identity_id;
+        out.shared = true;
+        let rsk = self.rsk(&crate::platform::decode_identifier(repo_id)?, out.epoch);
+        let share_current = existing.is_some_and(|s| {
+            s.epoch == out.epoch && s.key_id == self.key.key_id && current == Some(content)
+        });
+        if !share_current {
+            self.put_share(existing, repo_id, out.epoch, &rsk, content)
+                .await?;
+            out.share_written = true;
+        }
+        for member in maintainers.iter().filter(|m| *m != me) {
+            let Some(their) = self.store.encryption_key(member, None).await? else {
+                out.waiting.push(member.clone());
+                continue;
+            };
+            let old = grants.iter().find(|g| g.member_id == *member);
+            if old.is_some_and(|g| {
+                g.epoch == out.epoch
+                    && g.recipient_key_id == their.id
+                    && g.sender_key_id == self.key.key_id
+            }) {
+                continue;
+            }
+            self.put_grant(old, repo_id, member, &their, out.epoch, &rsk)
+                .await?;
+            out.granted.push(member.clone());
+        }
+        Ok(())
+    }
+
     /// As the owner of `repo_id`: make its share hold `wanted` (keeping what is there when
     /// `None`), grant it to every one of `maintainers` that has a forge-user key, and revoke
     /// the grants of anyone else, moving to a new epoch when someone is revoked. Writes nothing
@@ -624,44 +660,21 @@ impl UserSync<'_> {
         if !revoked.is_empty() && existing.is_some() {
             epoch = epoch.checked_add(1).ok_or(Error::Integrity)?;
         }
-        let content = wanted.cloned().or(current.clone());
         let mut out = Reconciled {
             epoch,
             ..Reconciled::default()
         };
-        let Some(content) = content else {
-            for g in &revoked {
-                self.store.delete_grant(g).await?;
-                out.revoked.push(g.member_id.clone());
-            }
-            return Ok(out);
-        };
-        out.shared = true;
-        let rsk = self.rsk(&repo, epoch);
-        let share_current = existing.as_ref().is_some_and(|s| {
-            s.epoch == epoch && s.key_id == self.key.key_id && current.as_ref() == Some(&content)
-        });
-        if !share_current {
-            self.put_share(existing.as_ref(), repo_id, epoch, &rsk, &content)
-                .await?;
-            out.share_written = true;
-        }
-        for member in maintainers.iter().filter(|m| *m != me) {
-            let Some(their) = self.store.encryption_key(member, None).await? else {
-                out.waiting.push(member.clone());
-                continue;
-            };
-            let old = grants.iter().find(|g| g.member_id == *member);
-            if old.is_some_and(|g| {
-                g.epoch == epoch
-                    && g.recipient_key_id == their.id
-                    && g.sender_key_id == self.key.key_id
-            }) {
-                continue;
-            }
-            self.put_grant(old, repo_id, member, &their, epoch, &rsk)
-                .await?;
-            out.granted.push(member.clone());
+        if let Some(content) = wanted.or(current.as_ref()) {
+            self.share_and_grant(
+                repo_id,
+                existing.as_ref(),
+                current.as_ref(),
+                content,
+                &grants,
+                maintainers,
+                &mut out,
+            )
+            .await?;
         }
         for g in &revoked {
             self.store.delete_grant(g).await?;

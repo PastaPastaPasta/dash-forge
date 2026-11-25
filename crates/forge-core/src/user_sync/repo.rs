@@ -64,7 +64,7 @@ pub async fn push_storage(
         .and_then(|d| d.get(storage::DEFAULT_KEY))
         .and_then(storage::policy_from_synced);
     let mut shared_policy = None;
-    if is_maintainer && owner_id != sync.key().identity_id {
+    if is_maintainer {
         if let Some(share) = sync.granted_share(repo_id, owner_id).await? {
             let (profiles, policy) = share.as_profiles(owner_id);
             for (name, p) in profiles {

@@ -406,6 +406,21 @@ mod tests {
     }
 
     #[test]
+    fn the_sync_slot_is_where_forge_core_reads_the_sync_key() {
+        use forge_core::user_sync::key;
+        for network in ["testnet", "devnet-sakura"] {
+            assert_eq!(
+                account(network, "ID", Slot::Sync),
+                key::keychain_account(network, "ID")
+            );
+            assert_eq!(
+                slot_file(network, "ID", Slot::Sync).ok(),
+                key::key_file(network, "ID")
+            );
+        }
+    }
+
+    #[test]
     fn stored_sources_and_descriptions() {
         let k = Stored::Keychain {
             source: keystore::keychain_source("testnet", "ID"),

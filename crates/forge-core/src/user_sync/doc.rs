@@ -159,11 +159,6 @@ impl SlotDoc {
         }
         self.version = self.version.max(other.version);
     }
-
-    /// The highest `at` in the document (0 when empty).
-    pub fn latest(&self) -> u64 {
-        self.entries.values().map(|e| e.at).max().unwrap_or(0)
-    }
 }
 
 /// `value` as canonical JSON: object keys sorted, no whitespace (what gen.py writes).
