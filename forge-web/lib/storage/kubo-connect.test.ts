@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { whyBlocked } from './probe'
 import { isSafari, safariNeedsNotice, kuboUpCommand, pairWithNode, parseKuboCode, parseKuboFragment, validatePairResponse } from './kubo-connect'
 
 vi.mock('./probe', () => ({ whyBlocked: vi.fn(async () => 'down') }))
 const response = { name: 'kubo', api: 'http://127.0.0.1:5001', gateway: 'http://127.0.0.1:8080', auth: `Bearer ${'x'.repeat(43)}`, peerId: '12D3peer', version: '0.43.1' }
 afterEach(() => vi.unstubAllGlobals())
+function stubPermission(states: PermissionState[]): void {
+  const query = vi.fn(async () => ({ state: states.shift() ?? 'granted' }))
+  vi.stubGlobal('navigator', { userAgent: 'Chrome/158', permissions: { query } })
+}
 
 describe('loopback pairing', () => {
   it('parses only a port and a Crockford code, normalized', () => {
@@ -26,13 +31,48 @@ describe('loopback pairing', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ...response, api: 'http://127.0.0.1:6001' })))
     await expect(pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' })).rejects.toThrow(/different API port/)
   })
-  it.each([[403, /Wrong code/], [410, /expired/]] as const)('explains HTTP %d', async (status, message) => {
+  it.each([[403, /code isn't right/], [410, /expired or was already used/]] as const)('explains HTTP %d', async (status, message) => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status })))
     await expect(pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' })).rejects.toThrow(message)
   })
-  it('explains a network or local-access failure', async () => {
+  it('explains a node that is not running', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('failed') }))
-    await expect(pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' })).rejects.toThrow(/not running.*browser blocked/)
+    await expect(pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' })).rejects.toThrow(/isn't running\. Run dg ipfs up/)
+  })
+  it('waits on the local-network prompt without a timeout', async () => {
+    stubPermission(['prompt'])
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => Response.json(response))
+    vi.stubGlobal('fetch', fetch)
+    const onAsk = vi.fn()
+    await expect(pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' }, onAsk)).resolves.toMatchObject({ version: '0.43.1' })
+    expect(onAsk).toHaveBeenCalledOnce()
+    expect(fetch.mock.calls[0]![1]!.signal).toBeUndefined()
+  })
+  it('times out once the permission is granted', async () => {
+    stubPermission(['granted'])
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => Response.json(response))
+    vi.stubGlobal('fetch', fetch)
+    await pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' })
+    expect(fetch.mock.calls[0]![1]!.signal).toBeInstanceOf(AbortSignal)
+  })
+  it('tells a blocked permission apart from a refusing node', async () => {
+    stubPermission(['denied'])
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    await expect(pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' })).rejects.toThrow(/site's settings/)
+    expect(fetch).not.toHaveBeenCalled()
+    stubPermission(['prompt', 'prompt'])
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('failed') }))
+    await expect(pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' })).rejects.toThrow(/choose Allow/)
+  })
+  it('never asks for a flag on a Forge site the command already allows', async () => {
+    stubPermission(['granted', 'granted'])
+    vi.mocked(whyBlocked).mockResolvedValueOnce('cors')
+    vi.stubGlobal('location', { origin: 'https://testnet-forge.dashhq.org' })
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('failed') }))
+    const error = await pairWithNode({ port: 5001, code: '7KQ2-M9XD-PF4C' }).catch((e: Error) => e)
+    expect(String(error)).toMatch(/Update dg, run dg ipfs up/)
+    expect(String(error)).not.toMatch(/--origin/)
   })
   it.each(['http://localhost:3000', 'http://127.0.0.1:3000', 'https://forge.dashhq.org'])('limits the Safari notice on %s', (origin) => {
     vi.stubGlobal('navigator', { userAgent: 'Version/18.0 Safari/605.1' })
@@ -45,6 +85,7 @@ describe('loopback pairing', () => {
     expect(isSafari('Version/18.0 Safari/605.1')).toBe(true)
     expect(isSafari('Chrome/142 Safari/537.36')).toBe(false)
     expect(kuboUpCommand('https://forge.dashhq.org', '/settings/storage/')).toBe('dg ipfs up')
+    expect(kuboUpCommand('https://testnet-forge.dashhq.org', '/settings/storage/')).toBe('dg ipfs up')
     expect(kuboUpCommand('http://localhost:3000', '/settings/storage/')).toContain('--origin')
     expect(kuboUpCommand('https://ipfs.io', '/ipfs/bafy/settings/storage/')).toBeNull()
     expect(kuboUpCommand('https://ipfs.io', '/ipns/example/settings/storage/')).toBeNull()

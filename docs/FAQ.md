@@ -124,7 +124,7 @@ Protecting the browser vault with a **passkey** also needs WebAuthn's PRF extens
 
 ## How do I run my own IPFS node?
 
-Run `dg ipfs up`. It downloads kubo (checked against a hash built into `dg`), runs it for your user, starts it at login, saves a storage profile called `kubo`, and opens the web app's connect page. Then `dg storage use kubo` sends your pushes there. It costs no DASH. Your node stores the bytes on your own disk. The node accepts the web app only from the websites you allow, with a token that can add, pin and unpin and nothing else. [Run your own IPFS node](guides/run-your-own-ipfs-node.md) has the details, including port forwarding so others can reach it.
+Run `dg ipfs up`. It downloads kubo (checked against a hash built into `dg`), runs it for your user, starts it at login, saves a storage profile called `kubo`, and prints a link and a code that connect the web app. Then `dg storage use kubo` sends your pushes there. It costs no DASH. Your node stores the bytes on your own disk. The node accepts the web app only from the websites you allow, with a token that can add, pin and unpin and nothing else. [Run your own IPFS node](guides/run-your-own-ipfs-node.md) has the details, including port forwarding so others can reach it.
 
 ## How do I keep a copy of someone's repo?
 

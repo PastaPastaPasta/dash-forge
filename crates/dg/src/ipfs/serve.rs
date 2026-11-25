@@ -77,24 +77,33 @@ pub async fn run(ctx: &Ctx, node: Node) -> Result<()> {
         tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, node.config.gateway_port))
             .await
             .context("could not bind the IPFS gateway port")?;
+    // IPv6 loopback is best effort: hosts without it, or with the port taken there, keep IPv4.
+    let api6 = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, node.config.api_port))
+        .await
+        .ok();
+    let gateway6 =
+        tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, node.config.gateway_port))
+            .await
+            .ok();
     let (sender, receiver) = watch::channel(false);
     let mut tasks = JoinSet::new();
-    let rx = receiver.clone();
     let api_router = proxy::rpc_router(state.clone());
-    tasks.spawn(async move {
-        axum::serve(api, api_router)
-            .with_graceful_shutdown(shutdown(rx))
-            .await
-            .map_err(anyhow::Error::from)
-    });
-    let rx = receiver.clone();
     let gw_router = proxy::gateway_router(state);
-    tasks.spawn(async move {
-        axum::serve(gateway, gw_router)
-            .with_graceful_shutdown(shutdown(rx))
-            .await
-            .map_err(anyhow::Error::from)
-    });
+    for (listener, router) in [
+        (Some(api), api_router.clone()),
+        (api6, api_router),
+        (Some(gateway), gw_router.clone()),
+        (gateway6, gw_router),
+    ] {
+        let Some(listener) = listener else { continue };
+        let rx = receiver.clone();
+        tasks.spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown(rx))
+                .await
+                .map_err(anyhow::Error::from)
+        });
+    }
     tasks.spawn(supervise(node.clone(), tokens.clone(), receiver.clone()));
     let result = tokio::select! {
         result = signal() => result,

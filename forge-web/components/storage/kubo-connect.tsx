@@ -5,7 +5,7 @@ import { DOCS } from '@/lib/docs-links'
 import { Suspense, useCallback, useEffect, useState } from 'react'
 import { takeKuboPair } from '@/lib/prehydration'
 import { usePathname, useSearchParams } from '@/hooks/use-route'
-import { safariNeedsNotice, kuboUpCommand, pairWithNode, parseKuboCode, parseKuboFragment, SAFARI_NOTICE, type PairedNode } from '@/lib/storage/kubo-connect'
+import { safariNeedsNotice, kuboUpCommand, pairWithNode, parseKuboCode, parseKuboFragment, PERMISSION_ASK, SAFARI_NOTICE, type PairedNode } from '@/lib/storage/kubo-connect'
 import { policyFor, withProfile, type StoragePolicy } from '@/lib/storage'
 import { errText } from '@/lib/storage/util'
 import { useAuth } from '@/contexts/auth-context'
@@ -47,6 +47,7 @@ export function KuboConnectView({ storage, fragmentOnly = false, showUnlock = tr
   const [code, setCode] = useState('')
   const [port, setPort] = useState('5001')
   const [busy, setBusy] = useState(false)
+  const [asking, setAsking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [savedName, setSavedName] = useState('')
@@ -56,9 +57,10 @@ export function KuboConnectView({ storage, fragmentOnly = false, showUnlock = tr
 
   const connect = useCallback(async (input: { port: number; code: string }): Promise<void> => {
     setBusy(true)
+    setAsking(false)
     setError(null)
     setSaved(false)
-    try { setNode(await pairWithNode(input)) } catch (e) { setError(errText(e)) } finally { setBusy(false) }
+    try { setNode(await pairWithNode(input, () => setAsking(true))) } catch (e) { setError(errText(e)) } finally { setBusy(false); setAsking(false) }
   }, [])
   const onPair = useCallback((fragment: string): void => {
     const input = parseKuboFragment(fragment)
@@ -84,16 +86,14 @@ export function KuboConnectView({ storage, fragmentOnly = false, showUnlock = tr
         <h3 className="font-medium">Run one command</h3>
         {browser?.command ? <>
           <CopyBlock text={browser.command} label="Copy the node setup command" />
-          <p>It installs IPFS (kubo 0.43.1) for your user, starts it at login, and opens this page to connect. Needs dg: <Link className="underline" href={DOCS.install}>install dg</Link></p>
-          <p className="text-[12px]">The node only accepts this site, and only for adding, pinning and unpinning.</p>
+          <p>It sets up IPFS on this computer and prints a link that connects it here. Needs <Link className="underline" href={DOCS.install}>dg</Link>.</p>
         </> : <p>Open Forge from its own address to connect a node.</p>}
-        <h3 className="font-medium">Connect with a code</h3>
-        <label className="block">Connection code<Input aria-label="Connection code" autoComplete="off" spellCheck={false} placeholder="XXXX-XXXX-XXXX" onChange={(e) => setCode(e.target.value)} /></label>
+        <label className="block">Or paste the code <code>dg ipfs up</code> printed<Input aria-label="Connection code" autoComplete="off" spellCheck={false} placeholder="XXXX-XXXX-XXXX" onChange={(e) => setCode(e.target.value)} /></label>
         <details><summary className="cursor-pointer">Advanced</summary><label>Port<Input aria-label="Node port" type="number" min={1} max={65535} value={port} onChange={(e) => setPort(e.target.value)} /></label></details>
         <Button size="sm" loading={busy} disabled={node !== null || !parseKuboCode(code.trim(), Number(port))} onClick={() => { const input = parseKuboCode(code.trim(), Number(port)); if (input) void connect(input) }}>Connect</Button>
       </> : null}
       {browser?.safari ? <p role="note">{SAFARI_NOTICE}</p> : null}
-      {busy ? <p role="status">Connecting to the node…</p> : null}
+      {busy ? <p role="status">{asking ? PERMISSION_ASK : 'Connecting to the node…'}</p> : null}
       {error ? <p role="alert" className="text-danger-700 dark:text-danger-400">{error}</p> : null}
       {node ? <div className="space-y-3">
         <p className="font-medium">Connect the IPFS node on this computer? kubo {node.version}, peer {node.peerId.slice(0, 12)}…</p>
