@@ -144,7 +144,7 @@ machine), so it works behind NAT. There is no central service: you run the relay
 runner subscribes to it.
 
 ```toml
-# relay.toml (forge-relay run --config relay.toml --listen [::]:8080)
+# relay.toml (forge-relay run --config relay.toml --listen '[::]:8080')
 [wake]
 repos = ["alice/project"]            # owner/name or repo ids; polled even without a webhook
 secret-file = "/run/secrets/wake"    # or secret = "…": 32–96 printable ASCII characters
@@ -157,8 +157,8 @@ url = "http://relay:8080"            # the relay's --listen address (http or htt
 secret_file = "/etc/forge-runner/relay.secret"   # the same secret
 ```
 
-`--listen [::]:8080` takes IPv6 and IPv4 on Linux. On a host without IPv6 use `0.0.0.0:8080`;
-on a BSD, where `[::]` is IPv6 only, put a proxy that listens on both in front.
+`--listen '[::]:8080'` (quoted, for zsh) takes IPv6 and IPv4 on Linux with default settings. On a host without IPv6 use `0.0.0.0:8080`;
+on a BSD or Windows, where `[::]` is IPv6 only, put a proxy that listens on both in front.
 
 `openssl rand -hex 32` makes a good secret. `[wake]` needs `--listen`: the wake endpoint is
 `GET /v1/wake` on the same listener as the health check.
