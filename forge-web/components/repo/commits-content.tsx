@@ -406,25 +406,32 @@ function LogBody({
             {run.day === '' ? 'Commits of unknown date' : `Commits on ${formatDate(run.at)}`}
           </h2>,
           ...run.rows.map((entry) => (
-          <div key={entry.oid} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="commit-row">
-            {/* Touch: the message link stretches over its whole text column (both lines and the
-                row's padding): a 44px+ target that leaves the copy button beside it alone. */}
-            <div className="relative min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <Link href={repoHref('/repo/commit', addr, { oid: entry.oid })} className="block min-w-0 truncate text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:after:absolute coarse:after:inset-x-0 coarse:after:-inset-y-2.5 coarse:after:content-[''] dark:text-anvil-50 dark:hover:text-forge-400">
-                  {entry.subject || '(no message)'}
-                </Link>
-                <CheckDot counts={outcomes.get(entry.oid)} />
-              </div>
-              <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-                <span className="min-w-0 truncate">{entry.author.name || 'unknown'}</span>
-                <span className="shrink-0 whitespace-nowrap">
-                  · <Time ms={entry.author.when} />
-                </span>
-              </div>
+          <div
+            key={entry.oid}
+            className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2.5 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 sm:gap-y-0.5 dark:border-anvil-850"
+            data-testid="commit-row"
+          >
+            {/* Phones: the message gets the whole first line; author, signature and id share the
+                second. Wider: message over author on the left, signature and id beside both.
+                Touch: the message link stretches over the row (a 44px+ target); the signature
+                and copy buttons are positioned later, so they stay on top of it, and the phone
+                row gap keeps their 44px hit areas off the message line. */}
+            <div className="col-span-2 row-start-1 flex min-w-0 items-center gap-1.5 sm:col-span-1">
+              <Link href={repoHref('/repo/commit', addr, { oid: entry.oid })} className="block min-w-0 truncate text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:after:absolute coarse:after:inset-0 coarse:after:content-[''] dark:text-anvil-50 dark:hover:text-forge-400">
+                {entry.subject || '(no message)'}
+              </Link>
+              <CheckDot counts={outcomes.get(entry.oid)} />
             </div>
-            <SignatureBadge state={signatures.get(entry.oid)} />
-            <Oid value={entry.oid} chars={7} />
+            <div className="col-start-1 row-start-2 flex min-w-0 items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+              <span className="min-w-0 truncate">{entry.author.name || 'unknown'}</span>
+              <span className="shrink-0 whitespace-nowrap">
+                · <Time ms={entry.author.when} />
+              </span>
+            </div>
+            <div className="col-start-2 row-start-2 flex items-center gap-3 sm:row-span-2 sm:row-start-1">
+              <SignatureBadge state={signatures.get(entry.oid)} />
+              <Oid value={entry.oid} chars={7} />
+            </div>
           </div>
           )),
         ])}
