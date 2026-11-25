@@ -16,7 +16,7 @@ import { baseOf, parseDoc, planSlot, sameDoc, type LwwDoc, type PlanOptions, typ
 import { prefsOwner, readRecord, store, updateRecord, type PrefsMeta, type SlotMeta, type SyncRecord } from './overlay'
 import type { Stored, UserSyncPort } from './platform'
 import { PREFS_PLAN, prefKeys, prefsEntries, prefsViewRaw } from './prefs-slot'
-import { storageEntries, storageView, withAdditions } from './storage-slot'
+import { carryProfileExtras, storageEntries, storageView, withAdditions } from './storage-slot'
 
 /** This device's storage settings, as the vault keeps them. */
 export interface LocalStorageConfig {
@@ -145,7 +145,7 @@ async function syncStorage(ctx: SyncContext, record: SyncRecord | null, at: numb
   const deletes = record?.deletes ?? {}
   const local = await ctx.storage.load()
   const snapshot = storageEntries(local)
-  const plan = await mergeSlot(ctx, 'storage', { local: snapshot, base, options: {}, tag, deletions: deletes })
+  const plan = await mergeSlot(ctx, 'storage', { local: snapshot, base, options: { carry: carryProfileExtras }, tag, deletions: deletes })
   // Additions only, to the settings as they are now (a Settings save may have landed meanwhile).
   const written = await ctx.storage.update((current) => withAdditions(current, plan.add))
   const addedHere = Object.fromEntries(Object.entries(storageEntries(written)).filter(([k]) => Object.hasOwn(plan.add, k) && !Object.hasOwn(snapshot, k)))

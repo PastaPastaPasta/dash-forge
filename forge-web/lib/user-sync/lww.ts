@@ -75,6 +75,11 @@ export interface PlanOptions {
    * what changed here, keeping what another device added meanwhile.
    */
   readonly lists?: Readonly<Record<string, (element: unknown) => string>>
+  /**
+   * The value to write for a local key, given the synced one: lets a slot keep parts of a synced
+   * value this build does not model (dg's `dg` object beside a profile's settings).
+   */
+  readonly carry?: (key: string, synced: unknown, local: unknown) => unknown
 }
 
 /** What the last sync recorded per key: the value's tag, and for list keys each element's tag by id. */
@@ -130,13 +135,13 @@ export function planSlot(p: {
       continue
     }
     if (p.base === null && p.uploadLocal === false) continue
-    const lv = p.local[key]
+    const lv = p.options.carry && synced !== undefined ? p.options.carry(key, synced.v, p.local[key]) : p.local[key]
     const idOf = p.options.lists?.[key]
     const list = idOf !== undefined && synced !== undefined && Array.isArray(synced.v) && Array.isArray(lv)
     let changed: boolean
     if (synced === undefined) changed = true
     else if (p.base === null) changed = synced.v === null || list
-    else changed = p.base.tags[key] !== p.tag(key, lv)
+    else changed = p.base.tags[key] !== p.tag(key, p.local[key])
     if (!changed) continue
     const v = list ? mergeList(synced!.v as unknown[], lv as unknown[], p.base?.elements?.[key] ?? {}, idOf!, (e) => p.tag(key, e)) : lv
     if (synced !== undefined && sameValue(synced.v, v)) continue
@@ -151,7 +156,7 @@ export function planSlot(p: {
     view[key] = e.v
     const has = Object.hasOwn(p.local, key)
     if (!has) add[key] = e.v
-    else if (!sameValue(p.local[key], e.v)) collisions.push(key)
+    else if (!sameValue(p.options.carry ? p.options.carry(key, e.v, p.local[key]) : p.local[key], e.v)) collisions.push(key)
   }
   return { next, upload: p.remote === null ? Object.keys(entries).length > 0 : !sameDoc(next, remote), view, collisions: collisions.sort(), add }
 }

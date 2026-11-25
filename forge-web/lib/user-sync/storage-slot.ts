@@ -17,6 +17,14 @@ export const LOCAL_PROFILE_CAP = 32
 const profileValue = z.object({ settings: profilePublicSchema, secrets: profileSecretsSchema })
 const testValue = z.object({ at: z.number(), ok: z.boolean() })
 
+/** A local profile value written with the parts of its synced namesake this build does not model. */
+export function carryProfileExtras(key: string, synced: unknown, local: unknown): unknown {
+  if (!key.startsWith('profile:') || synced === null || typeof synced !== 'object' || Array.isArray(synced)) return local
+  if (local === null || typeof local !== 'object' || Array.isArray(local)) return local
+  const extras = Object.fromEntries(Object.entries(synced).filter(([k]) => k !== 'settings' && k !== 'secrets'))
+  return Object.keys(extras).length === 0 ? local : { ...extras, ...local }
+}
+
 /** The slot's entries for a local config. */
 export function storageEntries(config: StorageConfig): Record<string, unknown> {
   const out: Record<string, unknown> = {}

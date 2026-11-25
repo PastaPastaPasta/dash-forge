@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { canonicalJson } from './crypto'
 import { baseOf, mergeList, parseDoc, planSlot, NewerSyncFormatError, type LwwDoc, type Tagger } from './lww'
+import { carryProfileExtras } from './storage-slot'
 
 const tag: Tagger = (key, v) => `${key}=${canonicalJson(v ?? null)}`
 const id = (e: unknown): string => String(e)
@@ -63,4 +64,32 @@ describe('the last-writer-wins slot', () => {
     expect(() => parseDoc({ format: 'forge-user/prefs', version: 2, entries: {} }, 'prefs')).toThrow(NewerSyncFormatError)
     expect(parseDoc({ format: 'forge-user/prefs', version: 1, entries: {}, extra: 1 }, 'prefs')['extra']).toBe(1)
   })
+
+  describe('dg-only parts of a synced profile', () => {
+    const settings = { kind: 'ipfs-kubo', api: 'http://nas.lan:5001' }
+    const synced = { settings, secrets: {}, dg: { allowPrivateUri: true } }
+    const options = { carry: carryProfileExtras }
+
+    it('an unchanged profile is not a collision and is not rewritten', () => {
+      const local = { 'profile:nas': { settings, secrets: {} } }
+      const plan = planSlot({ slot: 'storage', local, base: baseOf(local, tag), remote: doc({ 'profile:nas': { at: 5, v: synced } }), now: 10, tag, options })
+      expect(plan.collisions).toEqual([])
+      expect(plan.upload).toBe(false)
+    })
+
+    it('an edit made here keeps the dg object', () => {
+      const before = { 'profile:nas': { settings, secrets: {} } }
+      const edited = { settings: { ...settings, api: 'http://nas.lan:5002' }, secrets: {} }
+      const plan = planSlot({ slot: 'storage', local: { 'profile:nas': edited }, base: baseOf(before, tag), remote: doc({ 'profile:nas': { at: 5, v: synced } }), now: 10, tag, options })
+      expect(plan.next.entries['profile:nas']!.v).toEqual({ ...edited, dg: { allowPrivateUri: true } })
+    })
+
+    it('a newer synced edit is not overwritten by an unchanged local copy', () => {
+      const local = { 'profile:nas': { settings, secrets: {} } }
+      const newer = { ...synced, settings: { ...settings, api: 'http://nas.lan:6001' } }
+      const plan = planSlot({ slot: 'storage', local, base: baseOf(local, tag), remote: doc({ 'profile:nas': { at: 50, v: newer } }), now: 10, tag, options })
+      expect(plan.next.entries['profile:nas']!.v).toEqual(newer)
+    })
+  })
 })
+
