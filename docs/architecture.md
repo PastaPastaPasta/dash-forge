@@ -13,7 +13,7 @@ The on-chain model is **forge-v2**: shared contracts in one Platform protocol 14
 - Cost as first-class UX: estimates before every write batch, DASH primary / fiat secondary (USD unless the user picks another currency); a repository costs ~0.001 DASH to create, and bulky pack bytes can live in storage the user brings.
 - Migration path: one-command GitHub import.
 
-**Non-goals (first release; private repositories and the notifications inbox have shipped since)**: private repos (Phase 3 design: [security/private-repos.md](security/private-repos.md)), on-chain fast-forward/merge validation (reflog auditability instead — explicit INIT.md limit), Actions-equivalent (CI is external by design, bridged via relay), global cross-repo search, notifications inbox (poll badge only), wikis (`docs/` convention).
+**Non-goals (first release)**: on-chain fast-forward/merge validation (reflog auditability instead — explicit INIT.md limit), Actions-equivalent (CI is external by design, bridged via relay), global cross-repo search, wikis (`docs/` convention). Private repositories ([security/private-repos.md](security/private-repos.md)) and a notifications inbox were non-goals too, and have shipped since.
 
 ## 2. Components
 
@@ -28,7 +28,7 @@ The on-chain model is **forge-v2**: shared contracts in one Platform protocol 14
                  │    webhook, star, watch, milestone, policy, runner    │
                  │  forge-meta: label, topic, packMirror, repoKey, ban,  │
                  │    profile, follow, board, card, vaultEntry           │
-                 │  all keyed by repoId; writes gated by membership      │
+                 │  repo data keyed by repoId; writes gated by members   │
                  └────────▲───────────────▲───────────────▲──────────────┘
                           │ DAPI (proofs) │               │ block/ST stream
       ┌───────────────────┴───┐   ┌───────┴────────┐  ┌───┴───────────────┐
@@ -57,8 +57,8 @@ The on-chain model is **forge-v2**: shared contracts in one Platform protocol 14
 ### 4.1 Contract topology
 Shared contracts, registered once per network by one deployer identity and joined by a protocol 14 **contract group** (`dash-forge`). The ids per network are in `forge-contracts/deployments/<network>.json` ([forge-v2.md, where they are registered](contracts/forge-v2.md#where-they-are-registered)). Every repository is a set of documents in them, keyed by the `repo` document's id (`repoId`). Creating a repository writes three documents: `repo`, the owner's `maintainer` membership, and the first `config`. The full type tables are in [forge-v2.md §2](contracts/forge-v2.md#2-types-and-who-can-write-them).
 
-- **forge-core**: `repo` (the listing; `name` immutable, unique per owner), membership (`maintainer`, `writer`, and an invitee's `consent`), **settings** (`config`: append-only, non-deletable, maintainer-gated; append-only history makes protection evaluable *as-of any past update*), **git data** (`refUpdate`, `protectedRefUpdate`, `packManifest`, `chunk`: all non-deletable), `release`, `label` and `topic`.
-- **forge-collab**: `issue`, `patch` (PR), `transition` (open, closed, merged, draft and lock state, as a consensus sum), `comment`, `review`, and `repoKey` (private repositories' key wraps).
+- **forge-core**: `repo` (the listing; `name` immutable, unique per owner), membership (`maintainer`, `writer`, and an invitee's `consent`), **settings** (`config`: append-only, non-deletable, maintainer-gated; append-only history makes protection evaluable *as-of any past update*), **git data** (`refUpdate`, `protectedRefUpdate`, `packManifest`, `chunk`: all non-deletable), `release`, `label`, `topic` and `packMirror` (anyone's extra copy of a public repo's pack).
+- **forge-collab**: `issue`, `patch` (PR), `transition` (open, closed, merged, draft and lock state, as a consensus sum), `comment`, `review`, `repoKey` (private repositories' key wraps) and `ban` (a maintainer's ban of an identity from a repo).
 - **forge-community**: `event` (member actions: label, assign, ...), `authorEvent` (actions the target's author may take), `milestone`, `runner` and `checkRun` (CI results written by runner identities), `policy` (branch policy), `webhook` (relay subscription, secret encrypted to the relay identity), and the social graph (`profile`, `star`, `watch`, `follow`).
 - **forge-meta** (testnet and mainnet): takes `label`, `topic` and `packMirror` from forge-core, `repoKey` and `ban` from forge-collab, and `profile` and `follow` from forge-community, and adds the passkey vault (`vaultEntry`) and boards (`board`, `card`). forge-core gains `pushGrant` (a bot's push grant) on the same set. On a devnet with three contracts those types stay where the list above puts them. Clients read the layout from the deployment record.
 - **forge-user** (testnet only, in the same group): `state`, `share` and `grant`, the settings that follow a person's identity between devices. Until it is registered on mainnet, those settings stay on the device there.

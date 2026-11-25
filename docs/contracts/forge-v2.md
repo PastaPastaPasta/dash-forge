@@ -10,7 +10,7 @@ Three shared data contracts, **forge-core**, **forge-collab** and **forge-commun
 
 ## Where they are registered
 
-The ids below are copied from the deployment records, `forge-contracts/deployments/<network>.json`, which are what `dg`, `git-remote-dash` and the web app compile in. The records are the source of truth; `dg doctor --network <network>` checks them against the chain.
+The ids below are copied from the deployment records, `forge-contracts/deployments/<network>.json`, which are what `dg`, `git-remote-dash` and the web app compile in. The records are the source of truth; `dg doctor --network <network>` checks the four-contract set and the group against the chain.
 
 | Contract | Mainnet (2026-11-24) | Testnet (2026-10-26) |
 |---|---|---|
@@ -22,7 +22,7 @@ The ids below are copied from the deployment records, `forge-contracts/deploymen
 | contract group | `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ` | `EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC` |
 | deployer | `CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y` | `3pjHaytsQJg5aKZj3VeqwBPccN7uN3bCJiUNkT8KUBwM` |
 
-Both networks registered the same four files, `forge-contracts/contracts/mainnet/`. forge-user (`forge-contracts/contracts/user/forge-user.json`, settings that follow a person's identity: [design](../design/identity-synced-state.md)) is a fifth contract in the same group, on testnet only; on mainnet those settings stay on the device until it is registered there. The evidence for each registration is in `forge-contracts/evidence/<network>/`. Devnets bonsia, moutai and sakura, where RC1 and RC2 were registered first, are retired.
+Both networks now run the same four files, `forge-contracts/contracts/mainnet/`: mainnet registered them as they are, and testnet reached forge-meta's current bytes through two updates. forge-user (`forge-contracts/contracts/user/forge-user.json`, settings that follow a person's identity: [design](../design/identity-synced-state.md)) is a fifth contract in the same group, on testnet only; on mainnet those settings stay on the device until it is registered there. The evidence for each registration is in `forge-contracts/evidence/<network>/`. Devnets bonsia, moutai and sakura, where RC1 and RC2 were registered first, are retired.
 
 ## 1. Why shared contracts
 

@@ -1,13 +1,13 @@
 name: Forge sync
 
 # Mirrors master and every tag of this repository to its mainnet Dash Forge copy,
-# dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge (owner forge.dash).
+# dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge (owner forg3.dash).
 # GitHub is primary and the mirror is one-way: tools/forge-sync/mirror.sh never force-pushes,
 # and when Forge has a change GitHub lacks it pushes nothing, fails, and opens an issue.
 # tools/forge-sync/README.md has the operator notes.
 #
 # Secrets, in the `forge-mainnet` environment (deployments from master only):
-#   FORGE_MAINNET_KEY   dfk1: limited key of forge.dash bound to forge-core only, with a budget
+#   FORGE_MAINNET_KEY   dfk1: limited key of the owner, bound to forge-core only, with a budget
 #                       and an expiry (`dg auth export --new-key --scope core`).
 #   FORGE_IPFS_SSH_KEY  ssh key whose only power on our IPFS host is a forced command that
 #                       imports one CAR into its kubo node and pins it.

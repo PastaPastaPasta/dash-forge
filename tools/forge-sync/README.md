@@ -1,8 +1,9 @@
 # Forge sync
 
 `.github/workflows/forge-sync.yml` keeps the mainnet Forge copy of this repository,
-`dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge` (owner `forg3.dash`, the identity that registered the mainnet contracts; `forge.dash` is in a DPNS vote and does not resolve yet), equal to
-GitHub's master and tags. It runs on every push to master, daily at 04:23 UTC, and on demand
+`dash://CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y/dash-forge` (owner `forg3.dash`), equal to
+GitHub's master and tags. The owner is the identity that registered the mainnet contracts; its
+name `forge.dash` is in a DPNS vote and does not resolve yet. It runs on every push to master, daily at 04:23 UTC, and on demand
 (with an optional dry run). A tag push only asks for a run on master, so the code at a tag never
 gets the key. GitHub is primary: [`mirror.sh`](mirror.sh) never force-pushes.
 When Forge has a ref GitHub lacks, a master that is not in GitHub's history, or a tag that names

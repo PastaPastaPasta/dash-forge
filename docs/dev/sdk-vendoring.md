@@ -1,6 +1,6 @@
 # The Platform JS SDK: npm pins, and vendoring as a fallback
 
-forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` run on `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` **5.0.0-rc.8 from npm** (Platform v5, protocol 14), pinned exactly, in step with the Rust crates' `v5.0.0-rc.8` tag (`Cargo.toml`); forge-web's `pnpm-workspace.yaml` exempts the pair from pnpm's minimum release age until 5.0.0 final. No vendoring has been needed since 4.2.0-beta.6.
+forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` run on `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` **5.0.0-rc.8 from npm** (Platform v5, protocol 14), pinned exactly, in step with the Rust crates' `v5.0.0-rc.8` tag (`Cargo.toml`); forge-web's `pnpm-workspace.yaml` exempts the rc.8 pair from pnpm's minimum release age. No vendoring has been needed since 4.2.0-beta.6.
 
 **Vendoring is fallback tooling.** 4.2.0-beta.6 was never published: its release job asked for a runner group that no longer exists. For such a tag this repository can build the two packages itself and serve them as release assets, with no Rust or LLVM toolchain on any developer's machine or CI job. It was built for beta.6 as [`vendor-sdk-v4.2.0-beta.6`](https://github.com/PastaPastaPasta/dash-forge/releases/tag/vendor-sdk-v4.2.0-beta.6), which proved the pipeline; **nothing depends on that release**, since the move went straight to npm beta.7. Use it again only when a Platform tag the app needs is missing from npm.
 
