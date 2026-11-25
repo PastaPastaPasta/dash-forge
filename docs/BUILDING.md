@@ -1,14 +1,15 @@
 # Building Dash Forge
 
-To use Dash Forge you do not have to build it: prebuilt binaries for Linux, macOS and
-Windows come with every release. See [INSTALL.md](INSTALL.md). This page is for
-contributors.
+On testnet you do not have to build Dash Forge: the latest release ships prebuilt binaries for
+Linux and macOS ([INSTALL.md](INSTALL.md)). That release, v0.2.0, predates Forge's mainnet
+registration, so **on mainnet, build `dg` and `git-remote-dash` from source** as
+[INSTALL.md](INSTALL.md#build-from-source) shows. The rest of this page is for contributors.
 
 A fresh clone builds with no out-of-tree setup:
 
 ```sh
 git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
-cargo build --workspace          # Rust: forge-core, git-remote-dash, dg, forge-relay, forge-import
+cargo build --workspace          # Rust: dg, git-remote-dash, forge-relay, forge-import, forge-runner, forge-gateway, forge-notify
 cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web app
 ```
 
@@ -16,8 +17,9 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.98, which the pinned Platform packages (v5.0.0-beta.1) require |
+| Rust | pinned by `rust-toolchain.toml` (1.98.0) | install [rustup](https://rustup.rs); it installs the pinned toolchain automatically. MSRV floor is 1.98, which the pinned Platform packages (v5.0.0-rc.8) require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
+| C compiler, `pkg-config`, OpenSSL headers | any | on Linux, several dependencies build C code, and `openssl-sys` links the system OpenSSL. On Debian or Ubuntu: `sudo apt-get install build-essential pkg-config libssl-dev` (plus `curl unzip git ca-certificates` for the protoc recipe and the clone) |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
 
@@ -56,6 +58,9 @@ curl -sSLo /tmp/protoc.zip \
 sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
 protoc --version   # libprotoc 28.3
 ```
+
+Without `pkg-config` or the OpenSSL headers the build stops in `openssl-sys` ("Could not find
+openssl via pkg-config"); install the packages in the table above.
 
 ## The pinned toolchain
 
@@ -131,10 +136,10 @@ Two things matter here:
 The patch stays active until you remove it. Confirm which source is in use with
 `cargo tree -p dash-sdk`, which prints the resolved source for the package.
 
-### Protocol versions (SDK v4.2)
+### Protocol versions
 
-The pinned SDK (`v5.0.0-beta.1` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.0.0-beta.1` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
-protocol 13 (mainnet) and protocol 14 (testnet since October 2026, and the devnets). Neither client pins
+The pinned SDK (`v5.0.0-rc.8` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.0.0-rc.8` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
+protocol 13 and protocol 14. Mainnet and testnet both run protocol 14, which Forge's contracts need. Neither client pins
 a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a
 devnet) and raises it from the metadata of the first **proof-verified** response. So
 `Sdk::version()` / `sdk.version()` gives the network's version only after a proved query
@@ -173,11 +178,11 @@ longer do.
 ## Networks
 
 Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**.
-Every tool defaults to testnet, where Forge's forge-v2 contracts are registered (the production
-four-contract set, Platform 5.0.0-rc.8, protocol 14, chain id `dash-testnet-51`, since
-2026-10-26), so no flag is needed. Mainnet still runs protocol 13; forge-v2 is registered there
-after protocol 14 activates ([mainnet-runbook.md](mainnet-runbook.md)). The Pages and e2e
-workflows and `ipfs-release.sh` target testnet too.
+Forge's four contracts are registered on testnet (Platform 5.0.0-rc.8, protocol 14, chain id
+`dash-testnet-51`, since 2026-10-26) and on mainnet (chain id `evo1`, since 2026-11-24).
+Every tool defaults to testnet until you choose a network: `dg auth login --network mainnet`
+records mainnet as `dg`'s and `git-remote-dash`'s default. A web build defaults to testnet
+unless `NEXT_PUBLIC_NETWORK` says otherwise. The e2e workflows and `ipfs-release.sh` target testnet.
 
 Before testnet, Forge ran on devnets: moutai, then bonsia, then sakura, which went down around
 2026-10-24 ([networks.md](networks.md) has the history). Their deployment files stay in the
@@ -266,9 +271,10 @@ dg repo clone <owner>/<repo>                            # the same, on dg's netw
 NEXT_PUBLIC_NETWORK=testnet pnpm build                  # forge-web
 ```
 
-The web header shows a network badge on every network except mainnet (the production build
-at forge.dashhq.org is built from master by `pages.yml`, for the network the `PAGES_NETWORK`
-repository variable names (default testnet), and shows "testnet"). On a network with no
+The web header shows a network badge on every network except mainnet. The hosted builds come
+from master: `pages.yml` builds forge.dashhq.org for the network the `PAGES_NETWORK` repository
+variable names (the workflow's fallback is testnet; the live site is mainnet), and
+`pages-testnet.yml` builds testnet-forge.dashhq.org for testnet. On a network with no
 forge-v2 deployment, the badge is amber and the pages that need the contracts show a "not
 deployed" state instead of querying.
 
@@ -288,7 +294,8 @@ before their registration); `deploy-v2.mjs` adds the `v2` section to it.
 
 `pnpm build:dash-site` (in `forge-web/`) builds the copy of the web app meant for
 a [dash-sites](https://github.com/PastaPastaPasta/dash-sites) name such as
-forg3.dash.site, where every stored byte costs DASH. It is the ordinary export
+forg3.dash.site (registered; nothing published there as of 2026-11-25), where every
+stored byte costs DASH. It is the ordinary export
 with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
 
 - The docs hub is left out: each `/docs/<page>/` becomes a small redirect to the
@@ -299,7 +306,15 @@ with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
   with its SHA-384. The script refuses if the built file is not byte-identical to
   the package's. `dash-sites publish out --external dash-site-external.json` then
   publishes the site without storing it; readers fetch it from an npm CDN and use
-  it only if the hash matches.
+  it only if the hash matches. That makes the copy a version 2 site: dash.site
+  opens it, while the testnet host `id.dashhq.org` and dash-sites extension 0.1.0
+  do not yet.
+
+Like every build, it targets testnet unless `NEXT_PUBLIC_NETWORK=mainnet` is set,
+and the `dash-sites` CLI publishes to testnet unless given `--network mainnet`.
+A mainnet copy needs both, plus `--name <label>` and the owning identity
+(`--identity-file <file>`, or `--identity <id>` with `DASH_SITES_KEY`). Run
+`dash-sites publish … --dry-run` first to see the size and price.
 
 `NEXT_PUBLIC_SITE_URL` must be the address the build is published at (e.g.
 `https://forg3.dash.site`), and not forge.dashhq.org or testnet-forge.dashhq.org.
@@ -347,7 +362,7 @@ run against **live testnet** with `DASH_FORGE_NETWORK=testnet E2E_LIVE_TARGET=1`
 `E2E_NETWORK=testnet` (Playwright). Testnet writes are permanent, so the harness refuses them
 without `E2E_LIVE_TARGET=1`. They are not part of the per-push gate:
 
-* `make e2e` — the CLI suite (`e2e/cli/run.sh`, 11 scenarios). Needs the funded fixture
+* `make e2e` — the CLI suite (`e2e/cli/run.sh`, 37 scenarios). Needs the funded fixture
   identities described in `e2e/cli/config.sh` under
   `~/.config/dash-forge/test-identities/testnet-scratch/` (OWNER, COLLAB, CONTRIB) on testnet,
   and a testnet funding key in `E2E_MINT_FUNDING` for the scenarios that mint.
@@ -376,10 +391,10 @@ its own certificate store, so it fails behind a TLS-intercepting proxy even when
 works. It reads a pre-populated cache, so you can seed the archive yourself:
 
 ```sh
-curl -sSL -o "$CARGO_TARGET_DIR/tenderdash-v1.5.3.zip" \
-  https://github.com/dashpay/tenderdash/archive/v1.5.3.zip
+curl -sSL -o "$CARGO_TARGET_DIR/tenderdash-v1.8.0.zip" \
+  https://github.com/dashpay/tenderdash/archive/v1.8.0.zip
 ```
 
 (with `CARGO_TARGET_DIR` exported; otherwise the cache lives under the crate's own
-`OUT_DIR`, which changes per build profile). The version comes from `TENDERDASH_COMMITISH`
-in that crate's build script.
+`OUT_DIR`, which changes per build profile). The version is `DEFAULT_VERSION` in that crate's
+`build.rs` (override it with `TENDERDASH_COMMITISH`).

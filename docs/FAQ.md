@@ -6,7 +6,7 @@ Nobody. There is no Forge server, company account or database.
 
 - **Refs, issues, PRs, reviews and access control** are documents on **Dash Platform**, a network run by Dash masternodes. Each document is signed by its author's identity.
 - **Pack bytes** (the git objects) are stored wherever the repository's owner puts them: their own S3-compatible bucket, an IPFS node, or Platform itself.
-- **The web app** is a static site. It is served from GitHub Pages at forge.dashhq.org, and anyone can build it and serve it elsewhere.
+- **The web app** is a static site. It is served from GitHub Pages at forge.dashhq.org (mainnet) and testnet-forge.dashhq.org (testnet), and anyone can build it and serve it elsewhere.
 - **The CLI** (`dg`, `git-remote-dash`) talks to Platform nodes and storage directly.
 
 The Forge project publishes code and nothing else. Anything that looks hosted is either a static file or something you run yourself.
@@ -80,7 +80,7 @@ Forge is not a GitHub clone, and it does not need you to leave GitHub.
 - **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj push and fetch work too; see the [quick start](guides/quick-start.md#jj) for the one setup step that differs.
 - **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. The Mirror Action keeps code, issues, PRs, releases and labels in sync on every GitHub event.
 - **CI can listen.** `dg webhook add` and a relay you run deliver GitHub-shaped webhooks, so existing CI receivers work ([Collaborating](guides/collaborating.md#webhooks-and-ci)).
-- **It is not at feature parity.** No hosted CI (bring your own: [forge-runner](guides/self-host-runner.md) runs GitHub Actions workflows on your machine and reports checks with a runner key), and no wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. The web app opens, reviews and merges PRs and forks repositories, but some merges still need `dg`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. See [Collaborating](guides/collaborating.md#from-the-web-app). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists what has no equivalent, and the workarounds.
+- **It is not at feature parity.** No hosted CI (bring your own: [forge-runner](guides/self-host-runner.md) runs GitHub Actions workflows on your machine and reports checks with a runner key), and no wiki, discussions or global search; organizations are on testnet only. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. The web app opens, reviews and merges PRs and forks repositories, but some merges still need `dg`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. See [Collaborating](guides/collaborating.md#from-the-web-app). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists what has no equivalent, and the workarounds.
 
 ## What doesn't Forge do (yet)?
 
@@ -90,9 +90,8 @@ Each line says why: **by design** (the protocol or the no-server rule rules it o
 |---|---|---|
 | **Wiki** | later | A `docs/` folder in the repository (the web app renders Markdown), or a second repository such as `<repo>-wiki` |
 | **Discussions** | later | Issues with a `discussion` label |
-| **Projects and boards** | later | Labels, milestones, and `dg issue list --label … --assignee …` |
 | **Gists** | later | A small public repository |
-| **Teams** | by design | Membership is never delegated: only the owner adds members. Use an [organization identity](guides/collaborating.md#organizations) or add each person to each repository |
+| **Teams** | by design | Membership is never delegated: only the owner adds members. On testnet, an [organization](guides/organizations.md) (an N-of-M multisig identity) can own repositories; otherwise add each person to each repository |
 | **Transferring a repository** | by design | The owner is fixed. Create a repository under the new owner and push to it; `dg repo edit --moved-to` marks the old one |
 | **Deleting a repository, issue or pull request** | by design | They are permanent, and the contracts have no moderation. Archive the repository, close the issue or PR |
 | **Editing files in the browser** | later | Edit in a clone and push |

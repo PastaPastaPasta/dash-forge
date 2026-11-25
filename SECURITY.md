@@ -34,7 +34,7 @@ Forge has not reached 1.0. We fix security issues on `master` and in the latest 
 - **Proof checks**: anything that makes the web app or `dg` show data as verified when Platform did not prove it ([verify-forge.md](docs/guides/verify-forge.md)).
 - **Client rules**: a way to make a reader accept a merge, approval, protected-ref update, release or role change that the rules in [forge-v2.md](docs/contracts/forge-v2.md) refuse.
 - **The web app as served**: script injection, framing, or a build at forge.dashhq.org that differs from the published one ([verify-the-app.md](docs/guides/verify-the-app.md)).
-- **The hosted gateway**: git-forge.dashhq.org, which serves public repositories read-only over HTTPS: anything that makes it serve a private repository or a members-only item, and server-side request forgery ([forge-gateway.md](docs/hosting/forge-gateway.md)).
+- **The hosted gateway**: git-forge.dashhq.org, which serves public testnet repositories read-only over HTTPS: anything that makes it serve a private repository or a members-only item, and server-side request forgery ([forge-gateway.md](docs/hosting/forge-gateway.md)).
 - **The GitHub Actions**: the Mirror Action (`action/`) and the Check Action (`check-action/`), which run in your workflows with your keys: secret handling, and anything that lets a pull request or a repository's content read or exfiltrate a key.
 - **forge-relay, forge-import and forge-runner**: secret handling, server-side request forgery, and escape from a runner's sandbox.
 
