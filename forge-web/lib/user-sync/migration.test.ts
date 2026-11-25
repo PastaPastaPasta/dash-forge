@@ -15,7 +15,7 @@ import { encodeWif } from '../auth/wif'
 import { loadStorageConfig, saveStorageConfig, updateStorageConfig, type StorageConfig } from '../storage/store'
 import { parsePrefs, PREFS_KEY } from '../view/prefs'
 import { fakePlatform, memoryStorage } from './fake-port'
-import { noteStorageDeletes, readPref, recordKey, setActive } from './overlay'
+import { notePrefWrite, noteStorageDeletes, readPref, recordKey, setActive } from './overlay'
 import { openState } from './crypto'
 import { decodeIdentifier } from '../auth/base58'
 import { syncUserSettings, type SyncContext } from './service'
@@ -152,9 +152,9 @@ describe('first sync from master-format state', () => {
     // older build there reads it.
     expect(await loadStorageConfig(NETWORK, ID)).toEqual(MASTER_CONFIG)
     // Preferences it never set take the synced values as its own; its other keys are untouched.
-    for (const k of [PREFS_KEY, 'forge:fiat:v1', 'forge.trending.v1', 'forge.imageHosts.v1', 'forge.ipfsGateways', 'forge:orgs:testnet']) {
-      expect(JSON.parse(JSON.stringify(b.local.getItem(k)))).not.toBeNull()
-    }
+    expect(JSON.parse(b.local.getItem('forge:fiat:v1')!)).toEqual(JSON.parse(MASTER_PREFS['forge:fiat:v1']!))
+    expect(b.local.getItem('forge.trending.v1')).toBe(MASTER_PREFS['forge.trending.v1'])
+    for (const k of ['forge.imageHosts.v1', 'forge.ipfsGateways', 'forge:orgs:testnet']) expect(JSON.parse(b.local.getItem(k)!)).toEqual(JSON.parse(MASTER_PREFS[k]!))
     expect(parsePrefs(b.local.getItem(PREFS_KEY))).toEqual(parsePrefs(MASTER_PREFS[PREFS_KEY]!))
     expect(b.local.getItem('forge.unrelated')).toBe('mine')
     // ipfsPeer stays per device.
@@ -292,6 +292,9 @@ describe('first sync from master-format state', () => {
     expect(local.profiles.map((p) => p.name)).toEqual(['home-kubo', 'mine', 'r2-main'])
     const next = await syncUserSettings({ ...base, now: () => 1764100009000 })
     expect(next.storage!.profiles.map((p) => p.name)).toContain('mine')
+    const sctx = { E, keyId: KEY_ID, identityId: decodeIdentifier(ID), network: NETWORK }
+    const synced = (await openState(sctx, platform.states.get(`${ID}/storage`)!.fields)) as { entries: Record<string, { v: unknown }> }
+    expect(synced.entries['profile:mine']?.v).toEqual({ settings: mine.settings, secrets: mine.secrets })
   }, 120_000)
 
   it('another identity’s first sync on this device does not upload this browser’s preferences as its own', async () => {
@@ -301,4 +304,60 @@ describe('first sync from master-format state', () => {
     await syncUserSettings({ ...ctx(platform, 'aaaa', a.local), identityId: OTHER, port: platform.port(OTHER), storage: null })
     expect(platform.states.has(`${OTHER}/prefs`)).toBe(false)
   }, 60_000)
+
+  it('a Settings save of a key the sync was adding keeps the saved value, and uploads it next', async () => {
+    await syncUserSettings(ctx(platform, 'aaaa', a.local))
+    await leave(a)
+    await use(b)
+    await storeInVault(NETWORK, SECRET, { passphrase: 'another passphrase!' })
+    const saved = { ...MASTER_CONFIG.profiles[1]!, settings: { ...MASTER_CONFIG.profiles[1]!.settings, bucket: 'saved-here' } } as StorageConfig['profiles'][number]
+    const base = ctx(platform, 'bbbb', b.local)
+    let once = false
+    const port = {
+      ...base.port,
+      readState: async (owner: string, slot: string) => {
+        const got = await base.port.readState(owner, slot)
+        if (slot === 'storage' && !once) {
+          once = true
+          await updateStorageConfig(NETWORK, ID, (c) => ({ ...c, profiles: [...c.profiles, saved] }))
+        }
+        return got
+      },
+    }
+    await syncUserSettings({ ...base, port })
+    expect((await loadStorageConfig(NETWORK, ID)).profiles.find((p) => p.name === 'r2-main')).toEqual(saved)
+    await syncUserSettings({ ...base, now: () => 1764100009000 })
+    const sctx = { E, keyId: KEY_ID, identityId: decodeIdentifier(ID), network: NETWORK }
+    const synced = (await openState(sctx, platform.states.get(`${ID}/storage`)!.fields)) as { entries: Record<string, { v: { settings: { bucket: string } } }> }
+    expect(synced.entries['profile:r2-main']?.v.settings.bucket).toBe('saved-here')
+  }, 120_000)
+
+  it('a preference set back to the value held here before still reads as set, and is uploaded', async () => {
+    await syncUserSettings(ctx(platform, 'aaaa', a.local))
+    await leave(a)
+    await use(b)
+    await storeInVault(NETWORK, SECRET, { passphrase: 'another passphrase!' })
+    const own = JSON.stringify({ diffLayout: 'split', ignoreWhitespace: false, palette: 'standard', mergeName: '', mergeEmail: '' })
+    b.local.setItem(PREFS_KEY, own)
+    await syncUserSettings(ctx(platform, 'bbbb', b.local))
+    setActive(NETWORK, ID)
+    expect(parsePrefs(readPref(PREFS_KEY)).diffLayout).toBe('unified')
+    // The user picks split: the very string this device held.
+    b.local.setItem(PREFS_KEY, own)
+    notePrefWrite(PREFS_KEY)
+    expect(parsePrefs(readPref(PREFS_KEY)).diffLayout).toBe('split')
+    await syncUserSettings({ ...ctx(platform, 'bbbb', b.local), now: () => 1764100005000 })
+    const sctx = { E, keyId: KEY_ID, identityId: decodeIdentifier(ID), network: NETWORK }
+    const prefs = (await openState(sctx, platform.states.get(`${ID}/prefs`)!.fields)) as { entries: Record<string, { v: { diffLayout?: string } }> }
+    expect(prefs.entries['diff']?.v.diffLayout).toBe('split')
+  }, 120_000)
+
+  it('writes no shared browser preference for an identity no longer signed in here', async () => {
+    await syncUserSettings(ctx(platform, 'aaaa', a.local))
+    await leave(a)
+    await use(b)
+    await storeInVault(NETWORK, SECRET, { passphrase: 'another passphrase!' })
+    await syncUserSettings({ ...ctx(platform, 'bbbb', b.local), stillActive: () => false })
+    expect(b.local.getItem(PREFS_KEY)).toBeNull()
+  }, 120_000)
 })

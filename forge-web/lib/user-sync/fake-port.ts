@@ -25,7 +25,8 @@ export function fakePlatform(): FakePlatform {
     port(signer) {
       const bump = <T>(existing: Stored<T> | null, fields: T, map: Map<string, Stored<T>>, key: string): void => {
         const current = map.get(key) ?? null
-        if ((existing?.revision ?? null) !== (current?.revision ?? null)) throw new Error('revision conflict')
+        // As Platform: a replace names the document it read (its id) at the revision it read.
+        if ((existing?.revision ?? null) !== (current?.revision ?? null) || (existing?.id ?? null) !== (current?.id ?? null)) throw new Error('revision conflict')
         map.set(key, { id: current?.id ?? nextId(), ownerId: signer, revision: (current?.revision ?? 0n) + 1n, fields })
         p.writes++
       }
@@ -39,7 +40,10 @@ export function fakePlatform(): FakePlatform {
         writeGrant: async (fields, existing) => bump(existing, fields, p.grants, `${signer}/${fields.repoId}/${fields.memberId}`),
         deleteGrant: async (existing) => {
           if (existing.ownerId !== signer) throw new Error('not the owner')
-          p.grants.delete(`${signer}/${existing.fields.repoId}/${existing.fields.memberId}`)
+          const key = `${signer}/${existing.fields.repoId}/${existing.fields.memberId}`
+          // Only the document read: one recreated since is another document.
+          if (p.grants.get(key)?.id !== existing.id) return
+          p.grants.delete(key)
           p.writes++
         },
         syncKey: async (identityId, keyId) => {

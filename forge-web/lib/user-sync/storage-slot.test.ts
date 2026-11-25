@@ -36,4 +36,30 @@ describe('a Settings save over the merged view', () => {
     expect(saved.repoPolicies).toEqual({ r1: local.repoPolicies['r1'], r2: { targets: ['a'], replicas: 1, platformFallback: false } })
     expect(saved.lastTests).toEqual(local.lastTests)
   })
+
+  it('an edit of the synced namesake keeps the local profile, under the name it was shown with', () => {
+    const local = config([s3('r2', 'mine')])
+    const shown = storageView({ 'profile:r2': { settings: s3('r2', 'theirs').settings, secrets: {} } }, ['profile:r2'], local, 'dddd')
+    const next = { ...shown, profiles: shown.profiles.map((p) => (p.name === 'r2' ? s3('r2', 'edited') : p)) }
+    const saved = localAfterSave(local, shown, next, 'dddd')
+    expect(saved.profiles).toEqual([s3('r2', 'edited'), s3(collisionName('r2', 'dddd'), 'mine')])
+  })
+
+  it('shows the local profile under a free name when the plain collision name is synced too, and keeps it on save', () => {
+    const local = config([s3('r2', 'mine')])
+    const synced = { 'profile:r2': { settings: s3('r2', 'theirs').settings, secrets: {} }, [`profile:${collisionName('r2', 'dddd')}`]: { settings: s3('x', 'other').settings, secrets: {} } }
+    const shown = storageView(synced, ['profile:r2'], local, 'dddd')
+    expect(shown.profiles.find((p) => p.settings.kind === 's3' && (p.settings as { bucket: string }).bucket === 'mine')?.name).toBe(collisionName('r2', 'dddd-2'))
+    const saved = localAfterSave(local, shown, { ...shown, profiles: [...shown.profiles, s3('other')] }, 'dddd')
+    expect(saved.profiles.find((p) => p.name === 'r2')).toEqual(s3('r2', 'mine'))
+  })
+
+  it('keeps a collision name a saved policy names, so the policy resolves in the local blob', () => {
+    const local = config([s3('r2', 'mine')])
+    const shown = storageView({ 'profile:r2': { settings: s3('r2', 'theirs').settings, secrets: {} } }, ['profile:r2'], local, 'dddd')
+    const alias = collisionName('r2', 'dddd')
+    const saved = localAfterSave(local, shown, { ...shown, defaultPolicy: { targets: [alias], replicas: 1, platformFallback: false } }, 'dddd')
+    expect(saved.defaultPolicy?.targets).toEqual([alias])
+    expect(saved.profiles.map((p) => p.name)).toContain(alias)
+  })
 })

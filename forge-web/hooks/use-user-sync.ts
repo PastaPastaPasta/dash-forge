@@ -21,7 +21,7 @@ import { loadStorageConfig, updateStorageConfig, type StorageConfig } from '@/li
 import { setActive } from '@/lib/user-sync/overlay'
 import { forgeUserPort } from '@/lib/user-sync/platform'
 import { syncedAt, syncUserSettings } from '@/lib/user-sync/service'
-import { dropSyncedStorage, onLocalSettingsChange, requestUserSync, setSyncSubject, subscribeUserSync, userSyncStatus, type UserSyncStatus } from '@/lib/user-sync/session'
+import { dropSyncedStorage, onLocalSettingsChange, requestUserSync, syncSubject, setSyncSubject, subscribeUserSync, userSyncStatus, type UserSyncStatus } from '@/lib/user-sync/session'
 
 /** The least time between two syncs a tab switch starts. */
 const VISIBILITY_SYNC_MS = 60_000
@@ -85,7 +85,7 @@ export function UserSyncDriver(): null {
       void requestUserSync(identity, () =>
         withSyncKey(DEFAULT_NETWORK, identity, (kid, E) =>
           spendAction(namedAction('Settings synced'), (tag) =>
-            syncUserSettings({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, network: DEFAULT_NETWORK, identityId: identity, keyId: kid, E, deviceId, storage: local }),
+            syncUserSettings({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, network: DEFAULT_NETWORK, identityId: identity, keyId: kid, E, deviceId, storage: local, stillActive: () => syncSubject() === identity }),
           ),
         ),
       )

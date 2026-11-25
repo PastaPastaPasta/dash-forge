@@ -52,6 +52,11 @@ export function collisionName(name: string, deviceId: string): string {
   return `${name.slice(0, 64 - suffix.length)}${suffix}`
 }
 
+/** The names a local profile may be shown under beside a synced namesake, in order: the first free one is used. */
+function collisionNames(name: string, deviceId: string): string[] {
+  return [collisionName(name, deviceId), ...Array.from({ length: 8 }, (_, i) => collisionName(name, `${deviceId}-${i + 2}`))]
+}
+
 /**
  * The effective config: the merged values, plus each local profile whose synced namesake differs,
  * kept as {@link collisionName} (nothing local is dropped from sight).
@@ -78,8 +83,9 @@ export function storageView(view: Readonly<Record<string, unknown>>, collisions:
     if (!key.startsWith('profile:')) continue
     const own = local.profiles.find((p) => `profile:${p.name}` === key)
     if (!own) continue
-    const name = collisionName(own.name, deviceId)
-    if (!profiles.some((p) => p.name === name)) profiles.push({ ...own, name })
+    // A name neither synced nor local: a synced profile of the plain collision name never hides this one.
+    const name = collisionNames(own.name, deviceId).find((n) => !profiles.some((p) => p.name === n) && !local.profiles.some((p) => p.name === n))
+    if (name !== undefined) profiles.push({ ...own, name })
   }
   profiles.sort((a, b) => a.name.localeCompare(b.name))
   return { version: 1, profiles, defaultPolicy, repoPolicies, lastTests }
@@ -143,17 +149,24 @@ export function localAfterSave(local: StorageConfig, shown: StorageConfig, next:
   const byName = (c: StorageConfig, name: string): StorageProfile | undefined => c.profiles.find((p) => p.name === name)
   const keepLocal = new Set<string>()
   const dropCopies = new Set<string>()
+  // Names the saved policies use: a profile they name stays under that name in the blob.
+  const named = new Set([...(next.defaultPolicy?.targets ?? []), ...Object.values(next.repoPolicies).flatMap((p) => p.targets)])
   for (const own of local.profiles) {
-    const copy = collisionName(own.name, deviceId)
-    const shownCopy = byName(shown, copy)
-    if (byName(local, copy) !== undefined || shownCopy === undefined || !sameProfile(shownCopy, { ...own, name: copy })) continue
+    const copy = collisionNames(own.name, deviceId).find((n) => {
+      const shownCopy = byName(shown, n)
+      return byName(local, n) === undefined && shownCopy !== undefined && sameProfile(shownCopy, { ...own, name: n })
+    })
+    if (copy === undefined) continue
+    const shownCopy = byName(shown, copy)!
     const nextCopy = byName(next, copy)
     const synced = byName(shown, own.name)
     const nextSynced = byName(next, own.name)
     if (nextCopy === undefined || !sameProfile(nextCopy, shownCopy)) continue
-    dropCopies.add(copy)
+    // The synced namesake edited here: the local one stays, under the name it was shown with.
+    if (!(synced === undefined || nextSynced === undefined || sameProfile(nextSynced, synced))) continue
     // The synced namesake untouched (or removed) here: the local one keeps its name and settings.
-    if (synced === undefined || nextSynced === undefined || sameProfile(nextSynced, synced)) keepLocal.add(own.name)
+    keepLocal.add(own.name)
+    if (!named.has(copy)) dropCopies.add(copy)
   }
   const visible = new Set(shown.profiles.map((p) => p.name))
   const nextNames = new Set(next.profiles.map((p) => p.name))

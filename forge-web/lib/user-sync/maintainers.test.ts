@@ -185,4 +185,67 @@ describe('maintainers use the owner’s storage', () => {
     expect((await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER }))?.epoch).toBe(1)
     expect(platform.shares.size).toBe(1)
   })
+
+  it('keep with no share writes the nothing share past a leftover grant before deleting it', async () => {
+    const { platform, owner } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    for (const [k, g] of platform.grants) platform.grants.set(k, { ...g, fields: { ...g.fields, epoch: 7 } })
+    platform.shares.clear()
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: {}, maintainers: [] })
+    expect(done.epoch).toBe(8)
+    expect([...platform.shares.values()].map((s) => s.fields.epoch)).toEqual([8])
+    expect(platform.grants.size).toBe(0)
+  })
+
+  it('stopping returns the epoch it wrote', async () => {
+    const { platform, owner } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: storageEntries(PLATFORM_ONLY), maintainers: [ALICE] })
+    expect(done.epoch).toBe([...platform.shares.values()][0]!.fields.epoch)
+  })
+
+  it('a grant another tab wrote during the pass to someone no longer a maintainer is revoked at the next epoch', async () => {
+    const { platform, owner, member } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE, BOB] })
+    const bobs = [...platform.grants.values()].find((g) => g.fields.memberId === BOB)!
+    platform.grants.clear()
+    let reads = 0
+    const port = {
+      ...owner.port,
+      grantsOf: async (o: string, r: string) => {
+        const got = await owner.port.grantsOf(o, r)
+        // Another tab, with a stale member list, grants Bob again right after this pass read the grants.
+        if (reads++ === 0) platform.grants.set(`${OWNER}/${REPO}/${BOB}`, bobs)
+        return got
+      },
+    }
+    const done = await reconcileRepoShare({ ...owner, port }, { repoId: REPO, view: VIEW, maintainers: [ALICE], removed: [BOB] })
+    expect(done.epoch).toBe(1)
+    expect([...platform.grants.values()].map((g) => g.fields.memberId)).toEqual([ALICE])
+    expect(await readGrantedStorage(member(BOB), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
+  })
+
+  it('rewrites a grant envelope of another size', async () => {
+    const { platform, owner } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    for (const [k, g] of platform.grants) platform.grants.set(k, { ...g, fields: { ...g.fields, wrapped: new Uint8Array(61) } })
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    expect([...platform.grants.values()].map((g) => g.fields.wrapped.length)).toEqual([60])
+  })
+
+  it('a maintainer uses each shared destination once, and keeps its own profile of the shared name', async () => {
+    const { platform, owner, member } = identities()
+    await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE] })
+    const rsk = await repoStorageKey(owner.E, decodeIdentifier(REPO), 'testnet', 0)
+    const stored = [...platform.shares.values()][0]!
+    const plain = { ...sharePlain(CONFIG, REPO), policy: { targets: ['r2-main', 'platform', 'platform'], replicas: 3, platformFallback: false } }
+    await platform.port(OWNER).writeShare(REPO, await sealShare(rsk, { network: 'testnet', repoId: decodeIdentifier(REPO), epoch: 0, keyId: owner.keyId }, plain), stored)
+    const got = await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })
+    expect(got?.policy).toEqual({ targets: ['r2-main', 'platform'], replicas: 2, platformFallback: false })
+    const mine = { ...R2, name: 'shared-r2-main', settings: { ...R2.settings, bucket: 'alice' } } as StorageConfig['profiles'][number]
+    const own: StorageConfig = { version: 1, profiles: [mine], defaultPolicy: { targets: ['shared-r2-main'], replicas: 1, platformFallback: false }, repoPolicies: {}, lastTests: {} }
+    const cfg = withGrantedStorage(own, REPO, got)
+    expect(cfg.profiles.find((p) => p.name === 'shared-r2-main')).toEqual(mine)
+    expect(cfg.repoPolicies[REPO]?.targets).toEqual(['shared-r2-main-2', 'platform'])
+  })
 })

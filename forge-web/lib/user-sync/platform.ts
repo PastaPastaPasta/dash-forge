@@ -9,7 +9,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
 import { authSdk } from '../sdk/facade'
-import { base64ToBytes, queryDocumentsWithProof, type OrderByClause, type PlainDocument, type WhereClause } from '../sdk/query'
+import { base64ToBytes, queryAllDocuments, queryDocumentsWithProof, type OrderByClause, type PlainDocument, type WhereClause } from '../sdk/query'
 import { createDocumentIdempotent, deleteDocumentIdempotent, replaceDocumentIdempotent, type WriteAuth } from '../sdk/write'
 import { base58Encode } from '../auth/base58'
 import { KeyPurpose, KeyType } from '../vendor/platform-auth/app-connect/types'
@@ -114,12 +114,12 @@ export function grantOf(doc: PlainDocument): Stored<GrantFields> | null {
   const memberId = idOf(doc['memberId'])
   const wrapped = bytesOf(doc['wrapped'])
   const { epoch, senderKeyId, recipientKeyId } = doc
-  if (typeof ownerId !== 'string' || typeof doc['$id'] !== 'string' || !repoId || !memberId || !isU32(epoch) || !isU32(senderKeyId) || !isU32(recipientKeyId) || wrapped?.length !== WRAPPED_BYTES) return null
+  if (typeof ownerId !== 'string' || typeof doc['$id'] !== 'string' || !repoId || !memberId || !isU32(epoch) || !isU32(senderKeyId) || !isU32(recipientKeyId) || wrapped === null || wrapped.length < WRAPPED_BYTES || wrapped.length > 96) return null
   return storedOf(doc as PlainDocument & { $id: string }, ownerId, { repoId, memberId, epoch, senderKeyId, recipientKeyId, wrapped })
 }
 
-/** The most grants one read lists (a repo's maintainers are far fewer). */
-const GRANT_LIMIT = 100
+/** Grants read per page (every page is read). */
+const GRANT_PAGE = 100
 
 /** The port over Forge's SDK connection; `auth` signs writes (a group-bound key covers forge-user). */
 export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth | null): UserSyncPort {
@@ -132,8 +132,9 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
     const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractId, documentTypeName: type, where, orderBy, limit: 1 })
     return documents[0] ?? null
   }
+  // Every grant, or an error: a reconcile that missed one could leave a former maintainer's key on the share.
   const grants = async (where: WhereClause[], orderBy: OrderByClause[]): Promise<Stored<GrantFields>[]> => {
-    const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractId, documentTypeName: 'grant', where, orderBy, limit: GRANT_LIMIT })
+    const documents = await queryAllDocuments(sdk, { dataContractId: contractId, documentTypeName: 'grant', where, orderBy }, { pageLimit: GRANT_PAGE })
     return documents.flatMap((d) => grantOf(d) ?? [])
   }
   /** Create `data`, or replace `existing` (at the revision read) with `changes`: an undefined property is removed. */

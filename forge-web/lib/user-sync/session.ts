@@ -97,13 +97,15 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
         const generation = vaultLockGeneration()
         try {
           if (state.identityId === identityId) set({ ...state, status: { kind: 'syncing', syncedAt } })
+          const saves = localSaves
           const outcome = await current()
           // Locked meanwhile: what the run decrypted is not kept.
           if (vaultLockGeneration() !== generation) {
             if (state.identityId === identityId) set({ ...state, status: { kind: 'local', syncedAt }, storage: null, synced: null })
           } else if (state.identityId === identityId) {
             if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
-            else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage, synced: outcome.synced ?? state.synced ?? null })
+            // A Settings save during the run shows what it saved: the run's view predates it (the next run follows).
+            else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: localSaves !== saves ? state.storage : (outcome.storage ?? state.storage), synced: outcome.synced ?? state.synced ?? null })
           }
         } catch (e) {
           if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
@@ -138,7 +140,15 @@ export function onLocalSettingsChange(listener: () => void): () => void {
   }
 }
 
+let localSaves = 0
+
+/** Who sync is for in this tab now (the signed-in identity), or null. */
+export function syncSubject(): string | null {
+  return state.identityId
+}
+
 /** Show `config` as the effective one until the sync it starts finishes (a Settings save). */
 export function setSyncedStorage(identityId: string, config: StorageConfig): void {
+  localSaves++
   if (state.identityId === identityId && state.storage !== null) set({ ...state, storage: config })
 }

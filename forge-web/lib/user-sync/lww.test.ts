@@ -111,4 +111,33 @@ describe('the last-writer-wins slot', () => {
     const plan = planSlot({ slot: 'storage', local, base: baseOf(local, tag), remote, now: 10, tag, options: {}, edits: { 'repo:r': 9 } })
     expect(plan.next.entries['repo:r']).toEqual({ at: 10, v: { targets: ['a'] } })
   })
+
+  it('a recorded delete is the newest tombstone: over an older one, and where none was synced', () => {
+    const base = baseOf({}, tag)
+    const older = planSlot({ slot: 's', local: {}, base, remote: doc({ a: { at: 10, v: null } }), now: 30, tag, options: {}, deletions: { a: 20 } })
+    expect(older.next.entries['a']).toEqual({ at: 20, v: null })
+    const absent = planSlot({ slot: 's', local: {}, base, remote: doc({}), now: 30, tag, options: {}, deletions: { a: 20 } })
+    expect(absent.next.entries['a']).toEqual({ at: 20, v: null })
+  })
+
+  it('does not upload a value another identity left here, missing from this identity’s copy', () => {
+    const local = { mergeIdentity: { name: 'A', email: 'a@example.org' } }
+    const plan = planSlot({ slot: 'prefs', local, base: baseOf(local, tag), remote: doc({}), now: 10, tag, options: {}, uploadLocal: false })
+    expect(plan.upload).toBe(false)
+    const changed = planSlot({ slot: 'prefs', local: { mergeIdentity: { name: 'B', email: 'b@example.org' } }, base: baseOf(local, tag), remote: doc({}), now: 10, tag, options: {}, uploadLocal: false })
+    expect(changed.upload).toBe(true)
+  })
+
+  it('keeps an entry named __proto__ through a read and a write', () => {
+    const raw = JSON.parse('{"format":"forge-user/prefs","version":1,"entries":{"__proto__":{"at":1,"v":7}}}') as unknown
+    const plan = planSlot({ slot: 'prefs', local: { a: 1 }, base: null, remote: parseDoc(raw, 'prefs'), now: 10, tag, options: {} })
+    expect(JSON.parse(canonicalJson(plan.next)).entries.__proto__).toEqual({ at: 1, v: 7 })
+    expect(Object.keys(plan.next.entries).sort()).toEqual(['__proto__', 'a'])
+  })
+
+  it('publishes a list reordered here', () => {
+    const before = { ipfsGateways: ['https://a.example', 'https://b.example'] }
+    const plan = planSlot({ slot: 'prefs', local: { ipfsGateways: ['https://b.example', 'https://a.example'] }, base: baseOf(before, tag, { ipfsGateways: id }), remote: doc({ ipfsGateways: { at: 5, v: before.ipfsGateways } }), now: 10, tag, options: { lists: { ipfsGateways: id } } })
+    expect(plan.next.entries['ipfsGateways']!.v).toEqual(['https://b.example', 'https://a.example'])
+  })
 })

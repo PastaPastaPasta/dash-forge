@@ -6,6 +6,7 @@ import { decodeIdentifier } from '../auth/base58'
 import {
   PIECE_BYTES,
   SyncDecryptError,
+  SyncTooLargeError,
   canonicalJson,
   decodePlain,
   ecdhX,
@@ -148,5 +149,28 @@ describe('forge-user sync vectors', () => {
   it('refuses a deflate bomb past the size limit', () => {
     const bomb = encodePlain({ x: 'a'.repeat(4096) })
     expect(() => inflateRaw(bomb, 1024)).toThrow(/size limit/)
+  })
+
+  it('never writes what a reader would refuse to inflate', () => {
+    expect(() => encodePlain({ x: 'a'.repeat(1 << 20) })).toThrow(SyncTooLargeError)
+  })
+
+  it('splits ciphertext past 10,000 bytes into three pieces and opens them again', async () => {
+    const noise = Buffer.from(crypto.getRandomValues(new Uint8Array(11_000))).toString('base64')
+    const doc = await sealState(ctx, 'big3', { noise })
+    expect(doc.d2).toBeDefined()
+    expect(doc.d0.length + doc.d1!.length + doc.d2!.length).toBeGreaterThan(10_000)
+    expect(await openState(ctx, doc)).toEqual({ noise })
+  })
+
+  it('wraps only a 32-byte repo storage key', async () => {
+    await expect(wrapGrant(ownerE, hex(vectors.memberEncPubHex), grantParams, new Uint8Array(33))).rejects.toThrow(/32 bytes/)
+  })
+
+  it('writes every array index, a hole as null, and refuses a value with no JSON form', () => {
+    // eslint-disable-next-line no-sparse-arrays
+    expect(canonicalJson([1, , 3])).toBe('[1,null,3]')
+    expect(() => canonicalJson(undefined)).toThrow()
+    expect(canonicalJson(null)).toBe('null')
   })
 })

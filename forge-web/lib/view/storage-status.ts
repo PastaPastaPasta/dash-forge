@@ -9,7 +9,7 @@ import { z } from 'zod'
 
 import { IPFS_GATEWAYS } from '../constants'
 import { isPublicHttpsUrl } from '../net'
-import { effectiveRaw } from '../user-sync/overlay'
+import { effectiveRaw, notePrefWrite } from '../user-sync/overlay'
 import type { UnavailablePack } from './browse-source'
 import { plural, urlHost } from './format'
 
@@ -60,6 +60,7 @@ export function userGateways(): string[] {
 export function setUserGateways(list: readonly string[]): void {
   const clean = [...new Set(list.flatMap((g) => normalizeGateway(g) ?? []))].slice(0, 16)
   storage()?.setItem(GATEWAYS_KEY, JSON.stringify(clean))
+  notePrefWrite(GATEWAYS_KEY)
 }
 
 /** Test hook: the shared default list, replaced (`null` restores the real one). */

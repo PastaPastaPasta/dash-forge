@@ -47,10 +47,13 @@ function orgsOf(v: unknown, network: string): Record<string, unknown>[] | null {
 export function prefsEntries(raw: Readonly<Record<string, string | null>>, network: string): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const prefsRaw = raw[PREFS_KEY] ?? null
-  if (prefsRaw !== null) {
+  const stored = json(prefsRaw)
+  // Unreadable stored preferences are the reader's defaults, never values to sync.
+  if (prefsRaw !== null && typeof stored === 'object' && stored !== null && !Array.isArray(stored)) {
     const p = parsePrefs(prefsRaw)
     out['diff'] = { diffLayout: p.diffLayout, ignoreWhitespace: p.ignoreWhitespace, palette: p.palette }
-    if (p.mergeName !== '' || p.mergeEmail !== '') out['mergeIdentity'] = { name: p.mergeName, email: p.mergeEmail }
+    // Set (even cleared) once the stored preferences carry it; absent when never set.
+    if ('mergeName' in stored || 'mergeEmail' in stored) out['mergeIdentity'] = { name: p.mergeName, email: p.mergeEmail }
   }
   const fiat = json(raw[FIAT_SETTINGS_KEY] ?? null) as Record<string, unknown> | undefined
   if (fiat && typeof fiat === 'object' && typeof fiat['enabled'] === 'boolean' && isCurrency(fiat['currency'])) out['fiat'] = { enabled: fiat['enabled'], currency: fiat['currency'] }
@@ -69,8 +72,26 @@ export const PREFS_PLAN: PlanOptions = {
   lists: {
     imageHosts: (e) => String(e),
     ipfsGateways: (e) => String(e),
-    orgs: (e) => String((e as Record<string, unknown>)['orgId']),
+    orgs: (e) => (typeof e === 'object' && e !== null ? String((e as Record<string, unknown>)['orgId']) : ''),
   },
+}
+
+/** Each preference key's slot keys. */
+function slotKeysOf(key: string, network: string): readonly string[] {
+  if (key === PREFS_KEY) return ['diff', 'mergeIdentity']
+  if (key === FIAT_SETTINGS_KEY) return ['fiat']
+  if (key === TRENDING_PREF_KEY) return ['trending']
+  if (key === IMAGE_HOSTS_KEY) return ['imageHosts']
+  if (key === GATEWAYS_KEY) return ['ipfsGateways']
+  if (key === orgsKey(network)) return ['orgs']
+  return []
+}
+
+/** Preference keys written here (and when) as the slot keys they hold. */
+export function prefSlotEdits(edits: Readonly<Record<string, number>>, network: string): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [key, at] of Object.entries(edits)) for (const slotKey of slotKeysOf(key, network)) out[slotKey] = at
+  return out
 }
 
 /**

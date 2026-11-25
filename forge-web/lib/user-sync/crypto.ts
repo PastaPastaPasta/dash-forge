@@ -85,7 +85,8 @@ export function randomNonce(): Uint8Array {
 
 /** JSON with object keys sorted at every level and no whitespace (gen.py's `sort_keys=True`). */
 export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v === undefined ? null : v)).join(',')}]`
+  // Every index, a hole or undefined as null (`map` would skip a hole).
+  if (Array.isArray(value)) return `[${Array.from(value, (v) => canonicalJson(v === undefined ? null : v)).join(',')}]`
   if (value !== null && typeof value === 'object') {
     const entries = Object.keys(value)
       .sort()
@@ -93,7 +94,9 @@ export function canonicalJson(value: unknown): string {
       .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`)
     return `{${entries.join(',')}}`
   }
-  return JSON.stringify(value)
+  const out = JSON.stringify(value) as string | undefined
+  if (out === undefined) throw new Error('a synced value has no JSON form')
+  return out
 }
 
 export function deflateRaw(bytes: Uint8Array): Uint8Array {
@@ -117,7 +120,10 @@ export function inflateRaw(bytes: Uint8Array, max = MAX_PLAINTEXT_BYTES): Uint8A
 }
 
 export function encodePlain(value: unknown): Uint8Array {
-  return deflateRaw(te.encode(canonicalJson(value)))
+  const bytes = te.encode(canonicalJson(value))
+  // What a reader would refuse to inflate is never written.
+  if (bytes.length > MAX_PLAINTEXT_BYTES) throw new SyncTooLargeError(bytes.length, MAX_PLAINTEXT_BYTES)
+  return deflateRaw(bytes)
 }
 
 export function decodePlain(compressed: Uint8Array): unknown {
@@ -275,6 +281,7 @@ export function grantWrapKey(shared: Uint8Array, p: GrantParams): Promise<Uint8A
 
 /** `nonce ‖ AES-GCM(W, rsk, AAD = ownerId)`, 60 bytes; `E_owner` with the member's public key. */
 export async function wrapGrant(ownerE: Uint8Array, memberPub: Uint8Array, p: GrantParams, rsk: Uint8Array, nonce: Uint8Array = randomNonce()): Promise<Uint8Array> {
+  if (rsk.length !== 32) throw new Error('a repo storage key is 32 bytes')
   const shared = ecdhX(ownerE, memberPub)
   const w = await grantWrapKey(shared, p)
   try {
