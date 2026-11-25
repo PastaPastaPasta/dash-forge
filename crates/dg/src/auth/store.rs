@@ -483,7 +483,7 @@ pub fn promote(
 ) -> Result<Stored> {
     let main = storer.store(network, identity_id, text, Slot::Main)?;
     if let Some((stored, staged)) = storer.staged.take() {
-        let _lock = identity_lock(network, identity_id)?;
+        let _lock = identity_lock(network, identity_id).ok();
         discard(&stored, &staged, storer.pass.as_ref());
     }
     Ok(main)
@@ -539,8 +539,17 @@ fn identity_lock(network: &str, identity_id: &str) -> Result<std::fs::File> {
         .truncate(false)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    file.lock()
-        .with_context(|| format!("locking {}", path.display()))?;
+    match file.lock() {
+        Ok(()) => {}
+        // A filesystem without locks (some network or FUSE mounts): store unlocked, as before.
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+            eprintln!(
+                "note: {} can't be locked here ({e}); storing without it",
+                path.display()
+            );
+        }
+        Err(e) => return Err(e).with_context(|| format!("locking {}", path.display())),
+    }
     Ok(file)
 }
 
