@@ -27,6 +27,10 @@ export function fakePlatform(): FakePlatform {
     olderKeys: new Map(),
     writes: 0,
     port(signer) {
+      const liveKeys = (identityId: string): SyncPublicKey[] => {
+        const k = p.keys.get(identityId)
+        return [...(p.olderKeys.get(identityId) ?? []), ...(k ? [k] : [])].sort((a, b) => a.keyId - b.keyId)
+      }
       const bump = <T>(existing: Stored<T> | null, fields: T, map: Map<string, Stored<T>>, key: string): void => {
         const current = map.get(key) ?? null
         // As Platform: a replace names the document it read (its id) at the revision it read.
@@ -51,14 +55,10 @@ export function fakePlatform(): FakePlatform {
           p.writes++
         },
         syncKey: async (identityId, keyId) => {
-          const k = p.keys.get(identityId)
-          if (keyId === undefined || k?.keyId === keyId) return k ?? null
-          return p.olderKeys.get(identityId)?.find((o) => o.keyId === keyId) ?? null
+          const live = liveKeys(identityId)
+          return (keyId === undefined ? live.at(-1) : live.find((k) => k.keyId === keyId)) ?? null
         },
-        syncKeys: async (identityId) => {
-          const k = p.keys.get(identityId)
-          return [...(p.olderKeys.get(identityId) ?? []), ...(k ? [k] : [])].sort((a, b) => a.keyId - b.keyId)
-        },
+        syncKeys: async (identityId) => liveKeys(identityId),
       }
     },
   }

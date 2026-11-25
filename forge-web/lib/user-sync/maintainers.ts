@@ -237,12 +237,6 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   const keys = new Map<string, readonly SyncPublicKey[]>()
   if (!stop) for (const m of members) keys.set(m, await ctx.port.syncKeys(m))
   const newest = (m: string): SyncPublicKey | undefined => keys.get(m)?.at(-1)
-  // A grant to a key that is not the member's newest moves the share on: the key it went to keeps
-  // that epoch's repo key, so a rotated-out key never opens what is shared after.
-  const rekeyed = grants.some((g) => {
-    const key = newest(g.fields.memberId)
-    return key !== undefined && key.keyId !== g.fields.recipientKeyId
-  })
   // Revoked: every grant when sharing stops; else one to anyone not a maintainer now, or to a key no longer live.
   const revoked = grants.filter((g) => stop || !(keys.get(g.fields.memberId) ?? []).some((k) => k.keyId === g.fields.recipientKeyId))
   let opened: SharePlain | null = null
@@ -256,6 +250,16 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     }
   }
   const lent = (s: SharePlain | null): boolean => s !== null && Object.keys(s.profiles).length > 0
+  // A grant to a key that is not the member's newest moves the share on when it lends storage: the
+  // key it went to keeps that epoch's repo key, so a rotated-out key never opens what is shared after.
+  // An empty share has nothing to move away from (and its grants are not rewritten: no endless bumps).
+  const willLend = !stop && lent(rule.kind === 'content' ? rule.plain : rule.kind === 'keep' ? opened : null)
+  const rekeyed =
+    willLend &&
+    grants.some((g) => {
+      const key = newest(g.fields.memberId)
+      return key !== undefined && key.keyId !== g.fields.recipientKeyId
+    })
   // Stopping a share that lends storage, or one that does not open here.
   const stopping = stop && (opened === null || lent(opened))
   // Epochs only go up: a share is never deleted, and a new one starts past every grant left over,

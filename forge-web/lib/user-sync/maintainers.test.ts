@@ -120,7 +120,7 @@ describe('maintainers use the owner’s storage', () => {
     expect(await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
   })
 
-  it('a share’s epoch never goes back: remove, stop, share again, each above every earlier one', async () => {
+  it('a share’s epoch never goes back: remove, stop, share again (at the stop’s epoch, which no grant held)', async () => {
     const { platform, owner, member } = identities()
     const epochs: number[] = []
     const shareEpoch = (): number => [...platform.shares.values()][0]!.fields.epoch
@@ -360,6 +360,12 @@ describe('maintainers use the owner’s storage', () => {
     expect(done).toMatchObject({ granted: [], epoch: 1 })
     expect(platform.writes).toBe(writes)
     expect(platform.grants.size).toBe(1)
+    // A newer key for that member, the old one still live: an empty share has nothing to move away from.
+    platform.olderKeys.set(ALICE, [platform.keys.get(ALICE)!])
+    platform.keys.set(ALICE, { keyId: 12, pub: secp.getPublicKey(secp.utils.randomSecretKey(), true) })
+    await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
+    await reconcileRepoShare(owner, { repoId: REPO, view: unusable, maintainers: [ALICE] })
+    expect(platform.writes).toBe(writes)
   })
 
   it('a repo with no storage of its own and no share writes nothing', async () => {
