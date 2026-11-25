@@ -150,9 +150,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const syncOn = syncKind === 'synced' || syncKind === 'syncing'
   // Maintainers get only storage set for this repo (its own policy), never the owner's default.
   const repoStorage = useStorageConfig()
-  const hasRepoStorage = repoStorage.config?.repoPolicies[repo.repoId] !== undefined
+  const repoPolicy = repoStorage.config?.repoPolicies[repo.repoId]
+  const hasRepoStorage = repoPolicy !== undefined
+  const repoStorageShareable = repoPolicy?.targets.some((t) => repoStorage.config?.profiles.some((p) => p.name === t && p.settings.kind !== 'platform')) ?? false
   const repoGrant = useRepoGrant(repo)
-  const card = storageCardView({ syncOn, owner: identity !== null && identity === repo.ownerId, hasRepoStorage, maintainers: share.maintainers?.length ?? 0 })
+  const card = storageCardView({ syncOn, owner: identity !== null && identity === repo.ownerId, hasRepoStorage, repoStorageShareable, maintainers: share.maintainers?.length ?? 0 })
   // A removed maintainer could have copied the shared credentials: say so once.
   const [rotate, setRotate] = useState(false)
   // The identity the owner tried to add before they accepted: the invite is pending on them.

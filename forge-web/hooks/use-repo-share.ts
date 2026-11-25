@@ -47,6 +47,24 @@ export function stoppedDefaultKey(networkKey: string, repoId: string): string {
   return `forge:user-sync:stopped-default:${networkKey}:${repoId}`
 }
 
+/** Repos (network:repo) whose default-storage share a reconcile here stopped, waiting to be said. */
+const stopsToSay = new Set<string>()
+const stopListeners = new Set<() => void>()
+
+/** A reconcile stopped `repoKey`'s default-storage share: say it, whatever became of the visit that ran it. */
+export function noteStoppedDefault(repoKey: string): void {
+  stopsToSay.add(repoKey)
+  for (const l of stopListeners) l()
+}
+
+/** Whether to say it now for (network, repo): once per repo, recorded as said when it is. */
+export function takeStoppedNotice(networkKey: string, repoId: string): boolean {
+  const key = `${networkKey}:${repoId}`
+  if (!stopsToSay.has(key)) return false
+  stopsToSay.delete(key)
+  return firstStoppedNotice(networkKey, repoId)
+}
+
 /** Whether the line was shown before; records it as shown when not. */
 export function firstStoppedNotice(networkKey: string, repoId: string): boolean {
   try {
@@ -112,13 +130,14 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       if (isOwner) {
         const listed = await readMaintainers(sdk, repo).catch(() => null)
         if (!stale && listed !== null) setMaintainers(listed.filter((m) => m !== identity))
-        if (config === null) return
+        if (config === null || stale) return
         const done = await reconcile(config).catch(() => null)
+        // A share of the default storage (from before only repo storage was shared) just stopped:
+        // said even if this visit moved on meanwhile (a later pass finds nothing left to stop).
+        if (done?.stopped === 'default') noteStoppedDefault(repoKey)
         if (stale || done === null) return
         setWaiting(done.waiting)
         setGranted(done.granted)
-        // A share of the default storage (from before only repo storage was shared) just stopped.
-        if (done.stopped === 'no-repo-policy' && firstStoppedNotice(ACTIVE_NETWORK.key, repo.repoId)) setStoppedDefault(true)
         return
       }
       const maintainers = await readMaintainers(sdk, repo).catch(() => [] as string[])
@@ -128,7 +147,19 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
     return () => {
       stale = true
     }
-  }, [user, identity, sdk, isOwner, config, reconcile, repo])
+  }, [user, identity, sdk, isOwner, config, reconcile, repo, repoKey])
+
+  const [stopTick, setStopTick] = useState(0)
+  useEffect(() => {
+    const bump = (): void => setStopTick((t) => t + 1)
+    stopListeners.add(bump)
+    return () => {
+      stopListeners.delete(bump)
+    }
+  }, [])
+  useEffect(() => {
+    if (isOwner && takeStoppedNotice(ACTIVE_NETWORK.key, repo.repoId)) setStoppedDefault(true)
+  }, [isOwner, repo.repoId, stopTick])
 
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
@@ -163,12 +194,18 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
  * key), `no-key` (this browser holds no forge-user key), `not-maintainer`, or `off` (no sync on
  * this network, or not read: the owner, signed out).
  */
-export type RepoGrantStatus = 'off' | 'pending' | 'granted' | 'none' | 'no-key' | 'not-maintainer'
+export type RepoGrantStatus = 'off' | 'pending' | 'granted' | 'none' | 'unusable' | 'no-key' | 'not-maintainer'
 
 interface GrantRead {
   readonly status: Exclude<RepoGrantStatus, 'off' | 'pending'>
   readonly grant: GrantedStorage | null
 }
+
+// One object per status without a grant: a repeated read settles on the same value (no re-render).
+const NOT_MAINTAINER: GrantRead = { status: 'not-maintainer', grant: null }
+const NO_KEY: GrantRead = { status: 'no-key', grant: null }
+const NONE: GrantRead = { status: 'none', grant: null }
+const UNUSABLE: GrantRead = { status: 'unusable', grant: null }
 
 /** Grant reads in flight (one per repo and identity); a settled one is read again on the next visit. */
 const grantReads = new Map<string, Promise<GrantRead | null>>()
@@ -211,12 +248,15 @@ export function useRepoGrant(repo: RepoRef | null): { readonly status: RepoGrant
     let pending = grantReads.get(scope)
     if (pending === undefined) {
       pending = (async (): Promise<GrantRead> => {
-        if (!(await readMaintainers(sdk, repo)).includes(identity)) return { status: 'not-maintainer', grant: null }
+        if (!(await readMaintainers(sdk, repo)).includes(identity)) return NOT_MAINTAINER
+        const port = forgeUserPort(sdk, user, null)
         const got = await withSyncKey(DEFAULT_NETWORK, identity, async (keyId, E) => ({
-          grant: await readGrantedStorage({ port: forgeUserPort(sdk, user, null), networkKey: ACTIVE_NETWORK.key, memberId: identity, keyId, E }, { repoId: repo.repoId, repoOwnerId: repo.ownerId }),
+          grant: await readGrantedStorage({ port, networkKey: ACTIVE_NETWORK.key, memberId: identity, keyId, E }, { repoId: repo.repoId, repoOwnerId: repo.ownerId }),
         }))
-        if (got === null) return { status: 'no-key', grant: null }
-        return got.grant === null ? { status: 'none', grant: null } : { status: 'granted', grant: got.grant }
+        if (got === null) return NO_KEY
+        if (got.grant !== null) return { status: 'granted', grant: got.grant }
+        // A grant there that does not open here (an older key, an epoch moving): not "nothing set".
+        return (await port.grantFor(repo.ownerId, repo.repoId, identity)) === null ? NONE : UNUSABLE
       })().catch(() => null)
       const mine = pending
       grantReads.set(scope, mine)

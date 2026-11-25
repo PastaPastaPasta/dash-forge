@@ -249,19 +249,29 @@ describe('maintainers use the owner’s storage', () => {
     expect(cfg.repoPolicies[REPO]?.targets).toEqual(['shared-r2-main-2', 'platform'])
   })
 
-  it('a share of the default storage (no storage of the repo’s own) stops: nothing at the next epoch, every grant revoked, once', async () => {
+  it('a share of the repo’s own storage the owner cleared stops: nothing at the next epoch, every grant revoked, once, not called the default', async () => {
     const { platform, owner, member } = identities()
     await reconcileRepoShare(owner, { repoId: REPO, view: VIEW, maintainers: [ALICE, BOB] })
     const { [`repo:${REPO}`]: _own, ...defaultOnly } = VIEW
     expect(shareRule(defaultOnly, REPO)).toEqual({ kind: 'nothing', reason: 'no-repo-policy' })
     const done = await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE, BOB] })
-    expect(done).toMatchObject({ granted: [], shared: true, epoch: 1, stopped: 'no-repo-policy' })
+    expect(done).toMatchObject({ granted: [], shared: true, epoch: 1, stopped: 'other' })
     expect(platform.grants.size).toBe(0)
     expect(await readGrantedStorage(member(ALICE), { repoId: REPO, repoOwnerId: OWNER })).toBeNull()
     const writes = platform.writes
     const again = await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE, BOB] })
     expect(again.stopped).toBeUndefined()
     expect(platform.writes).toBe(writes)
+  })
+
+  it('a share that held the default storage (the old rule) stops and says so', async () => {
+    const { platform, owner } = identities()
+    const legacy = { ...VIEW, [`repo:${REPO}`]: VIEW['default'] }
+    await reconcileRepoShare(owner, { repoId: REPO, view: legacy, maintainers: [ALICE] })
+    const { [`repo:${REPO}`]: _own, ...defaultOnly } = VIEW
+    const done = await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE] })
+    expect(done).toMatchObject({ granted: [], shared: true, epoch: 1, stopped: 'default' })
+    expect(platform.grants.size).toBe(0)
   })
 
   it('a repo with no storage of its own and no share writes nothing', async () => {

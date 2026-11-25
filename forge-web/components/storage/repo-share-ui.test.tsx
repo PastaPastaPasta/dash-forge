@@ -15,7 +15,7 @@ vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config
 import { LOCAL_PUSHES_HINT, SHARE_ACTION, storageCardView } from './repo-share-notes'
 import { RepoStoragePolicy } from './repo-storage-policy'
 import { OWNER_STORAGE_UNSET, StorageRow } from '@/components/repo/merge-upload'
-import { firstStoppedNotice, stoppedDefaultKey } from '@/hooks/use-repo-share'
+import { firstStoppedNotice, noteStoppedDefault, stoppedDefaultKey, takeStoppedNotice } from '@/hooks/use-repo-share'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const kubo = { name: 'kubo', settings: { kind: 'ipfs-kubo', provider: 'kubo', api: 'http://127.0.0.1:5001', gateway: '', publicGateway: '', pinningEndpoint: '' }, secrets: {} } as StorageConfig['profiles'][number]
@@ -37,16 +37,22 @@ afterEach(() => {
 describe('the "Your browser pushes" card by case', () => {
   it('without sync (mainnet) it is master’s card: its hint, no action, no details', () => {
     for (const owner of [true, false]) for (const hasRepoStorage of [true, false]) {
-      expect(storageCardView({ syncOn: false, owner, hasRepoStorage, maintainers: 2 })).toEqual({ hint: LOCAL_PUSHES_HINT, details: false })
+      expect(storageCardView({ syncOn: false, owner, hasRepoStorage, repoStorageShareable: hasRepoStorage, maintainers: 2 })).toEqual({ hint: LOCAL_PUSHES_HINT, details: false })
     }
     expect(LOCAL_PUSHES_HINT).toBe('Only you see this: it stays in this browser.')
   })
 
   it('offers the owner the one action only with sync, maintainers, and no storage of the repo’s own', () => {
-    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: false, maintainers: 1 }).shareAction).toBe(SHARE_ACTION)
-    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: false, maintainers: 0 }).shareAction).toBeUndefined()
-    expect(storageCardView({ syncOn: true, owner: false, hasRepoStorage: false, maintainers: 1 }).shareAction).toBeUndefined()
-    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, maintainers: 1 })).toEqual({ hint: "Shared with this repo's maintainers.", details: true })
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: false, repoStorageShareable: false, maintainers: 1 }).shareAction).toBe(SHARE_ACTION)
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: false, repoStorageShareable: false, maintainers: 0 }).shareAction).toBeUndefined()
+    expect(storageCardView({ syncOn: true, owner: false, hasRepoStorage: false, repoStorageShareable: false, maintainers: 1 }).shareAction).toBeUndefined()
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 1 })).toEqual({ hint: "Shared with this repo's maintainers.", details: true })
+  })
+
+  it('says shared only with maintainers and a place that is not Platform', () => {
+    const alone = { hint: 'Only you see this.', details: false }
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: true, maintainers: 0 })).toEqual(alone)
+    expect(storageCardView({ syncOn: true, owner: true, hasRepoStorage: true, repoStorageShareable: false, maintainers: 3 })).toEqual(alone)
   })
 })
 
@@ -88,5 +94,15 @@ describe('the stopped-default notice', () => {
     expect(localStorage.getItem(stoppedDefaultKey('testnet', 'r'))).not.toBeNull()
     expect(firstStoppedNotice('testnet', 'r')).toBe(false)
     expect(firstStoppedNotice('testnet', 'other')).toBe(true)
+  })
+
+  it('waits for a page to say it, even after the visit that stopped it is gone, then never again', () => {
+    expect(takeStoppedNotice('testnet', 'late')).toBe(false)
+    noteStoppedDefault('testnet:late')
+    expect(localStorage.getItem(stoppedDefaultKey('testnet', 'late'))).toBeNull()
+    expect(takeStoppedNotice('testnet', 'late')).toBe(true)
+    expect(takeStoppedNotice('testnet', 'late')).toBe(false)
+    noteStoppedDefault('testnet:late')
+    expect(takeStoppedNotice('testnet', 'late')).toBe(false)
   })
 })

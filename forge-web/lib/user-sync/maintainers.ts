@@ -37,6 +37,9 @@ export const NOTHING_SHARED: SharePlain = { format: SHARE_FORMAT, version: 1, pr
 /** Why nothing is shared: the repo has no storage of its own (`repo:<id>`), or it stores on Platform only. */
 export type NothingReason = 'no-repo-policy' | 'platform-only'
 
+/** Why a pass stopped a share: the share held the owner's default storage (shared before only repo storage was), or other. */
+export type StopReason = 'default' | 'other'
+
 export type ShareRule = { readonly kind: 'keep' } | { readonly kind: 'nothing'; readonly reason: NothingReason } | { readonly kind: 'content'; readonly plain: SharePlain }
 
 const KEEP: ShareRule = { kind: 'keep' }
@@ -185,8 +188,8 @@ export interface Reconciled {
   /** Whether a share exists (so a removed maintainer may have seen its credentials). */
   readonly shared: boolean
   readonly epoch: number | null
-  /** This pass stopped a share that held storage (moved it to the nothing share), and why. */
-  readonly stopped?: NothingReason
+  /** This pass stopped a share that held storage (moved it to the nothing share), and what it held. */
+  readonly stopped?: StopReason
 }
 
 /**
@@ -251,7 +254,7 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
     const epoch = existing === null ? at : at + 1
     if (write) await writeShare(ctx, p.repoId, repo, epoch, NOTHING_SHARED, existing)
     for (const g of grants) await ctx.port.deleteGrant(g)
-    const stopped = existing !== null && !shownNothing && rule.kind === 'nothing' ? { stopped: rule.reason } : {}
+    const stopped = existing !== null && !shownNothing && rule.kind === 'nothing' ? { stopped: heldDefault(current, p.view) ? ('default' as const) : ('other' as const) } : {}
     return { granted: [], waiting: [], shared: existing !== null, epoch: write ? epoch : (existing?.fields.epoch ?? null), ...stopped }
   }
   // A grant to anyone not a maintainer now (removed here, or found stale), or sharing again after a
@@ -287,6 +290,16 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   } finally {
     rsk.fill(0)
   }
+}
+
+/** Whether a share's policy names the same places as the owner's default policy (what the old rule shared). */
+function heldDefault(current: unknown, view: Readonly<Record<string, unknown>> | null): boolean {
+  if (view === null || typeof current !== 'object' || current === null) return false
+  const held = syncedPolicy((current as Record<string, unknown>)['policy'])
+  const fallback = syncedPolicy(view['default'])
+  if (held === null || fallback === null) return false
+  const named = (p: SyncedPolicy): string => [...new Set(p.targets)].sort().join('\u0000')
+  return named(held) === named(fallback)
 }
 
 async function writeShare(ctx: OwnerContext, repoId: string, repo: Uint8Array, epoch: number, plain: SharePlain, existing: Awaited<ReturnType<UserSyncPort['readShare']>>): Promise<void> {

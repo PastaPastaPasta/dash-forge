@@ -103,13 +103,22 @@ export const SHARE_ACTION = 'Use separate storage for this repo to share it with
  * sync and maintainers but no storage of the repo's own gets one action to set it (maintainers get
  * only that); with it, the card says it is shared, details collapsed.
  */
-export function storageCardView(p: { readonly syncOn: boolean; readonly owner: boolean; readonly hasRepoStorage: boolean; readonly maintainers: number }): {
+export function storageCardView(p: {
+  readonly syncOn: boolean
+  readonly owner: boolean
+  readonly hasRepoStorage: boolean
+  /** The repo's own storage names a place that is not Platform (something to share). */
+  readonly repoStorageShareable: boolean
+  readonly maintainers: number
+}): {
   readonly hint: string
   readonly shareAction?: string
   readonly details: boolean
 } {
   if (!p.syncOn) return { hint: LOCAL_PUSHES_HINT, details: false }
-  if (p.owner && p.hasRepoStorage) return { hint: "Shared with this repo's maintainers.", details: true }
+  if (p.owner && p.hasRepoStorage) {
+    return p.repoStorageShareable && p.maintainers > 0 ? { hint: "Shared with this repo's maintainers.", details: true } : { hint: 'Only you see this.', details: false }
+  }
   if (p.owner && p.maintainers > 0) return { hint: 'Only you see this.', shareAction: SHARE_ACTION, details: false }
   return { hint: 'Only you see this.', details: false }
 }
