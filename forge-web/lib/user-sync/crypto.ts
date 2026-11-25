@@ -6,6 +6,7 @@
  */
 
 import * as secp from '@noble/secp256k1'
+import { concatBytes as concat } from '@noble/hashes/utils.js'
 import { deflateSync } from 'fflate'
 import { Inflate } from 'pako'
 
@@ -21,16 +22,6 @@ export const WRAPPED_BYTES = 60
 export const MAX_PLAINTEXT_BYTES = 1 << 20
 
 const te = new TextEncoder()
-
-function concat(...parts: readonly Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
-  let at = 0
-  for (const p of parts) {
-    out.set(p, at)
-    at += p.length
-  }
-  return out
-}
 
 function u32(x: number): Uint8Array {
   if (!Number.isInteger(x) || x < 0 || x > 0xffffffff) throw new Error(`not a u32: ${x}`)
@@ -197,7 +188,7 @@ export async function openStateBytes(ctx: StateContext, doc: StateFields): Promi
   if (doc.keyId !== ctx.keyId) throw new SyncDecryptError('the synced settings (written with another key)')
   const key = await stateKey(ctx.E, ctx.identityId, ctx.network, doc.slot)
   try {
-    const ct = concat(...[doc.d0, doc.d1, doc.d2].filter((d): d is Uint8Array => d !== undefined))
+    const ct = concat(...[doc.d0, doc.d1, doc.d2].filter((d) => d !== undefined))
     return await openGcm(key, doc.n, ct, stateAad(ctx.network, ctx.identityId, doc.slot, doc.v, doc.keyId))
   } finally {
     key.fill(0)
@@ -226,9 +217,16 @@ export interface ShareFields {
   readonly d1?: Uint8Array
 }
 
+export interface ShareParams {
+  readonly network: string
+  readonly repoId: Uint8Array
+  readonly epoch: number
+  readonly keyId: number
+}
+
 export async function sealShareBytes(
   rsk: Uint8Array,
-  p: { readonly network: string; readonly repoId: Uint8Array; readonly epoch: number; readonly keyId: number },
+  p: ShareParams,
   compressed: Uint8Array,
   nonce: Uint8Array = randomNonce(),
 ): Promise<ShareFields> {
@@ -237,12 +235,12 @@ export async function sealShareBytes(
   return { epoch: p.epoch, keyId: p.keyId, n: nonce, d0: d0!, ...(d1 ? { d1 } : {}) }
 }
 
-export function sealShare(rsk: Uint8Array, p: { readonly network: string; readonly repoId: Uint8Array; readonly epoch: number; readonly keyId: number }, value: unknown, nonce?: Uint8Array): Promise<ShareFields> {
+export function sealShare(rsk: Uint8Array, p: ShareParams, value: unknown, nonce?: Uint8Array): Promise<ShareFields> {
   return sealShareBytes(rsk, p, encodePlain(value), nonce)
 }
 
 export async function openShareBytes(rsk: Uint8Array, p: { readonly network: string; readonly repoId: Uint8Array }, doc: ShareFields): Promise<Uint8Array> {
-  const ct = concat(...[doc.d0, doc.d1].filter((d): d is Uint8Array => d !== undefined))
+  const ct = concat(...[doc.d0, doc.d1].filter((d) => d !== undefined))
   return openGcm(rsk, doc.n, ct, shareAad(p.network, p.repoId, doc.epoch, doc.keyId), "the repository's shared storage")
 }
 

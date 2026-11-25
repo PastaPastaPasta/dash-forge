@@ -9,7 +9,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
 import { authSdk } from '../sdk/facade'
-import { base64ToBytes, queryDocumentsWithProof, type PlainDocument } from '../sdk/query'
+import { base64ToBytes, queryDocumentsWithProof, type OrderByClause, type PlainDocument, type WhereClause } from '../sdk/query'
 import { createDocumentIdempotent, deleteDocumentIdempotent, replaceDocumentIdempotent, type WriteAuth } from '../sdk/write'
 import { base58Encode } from '../auth/base58'
 import { KeyPurpose, KeyType } from '../vendor/platform-auth/app-connect/types'
@@ -71,9 +71,9 @@ function piece(value: unknown, min: number): Uint8Array | undefined | null {
   return b !== null && b.length >= min && b.length <= PIECE_BYTES ? b : null
 }
 
-function revisionOf(doc: PlainDocument): bigint | undefined {
+function storedOf<T>(doc: PlainDocument & { $id: string }, ownerId: string, fields: T): Stored<T> {
   const r = doc['$revision']
-  return typeof r === 'number' || typeof r === 'bigint' ? BigInt(r) : undefined
+  return { id: doc.$id, ownerId, ...(typeof r === 'number' || typeof r === 'bigint' ? { revision: BigInt(r) } : {}), fields }
 }
 
 function idOf(v: unknown): string | null {
@@ -93,8 +93,7 @@ export function stateOf(doc: PlainDocument, ownerId: string, slot: string): Stor
   if (doc['$ownerId'] !== ownerId || doc['slot'] !== slot || typeof doc['$id'] !== 'string' || typeof v !== 'number' || !isU32(keyId) || n?.length !== NONCE_BYTES || !d0 || d1 === null || d2 === null) {
     throw unreadable('settings slot')
   }
-  const revision = revisionOf(doc)
-  return { id: doc['$id'], ownerId, ...(revision !== undefined ? { revision } : {}), fields: { slot, v, keyId, n, d0, ...(d1 ? { d1 } : {}), ...(d2 ? { d2 } : {}) } }
+  return storedOf(doc as PlainDocument & { $id: string }, ownerId, { slot, v, keyId, n, d0, ...(d1 ? { d1 } : {}), ...(d2 ? { d2 } : {}) })
 }
 
 export function shareOf(doc: PlainDocument, ownerId: string, repoId: string): Stored<ShareFields> {
@@ -105,8 +104,7 @@ export function shareOf(doc: PlainDocument, ownerId: string, repoId: string): St
   if (doc['$ownerId'] !== ownerId || idOf(doc['repoId']) !== repoId || typeof doc['$id'] !== 'string' || !isU32(epoch) || !isU32(keyId) || n?.length !== NONCE_BYTES || !d0 || d1 === null) {
     throw unreadable('storage share')
   }
-  const revision = revisionOf(doc)
-  return { id: doc['$id'], ownerId, ...(revision !== undefined ? { revision } : {}), fields: { epoch, keyId, n, d0, ...(d1 ? { d1 } : {}) } }
+  return storedOf(doc as PlainDocument & { $id: string }, ownerId, { epoch, keyId, n, d0, ...(d1 ? { d1 } : {}) })
 }
 
 /** A grant row, or null when it does not read as one (a reader skips it). */
@@ -117,8 +115,7 @@ export function grantOf(doc: PlainDocument): Stored<GrantFields> | null {
   const wrapped = bytesOf(doc['wrapped'])
   const { epoch, senderKeyId, recipientKeyId } = doc
   if (typeof ownerId !== 'string' || typeof doc['$id'] !== 'string' || !repoId || !memberId || !isU32(epoch) || !isU32(senderKeyId) || !isU32(recipientKeyId) || wrapped?.length !== WRAPPED_BYTES) return null
-  const revision = revisionOf(doc)
-  return { id: doc['$id'], ownerId, ...(revision !== undefined ? { revision } : {}), fields: { repoId, memberId, epoch, senderKeyId, recipientKeyId, wrapped } }
+  return storedOf(doc as PlainDocument & { $id: string }, ownerId, { repoId, memberId, epoch, senderKeyId, recipientKeyId, wrapped })
 }
 
 /** The most grants one read lists (a repo's maintainers are far fewer). */
@@ -131,13 +128,21 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
     if (auth === null) throw new Error('this sync port reads only')
     return auth
   }
-  const one = async (type: string, where: [string, string, unknown][], orderBy: [string, 'asc'][]): Promise<PlainDocument | null> => {
-    const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractId, documentTypeName: type, where, orderBy, limit: 1 } as Parameters<typeof queryDocumentsWithProof>[1])
+  const one = async (type: string, where: WhereClause[], orderBy: OrderByClause[]): Promise<PlainDocument | null> => {
+    const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractId, documentTypeName: type, where, orderBy, limit: 1 })
     return documents[0] ?? null
   }
-  const grants = async (where: [string, string, unknown][], orderBy: [string, 'asc'][]): Promise<Stored<GrantFields>[]> => {
-    const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractId, documentTypeName: 'grant', where, orderBy, limit: GRANT_LIMIT } as Parameters<typeof queryDocumentsWithProof>[1])
+  const grants = async (where: WhereClause[], orderBy: OrderByClause[]): Promise<Stored<GrantFields>[]> => {
+    const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractId, documentTypeName: 'grant', where, orderBy, limit: GRANT_LIMIT })
     return documents.flatMap((d) => grantOf(d) ?? [])
+  }
+  /** Create `data`, or replace `existing` (at the revision read) with `changes`: an undefined property is removed. */
+  const put = async (documentType: string, existing: Stored<unknown> | null, data: Record<string, unknown>, changes: Record<string, unknown>): Promise<void> => {
+    if (existing === null) {
+      await createDocumentIdempotent(sdk, signer(), { contractId, documentType, data: Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined)) })
+      return
+    }
+    await replaceDocumentIdempotent(sdk, signer(), { contractId, documentType, documentId: existing.id, changes, ...(existing.revision !== undefined ? { expectedRevision: existing.revision } : {}) })
   }
   return {
     async readState(ownerId, slot) {
@@ -145,49 +150,21 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
       return doc ? stateOf(doc, ownerId, slot) : null
     },
     async writeState(f, existing) {
-      if (existing === null) {
-        await createDocumentIdempotent(sdk, signer(), { contractId, documentType: 'state', data: { slot: f.slot, v: f.v, keyId: f.keyId, n: f.n, d0: f.d0, ...(f.d1 ? { d1: f.d1 } : {}), ...(f.d2 ? { d2: f.d2 } : {}) } })
-        return
-      }
-      await replaceDocumentIdempotent(sdk, signer(), {
-        contractId,
-        documentType: 'state',
-        documentId: existing.id,
-        changes: { v: f.v, keyId: f.keyId, n: f.n, d0: f.d0, d1: f.d1, d2: f.d2 },
-        ...(existing.revision !== undefined ? { expectedRevision: existing.revision } : {}),
-      })
+      const changes = { v: f.v, keyId: f.keyId, n: f.n, d0: f.d0, d1: f.d1, d2: f.d2 }
+      await put('state', existing, { slot: f.slot, ...changes }, changes)
     },
     async readShare(ownerId, repoId) {
       const doc = await one('share', [['$ownerId', '==', ownerId], ['repoId', '==', repoId]], [['repoId', 'asc']])
       return doc ? shareOf(doc, ownerId, repoId) : null
     },
     async writeShare(repoId, f, existing) {
-      if (existing === null) {
-        await createDocumentIdempotent(sdk, signer(), { contractId, documentType: 'share', data: { repoId, epoch: f.epoch, keyId: f.keyId, n: f.n, d0: f.d0, ...(f.d1 ? { d1: f.d1 } : {}) } })
-        return
-      }
-      await replaceDocumentIdempotent(sdk, signer(), {
-        contractId,
-        documentType: 'share',
-        documentId: existing.id,
-        changes: { epoch: f.epoch, keyId: f.keyId, n: f.n, d0: f.d0, d1: f.d1 },
-        ...(existing.revision !== undefined ? { expectedRevision: existing.revision } : {}),
-      })
+      const changes = { epoch: f.epoch, keyId: f.keyId, n: f.n, d0: f.d0, d1: f.d1 }
+      await put('share', existing, { repoId, ...changes }, changes)
     },
     grantsOf: (ownerId, repoId) => grants([['$ownerId', '==', ownerId], ['repoId', '==', repoId]], [['repoId', 'asc'], ['memberId', 'asc']]),
     grantsFor: (memberId, repoId) => grants([['memberId', '==', memberId], ['repoId', '==', repoId]], [['memberId', 'asc'], ['repoId', 'asc']]),
     async writeGrant(f, existing) {
-      if (existing === null) {
-        await createDocumentIdempotent(sdk, signer(), { contractId, documentType: 'grant', data: { ...f } })
-        return
-      }
-      await replaceDocumentIdempotent(sdk, signer(), {
-        contractId,
-        documentType: 'grant',
-        documentId: existing.id,
-        changes: { epoch: f.epoch, senderKeyId: f.senderKeyId, recipientKeyId: f.recipientKeyId, wrapped: f.wrapped },
-        ...(existing.revision !== undefined ? { expectedRevision: existing.revision } : {}),
-      })
+      await put('grant', existing, { ...f }, { epoch: f.epoch, senderKeyId: f.senderKeyId, recipientKeyId: f.recipientKeyId, wrapped: f.wrapped })
     },
     async deleteGrant(existing) {
       await deleteDocumentIdempotent(sdk, signer(), { contractId, documentType: 'grant', documentId: existing.id })

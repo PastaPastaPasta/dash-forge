@@ -64,7 +64,11 @@ export function setSyncSubject(identityId: string | null, status: UserSyncStatus
 }
 
 let running: Promise<void> | null = null
-let again: { readonly identityId: string; readonly exec: () => Promise<SyncOutcome | null> } | null = null
+interface Request {
+  readonly identityId: string
+  readonly exec: () => Promise<SyncOutcome | null>
+}
+let again: Request | null = null
 
 /**
  * Run `exec` (one sync; null: it could not run, the key is gone). Single-flight: a request while
@@ -76,7 +80,7 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
     return running
   }
   const run = async (): Promise<void> => {
-    let next: { readonly identityId: string; readonly exec: () => Promise<SyncOutcome | null> } | null = { identityId, exec }
+    let next: Request | null = { identityId, exec }
     while (next) {
       const { identityId, exec: current } = next
       again = null
@@ -84,12 +88,10 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
       try {
         if (state.identityId === identityId) set({ ...state, status: { kind: 'syncing', syncedAt } })
         const outcome = await current()
-        if (state.identityId !== identityId) {
-          next = again
-          continue
+        if (state.identityId === identityId) {
+          if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
+          else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage })
         }
-        if (outcome === null) set({ ...state, status: { kind: 'local', syncedAt } })
-        else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: outcome.storage ?? state.storage })
       } catch (e) {
         if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
       }

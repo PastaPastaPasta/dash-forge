@@ -32,7 +32,7 @@ function write(key: string, value: unknown): void {
 
 function readSettings(): FiatSettings {
   let value: unknown = null
-  try { value = JSON.parse(readPref(FIAT_SETTINGS_KEY) ?? 'null') } catch { value = null }
+  try { value = JSON.parse(readPref(FIAT_SETTINGS_KEY) ?? 'null') } catch { /* unreadable: the defaults */ }
   if (value && typeof value === 'object' && 'v' in value && value.v === 1 && 'enabled' in value && typeof value.enabled === 'boolean' && 'currency' in value && isCurrency(value.currency)) {
     return { enabled: value.enabled, currency: value.currency }
   }

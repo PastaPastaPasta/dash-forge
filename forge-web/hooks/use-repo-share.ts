@@ -20,6 +20,7 @@ import { namedAction, spendAction } from '@/lib/spend-toast'
 import type { StorageConfig } from '@/lib/storage'
 import { readGrantedStorage, reconcileRepoShare, withGrantedStorage, type GrantedStorage, type Reconciled } from '@/lib/user-sync/maintainers'
 import { forgeUserPort } from '@/lib/user-sync/platform'
+import { quietSigner } from '@/hooks/use-user-sync'
 
 export interface RepoShareState {
   /** Owner: maintainers with no forge-user key yet. */
@@ -34,7 +35,7 @@ export interface RepoShareState {
 }
 
 export function useRepoStorageShare(repo: RepoRef): RepoShareState {
-  const { identity, signer } = useAuth()
+  const { identity, signer, controller } = useAuth()
   const { sdk } = useSdk()
   const { config } = useStorageConfig()
   const user = ACTIVE_NETWORK.v2?.user
@@ -48,11 +49,11 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
       const maintainers = await readMaintainers(sdk, repo)
       return withSyncKey(DEFAULT_NETWORK, identity, (keyId, E) =>
         spendAction(namedAction('Storage shared with maintainers'), (tag) =>
-          reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(signer)), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, config: cfg, maintainers: maintainers.filter((m) => !removed.includes(m)), removed }),
+          reconcileRepoShare({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, ownerId: identity, keyId, E }, { repoId: repo.repoId, config: cfg, maintainers: maintainers.filter((m) => !removed.includes(m)), removed }),
         ),
       )
     },
-    [user, identity, sdk, signer, isOwner, repo],
+    [user, identity, sdk, signer, controller, isOwner, repo],
   )
 
   useEffect(() => {
@@ -77,8 +78,10 @@ export function useRepoStorageShare(repo: RepoRef): RepoShareState {
   const afterRemoval = useCallback(
     async (member: string): Promise<boolean> => {
       const done = config === null ? null : await reconcile([member], config).catch(() => null)
-      if (done !== null) setWaiting(done.waiting)
-      if (done !== null) return done.shared
+      if (done !== null) {
+        setWaiting(done.waiting)
+        return done.shared
+      }
       // Not reconciled here (no sync key in this tab): the next visit with one moves the epoch.
       if (user === undefined || sdk === null) return false
       return (await forgeUserPort(sdk, user, null).readShare(repo.ownerId, repo.repoId).catch(() => null)) !== null

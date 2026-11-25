@@ -11,13 +11,12 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { decodeIdentifier } from '../auth/base58'
 import type { StorageConfig } from '../storage/store'
-import { canonicalJson, hkdf32, openState, sealState, type StateContext } from './crypto'
+import { canonicalJson, hkdf32, openState, sealState, type StateContext, type StateFields } from './crypto'
 import { baseOf, parseDoc, planSlot, sameDoc, type LwwDoc, type PlanOptions, type SlotPlan, type Tagger } from './lww'
-import { readRecord, writeRecord, type PrefsMeta, type SlotMeta, type SyncRecord } from './overlay'
+import { readRecord, store, updateRecord, type PrefsMeta, type SlotMeta, type SyncRecord } from './overlay'
 import type { Stored, UserSyncPort } from './platform'
 import { PREFS_PLAN, prefKeys, prefsEntries, prefsViewRaw } from './prefs-slot'
 import { storageEntries, storageView, withAdditions } from './storage-slot'
-import type { StateFields } from './crypto'
 
 /** This device's storage settings, as the vault keeps them. */
 export interface LocalStorageConfig {
@@ -99,12 +98,7 @@ async function mergeSlot(ctx: SyncContext, slot: string, local: Record<string, u
 }
 
 function localStore(ctx: SyncContext): Pick<Storage, 'getItem' | 'setItem'> | null {
-  if (ctx.localStore !== undefined) return ctx.localStore
-  try {
-    return typeof localStorage === 'undefined' ? null : localStorage
-  } catch {
-    return null
-  }
+  return ctx.localStore !== undefined ? ctx.localStore : store()
 }
 
 function readRaw(store: Pick<Storage, 'getItem'> | null, keys: readonly string[]): Record<string, string | null> {
@@ -157,16 +151,14 @@ export async function syncUserSettings(ctx: SyncContext): Promise<SyncOutcome> {
   const at = (ctx.now ?? Date.now)()
   const record = readRecord(ctx.networkKey, ctx.identityId)
   const prefs = await syncPrefs(ctx, record, at)
-  writeRecord(ctx.networkKey, ctx.identityId, { ...(readRecord(ctx.networkKey, ctx.identityId) ?? { v: 1 }), prefs })
+  updateRecord(ctx.networkKey, ctx.identityId, { prefs })
   const storage = await syncStorage(ctx, record, at)
-  if (storage !== null) writeRecord(ctx.networkKey, ctx.identityId, { ...(readRecord(ctx.networkKey, ctx.identityId) ?? { v: 1 }), storage: storage.meta })
+  if (storage !== null) updateRecord(ctx.networkKey, ctx.identityId, { storage: storage.meta })
   return { storage: storage?.config ?? null, syncedAt: at }
 }
 
-/**
- * The effective storage config without a Platform read: the last merge recorded here is not kept
- * (it holds credentials), so this is the local config; callers show it until a sync finishes.
- */
+/** When this device last synced for (network, identity), or null. */
 export function syncedAt(networkKey: string, identityId: string): number | null {
-  return readRecord(networkKey, identityId)?.storage?.syncedAt ?? readRecord(networkKey, identityId)?.prefs?.syncedAt ?? null
+  const r = readRecord(networkKey, identityId)
+  return r?.storage?.syncedAt ?? r?.prefs?.syncedAt ?? null
 }

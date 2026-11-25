@@ -11,7 +11,7 @@ import { decodeIdentifier } from '../auth/base58'
 import { PLATFORM_PROFILE, policySchema, type StoragePolicy, type StorageProfile } from '../storage/profiles'
 import { policyForRepo, type StorageConfig } from '../storage/store'
 import { canonicalJson, openShare, repoStorageKey, sealShare, unwrapGrant, wrapGrant, type GrantParams } from './crypto'
-import type { GrantFields, Stored, UserSyncPort } from './platform'
+import type { GrantFields, UserSyncPort } from './platform'
 import { profileOf } from './storage-slot'
 
 export const SHARE_FORMAT = 'forge-user/share'
@@ -128,7 +128,7 @@ export interface GrantedStorage {
 export async function readGrantedStorage(ctx: MemberContext, p: { readonly repoId: string; readonly repoOwnerId: string }): Promise<GrantedStorage | null> {
   const network = ctx.networkKey
   const repo = decodeIdentifier(p.repoId)
-  const grants: Stored<GrantFields>[] = (await ctx.port.grantsFor(ctx.memberId, p.repoId)).filter(
+  const grants = (await ctx.port.grantsFor(ctx.memberId, p.repoId)).filter(
     (g) => g.ownerId === p.repoOwnerId && g.fields.memberId === ctx.memberId && g.fields.repoId === p.repoId && g.fields.recipientKeyId === ctx.keyId,
   )
   const grant = grants.sort((a, b) => b.fields.epoch - a.fields.epoch)[0]

@@ -13,6 +13,8 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { connectionId } from '@/lib/auth/connection-id'
+import type { AuthController } from '@/lib/auth/controller'
+import type { WriteAuth } from '@/lib/sdk/write'
 import { heldSyncKeyId, onSyncKeyChange, withSyncKey } from '@/lib/auth/vault'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { namedAction, spendAction } from '@/lib/spend-toast'
@@ -26,7 +28,7 @@ import { onLocalSettingsChange, requestUserSync, setSyncSubject, subscribeUserSy
 const VISIBILITY_SYNC_MS = 60_000
 
 export function UserSyncDriver(): null {
-  const { identity, storage, unlockScope, signer } = useAuth()
+  const { identity, storage, unlockScope, signer, controller } = useAuth()
   const { sdk } = useSdk()
   const user = ACTIVE_NETWORK.v2?.user
   const [changes, setChanges] = useState(0)
@@ -62,11 +64,12 @@ export function UserSyncDriver(): null {
     void (async () => {
       const keyId = await heldSyncKeyId(DEFAULT_NETWORK, identity)
       if (stale) return
+      const at = syncedAt(ACTIVE_NETWORK.key, identity)
       if (keyId === null || sdk === null || signer === null) {
-        setSyncSubject(identity, { kind: 'local', syncedAt: syncedAt(ACTIVE_NETWORK.key, identity) })
+        setSyncSubject(identity, { kind: 'local', syncedAt: at })
         return
       }
-      setSyncSubject(identity, { kind: 'syncing', syncedAt: syncedAt(ACTIVE_NETWORK.key, identity) })
+      setSyncSubject(identity, { kind: 'syncing', syncedAt: at })
       // The storage settings sync only where this tab can open them (a vault key, fully unlocked).
       const local =
         storage === 'vault' && unlockScope === 'full'
@@ -76,7 +79,7 @@ export function UserSyncDriver(): null {
       void requestUserSync(identity, () =>
         withSyncKey(DEFAULT_NETWORK, identity, (kid, E) =>
           spendAction(namedAction('Settings synced'), (tag) =>
-            syncUserSettings({ port: forgeUserPort(sdk, user, tag(signer)), networkKey: ACTIVE_NETWORK.key, network: DEFAULT_NETWORK, identityId: identity, keyId: kid, E, deviceId, storage: local }),
+            syncUserSettings({ port: forgeUserPort(sdk, user, tag(quietSigner(controller, signer))), networkKey: ACTIVE_NETWORK.key, network: DEFAULT_NETWORK, identityId: identity, keyId: kid, E, deviceId, storage: local }),
           ),
         ),
       )
@@ -84,9 +87,17 @@ export function UserSyncDriver(): null {
     return () => {
       stale = true
     }
-  }, [identity, user, sdk, signer, storage, unlockScope, changes])
+  }, [identity, user, sdk, signer, controller, storage, unlockScope, changes])
 
   return null
+}
+
+/**
+ * The session's signer for background writes: its charges reach the ledger and toast like any
+ * write's, but a key that does not cover a contract fails the write instead of opening sign-in.
+ */
+export function quietSigner(controller: AuthController, signer: WriteAuth): WriteAuth {
+  return { ...(controller.writeAuth ?? signer), onSpend: signer.onSpend }
 }
 
 export function useUserSyncStatus(): UserSyncStatus {

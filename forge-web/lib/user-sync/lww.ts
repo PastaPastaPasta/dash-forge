@@ -62,24 +62,6 @@ export function sameValue(a: unknown, b: unknown): boolean {
   return canonicalJson(a ?? null) === canonicalJson(b ?? null)
 }
 
-/** The later of two entries; a tie goes to the larger encoding, so every client picks the same one. */
-export function laterEntry(a: LwwEntry | undefined, b: LwwEntry | undefined): LwwEntry | undefined {
-  if (a === undefined) return b
-  if (b === undefined) return a
-  if (a.at !== b.at) return a.at > b.at ? a : b
-  return canonicalJson(a.v ?? null) >= canonicalJson(b.v ?? null) ? a : b
-}
-
-/** Two documents merged entry by entry ({@link laterEntry}); `a`'s other fields win. */
-export function mergeDocs(a: LwwDoc, b: LwwDoc): LwwDoc {
-  const entries: Record<string, LwwEntry> = {}
-  for (const key of new Set([...Object.keys(a.entries), ...Object.keys(b.entries)])) {
-    const e = laterEntry(a.entries[key], b.entries[key])
-    if (e !== undefined) entries[key] = e
-  }
-  return { ...b, ...a, entries }
-}
-
 export function sameDoc(a: LwwDoc, b: LwwDoc): boolean {
   return canonicalJson(a) === canonicalJson(b)
 }
@@ -134,7 +116,7 @@ export function planSlot(p: {
   const entries: Record<string, LwwEntry> = { ...remote.entries }
   const keys = new Set([...Object.keys(p.local), ...Object.keys(p.base?.tags ?? {})])
   for (const key of keys) {
-    const has = Object.prototype.hasOwnProperty.call(p.local, key)
+    const has = Object.hasOwn(p.local, key)
     const lv = has ? p.local[key] : undefined
     const synced = entries[key]
     let changed: boolean
@@ -151,14 +133,14 @@ export function planSlot(p: {
     if (synced !== undefined && sameValue(synced.v, v)) continue
     entries[key] = { at, v }
   }
-  const next: LwwDoc = { ...remote, format: remote.format, version: remote.version, entries }
+  const next: LwwDoc = { ...remote, entries }
   const view: Record<string, unknown> = {}
   const add: Record<string, unknown> = {}
   const collisions: string[] = []
   for (const [key, e] of Object.entries(entries)) {
     if (e.v === null) continue
     view[key] = e.v
-    const has = Object.prototype.hasOwnProperty.call(p.local, key)
+    const has = Object.hasOwn(p.local, key)
     if (!has) add[key] = e.v
     else if (!sameValue(p.local[key], e.v)) collisions.push(key)
   }

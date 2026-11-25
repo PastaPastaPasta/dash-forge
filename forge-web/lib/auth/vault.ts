@@ -1458,8 +1458,10 @@ function setUnlocked(
   const switched = unlocked !== null && (unlocked.network !== network || unlocked.secret.identityId !== secret.identityId)
   const at = opts.at ?? Date.now()
   unlocked = { network, secret, at, blobKeys, scope: opts.scope ?? 'full', lockMarkerAt: opts.lockMarkerAt ?? lockMarker() }
-  if (switched) notifyEncryptionKeyChange()
-  if (switched) notifySyncKeyChange()
+  if (switched) {
+    notifyEncryptionKeyChange()
+    notifySyncKeyChange()
+  }
   if (lockTimer) clearTimeout(lockTimer)
   lockTimer = setTimeout(() => expire(network), Math.max(0, at + AUTO_LOCK_MS - Date.now()))
 }
@@ -1635,8 +1637,10 @@ export function releaseUnlocked(): void {
   lockTimer = null
   if (wasUnlocked) for (const l of lockListeners) l()
   // Every private-repo session ends with the vault (its keys were opened with this unlock).
-  if (wasUnlocked) notifyEncryptionKeyChange()
-  if (wasUnlocked) notifySyncKeyChange()
+  if (wasUnlocked) {
+    notifyEncryptionKeyChange()
+    notifySyncKeyChange()
+  }
 }
 
 // ---------------------------------------------------------------------------

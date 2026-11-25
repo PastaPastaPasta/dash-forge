@@ -37,7 +37,8 @@ export function recordKey(networkKey: string, identityId: string): string {
   return `forge:user-sync:${networkKey}:${identityId}`
 }
 
-function store(): Storage | null {
+/** localStorage, or null where it is missing or refused. */
+export function store(): Storage | null {
   try {
     return typeof localStorage === 'undefined' ? null : localStorage
   } catch {
@@ -54,6 +55,11 @@ export function readRecord(networkKey: string, identityId: string): SyncRecord |
   } catch {
     return null
   }
+}
+
+/** `patch` merged over the stored record. */
+export function updateRecord(networkKey: string, identityId: string, patch: Omit<Partial<SyncRecord>, 'v'>): void {
+  writeRecord(networkKey, identityId, { ...(readRecord(networkKey, identityId) ?? { v: 1 }), ...patch })
 }
 
 export function writeRecord(networkKey: string, identityId: string, record: SyncRecord): void {
@@ -98,7 +104,7 @@ export function effectiveRaw(key: string, localRaw: string | null): string | nul
   const prefs = active?.prefs
   if (!prefs) return localRaw
   const merged = prefs.view[key]
-  if (merged === undefined || !Object.prototype.hasOwnProperty.call(prefs.raw, key) || prefs.raw[key] !== localRaw) return localRaw
+  if (merged === undefined || !Object.hasOwn(prefs.raw, key) || prefs.raw[key] !== localRaw) return localRaw
   return merged
 }
 
