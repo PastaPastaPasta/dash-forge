@@ -9,7 +9,6 @@
  */
 
 import { useState } from 'react'
-import { Ban as BanIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
 import { contractOf, readMembershipsCached, repoContractIds, repoKey, resolveOwner } from '@/lib/repo'
@@ -110,11 +109,8 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
   const keepsRole = banning === null ? null : banKeepsRole(banning.role)
   const rows = [...(state?.standing.values() ?? [])].sort((a, b) => b.createdAt - a.createdAt)
   return (
-    <Section id="bans" title="Bans" icon={<BanIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
+    <Section id="bans" title="Bans" description="Forge apps hide what a banned identity wrote here and refuse their new posts (Dash Platform itself still accepts their writes). Only the maintainer who added a ban can lift it.">
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="bans">
-        <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Hides posts from banned identities and blocks new ones in Forge apps (Platform itself still accepts their writes). Only the maintainer who added a ban can lift it.
-        </p>
         {bans.error ? (
           <ErrorState message={bans.error} onRetry={bans.reload} />
         ) : state?.membersUnread === true ? (

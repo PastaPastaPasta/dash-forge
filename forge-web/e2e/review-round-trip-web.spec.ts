@@ -128,9 +128,10 @@ test.beforeAll(() => {
 test.afterAll(() => rmSync(WORK, { recursive: true, force: true }))
 
 test('r1. the owner sets the branch policy: 1 maintainer approval, checks, squash only', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', `/repo/settings/?owner=${ids.owner}&name=${REPO}`)
+  const page = await signedIn(browser, 'OWNER', `/repo/settings/?owner=${ids.owner}&name=${REPO}#branches`)
   await waitForRepoResolved(page)
   const policy = page.getByTestId('policy-editor')
+  await policy.getByTestId('policy-toggle').click()
   await expect(policy.getByTestId('enforced-by-apps')).toBeVisible({ timeout: 90_000 })
   await policy.getByLabel('Required approvals').fill('1')
   await policy.getByText("Only maintainers' approvals count").click()
@@ -138,7 +139,7 @@ test('r1. the owner sets the branch policy: 1 maintainer approval, checks, squas
   for (const m of ['Fast-forward', 'Merge commit', 'Rebase']) await policy.getByLabel(m).uncheck()
   await policy.getByRole('button', { name: /save policy/i }).click()
   await confirmWrite(page, /sign & save/i)
-  await expect(policy.getByRole('button', { name: /save policy/i })).toBeDisabled({ timeout: 90_000 })
+  await expect(policy.getByRole('button', { name: /save policy/i })).toHaveCount(0, { timeout: 90_000 })
 })
 
 test('r2. the contributor opens a PR from the fork', async ({ browser }) => {

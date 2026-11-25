@@ -45,6 +45,7 @@ const fragment = (): void => { Object.defineProperty(window, '__forgeKuboPair', 
 describe('the kubo connection form', () => {
   it.each([
     ['https://forge.dashhq.org', '/settings/storage/', 'dg ipfs up'],
+    ['https://testnet-forge.dashhq.org', '/settings/storage/', 'Or paste the code dg ipfs up printed'],
     ['http://localhost:3000', '/settings/storage/', "dg ipfs up --origin 'http://localhost:3000'"],
     ['https://ipfs.io', '/ipfs/bafy/settings/storage/', 'Open Forge from its own address'],
     ['https://ipfs.io', '/ipns/example/settings/storage/', 'Open Forge from its own address'],
@@ -52,6 +53,11 @@ describe('the kubo connection form', () => {
     vi.stubGlobal('location', { origin, pathname, search: '', hash: '' }); await render()
     expect(host.textContent).toContain(text)
     if (pathname.startsWith('/ip')) expect(host.querySelector('pre')).toBeNull()
+  })
+  it('says the browser is asking while its local-network prompt is open', async () => {
+    mocks.pair.mockImplementation((_input: unknown, onAsk: () => void) => { onAsk(); return new Promise(() => {}) })
+    fragment(); await render()
+    expect(host.querySelector('[role=status]')?.textContent).toBe('Your browser is asking to let this site reach apps on this device. Choose Allow.')
   })
   it('pairs automatically but never probes or saves without Test and save', async () => {
     fragment(); await render()
@@ -77,7 +83,7 @@ describe('the kubo connection form', () => {
     await act(async () => {
       window.dispatchEvent(new HashChangeEvent('hashchange'))
       expect(location.hash).toBe('')
-      expect(mocks.pair).toHaveBeenCalledWith({ port: 5001, code: '7KQ2-M9XD-PF4C' })
+      expect(mocks.pair).toHaveBeenCalledWith({ port: 5001, code: '7KQ2-M9XD-PF4C' }, expect.any(Function))
     })
     expect(replace).toHaveBeenCalledWith(state, '', '/settings/storage/?keep=1')
     expect(host.textContent).toContain('Connect the IPFS node on this computer?')

@@ -46,7 +46,7 @@ test.beforeAll(async () => {
 
 test('the owner never gets the plain Add or Remove on a private repo', async ({ browser }) => {
   test.skip(repoName === null, 'no private-smoke repo on this devnet')
-  const page = await signedIn(browser, 'OWNER', `/repo/settings/?owner=${OWNER}&name=${repoName}`)
+  const page = await signedIn(browser, 'OWNER', `/repo/settings/?owner=${OWNER}&name=${repoName}#collaborators`)
   await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
   await waitForRepoResolved(page)
   await noPlainPath(page)

@@ -55,10 +55,13 @@ pub enum IpfsCommand {
     Serve,
     /// Show the node, stored bytes, pins and followed repositories.
     Status,
-    /// Get a new connection code for the web app.
+    /// Print a new connection link and code for the web app.
     Connect {
-        /// Print the connection link without opening a browser.
+        /// Also open the connection link in a browser.
         #[arg(long)]
+        open: bool,
+        /// The default; kept so existing scripts still run.
+        #[arg(long, hide = true, conflicts_with = "open")]
         no_open: bool,
         /// Use this allowed website for the connection link.
         #[arg(long, value_name = "ORIGIN")]
@@ -110,8 +113,11 @@ pub struct UpArgs {
     /// On Linux, keep the service running without a login.
     #[arg(long, conflicts_with = "no_service")]
     linger: bool,
-    /// Print the connection link without opening a browser.
+    /// Also open the connection link in a browser.
     #[arg(long)]
+    open: bool,
+    /// The default; kept so existing scripts still run.
+    #[arg(long, hide = true, conflicts_with = "open")]
     no_open: bool,
 }
 
@@ -163,13 +169,13 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
             });
             Ok(())
         }
-        IpfsCommand::Connect { no_open, origin } => {
+        IpfsCommand::Connect { open, origin, .. } => {
             let mut node = Node::load()?;
             if let Some(origin) = origin {
                 node.config.set_link_origin(Some(origin))?;
             }
             let connection = pair::create(&node)?;
-            let opened = open_link(&connection.link, *no_open || ctx.json).await;
+            let opened = open_link(&connection.link, !*open || ctx.json).await;
             ctx.emit(json!({"connect":connection}), || {
                 print_connection(&connection, opened);
             });
@@ -230,6 +236,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
             node.config.origins.push(origin);
         }
     }
+    node.config.add_forge_origins();
     node.config
         .set_link_origin(args.origin.first().map(String::as_str))?;
     node.config.validate()?;
@@ -320,7 +327,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     let connection = pair::create(&node)?;
     let opened = open_link(
         &connection.link,
-        args.no_open || ctx.json || !node.config.service,
+        !args.open || ctx.json || !node.config.service,
     )
     .await;
     let value = json!({"node":up_node(&node, &peer_id, &version), "profile":node.config.name,"connect":connection});
@@ -460,7 +467,7 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
         OriginCommand::Remove { origin } => (origin, false),
     };
     let origin = config::validate_origin(origin)?;
-    if origin == config::DEFAULT_ORIGIN && !add {
+    if config::FORGE_ORIGINS.contains(&origin.as_str()) && !add {
         return Err(crate::errors::usage(
             "the Forge website must remain an allowed origin",
         ));
@@ -652,14 +659,23 @@ async fn run_opener(mut command: tokio::process::Command, grace: Duration) -> bo
 }
 
 fn print_connection(connection: &pair::Connection, opened: bool) {
+    println!();
     println!(
-        "Connecting the web app… {} {}",
-        if opened { "opened" } else { "open" },
-        connection.link
+        "Connect it to Forge: open this link{}",
+        if opened {
+            " (opened in your browser)"
+        } else {
+            ""
+        }
+    );
+    println!("  {}", connection.link);
+    println!(
+        "or paste this code on the Storage page: {}",
+        connection.code
     );
     println!(
-        "Settings → Storage → IPFS (kubo) → Connect with a code: {} (valid 10 min).",
-        connection.code
+        "The code works once and expires in {} minutes. For a new one: dg ipfs connect",
+        pair::CODE_LIFETIME_SECS / 60
     );
 }
 

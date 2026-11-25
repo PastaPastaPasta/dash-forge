@@ -41,3 +41,12 @@ describe('a confirm with its cost still pending', () => {
     expect(onConfirm).not.toHaveBeenCalled()
   })
 })
+
+describe('an organization request', () => {
+  it('shows no cost and never says it is free', () => {
+    act(() => root.render(<ConfirmDialog open onClose={() => undefined} title="Create repo?" cost={null} request confirmLabel="Sign & ask co-signers" onConfirm={async () => undefined} />))
+    expect(document.body.textContent).not.toContain('This action is free')
+    expect(document.body.textContent).toContain('Nothing is spent now')
+    expect(document.querySelector('[data-testid="cost-preview"]')).toBeNull()
+  })
+})

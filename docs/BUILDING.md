@@ -284,6 +284,28 @@ both contracts are `registered`. A fresh devnet's file starts with the network f
 (`network`, `devnetName`, `chainId`, `quorumBaseUrl`, `dapiAddresses`, as the devnet files did
 before their registration); `deploy-v2.mjs` adds the `v2` section to it.
 
+## The dash.site build
+
+`pnpm build:dash-site` (in `forge-web/`) builds the copy of the web app meant for
+a [dash-sites](https://github.com/PastaPastaPasta/dash-sites) name such as
+forg3.dash.site, where every stored byte costs DASH. It is the ordinary export
+with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
+
+- The docs hub is left out: each `/docs/<page>/` becomes a small redirect to the
+  same page under `FORGE_DOCS_URL` (required, e.g. `https://forge.dashhq.org/docs`),
+  keeping any `#anchor`.
+- The Platform SDK's wasm is listed in `dash-site-external.json` as the file
+  `dist/raw/wasm_sdk_bg.wasm` of the exact `@dashevo/wasm-sdk` version installed,
+  with its SHA-384. The script refuses if the built file is not byte-identical to
+  the package's. `dash-sites publish out --external dash-site-external.json` then
+  publishes the site without storing it; readers fetch it from an npm CDN and use
+  it only if the hash matches.
+
+`pnpm build` and `pnpm build:ipfs` are unchanged. The dash.site build's
+`forge-manifest.json` lists the redirect pages and depends on `FORGE_DOCS_URL`;
+no CI job attests it yet, so the app shows its unofficial-copy notice where it
+checks attestations.
+
 ## Checks
 
 ```sh

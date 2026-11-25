@@ -23,6 +23,8 @@ pub struct Connection {
     pub expires_at: u64,
 }
 
+pub const CODE_LIFETIME_SECS: u64 = 600;
+
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -51,7 +53,7 @@ pub fn create(node: &Node) -> Result<Connection> {
         .map(|b| char::from(alphabet[usize::from(b & 31)]))
         .collect();
     let code = format!("{}-{}-{}", &raw[..4], &raw[4..8], &raw[8..]);
-    let expires_at = now() + 600;
+    let expires_at = now() + CODE_LIFETIME_SECS;
     let pair = Pair {
         sha256_hex: hex::encode(hash(&raw)),
         expires_at,
