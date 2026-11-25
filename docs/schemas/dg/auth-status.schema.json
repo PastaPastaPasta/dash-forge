@@ -151,6 +151,13 @@
         "null"
       ],
       "description": "The command that renews a wallet-granted key, else null."
+    },
+    "orgRequestsWaiting": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Requests in the organizations connected here that wait for your signature; null when none is connected (or on mainnet)."
     }
   },
   "required": [

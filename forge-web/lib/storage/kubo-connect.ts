@@ -61,25 +61,59 @@ export function validatePairResponse(value: unknown): PairedNode {
   return { profile, peerId: p.peerId, version: p.version }
 }
 
-export async function pairWithNode(input: KuboCode): Promise<PairedNode> {
+export type LoopbackAccess = PermissionState | 'unknown'
+
+/** The browser's local-network permission for this site, where the browser has one. */
+export async function loopbackAccess(): Promise<LoopbackAccess> {
+  if (typeof navigator === 'undefined' || !navigator.permissions?.query) return 'unknown'
+  for (const name of ['loopback-network', 'local-network-access']) {
+    try { return (await navigator.permissions.query({ name } as unknown as PermissionDescriptor)).state } catch { /* not this browser's name */ }
+  }
+  return 'unknown'
+}
+
+const FORGE_ORIGINS = ['https://forge.dashhq.org', 'https://testnet-forge.dashhq.org']
+export const PERMISSION_ASK = 'Your browser is asking to let this site reach apps on this device. Choose Allow.'
+const PERMISSION_DENIED = "Your browser isn't letting this site reach apps on this device. Allow it in this site's settings (the icon left of the address), then press Connect."
+const PERMISSION_DISMISSED = 'This site needs your OK to reach the node on this computer. Press Connect, then choose Allow.'
+const NOT_RUNNING = "The IPFS node on this computer isn't running. Run dg ipfs up, then press Connect."
+
+function notAllowedHere(origin: string): string {
+  if (origin === FORGE_ORIGINS[0]) return "The node on this computer doesn't accept this site yet. Update dg, run dg ipfs up, then press Connect."
+  if (FORGE_ORIGINS.includes(origin)) return `The node on this computer doesn't accept this site yet. Update dg and run dg ipfs up (with dg 0.2.0: dg ipfs up --origin ${origin}), then press Connect.`
+  return `The node on this computer doesn't accept this site. Run ${kuboUpCommand(origin, '/') ?? 'dg ipfs up'}, then press Connect.`
+}
+
+/**
+ * Swap a one-time code for the node's settings. A first visit makes the browser ask before the
+ * page may reach this computer, and the request waits on that prompt. The short timeout runs only
+ * once access is known to be granted, so a late Allow is never mistaken for the node refusing this
+ * site. A refused connection fails before any prompt shows, so a fast failure means a stopped node.
+ */
+export async function pairWithNode(input: KuboCode, onAsk?: () => void): Promise<PairedNode> {
   const parsed = parseKuboCode(input.code, input.port)
   if (!parsed) throw new Error('Enter a code like XXXX-XXXX-XXXX and a port from 1 to 65535.')
   const url = `http://127.0.0.1:${parsed.port}/dash-forge/pair`
+  const before = await loopbackAccess()
+  if (before === 'denied') throw new Error(PERMISSION_DENIED)
+  if (before === 'prompt') onAsk?.()
+  const started = Date.now()
   let response: Response
   try {
     response = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: parsed.code }),
-      credentials: 'omit', redirect: 'error', targetAddressSpace: 'loopback', signal: AbortSignal.timeout(15_000),
+      credentials: 'omit', redirect: 'error', targetAddressSpace: 'loopback',
+      signal: AbortSignal.timeout(before === 'granted' ? 15_000 : 120_000),
     } as RequestInit)
   } catch {
     if (isSafari() && safariNeedsNotice(location.origin)) throw new Error(SAFARI_NOTICE)
-    const why = await whyBlocked(url)
-    throw new Error(why === 'down'
-      ? `The node is not running, or your browser blocked it. Run dg ipfs up. ${LOCAL_ACCESS_HINT}`
-      : `The node blocked this site. Run dg ipfs up --origin ${location.origin}. ${LOCAL_ACCESS_HINT}`)
+    const after = await loopbackAccess()
+    if (after === 'denied') throw new Error(PERMISSION_DENIED)
+    if (after === 'prompt') throw new Error(Date.now() - started < 1_500 ? NOT_RUNNING : PERMISSION_DISMISSED)
+    throw new Error((await whyBlocked(url)) === 'down' ? NOT_RUNNING : notAllowedHere(location.origin))
   }
-  if (response.status === 403) throw new Error('Wrong code. Check it and try again (five tries maximum).')
-  if (response.status === 410) throw new Error('This code expired or was already used. Run dg ipfs connect for a new one.')
+  if (response.status === 403) throw new Error("That code isn't right. Check it against what dg printed and try again (five tries).")
+  if (response.status === 410) throw new Error('This code expired or was already used. Codes work once, for 10 minutes. Run dg ipfs connect for a new one.')
   if (!response.ok) throw new Error(`The node could not connect (HTTP ${response.status}). Run dg ipfs connect again.`)
   let value: unknown
   try { value = await response.json() } catch { throw new Error('The node returned invalid connection settings. Run dg ipfs connect again.') }
@@ -92,5 +126,5 @@ export function kuboUpCommand(origin: string, pathname: string): string | null {
   let url: URL
   try { url = new URL(origin) } catch { return null }
   if (servedCid({ protocol: url.protocol, hostname: url.hostname, pathname }) || /^\/(ipfs|ipns)\//.test(pathname) || /\.(ipfs|ipns)\./i.test(url.hostname)) return null
-  return origin === 'https://forge.dashhq.org' ? 'dg ipfs up' : `dg ipfs up --origin '${origin.replace(/'/g, "'\\''")}'`
+  return FORGE_ORIGINS.includes(origin) ? 'dg ipfs up' : `dg ipfs up --origin '${origin.replace(/'/g, "'\\''")}'`
 }

@@ -35,6 +35,13 @@ pub const ENV_QUORUM_URL: &str = "DASH_FORGE_QUORUM_URL";
 /// The DAPI port assumed when an address omits one (the Platform HTTPS gateway).
 pub const DEFAULT_DAPI_PORT: u16 = 1443;
 
+/// The web app's origin on mainnet, and on a devnet (which has no web app of its own).
+pub const MAINNET_WEB_ORIGIN: &str = "https://forge.dashhq.org";
+/// The web app's origin on testnet.
+pub const TESTNET_WEB_ORIGIN: &str = "https://testnet-forge.dashhq.org";
+/// The bridge that tops up an identity's credits from any Dash wallet.
+pub const TOP_UP_BRIDGE: &str = "https://bridge.thepasta.org";
+
 /// The network a client is bound to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -83,6 +90,26 @@ impl Network {
         match self {
             Network::Devnet { name, .. } => Some(name),
             _ => None,
+        }
+    }
+
+    /// The origin of the web app that reads this network (repo links, the CORS origin a
+    /// storage bucket must allow). A devnet has no web app of its own: it gets mainnet's.
+    pub fn web_origin(&self) -> &'static str {
+        match self {
+            Network::Testnet => TESTNET_WEB_ORIGIN,
+            Network::Mainnet | Network::Devnet { .. } => MAINNET_WEB_ORIGIN,
+        }
+    }
+
+    /// Where to top up an identity's credits on this network: the bridge, opened on the
+    /// network (`?network=`). A devnet gets the bare bridge, which has no devnet mode.
+    pub fn top_up_url(&self) -> String {
+        match self {
+            Network::Testnet | Network::Mainnet => {
+                format!("{TOP_UP_BRIDGE}/?network={}", self.kind())
+            }
+            Network::Devnet { .. } => TOP_UP_BRIDGE.to_string(),
         }
     }
 
@@ -243,6 +270,18 @@ struct DeploymentFile {
     /// The forge-v2 record `deploy-v2.mjs` read-modify-writes (`forge-contracts/scripts`).
     #[serde(default)]
     v2: Option<V2Record>,
+    /// forge-user (`docs/design/identity-synced-state.md`): absent where it is not registered.
+    #[serde(default)]
+    user: Option<UserRecord>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserRecord {
+    #[serde(default)]
+    contract_id: Option<String>,
+    #[serde(default)]
+    contract_group_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -385,6 +424,7 @@ impl V2Record {
             group,
             superseded_in_group,
             group_owner,
+            user: None,
         })
     }
 }
@@ -415,6 +455,9 @@ pub struct ForgeIds {
     /// neither the group's owner nor forge-core's.
     /// The group must also have no admins (`deploy-v2.mjs` registers none).
     pub group_owner: Option<String>,
+    /// forge-user (settings that follow the identity), a member of the same group; `None`
+    /// where it is not registered (mainnet, until the owner registers it).
+    pub user: Option<String>,
 }
 
 impl ForgeIds {
@@ -438,6 +481,14 @@ impl ForgeIds {
         self.all().iter().any(|(_, id)| *id == contract_id)
     }
 
+    /// Whether `contract_id` is a Forge member of the group: a current or superseded Forge
+    /// contract, or forge-user.
+    pub fn is_group_member(&self, contract_id: &str) -> bool {
+        self.contains(contract_id)
+            || self.superseded_in_group.iter().any(|c| c == contract_id)
+            || self.user.as_deref() == Some(contract_id)
+    }
+
     /// Whether a key with `bounds` is unbound or bound to Forge: a Forge contract (current, or
     /// superseded in the group), any document type of one, or the Forge contract group. A key
     /// bound to another app's contract or group is not Forge's to use.
@@ -445,9 +496,7 @@ impl ForgeIds {
         use crate::platform::KeyBounds;
         match bounds {
             None => true,
-            Some(KeyBounds::Contract { id, .. }) => {
-                self.contains(id) || self.superseded_in_group.contains(id)
-            }
+            Some(KeyBounds::Contract { id, .. }) => self.is_group_member(id),
             Some(KeyBounds::ContractGroup { id }) => *id == self.group,
         }
     }
@@ -464,6 +513,7 @@ impl ForgeIds {
             group: "G".into(),
             superseded_in_group: vec![],
             group_owner: None,
+            user: None,
         }
     }
 
@@ -564,7 +614,15 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
         key: key.to_string(),
         dapi_addresses,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
-        v2: file.v2.as_ref().and_then(V2Record::ids),
+        v2: file.v2.as_ref().and_then(V2Record::ids).map(|mut ids| {
+            ids.user = file
+                .user
+                .as_ref()
+                .filter(|u| u.contract_group_id.as_deref() == Some(ids.group.as_str()))
+                .and_then(|u| u.contract_id.clone())
+                .filter(|s| !s.is_empty());
+            ids
+        }),
         retired: file.retired,
     }))
 }
@@ -990,6 +1048,26 @@ impl NetworkSettings {
 mod tests {
     use super::*;
 
+    #[test]
+    fn web_origin_and_top_up_follow_the_network() {
+        let devnet = Network::from_key("devnet-moutai");
+        assert_eq!(Network::Mainnet.web_origin(), "https://forge.dashhq.org");
+        assert_eq!(
+            Network::Testnet.web_origin(),
+            "https://testnet-forge.dashhq.org"
+        );
+        assert_eq!(devnet.web_origin(), "https://forge.dashhq.org");
+        assert_eq!(
+            Network::Mainnet.top_up_url(),
+            "https://bridge.thepasta.org/?network=mainnet"
+        );
+        assert_eq!(
+            Network::Testnet.top_up_url(),
+            "https://bridge.thepasta.org/?network=testnet"
+        );
+        assert_eq!(devnet.top_up_url(), "https://bridge.thepasta.org");
+    }
+
     /// moutai's forge-v2 ids as read straight from the file on disk: proves the embedded copy
     /// is the committed file, without restating the ids here.
     fn expected_ids() -> ForgeIds {
@@ -1024,6 +1102,7 @@ mod tests {
                 .filter_map(|r| r["contractId"].as_str().map(str::to_string))
                 .collect(),
             group_owner: Some(on_disk("/v2/contractGroup/owner")),
+            user: None,
         }
     }
 
@@ -1146,6 +1225,7 @@ mod tests {
                 group: "G".into(),
                 superseded_in_group: vec![],
                 group_owner: None,
+                user: None,
             })
         );
         // Three contracts: forge-community's own id, and its superseded ones in the group
@@ -1164,6 +1244,7 @@ mod tests {
                 group: "G".into(),
                 superseded_in_group: vec!["OLDM".into()],
                 group_owner: None,
+                user: None,
             })
         );
         // Four contracts (D44): forge-meta's id, and its superseded ones in the group
@@ -1391,14 +1472,12 @@ mod tests {
         let live = suggested_v2_network().expect("a live network is deployed");
         assert!(notice.contains(&live.dg_flags()), "{notice}");
         assert!(!notice.contains("--devnet-name moutai"), "{notice}");
-        // sakura went down after testnet's registration and names it; live networks get none.
+        // sakura names the same live network (mainnet once it is deployed); live networks get none.
         let sakura =
             retired_notice(&Network::from_key("devnet-sakura")).expect("sakura is retired");
-        assert!(
-            sakura.contains(&Network::Testnet.dg_flags()) || sakura.contains("testnet"),
-            "{sakura}"
-        );
+        assert!(sakura.contains(&live.dg_flags()), "{sakura}");
         assert!(retired_notice(&Network::Testnet).is_none());
+        assert!(retired_notice(&Network::Mainnet).is_none());
     }
 
     #[test]

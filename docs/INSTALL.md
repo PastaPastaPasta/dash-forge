@@ -2,8 +2,8 @@
 
 > **Current release: [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0)**
 > ([release notes](releases/v0.2.0.md), [changelog](../CHANGELOG.md)), the first published
-> release. You can also [build from source](#build-from-source) from any commit. Forge runs
-> on mainnet and testnet; testnet is the tools' default network ([Networks](networks.md)). The version policy is in [VERSIONING.md](VERSIONING.md).
+> release. You can also [build from source](#build-from-source) from any commit. v0.2.0 predates
+> Forge's mainnet registration, so its binaries work on testnet only; for mainnet, build from source. The version policy is in [VERSIONING.md](VERSIONING.md).
 
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
 ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use
@@ -14,7 +14,7 @@ Dash Forge. Each archive contains:
 | `dg` | the command-line interface |
 | `git-remote-dash` | the git remote helper; git runs it for `dash://` URLs, so it must be on `PATH` |
 | `forge-relay`, `forge-import` | the relay daemon and the GitHub importer (optional) |
-| `forge-runner` | the self-hosted CI runner (optional; [guide](guides/self-host-runner.md)); not in the Windows archive |
+| `forge-runner` | the self-hosted CI runner (optional; [guide](guides/self-host-runner.md)) |
 | `completions/` | shell completions for `dg` (bash, zsh, fish, PowerShell) |
 | `LICENSE-MIT`, `LICENSE-APACHE` | Dash Forge's own licenses: use either one |
 | `THIRD-PARTY-LICENSES` | the licenses of the open-source Rust crates built into the binaries |
@@ -29,19 +29,16 @@ Dash Forge. Each archive contains:
 | `x86_64-unknown-linux-musl` | `.tar.gz` | fully static: Alpine, older distributions, containers |
 | `x86_64-apple-darwin` | `.tar.gz` | Intel Macs; **not signed by Apple**, see [below](#macos-gatekeeper) |
 | `aarch64-apple-darwin` | `.tar.gz` | Apple silicon; **not signed by Apple** |
-| `x86_64-pc-windows-msvc` | `.zip` | Windows 10 and later; **experimental**, see [below](#windows) |
 
-Archives are named `dash-forge-<version>-<target>.tar.gz` (`.zip` on Windows). Each
-contains one directory with the same name.
+Archives are named `dash-forge-<version>-<target>.tar.gz`. Each contains one directory with
+the same name.
 
 There is no static build for aarch64 Linux yet. On an aarch64 system with glibc older than
 2.35, [build from source](BUILDING.md).
 
 ### Windows
 
-The Windows build is **experimental**. Every release builds and packages it, but clone, push and fetch over
-`dash://` have not been tested on Windows. Report what works and what does not in the
-[issue tracker](https://github.com/PastaPastaPasta/dash-forge/issues).
+Use [WSL](https://learn.microsoft.com/windows/wsl/install) and the Linux build.
 
 ## Install script (Linux and macOS)
 
@@ -74,7 +71,7 @@ The script never runs `sudo`. You can control it with these environment variable
 
 | Variable | Default | Effect |
 |---|---|---|
-| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.3.0`; needed for a pre-release such as `0.3.0-rc.1`, which "latest" never picks |
+| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.2.0`; needed for a pre-release such as `0.2.0-rc.1`, which "latest" never picks |
 | `DASH_FORGE_INSTALL_DIR` | `~/.local/bin` | where the binaries go |
 | `DASH_FORGE_BINARIES` | `dg git-remote-dash` | add `forge-relay` / `forge-import` / `forge-runner` if you want them |
 | `DASH_FORGE_COMPLETIONS` | `0` | `1` installs bash, zsh and fish completions under `~/.local/share` and `~/.config/fish` |
@@ -91,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/i
 Then check the install:
 
 ```sh
-dg --version      # dg 0.3.0 (<commit> <target>)
+dg --version      # dg 0.2.0 (<commit> <target>)
 dg doctor         # git, git-remote-dash (same version as dg), network, identity
 ```
 
@@ -104,11 +101,6 @@ dg doctor         # git, git-remote-dash (same version as dg), network, identity
    ```sh
    sha256sum --check --ignore-missing SHA256SUMS          # Linux
    shasum -a 256 --check --ignore-missing SHA256SUMS      # macOS
-   ```
-
-   ```powershell
-   # Windows: compare with the line for your archive in SHA256SUMS
-   (Get-FileHash dash-forge-<version>-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash.ToLower()
    ```
 
 3. Optionally, verify build provenance. The archives and `SHA256SUMS` carry GitHub
@@ -135,8 +127,6 @@ dg doctor         # git, git-remote-dash (same version as dg), network, identity
    install -m 755 dash-forge-<version>-<target>/dg dash-forge-<version>-<target>/git-remote-dash ~/.local/bin/
    ```
 
-   On Windows, extract the zip and add the folder to your user `Path`, or copy `dg.exe` and
-   `git-remote-dash.exe` into a folder that is already on it.
 
 ## cargo binstall
 

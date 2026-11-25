@@ -1,6 +1,6 @@
 import { test, expect, type Request } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { idFile, PASSPHRASE, shot } from './helpers'
+import { idFile, PASSPHRASE, shot, showOtherWays, usePassword } from './helpers'
 
 /**
  * P-1 follow-up: real writes through the DAPI request budget (`lib/sdk/budget.ts`). The rb-*
@@ -37,8 +37,10 @@ test('rbw-1. a browser key and a repo, written through the request budget', asyn
   // 1. Register this browser's key: an IdentityUpdate transition.
   await page.goto('/new/', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', IDENTITY)
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByRole('button', { name: /create this browser's key/i }).click()

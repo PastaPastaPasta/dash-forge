@@ -84,7 +84,7 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 | `git-remote-dash` | The same | `DASH_FORGE_KEY`, else `~/.config/dash-forge/identities/<owner>.identity.json` if that file exists, else the default `dg auth` recorded |
 | `forge-import` | The same | `--identity <source>` > `DASH_FORGE_KEY` |
 | Mirror Action | A CI secret: an inline runner key, or a CI-only identity file | the `DASH_FORGE_KEY` secret ([mirror guide](mirror-a-github-repo.md#the-ci-secret)) |
-| Web app | A **limited key** (or a key your wallet granted, with the budget and expiry you approved there; the older code's keys have no limits, see below), encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
+| Web app | A **limited key** (or a key your wallet granted, with the budget and expiry you approved there; keys from the wallet's older code have no limits, see below), encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
 
 A key *source* (`--identity`, `DASH_FORGE_KEY`, the recorded default) is any of:
 
@@ -182,7 +182,7 @@ It runs the rekey of [private-repos.md §5.2](../security/private-repos.md#52-en
 
 The key `dg` stores beside your limited key (`dg auth login`) gets the new key too. A repository counts as moved only when a fresh read shows your wrap for its current epoch on the new key. If one is not, every old key stays enabled and nothing is lost. Run the command again: each run adds a fresh key and treats every enabled encryption key as old, since a lost device may have held an earlier run's key too. Other computers and browsers need the new key: sign in again with the words, or in the web app add it from **Settings → Members-only and private content**.
 
-**In the web app**, **Settings → Members-only and private content** stores your encryption key in this browser's vault: from your recovery phrase, your identity file or the key itself, checked against your identity first, or **Register a new key** for an identity that has none. A wallet sign-in with the older code stores it for you; the current one (App Connect v2) does not ([below](#signing-in-with-the-dash-wallet-app-what-works-today)). The vault keeps every encryption key you give it, and **Add another encryption key** adds one more.
+**In the web app**, **Settings → Members-only and private content** stores your encryption key in this browser's vault: from your recovery phrase, your identity file or the key itself, checked against your identity first, or **Register a new key** for an identity that has none. A wallet sign-in (App Connect v2) does not bring it ([below](#signing-in-with-the-dash-wallet-app-what-works-today)); one the wallet's older code stored earlier stays in the vault. The vault keeps every encryption key you give it, and **Add another encryption key** adds one more.
 
 ---
 
@@ -228,7 +228,7 @@ dg auth name register <label>                   # a DPNS username
 
 `dg auth login` signs in with the DashPay wallet on your phone (App Connect), so neither the recovery phrase nor the master key touches this computer. Giving it an identity file, `--identity <file>` or `--mnemonic` signs in from your identity's master key instead (`--full-key` and `--replace` need one of those, and stop with a usage error without); `--wallet` asks for the wallet explicitly:
 
-1. `dg` prints a QR code and the same request as a `dash-key:` link (copy it to the phone if the camera can't read the terminal). In DashPay, open **More → Tools → Connections → Scan QR**, or open the link on the phone.
+1. `dg` prints a QR code and the same request as a `dashpay://connect` link (copy it to the phone if the camera can't read the terminal). In DashPay, open **More → Tools → Connections → Scan QR**, or open the link on the phone.
 2. The wallet shows "Dash Forge" and the key it is asked for: one limited key (bound to the `dash-forge` contract group) with `dg`'s proposed limits, 0.25 DASH for 180 days, or `--budget` / `--expires` (a wallet grants at most 5 DASH and 365 days). You can keep them or pick another limit in the wallet. Approving adds the key to your identity.
 3. `dg` reads the answer from Platform (no Forge server is involved, so this works over SSH), checks the key on chain, and shows the identity, its username if it has one, and the budget and expiry the wallet granted. **Check that it is the identity your wallet showed** and confirm. The key is then stored like any limited key: the keychain, else a passphrase-sealed file (`--insecure-plaintext` as for `dg auth login`).
 
@@ -240,7 +240,7 @@ The code is valid for 10 minutes; in a terminal `dg` offers a new one when it ex
 
 `dg auth status` shows each key's origin (`Origin:`: your DashPay wallet, registered with your recovery phrase, an identity file, a dfk1 key, or the OS keychain for a key an earlier `dg` stored), its budget left and its expiry, and for a wallet key "Renew in your wallet". `--json` has the same as `keyOrigin` (`wallet`, `phrase`, `file`, `dfk1`, `keychain`). To renew it, run `dg auth login` again: the request names the identity, and the wallet disables the previous key it gave this computer in the same update (dg sends the same connection id, kept in `app-connect.toml` beside `config.toml`; a damaged file or id is reported, not replaced). Signing in again as the same identity keeps the encryption key the old key had beside it, when `dg` can open the stored copy (not a sealed file you replace without its passphrase); a wallet sign-in does not bring one of its own, so private repositories otherwise need `dg auth login <file>` or `--mnemonic` once. To disable the key, disconnect Dash Forge in the wallet (Connections), or `dg auth keys disable <id>` with your master key.
 
-Wallets: DashPay for Android 11.9.2 or later. On testnet, where Forge runs today, use DashPay's testnet build: the `-testnet.apk` on the [latest dash-wallet release](https://github.com/dashpay/dash-wallet/releases/latest), installed beside the store app. Dash Wallet for iOS speaks the same protocol, but no testnet build of it is available to download.
+Wallets: DashPay for Android 11.9.2 or later, or Dash Wallet for iOS 9.1.4 or later, on mainnet. On testnet, use DashPay's testnet build: the `-testnet.apk` on the [latest dash-wallet release](https://github.com/dashpay/dash-wallet/releases/latest), installed beside the store app.
 
 ### A browser key from dg
 
@@ -263,7 +263,8 @@ Ways to get one in the web app (**Sign in**):
 |---|---|
 | Use dg on your computer | `dg` registers the key and prints it sealed to this tab ([above](#a-browser-key-from-dg)). The recovery phrase stays out of the browser. |
 | Import an identity file or recovery phrase | Your master key signs one IdentityUpdate that adds the limited key. It is used once and not retained. You choose how long the key lives: 30 days, 90 days (the default), 6 months or 1 year. |
-| Create a new identity | 12 words, a check on three of them, a choice of passkey or passphrase, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. The key is stored in the vault *before* it is registered, and an interrupted creation resumes when you type the same words again. |
+| Create a new identity | 12 words, a check on three of them, a choice of passkey or passphrase, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. The key is stored in the vault *before* it is registered, and an interrupted creation resumes when you type the same words again. On mainnet, where the wallet can sign you in, this sits under **Other ways to sign in**. |
+| Get DashPay (mainnet) | On mainnet, where the wallet can sign you in, the sheet's first option for newcomers: install DashPay for Android or Dash Wallet for iOS, create your identity in it (the recovery phrase stays on the phone), then sign in with **Use my Dash wallet**. Testnet and devnets keep **Create a new identity** first. |
 | Use my Dash wallet | **A limited key**, granted by your wallet through App Connect v2: one approval for all of Forge, with a spending limit and an expiry you confirm in the wallet. On testnet it works with the testnet build of DashPay Wallet for Android 11.9.2 or later (More → Tools → Connections); scan the QR code (or tap the link on the phone) and approve. **Check that the username and identity shown match what your wallet showed**: anyone who saw the QR code could answer. No encryption key comes with it. Details [below](#signing-in-with-the-dash-wallet-app-what-works-today). |
 | Advanced: paste a key | A HIGH or CRITICAL key, for this tab only, lost on reload. It has no limits Forge set. Never paste a master key. |
 
@@ -276,19 +277,19 @@ The header shows your balance and the key's remaining budget. It turns amber whe
 - **Revoke on Platform** disables this browser's key (about 0.00002 DASH). It needs your identity file or recovery phrase once. After a reload it first asks you to unlock this tab, so it can disable every key the browser holds.
 - **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires. If you topped the identity up in this browser, a note of where its next top-up starts (or an unfinished top-up) stays, with no keys or words in it; Forget and Revoke say so before you confirm.
 
-For a key a wallet granted without limits, **Renew key** reads **Replace with a limited key**, **Revoke on Platform** reads **Disable key on Platform**, and **Top up key budget** is not offered (Platform cannot add limits to such a key).
+For a key a wallet's older code granted (no limits, and maybe only part of Forge), **Renew key** reads **Replace with a limited key**: it opens one approval in your wallet first, with **Use your identity file or recovery phrase instead** under it. **Revoke on Platform** reads **Disable key on Platform**, and **Top up key budget** is not offered (Platform cannot add limits to such a key).
 
 Losing a device costs nothing beyond that key's remaining budget. Register a new key and disable the old one.
 
 ### Signing in with the Dash Wallet app: what works today
 
-The **Use my Dash wallet** tile asks your wallet for one key for all of Forge through **App Connect v2** (Dash Platform's App Connect contract, protocol 14). The key it grants is limited: bound to Forge's contracts, with a spending limit and an expiry you confirm in the wallet. Released wallets answer it (checked 2026-11-22):
+The **Use my Dash wallet** tile asks your wallet for one key for all of Forge through **App Connect v2** (Dash Platform's App Connect contract, protocol 14). The key it grants is limited: bound to Forge's contracts, with a spending limit and an expiry you confirm in the wallet. Released wallets answer it:
 
 | Wallet | Network | Works today |
 |---|---|---|
-| DashPay Wallet for Android 11.9.2 or later, testnet build (`dashpay-wallet-…-testnet.apk` on the [DashPay Wallet releases](https://github.com/dashpay/dash-wallet/releases/latest)) | testnet | **Yes.** Checked end to end on 2026-11-22: approval, sign-in and a write with the granted key. The testnet build installs next to the store app. |
-| Dash Wallet for iOS 9.1.4 or later | testnet | Speaks App Connect v2, but there is no verified way to put a store build on testnet. |
-| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | Both answer App Connect v2 on mainnet, the sign-in [forge.dashhq.org](https://forge.dashhq.org) uses there since 2026-11-24. |
+| DashPay Wallet for Android 11.9.2 or later, testnet build (`dashpay-wallet-…-testnet.apk` on the [DashPay Wallet releases](https://github.com/dashpay/dash-wallet/releases/latest)) | testnet | **Yes.** The testnet build installs next to the store app. |
+| Dash Wallet for iOS 9.1.4 or later | testnet | No: there is no testnet build of the iOS app to install. |
+| DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4 | mainnet | **Yes**: the web app at forge.dashhq.org and `dg auth login --network mainnet --wallet` both show a `dashpay://connect` code. |
 | Any released wallet | devnets | No: released wallets carry no devnet's settings. |
 
 On testnet the sheet lists the wallet first; creating an identity in the browser stays the recommended start for newcomers, since the testnet wallet is a sideloaded app. In the wallet the feature is under More → Tools → Connections.
@@ -299,18 +300,20 @@ What to expect:
 - **Scan only a code shown on forge.dashhq.org.** The request names Forge and nothing about the site that shows it, so a lookalike site can show a code that looks the same, and your wallet cannot tell them apart. If you approve one, that site gets a key that signs Forge writes as you, within the limits you approved. Forge never asks you to scan a code it didn't show you on its own site. If you scanned a code you didn't trust, use **Settings → Devices & keys → Disable all other keys** (your identity file or recovery phrase signs once). [If Forge tells you to revoke keys](revoke-keys.md) has the steps.
 - **No encryption key.** App Connect v2 gives Forge a signing key only. To read private repositories and members-only content, import your encryption key under **Settings → Members-only and private content**.
 - **Renewing.** When the key's budget or time runs low, Forge offers **Renew in your wallet**: the wallet grants a new key and disables the old one in the same update.
+- **Disconnecting it in the wallet** disables the key on Platform, on every device that holds it, including one a passkey restored it to. Nothing signs with it after that: each write, and each notification-service request, checks the key on chain first. The next unlock on such a device says "This key was disconnected in your wallet, so sign in again" and offers **Forget this key and sign in again**. With **Stay signed in for public repos** on, the next page load says it too.
 - **Check the identity yourself.** The answer does not prove who sent it: anyone who saw the QR code could answer. Forge refuses if two identities answer. When one does, Forge shows which: compare the username and identity id with the wallet's approval screen. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 10 minutes; keep the QR code private.
 - **A freshly restored wallet may not answer until it has synced.** If the wallet says its connection records can't be read, let it finish syncing, then open or scan the code again.
 
-#### The older code (DashConnect)
+#### The older code (DashConnect) is gone
 
-Behind **Show the older code**, the sheet still offers the older key exchange (DashConnect, one key per Forge contract, with no spending limit or expiry). DashPay for Android 11.9.2 and later refuse it, and Dash Wallet for iOS has dropped it on its development branch; only iOS 9.1.4 still answers it, on testnet. What it means if you use it:
+The sheet used to offer, behind **Show the older code**, the older key exchange (DashConnect: one key per Forge contract, with no spending limit or expiry, and a guided "Step 2 of 3" for the other contracts). It was removed in November 2026: every released wallet that answered it also answers App Connect v2, and DashPay for Android 11.9.2 already refused it.
 
-- **One approval per Forge contract**, each first one with a second code that adds the key to your identity; right after the first sign-in the web app walks through the rest ("Step 2 of 3: approve Forge collaboration").
-- **No spending limit or expiry**, which Platform cannot add later. The app warns about it and offers **Replace with a limited key** (your identity file or 12 words, once), which disables the wallet's keys in the same update.
-- **A disabled wallet key cannot be replaced by the wallet**: it derives the same key every time, so Forge refuses that sign-in; use Import instead.
-- **Disconnect in the iOS wallet doesn't disable the key.** Use **Settings → This browser's key → Disable key on Platform**, or **Settings → Devices & keys → Disable all other keys**.
-- **It also registers an encryption key**, which Forge keeps in this browser's vault; replace it if you scanned a code you didn't trust ([above](#replacing-it-after-a-lost-device)).
+If this browser still holds a key from it:
+
+- **It keeps working.** Nothing was deleted from your browser: the key unlocks and signs as before, where its bounds allow.
+- **Replace it with a limited key.** **Settings → This browser's key** warns that it has no spending limit, and **Replace with a limited key** asks your wallet for one approval for all of Forge first (or uses your identity file or 12 words, which also disables the old keys in the same update). A write the old key does not cover (it was bound to one Forge contract) opens the same replacement.
+- **A wallet replacement leaves the old key live**, held here never to sign, so it no longer counts as "no spending limit". **Renew with identity file** disables it and keeps you signed in with a fresh key; **Revoke on Platform** disables it together with the new key and signs this browser out. Disconnect in the iOS wallet doesn't disable it either; **Settings → Devices & keys → Disable all other keys** does.
+- **Its encryption key stays in this browser's vault**; replace it if you scanned a code you didn't trust ([above](#replacing-it-after-a-lost-device)).
 
 [wallet-login.md](../design/wallet-login.md) has the protocol details, and [wallet-primary.md](../design/wallet-primary.md) the plan to make the wallet the primary sign-in.
 
@@ -350,7 +353,7 @@ What the vault does **not** protect against:
 
 - **Script running in the page.** The vault protects the key at rest. While it is unlocked, any script running on the page (an XSS) can use it. During the stay-signed-in window a script on any page load of this site can also read the kept signing key and send it off, bounded by that key's budget and on-chain expiry (not the encryption key, storage credentials or wallet grants, which are never kept). The page's CSP allows inline scripts, which Next's static bootstrap needs. It does not allow JavaScript `eval`, only `wasm-unsafe-eval` for the SDK's WebAssembly. forge.dashhq.org also runs one third-party script, Cloudflare's Web Analytics beacon, with the page's privileges. The CSP allows only its exact URL and the page pins its bytes by SRI hash, so a changed script is refused, not run ([Hosting §6](../hosting.md#6-cloudflare-web-analytics-the-page-carries-the-beacon)). A build you host yourself has no such script unless you set `NEXT_PUBLIC_CF_BEACON_TOKEN`.
 - **Someone with a copy of your browser profile, taken within the window.** The kept record is deleted when the app next runs after it expires, not the moment it does, and the browser may keep the key that seals it in the profile. So a copy taken before your next visit can use the signing key without your passphrase or passkey, until its budget or on-chain expiry runs out, or you revoke it. Nothing else of the vault is in that record. **Stay signed in for public repos** off closes this.
-- **Clickjacking where the host sends no header.** `frame-ancestors` only works as an HTTP header, and GitHub Pages can't send one. Cloudflare, in front of Pages, can add it ([Hosting the web app](../hosting.md#7-security-headers) lists the headers); until it does, forge.dashhq.org can be framed. A framed page never picks up a kept session, so it opens locked. A copy you host yourself needs `Content-Security-Policy: frame-ancestors 'none'` too.
+- **Clickjacking where the host sends no header.** `frame-ancestors` only works as an HTTP header, and GitHub Pages can't send one. A Cloudflare proxy in front of Pages could add it ([Hosting the web app](../hosting.md#7-security-headers) lists the headers); none is in front today, so forge.dashhq.org can be framed. A framed page never picks up a kept session, so it opens locked. A copy you host yourself needs `Content-Security-Policy: frame-ancestors 'none'` too.
 - **A shared origin.** On a GitHub Pages project site (`*.github.io/<repo>`) or an IPFS path gateway (`ipfs.io/ipfs/…`), other sites share the origin and could read the vault or ask the browser for the passkey's PRF output. So the app refuses to create or unlock a vault there. Browsing still works. Use <https://forge.dashhq.org> (the Pages deployment's custom domain, set in the repository's Pages settings) or an IPFS subdomain gateway (`<cid>.ipfs.<gateway>`).
 
 ---
@@ -422,7 +425,8 @@ In the web app, paste the public key (an `ssh-ed25519 …` line, or the output o
 
 - **Which keys.** Ed25519 SSH keys, and Ed25519 or ECDSA (P-256/384/521) OpenPGP keys. A profile lists at most four, of at most 300 bytes each, so an RSA key does not fit: add an Ed25519 signing subkey (`gpg --quick-add-key <fingerprint> ed25519 sign`). For an OpenPGP key, the key that signs is published: the newest subkey that may sign, else the primary key, as gpg picks it.
 - **What Verified means.** The signature checks against a key that exactly one of the repository's owner and members lists on their profile. The badge names that identity. As with a key on a GitHub account, nobody proves they hold the private key of a key they list. Forge does not tie it to the commit's author email either, which it doesn't know. A key that two identities list names nobody.
-- **Unverified** says why: the key is on no member's profile, more than one identity lists it, the signature does not match the commit (it was changed after signing), or it is a kind Forge does not check (X.509, RSA, an SSH key that is not Ed25519, SHA-1).
+- **Signed** (neutral, SSH) and **Unknown key** (neutral, OpenPGP) mean the key is on no member's profile, as with history signed on another host. An SSH signature carries its key, so Forge checks it anyway; an OpenPGP one can't be checked without the key. **Signed by GitHub** means the signature checks against GitHub's web-flow key, which signs merges and edits made on github.com: the commit was made on GitHub, but the badge names no member. GitHub's 2017 key, retired in 2024, is not trusted. In the web only; `dg verify-commit` reports these as Unverified, key on no member's profile.
+- **Unverified** says why: more than one identity lists the key, the signature does not match the commit (it was changed after signing), or it is a kind Forge does not check (X.509, RSA, an SSH key that is not Ed25519, SHA-1).
 - **Checked where.** In your browser (and by `dg`): nothing is asked of a server. The web reads the repository's members and their profiles once a page shows a signed commit.
 
 Check commits from a clone with `dg verify-commit`, which gives the same verdict as the badges:

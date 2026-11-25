@@ -7,7 +7,7 @@
 //!
 //! 1. [`forge::LoginRequest::new`] draws an ephemeral key and builds Forge's request: one
 //!    AUTHENTICATION / HIGH key bound to the dash-forge contract group, with a budget and an
-//!    expiry ([`request`] has the codec, [`request::build_uri`] the `dash-key:` link a QR code
+//!    expiry ([`request`] has the codec, [`request::build_uri`] the `dashpay://connect` link a QR code
 //!    shows).
 //! 2. The wallet registers the key on the user's identity and publishes a `loginKeyResponse`
 //!    in the App Connect system contract ([`APP_CONNECT_CONTRACT_ID`]), keyed by
@@ -171,7 +171,7 @@ fn with_secret_key<T>(secret: &[u8; 32], f: impl FnOnce(&secp256k1::SecretKey) -
 }
 
 /// The compressed public key of a 32-byte private key, or `None` when it is not one.
-fn public_key_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
+pub(crate) fn public_key_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
     with_secret_key(secret, |key| public_of(key).serialize())
 }
 

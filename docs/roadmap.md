@@ -68,7 +68,7 @@ Every roadmap item must keep all of these true:
 3. **No moderation.** The contracts are registered without Platform contract moderation, so no one can ban identities or delete content at the protocol level.
 4. **The UI shows only what was verified.** A "verified" badge comes from a check that actually passed, and a button's label says what the click actually does.
 5. **Cost honesty.** Show an estimate before every paid write, split into deposit and burn, with DASH primary. No surprise spend, including on `git push`.
-6. **Zero workflow change.** Plain git (jj talks to git remotes and is expected to work, but is untested since July 2026); `dg` mirrors `gh`.
+6. **Zero workflow change.** Plain git, and jj through the same remote helper; `dg` mirrors `gh`.
 
 ## 5. Decisions
 
@@ -140,7 +140,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 
 **Mobile wallet sign-in (D-L)**
 
-The user scans a QR code (or taps a `dash-key:` deep link on the phone itself), approves in the Dash Wallet app, and the browser is signed in. No key file, no key paste. This is the QR key exchange yappr implements (`yappr/components/auth/key-exchange-*.tsx`, `@pastapastapasta/platform-auth`); Forge re-implements it in `forge-web/lib/auth/wallet-protocol.ts`.
+The user scans a QR code (or taps a `dash-key:` deep link on the phone itself), approves in the Dash Wallet app, and the browser is signed in. No key file, no key paste. This is the QR key exchange yappr implements (`yappr/components/auth/key-exchange-*.tsx`, `@pastapastapasta/platform-auth`); Forge re-implemented it in `forge-web/lib/auth/wallet-protocol.ts` (v1; removed 2026-11-23 in favour of App Connect v2, `app-connect-v2.ts`).
 
 What exists today, checked 2026-09-26:
 - **Forge web (PR #43):** the wallet tile emits a `dash-key:` request for one Forge contract (forge-core; forge-collab takes a second approval), reads both the legacy key-exchange contract and the PV14 App Connect system contract `H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ`, shows the `dash-st:` registration QR on a first login, and verifies the granted key on chain. It accepts the wallets' keys without budget or expiry, with a warning. It shows the full identity and DPNS name for confirmation; two answerers are refused on App Connect only. See [wallet-login](design/wallet-login.md).

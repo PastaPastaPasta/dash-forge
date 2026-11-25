@@ -7,28 +7,27 @@
  *   New to Dash: Create a new identity, badged Recommended — mnemonic + backup quiz + deposit
  *      QR, registered with a limited key inside the IdentityCreate. It ends on a "You're in"
  *      view with next steps and a check for a second payment left on the deposit address (F13, F14).
+ *      On mainnet, where the wallet leads, this is "Get DashPay" instead (create the identity in
+ *      the wallet, then sign in with it), and the in-page create sits under "Other ways to sign in".
  *   Already have one: a passkey from another device; Import an identity file (or mnemonic) — the
  *      master key signs one IdentityUpdate that registers a limited key for this browser, and is
- *      not stored; dg; and Use my Dash wallet — App Connect v2 where the chain supports it (one
- *      approval covers all of Forge, with a budget and an expiry), else the DashConnect key
- *      exchange (shown only when a response contract exists here). The wallet leads where a
- *      released wallet can answer (`walletSignInReady`: App Connect v2 on mainnet or testnet), and
- *      is the one recommended except on testnet, where creating stays recommended for newcomers
- *      (`lib/auth/sign-in-methods.ts`); elsewhere it is last, badged "Not available yet". The older exchange approves one
- *      Forge contract per scan, so a finished sign-in walks through the rest in one guided
- *      sequence ("Step 2 of 3"), each step skippable (FEAT-04, lib/auth/guided-grants.ts);
+ *      not stored; dg; and Use my Dash wallet — App Connect v2 (one approval covers all of Forge,
+ *      with a budget and an expiry), shown where the chain supports it. The wallet leads where a
+ *      released wallet can answer (`walletSignInReady`: mainnet or testnet), and is the one
+ *      recommended except on testnet, where creating stays recommended for newcomers
+ *      (`lib/auth/sign-in-methods.ts`); elsewhere it is last, badged "Not available yet".
  *   Advanced: paste a raw key (developer path; this tab only; red warning).
  *
  * When this device already holds an encrypted key, the sheet opens on "Unlock" instead
  * (callers can open it on a view directly: Renew opens Import, or the wallet that granted the key
- * when it came from one). On a network without forge-v2
- * (no contract group to bind a key to) there is nothing to sign for: Import shows "not
- * deployed".
+ * when it came from one; a key from the older wallet code opens "Replace", the wallet first). On a
+ * network without forge-v2 (no contract group to bind a key to) there is nothing to sign for:
+ * Import shows "not deployed".
  */
 
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, ArrowLeft, ChevronDown, Compass, CopyPlus, Fingerprint, HelpCircle, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, Compass, CopyPlus, Fingerprint, HelpCircle, KeyRound, Lock, Plus, RotateCw, Smartphone, SquareTerminal, Upload, Wallet } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { PushCostText } from '@/components/ui/push-cost-text'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -40,7 +39,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow, type CreatedIdentity } from '@/components/auth/create-identity-flow'
 import { TestCreditsBadge, isTestNetwork } from '@/components/ui/test-credits'
-import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
+import { DASHPAY_ANDROID_RELEASES, WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { Tile } from '@/components/auth/sign-in-tile'
 import { PasskeySignIn } from '@/components/auth/passkey-sign-in'
 import { DgHandoffFlow, type HandoffTarget } from '@/components/auth/dg-handoff-flow'
@@ -51,14 +50,11 @@ import { forgetConfirm } from '@/components/keys-panel'
 import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { useConfirmAction } from '@/components/ui/confirm-action'
 import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
-import { GRANT_COPY } from '@/lib/auth/key-registration'
-import { guidedStep, guidedStepTitle, passGuidedStep, startGuidedGrants, type GuidedGrants } from '@/lib/auth/guided-grants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, lifetimeLabel, limitsFor, masterMaterialFromFile, type VaultInfo } from '@/lib/auth'
 import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
-import { walletLoginAvailable } from '@/lib/auth/app-connect'
 import { signInMethods, walletLeads, type SignInGroup, type SignInMethod } from '@/lib/auth/sign-in-methods'
 import { appConnectV2Available } from '@/lib/auth/app-connect-v2'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
@@ -71,27 +67,17 @@ import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, typical
 import { writesPausedReason } from '@/lib/devnet-notice'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage, shortId } from '@/lib/utils'
+import type { UnlockMethod } from '@/lib/auth/vault'
 
 type View = 'choose' | 'unlock' | 'advanced' | 'welcome' | LoginView
 
 export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
   const requested = useUiStore((s) => s.loginView)
-  // The contract the grant view asks the wallet for, as the opener named it (captured in the
-  // store when the sheet opened, so a grant landing mid-flow does not switch the target)
-  const requestedGrant = useUiStore((s) => s.loginGrantFor) ?? 'collab'
   const intent = useUiStore((s) => s.loginIntent)
   const close = useUiStore((s) => s.closeLogin)
-  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys, grants, origin } = useAuth()
+  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys, origin } = useAuth()
   const [view, setView] = useState<View | null>(null)
-  // The guided grants after a wallet sign-in (FEAT-04): `walletDone` waits for the new session's
-  // grants to land, `guide` is the sequence once it runs. Neither outlives the sheet.
-  const [walletDone, setWalletDone] = useState(false)
-  const [guide, setGuide] = useState<GuidedGrants | null>(null)
-  const guided = guide !== null && grants !== null ? guidedStep(guide, grants) : null
-  const grantKind = guided?.kind ?? requestedGrant
-  const grantFor = ACTIVE_NETWORK.v2?.[grantKind]
-  const grantTitle = guided ? guidedStepTitle(guided, GRANT_COPY[guided.kind].name) : GRANT_COPY[grantKind].title
   const [unlockFor, setUnlockFor] = useState<string | null>(null)
   // The locked key a dg handoff replaces (Unlock → "Replace this key with dg").
   const [dgReplace, setDgReplace] = useState<HandoffTarget | null>(null)
@@ -108,8 +94,6 @@ export function LoginModal(): JSX.Element {
     if (!open) {
       opened.current = null
       setView(null)
-      setWalletDone(false)
-      setGuide(null)
       setCreated(null)
       return
     }
@@ -130,24 +114,6 @@ export function LoginModal(): JSX.Element {
     }
   }, [open, requested, hasVault, vaultsLoaded, vaultsError, reloadVaults])
 
-  // A wallet sign-in finished: ask for the grants it did not cover in one sequence, or close when
-  // it covered them all (an unbounded key, or a three-contract set).
-  useEffect(() => {
-    if (!open || !walletDone || grants === null) return
-    setWalletDone(false)
-    const start = startGuidedGrants(grants)
-    if (start === null) {
-      close()
-      return
-    }
-    setGuide(start)
-    setView('grant')
-  }, [open, walletDone, grants, close])
-  // The sequence is over (every step done or skipped): the sheet closes.
-  useEffect(() => {
-    if (open && guide !== null && grants !== null && guided === null) close()
-  }, [open, guide, grants, guided, close])
-
   // The last stored key was forgotten from the Unlock view: nothing is left to unlock, so the
   // sheet offers the ways to sign in (QW2-027), not "Unlock the key this browser already holds".
   useEffect(() => {
@@ -159,15 +125,15 @@ export function LoginModal(): JSX.Element {
     setUnlockFor(id)
     setView('unlock')
   }
-  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' || view === 'wallet-renew' || view === 'welcome' ? null : () => setView('choose')
+  const back = view === null || view === 'choose' || view === 'unlock' || view === 'renew' || view === 'wallet-renew' || view === 'wallet-replace' || view === 'welcome' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
   const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys, origin !== 'app-connect')
-  const title = titleFor(view, grantTitle, intent?.action)
+  const title = titleFor(view, intent?.action)
 
   return (
     <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">
-      {intent && view !== 'grant' && view !== 'welcome' ? (
+      {intent && view !== 'welcome' ? (
         <p data-testid="signin-intent" className="mb-3 rounded-md bg-anvil-100 px-3 py-2 text-dense text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
           {intent.privateRepo
             ? 'Private repos are encrypted for their members. Import your identity with "Read and write members-only and private content" ticked: this browser then keeps your encryption key and opens the private repos you are a member of. Reading costs nothing.'
@@ -230,22 +196,15 @@ export function LoginModal(): JSX.Element {
         />
       ) : null}
       {view === 'welcome' && created ? <WelcomeView created={created} onDone={close} /> : null}
-      {view === 'wallet' ? <WalletConnectFlow onDone={() => setWalletDone(true)} onUnlock={() => setView('unlock')} /> : null}
-      {view === 'wallet-renew' ? (
+      {view === 'wallet' ? <WalletConnectFlow onDone={close} onUnlock={() => setView('unlock')} /> : null}
+      {view === 'wallet-renew' || view === 'wallet-replace' ? (
         <>
-          <WalletConnectFlow mode="renew" onDone={close} onUnlock={() => setView('unlock')} />
-          <div className="mt-3 border-t border-anvil-200 pt-3 dark:border-anvil-800">
+          <WalletConnectFlow mode={view === 'wallet-renew' ? 'renew' : 'login'} onDone={close} onUnlock={() => setView('unlock')} />
+          <div className={cn('mt-3 border-t border-anvil-200 pt-3 dark:border-anvil-800', ACTIVE_NETWORK.network === 'mainnet' && 'hidden')}>
             <button type="button" data-testid="renew-with-file-instead" onClick={() => setView('renew')} className="hit-area text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100">
-              Renew with identity file or recovery phrase instead
+              {view === 'wallet-renew' ? 'Renew with identity file or recovery phrase instead' : 'Use your identity file or recovery phrase instead'}
             </button>
           </div>
-        </>
-      ) : null}
-      {view === 'grant' ? (
-        <>
-          {/* Keyed by contract: the next step starts a new request, never the last one's QR. */}
-          <WalletConnectFlow key={grantKind} mode="grant" contractId={grantFor} onDone={() => (guide !== null && guided ? setGuide(passGuidedStep(guide, guided.kind)) : close())} />
-          {guide !== null && guided ? <GuidedSkip step={guided} onSkip={() => setGuide(passGuidedStep(guide, guided.kind))} onSkipAll={close} /> : null}
         </>
       ) : null}
       {view === 'advanced' ? <AdvancedView onDone={close} /> : null}
@@ -257,10 +216,10 @@ export function LoginModal(): JSX.Element {
  * The sheet's title. A write asked for the sheet: say which (L-62). Creating an identity is
  * sign-up, and says so on every step (QW4-022), as GitHub's "Create your account" does.
  */
-function titleFor(view: View | null, grantTitle: string, action: string | undefined): string {
+function titleFor(view: View | null, action: string | undefined): string {
   switch (view) {
-    case 'grant':
-      return grantTitle
+    case 'wallet-replace':
+      return "Replace this browser's key"
     case 'renew':
       return "Renew this browser's key"
     case 'wallet-renew':
@@ -276,38 +235,18 @@ function titleFor(view: View | null, grantTitle: string, action: string | undefi
   }
 }
 
-/** Skip this approval, or the rest: a skipped one is asked for when a write first needs it. */
-function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number; readonly of: number }; onSkip: () => void; onSkipAll: () => void }): JSX.Element {
-  return (
-    <div className="mt-3 space-y-2 border-t border-anvil-200 pt-3 dark:border-anvil-800" data-testid="guided-skip">
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Your wallet approves one Forge contract per scan. Skip a step and Forge asks again when you first need it.
-      </p>
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" onClick={onSkip} data-testid="guided-skip-step">
-          Skip this step
-        </Button>
-        {step.step < step.of ? (
-          <Button variant="outline" size="sm" onClick={onSkipAll} data-testid="guided-skip-rest">
-            Skip the rest
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
 /** The sheet's description line for a view. */
 function describeView(view: View, limitedKeys: boolean, notWalletGrant: boolean): ReactNode {
   if (view === 'welcome') return 'Your identity is registered and this browser is signed in. Pick a first step, or close this and look around.'
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
-  if (view === 'wallet' || view === 'grant') return 'Your wallet gives this browser a key for Dash Forge. Your recovery phrase and master key stay on the phone.'
+  if (view === 'wallet') return null
+  if (view === 'wallet-replace') {
+    return "This browser's key came from your wallet's older code, with no spending limit or only part of Forge. One approval gives a limited key for all of Forge. The current key stays live until Revoke on Platform disables it."
+  }
   if (view === 'wallet-renew') {
     // A key a passkey or the master key brought here is not this browser's own wallet grant: the
     // wallet adds a new one and leaves it.
-    return notWalletGrant
-      ? 'Your wallet adds a new key for this browser. The current key stays live until Revoke on Platform or a renewal with your identity file disables it. Your recovery phrase and master key stay on the phone.'
-      : 'Your wallet adds a new key for this browser and disables the current one. Your recovery phrase and master key stay on the phone.'
+    return notWalletGrant ? 'Your wallet adds a new key for this browser.' : 'Your wallet adds a new key for this browser and disables the current one.'
   }
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
   const base = <>at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge</>
@@ -318,10 +257,18 @@ function describeView(view: View, limitedKeys: boolean, notWalletGrant: boolean)
   if (view === 'dg') return <>dg registers a limited key for this browser ({limits}). Your recovery phrase stays out of the browser.</>
   if (view === 'import') return <>This browser gets its own Forge key: it can spend {limits}.</>
   if (view === 'create') return <>This browser gets its own Forge key: it can spend {fixedLimits}.</>
-  if (view === 'unlock') return 'Unlock the key this browser already holds.'
-  // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md). Creating
-  // fixes the lifetime (renewable later); importing lets you pick up to a year at once (Q5-C04).
-  return <>This browser gets its own Forge key: {base}, for {BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity&apos;s key can be renewed for up to a year later.</>
+  if (view === 'unlock') return null
+  // The tile list: one short line; the key's limits are under Other ways to sign in.
+  return 'Your keys stay in your wallet or on this device.'
+}
+
+/** The browser key's limits, shown with the other ways in. Creating fixes the lifetime (renewable later); importing lets you pick up to a year at once (Q5-C04). */
+function KeyLimitsNote(): JSX.Element {
+  return (
+    <p data-testid="signin-key-limits" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+      This browser gets its own Forge key. It spends at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH<FiatNote dash={BROWSER_KEY_DEFAULTS.budgetDash} kind="bound" />, only on Forge. It lasts {BROWSER_KEY_DEFAULTS.days} days by default, and up to a year.
+    </p>
+  )
 }
 
 function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () => void }): JSX.Element {
@@ -329,6 +276,7 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
   const closeLogin = useUiStore((s) => s.closeLogin)
   const { available: walletAvailable, v2: walletV2 } = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
+  const [more, setMore] = useState(false)
   const creating = useCreationInProgress()
   // While writes are paused (a devnet move, or the operator's PAGES_NOTICE=paused), no identity is
   // created, imported or given a wallet key here.
@@ -372,11 +320,9 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
                 ? network === 'testnet'
                   ? "DashPay on your phone (its testnet build): scan a QR code (or tap a link on the phone) and approve once for all of Forge. Your recovery phrase stays on the phone."
                   : 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
-                : network === 'testnet'
-                  ? "DashPay for Android answers only App Connect v2, which can't be offered here right now. Use another option for now."
-                  : network === 'devnet'
-                    ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
-                    : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
+                : network === 'devnet'
+                  ? `Test wallets only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps carry no devnet's settings.`
+                  : "Your wallet answers App Connect v2, which can't be offered here right now. Use another option for now."
             }
             muted={!walletFirst}
             badge={walletFirst ? (isRecommended ? recommended : null) : { label: 'Not available yet', tone: 'waiting' }}
@@ -384,6 +330,26 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
             // The wallet broadcasts a key-adding update for Forge: paused with every other write.
             pausedReason={pausedReason}
           />
+        )
+      case 'get-dashpay':
+        return (
+          <Fragment key={id}>
+            <Tile
+              testId="tile-get-dashpay"
+              icon={Smartphone}
+              title="Get DashPay, create your identity there, then sign in"
+              body="Install DashPay (Android) or Dash Wallet (iPhone) and create your Dash identity in it; your recovery phrase stays on the phone. Then come back and choose this to sign in with it."
+              onClick={() => onPick('wallet')}
+              pausedReason={pausedReason}
+            />
+            <p data-testid="get-dashpay-links" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+              DashPay for Android 11.9.2 or later (see the{' '}
+              <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
+                DashPay Wallet releases (opens in a new tab)
+              </a>
+              ), or Dash Wallet for iOS 9.1.4 or later.
+            </p>
+          </Fragment>
         )
       case 'create':
         return (
@@ -449,26 +415,35 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
   const advancedTiles = group('advanced')
   return (
     <div className="space-y-2">
-      {group('lead')}
-      <GroupLabel>New to Dash?</GroupLabel>
-      {group('new')}
-      <GroupLabel>Already have a Dash identity?</GroupLabel>
-      {group('existing')}
-      {advancedTiles.length > 0 ? (
-        <div className="pt-2">
-          <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
-            Advanced
-          </button>
-          {advanced ? <div className="mt-2">{advancedTiles}</div> : null}
+      {group('primary')}
+      <div className="pt-2">
+        <button
+          type="button"
+          data-testid="signin-more"
+          aria-expanded={more}
+          aria-controls="signin-more-panel"
+          onClick={() => setMore((o) => !o)}
+          className="hit-area flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-dense font-medium text-anvil-600 hover:text-anvil-900 dark:text-anvil-300 dark:hover:text-anvil-100"
+        >
+          <span className="flex-1">Other ways to sign in</span>
+          <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 transition-transform', more && 'rotate-180')} aria-hidden />
+        </button>
+        <div id="signin-more-panel" hidden={!more} className="mt-2 space-y-2">
+          {group('more')}
+          <KeyLimitsNote />
+          {advancedTiles.length > 0 ? (
+            <div className="pt-2">
+              <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
+                Advanced
+              </button>
+              {advanced ? <div className="mt-2">{advancedTiles}</div> : null}
+            </div>
+          ) : null}
+          <SignInHelp onLeave={closeLogin} />
         </div>
-      ) : null}
-      <SignInHelp onLeave={closeLogin} />
+      </div>
     </div>
   )
-}
-
-function GroupLabel({ children }: { children: ReactNode }): JSX.Element {
-  return <h3 className="pt-2 text-[12px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">{children}</h3>
 }
 
 /** The words the sheet uses, in plain English, without leaving it (F3; QW-013 linked out instead). */
@@ -615,10 +590,10 @@ function useCreationInProgress(): { readonly address: string; readonly funded: b
 }
 
 /**
- * Whether the wallet tile applies here: a wallet login contract exists on this network, or the
- * chain supports App Connect v2 (`v2`: the flow then asks for one approval for all of Forge).
- * When Platform cannot be reached to check, the tile shows anyway: the flow behind it names what
- * failed and offers "Try again", where hiding it would fail silently.
+ * Whether the wallet tile applies here: the chain supports App Connect v2 (`v2`: one approval for
+ * all of Forge), the only wallet sign-in left. When Platform cannot be reached to check, the tile
+ * shows anyway (`available` without `v2`): the flow behind it names what failed and offers "Try
+ * again", where hiding it would fail silently.
  */
 function useWalletAvailability(limitedKeys: boolean): { readonly available: boolean; readonly v2: boolean } {
   const [state, setState] = useState({ available: false, v2: false })
@@ -627,11 +602,9 @@ function useWalletAvailability(limitedKeys: boolean): { readonly available: bool
     let cancelled = false
     connectPlatform(ACTIVE_NETWORK.network)
       .then(async (sdk) => {
-        // v2 needs no response contract of its own; a failed check only means "not v2".
-        const v2 = await withTimeout(appConnectV2Available(sdk, ACTIVE_NETWORK.network), PLATFORM_READ_MS, 'Checking what your wallet can answer').catch(() => false)
-        // When Platform cannot be asked, the tile shows anyway (see above).
-        const v1 = await withTimeout(walletLoginAvailable(sdk, ACTIVE_NETWORK.key), PLATFORM_READ_MS, 'Finding the wallet login contract').catch(() => true)
-        return { available: v1 || v2, v2 }
+        // A check that could not finish shows the tile anyway (see above).
+        const v2 = await withTimeout(appConnectV2Available(sdk, ACTIVE_NETWORK.network), PLATFORM_READ_MS, 'Checking what your wallet can answer').catch(() => null)
+        return { available: v2 !== false, v2: v2 === true }
       })
       .then(
         (next) => !cancelled && setState(next),
@@ -692,8 +665,11 @@ function UnlockView({
   const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === (initial ?? lockedIdentityOf(vaults, lastIdentity)))))
   const [passphrase, setPassphrase] = useState('')
   const passphraseRef = useRef<HTMLInputElement>(null)
-  const [error, setError] = useState<string | null>(null)
+  // An error belongs to the key it came from: after a pick or a forget, another key shows none.
+  const [failure, setFailure] = useState<{ id: string; text: string } | null>(null)
   const v = vaults[pick] ?? vaults[0]
+  const error = failure !== null && failure.id === v?.identityId ? failure.text : null
+  const setError = (text: string | null): void => setFailure(text === null || !v ? null : { id: v.identityId, text })
   if (!v) {
     return (
       <div className="space-y-3">
@@ -704,7 +680,7 @@ function UnlockView({
       </div>
     )
   }
-  const go = async (method: { passphrase: string } | 'passkey'): Promise<void> => {
+  const go = async (method: UnlockMethod): Promise<void> => {
     if (isLoading) return
     setError(null)
     try {
@@ -715,7 +691,24 @@ function UnlockView({
       setError(errorMessage(e))
     }
   }
-  const expired = error !== null && /no longer usable|renew/i.test(error)
+  // A wallet's key (or one a passkey restored) the wallet disconnected: renewing can't bring it
+  // back, so the way on is to forget it and sign in again.
+  const disconnected = v.disconnected === true || (error !== null && /disconnected in your wallet/i.test(error))
+  const expired = !disconnected && error !== null && /no longer usable|renew/i.test(error)
+  const forgetIt = (then?: () => void): void => {
+    void forgetConfirm(v.identityId, { disabled: disconnected })
+      .then(confirm)
+      .then((ok) => {
+        if (ok)
+          forget(v.identityId).then(
+            () => {
+              setPick(0)
+              then?.()
+            },
+            (e: unknown) => setError(errorMessage(e)),
+          )
+      })
+  }
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-dense">
@@ -727,6 +720,8 @@ function UnlockView({
             value={pick}
             onChange={(e) => {
               setPick(Number(e.target.value))
+              // An error (a disconnected key above all) is about the key it came from.
+              setError(null)
               // Another key: its passphrase starts empty, in the field (if it stays mounted) and
               // in state (if it unmounts for a passkey-only key and comes back empty).
               if (passphraseRef.current) passphraseRef.current.value = ''
@@ -744,8 +739,13 @@ function UnlockView({
           <span className="font-mono">{shortId(v.identityId)}</span>
         )}
       </div>
+      {v.methods.includes('device') ? (
+        <Button variant={disconnected ? 'outline' : 'primary'} className="w-full" onClick={() => go('device')} loading={isLoading} disabled={isLoading} data-testid="unlock-device">
+          Unlock
+        </Button>
+      ) : null}
       {v.methods.includes('passkey') ? (
-        <Button variant="primary" className="w-full" onClick={() => go('passkey')} loading={isLoading} disabled={isLoading}>
+        <Button variant={disconnected ? 'outline' : 'primary'} className="w-full" onClick={() => go('passkey')} loading={isLoading} disabled={isLoading}>
           <Fingerprint className="h-4 w-4" aria-hidden /> Unlock with passkey
         </Button>
       ) : null}
@@ -760,7 +760,7 @@ function UnlockView({
           <Field label="Passphrase" htmlFor="unlock-passphrase">
             <Input id="unlock-passphrase" ref={passphraseRef} type="password" autoComplete="current-password" onChange={(e) => setPassphrase(e.target.value)} autoFocus />
           </Field>
-          <Button type="submit" variant={v.methods.includes('passkey') ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === '' || isLoading}>
+          <Button type="submit" variant={v.methods.includes('passkey') || disconnected ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === '' || isLoading}>
             Unlock
           </Button>
         </form>
@@ -771,7 +771,21 @@ function UnlockView({
           {step}
         </p>
       ) : null}
-      <ErrorBox error={error} />
+      {disconnected ? (
+        <div role="alert" data-testid="unlock-disconnected" className="space-y-2 rounded-md border border-caution/40 bg-caution/10 p-3 text-dense">
+          <p>
+            {v.fromAppConnect === true || (error !== null && /^this key was disconnected in your wallet/i.test(error))
+              ? 'This key was disconnected in your wallet, so sign in again.'
+              : 'This key was disabled on Platform (disconnected in your wallet, or revoked from another device), so sign in again.'}{' '}
+            It can&apos;t sign anything now.
+          </p>
+          <Button variant="primary" className="w-full" onClick={() => forgetIt(onOther)}>
+            Forget this key and sign in again
+          </Button>
+        </div>
+      ) : null}
+      {/* Any other failure (a wrong passphrase, a forget that failed) still shows. */}
+      <ErrorBox error={disconnected && error !== null && /so sign in again/i.test(error) ? null : error} />
       {expired ? (
         <Button variant="outline" className="w-full" onClick={() => onRenew(v)}>
           Renew this browser&apos;s key
@@ -780,10 +794,16 @@ function UnlockView({
       {/* The recovery route (like "Forgot password?"): the identity file or recovery phrase
           registers a new key for this browser and disables the one it cannot open. */}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="unlock-forgot">
-        {v.methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
-        <button type="button" onClick={() => onRenew(v)} className="hit-area text-forge-700 underline dark:text-forge-400">
-          {v.fromDg ? 'Replace this key with dg' : 'Replace this key with your recovery phrase or identity file'}
-        </button>
+        {v.methods.includes('passphrase') ? 'Forgot the passphrase' : v.methods.includes('passkey') ? 'Lost the passkey' : 'Key not working'}?{' '}
+        {ACTIVE_NETWORK.network === 'mainnet' && !v.fromDg ? (
+          <button type="button" onClick={onOther} className="hit-area text-forge-700 underline dark:text-forge-400">
+            Sign in again with your wallet
+          </button>
+        ) : (
+          <button type="button" onClick={() => onRenew(v)} className="hit-area text-forge-700 underline dark:text-forge-400">
+            {v.fromDg ? 'Replace this key with dg' : 'Replace this key with your recovery phrase or identity file'}
+          </button>
+        )}
       </p>
       <div className="flex justify-between pt-1 text-[12px]">
         <button type="button" onClick={onOther} className="hit-area text-anvil-500 dark:text-anvil-400 underline">
@@ -791,13 +811,7 @@ function UnlockView({
         </button>
         <button
           type="button"
-          onClick={() => {
-            void forgetConfirm(v.identityId)
-              .then(confirm)
-              .then((ok) => {
-                if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
-              })
-          }}
+          onClick={() => forgetIt()}
           className="hit-area text-danger-700 dark:text-danger-400 underline"
         >
           Forget this key
@@ -885,9 +899,13 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
   }, [error])
   // Enter in a passphrase field submits (QW3-027); `submit` is declared below, so through a ref.
   const submitRef = useRef<() => void>(() => undefined)
-  const { fields, protection, problem } = useProtection({ onSubmit: () => submitRef.current() })
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
   const [enablePrivate, setEnablePrivate] = useState(wantsPrivate)
+  // Kept by this browser alone only when nothing else is: no encryption key, and a renewal never
+  // weakens a key that had a passkey or passphrase.
+  const heldMethods = vaults.find((v) => v.identityId === identity && v.staged !== true)?.methods ?? []
+  const allowDevice = !enablePrivate && !(renew && heldMethods.some((m) => m !== 'device'))
+  const { fields, protection, problem } = useProtection({ onSubmit: () => submitRef.current(), allowDevice })
   // The identity the words found, which this browser already holds a key for: filled into the ID
   // field, and cleared with it when the words change (other words, another identity).
   const [foundId, setFoundId] = useState<string | null>(null)

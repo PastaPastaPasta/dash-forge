@@ -26,7 +26,7 @@ The rest of this guide covers the command-line path: private repositories, GitLa
 9. [What it costs](#9-what-it-costs)
 10. [GitHub features with no Forge equivalent](#10-github-features-with-no-forge-equivalent)
 
-Replace every `<…>` placeholder with your own value. Forge runs on **testnet**, where Dash is free ([Which network](README.md#which-network)).
+Replace every `<…>` placeholder with your own value. The commands use **testnet**, where Dash is free; add `--network mainnet` for real repositories ([Which network](README.md#which-network)).
 
 ---
 
@@ -53,10 +53,9 @@ Forge hosts nothing. Pack bytes (the git objects) go to storage you choose, and 
 
 | Option | Good for | Guide |
 |---|---|---|
-| Cloudflare R2 | most projects: no egress fees, a free tier | [R2](bring-your-own-storage.md#cloudflare-r2) |
-| Backblaze B2, AWS S3, Storj | an account you already have | [B2](bring-your-own-storage.md#backblaze-b2), [S3](bring-your-own-storage.md#aws-s3), [Storj](bring-your-own-storage.md#storj) |
+| An S3-compatible bucket | most projects | [S3-compatible bucket](bring-your-own-storage.md#an-s3-compatible-bucket) |
 | A NAS at home | no storage bill; needs a second copy for when it's off | [Home NAS](home-nas-storage.md) |
-| IPFS (kubo, a pinning service) | content addressing, many readers | [IPFS](bring-your-own-storage.md#ipfs-your-own-kubo-node) |
+| IPFS (your kubo node) | content addressing, many readers | [IPFS](bring-your-own-storage.md#ipfs-your-own-kubo-node) |
 | Dash Platform | tiny repositories; no account needed | nothing to set up |
 
 Set it up and make it your global default:
@@ -250,7 +249,7 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Actions** (CI/CD runners) | No hosted runners; a runner you host yourself (`forge-runner`) | See [§8](#8-ci) |
 | **Discussions** | None | Issues with a `discussion` label |
 | **Wiki** | None | A `docs/` folder in the repository; the web app renders Markdown |
-| **GitHub Pages** | None: Forge serves no user content | Serve the site from your own bucket and domain (R2 and S3 host static sites) |
+| **GitHub Pages** | None: Forge serves no user content | Serve the site from your own host and domain |
 | **Packages** (npm, containers) | None | Publish to the usual registries, or attach build outputs to a release (`dg release create --asset`) |
 | **Projects / boards** | None | Labels, and `dg issue list --label … --assignee …` filters |
 | **Milestones** | Supported (`dg milestone`, and **Issues → Milestones** on the web), but the importer does not bring them over | Re-create the ones you need ([Milestones](collaborating.md#milestones)) and set them with `dg issue milestone` |

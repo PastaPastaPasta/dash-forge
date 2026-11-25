@@ -4,7 +4,7 @@
 
 Registration is the one step in a Forge launch that cannot be undone. Contracts cannot be deleted or re-owned, and an update may only add types and optional properties or loosen a few bounds ([after registration](#7-after-registration-what-can-still-change)). Rehearse it on a scratch set first, and read this page to the end before you broadcast anything.
 
-**Status.** Forge is registered on testnet (since 2026-10-26) and mainnet (since 2026-11-24, contract group `<MAINNET_GROUP_ID>`). A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record. Until then every client reports "not deployed" on that network ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
+**Status.** Forge is registered on testnet (2026-10-26) and mainnet (2026-11-24). A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; on any other network every client reports "not deployed" ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
 
 1. [What is registered](#1-what-is-registered)
 2. [Before you register](#2-before-you-register)
@@ -45,7 +45,7 @@ A group-bound key can sign for every member of the group ([Contract group trust]
 
 All of these come first. `deploy-v2.mjs` enforces the ones it can; the rest are on you.
 
-1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.0.0-rc.4 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
+1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.0.0-rc.8 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
 2. **Freeze the schema.** Rules, indexes and config freeze at registration ([§7](#7-after-registration-what-can-still-change)). Decide `config.readonly` (it can only be set at registration; Forge registers writable so later additive updates can land) and every other now-or-never choice, and merge the schema to `master`. The script refuses to register files that differ from git `HEAD`, a `HEAD` that is not on a branch of `origin`, or a committed set that `build.py --check` rejects.
 3. **Rehearse on a scratch set.** Register the same committed JSON under a throwaway deployer and run the live suites against it, on the same network and the same Platform release. A scratch registration is permanent too, so use a different deployer from the real one:
 
@@ -77,17 +77,26 @@ Fees are credits (1 DASH = 10^11 credits) and are the same on every network of t
 
 | Contract | Signed create | Cost |
 |---|---|---|
-| forge-core | 16,355 B | 0.5968 |
-| forge-collab | 17,213 B | 0.3963 |
-| forge-community | 15,425 B | 0.5063 |
-| forge-meta | 6,890 B | 0.3636 |
-| **The four** | | **about 1.86** |
+| forge-core | 16,362 B | 0.5968 |
+| forge-collab | 17,291 B | 0.3964 |
+| forge-community | 15,651 B | 0.5163 |
+| forge-meta | 10,948 B | 0.4650 |
+| **The four** | | **1.9746** |
 
-Measured on devnet sakura, on Platform 5.0.0-beta.6, with the committed four-contract set (measured during the release rehearsal). The three-contract devnet set cost about 1.73 (sakura's `costCredits` record). Fees did not change between beta.6 and the testnet's rc.3 release, and testnet's fee multiplier is 1 as on sakura, so expect the same on testnet; **to be re-measured on testnet** by the rehearsal, which prints each step's cost. Fund the deployer with about 2.5 DASH on testnet to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
+Measured on testnet with a scratch registration of the committed four-contract set (Platform 5.0, protocol 14). Mainnet uses the same fee schedule. Fund the deployer with 3 DASH to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
 
 On mainnet the same set costs the same number of DASH, in real money. A dry run costs nothing.
 
 ## 5. Register
+
+`forge-contracts/scripts/launch-network.mjs` runs this section and [§6](#6-after-registration) steps 1 to 3 as one re-runnable command. It dry-runs unless given `--execute`, asks the operator to type `mainnet` before a mainnet broadcast, and never passes `--force-new`, `--update` or `--replay`:
+
+```bash
+node forge-contracts/scripts/launch-network.mjs --network <testnet|mainnet> --identity <deployer.identity.json> \
+     --deployer-created-height <n> --expect-sha256 <signed sums> [--execute | --post-only]
+```
+
+The commands it runs, one by one:
 
 ```bash
 # Once: the pinned SDK the script uses.
@@ -133,7 +142,7 @@ Flags used on this page, all in `forge-contracts/scripts/deploy-v2.mjs`: `--set`
 5. **Check with `dg doctor --network <network>`.** Its `forge-v2` rows print the core, collab and community ids and the group, and verify enrolment in the group. forge-meta is checked too, but is named only when its check fails; a dedicated meta row is not there yet (CLIE-19, when available).
 6. **Seed the labelled fixture and the showcase** with the QA identity, never a user's: `forge-contracts/deployments/fixtures/<network>.json` for the read tests, and `SHOWCASE` in `forge-web/lib/view/showcase.ts` for the landing page.
 
-**Key exchange.** On testnet, mobile-wallet sign-in can also read a key-exchange contract: yappr's, which the shipped wallets pin (recorded in `testnet.json` as `keyExchange`, "not deployed by Forge"). Mainnet needs no key-exchange contract: wallet sign-in there uses DashPay App Connect v2, whose answers live in the App Connect system contract `H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ`, so mainnet's record names none (`deploy-key-exchange.mjs` refuses testnet and mainnet).
+**Key exchange.** Mobile-wallet sign-in reads a key-exchange contract. Testnet uses yappr's, which the shipped wallets pin (recorded in `testnet.json` as `keyExchange`, "not deployed by Forge"). Mainnet's record names none; sign-in there needs one, and registering Forge's own copy is an owner decision (`deploy-key-exchange.mjs` refuses testnet and mainnet).
 
 ### What the registration PR commits
 

@@ -237,7 +237,7 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
         },
         Section {
             title: "storage",
-            checks: check_storage().await,
+            checks: check_storage(ctx).await,
         },
         Section {
             title: "read gateways",
@@ -703,10 +703,7 @@ fn balance_check(credits: u64, network: &forge_core::network::Network) -> Check 
         dash_amount(dash),
         crate::fmt::balance_note(dash, network)
     );
-    let fix = format!(
-        "top up from any Dash wallet at {}",
-        forge_core::user_error::TOP_UP_URL
-    );
+    let fix = format!("top up from any Dash wallet at {}", network.top_up_url());
     if credits == 0 {
         Check::fail(
             "balance",
@@ -1036,7 +1033,26 @@ fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
 
 // --- storage -----------------------------------------------------------------------------
 
-async fn check_storage() -> Vec<Check> {
+async fn check_storage(ctx: &Ctx) -> Vec<Check> {
+    let sync = match crate::sync::state(ctx) {
+        crate::sync::SyncState::Unavailable => None,
+        crate::sync::SyncState::Off => Some(Check::ok("settings sync", crate::sync::OFF_HINT)),
+        crate::sync::SyncState::Locked => Some(Check::warn(
+            "settings sync",
+            "its key is in a passphrase-sealed file, so this run uses this computer's storage only",
+            "set DASH_FORGE_PASSPHRASE, or sign in with your wallet again where a keychain is available",
+        )),
+        crate::sync::SyncState::On { .. } => Some(Check::ok(
+            "settings sync",
+            "on: storage profiles follow your identity across devices",
+        )),
+    };
+    sync.into_iter()
+        .chain(check_storage_profiles(ctx).await)
+        .collect()
+}
+
+async fn check_storage_profiles(ctx: &Ctx) -> Vec<Check> {
     let path = StorageProfiles::default_path()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -1071,14 +1087,16 @@ async fn check_storage() -> Vec<Check> {
             ));
         }
         if let Some(url) = public_probe_url(profile) {
-            out.push(match probe_preflight(&http, &url).await {
-                Ok(()) => Check::ok("web CORS", format!("{name}: the web app may read {url}")),
-                Err(why) => Check::warn(
-                    "web CORS",
-                    format!("{name}: {why}; git works, the web app cannot read this storage"),
-                    format!("`dg storage test {name}` prints the exact CORS config to paste"),
-                ),
-            });
+            out.push(
+                match probe_preflight(&http, &url, ctx.network().web_origin()).await {
+                    Ok(()) => Check::ok("web CORS", format!("{name}: the web app may read {url}")),
+                    Err(why) => Check::warn(
+                        "web CORS",
+                        format!("{name}: {why}; git works, the web app cannot read this storage"),
+                        format!("`dg storage test {name}` prints the exact CORS config to paste"),
+                    ),
+                },
+            );
         }
     }
     out
@@ -1953,15 +1971,16 @@ mod tests {
     #[test]
     fn a_fresh_install_warns_instead_of_failing_on_testnet() {
         // L-33: the quick start's first `dg doctor` (nothing configured) exited 1 with E104, when the
-        // default network had no deployment. Testnet, the default, now has one; mainnet still has
-        // none, so it stands in for an undeployed default.
-        let mainnet = NetworkSettings {
-            network: Some("mainnet".into()),
+        // default network had no deployment. Testnet, the default, now has one, and so does
+        // mainnet; an unknown devnet stands in for an undeployed default.
+        let undeployed = NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some("paloma".into()),
             ..Default::default()
         }
         .resolve()
         .unwrap();
-        let c = check_contracts(&mainnet, true);
+        let c = check_contracts(&undeployed, true);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
         assert!(
             c.fix
@@ -1972,8 +1991,8 @@ mod tests {
             "{:?}",
             c.fix
         );
-        // Chosen explicitly (`--network mainnet`), it is still the failure it was.
-        assert_eq!(check_contracts(&mainnet, false).status, Status::Fail);
+        // Chosen explicitly, it is still the failure it was.
+        assert_eq!(check_contracts(&undeployed, false).status, Status::Fail);
         // The default network, testnet, is deployed: nothing to warn about.
         let testnet = NetworkSettings::default().resolve().unwrap();
         assert_eq!(check_contracts(&testnet, false).status, Status::Ok);
@@ -2088,6 +2107,13 @@ mod tests {
         assert_eq!(
             balance_check(one_dash, &forge_core::network::Network::Mainnet).status,
             Status::Ok
+        );
+        // The top-up link opens the bridge on the network checked.
+        assert_eq!(
+            balance_check(0, &forge_core::network::Network::Testnet)
+                .fix
+                .as_deref(),
+            Some("top up from any Dash wallet at https://bridge.thepasta.org/?network=testnet")
         );
     }
 

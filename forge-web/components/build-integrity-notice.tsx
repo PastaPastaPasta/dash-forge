@@ -23,12 +23,12 @@ export function BuildIntegrityNotice({ className }: { className?: string }): JSX
   }, [])
   if (state !== 'unpublished') return null
   return (
-    <p role="note" data-testid="build-integrity-notice" className={cn('flex items-start gap-2 text-[12px] text-caution-700 dark:text-caution-400', className)}>
-      <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+    <p role="note" data-testid="build-integrity-notice" className={cn('flex items-center gap-2 text-[12px] text-caution-700 dark:text-caution-400', className)}>
+      <ShieldAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
       <span>
-        This copy of Forge isn&apos;t a published build, so it could read anything you unlock here.{' '}
+        Unpublished build — verify before unlocking keys.{' '}
         <a href={verifyGuideUrl()} target="_blank" rel="noreferrer" className="hit-area underline">
-          How to verify a copy
+          Verify
         </a>
       </span>
     </p>

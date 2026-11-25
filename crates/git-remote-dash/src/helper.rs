@@ -173,6 +173,9 @@ pub struct Helper {
     /// may be `git ls-remote` (git sends both the same `list`), which leaves the repository as it
     /// was.
     first_members_fetch: Option<FirstMembersFetch>,
+    /// Whether this push reconciles the repository's shared storage once it has landed
+    /// (`identity-synced-state.md` §5).
+    reconcile_after_push: bool,
 }
 
 /// What a clone's first fetch of members-only or shared branches does before anything else,
@@ -559,6 +562,7 @@ impl Helper {
             shared_fetch: None,
             in_clone,
             first_members_fetch: None,
+            reconcile_after_push: false,
         })
     }
 
@@ -1557,10 +1561,123 @@ impl Helper {
         let (head, refs): (Vec<PushSpec>, Vec<PushSpec>) =
             specs.iter().cloned().partition(|s| is_head(&s.dst));
         let mut outcomes: Vec<PushOutcome> = head.into_iter().map(head_outcome).collect();
+        let mut landed = false;
         if !refs.is_empty() {
-            outcomes.extend(Box::pin(self.push_refs(&refs, options)).await?);
+            let pushed = Box::pin(self.push_refs(&refs, options)).await?;
+            landed = pushed.iter().any(|o| matches!(o, PushOutcome::Ok(_)));
+            outcomes.extend(pushed);
+        }
+        if std::mem::take(&mut self.reconcile_after_push) && !options.dry_run && landed {
+            self.reconcile_share().await;
         }
         Ok(outcomes)
+    }
+
+    /// The pusher's synced storage for this push (`identity-synced-state.md` §7): `None` unless
+    /// forge-user is registered here and this computer holds the identity's forge-user key. A
+    /// read that fails leaves the push to this computer's settings, with a note.
+    async fn synced_storage(&mut self) -> Option<forge_core::user_sync::repo::PushStorage> {
+        use forge_core::user_sync::{key, platform::PlatformUserStore, repo, UserSync};
+        let contract = self.target.v2.as_ref()?.user.clone()?;
+        let network = self.target.network.key();
+        self.ensure_signer().await.ok()?;
+        let conn = self.conn.as_ref()?;
+        let me = conn.identity().id();
+        let key::LocalKey::Held(key) = key::load(&network, &me) else {
+            return None;
+        };
+        let local = forge_core::storage::StorageProfiles::load().ok()?;
+        let read = async {
+            let store = PlatformUserStore::open(&conn.client, &contract, None).await?;
+            let is_maintainer = conn.repo.owner_id() != me
+                && repo::current_maintainers(&conn.client, &conn.repo)
+                    .await?
+                    .contains(&me);
+            repo::push_storage(
+                &UserSync::new(&key, &store),
+                conn.repo.id(),
+                conn.repo.owner_id(),
+                is_maintainer,
+                &local,
+            )
+            .await
+        };
+        match read.await {
+            Ok(view) => {
+                if let (Some(owner), true) = (&view.shared_by, view.policy_from_share) {
+                    eprintln!(
+                        "dash: using the storage {owner} shares with this repository's maintainers"
+                    );
+                }
+                if let Some(why) = &view.share_skipped {
+                    eprintln!(
+                        "dash: note: the storage this repository's owner shares is not used: {why}"
+                    );
+                }
+                Some(view)
+            }
+            Err(e) => {
+                eprintln!("dash: note: your synced storage settings were not read ({e}); using this computer's");
+                None
+            }
+        }
+    }
+
+    /// As the repository's owner, after a push: lend the storage the owner's synced policy for
+    /// the repository names ([`forge_core::user_sync::ShareRule`]: never this clone's git config)
+    /// to the current maintainers who have a forge-user key, and revoke anyone else
+    /// (`identity-synced-state.md` §5). Writes only what changed; a failure is a note, never a
+    /// failed push.
+    async fn reconcile_share(&mut self) {
+        use forge_core::user_sync::{key, platform::PlatformUserStore, repo, UserSync};
+        let Some(contract) = self.target.v2.as_ref().and_then(|f| f.user.clone()) else {
+            return;
+        };
+        let network = self.target.network.key();
+        let Some(conn) = self.conn.as_ref() else {
+            return;
+        };
+        let Some(signer) = conn.signer.as_ref() else {
+            return;
+        };
+        let me = signer.identity.id();
+        if conn.repo.owner_id() != me {
+            return;
+        }
+        let key::LocalKey::Held(key) = key::load(&network, &me) else {
+            return;
+        };
+        let run = async {
+            let maintainers = repo::current_maintainers(&conn.client, &conn.repo).await?;
+            let engine = forge_core::platform::WriteEngine::new(
+                &conn.client,
+                &signer.identity,
+                signer.bridge.doc_op_key()?,
+            )?;
+            let store = PlatformUserStore::open(&conn.client, &contract, Some(&engine)).await?;
+            UserSync::new(&key, &store)
+                .reconcile_repo_by_rule(conn.repo.id(), &maintainers)
+                .await
+        };
+        match run.await {
+            Ok(done) => {
+                let writes =
+                    usize::from(done.share_written) + done.granted.len() + done.revoked.len();
+                if writes > 0 {
+                    eprintln!(
+                        "dash: this repository's shared storage was updated for its maintainers (epoch {}; {writes} more Platform write{}, paid by this identity)",
+                        done.epoch,
+                        if writes == 1 { "" } else { "s" }
+                    );
+                }
+                for m in &done.revoked {
+                    eprintln!("dash: {m} is no longer a maintainer and lost access to this repository's shared storage; rotate the credentials they saw: docs/guides/rotate-storage-credentials.md");
+                }
+            }
+            Err(e) => {
+                eprintln!("dash: note: this repository's shared storage was not updated ({e})");
+            }
+        }
     }
 
     /// [`Self::push`] of real refs (no `HEAD`).
@@ -1579,8 +1696,27 @@ impl Helper {
         // storage.toml must not block it; its ref updates are paid for, so the cost guard's
         // settings still apply.
         let push_policy = if specs.iter().any(|s| !s.src.is_empty()) {
-            PushPolicy::load_for_push(self.remote.as_deref(), options)
-                .context("reading the storage policy (dash.storage / dash.replicas)")?
+            let local = PushPolicy::load_for_push(self.remote.as_deref(), options);
+            let has_user = self.target.v2.as_ref().is_some_and(|f| f.user.is_some());
+            let sync_may_help = has_user && local.as_ref().map_or(true, |p| !p.storage_configured);
+            let synced = if sync_may_help {
+                self.synced_storage().await
+            } else {
+                None
+            };
+            let policy = match &synced {
+                Some(view) => {
+                    PushPolicy::load_for_push_with(self.remote.as_deref(), options, Some(view))
+                }
+                None => local,
+            }
+            .context("reading the storage policy (dash.storage / dash.replicas)")?;
+            // Its writes are not part of the push's approved estimate: a push whose threshold is a
+            // hard cap (`dash.confirm = refuse`) leaves shared storage to `dg collab` and to
+            // pushes from a terminal.
+            self.reconcile_after_push =
+                has_user && policy.confirm != crate::policy::ConfirmMode::Refuse;
+            policy
         } else {
             PushPolicy::guard_only(self.remote.as_deref()).context(
                 "reading the cost guard's settings (dash.costWarnThreshold / dash.confirm)",
@@ -2124,6 +2260,7 @@ impl Helper {
         let (text, event) = progress::done_line(
             charge,
             after,
+            self.network(),
             conn.repo.owner_id(),
             conn.repo.name(),
             conn.repo.visibility,
@@ -5154,7 +5291,7 @@ struct Funds<'a> {
     identity: String,
     /// The signing key's id, when it has a total budget (a key without one has nothing to read).
     budgeted_key: Option<u32>,
-    testnet: bool,
+    network: forge_core::network::Network,
 }
 
 impl<'a> Funds<'a> {
@@ -5174,7 +5311,7 @@ impl<'a> Funds<'a> {
                         .key_limits(*id)
                         .is_some_and(|l| l.total_budget.is_some())
                 }),
-            testnet: matches!(network, forge_core::network::Network::Testnet),
+            network: network.clone(),
         }
     }
 }
@@ -5272,7 +5409,7 @@ impl PushContext<'_> {
             est_credits,
             balance,
             budget_left,
-            f.testnet,
+            &f.network,
             self.refusal_note(),
         )?;
         Ok(())

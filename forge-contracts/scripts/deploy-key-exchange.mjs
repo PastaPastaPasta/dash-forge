@@ -7,8 +7,9 @@
 //        [--network devnet --devnet-name sakura] [--dry-run]
 //
 // The schema is forge-contracts/contracts/third-party/key-exchange.json (fetched from testnet).
-// The result goes to deployments/<key>.json as a top-level `keyExchange` record, which forge-web
-// reads (lib/auth/app-connect.ts `legacyKeyExchangeId`). Rerunning after success is a no-op.
+// The result goes to deployments/<key>.json as a top-level `keyExchange` record. forge-web no
+// longer reads it: its v1 (DashConnect) wallet sign-in was removed in favour of App Connect v2.
+// Rerunning after success is a no-op.
 // Testnet and mainnet are refused: testnet has yappr's own copy, which the wallets pin.
 //
 // On a devnet the wallets must be pointed at the copy: iOS Settings → Devnet → "DashConnect

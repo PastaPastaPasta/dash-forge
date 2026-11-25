@@ -4,12 +4,12 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge runs on **testnet** (Forge's contracts are registered on Platform v5.0.0-rc.8), and that is the Action's default network. Forge is also live on **mainnet** ([forge.dashhq.org](https://forge.dashhq.org)) since 2026-11-24: set `network: mainnet` for a mainnet repository (with a v0.3.0 or later Action). Pin a release tag: at `@v0.2.0` the Action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
+> **Status.** Forge is live on **mainnet** (since 2026-11-24, [forge.dashhq.org](https://forge.dashhq.org)) and on **testnet** ([testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)). The Action's default network is still testnet. The v0.2.0 release predates mainnet, so its binaries work on testnet only. To mirror to mainnet, set `network: mainnet`, pin `uses:` to a reviewed commit from after the mainnet registration (`44691a33c` or later), and set `install: 'source'`. On testnet, pin a release tag: at `@v0.2.0` the Action's `version` defaults to `0.2.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
 
 ## Quick start
 
 1. **Create the destination repository and an identity to sign with.** Follow [Mirror a GitHub repository](../docs/guides/mirror-a-github-repo.md) for the first import. The Action can also create the repository on its first run, when `repo` is a bare name or names the signer as the owner.
-2. **Make a runner key.** The best choice is a *limited runner key*: it can spend at most its budget (0.5 DASH by default), only on Forge, and only until it expires (365 days by default). Make one with `dg auth export --new-key` ([guide](../docs/guides/mirror-a-github-repo.md#the-ci-secret)) or the [setup wizard](https://forge.dashhq.org/mirror/). The alternative is a **separate CI-only identity** with a small balance, added to the repository as a **maintainer** (`dg collab add … --role maintainer`); its identity file has no key budget, so the Action takes it only with `allow-unlimited-key: 'true'`. A writer also works, but cannot publish releases, and Forge does not trust a writer's imported numbers: issues opened on the mirror then start again from a low number instead of continuing GitHub's (#7762 after #7761). The trade-off is exposure: a leaked maintainer key can also change protected branches and the repo's settings, not just mirror. Do not give CI your main identity file, because it holds your master key. See [Identity and keys](../docs/guides/identity-and-keys.md).
+2. **Make a runner key.** The best choice is a *limited runner key*: it can spend at most its budget (0.5 DASH by default), only on Forge, and only until it expires (365 days by default). Make one with `dg auth export --new-key` ([guide](../docs/guides/mirror-a-github-repo.md#the-ci-secret)) or the [setup wizard](https://forge.dashhq.org/mirror/). For a mirror that syncs only `code,releases`, `dg auth export --new-key --scope core` makes the narrowest key: it can write forge-core alone (repositories and their settings and collaborators, refs, packs, releases), not issues, pull requests, stars, or on mainnet and testnet labels and private repositories. It narrows the key but is not a code-only key: a leaked one can still add maintainers or writers, change protected branches and settings, and create or delete repositories ([details](../docs/guides/mirror-a-github-repo.md#the-ci-secret)). Syncing issues, pull requests or labels needs the default `--scope group` key. The alternative is a **separate CI-only identity** with a small balance, added to the repository as a **maintainer** (`dg collab add … --role maintainer`); its identity file has no key budget, so the Action takes it only with `allow-unlimited-key: 'true'`. A writer also works, but cannot publish releases, and Forge does not trust a writer's imported numbers: issues opened on the mirror then start again from a low number instead of continuing GitHub's (#7762 after #7761). The trade-off is exposure: a leaked maintainer key can also change protected branches and the repo's settings, not just mirror. Do not give CI your main identity file, because it holds your master key. See [Identity and keys](../docs/guides/identity-and-keys.md).
 3. **Add repository secrets** (Settings → Secrets and variables → Actions):
    - `DASH_FORGE_KEY`: the runner key, `dfk1:<network>:<identityId>:<keyId>:<wif>`. The Action refuses the contents of a bridge-format identity JSON file, because its keys have no budget, unless you set `allow-unlimited-key: 'true'`.
    - For bucket storage: `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`, or `PINNING_TOKEN`.
@@ -35,13 +35,13 @@ jobs:
       - uses: PastaPastaPasta/dash-forge/action@v0.2.0
         with:
           repo: dash://<owner identity id>/project
-          network: testnet               # the default; mainnet for a mainnet repository
+          network: testnet               # the default; for mainnet see Status
           sync: code,releases
           storage-kind: s3
-          s3-endpoint: https://<account>.r2.cloudflarestorage.com
-          s3-region: auto
+          s3-endpoint: https://s3.example.org
+          s3-region: us-east-1
           s3-bucket: forge
-          s3-public-url: https://pub-9a1.r2.dev
+          s3-public-url: https://s3.example.org/forge
           cost-cap: '0.05'
         env:
           DASH_FORGE_KEY: ${{ secrets.DASH_FORGE_KEY }}
@@ -74,11 +74,11 @@ This is opt-in, because it lets anyone spend your DASH. Anyone with a GitHub acc
 | Input | Default | |
 |---|---|---|
 | `repo` | *(required)* | Destination: `dash://<owner>/<name>`, `<owner>/<name>`, or a bare name (the signer's own). Created if missing when the signer is the owner. |
-| `network` | `testnet` | `mainnet`, `testnet` or `devnet`. The default is testnet, as for `dg`; Forge is deployed on both mainnet and testnet. |
+| `network` | `testnet` | `mainnet`, `testnet` or `devnet`. Mainnet needs `install: 'source'` until a release after v0.2.0. |
 | `devnet-name` | empty | The devnet's name. Required when `network` is `devnet`, ignored otherwise. |
 | `sync` | `code,releases` | Comma list of `code`, `issues`, `prs`, `releases`, `labels`. |
 | `storage-kind` | `platform` | Where pack bytes go: `platform`, `s3` or `ipfs-pinning`. Refs, manifests, issues and PRs are always on Platform. |
-| `s3-endpoint`, `s3-region`, `s3-bucket`, `s3-public-url`, `s3-prefix` | | S3-compatible bucket (R2, B2, S3, MinIO). `s3-public-url` is the origin browsers read packs from. See [Bring your own storage](../docs/guides/bring-your-own-storage.md). |
+| `s3-endpoint`, `s3-region`, `s3-bucket`, `s3-public-url`, `s3-prefix` | | S3-compatible bucket. `s3-public-url` is the origin browsers read packs from. See [Bring your own storage](../docs/guides/bring-your-own-storage.md). |
 | `s3-virtual-hosted` | `false` | `true`: virtual-hosted addressing (`https://<bucket>.<endpoint host>/<key>`), the same as `dg storage add --virtual-hosted`. Use it for AWS S3, which deprecates path-style. |
 | `pinning-endpoint` | | `ipfs-pinning`: Pinning Service API base URL. |
 | `ipfs-api` | `http://127.0.0.1:5001` | `ipfs-pinning`: the kubo RPC API the job runs, for example as a service container. |
@@ -89,7 +89,7 @@ This is opt-in, because it lets anyone spend your DASH. Anyone with a GitHub acc
 | `fail-on-partial` | `false` | `true`: fail the step when some items were skipped (`status: partial`). By default that is a warning, because the next run retries them. |
 | `github-repo` | `${{ github.repository }}` | The GitHub repository to mirror. |
 | `i-have-the-rights` | *(empty)* | Your acknowledgement that you may publish the mirrored repository's content permanently on Dash Platform (see [Rights](#rights-licence-and-git-lfs)). Empty: acknowledged when `github-repo` belongs to the account that owns the workflow's repository, so mirroring your own repository needs nothing. `true`: you may publish it; needed for a repository of another owner. `false`: never; a real run refuses. |
-| `version` | `0.3.0` | The Dash Forge release this Action version pins: the one it was cut with. Empty: `install: 'true'` builds from source. |
+| `version` | `0.2.0` | The Dash Forge release this Action version pins: the one it was cut with. Empty: `install: 'true'` builds from source. |
 | `install` | `true` | `true`: install release `version` with [`install.sh`](../install.sh) (the step fails if that release is not published), or, with `version` empty, build from source as `source` does. `source`: build `dg`, `git-remote-dash` and `forge-import` from the Action's own source, the ref after `@` in `uses:` (needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on Linux x86_64 and arm64). `false`: use the binaries already on `PATH`. |
 | `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, keyed by `Cargo.lock` and the toolchain. `false`: compile everything on every run. |
 | `state-cache` | `true` | Keep the incremental sync state in `actions/cache`, so a run looks only at what changed on GitHub since the last one. This is only for speed: without the cache a run re-examines everything and still writes nothing that is already there. |
@@ -168,7 +168,7 @@ Each run adds a table to the job summary:
 
 With `dry-run: 'true'` the same table says *Would write*, and its cost row is labelled *Estimated cost*. The run also adds warning annotations:
 
-- when less than 20% of the runner key's budget is left, or the key expires within 30 days: *"Renew at forge.dashhq.org/&lt;owner&gt;/&lt;name&gt;/settings/mirror."*;
+- when less than 20% of the runner key's budget is left, or the key expires within 30 days: *"Make a new runner key at forge.dashhq.org/mirror/ (or dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1, then gh secret set DASH_FORGE_KEY < runner.dfk1 && rm runner.dfk1) and replace the DASH_FORGE_KEY secret."*;
 - when `DASH_FORGE_KEY` is not a limited key (it has no budget), recommending a limited runner key;
 - for anything the importer flags, such as a release asset without a digest.
 

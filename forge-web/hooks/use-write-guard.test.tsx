@@ -8,7 +8,12 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const state = vi.hoisted(() => ({ paused: null as string | null, origin: null as 'app-connect' | null }))
+const state = vi.hoisted(() => ({
+  paused: null as string | null,
+  origin: null as 'app-connect' | null,
+  grants: null as { core: boolean; collab: boolean; community: boolean; meta: boolean } | null,
+  unlockScope: null as 'full' | 'signing' | null,
+}))
 const toast = vi.hoisted(() => vi.fn())
 const openLogin = vi.hoisted(() => vi.fn())
 const openTopUp = vi.hoisted(() => vi.fn())
@@ -26,12 +31,12 @@ vi.mock('@/contexts/auth-context', () => ({
     balance: '1000000000',
     funds: null,
     keyLimits: null,
-    grants: null,
+    grants: state.grants,
     refreshBalance: vi.fn(async () => undefined),
     recheckSession,
     origin: state.origin,
     resuming: false,
-    unlockScope: null,
+    unlockScope: state.unlockScope,
   }),
 }))
 vi.mock('@/lib/view/funds', () => ({ affordability: () => ({ ok: true }) }))
@@ -51,6 +56,8 @@ beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   state.paused = null
   state.origin = null
+  state.grants = null
+  state.unlockScope = null
   openTopUp.mockClear()
   recheckSession.mockReset().mockResolvedValue(undefined)
   toast.mockClear()
@@ -105,5 +112,24 @@ describe('useWriteGuard after a write fails on a wallet-granted key', () => {
     guard.failed(refusal(20014))
     expect(guard.failed(refusal(20006))).not.toMatch(/wallet revoked/)
     expect(recheckSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('useWriteGuard with a key from the older wallet code (one contract only)', () => {
+  it('offers to replace the key (one wallet approval covers all of Forge), not a per-contract grant', () => {
+    state.grants = { core: true, collab: false, community: false, meta: true }
+    state.unlockScope = 'full'
+    act(() => root.render(<Probe />))
+    expect(guard.check(1000, 'core')).toBe(true)
+    expect(guard.check(1000, 'community')).toBe(false)
+    expect(openLogin).toHaveBeenCalledWith('wallet-replace')
+  })
+
+  it('asks a signing-only tab to unlock first (the grant may be sealed in the vault)', () => {
+    state.grants = { core: true, collab: false, community: false, meta: true }
+    state.unlockScope = 'signing'
+    act(() => root.render(<Probe />))
+    expect(guard.check(1000, 'collab')).toBe(false)
+    expect(openLogin).toHaveBeenCalledWith('unlock')
   })
 })

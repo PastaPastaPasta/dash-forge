@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }))
 
-import { repoHref, withTrailingSlash } from './use-query-param'
+import { parseItemNumber, repoHref, withTrailingSlash } from './use-query-param'
 
 describe('repoHref', () => {
   it('adds the trailing slash to every repo route', () => {
@@ -21,5 +21,17 @@ describe('repoHref', () => {
   it('withTrailingSlash', () => {
     expect(withTrailingSlash('/settings')).toBe('/settings/')
     expect(withTrailingSlash('/settings/')).toBe('/settings/')
+  })
+})
+
+describe('parseItemNumber', () => {
+  it('reads the numbers an issue or PR can have', () => {
+    expect(parseItemNumber('1')).toBe(1)
+    expect(parseItemNumber('42')).toBe(42)
+    expect(parseItemNumber('4294967295')).toBe(4294967295)
+  })
+
+  it('refuses numbers the contracts cannot hold, so the page says no item is addressed', () => {
+    for (const raw of ['', 'abc', '0', '-1', '-0', '4294967296', '99999999999999999999']) expect(parseItemNumber(raw)).toBeNaN()
   })
 })

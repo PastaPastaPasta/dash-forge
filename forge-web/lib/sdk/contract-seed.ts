@@ -37,6 +37,7 @@ export type ContractSnapshots = Readonly<Record<string, ContractSnapshot>>
 const SNAPSHOTS: Readonly<Record<string, () => Promise<{ default: ContractSnapshots }>>> = {
   'devnet-sakura': () => import('../../../forge-contracts/deployments/contracts/devnet-sakura.json'),
   testnet: () => import('../../../forge-contracts/deployments/contracts/testnet.json'),
+  mainnet: () => import('../../../forge-contracts/deployments/contracts/mainnet.json'),
 }
 
 /** The deployment keys that have a snapshot. */

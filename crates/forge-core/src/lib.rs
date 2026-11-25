@@ -72,6 +72,8 @@ pub mod members_git;
 pub mod mirror;
 pub mod narrow;
 pub mod network;
+pub mod org;
+pub mod own_copy;
 pub mod pack;
 pub mod pack_mirror;
 pub mod platform;
@@ -91,6 +93,7 @@ pub(crate) mod test_http;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod user_error;
+pub mod user_sync;
 pub mod webhooks;
 
 pub use error::{Error, Result};

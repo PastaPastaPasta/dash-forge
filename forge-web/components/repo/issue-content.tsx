@@ -705,7 +705,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <span className="inline-flex flex-wrap items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
               <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="opened this issue" link={false} />
             </span>
-            {addr ? <CopyLinkButton repo={addr} target={{ kind: 'issue', number: issue.number }} visibility={home.repo.visibility} className="ml-auto" /> : null}
+            {addr ? (
+              <CopyLinkButton
+                repo={addr}
+                target={{ kind: 'issue', number: issue.number }}
+                visibility={home.repo.visibility}
+                className="ml-auto border-transparent bg-transparent text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:border-transparent dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+              />
+            ) : null}
           </div>
         </div>
 
@@ -832,7 +839,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
           {signedOut && !lockApplies && !archived ? (
-            <SignedOutComposer cost={commentCost} />
+            <SignedOutComposer />
           ) : (
           <>
           {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}

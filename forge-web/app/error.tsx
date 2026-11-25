@@ -11,21 +11,21 @@
  */
 
 import { useEffect } from 'react'
+import Link from 'next/link'
 import { AlertTriangle, WifiOff } from 'lucide-react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
 import { errorMessage } from '@/lib/utils'
 import { isOffline } from '@/lib/online'
 import { scheduleReconnect } from '@/lib/view/reconnect'
 import { autoReload, isLoadFailure } from '@/lib/auto-reload'
-import { ErrorDetails, RetryButton } from '@/components/ui/states'
+import { Button, buttonClass } from '@/components/ui/button'
+import { ErrorDetails } from '@/components/ui/states'
 
 export default function AppError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }): JSX.Element {
   const chunk = isLoadFailure(error)
   const connection = chunk || isUnreachableError(error) || isOffline()
   useEffect(() => {
     if (!connection) return
-    // Online, a chunk that failed to load is fetched again by a reload (backed off). Otherwise
-    // wait for the browser to come back online (scheduleReconnect does that while offline).
     if (!chunk && !isOffline()) return
     return scheduleReconnect(autoReload)
   }, [connection, chunk])
@@ -37,14 +37,21 @@ export default function AppError({ error, reset }: { error: Error & { digest?: s
         <Icon className="h-5 w-5" aria-hidden />
       </span>
       <h1 role="status" className="text-xl">
-        {connection ? "You're offline" : 'This page hit an error'}
+        {connection ? "You're offline" : 'Something went wrong'}
       </h1>
       <p className="mt-2 text-dense text-anvil-600 dark:text-anvil-300">
         {connection
-          ? 'This page could not be loaded. It will load by itself once your connection is back.'
-          : 'Something in this page failed. Trying again usually works; if it keeps failing, reload.'}
+          ? 'This page will reload when your connection returns.'
+          : "This page couldn't finish loading."}
       </p>
-      <RetryButton onClick={() => (connection ? window.location.reload() : reset())} />
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+        <Button variant="primary" onClick={() => (connection ? window.location.reload() : reset())}>
+          Try again
+        </Button>
+        <Link href="/" className={buttonClass({ variant: 'outline' })}>
+          Go home
+        </Link>
+      </div>
       <ErrorDetails message={errorMessage(error, 'unknown error')} />
     </main>
   )

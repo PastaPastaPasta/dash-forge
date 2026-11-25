@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-connect.schema.json",
+  "title": "dg org connect --json",
+  "description": "An organization connected on this computer.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "connected"
+      ]
+    },
+    "orgId": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "threshold": {
+      "type": "integer"
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "authPub": {
+            "type": "string"
+          },
+          "you": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "index",
+          "name",
+          "authPub",
+          "you"
+        ]
+      }
+    },
+    "network": {
+      "type": "string"
+    },
+    "room": {
+      "type": "string"
+    },
+    "relay": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "orgId",
+    "label",
+    "threshold",
+    "members"
+  ],
+  "additionalProperties": true
+}

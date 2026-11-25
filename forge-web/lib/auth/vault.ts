@@ -9,7 +9,11 @@
  *   256-bit data key. The data key is itself wrapped (AES-GCM) by one or both of:
  *     - a passkey: WebAuthn `prf` extension output (evaluated with a random 32-byte salt stored
  *       beside it), stretched with HKDF-SHA256 to a key-wrapping key;
- *     - a passphrase: Argon2id(passphrase, 16-byte salt, m = 64 MiB, t = 3, p = 1) → 32 bytes.
+ *     - a passphrase: Argon2id(passphrase, 16-byte salt, m = 64 MiB, t = 3, p = 1) → 32 bytes;
+ *     - this browser alone (`device`, the default when the user adds neither): a non-extractable
+ *       AES-GCM `CryptoKey` kept in the record. It opens without a prompt, so it protects only
+ *       against the record being read as plain bytes, not against a script on this site or a
+ *       copy of the browser profile. The key it guards is spend-capped and expires on chain.
  *   The AES-GCM additional data binds each ciphertext to its network, identity and slot, so a
  *   record cannot be replayed under another identity.
  * - In memory: the unlocked record lives only in this module (never React state, never
@@ -52,6 +56,7 @@ import {
   keptExpired,
   loadResume,
   lockMarker,
+  markDeviceOpened,
   markLocked,
   openResume,
   saveResume,
@@ -98,9 +103,9 @@ export interface VaultSecret {
   /** The limited key's private key, WIF. */
   readonly wif: string
   /**
-   * More keys of the same identity, each for one contract: a shipped Dash wallet grants a key
-   * bound to ONE contract, so a forge-core key and a later forge-collab key are two grants.
-   * Absent for a group-bound key (it covers both contracts).
+   * More keys of the same identity, each for one contract: a wallet's older code (DashConnect,
+   * removed) granted a key bound to ONE contract, so a forge-core key and a later forge-collab key
+   * are two grants; and keys held only to be disabled later. Absent for a group-bound key alone.
    */
   readonly extra?: readonly ExtraKey[]
 }
@@ -131,6 +136,12 @@ type Slot =
       readonly kind: 'passphrase'
       readonly salt: Uint8Array
       readonly params: typeof ARGON2_PARAMS
+      readonly iv: Uint8Array
+      readonly wrapped: Uint8Array
+    }
+  | {
+      readonly kind: 'device'
+      readonly wrapKey: CryptoKey
       readonly iv: Uint8Array
       readonly wrapped: Uint8Array
     }
@@ -174,7 +185,7 @@ export interface VaultInfo {
   readonly identityId: string
   readonly keyId: number
   readonly createdAt: number
-  readonly methods: readonly ('passkey' | 'passphrase')[]
+  readonly methods: readonly UnlockKind[]
   /** Only a key whose registration was not finished is stored (unlocking finishes it). */
   readonly staged?: true
   /**
@@ -186,6 +197,11 @@ export interface VaultInfo {
   readonly fromDg?: true
   /** The key came from a wallet's App Connect grant: Renew offers the wallet first. */
   readonly fromAppConnect?: true
+  /**
+   * The last unlock found this key (a wallet's, or one a passkey restored) disabled on chain: the
+   * wallet disconnected it. Set by the controller, not stored in the vault record.
+   */
+  readonly disconnected?: true
 }
 
 const enc = new TextEncoder()
@@ -213,6 +229,24 @@ function encryptionBlobKey(network: Network, identityId: string): string {
  */
 function stagedKey(network: Network, identityId: string): string {
   return `vault-staged:${network}:${identityId}`
+}
+
+/**
+ * The forge-user encryption key a wallet delivers (`docs/design/identity-synced-state.md` §5),
+ * sealed under the storage-blob key. Its own entry, never `vault-enc`: an older build reads every
+ * key there as a private-repo key.
+ */
+function syncBlobKey(network: Network, identityId: string): string {
+  return `vault-sync:${network}:${identityId}`
+}
+
+/**
+ * A random id for the storage settings as sync last saw them (`lib/user-sync`): it goes whenever the
+ * blob does (discarded, dropped on a re-key, forgotten), so sync never compares a new blob with
+ * what an old one held.
+ */
+function storageSyncIdKey(network: Network, identityId: string): string {
+  return `vault-storage-sync:${network}:${identityId}`
 }
 
 /** The extra wallet grants ({@link ExtraKey}), sealed like the storage settings. */
@@ -559,11 +593,18 @@ async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array, ki
 // Store / unlock / lock
 // ---------------------------------------------------------------------------
 
-/** How to protect a new vault: a passphrase, a passkey PRF output, or both. */
+/** How to protect a new vault: a passphrase, a passkey PRF output, or both; or this browser alone (`device`). */
 export interface Protection {
   readonly passphrase?: string
   readonly passkey?: { credentialId: Uint8Array; prfSalt: Uint8Array; output: Uint8Array }
+  readonly device?: true
 }
+
+/** The ways a stored key opens. */
+export type UnlockKind = 'passkey' | 'passphrase' | 'device'
+
+/** One unlock attempt: a passphrase, the enrolled passkey, or this browser's own key (no prompt). */
+export type UnlockMethod = { passphrase: string } | 'passkey' | 'device'
 
 /** What {@link storeInVault} did with storage settings sealed under the record it replaced. */
 export interface StoreOutcome {
@@ -590,7 +631,7 @@ export interface StoreOutcome {
 
 /** Refuse a protection the vault cannot seal with (before any work is done). */
 function assertProtection(protection: Protection): void {
-  if (!protection.passphrase && !protection.passkey) throw new Error('the vault needs a passphrase or a passkey')
+  if (!protection.passphrase && !protection.passkey && !protection.device) throw new Error('the vault needs a passphrase, a passkey or this browser')
   if (protection.passphrase !== undefined && protection.passphrase.length < MIN_PASSPHRASE) {
     throw new Error(`use a passphrase of at least ${MIN_PASSPHRASE} characters`)
   }
@@ -600,6 +641,11 @@ function assertProtection(protection: Protection): void {
 async function sealRecord(network: Network, main: Omit<VaultSecret, 'extra'>, protection: Protection, dataKey: Uint8Array): Promise<VaultRecord> {
   const { identityId } = main
   const body = await seal(dataKey, enc.encode(JSON.stringify(main)), aad(network, identityId, 'body'))
+  return { version: 1, network, identityId, keyId: main.keyId, createdAt: Date.now(), iv: body.iv, ciphertext: body.ct, slots: await wrapSlots(network, identityId, protection, dataKey) }
+}
+
+/** The data key wrapped under each method of `protection` (this browser alone only when it is the sole one). */
+async function wrapSlots(network: Network, identityId: string, protection: Protection, dataKey: Uint8Array): Promise<Slot[]> {
   const slots: Slot[] = []
   if (protection.passkey) {
     const kek = prfKey(protection.passkey.output, network, identityId)
@@ -614,7 +660,76 @@ async function sealRecord(network: Network, main: Omit<VaultSecret, 'extra'>, pr
     kek.fill(0)
     slots.push({ kind: 'passphrase', salt, params: ARGON2_PARAMS, iv: w.iv, wrapped: w.ct })
   }
-  return { version: 1, network, identityId, keyId: main.keyId, createdAt: Date.now(), iv: body.iv, ciphertext: body.ct, slots }
+  if (protection.device && slots.length === 0) {
+    const wrapKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+    const iv = random(12)
+    const ad = aad(network, identityId, 'device')
+    const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(ad) }, wrapKey, buf(dataKey)))
+    slots.push({ kind: 'device', wrapKey, iv, wrapped })
+  }
+  return slots
+}
+
+/** Only this browser protects it (no passkey, no passphrase). */
+function deviceOnly(protection: Protection): boolean {
+  return protection.device === true && !protection.passphrase && !protection.passkey
+}
+
+/**
+ * A key kept by this browser alone may hold nothing but the limited signing key: never wallet
+ * grants held beside it, an encryption key or storage settings, which would then open without a
+ * prompt. Those need a passkey or passphrase.
+ */
+export class DeviceOnlyRefusedError extends Error {
+  constructor() {
+    super('This browser also holds other keys or storage settings for this identity: add a passkey or a password to keep them.')
+    this.name = 'DeviceOnlyRefusedError'
+  }
+}
+
+async function assertDeviceOnlyFits(network: Network, identityId: string, extra: readonly ExtraKey[] | undefined): Promise<void> {
+  if (extra?.length) throw new DeviceOnlyRefusedError()
+  const blobs = await Promise.all([idbGet('vault', storageBlobKey(network, identityId)), idbGet<StoredEncryption>('vault', encryptionBlobKey(network, identityId))])
+  if (blobs[0] !== undefined || encryptionEntries(blobs[1]).length > 0) throw new DeviceOnlyRefusedError()
+}
+
+/**
+ * Protect a key kept by this browser alone with a passkey or passphrase (no new key, no fee):
+ * its data key is re-wrapped under them and the browser-only slot is dropped. Then it unlocks
+ * fully, so private content and storage settings can be added.
+ */
+export async function protectVault(network: Network, identityId: string, protection: Protection): Promise<VaultSecret> {
+  assertDedicatedOrigin()
+  if (deviceOnly(protection) || (!protection.passphrase && !protection.passkey)) throw new Error('choose a passkey or a passphrase')
+  assertProtection(protection)
+  const at = key(network, identityId)
+  const record = await idbGet<VaultRecord>('vault', at)
+  const slot = record?.slots.find((x) => x.kind === 'device')
+  if (record === undefined || slot?.kind !== 'device') throw new VaultLockedError('this key is already protected')
+  // Nothing else is sealed under a browser-only record, so it moves to a fresh data key: the old
+  // one was as readable as the browser profile.
+  await assertDeviceOnlyFits(network, identityId, undefined)
+  const oldKey = new Uint8Array(
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(slot.iv), additionalData: buf(aad(network, identityId, 'device')) }, slot.wrapKey, buf(slot.wrapped)),
+  )
+  const dataKey = random(32)
+  try {
+    const body = await open(oldKey, record.iv, record.ciphertext, aad(network, identityId, 'body'))
+    const main = JSON.parse(new TextDecoder().decode(body)) as Omit<VaultSecret, 'extra'>
+    body.fill(0)
+    const chosen: Protection = { ...(protection.passphrase ? { passphrase: protection.passphrase } : {}), ...(protection.passkey ? { passkey: protection.passkey } : {}) }
+    const sealed = await sealRecord(network, { identityId: main.identityId, keyId: main.keyId, wif: main.wif }, chosen, dataKey)
+    await idbUpdate<VaultRecord>('vault', at, (current) => {
+      if (current?.keyId !== record.keyId) throw new VaultChangedError()
+      return [[at, { ...current, iv: sealed.iv, ciphertext: sealed.ciphertext, slots: sealed.slots }]]
+    })
+  } finally {
+    oldKey.fill(0)
+    dataKey.fill(0)
+  }
+  const opened = await unlockWithProtection(network, identityId, protection)
+  if (opened === null) throw new VaultLockedError("This browser's key could not be opened after protecting it.")
+  return opened
 }
 
 /**
@@ -647,6 +762,7 @@ async function readsBack(network: Network, at: string, main: Omit<VaultSecret, '
 export async function stageInVault(network: Network, secret: VaultSecret, protection: Protection): Promise<void> {
   assertDedicatedOrigin()
   assertProtection(protection)
+  if (deviceOnly(protection)) await assertDeviceOnlyFits(network, secret.identityId, secret.extra)
   const { extra: _extra, ...main } = secret
   const at = stagedKey(network, secret.identityId)
   // Fails fast, before the slow sealing; checked again inside the write below.
@@ -711,10 +827,22 @@ export type StagedKeyState =
 async function openRecord(
   network: Network,
   record: VaultRecord,
-  method: { passphrase: string } | 'passkey',
+  method: UnlockMethod,
   withExtra: boolean,
   cachedOnly = false,
-): Promise<{ secret: VaultSecret; blobKeys: BlobKeys } | null> {
+): Promise<{ secret: VaultSecret; blobKeys: BlobKeys | null } | null> {
+  // This browser's own slot opens the signing key only: no grants, no blob keys (signing scope).
+  if (method === 'device') {
+    const slot = record.slots.find((s) => s.kind === 'device')
+    if (slot?.kind !== 'device') return null
+    try {
+      const ad = aad(network, record.identityId, 'device')
+      const dataKey = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(slot.iv), additionalData: buf(ad) }, slot.wrapKey, buf(slot.wrapped)))
+      return { secret: (await unwrapData(network, record, dataKey, false)).secret, blobKeys: null }
+    } catch {
+      return null
+    }
+  }
   if (method === 'passkey') {
     const slot = passkeySlot(record)
     if (!slot) return null
@@ -775,7 +903,7 @@ export type RecoverResult =
 export async function recoverStaged(
   network: Network,
   identityId: string,
-  method: { passphrase: string } | 'passkey',
+  method: UnlockMethod,
   state: (secret: VaultSecret) => Promise<StagedKeyState>,
 ): Promise<RecoverResult> {
   assertDedicatedOrigin()
@@ -787,7 +915,7 @@ export async function recoverStaged(
   if (record === undefined) return { status: 'pending' }
   // A passkey unlock already prompted once, for whichever passkey the user picked: the staged
   // record opens only if that was its passkey (never a second prompt).
-  const opened = await openRecord(network, record, method, false, true)
+  const opened = (await openRecord(network, record, 'device', false)) ?? (await openRecord(network, record, method, false, true))
   if (opened === null) return { status: 'locked' }
   const s = await state(opened.secret)
   if (s === 'never') {
@@ -806,8 +934,10 @@ export async function recoverStaged(
   const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
   const hadBlob = (await idbGet('vault', storageBlobKey(network, identityId))) !== undefined
   const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
-  const encBlob = await sealEncryptionBlobs(opened.blobKeys.encryption, network, identityId, carriedEnc)
-  const blob = carried !== null ? await sealBlob(opened.blobKeys.storage, network, identityId, carried) : undefined
+  // A browser-only record holds no blobs (it was staged only where there were none to carry).
+  const keys = opened.blobKeys
+  const encBlob = keys === null ? undefined : await sealEncryptionBlobs(keys.encryption, network, identityId, carriedEnc)
+  const blob = keys !== null && carried !== null ? await sealBlob(keys.storage, network, identityId, carried) : undefined
   const { replaces: _replaces, ...promoted } = record
   let raced = false
   await idbUpdate<VaultRecord>(
@@ -833,11 +963,12 @@ export async function recoverStaged(
   if (raced) return { status: 'conflict' }
   // Adopted over an interactive unlock of this tab: its 12-hour lock carries over.
   const unlockedAt = unlockedFor(network, identityId)?.at
-  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(unlockedAt !== undefined ? { at: unlockedAt } : {}) })
+  setUnlocked(network, opened.secret, keys, { lockMarkerAt, ...(keys === null ? { scope: 'signing' as const } : {}), ...(unlockedAt !== undefined ? { at: unlockedAt } : {}) })
+  const lostEnc = keys === null ? carriedEnc.map((b) => b.keyId).concat(droppedEnc) : droppedEnc
   return {
     status: 'adopted',
     secret: opened.secret,
-    outcome: { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: droppedEnc.length > 0, encryptionKeysDropped: droppedEnc },
+    outcome: { storageSettingsDropped: hadBlob && (carried === null || keys === null), encryptionKeyDropped: lostEnc.length > 0, encryptionKeysDropped: lostEnc },
   }
 }
 
@@ -860,10 +991,13 @@ export async function abandonStaged(network: Network, identityId: string, keyId?
 async function openWith(
   network: Network,
   record: VaultRecord,
-  using: Protection | 'passkey',
+  using: Protection | 'passkey' | 'device',
   withExtra: boolean,
   noPrompt = false,
-): Promise<{ secret: VaultSecret; blobKeys: BlobKeys } | null> {
+): Promise<{ secret: VaultSecret; blobKeys: BlobKeys | null } | null> {
+  // A browser-only slot opens without a prompt, whatever was asked for.
+  const device = await openRecord(network, record, 'device', withExtra)
+  if (device !== null || using === 'device') return device
   if (using === 'passkey') return openRecord(network, record, 'passkey', withExtra)
   if (using.passphrase !== undefined) {
     const opened = await openRecord(network, record, { passphrase: using.passphrase }, withExtra)
@@ -888,7 +1022,7 @@ async function openWith(
 export async function openStaged(
   network: Network,
   identityId: string,
-  using: Protection | 'passkey',
+  using: Protection | UnlockMethod,
   explicit = using === 'passkey',
 ): Promise<VaultSecret | null> {
   assertDedicatedOrigin()
@@ -915,7 +1049,7 @@ export async function unlockWithProtection(network: Network, identityId: string,
   const opened = await openWith(network, record, protection, true)
   if (opened === null) return null
   const at = unlockedFor(network, identityId)?.at
-  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(at !== undefined ? { at } : {}) })
+  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(opened.blobKeys === null ? { scope: 'signing' as const } : {}), ...(at !== undefined ? { at } : {}) })
   return opened.secret
 }
 
@@ -954,6 +1088,7 @@ export async function storeInVault(
   assertDedicatedOrigin()
   assertProtection(protection)
   const { identityId } = secret
+  if (deviceOnly(protection)) await assertDeviceOnlyFits(network, identityId, secret.extra)
   // A renewal replaces the record (and its data key): carry the storage settings across when
   // this session can open them; otherwise they cannot be opened any more and are dropped.
   const hadBlob = (await idbGet<StorageBlob>('vault', storageBlobKey(network, identityId))) !== undefined
@@ -963,6 +1098,7 @@ export async function storeInVault(
   // Each key that opens is carried; any other is dropped, and reported by id.
   const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
   const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
+  const carriedSync = await readSyncKey(network, identityId).catch(() => null)
   const dataKey = random(32)
   let storageKey: CryptoKey
   let encryptionKey: CryptoKey
@@ -977,6 +1113,7 @@ export async function storeInVault(
     const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
     encryptionKey = await deriveEncryptionKey(dataKey, network, identityId)
     const encBlob = await sealEncryptionBlobs(encryptionKey, network, identityId, carriedEnc)
+    const syncBlob = carriedSync !== null && !deviceOnly(protection) ? await sealSyncBlob(storageKey, network, identityId, carriedSync.keyId, carriedSync.secret) : undefined
     // One transaction: a crash between the writes must not leave settings sealed under a
     // data key no record holds any more. The key is now the main record, so a staged copy of
     // THIS key (the renewal that registered it) is done; a stage of another key (a renewal
@@ -994,6 +1131,8 @@ export async function storeInVault(
           [storageBlobKey(network, identityId), blob],
           [extraBlobKey(network, identityId), extraBlob],
           [encryptionBlobKey(network, identityId), encBlob],
+          [syncBlobKey(network, identityId), syncBlob],
+          ...(hadBlob && carried === null ? ([[storageSyncIdKey(network, identityId), undefined]] as const) : []),
           ...(staged !== undefined && (staged.keyId === secret.keyId || staged.keyId === options.dropStagedKeyId) ? ([[at, undefined]] as const) : []),
         ]
       },
@@ -1004,8 +1143,14 @@ export async function storeInVault(
     readBackOk = await readsBack(network, key(network, identityId), main, dataKey).catch(() => false)
   } finally {
     dataKey.fill(0)
+    carriedSync?.secret.fill(0)
   }
-  setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
+  // A key kept by this browser alone opens for signing only: nothing else may be sealed under it.
+  if (deviceOnly(protection)) {
+    setUnlocked(network, main, null, { lockMarkerAt, scope: 'signing' })
+    markDeviceOpened()
+  } else setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
+  notifySyncKeyChange()
   // TS-17: ask the browser to keep the vault (Safari clears a site's storage after 7 days
   // without a visit otherwise). Most browsers answer without a prompt; a refusal is shown in
   // Settings → Devices & keys.
@@ -1024,6 +1169,20 @@ export async function storeInVault(
  */
 export async function discardStorageBlob(network: Network, identityId: string): Promise<void> {
   await idbDelete('vault', storageBlobKey(network, identityId))
+  await idbDelete('vault', storageSyncIdKey(network, identityId))
+}
+
+/**
+ * The storage settings' sync id ({@link storageSyncIdKey}), made when `create` and none exists;
+ * null otherwise. Not secret.
+ */
+export async function storageSyncId(network: Network, identityId: string, create: boolean): Promise<string | null> {
+  const at = storageSyncIdKey(network, identityId)
+  const held = await idbGet<string>('vault', at)
+  if (typeof held === 'string' || !create) return typeof held === 'string' ? held : null
+  const id = Array.from(random(16), (b) => b.toString(16).padStart(2, '0')).join('')
+  await idbPut('vault', at, id)
+  return id
 }
 
 /**
@@ -1117,7 +1276,15 @@ export async function listVaults(network: Network): Promise<VaultInfo[]> {
 }
 
 async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array, slot: Slot, withExtra = true): Promise<{ secret: VaultSecret; blobKeys: BlobKeys }> {
-  const dataKey = await open(kek, slot.iv, slot.wrapped, aad(network, record.identityId, slot.kind))
+  try {
+    return await unwrapData(network, record, await open(kek, slot.iv, slot.wrapped, aad(network, record.identityId, slot.kind)), withExtra)
+  } finally {
+    kek.fill(0)
+  }
+}
+
+/** Open a record's body and blob keys with its data key (wiped after). */
+async function unwrapData(network: Network, record: VaultRecord, dataKey: Uint8Array, withExtra: boolean): Promise<{ secret: VaultSecret; blobKeys: BlobKeys }> {
   try {
     const body = await open(dataKey, record.iv, record.ciphertext, aad(network, record.identityId, 'body'))
     const parsed = JSON.parse(new TextDecoder().decode(body)) as VaultSecret
@@ -1129,7 +1296,6 @@ async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array
     return { secret, blobKeys: { storage: storageKey, encryption: await deriveEncryptionKey(dataKey, network, record.identityId) } }
   } finally {
     dataKey.fill(0)
-    kek.fill(0)
   }
 }
 
@@ -1148,18 +1314,27 @@ export async function unlockWithPasskey(network: Network, identityId: string, no
 }
 
 /**
+ * Unlock a key stored for this browser alone (no prompt). `autoSince`: a page load opening it by
+ * itself, refused when a lock happened anywhere since that marker; it does not count as opening
+ * it on purpose (a later page load still respects that lock).
+ */
+export async function unlockWithDevice(network: Network, identityId: string, autoSince?: number): Promise<VaultSecret> {
+  return unlockWith(network, identityId, 'device', undefined, autoSince)
+}
+
+/**
  * Open the main record with `method`; when that fails (or there is none) and a key whose
  * registration was not finished is staged here (D-016), try the staged record's own slots:
  * a renewal may have been protected with another passphrase or passkey than the key it
  * replaces. The controller then asks Platform and finishes or keeps the staged key. Each
  * record is only ever opened with its own slots; neither stands in for the other.
  */
-async function unlockWith(network: Network, identityId: string, method: { passphrase: string } | 'passkey', note?: PasskeyPromptNote): Promise<VaultSecret> {
+async function unlockWith(network: Network, identityId: string, method: UnlockMethod, note?: PasskeyPromptNote, autoSince?: number): Promise<VaultSecret> {
   assertDedicatedOrigin()
-  const lockMarkerAt = lockMarker()
+  const lockMarkerAt = autoSince ?? lockMarker()
   const main = await idbGet<VaultRecord>('vault', key(network, identityId))
   const staged = await idbGet<VaultRecord>('vault', stagedKey(network, identityId))
-  const kind = method === 'passkey' ? 'passkey' : 'passphrase'
+  const kind: UnlockKind = method === 'passkey' || method === 'device' ? method : 'passphrase'
   if (!main?.slots.some((s) => s.kind === kind) && !staged?.slots.some((s) => s.kind === kind)) {
     throw new VaultLockedError(`no ${kind}-protected key for this identity here`)
   }
@@ -1173,13 +1348,17 @@ async function unlockWith(network: Network, identityId: string, method: { passph
     }
     const opened = await openRecord(network, record, method, record === main)
     if (opened !== null) {
+      if (autoSince !== undefined && lockMarker() !== autoSince) throw new VaultLockedError('locked while this page was loading')
+      if (method === 'device' && autoSince === undefined) markDeviceOpened()
       // An interactive unlock over a resumed session keeps its first unlock's 12-hour lock.
       const at = unlockedFor(network, identityId)?.at
-      setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(at !== undefined ? { at } : {}) })
+      setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(opened.blobKeys === null ? { scope: 'signing' as const } : {}), ...(at !== undefined ? { at } : {}) })
       return opened.secret
     }
   }
-  throw new VaultLockedError(method === 'passkey' ? 'That passkey did not open the key stored here.' : 'Wrong passphrase.')
+  throw new VaultLockedError(
+    method === 'passkey' ? 'That passkey did not open the key stored here.' : method === 'device' ? "This browser's key could not be opened." : 'Wrong passphrase.',
+  )
 }
 
 /**
@@ -1206,9 +1385,27 @@ export async function forgetVault(network: Network, identityId: string): Promise
   await idbDelete('vault', storageBlobKey(network, identityId))
   await idbDelete('vault', extraBlobKey(network, identityId))
   await idbDelete('vault', encryptionBlobKey(network, identityId))
+  await idbDelete('vault', syncBlobKey(network, identityId))
+  await idbDelete('vault', storageSyncIdKey(network, identityId))
   await idbDelete('vault', stagedKey(network, identityId))
   clearSignedWrites()
+  forgetSyncRecords(identityId)
   notifyEncryptionKeyChange()
+}
+
+/** Drop this browser's settings-sync records of `identityId` (`lib/user-sync/overlay.ts`): its own keys only. */
+function forgetSyncRecords(identityId: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    const doomed: string[] = []
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i)
+      if (k?.startsWith('forge:user-sync:') && k.endsWith(`:${identityId}`)) doomed.push(k)
+    }
+    for (const k of doomed) window.localStorage.removeItem(k)
+  } catch {
+    /* storage disabled */
+  }
 }
 
 /** Drop signed-but-unconfirmed writes this browser kept for retry (no keys; still, tidy up). */
@@ -1244,6 +1441,8 @@ interface Unlocked {
   blobKeys: BlobKeys | null
   /** Tab-only sessions: the encryption key, sealed under a random per-session key. */
   sessionEnc?: { key: CryptoKey; blobs: readonly EncryptionBlob[] }
+  /** A session with no blob keys: the forge-user key, sealed under a random per-session key. */
+  sessionSync?: { key: CryptoKey; blob: EncryptionBlob }
   /**
    * `signing`: picked up from a kept session. Only the limited signing key is here; the
    * encryption key, storage settings and wallet grants need an interactive unlock
@@ -1300,7 +1499,10 @@ function setUnlocked(
   const switched = unlocked !== null && (unlocked.network !== network || unlocked.secret.identityId !== secret.identityId)
   const at = opts.at ?? Date.now()
   unlocked = { network, secret, at, blobKeys, scope: opts.scope ?? 'full', lockMarkerAt: opts.lockMarkerAt ?? lockMarker() }
-  if (switched) notifyEncryptionKeyChange()
+  if (switched) {
+    notifyEncryptionKeyChange()
+    notifySyncKeyChange()
+  }
   if (lockTimer) clearTimeout(lockTimer)
   lockTimer = setTimeout(() => expire(network), Math.max(0, at + AUTO_LOCK_MS - Date.now()))
 }
@@ -1476,7 +1678,104 @@ export function releaseUnlocked(): void {
   lockTimer = null
   if (wasUnlocked) for (const l of lockListeners) l()
   // Every private-repo session ends with the vault (its keys were opened with this unlock).
-  if (wasUnlocked) notifyEncryptionKeyChange()
+  if (wasUnlocked) {
+    notifyEncryptionKeyChange()
+    notifySyncKeyChange()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The forge-user encryption key (`docs/design/identity-synced-state.md` §5): settings sync
+// ---------------------------------------------------------------------------
+
+function syncAad(network: Network, identityId: string, keyId: number): Uint8Array {
+  return aad(network, identityId, `sync|${keyId}`)
+}
+
+async function sealSyncBlob(key: CryptoKey, network: Network, identityId: string, keyId: number, secret: Uint8Array): Promise<EncryptionBlob> {
+  if (secret.length !== 32 || !Number.isSafeInteger(keyId) || keyId < 0) throw new Error('not an encryption private key')
+  const iv = random(12)
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(syncAad(network, identityId, keyId)) }, key, buf(secret))
+  return { keyId, iv, ciphertext: new Uint8Array(ct) }
+}
+
+async function openSyncBlob(key: CryptoKey, network: Network, identityId: string, blob: EncryptionBlob): Promise<Uint8Array> {
+  const plain = new Uint8Array(
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(blob.iv), additionalData: buf(syncAad(network, identityId, blob.keyId)) }, key, buf(blob.ciphertext)),
+  )
+  if (plain.length !== 32) {
+    plain.fill(0)
+    throw new Error('bad length')
+  }
+  return plain
+}
+
+/** The forge-user key this tab holds open for (network, identity), or null (none, locked, or sealed under another key). */
+async function readSyncKey(network: Network, identityId: string): Promise<{ keyId: number; secret: Uint8Array } | null> {
+  const u = unlockedSecret(network, identityId) === null ? null : unlocked
+  if (u === null) return null
+  if (u.sessionSync !== undefined) return { keyId: u.sessionSync.blob.keyId, secret: await openSyncBlob(u.sessionSync.key, network, identityId, u.sessionSync.blob) }
+  const k = u.blobKeys?.storage
+  if (k === undefined) return null
+  const blob = await idbGet<EncryptionBlob>('vault', syncBlobKey(network, identityId))
+  if (blob === undefined) return null
+  try {
+    return { keyId: blob.keyId, secret: await openSyncBlob(k, network, identityId, blob) }
+  } catch {
+    // Sealed under a key an older build replaced: the next wallet sign-in delivers it again.
+    return null
+  }
+}
+
+/**
+ * Keep the forge-user encryption key (verified against the identity by the caller, who wipes
+ * `secret`) beside the unlocked record: sealed at rest when this session holds the blob keys,
+ * else in this tab's memory only. Never in the kept session.
+ */
+export async function storeSyncKey(network: Network, identityId: string, keyId: number, secret: Uint8Array): Promise<void> {
+  assertDedicatedOrigin()
+  const u = unlockedSecret(network, identityId) === null ? null : unlocked
+  if (u === null) throw new VaultLockedError('unlock this browser first')
+  if (u.blobKeys === null) {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+    u.sessionSync = { key, blob: await sealSyncBlob(key, network, identityId, keyId, secret) }
+  } else {
+    await idbPut('vault', syncBlobKey(network, identityId), await sealSyncBlob(u.blobKeys.storage, network, identityId, keyId, secret))
+  }
+  notifySyncKeyChange()
+}
+
+/**
+ * Run `use` with the forge-user key (a fresh copy, wiped afterwards); null when this tab holds
+ * none for (network, identity). Callers pass it only to `lib/user-sync`.
+ */
+export async function withSyncKey<T>(network: Network, identityId: string, use: (keyId: number, secret: Uint8Array) => Promise<T>): Promise<T | null> {
+  const held = await readSyncKey(network, identityId)
+  if (held === null) return null
+  try {
+    return await use(held.keyId, held.secret)
+  } finally {
+    held.secret.fill(0)
+  }
+}
+
+/** The forge-user key id this tab holds for (network, identity), or null. */
+export async function heldSyncKeyId(network: Network, identityId: string): Promise<number | null> {
+  return withSyncKey(network, identityId, async (keyId) => keyId)
+}
+
+const syncListeners = new Set<() => void>()
+
+/** Be told when the forge-user key is stored, or becomes unusable (lock, another identity). */
+export function onSyncKeyChange(listener: () => void): () => void {
+  syncListeners.add(listener)
+  return () => {
+    syncListeners.delete(listener)
+  }
+}
+
+function notifySyncKeyChange(): void {
+  for (const l of syncListeners) l()
 }
 
 // ---------------------------------------------------------------------------

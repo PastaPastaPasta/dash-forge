@@ -113,16 +113,16 @@ function edgeWindows(size: number): (readonly [number, number])[] {
 }
 
 /** Re-read an S3 copy through the signed API and check it is exactly `bytes`. */
-async function verifyS3(s: S3Settings, p: StorageProfile, key: string, bytes: Uint8Array, hashHex: string): Promise<void> {
+async function verifyS3(s: S3Settings, p: StorageProfile, key: string, bytes: Uint8Array, hashHex: string, signal?: AbortSignal): Promise<void> {
   if (bytes.length <= FULL_VERIFY_MAX) {
-    const got = await getObject(s, p.secrets, key)
+    const got = await getObject(s, p.secrets, key, undefined, signal)
     if ((await sha256Hex(got)) !== hashHex) throw new Error(`re-read of ${key} returned ${got.length} bytes that do not hash to the artifact`)
     return
   }
-  const size = await headObject(s, p.secrets, key)
+  const size = await headObject(s, p.secrets, key, signal)
   if (size !== bytes.length) throw new Error(`re-read of ${key}: object missing or wrong size (${size} ≠ ${bytes.length})`)
   for (const [start, end] of edgeWindows(bytes.length)) {
-    const got = await getObject(s, p.secrets, key, `bytes=${start}-${end - 1}`)
+    const got = await getObject(s, p.secrets, key, `bytes=${start}-${end - 1}`, signal)
     if (!bytesEqual(got, bytes.subarray(start, end))) throw new Error(`re-read of ${key} bytes ${start}..${end} differ from the artifact`)
   }
 }
@@ -143,7 +143,7 @@ async function verifyPublic(label: string, read: (range: string) => Promise<{ st
 }
 
 /** Store and verify on one external profile; the URIs its manifest entry records. */
-async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: string): Promise<string[]> {
+async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: string, signal?: AbortSignal): Promise<string[]> {
   const problem = profileProblem(p) ?? publishProblem(p)
   if (problem) throw new Error(`the profile is not usable: ${problem}`)
   const s = p.settings
@@ -153,28 +153,29 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
     // not 404, when the key lacks s3:ListBucket (HeadObject, "Permissions":
     // https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html), and keys are
     // content-addressed, so an unneeded PUT is harmless (parity with forge-core `S3Backend::put`).
-    const existing = await headObject(s, p.secrets, key).catch(() => null)
-    if (existing !== bytes.length) await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex })
+    const existing = await headObject(s, p.secrets, key, signal).catch(() => null)
+    if (existing !== bytes.length) await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex, ...(signal ? { signal } : {}) })
     try {
-      await verifyS3(s, p, key, bytes, hashHex)
+      await verifyS3(s, p, key, bytes, hashHex, signal)
     } catch (first) {
+      if (signal?.aborted) throw first
       // A same-size but corrupt object at a content-addressed key would fail every push:
       // re-upload once, unconditionally, and check again.
-      await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex })
+      await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex, ...(signal ? { signal } : {}) })
       try {
-        await verifyS3(s, p, key, bytes, hashHex)
+        await verifyS3(s, p, key, bytes, hashHex, signal)
       } catch (second) {
         throw new Error(`${errText(second)} (also after a re-upload; first attempt: ${errText(first)})`)
       }
     }
-    await verifyPublic(`the public URL (${new URL(s.publicUrl).host})`, (range) => getPublic(s, key, range), bytes)
+    await verifyPublic(`the public URL (${new URL(s.publicUrl).host})`, (range) => getPublic(s, key, range, signal), bytes)
     return [publicObjectUrl(s, key), s3Uri(s, key)]
   }
   if (s.kind === 'ipfs-kubo' || s.kind === 'ipfs-pinning-service') {
-    const cid = await addVerified(s, p.secrets, bytes)
+    const cid = await addVerified(s, p.secrets, bytes, signal)
     if (s.kind === 'ipfs-pinning-service') await remotePin(s, p.secrets, cid, `dash-forge ${hashHex.slice(0, 16)}`)
     if (s.gateway !== '') {
-      const r = await timedFetch(gatewayUrl(s.gateway, cid), { credentials: 'omit', cache: 'no-store' })
+      const r = await timedFetch(gatewayUrl(s.gateway, cid), { credentials: 'omit', cache: 'no-store' }, signal ? { signal } : {})
       const got = await r.bytes()
       if (!r.resp.ok || (await sha256Hex(got)) !== hashHex) throw new Error(`re-read of ipfs://${cid} through the gateway did not return the artifact`)
     }
@@ -182,7 +183,7 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
     if (s.publicGateway !== '') {
       const url = gatewayUrl(s.publicGateway, cid)
       await verifyPublic(`the public gateway (${new URL(url).host})`, async (range) => {
-        const r = await timedFetch(url, { headers: { Range: range }, credentials: 'omit', cache: 'no-store' })
+        const r = await timedFetch(url, { headers: { Range: range }, credentials: 'omit', cache: 'no-store' }, signal ? { signal } : {})
         return { status: r.resp.status, bytes: await r.bytes() }
       }, bytes)
       uris.unshift(url)
@@ -205,6 +206,7 @@ async function storeOnExternalTargets(
   bytes: Uint8Array,
   hashHex: string,
   step: (e: UploadEvent) => void,
+  signal?: AbortSignal,
 ): Promise<{ confirmed: ExternalCopy[]; failures: TargetFailure[] }> {
   const confirmed: ExternalCopy[] = []
   const failures: TargetFailure[] = []
@@ -214,7 +216,7 @@ async function storeOnExternalTargets(
       try {
         const profile = byName.get(name)
         if (!profile) throw new Error('no such storage profile in this browser')
-        const uris = await storeExternal(profile, bytes, hashHex)
+        const uris = await storeExternal(profile, bytes, hashHex, signal)
         confirmed.push({ target: name, uris })
         step({ target: name, phase: 'done', uris })
       } catch (e) {
@@ -298,6 +300,7 @@ export async function storeFile(
     readonly maxUris?: number
     /** The file's hex SHA-256 when the caller has it already (it is not hashed again). */
     readonly sha256Hex?: string
+    readonly signal?: AbortSignal
   },
 ): Promise<StoredFile> {
   if (bytes.length === 0) throw new Error('an empty file cannot be stored as an asset')
@@ -308,7 +311,8 @@ export async function storeFile(
   }
   const required = Math.min(opts.policy.replicas, external.length)
   const hashHex = opts.sha256Hex ?? (await sha256Hex(bytes))
-  const { confirmed, failures } = await storeOnExternalTargets(external, byName, bytes, hashHex, opts.onStep ?? (() => undefined))
+  const { confirmed, failures } = await storeOnExternalTargets(external, byName, bytes, hashHex, opts.onStep ?? (() => undefined), opts.signal)
+  if (opts.signal?.aborted) throw new Error('Cancelled')
   if (confirmed.length < required) throw new ReplicationError(required, confirmed.map((c) => c.target), failures, false)
   confirmed.sort((a, b) => external.indexOf(a.target) - external.indexOf(b.target))
   let uris = orderUris(confirmed.map((c) => c.uris))

@@ -13,11 +13,13 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bell, BookOpen, ChevronDown, Compass, GitFork, GraduationCap, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { Bell, BookOpen, ChevronDown, Compass, GitFork, GraduationCap, Hammer, Lock, Menu, PenLine, Plus, Search, Settings, Users, Wallet, X } from 'lucide-react'
 import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
+import { ORGS_ON, useOrgRecords, useOrgsStore, useWaitingCount } from '@/hooks/use-orgs'
+import { waitingForViewer } from '@/lib/org/requests'
 import { addressFromParams, repoHref } from '@/hooks/use-query-param'
 import { identityHref } from '@/lib/view/profile-links'
 import { SignInButton } from '@/components/sign-in-button'
@@ -168,6 +170,7 @@ export function AppHeader(): JSX.Element {
             <BookOpen className="h-4 w-4" aria-hidden /> Docs
           </Link>
           <NewMenu />
+          {ORGS_ON ? <OrgSignBadge signedIn={identity !== null} /> : null}
           {identity ? <NotificationsBell /> : null}
           <ThemeToggle />
           {identity ? (
@@ -465,6 +468,7 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
           {ACTIVE_NETWORK.v2 !== null ? item('/new/', 'New repository', Plus) : null}
           {ACTIVE_NETWORK.v2 !== null ? item('/mirror/', 'Mirror a GitHub repo', GitFork) : null}
           {signedIn ? item('/notifications/', 'Notifications', Bell) : null}
+          {ORGS_ON ? item('/org/', 'Organizations', Users) : null}
           {signedIn ? item('/settings/', 'Settings & spend', Settings) : null}
           {/* What Forge is (QW-013), and the guides. */}
           {item('/start/', 'Getting started', GraduationCap)}
@@ -597,19 +601,44 @@ function NewMenu(): JSX.Element | null {
             <Plus className="mt-0.5 h-4 w-4 shrink-0 text-fg-muted" aria-hidden />
             <span>
               Repository
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Create a repo on {ACTIVE_NETWORK.key}</span>
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Create a new repo</span>
             </span>
           </Link>
           <Link href="/mirror/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             <GitFork className="mt-0.5 h-4 w-4 shrink-0 text-fg-muted" aria-hidden />
             <span>
               Mirror a GitHub repo
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Set up in your browser, about 10 minutes</span>
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Sync or copy from GitHub</span>
             </span>
           </Link>
         </nav>
       ) : null}
     </div>
+  )
+}
+
+function OrgSignBadge({ signedIn }: { signedIn: boolean }): JSX.Element | null {
+  const waiting = useWaitingCount()
+  const records = useOrgRecords()
+  const views = useOrgsStore((st) => st.views)
+  if (waiting === 0) return null
+  const withWaiting = records.filter((r) => views[r.orgId]?.requests.some((q) => waitingForViewer(q.status, q.viewerSigned, q.viewerDeclined)))
+  const href = withWaiting.length === 1 && withWaiting[0] ? `/org/?id=${encodeURIComponent(withWaiting[0].orgId)}` : signedIn ? '/notifications/' : '/org/'
+  const label = `${waiting} organization ${waiting === 1 ? 'request needs' : 'requests need'} your signature`
+  return (
+    <Link
+      href={href}
+      aria-label={label}
+      title={label}
+      data-testid="org-sign-badge"
+      data-waiting={waiting}
+      className="relative inline-flex h-8 w-8 items-center justify-center rounded-md text-anvil-700 coarse:h-11 coarse:w-11 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800"
+    >
+      <PenLine className="h-4 w-4" aria-hidden />
+      <span aria-hidden className="absolute -right-0.5 -top-0.5 min-w-[16px] rounded-full bg-forge-700 px-1 text-center font-mono text-[10px] leading-4 text-white">
+        {waiting > 99 ? '99+' : waiting}
+      </span>
+    </Link>
   )
 }
 
@@ -699,6 +728,11 @@ function AccountMenu({
           <Link href="/explore/" className={ITEM} onClick={() => setOpen(false)}>
             Explore
           </Link>
+          {ORGS_ON ? (
+            <Link href="/org/" className={ITEM} onClick={() => setOpen(false)}>
+              Organizations
+            </Link>
+          ) : null}
           <Link href="/settings/" className={ITEM} onClick={() => setOpen(false)}>
             Settings &amp; spend
           </Link>
@@ -714,11 +748,10 @@ function AccountMenu({
             className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
           >
             <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            {/* What Lock does (QW-044): the pages then say "Session locked", not "Sign in to …". */}
             <span>
               Lock
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
-                {pasted ? 'Signs you out and forgets the pasted key.' : 'Signs you out; your key stays in this browser until you forget it in Settings.'}
+                {pasted ? 'Signs you out and forgets this key.' : 'Locks every tab; your key stays here until you forget it in Settings.'}
               </span>
             </span>
           </button>

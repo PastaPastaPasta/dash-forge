@@ -302,5 +302,15 @@
       "note": "custody: offline escrow (OD-2); never signs anything but Forge contract registrations and updates"
     },
     "restores": []
+  },
+  "user": {
+    "contractId": "46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU",
+    "ownerId": "3pjHaytsQJg5aKZj3VeqwBPccN7uN3bCJiUNkT8KUBwM",
+    "identityNonce": "5",
+    "contractGroupId": "EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC",
+    "sizeBytes": 2240,
+    "deployedAt": "2026-11-25T00:49:30Z",
+    "sourceFile": "forge-contracts/contracts/user/forge-user.json",
+    "feeDash": "0.20 registration (0.1 base + 3 types x 0.02 + 4 indexes x 0.01, rs-platform-version fee v3) + storage/processing; balance delta not captured (read lagged)"
   }
 }

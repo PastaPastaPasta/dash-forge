@@ -38,7 +38,9 @@ fn git(dir: &Path, home: &Path, args: &[&str]) -> Output {
         .env("GIT_AUTHOR_EMAIL", "t@e.x")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@e.x")
-        .env("DASH_FORGE_NETWORK", "mainnet")
+        // An unknown devnet: mainnet is deployed now, and would be read.
+        .env("DASH_FORGE_NETWORK", "devnet")
+        .env("DASH_FORGE_DEVNET_NAME", "paloma")
         .env("DASH_FORGE_NO_KEYCHAIN", "1")
         .env("PATH", path)
         .stdin(Stdio::null())

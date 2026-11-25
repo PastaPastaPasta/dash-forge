@@ -18,8 +18,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
-import Link from 'next/link'
-import { AlertTriangle, ChevronLeft, Eye, EyeOff, KeyRound, Lock, Pencil, Plus, Users } from 'lucide-react'
+import { AlertTriangle, Eye, EyeOff, KeyRound, Lock, Pencil, Plus, Users } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
 import { ACCESS_SENTENCE } from '@/lib/env'
@@ -41,7 +40,7 @@ import {
 import { useEnvWriter, useEnvironments, useRepoPeople, type EnvironmentsRead } from '@/hooks/use-environments'
 import { EnvChangeDialog, type EnvChangeContext, type EnvChangeMode } from '@/components/repo/environment-editor'
 import { useDpnsName } from '@/hooks/use-dpns-name'
-import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import type { RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -63,10 +62,10 @@ export function EnvironmentsContent({ home, addr }: { home: RepoHome; addr: Repo
   if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider' || access === 'bot')) {
     return <PrivateRepoState repo={home.repo} addr={addr} access={access} />
   }
-  return <Environments home={home} addr={addr} />
+  return <Environments home={home} />
 }
 
-function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
+function Environments({ home }: { home: RepoHome }): JSX.Element {
   const { state, locked, viewer } = useEnvironments(home)
   const book = state.data?.book ?? null
   const maintainer = viewer !== null && book?.maintainers.has(viewer) === true
@@ -86,14 +85,8 @@ function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JS
   const actions: EnvActions | null = ctx === null ? null : { start: setChange }
   return (
     <div className="max-w-3xl space-y-5" data-testid="environments">
-      <Link
-        href={repoHref('/repo/settings', addr)}
-        className="hit-area inline-flex items-center gap-1 text-dense text-anvil-600 hover:text-anvil-900 dark:text-anvil-300 dark:hover:text-anvil-50"
-      >
-        <ChevronLeft className="h-4 w-4" aria-hidden /> Settings
-      </Link>
       <div>
-        <h2 id="environments-title" className="flex items-center gap-2 text-prose">
+        <h2 id="environments-title" className="flex items-center gap-2 text-lg font-semibold text-anvil-900 dark:text-anvil-50">
           <KeyRound className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Environments
         </h2>
         {actions !== null ? (

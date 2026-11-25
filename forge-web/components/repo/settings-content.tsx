@@ -8,8 +8,11 @@
  * the on-chain result. The config and policy sections live in `repo-settings-sections.tsx`.
  */
 
+import { OrgManagesAccess, useOwnerKind } from '@/components/org/owner-chip'
+import { useOrgRequester } from '@/components/org/use-org-requester'
+import { changeRoleRequest, grantRequest, revokeRequest } from '@/lib/org/actions'
 import { useState } from 'react'
-import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
+import { Fingerprint } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import type { PrivateSession } from '@/lib/repo/private-session'
@@ -41,6 +44,9 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
+import { RepoShareNotes, RotateCredentialsNote } from '@/components/storage/repo-share-notes'
+import { useRepoStorageShare } from '@/hooks/use-repo-share'
+import { useUserSyncStatus } from '@/hooks/use-user-sync'
 import { PrivateMembers } from '@/components/repo/private-members'
 import { MemberEnvOutcomeView, MemberEnvPlanView, useMemberEnvFlow } from '@/components/repo/member-env-plan'
 import type { MemberChange } from '@/lib/env/member-change'
@@ -50,7 +56,9 @@ import { WebhookSettings } from '@/components/repo/webhook-settings'
 import { BanSettings } from '@/components/repo/ban-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
-import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
+import { BranchSettings, Card, DangerZone, GeneralSettings, Section } from '@/components/repo/repo-settings-sections'
+import { SettingsPane, SettingsShell, useSettingsSection } from '@/components/repo/settings-shell'
+import { RowMenu } from '@/components/ui/row-menu'
 import { shortId } from '@/lib/utils'
 
 /** A Collaborators write awaiting its confirm; `change` (public repos) deletes `role`'s document, then adds `to`. */
@@ -109,7 +117,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
-  const isOwner = identity === repo.ownerId
+  const org = useOrgRequester(repo.ownerId)
+  const orgOwned = org.record !== null && repo.visibility === 'public'
+  const orgKind = useOwnerKind(repo.ownerId)
+  const isOwner = identity === repo.ownerId || orgOwned
+  const blockedByGuard = !orgOwned && guard.disabledReason !== null
   const viewer = useViewerRole(repo)
   const viewerRole = viewer.role
   // Bot is offered only where the registered contract admits it (never on sakura's live set).
@@ -129,6 +141,13 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     { enabled: ready && sdk !== null },
   )
   const memberRows = members.data ?? []
+  // Maintainers use the owner's storage (forge-user): the share and grants, and a removal's epoch.
+  const share = useRepoStorageShare(repo)
+  // Settings sync carries this choice to the identity's other devices: the hint says so only then.
+  const syncKind = useUserSyncStatus().kind
+  const syncOn = syncKind === 'synced' || syncKind === 'syncing'
+  // A removed maintainer could have copied the shared credentials: say so once.
+  const [rotate, setRotate] = useState(false)
   // The identity the owner tried to add before they accepted: the invite is pending on them.
   const [awaiting, setAwaiting] = useState<string | null>(null)
   // A member added to a repo with members-only content before they have an encryption key.
@@ -154,7 +173,15 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   // A role change to or from Bot moves the key to members-only content: priced with it.
   const changeCost = (member: string, from: MemberRole, to: MemberRole): ReturnType<typeof keyedRoleChangeCost> =>
     keyedRoleChangeCost(keyed ? laneSession : null, identity, member, from, to, repo.forge.core, ops?.keyId ?? null)
+  const runOrgAction = async (): Promise<void> => {
+    if (!action) return
+    const a = action
+    await org.submit((s) =>
+      a.kind === 'change' ? changeRoleRequest(s, repo, a.member, a.role, a.to) : a.kind === 'grant' ? grantRequest(s, repo, a.member, a.role) : revokeRequest(s, repo, a.member, a.role),
+    )
+  }
   const runAction = async (intent: string): Promise<void> => {
+    if (orgOwned) return runOrgAction()
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     const planned = envFlow.envsPlanned
     // their consent is gone or not given yet: nothing about the membership was signed
@@ -205,28 +232,51 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       done.kind === 'change'
         ? rows.some((m) => m.identity === done.member && m.role === done.to)
         : rows.some((m) => m.identity === done.member && m.role === done.role) === (done.kind === 'grant')
-    await retryWhileMissing(async () => {
+    const confirmed = await retryWhileMissing(async () => {
       invalidateMembers(repo, network)
       return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
     }, 8)
+    // A maintainer again, and it reads back: this tab grants them the owner's storage again.
+    if (confirmed === true && ((done.kind === 'grant' && done.role === 'maintainer') || (done.kind === 'change' && done.to === 'maintainer'))) share.afterAdd(done.member)
+    // Once the removal reads back: the owner's storage moves to a new epoch without them.
+    if (done.role === 'maintainer' && (done.kind === 'revoke' || (done.kind === 'change' && done.to !== 'maintainer'))) {
+      setRotate(await share.afterRemoval(done.member).catch(() => false))
+    }
     members.reload()
   }
+  const maintainer = viewerRole === 'maintainer'
+  const showDanger = maintainer || isOwner
+  const section = useSettingsSection(viewerRole !== null && !maintainer && !isOwner ? 'collaborators' : 'general', (s) => s !== 'danger' || showDanger)
+  const memberManager = isOwner && repo.visibility !== 'private'
   return (
-    <div className="max-w-2xl space-y-8">
-      <SettingsNav />
-
-      {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. The
-          sections carry no note of their own, so a failed role read still gets the banner. */}
-      {viewer.known || viewer.failed ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
-
-      <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
-
-      <BranchSettings home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
-
-      <Section id="collaborators" title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <div className="mb-4">
-          <MembersContentSetting home={home} maintainer={viewerRole === 'maintainer'} />
+    <SettingsShell addr={{ owner: repo.ownerId, name: repo.name }} active={section} showDanger={showDanger}>
+      {viewer.known || viewer.failed ? (
+        <div className="mb-6">
+          <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} />
         </div>
+      ) : null}
+
+      <SettingsPane id="general" active={section}>
+        <GeneralSettings home={home} maintainer={maintainer} owner={isOwner} onSaved={reload}>
+          <PlatformDetails repo={repo} />
+        </GeneralSettings>
+      </SettingsPane>
+
+      <SettingsPane id="branches" active={section}>
+        <BranchSettings home={home} maintainer={maintainer} onSaved={reload} />
+      </SettingsPane>
+
+      <SettingsPane id="collaborators" active={section}>
+      <Section
+        id="collaborators"
+        title="Members"
+        description={
+          orgOwned && org.record
+            ? `Changes are requests: they take effect once ${org.record.threshold} of ${org.record.members.length} members of ${org.record.label} sign.`
+            : 'People who can push, review or triage here. They join only after accepting an invitation.'
+        }
+      >
+        <MembersContentSetting home={home} maintainer={maintainer} />
         {home.private?.access === 'member' ? (
           <PrivateMembers home={home} session={home.private.session} />
         ) : (
@@ -236,7 +286,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         ) : members.error ? (
           <ErrorState message={members.error} onRetry={members.reload} />
         ) : (
-          <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+          <div className="rounded-lg border border-anvil-200 dark:border-anvil-800">
             {memberRows.length === 0 ? (
               <div className="px-4 py-6 text-center text-dense text-anvil-500 dark:text-anvil-400">
                 No members. Nobody can push to this repo.
@@ -246,18 +296,21 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                 const rowKey = `${m.role}:${m.identity}`
                 return (
                   <div key={rowKey} className="border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="member-row">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <Author identityId={m.identity} link={false} />
-                      <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
-                      {m.identity !== repo.ownerId && isOwner && repo.visibility !== 'private' ? (
-                        <div className="ml-auto flex gap-2">
-                          <Button size="sm" variant="outline" disabled={guard.disabledReason !== null} aria-expanded={changing === rowKey} onClick={() => setChanging((c) => (c === rowKey ? null : rowKey))}>
-                            Change role
-                          </Button>
-                          <Button size="sm" variant="danger" disabled={guard.disabledReason !== null} onClick={() => setAction({ kind: 'revoke', member: m.identity, role: m.role })}>
-                            Remove
-                          </Button>
-                        </div>
+                    <div className="flex items-center gap-3">
+                      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+                        <Author identityId={m.identity} link={false} />
+                        <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
+                      </div>
+                      {m.identity !== repo.ownerId && memberManager ? (
+                        <RowMenu
+                          label={`Actions for ${shortId(m.identity)}`}
+                          disabled={blockedByGuard}
+                          expanded={changing === rowKey}
+                          items={[
+                            { label: changing === rowKey ? 'Keep role' : 'Change role', onSelect: () => setChanging((c) => (c === rowKey ? null : rowKey)) },
+                            { label: 'Remove from repo', destructive: true, onSelect: () => setAction({ kind: 'revoke', member: m.identity, role: m.role }) },
+                          ]}
+                        />
                       ) : null}
                     </div>
                     {changing === rowKey ? (
@@ -272,9 +325,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                           exclude={grantableRoles(repo.visibility, { bots }).filter(
                             (r) => r === m.role || memberRows.some((o) => o.identity === m.identity && o.role !== m.role && memberDocOf(o.role) === memberDocOf(r)),
                           )}
-                          disabled={guard.disabledReason !== null}
+                          disabled={blockedByGuard}
                           onChange={(to) => {
-                            if (guard.check(changeCost(m.identity, m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
+                            if (orgOwned || guard.check(changeCost(m.identity, m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
                           }}
                         />
                         <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -289,17 +342,20 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           </div>
         )}
         {locked ? (
-          <div id="members-unlock" className="mt-4 scroll-mt-20">
+          <div id="members-unlock" className="scroll-mt-20">
             <UnlockMore title={isOwner ? 'Unlock this tab to add or remove members' : "Unlock this tab to see the repo's key epoch"} testId="members-unlock" />
           </div>
+        ) : orgOwned && keyed ? (
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Member changes on a repo with members-only content are made by a maintainer of the organization&apos;s choosing, not by organization requests yet.</p>
+        ) : !isOwner && orgKind.isOrg ? (
+          <OrgManagesAccess />
         ) : isOwner && repo.visibility === 'private' ? (
-          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             Adding or removing a member of a private repo hands out or rotates its key: add your encryption key to this browser
             (Settings → Members-only and private content) to manage members.
           </p>
         ) : isOwner ? (
-          <div className="mt-4 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-            <h4 className="mb-2 text-dense font-medium">Add a member</h4>
+          <Card title="Add a member" hint="Only maintainers' and writers' approvals count toward merging.">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
               <div className="flex-1">
                 <Field label="Identity ID or name" htmlFor="member-id">
@@ -307,15 +363,17 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                 </Field>
               </div>
               <RolePicker value={role} onChange={setRole} visibility={repo.visibility} bots={bots} />
-              <Button
-                variant="primary"
-                disabled={typed === null || !mayAdd(consent) || guard.disabledReason !== null}
-                onClick={() => {
-                  if (typed !== null && guard.check(previewCreate(memberDocOf(role)))) setAction({ kind: 'grant', member: typed, role })
-                }}
-              >
-                Add
-              </Button>
+              {memberId.trim() !== '' ? (
+                <Button
+                  variant="primary"
+                  disabled={typed === null || !mayAdd(consent) || blockedByGuard}
+                  onClick={() => {
+                    if (typed !== null && (orgOwned || guard.check(previewCreate(memberDocOf(role))))) setAction({ kind: 'grant', member: typed, role })
+                  }}
+                >
+                  Add
+                </Button>
+              ) : null}
             </div>
             <RoleSummary role={role} />
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
@@ -325,10 +383,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               repo={repo}
               members={members.data === null ? null : memberRows.map((m) => m.identity)}
               awaiting={awaiting}
-              disabled={guard.disabledReason !== null}
+              disabled={blockedByGuard}
               role={role}
               onPick={(id, r) => {
-                if (guard.check(previewCreate(memberDocOf(r)))) setAction({ kind: 'grant', member: id, role: r })
+                if (orgOwned || guard.check(previewCreate(memberDocOf(r)))) setAction({ kind: 'grant', member: id, role: r })
               }}
             />
             {noKeyYet !== null ? (
@@ -337,15 +395,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                 repo page to share the key with them.
               </p>
             ) : null}
-            <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-              People join only after accepting your invitation. Only maintainers&apos; and writers&apos; approvals count toward merging.
-            </p>
-          </div>
+          </Card>
         ) : null}
-        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
           <span>
-            Members act according to their role. Removing someone takes effect immediately.
-            {!isOwner ? ' Only the owner can add or remove members.' : ''}
+            Removing someone takes effect immediately.
+            {!isOwner && !orgKind.isOrg ? ' Only the owner can add or remove members.' : ''}
           </span>
           <EnforcedBy by="platform" />
         </p>
@@ -364,9 +419,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   : 'Remove member'
           }
           // The toast says the role granted, not the document type (QW4-033: triage was "Writer added").
-          toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
+          toast={action === null || orgOwned ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
-            action?.kind === 'grant'
+            orgOwned && org.record
+              ? `${action?.kind === 'grant' ? `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access` : action?.kind === 'change' ? `Changes ${shortId(action.member)}'s access from ${ROLE_LABEL[action.role]} to ${ROLE_LABEL[action.to]}` : action ? `Removes ${shortId(action.member)}'s ${ROLE_LABEL[action.role]} access` : ''} once ${org.record.threshold} of ${org.record.members.length} members of ${org.record.label} sign. You sign first; the organization pays the fee.`
+              : action?.kind === 'grant'
               ? action.role === 'bot'
                 ? addBotText(shortId(action.member))
                 : `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
@@ -378,7 +435,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     ? 'Removes them from this repo and changes the key to its members-only content.'
                     : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
-          cost={envFlow.cost(
+          cost={orgOwned ? null : envFlow.cost(
             action === null
               ? previewCreate('writer')
               : action.kind === 'revoke'
@@ -392,9 +449,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     : previewCreate(memberDocOf(action.role)),
           )}
           confirmLabel={
-            action?.kind === 'grant' ? envFlow.confirmLabel('Sign & add', 'add') : action?.kind === 'change' ? envFlow.confirmLabel('Sign & change', 'change') : envFlow.confirmLabel('Sign & remove', 'remove')
+            orgOwned ? 'Sign & ask co-signers' : action?.kind === 'grant' ? envFlow.confirmLabel('Sign & add', 'add') : action?.kind === 'change' ? envFlow.confirmLabel('Sign & change', 'change') : envFlow.confirmLabel('Sign & remove', 'remove')
           }
-          blocked={envFlow.blocked ?? keyBlock}
+          blocked={orgOwned ? undefined : (envFlow.blocked ?? keyBlock)}
+          request={orgOwned}
           onConfirm={runAction}
         >
           {/* What they could read: members-only discussion. Nothing is listed when they keep a
@@ -403,61 +461,82 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             ? <RemovalReads lane={keyed} />
             : null}
           {/* The environments the change saves again, for whom, what it can't, and a removal's checklist. */}
-          <MemberEnvPlanView flow={envFlow} />
+          {orgOwned ? null : <MemberEnvPlanView flow={envFlow} />}
         </ConfirmDialog>
+        {org.dialog}
         <MemberEnvOutcomeView home={home} flow={envFlow} />
+        {rotate ? <RotateCredentialsNote /> : null}
         </>
         )}
       </Section>
+      </SettingsPane>
 
-      <Section id="storage" title="Storage" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <StorageBackend backend={home.backend} emptyText="Readers fetch each upload from wherever it was stored." />
-        {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
-        {!(viewer.known && viewerRole === null) ? (
-          <>
-            <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
-              <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
-            </h3>
-            <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
-          </>
-        ) : null}
-      </Section>
+      <SettingsPane id="bans" active={section}>
+        <BanSettings home={home} maintainer={maintainer} />
+      </SettingsPane>
 
-      <WebhookSettings home={home} maintainer={viewerRole === 'maintainer'} />
+      <SettingsPane id="storage" active={section}>
+        <Section id="storage" title="Storage" description="Where this repo's code and uploads are stored.">
+          <Card title="Repository storage" hint="Set when the repo was created.">
+            <StorageBackend backend={home.backend} emptyText="Readers fetch each upload from wherever it was stored." />
+          </Card>
+          {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
+          {!(viewer.known && viewerRole === null) ? (
+            <Card title="Your browser pushes" hint={syncOn ? 'Only you see this.' : 'Only you see this: it stays in this browser.'}>
+              <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
+              <RepoShareNotes waiting={share.waiting} memberNeedsKey={share.memberNeedsKey} />
+            </Card>
+          ) : null}
+        </Section>
+      </SettingsPane>
 
-      <BanSettings home={home} maintainer={viewerRole === 'maintainer'} />
+      <SettingsPane id="webhooks" active={section}>
+        <WebhookSettings home={home} maintainer={maintainer} />
+      </SettingsPane>
 
-      <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
+      {showDanger ? (
+        <SettingsPane id="danger" active={section}>
+          <DangerZone home={home} maintainer={maintainer} owner={isOwner} onSaved={reload} />
+        </SettingsPane>
+      ) : null}
+    </SettingsShell>
+  )
+}
 
-      <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
-          <DetailRow label="Repo id">
-            <Oid value={repo.repoId} label="repo id" />
+/** The ids a CLI or SDK user needs, folded away under General. */
+function PlatformDetails({ repo }: { repo: RepoRef }): JSX.Element {
+  return (
+    <details id="platform-details" className="group rounded-lg border border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="platform-details">
+      <summary className="hit-area flex cursor-pointer select-none items-center gap-2 text-dense font-medium text-anvil-600 hover:text-anvil-900 dark:text-anvil-300 dark:hover:text-anvil-50">
+        <Fingerprint className="h-4 w-4 text-anvil-400 dark:text-anvil-500" aria-hidden />
+        Platform &amp; contract IDs
+      </summary>
+      <dl className="mt-3 divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
+        <DetailRow label="Repo id">
+          <Oid value={repo.repoId} label="repo id" />
+        </DetailRow>
+        <DetailRow label="Owner identity">
+          <Oid value={repo.ownerId} label="owner identity id" />
+        </DetailRow>
+        <DetailRow label="forge-core">
+          <Oid value={repo.forge.core} label="forge-core contract id" />
+        </DetailRow>
+        <DetailRow label="forge-collab">
+          <Oid value={repo.forge.collab} label="forge-collab contract id" />
+        </DetailRow>
+        <DetailRow label="forge-community">
+          <Oid value={repo.forge.community} label="forge-community contract id" />
+        </DetailRow>
+        {repo.forge.meta !== undefined && (
+          <DetailRow label="forge-meta">
+            <Oid value={repo.forge.meta} label="forge-meta contract id" />
           </DetailRow>
-          <DetailRow label="Owner identity">
-            <Oid value={repo.ownerId} label="owner identity id" />
-          </DetailRow>
-          <DetailRow label="forge-core">
-            <Oid value={repo.forge.core} label="forge-core contract id" />
-          </DetailRow>
-          <DetailRow label="forge-collab">
-            <Oid value={repo.forge.collab} label="forge-collab contract id" />
-          </DetailRow>
-          <DetailRow label="forge-community">
-            <Oid value={repo.forge.community} label="forge-community contract id" />
-          </DetailRow>
-          {repo.forge.meta !== undefined && (
-            <DetailRow label="forge-meta">
-              <Oid value={repo.forge.meta} label="forge-meta contract id" />
-            </DetailRow>
-          )}
-          <DetailRow label="Network">
-            <NetworkBadge always />
-          </DetailRow>
-        </dl>
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Ids for developers and the CLI. Click one to copy it.</p>
-      </Section>
-    </div>
+        )}
+        <DetailRow label="Network">
+          <NetworkBadge always />
+        </DetailRow>
+      </dl>
+    </details>
   )
 }
 

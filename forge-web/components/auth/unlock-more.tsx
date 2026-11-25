@@ -8,6 +8,7 @@
  * the unlock (a renewal, a revoke, a wallet login over the stored key).
  */
 
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { useCallback, useRef, useState } from 'react'
 import { Fingerprint, Lock } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -15,6 +16,8 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
+import type { UnlockMethod } from '@/lib/auth/vault'
+import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 
 /**
  * The prompt over members-only content this tab cannot read yet (DESIGN §4.8, §10):
@@ -39,7 +42,7 @@ export function UnlockMore({
   /** Offer the recovery route; off where it is already on screen (the sign-in sheet, a dialog). */
   forgot?: boolean
 }): JSX.Element {
-  const { identity, vaults, controller, isLoading, locked } = useAuth()
+  const { identity, vaults, controller, isLoading, locked, logout } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   // The passphrase lives only in the input's value property (an uncontrolled input): React
   // mirrors a controlled input's value into the `value` attribute, which puts it in the DOM.
@@ -54,7 +57,7 @@ export function UnlockMore({
   }, [])
   const [error, setError] = useState<string | null>(null)
   const methods = vaults.find((v) => v.identityId === identity)?.methods ?? []
-  const go = async (method: { passphrase: string } | 'passkey'): Promise<void> => {
+  const go = async (method: UnlockMethod): Promise<void> => {
     setError(null)
     try {
       await controller.unlockMore(method)
@@ -83,9 +86,10 @@ export function UnlockMore({
       <p className="flex items-center gap-2 text-dense font-medium">
         <Lock className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> {title}
       </p>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        After a reload this browser keeps only its spend-capped signing key. Your encryption key, storage credentials and wallet grants open again for this tab.
-      </p>
+      {methods.length === 1 && methods[0] === 'device' ? null : (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">After a reload only the signing key opens by itself. Unlock once for this tab.</p>
+      )}
+      {methods.length === 1 && methods[0] === 'device' ? <ProtectThisKey testId={testId} then={then} /> : null}
       {methods.includes('passkey') ? (
         <Button variant="primary" size="sm" onClick={() => void go('passkey')} loading={isLoading} disabled={isLoading}>
           <Fingerprint className="h-3.5 w-3.5" aria-hidden /> Unlock with passkey
@@ -125,12 +129,53 @@ export function UnlockMore({
       {/* The recovery route, as on the Unlock sheet (QW2-031). */}
       {forgot ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid={`${testId}-forgot`}>
-          {methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
-          <button type="button" onClick={() => openLogin('import')} className="hit-area text-forge-700 underline dark:text-forge-400">
-            Replace this key with your recovery phrase or identity file
+          {methods.includes('passphrase') ? 'Forgot the passphrase' : methods.includes('passkey') ? 'Lost the passkey' : 'Key not working'}?{' '}
+          <button
+            type="button"
+            onClick={() => {
+              // Mainnet: a fresh wallet sign-in, from a locked tab (storing it over this key would ask for the forgotten unlock).
+              if (ACTIVE_NETWORK.network === 'mainnet') {
+                logout()
+                openLogin('wallet')
+              } else openLogin('import')
+            }} className="hit-area text-forge-700 underline dark:text-forge-400">
+            {ACTIVE_NETWORK.network === 'mainnet' ? 'Sign in again with your wallet' : 'Replace this key with your recovery phrase or identity file'}
           </button>
         </p>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * A key kept by this browser alone opens for signing only: private content, storage settings and
+ * wallet grants need a passkey or passphrase on it first (no new key, no fee).
+ */
+function ProtectThisKey({ testId, then }: { testId: string; then?: () => void }): JSX.Element {
+  const { protectKey, isLoading } = useAuth()
+  const { fields, protection, problem } = useProtection({ allowDevice: false })
+  const [error, setError] = useState<string | null>(null)
+  const go = async (): Promise<void> => {
+    if (protection === null) {
+      setError(problem)
+      return
+    }
+    setError(null)
+    try {
+      await protectKey(protection)
+      then?.()
+    } catch (e) {
+      setError(errorMessage(e))
+    }
+  }
+  return (
+    <div className="space-y-2" data-testid={`${testId}-protect`}>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Add a passkey or password to this browser&apos;s key first.</p>
+      {fields}
+      <Button variant="primary" size="sm" loading={isLoading} onClick={() => void go()}>
+        Protect and unlock
+      </Button>
+      <ErrorBox error={error} />
     </div>
   )
 }

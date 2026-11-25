@@ -11,7 +11,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    setupFiles: ['./lib/fiat/test-setup.ts'],
+    setupFiles: ['./lib/fiat/test-setup.ts', './lib/storage/p2p/test-setup.ts'],
     include: ['**/*.test.{ts,tsx}'],
   },
 })

@@ -9,6 +9,7 @@ import { z } from 'zod'
 
 import { IPFS_GATEWAYS } from '../constants'
 import { isPublicHttpsUrl } from '../net'
+import { effectiveRaw, notePrefWrite } from '../user-sync/overlay'
 import type { UnavailablePack } from './browse-source'
 import { plural, urlHost } from './format'
 
@@ -16,7 +17,7 @@ import { plural, urlHost } from './format'
 // User gateways (localStorage; a list of public URLs, nothing secret)
 // ---------------------------------------------------------------------------
 
-const GATEWAYS_KEY = 'forge.ipfsGateways'
+export const GATEWAYS_KEY = 'forge.ipfsGateways'
 const GatewayList = z.array(z.string().url()).max(16)
 
 /** A gateway as typed (`https://gw.example`, `gw.example/`) → its canonical https URL, or null. */
@@ -45,7 +46,7 @@ function storage(): Storage | null {
 
 /** The gateways this reader added (Settings / "Add a gateway"), in their order. */
 export function userGateways(): string[] {
-  const raw = storage()?.getItem(GATEWAYS_KEY)
+  const raw = effectiveRaw(GATEWAYS_KEY, storage()?.getItem(GATEWAYS_KEY) ?? null)
   if (!raw) return []
   try {
     const parsed = GatewayList.safeParse(JSON.parse(raw))
@@ -59,6 +60,7 @@ export function userGateways(): string[] {
 export function setUserGateways(list: readonly string[]): void {
   const clean = [...new Set(list.flatMap((g) => normalizeGateway(g) ?? []))].slice(0, 16)
   storage()?.setItem(GATEWAYS_KEY, JSON.stringify(clean))
+  notePrefWrite(GATEWAYS_KEY)
 }
 
 /** Test hook: the shared default list, replaced (`null` restores the real one). */

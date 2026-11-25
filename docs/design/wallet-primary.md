@@ -11,14 +11,14 @@ This page records how every surface signs in today, what wallets can do now, wha
 | Method | Where | Key material in the page | Stored |
 |---|---|---|---|
 | Wallet, App Connect v2 (one approval, group-bound, budget + expiry) | `lib/auth/app-connect-v2.ts`, `components/auth/wallet-connect-flow.tsx`, `components/auth/connect-return.tsx`, `lib/auth/connect-callback.ts`; vendored protocol in `lib/vendor/platform-auth/app-connect/` | an ephemeral request key (zeroed), then the granted HIGH key | vault (origin `app-connect`) |
-| Wallet, v1 DashConnect (one key per contract, unlimited) | `lib/auth/app-connect.ts`, `lib/auth/wallet-protocol.ts`, `lib/auth/key-registration.ts`, `lib/auth/guided-grants.ts` | the granted login key (and encryption key) | vault, not kept across reload |
+| Wallet, v1 DashConnect (one key per contract, unlimited; removed 2026-11-23) | formerly `lib/auth/app-connect.ts`, `wallet-protocol.ts`, `key-registration.ts`, `guided-grants.ts` | the granted login key (and encryption key) | vault, not kept across reload |
 | Create a new identity (deposit) | `components/auth/create-identity-flow.tsx`, `lib/auth/create-identity.ts`, `asset-lock.ts`, `dapi-core.ts`, `hd.ts` | **the recovery phrase, the master key and every canonical key**, plus the asset-lock key, for the length of the flow | only the limited browser key (key 5) |
 | Recovery phrase or identity file | `components/auth/master-key-input.tsx`, `lib/auth/identity-file.ts`, `hd.ts`, `limited-key.ts` (`registerLimitedKey`) | **the master key** (one operation, then dropped; JS strings cannot be wiped) | the limited key it registers |
 | Passkey (on-chain sealed vault entry) | `components/auth/passkey-sign-in.tsx`, `lib/auth/passkey-vault/` | the sealed limited key(s); never master | on chain (forge-meta `vaultEntry`, ciphertext) |
 | From the dg CLI (browser → `dfkr1:` request, terminal registers, `dfkh1:` sealed reply) | `components/auth/dg-handoff-flow.tsx`, `lib/auth/key-handoff.ts`; Rust half `crates/forge-core/src/browser_key.rs` | the limited key only (master stays in the terminal) | vault (origin `dg`) |
 | Paste a private key (Advanced) | `components/login-modal.tsx` `AdvancedView`, `controller.loginWithRawKey` | whatever was pasted | session only |
 
-Entry point: `components/login-modal.tsx` `ChooseView`. Tile order: resume creation, wallet (first only if `walletSignInReady`, which is mainnet-only today), create, passkey, import, dg, wallet (last otherwise), then Advanced. Gate: `walletSignInReady` / `walletSignInSupported` in `lib/auth/app-connect.ts`.
+Entry point: `components/login-modal.tsx` `ChooseView`. Tile order: resume creation, wallet (first only if `walletSignInReady`), create, passkey, import, dg, wallet (last otherwise), then Advanced. Gate: `walletSignInReady` in `lib/auth/sign-in-methods.ts` (mainnet and testnet with App Connect v2 on offer; before item 4 it was mainnet-only and lived in the now-removed `lib/auth/app-connect.ts`).
 
 Storage (`lib/auth/vault.ts`, `session-resume.ts`): IndexedDB `vault` (AES-GCM data key wrapped by a passkey PRF or an Argon2id passphrase), extra wallet grants and the encryption key and storage credentials as separate sealed blobs; a 12 h resume record (`session:<network>`); localStorage holds only ids, labels and the App Connect connection id.
 
@@ -76,7 +76,7 @@ So **App Connect v2 from the two DashPay mobile wallets is the one real, release
 
 - v1 (`dash-key:` without `v=2`, answered in yappr's `7Uaq…`) is on its way out: Android 11.9.2 rejects it on every network and iOS `develop` rejects it. Only the released iOS 9.1.4 still answers it, on testnet. It never worked on mainnet.
 - `walletSignInReady` keeps the wallet tile last on testnet because "released wallets pin protocol 13 (#591)". That is no longer true: both released wallets need protocol 14, which testnet runs.
-- Forge's vendored platform-auth (`a627708d`) builds only `dash-key:…&v=2`. Current yappr adds the `dashpay://connect` carrier, which iOS `develop` requires on mainnet. Re-vendoring is needed before mainnet.
+- The web app builds `dashpay://connect?v=2&n=<m|t|d>&r=<base64url body>` (DIP dashpay/dips#181), ported from yappr's vendored platform-auth, on every network. DashPay for Android 11.9.2 and Dash Wallet for iOS 9.1.4 both read it. `dg auth login --wallet` builds the same link (`forge-core` `app_connect::request::build_uri`).
 - Wallets accept up to two encryption bindings, but no Forge contract allows wallet-issued encryption keys, so a v2 sign-in still cannot set up private repos by itself.
 
 ## 3. What "wallet sign-in is primary" means per surface
@@ -125,7 +125,7 @@ Each PR is small, changes one thing, and lands green.
 
 **Phase 1: abstraction, no behavior change**
 1. This document.
-2. forge-web: a sign-in method registry (`lib/auth/sign-in-methods.ts`, #654): which methods the sheet offers, in which group (lead / new / existing / advanced), and which is recommended; `ChooseView` renders from it. Tests pin today's order per network.
+2. forge-web: a sign-in method registry (`lib/auth/sign-in-methods.ts`, #654): which methods the sheet offers, in which group (lead / new / existing / other / advanced), and which is recommended; `ChooseView` renders from it. Tests pin today's order per network.
 
 A signer abstraction in `lib/sdk/write.ts` (a `WriteSigner` in place of `getSigningKeyWif`) is **not** planned: a v2 wallet grant is a plain limited key the page holds, which today's seam already handles, and no wallet offers per-transaction signing (`dashpay://sign` does not exist). It comes back only if a wallet does.
 
@@ -133,7 +133,7 @@ A signer abstraction in `lib/sdk/write.ts` (a `WriteSigner` in place of `getSign
 3. Re-vendor platform-auth `app-connect` (adds `dashpay://connect`; vectors from yappr).
 4. Lead with the wallet on testnet too (the #591 reason is gone): `walletSignInReady` and `walletSignInSupported` (whose testnet-only comment is now false), and the wallet tile's and request screen's copy ("DashConnect works on testnet only", "#591"). Copy names DashPay Wallet 11.9.2+ and links the testnet APK; it names iOS only once a route to testnet on iOS is verified. Before/after screenshots; a real login from the released Android testnet build on the `agentbox-api36` emulator.
 5. Per decision 3: on mainnet the create-identity tile becomes "Get DashPay" with the in-page create under Other ways; renewal and revoke route to the wallet first.
-6. (After the owner decides) remove v1 DashConnect and its guided grants.
+6. (After the owner decides) remove v1 DashConnect and its guided grants. **Done:** the owner chose (a) plus removing v1 on 2026-11-23; see the Status line and "Keys the older code left" in [wallet-login.md](wallet-login.md).
 
 **Phase 3: CLI**
 7. forge-core: an App Connect module in Rust (request codec, crypto, verifier) checked against platform-auth's `vectors.json`. Library only.

@@ -16,9 +16,12 @@
  *   as is; the description and topics are public by design (`private-repos.md` §7).
  */
 
+import { OrgManagesAccess, useOwnerKind } from '@/components/org/owner-chip'
+import { useOrgRequester } from '@/components/org/use-org-requester'
+import { listingRequest } from '@/lib/org/actions'
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { Archive, Globe, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
+import { Archive, Globe, Info, Lock, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { RowMenu } from '@/components/ui/row-menu'
 import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
 import {
@@ -79,7 +82,6 @@ import type { Policy } from '@/lib/rules/v2'
 import { previewCreate, type CostPreview as Cost, type FirstWrite } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
-import { repoHref, useRepoAddress } from '@/hooks/use-query-param'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useAuth } from '@/contexts/auth-context'
@@ -93,73 +95,102 @@ import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { MakeRepoPublic } from '@/components/repo/make-repo-public'
 import { madePublic } from '@/components/repo/conversion-status'
 import { readMakePublicStatus } from '@/lib/repo/make-public-status'
-import { shortId } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------------------------
 
-/** The sections on this page, and Environments and Bots and runners, which have their own pages (they read more). */
-const SECTIONS = [
-  ['general', 'General'],
-  ['branches', 'Branches'],
-  ['collaborators', 'Members'],
-  ['storage', 'Storage'],
-  ['environments', 'Environments'],
-  ['bots', 'Bots and runners'],
-  ['webhooks', 'Webhooks'],
-  ['bans', 'Bans'],
-  ['danger', 'Danger zone'],
-] as const
-
-const NAV_ITEM =
-  'inline-flex items-center rounded px-2 py-1 text-anvil-600 hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800'
-
-/** The sections that have their own page. */
-const PAGES: Readonly<Record<string, string>> = { environments: '/repo/settings/environments', bots: '/repo/settings/bots' }
-
-/** In-page navigation between the sections, and the links to Settings → Environments and → Bots and runners. */
-export function SettingsNav(): JSX.Element {
-  const addr = useRepoAddress()
-  return (
-    <nav aria-label="Settings sections" className="flex flex-wrap gap-1 border-b border-anvil-200 pb-2 text-dense dark:border-anvil-800">
-      {SECTIONS.map(([id, label]) => {
-        const page = PAGES[id]
-        return page !== undefined ? (
-          <Link key={id} href={repoHref(page, addr)} className={NAV_ITEM}>
-            {label}
-          </Link>
-        ) : (
-          <a key={id} href={`#${id}`} className={NAV_ITEM}>
-            {label}
-          </a>
-        )
-      })}
-    </nav>
-  )
-}
-
+/** A settings section: its title, one line on what it is for, an optional action, then its content. */
 export function Section({
   id,
   title,
-  icon,
+  description,
+  action,
   children,
-  tone,
 }: {
   id?: string
   title: string
-  icon: React.ReactNode
+  description?: React.ReactNode
+  action?: React.ReactNode
   children: React.ReactNode
-  tone?: 'danger'
 }): JSX.Element {
   return (
     <section id={id} aria-labelledby={id ? `${id}-title` : undefined} className="scroll-mt-20">
-      <h2 id={id ? `${id}-title` : undefined} className={'mb-3 flex items-center gap-2 text-prose' + (tone === 'danger' ? ' text-danger-700 dark:text-danger-400' : '')}>
-        {icon}
-        {title}
-      </h2>
-      <div>{children}</div>
+      <header className="mb-5 flex flex-wrap items-start gap-3 border-b border-anvil-200 pb-4 dark:border-anvil-800">
+        <div className="min-w-0 flex-1">
+          <h2 id={id ? `${id}-title` : undefined} className="text-lg font-semibold text-anvil-900 dark:text-anvil-50">
+            {title}
+          </h2>
+          {description !== undefined ? <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">{description}</p> : null}
+        </div>
+        {action}
+      </header>
+      <div className="space-y-6">{children}</div>
     </section>
+  )
+}
+
+/** One group of related settings inside a section, as a card with an optional title and action. */
+export function Card({
+  title,
+  hint,
+  action,
+  children,
+  testId,
+  collapsed = false,
+}: {
+  title?: React.ReactNode
+  hint?: React.ReactNode
+  action?: React.ReactNode
+  children: React.ReactNode
+  testId?: string
+  /** Only the title row shows (its action opens the rest). */
+  collapsed?: boolean
+}): JSX.Element {
+  return (
+    <div className="rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid={testId}>
+      {title !== undefined ? (
+        <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3', !collapsed && 'border-b border-anvil-100 dark:border-anvil-850')}>
+          <div className="min-w-[10rem] flex-1">
+            <h3 className="text-dense font-semibold text-anvil-900 dark:text-anvil-50">{title}</h3>
+            {hint !== undefined ? <p className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400">{hint}</p> : null}
+          </div>
+          {action}
+        </div>
+      ) : null}
+      {collapsed ? null : <div className="p-4">{children}</div>}
+    </div>
+  )
+}
+
+/**
+ * The save row of an edited form: shown only once something changed, with the price and a way to
+ * drop the edit. Nothing to save shows nothing (no disabled button to puzzle over).
+ */
+export function SaveBar({
+  label = 'Save',
+  disabled = false,
+  cost,
+  onSave,
+  onCancel,
+}: {
+  label?: string
+  disabled?: boolean
+  cost?: Cost | null
+  onSave: () => void
+  onCancel: () => void
+}): JSX.Element {
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850" data-testid="save-bar">
+      <Button variant="primary" size="sm" disabled={disabled} onClick={onSave}>
+        {label}
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onCancel}>
+        Cancel
+      </Button>
+      {cost ? <CostPreview cost={cost} /> : null}
+    </div>
   )
 }
 
@@ -167,7 +198,6 @@ function Note({ children }: { children: React.ReactNode }): JSX.Element {
   return <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{children}</p>
 }
 
-/** Only for a rule narrower than the page's read-only banner (that banner already names maintainers). */
 function OwnerOnlyNote(): JSX.Element {
   return <Note>Only the owner can change this.</Note>
 }
@@ -255,11 +285,14 @@ export function GeneralSettings({
   maintainer,
   owner,
   onSaved,
+  children,
 }: {
   home: RepoHome
   maintainer: boolean
   owner: boolean
   onSaved: () => void
+  /** What follows the settings (the Platform ids). */
+  children?: React.ReactNode
 }): JSX.Element {
   const cfg = useConfigWrite(home, onSaved)
   const live = home.branches.filter(isLive).map((b) => b.refName.slice('refs/heads/'.length))
@@ -268,54 +301,51 @@ export function GeneralSettings({
   const shownBranch = options.includes(branch) ? branch : home.defaultBranch
   const branchErr = branchProblem(shownBranch)
   const branchChanged = shownBranch !== home.defaultBranch
+  const canEdit = maintainer && !cfg.sealed && live.length > 0
 
   return (
-    <Section id="general" title="General" icon={<Settings2 className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-      <div className="space-y-5 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-        <VisibilityRow home={home} />
-        <div className="border-t border-anvil-100 pt-4 dark:border-anvil-850">
-          <Field label="Default branch" htmlFor="default-branch" hint="What a clone checks out and what the repo page opens on.">
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                id="default-branch"
-                className={`rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950 ${disabledField}`}
-                value={shownBranch}
-                disabled={!maintainer || cfg.sealed}
-                onChange={(e) => setBranch(e.target.value)}
-              >
-                {options.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-              {maintainer && !cfg.sealed ? (
-                <>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={!branchChanged || branchErr !== null || cfg.disabledReason !== null}
-                    onClick={() =>
-                      cfg.ask({
-                        title: `Make ${shownBranch} the default branch`,
-                        description: `Appends a config naming ${shownBranch} the default branch; protected patterns and storage carry over. Clones check it out and the repo page opens on it.`,
-                        change: { defaultBranch: shownBranch },
-                        confirmLabel: 'Sign & update',
-                      })
-                    }
-                  >
-                    Update
-                  </Button>
-                  {branchChanged ? <CostPreview cost={cfg.cost({ defaultBranch: shownBranch })} /> : null}
-                </>
-              ) : null}
-            </div>
-          </Field>
-          {live.length === 0 ? <Note>Push a branch first: the default branch is picked from the branches this repo has.</Note> : null}
-          {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch>`} /> : null}
+    <Section id="general" title="General">
+      <RepoDocForm home={home} maintainer={maintainer} owner={owner} onSaved={onSaved} />
+      <Card title="Default branch" hint="Clones check it out and the repo page opens on it.">
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="default-branch" className="sr-only">
+            Default branch
+          </label>
+          <select
+            id="default-branch"
+            className={`min-w-[12rem] rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950 ${disabledField}`}
+            value={shownBranch}
+            disabled={!canEdit}
+            onChange={(e) => setBranch(e.target.value)}
+          >
+            {options.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
         </div>
-        <RepoDocForm home={home} owner={owner} onSaved={onSaved} />
-      </div>
+        {live.length === 0 ? <Note>Push a branch first: the default is picked from the repo&apos;s branches.</Note> : null}
+        {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch>`} /> : null}
+        {canEdit && branchChanged ? (
+          <div className="mt-3">
+            <SaveBar
+              disabled={branchErr !== null || cfg.disabledReason !== null}
+              cost={cfg.cost({ defaultBranch: shownBranch })}
+              onCancel={() => setBranch(home.defaultBranch)}
+              onSave={() =>
+                cfg.ask({
+                  title: `Make ${shownBranch} the default branch`,
+                  description: `Appends a config naming ${shownBranch} the default branch; protected patterns and storage carry over. Clones check it out and the repo page opens on it.`,
+                  change: { defaultBranch: shownBranch },
+                  confirmLabel: 'Sign & update',
+                })
+              }
+            />
+          </div>
+        ) : null}
+      </Card>
+      {children}
       {cfg.dialog}
     </Section>
   )
@@ -340,35 +370,40 @@ export function VisibilityRow({ home }: { home: RepoHome }): JSX.Element {
   const isPrivate = visibility === 'private'
   const Icon = isPrivate ? Lock : Globe
   return (
-    <div data-testid="settings-visibility" data-visibility={visibility}>
-      <p className="text-dense font-medium text-anvil-800 dark:text-anvil-100">Visibility</p>
-      <p className="mt-1 flex items-center gap-1.5 text-dense text-anvil-800 dark:text-anvil-100">
-        <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-        <span className="font-medium">{isPrivate ? 'Private' : 'Public'}</span>
-        <span className="text-anvil-500 dark:text-anvil-400">
+    <div data-testid="settings-visibility" data-visibility={visibility} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <p className="w-full shrink-0 text-dense font-medium text-anvil-800 sm:w-28 dark:text-anvil-100">Visibility</p>
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-1.5 text-dense text-anvil-800 dark:text-anvil-100">
+          <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+          <span className="font-medium">{isPrivate ? 'Private' : 'Public'}</span>
+          <span className="text-anvil-500 dark:text-anvil-400">
+            {isPrivate
+              ? '· set when the repo was created'
+              : converted
+                ? ` — made public from Private${mode === null ? '' : ` (${mode})`}`
+                : '· set when the repo was created, and permanent'}
+          </span>
+        </p>
+        <p className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400">
           {isPrivate
-            ? '· set when the repo was created'
-            : converted
-              ? ` — made public from Private${mode === null ? '' : ` (${mode})`}`
-              : '· set when the repo was created, and permanent'}
-        </span>
-      </p>
-      <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-        {isPrivate
-          ? 'Code, ref names, issues, pull requests, comments and reviews are encrypted to members. That the repo exists, its name, owner, description, members and how many issues and pull requests it has are public.'
-          : "Public items are readable by everyone. Members-only items, letters and members-only branches keep their audience. A public repo can't become private again."}
-      </p>
+            ? 'Code, ref names, issues, pull requests, comments and reviews are encrypted to members. That the repo exists, its name, owner, description, members and how many issues and pull requests it has are public.'
+            : "Public items are readable by everyone. Members-only items, letters and members-only branches keep their audience. A public repo can't become private again."}
+        </p>
+      </div>
     </div>
   )
 }
 
 /** Description and topics: the `repo` document, which only its owner can edit. */
-function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean; onSaved: () => void }): JSX.Element {
+function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; maintainer: boolean; owner: boolean; onSaved: () => void }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   // The topic documents the save reconciles, for its price (the owner only: only they can save).
   const held = useAsync(() => readTopicDocNames(sdk!, home.repo), [ready, repoKey(home.repo)], { enabled: owner && ready && sdk !== null })
   const { signer } = useAuth()
   const guard = useWriteGuard()
+  const org = useOrgRequester(home.repo.ownerId)
+  const orgOwned = org.record !== null
+  const orgKind = useOwnerKind(home.repo.ownerId)
   const [description, setDescription] = useState(home.v2.description)
   const [topicsText, setTopicsText] = useState(home.v2.topics.join(', '))
   const [pending, setPending] = useState<RepoDocEdit | null>(null)
@@ -381,6 +416,11 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
   const cost = previewRepoEdit(edit, held.data, home.repo.visibility, home.repo.forge)
   const run = async (): Promise<void> => {
+    if (orgOwned && pending !== null) {
+      const edit = pending
+      await org.submit((s) => listingRequest(s, home.repo, edit))
+      return
+    }
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     await editRepoDoc(sdk, signer, home.repo, pending)
     await retryWhileMissing(async () => {
@@ -393,66 +433,65 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
     }, 8)
     onSaved()
   }
+  const reset = (): void => {
+    setDescription(home.v2.description)
+    setTopicsText(home.v2.topics.join(', '))
+  }
   return (
-    <div className="space-y-3 border-t border-anvil-100 pt-4 dark:border-anvil-850">
-      <Field label="Description" htmlFor="repo-description">
-        <Textarea
-          id="repo-description"
-          className="min-h-[64px]"
-          value={description}
-          disabled={!owner}
-          maxLength={500}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </Field>
-      <Field
-        label="Topics"
-        htmlFor="repo-topics"
-        hint={`Comma-separated, up to ${MAX_TOPICS}: lowercase letters and digits, words joined by single dashes (web-dev).`}
-      >
-        <Input id="repo-topics" value={topicsText} disabled={!owner} onChange={(e) => setTopicsText(e.target.value)} placeholder="rust, dash-platform" />
-      </Field>
-      {problem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
-      {home.repo.visibility === 'private' ? (
-        <Note>
-          The description and topics are public, even for a private repo. Private repos aren&apos;t listed on Explore&apos;s topic pages.
-        </Note>
-      ) : null}
-      {owner ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={!changed || problem !== null || guard.disabledReason !== null}
-            onClick={() => {
-              // The repo document is forge-core's; a public repo's topic documents are forge-meta's on
-              // a four-contract set (a private repo writes none)
+    <Card title="Repository">
+      <div className="space-y-4">
+        <VisibilityRow home={home} />
+        <Field label="Description" htmlFor="repo-description" hint={home.repo.visibility === 'private' ? 'Public, even for a private repo.' : undefined}>
+          <Textarea
+            id="repo-description"
+            className="min-h-[64px]"
+            value={description}
+            disabled={!owner}
+            maxLength={500}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </Field>
+        <Field label="Topics" htmlFor="repo-topics" hint={owner ? `Comma-separated, up to ${MAX_TOPICS}.` : undefined}>
+          <Input id="repo-topics" value={topicsText} disabled={!owner} onChange={(e) => setTopicsText(e.target.value)} placeholder="rust, dash-platform" />
+        </Field>
+        {problem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
+        {owner && changed ? (
+          <SaveBar
+            disabled={problem !== null || (!orgOwned && guard.disabledReason !== null)}
+            cost={orgOwned ? null : cost}
+            onCancel={reset}
+            onSave={() => {
+              if (orgOwned) {
+                setPending(edit)
+                return
+              }
               const topicDocs = edit.topics !== undefined && home.repo.visibility !== 'private'
               if (guard.check(cost, topicDocs ? ['core', writeContractKind(home.repo.forge, DOC.topic)] : 'core')) setPending(edit)
             }}
-          >
-            Save
-          </Button>
-          {changed ? <CostPreview cost={cost} /> : null}
-        </div>
-      ) : (
-        <OwnerOnlyNote />
-      )}
+          />
+        ) : !owner && maintainer ? (
+          orgKind.isOrg ? <OrgManagesAccess what="details" /> : <OwnerOnlyNote />
+        ) : null}
+      </div>
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
         title="Edit the repo details"
         description={
-          home.repo.visibility === 'private'
+          orgOwned && org.record
+            ? `Replaces the description and topics once ${org.record.threshold} of ${org.record.members.length} members of ${org.record.label} sign. You sign first; the organization pays the fee.`
+            : home.repo.visibility === 'private'
             ? "Replaces the description and topics. The repo's name and visibility can't change."
             : "Replaces the description and topics. Each topic added or removed costs a little extra so Explore can count it. The repo's name and visibility can't change."
         }
-        cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
-        confirmLabel="Sign & save"
-        toast={{ running: 'Saving the repo details…', done: 'Repository details saved' }}
+        cost={pending && !orgOwned ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
+        confirmLabel={orgOwned ? 'Sign & ask co-signers' : 'Sign & save'}
+        {...(orgOwned ? {} : { toast: { running: 'Saving the repo details…', done: 'Repository details saved' } })}
+        request={orgOwned}
         onConfirm={run}
       />
-    </div>
+      {org.dialog}
+    </Card>
   )
 }
 
@@ -472,83 +511,82 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
   const canEdit = maintainer && !cfg.sealed
 
   return (
-    <Section id="branches" title="Branches" icon={<GitBranch className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-      <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-        <h3 className="flex items-center gap-2 text-dense font-medium">
-          <ShieldCheck className="h-4 w-4 text-fg-muted" aria-hidden /> Protected branches and tags
-        </h3>
-        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300">
-          <span>Only maintainers can update a protected branch or tag.</span>
-          <EnforcedBy by="both" />
-        </p>
+    <Section id="branches" title="Branches" description="Only maintainers can push to a protected branch or tag.">
+      <Card
+        title="Protected branches and tags"
+        action={<EnforcedBy by="both" />}
+      >
         {maintainer ? <DefaultProtectionSuggestion home={home} cfg={cfg} /> : null}
-        <ul aria-label="Protected patterns" className="mt-3 divide-y divide-anvil-100 overflow-hidden rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
-          {patterns.length === 0 ? (
-            <li className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">Nothing is protected: every writer can update every branch and tag.</li>
-          ) : (
-            patterns.map((p) => {
+        {patterns.length === 0 ? (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400">Nothing is protected yet. Any writer can push to any branch or tag.</p>
+        ) : (
+          <ul aria-label="Protected patterns" className="-my-1 divide-y divide-anvil-100 dark:divide-anvil-850">
+            {patterns.map((p) => {
               const hits = patternMatches(p, refNames)
               return (
-                <li key={p} className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="protected-pattern">
-                  <span className="font-mono text-dense">{p}</span>
-                  <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
-                    {hits.length === 0 ? `matches no ${p.startsWith('refs/tags/') ? 'tag' : 'branch'} yet` : `matches ${matchList(hits)}`}
-                  </span>
+                <li key={p} className="flex items-center gap-3 py-2" data-testid="protected-pattern">
+                  <ShieldCheck className="h-4 w-4 shrink-0 text-anvil-400 dark:text-anvil-500" aria-hidden />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-mono text-dense text-anvil-900 dark:text-anvil-50">{p}</p>
+                    <p className="truncate text-[12px] text-anvil-500 dark:text-anvil-400">{hits.length === 0 ? 'no matches yet' : `matches ${matchList(hits)}`}</p>
+                  </div>
                   {canEdit ? (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      className="ml-auto"
-                      aria-label={`Unprotect ${p}`}
+                    <RowMenu
+                      label={`Actions for ${p}`}
                       disabled={cfg.disabledReason !== null}
-                      onClick={() =>
-                        cfg.ask({
-                          title: `Unprotect ${p}`,
-                          description: `Appends a config without ${p}. Writers can then update the branches it matched. Updates made while it was protected stay judged by the config in force at the time.`,
-                          change: { removePattern: p },
-                          confirmLabel: 'Sign & unprotect',
-                        })
-                      }
-                    >
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden /> Remove
-                    </Button>
+                      items={[
+                        {
+                          label: 'Unprotect',
+                          destructive: true,
+                          onSelect: () =>
+                            cfg.ask({
+                              title: `Unprotect ${p}`,
+                              description: `Appends a config without ${p}. Writers can then update the branches it matched. Updates made while it was protected stay judged by the config in force at the time.`,
+                              change: { removePattern: p },
+                              confirmLabel: 'Sign & unprotect',
+                            }),
+                        },
+                      ]}
+                    />
                   ) : null}
                 </li>
               )
-            })
-          )}
-        </ul>
-        {canEdit ? (
-          <div className="mt-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-              <div className="flex-1">
-                <Field label="Branch or pattern" htmlFor="protect-pattern">
-                  <Input
-                    id="protect-pattern"
-                    className="font-mono"
-                    spellCheck={false}
-                    value={entry}
-                    onChange={(e) => setEntry(e.target.value)}
-                    placeholder="main  or  release/*"
-                  />
-                </Field>
-              </div>
-              <Button
-                variant="primary"
-                disabled={candidate === '' || problem !== null || patterns.length >= MAX_PROTECTED_PATTERNS || cfg.disabledReason !== null}
-                onClick={() =>
-                  cfg.ask({
-                    title: `Protect ${candidate}`,
-                    description: `Appends a config adding ${candidate}. From then on only maintainers can update ${preview.length > 0 ? matchList(preview) : 'the refs it matches'}; a writer's push there is refused.`,
-                    change: { addPatterns: [candidate] },
-                    confirmLabel: 'Sign & protect',
-                    // QW-072: a protected pattern leaves the field, not "already protected" under it.
-                    onDone: () => setEntry(''),
-                  })
-                }
-              >
-                Protect
-              </Button>
+            })}
+          </ul>
+        )}
+        {canEdit && patterns.length < MAX_PROTECTED_PATTERNS ? (
+          <form
+            className="mt-4 border-t border-anvil-100 pt-4 dark:border-anvil-850"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (candidate === '' || problem !== null || cfg.disabledReason !== null) return
+              cfg.ask({
+                title: `Protect ${candidate}`,
+                description: `Appends a config adding ${candidate}. From then on only maintainers can update ${preview.length > 0 ? matchList(preview) : 'the refs it matches'}; a writer's push there is refused.`,
+                change: { addPatterns: [candidate] },
+                confirmLabel: 'Sign & protect',
+                // QW-072: a protected pattern leaves the field, not "already protected" under it.
+                onDone: () => setEntry(''),
+              })
+            }}
+          >
+            <label htmlFor="protect-pattern" className="mb-1 block text-dense font-medium text-anvil-800 dark:text-anvil-100">
+              Branch or pattern
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                id="protect-pattern"
+                className="flex-1 font-mono"
+                spellCheck={false}
+                value={entry}
+                onChange={(e) => setEntry(e.target.value)}
+                placeholder="main  or  release/*"
+              />
+              {candidate !== '' ? (
+                <Button type="submit" variant="primary" disabled={problem !== null || cfg.disabledReason !== null}>
+                  Protect
+                </Button>
+              ) : null}
             </div>
             {problem ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
             {candidate !== '' && problem === null ? (
@@ -560,21 +598,23 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                 <CostPreview cost={cfg.cost({ addPatterns: [candidate] })} />
               </div>
             ) : null}
-            <p className="mt-2 flex gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-              <span>
+            <details className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+              <summary className="hit-area inline-flex cursor-pointer select-none items-center gap-1 hover:text-anvil-700 dark:hover:text-anvil-200">
+                <Info className="h-3.5 w-3.5 shrink-0" aria-hidden /> Pattern syntax
+              </summary>
+              <p className="mt-1">
                 A bare name means <span className="font-mono">refs/heads/&lt;name&gt;</span>. <span className="font-mono">*</span> matches within one
-                path segment (<span className="font-mono">release/*</span> matches <span className="font-mono">release/1.x</span>, not{' '}
-                <span className="font-mono">release/1.x/rc</span>); <span className="font-mono">**</span> crosses segments;{' '}
-                <span className="font-mono">?</span> and <span className="font-mono">[a-z]</span> work as in git. <span className="font-mono">refs/tags/**</span> covers every
+                path segment; <span className="font-mono">**</span> crosses segments; <span className="font-mono">refs/tags/**</span> covers every
                 tag. Up to {MAX_PROTECTED_PATTERNS} patterns.
-              </span>
-            </p>
-          </div>
+              </p>
+            </details>
+          </form>
+        ) : canEdit ? (
+          <Note>{MAX_PROTECTED_PATTERNS} patterns is the most a repo holds: unprotect one to add another.</Note>
         ) : cfg.sealed ? (
           <SealedNote command={`dg repo protect add ${home.repo.ownerId}/${home.repo.name} <pattern>`} />
         ) : null}
-      </div>
+      </Card>
       <PolicyEditor home={home} maintainer={maintainer} />
       {cfg.dialog}
     </Section>
@@ -650,7 +690,7 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
     <div
       role="status"
       data-testid="protection-suggestion"
-      className="mt-3 flex flex-col gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 sm:flex-row sm:items-center"
+      className="mb-4 flex flex-col gap-2 rounded-md bg-anvil-50 px-3 py-2.5 sm:flex-row sm:items-center dark:bg-anvil-900"
     >
       <p className="flex-1 text-dense text-anvil-700 dark:text-anvil-200">
         {exposure} New repositories protect the default branch and every tag.
@@ -688,6 +728,16 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
   )
 }
 
+/** The saved branch policy in a line, for the collapsed card. */
+function policySummary(p: Policy): string {
+  const parts = [
+    p.requiredApprovals === 0 ? 'No approvals required' : `${plural(p.requiredApprovals, 'approval')} required${(p.approverRole ?? 0) === 1 ? ' from maintainers' : ''}`,
+    (p.requiredChecks?.length ?? 0) > 0 ? plural(p.requiredChecks?.length ?? 0, 'required check') : p.requireChecks === true ? 'checks must pass' : null,
+    p.requireCodeOwners === true ? 'code owners approve' : null,
+  ].filter((x) => x !== null)
+  return parts.join(' · ')
+}
+
 /** The branch policy (review-parity spec §3.6, §4.8): a client rule with maintainer override. */
 function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolean }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
@@ -697,6 +747,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
   const [draft, setDraft] = useState<Policy | null>(null)
   const [checksDraft, setChecksDraft] = useState<RequiredChecksDraft | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [open, setOpen] = useState(false)
   const base: Policy = current.data ?? { requiredApprovals: 0, approverRole: 0, requireChecks: false, mergeMethods: 0 }
   const shown = draft ?? base
   const shownChecks = checksDraft ?? draftOfPolicy(base)
@@ -735,13 +786,25 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
     current.reload()
   }
 
+  const discard = (): void => {
+    setDraft(null)
+    setChecksDraft(null)
+  }
   return (
-    <div className="mt-4 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="policy-editor">
-      <h3 className="flex items-center gap-2 text-dense font-medium">
-        <Scale className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Branch policy
-      </h3>
-      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="policy-note">
-        <span>Forge blocks merging until these are met. Maintainers can override, and the override is shown on the PR.</span>
+    <>
+    <Card
+      testId="policy-editor"
+      title="Branch policy"
+      hint={current.error ? "Couldn't read the branch policy." : current.settled ? `${policySummary(base)}${changed ? ' · unsaved changes' : ''}` : undefined}
+      action={
+        <Button variant="outline" size="sm" aria-expanded={open} onClick={() => setOpen((o) => !o)} data-testid="policy-toggle">
+          {open ? 'Close' : maintainer ? 'Edit' : 'View'}
+        </Button>
+      }
+      collapsed={!open}
+    >
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="policy-note">
+        <span>Pull requests can&apos;t merge until these are met. Maintainers can override.</span>
         <EnforcedBy by="apps" />
       </p>
       {current.loading && !current.settled ? (
@@ -749,7 +812,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
       ) : current.error ? (
         <ErrorState message={current.error} onRetry={current.reload} />
       ) : (
-        <fieldset disabled={!maintainer} className="mt-3 space-y-3">
+        <fieldset disabled={!maintainer} className="mt-4 space-y-3">
           <legend className="sr-only">Branch policy</legend>
           <label className="flex items-center gap-2 text-dense">
             <span className="w-44 text-anvil-700 dark:text-anvil-200">Required approvals</span>
@@ -801,41 +864,35 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
               checked={shown.requireCodeOwners === true}
               onChange={(e) => set({ requireCodeOwners: e.target.checked })}
             />
-            <span>
+            <span title="Each changed file assigned by CODEOWNERS on the base branch needs an approval from one of its owners.">
               Require approval from code owners
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
-                Each changed file that CODEOWNERS on the base branch assigns needs an approval from one of its owners.
-              </span>
             </span>
           </label>
           <RequiredChecksEditor draft={shownChecks} onChange={setChecksDraft} problems={problems} sources={pinning ? sources : null} maintainer={maintainer} />
-          {maintainer ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={!changed || !checksOk(problems) || guard.disabledReason !== null}
-                onClick={() => {
-                  if (guard.check(cost, 'community')) setConfirming(true)
-                }}
-              >
-                Save policy
-              </Button>
-              {changed ? <CostPreview cost={cost} /> : null}
-            </div>
+          {maintainer && changed ? (
+            <SaveBar
+              label="Save policy"
+              disabled={!checksOk(problems) || guard.disabledReason !== null}
+              cost={cost}
+              onCancel={discard}
+              onSave={() => {
+                if (guard.check(cost, 'community')) setConfirming(true)
+              }}
+            />
           ) : null}
         </fieldset>
       )}
-      <ConfirmDialog
-        open={confirming}
-        onClose={() => setConfirming(false)}
-        title="Save the branch policy"
-        description={`New policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${checksClause}${wanted.requireCodeOwners === true ? ', code owner approval' : ''}. It replaces the current one. Maintainers can override it when merging.`}
-        cost={cost}
-        confirmLabel="Sign & save"
-        onConfirm={run}
-      />
-    </div>
+    </Card>
+    <ConfirmDialog
+      open={confirming}
+      onClose={() => setConfirming(false)}
+      title="Save the branch policy"
+      description={`New policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${checksClause}${wanted.requireCodeOwners === true ? ', code owner approval' : ''}. It replaces the current one. Maintainers can override it when merging.`}
+      cost={cost}
+      confirmLabel="Sign & save"
+      onConfirm={run}
+    />
+    </>
   )
 }
 
@@ -867,16 +924,19 @@ function RequiredChecksEditor({
       <p className="text-anvil-700 dark:text-anvil-200" id="required-checks-label">
         Required checks by name
       </p>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Each must be reported on the PR head and pass. Once any are listed, only these are required, ticked above or not. Up to {MAX_REQUIRED_CHECKS}.
-      </p>
-      <label className="mt-2 flex items-start gap-2 coarse:min-h-11">
-        <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={draft.pinned} onChange={(e) => onChange({ ...draft, pinned: e.target.checked })} data-testid="pin-sources" />
-        <span>
-          Pin each check to the runner or maintainer that must report it
-          <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">All or none: every check names its source, or any trusted reporter counts for all of them.</span>
-        </span>
-      </label>
+      {maintainer ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+          When listed, only these checks must pass on the PR head (up to {MAX_REQUIRED_CHECKS}).
+        </p>
+      ) : null}
+      {maintainer || draft.pinned || rows.length > 0 ? (
+        <label className="mt-2 flex items-start gap-2 coarse:min-h-11">
+          <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={draft.pinned} onChange={(e) => onChange({ ...draft, pinned: e.target.checked })} data-testid="pin-sources" />
+          <span>
+            Pin each check to a specific runner or maintainer
+          </span>
+        </label>
+      ) : null}
       {rows.length > 0 ? (
         <ul className="mt-2 space-y-2" aria-labelledby="required-checks-label">
           {rows.map((row, i) => {
@@ -993,42 +1053,42 @@ function SourceChoice({ id, role }: { id: string; role: string | null }): JSX.El
 // Danger zone: archive
 // ---------------------------------------------------------------------------------------------
 
-export function DangerZone({ home, maintainer, onSaved }: { home: RepoHome; maintainer: boolean; onSaved: () => void }): JSX.Element {
+export function DangerZone({ home, maintainer, owner = false, onSaved }: { home: RepoHome; maintainer: boolean; owner?: boolean; onSaved: () => void }): JSX.Element | null {
   const cfg = useConfigWrite(home, onSaved)
   const archived = cfg.current.archived
+  if (!maintainer && !owner) return null
   return (
-    <Section id="danger" title="Danger zone" tone="danger" icon={<Archive className="h-4 w-4" aria-hidden />}>
-      <div className="space-y-3">
+    <Section id="danger" title="Danger zone" description="Changes that affect everyone who uses this repo. Each one asks you to confirm first.">
       <MakeRepoPublic home={home} maintainer={maintainer} onSaved={onSaved} />
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4">
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <div className="min-w-0 flex-1">
-          <p className="text-dense font-medium">{archived ? 'Unarchive this repository' : 'Archive this repository'}</p>
-          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+          <p className="text-dense font-semibold text-anvil-900 dark:text-anvil-50">{archived ? 'Unarchive this repository' : 'Archive this repository'}</p>
+          <p className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400">
             {archived
               ? 'Allow pushes, issues, pull requests and releases again.'
-              : "Make the repo read-only. Forge apps stop new issues, pull requests, releases and pushes. Repos can't be deleted."}
+              : "Make it read-only: Forge apps stop new issues, pull requests, releases and pushes. You can unarchive it any time. Repos can't be deleted."}
           </p>
           <EnforcedBy by="apps" className="mt-1" />
         </div>
         {maintainer && !cfg.sealed ? (
           <Button
-            variant="danger"
+            variant="outline"
             disabled={cfg.disabledReason !== null}
             onClick={() =>
               cfg.ask({
                 title: archived ? 'Unarchive this repository' : 'Archive this repository',
                 description: archived
                   ? 'Appends a config with archived = false. Everything else carries over.'
-                  : 'Appends a config with archived = true. Everything else carries over; unarchive any time.',
+                  : 'Appends a config with archived = true. Everything else carries over; unarchive any time. Forge apps enforce it; Dash Platform does not.',
                 change: { archived: !archived },
                 confirmLabel: archived ? 'Sign & unarchive' : 'Sign & archive',
               })
             }
           >
+            <Archive className="h-3.5 w-3.5" aria-hidden />
             {archived ? 'Unarchive' : 'Archive'}
           </Button>
         ) : null}
-      </div>
       </div>
       {cfg.sealed ? (
         <SealedNote command={`dg repo ${archived ? 'unarchive' : 'archive'} ${home.repo.ownerId}/${home.repo.name}`} />

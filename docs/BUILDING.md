@@ -218,7 +218,9 @@ which `dg init` and `dg repo clone` write; `dg auth`, `dg repo clone` and `dg re
 skip it), then `config.toml`, then the environment, then the
 network the key in use records (`dfk1:<network>:…`, an identity file's `network`, so a CI runner
 key needs no network setting), then the deployment file. `dg doctor` shows which one chose the
-network. For `git-remote-dash` it is the
+network. When `DASH_FORGE_NETWORK` or `DASH_FORGE_DEVNET_NAME` names a different network than
+the one a higher layer chose, `dg` prints a warning to stderr that names both, because
+`git-remote-dash` would use the environment's network. For `git-remote-dash` it is the
 environment, then git config, then the network `dg` recorded in `config.toml` (by `dg auth new`
 or `dg auth login`), then the deployment file. The environment comes first there because `dg`
 and `forge-import` pass their resolved network to the helper through it. `dg init` and
@@ -281,6 +283,34 @@ resolution exposes the ids (forge-core `NetworkTarget::v2`, forge-web `NETWORKS[
 both contracts are `registered`. A fresh devnet's file starts with the network fields only
 (`network`, `devnetName`, `chainId`, `quorumBaseUrl`, `dapiAddresses`, as the devnet files did
 before their registration); `deploy-v2.mjs` adds the `v2` section to it.
+
+## The dash.site build
+
+`pnpm build:dash-site` (in `forge-web/`) builds the copy of the web app meant for
+a [dash-sites](https://github.com/PastaPastaPasta/dash-sites) name such as
+forg3.dash.site, where every stored byte costs DASH. It is the ordinary export
+with two changes made after the build by `scripts/dash-site-postbuild.mjs`:
+
+- The docs hub is left out: each `/docs/<page>/` becomes a small redirect to the
+  same page under `FORGE_DOCS_URL` (required, e.g. `https://forge.dashhq.org/docs`),
+  keeping any `#anchor`.
+- The Platform SDK's wasm is listed in `dash-site-external.json` as the file
+  `dist/raw/wasm_sdk_bg.wasm` of the exact `@dashevo/wasm-sdk` version installed,
+  with its SHA-384. The script refuses if the built file is not byte-identical to
+  the package's. `dash-sites publish out --external dash-site-external.json` then
+  publishes the site without storing it; readers fetch it from an npm CDN and use
+  it only if the hash matches.
+
+`NEXT_PUBLIC_SITE_URL` must be the address the build is published at (e.g.
+`https://forg3.dash.site`), and not forge.dashhq.org or testnet-forge.dashhq.org.
+The wallet sign-in tells people to scan only codes shown on that address, so a
+dash.site copy built with the default would name the wrong host. The build stops
+without it, and checks the export names it.
+
+`pnpm build` and `pnpm build:ipfs` are unchanged. The dash.site build's
+`forge-manifest.json` lists the redirect pages and depends on `FORGE_DOCS_URL`;
+no CI job attests it yet, so the app shows its unofficial-copy notice where it
+checks attestations.
 
 ## Checks
 

@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { DEMO, EMPTY, expectLanded, loadSeedPulls, repoUrl, runAxe, skipWithoutFixture } from './helpers'
+import { DEMO, EMPTY, expectLanded, loadSeedPulls, repoUrl, runAxe, skipWithoutFixture, showOtherWays } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
@@ -59,7 +59,7 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   ['pull', () => repoUrl('pull', `&number=${loadSeedPulls().approved}`), (page) => page.getByRole('region', { name: 'Approvals' })],
   ['stargazers', repoUrl('stargazers'), (page) => page.getByRole('main').locator('a[href*="/u"]').first()],
   ['releases', repoUrl('releases'), (page) => page.getByText(/No releases|Latest/).first()],
-  ['settings-repo', repoUrl('settings'), (page) => page.getByRole('region', { name: 'Members' }).getByTestId('role-badge').filter({ hasText: /^Write$/ })],
+  ['settings-repo', repoUrl('settings', '#collaborators'), (page) => page.getByRole('region', { name: 'Members' }).getByTestId('role-badge').filter({ hasText: /^Write$/ })],
   ['empty-repo', repoUrl('', '', EMPTY), (page) => page.getByText(/empty|nothing pushed|push/i).first()],
 ]
 
@@ -91,8 +91,8 @@ for (const theme of ['dark', 'light'] as const) {
       await expect(dialog).toBeVisible()
       const views: [string, () => Promise<void>][] = [
         ['tiles', async () => {}],
-        ['help', async () => dialog.getByTestId('signin-help').locator('summary').click()],
-        ['import', async () => dialog.getByTestId('tile-import').click()],
+        ['help', async () => { await showOtherWays(dialog); await dialog.getByTestId('signin-help').locator('summary').click() }],
+        ['import', async () => { await showOtherWays(dialog); await dialog.getByTestId('tile-import').click() }],
         ['import-phrase', async () => dialog.getByRole('tab', { name: 'Recovery phrase' }).click()],
       ]
       for (const [view, open] of views) {

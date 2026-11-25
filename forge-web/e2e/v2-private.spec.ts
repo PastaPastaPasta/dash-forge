@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
-import { deployment, dgEnv, idFile, idOrEmpty, nodeSdk, PASSPHRASE, stateFile, unlock, waitForRepoResolved, skipWithoutRegistration } from './helpers'
+import { deployment, dgEnv, idFile, idOrEmpty, nodeSdk, PASSPHRASE, stateFile, unlock, waitForRepoResolved, skipWithoutRegistration, showOtherWays, usePassword } from './helpers'
 
 // needs the forge-v2 registration recorded for this network (e2e/network.ts)
 skipWithoutRegistration()
@@ -69,8 +69,10 @@ async function member(
     await unlock(page)
   } else {
     await page.getByRole('button', { name: /^sign in$/i }).first().click()
+    await showOtherWays(page)
     await page.getByTestId('tile-import').click()
     await page.setInputFiles('input[type="file"]', idFile(name))
+    await usePassword(page)
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
     await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
     await page.getByTestId('enable-private-repos').check()
@@ -98,7 +100,7 @@ async function member(
     await unlock(page)
     await waitForRepoResolved(page, 120_000)
     // Ready without a prompt: decrypted (the chip names the key epoch), or not a member at all.
-    const decrypted = page.getByTestId('private-chip').filter({ hasText: /decrypted with your key/ })
+    const decrypted = page.locator('[data-testid="private-chip"][title*="decrypted with your key"]')
     await unlockEncryption(page, decrypted.or(page.getByTestId('private-repo').filter({ hasText: /You're not one/ })))
   }
   // The repo's Settings has no inline unlock after a page load: unlock on the repo home, then
@@ -163,7 +165,7 @@ test('1. OWNER creates a private repo in the browser: four facts, key and sealed
   // The page drops `created=1` from the bar once it has read it: match the route, not the param.
   await page.waitForURL(/\/repo\/\?/, { timeout: 300_000 })
   await waitForRepoResolved(page, 120_000)
-  await expect(page.getByTestId('private-chip')).toHaveText(/Private · decrypted with your key \(epoch 0\)/, { timeout: 120_000 })
+  await expect(page.getByTestId('private-chip')).toHaveAttribute('title', /Private · decrypted with your key \(epoch 0\)/, { timeout: 120_000 })
   await shot(page, '03-created')
   await close()
 })

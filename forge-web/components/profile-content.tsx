@@ -25,7 +25,7 @@ import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import { dropHidden, isHiddenIdentity } from '@/lib/view/curation'
 import { HiddenNotice } from '@/components/hidden-notice'
-import { DOC, contractOf, followFirsts, followRelation, isIdentifier, readFollowCounts, resolveOwner } from '@/lib/repo'
+import { DOC, contractOf, followFirsts, followRelation, identityExists, isIdentifier, readFollowCounts, resolveOwner } from '@/lib/repo'
 import { writeContractKind } from '@/lib/layout'
 import { readProfile, type Profile } from '@/lib/repo/profile'
 import type { ProfileFields } from '@/lib/rules/profile'
@@ -35,7 +35,7 @@ import { identityHref, linkLabel } from '@/lib/view/profile-links'
 import { UsernameHint } from '@/components/username-hint'
 import { useDpnsLookup } from '@/hooks/use-dpns-name'
 import { cn } from '@/lib/utils'
-import { NETWORKS } from '@/lib/constants'
+import { NETWORKS, networkName } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useRelationToggle } from '@/hooks/use-relation-toggle'
@@ -136,11 +136,13 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
   // First-write reads only once the viewer points at Follow (a page view costs no reads).
   const [interested, setInterested] = useState(false)
 
-  const { data, loading, error, reload } = useAsync<ProfileData | null>(
+  const { data, loading, error, reload } = useAsync<ProfileData | null | 'absent'>(
     async () => {
       // `?id=` is an identity id exactly; `?name=` a DPNS name (`/u?name=alice`) or an identity id.
       const identityId = byId ? (isIdentifier(address) ? address : null) : await resolveOwner(sdk!, address)
       if (identityId === null) return null
+      // A DPNS name's owner exists; a typed id may not, and a follow of it would still be paid.
+      const exists = isIdentifier(address) ? identityExists(sdk!, identityId) : true
       const forge = NETWORKS[network].v2
       const noCounts = { followers: null, following: null }
       const follows = forge !== null ? readFollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
@@ -149,18 +151,21 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
       const hiddenRepos = isHiddenIdentity(identityId)
       // An unreadable profile leaves the page as it was before profiles: never an error.
       const profile = forge !== null && !hiddenRepos ? readProfile(sdk!, forge, identityId).catch(() => 'unread' as const) : null
-      const [name, repos, counts, stored] = await Promise.all([
+      const [found, name, repos, counts, stored] = await Promise.all([
+        exists,
         resolveDpnsName(sdk!, identityId, network),
         hiddenRepos ? { owned: [], member: [] } : listReposByOwner(sdk!, identityId, { network, counts: true }),
         follows,
         profile,
       ])
+      if (!found) return 'absent'
       return { identityId, name, repos: dropHidden(repos.owned), memberOf: dropHidden(repos.member), hiddenRepos, ...counts, profile: stored }
     },
     [ready, address, byId, network],
     { enabled: isForgeDeployed() && ready && sdk !== null && address !== '' },
   )
-  const identityId = data?.identityId ?? address
+  const profiled = data !== null && data !== 'absent' ? data : null
+  const identityId = profiled?.identityId ?? address
   // Follows live in forge-community.
   const forge = NETWORKS[network].v2
   const canFollow = forge !== null
@@ -169,7 +174,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
   // Your own name, read so that a failed read is not taken for none (the hint below).
   const ownName = useDpnsLookup(isSelf ? identityId : '')
   const follow = useRelationToggle({
-    enabled: canFollow && ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
+    enabled: canFollow && ready && sdk !== null && identity !== null && profiled !== null && !isSelf,
     key: `${network}:${identity ?? ''}:${identityId}`,
     ...followRelation(sdk!, signer, identity ?? '', forge, identityId),
     onError: guard.failed,
@@ -177,12 +182,12 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
 
   const following = follow.on === true
   // A named identity is remembered for the look-alike note (TS-24): followed, or visited below.
-  const named = data?.name ? { kind: 'owner' as const, name: data.name, identity: identityId } : null
+  const named = profiled?.name ? { kind: 'owner' as const, name: profiled.name, identity: identityId } : null
   useRememberAcquaintance([named], 'followed', isSelf ? null : follow.on)
   const first = useFirstWrite(
-    () => followFirsts(sdk!, contractOf(forge!, DOC.follow), identity!, identityId, data?.followers),
+    () => followFirsts(sdk!, contractOf(forge!, DOC.follow), identity!, identityId, profiled?.followers),
     [identity ?? '', network, identityId],
-    interested && canFollow && ready && sdk !== null && identity !== null && !following && data !== undefined && data !== null,
+    interested && canFollow && ready && sdk !== null && identity !== null && !following && profiled !== null,
   )
   const followCost = previewCreate('follow', {}, first)
   const unfollowRefund = previewDelete('follow')
@@ -208,6 +213,9 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
       />
     )
   }
+  if (data === 'absent') {
+    return <EmptyState heading="h1" icon={Users} title="No such identity" body={`No identity ${address} exists on ${networkName(NETWORKS[network])}.`} />
+  }
   if (!data) return <LoadingBlock />
 
   const profile = data.profile === 'unread' ? null : data.profile
@@ -216,11 +224,9 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
 
   return (
     <div className="space-y-6 md:grid md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] md:gap-8 md:space-y-0">
-      <aside aria-label="Profile" className="min-w-0 space-y-4" data-testid="profile-card">
+      <aside aria-label="Profile" className="min-w-0 space-y-3" data-testid="profile-card">
         <div className="flex items-center gap-4 md:flex-col md:items-start">
-          {/* A phone shows the avatar beside the name; from `md` it heads the column, full width. */}
-          <ProfileAvatar identityId={identityId} config={fields.avatarConfig} className="[--avatar:72px] md:[--avatar:256px]" />
-          {/* The page's one h1: whose profile this is (QW4-044: its only heading was "Repositories"). */}
+          <ProfileAvatar identityId={identityId} config={fields.avatarConfig} className="[--avatar:72px] md:[--avatar:128px]" />
           <div className="min-w-0 flex-1 md:w-full">
             <h1 className="min-w-0 max-w-full font-normal">
               <span className="sr-only">Profile of {heading}</span>

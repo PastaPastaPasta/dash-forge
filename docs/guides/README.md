@@ -1,6 +1,6 @@
 # User guides
 
-Task-oriented guides for using Dash Forge. For how it is built, see the [document index](../../README.md#document-index).
+Task-oriented guides for using Dash Forge. For how it is built, see the [architecture](../architecture.md).
 
 | Guide | Read it when you want to… |
 |---|---|
@@ -8,10 +8,14 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [Mirror a GitHub repository](mirror-a-github-repo.md) | keep a copy of a GitHub repository that nobody can take down: set it up from the browser with the `/mirror` wizard, or by hand with the Mirror Action or `forge-import` |
 | [Mirror a GitLab project](mirror-a-gitlab-project.md) | the same for a project on gitlab.com or your own GitLab, with a GitLab CI template |
 | [Moving from GitHub or GitLab](moving-from-github.md) | move a project over end to end: storage, identity, import, the Mirror Action, cut-over, collaborators, CI and costs |
-| [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own R2, B2, S3, Storj, self-hosted S3 or IPFS instead of on Platform, from the CLI or the browser |
-| [Storage on your home NAS](home-nas-storage.md) | run RustFS or Garage (or kubo) on a Synology, TrueNAS or Linux box, publish it safely with a Cloudflare Tunnel, and keep a second copy |
+| [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own S3-compatible bucket or IPFS node instead of on Platform, from the CLI or the browser |
+| [Rotate storage credentials](rotate-storage-credentials.md) | after removing a maintainer you shared a repository's storage with: roll the R2/S3 key, kubo auth or pinning token, update the profile, and the share follows |
+| [Storage on your home NAS](home-nas-storage.md) | run RustFS or Garage in Docker on a NAS or Linux box, give it a public https address, and keep a second copy |
 | [Run your own IPFS node](run-your-own-ipfs-node.md) | set up a node with one command (`dg ipfs up`), connect it to the web app, push to it, and keep a copy of someone else's repository with `dg ipfs pin` |
+| [Run your own backend](self-host-backend.md) | turn a Linux server, PC or NAS with Docker into storage your repositories push to, with one command (`backend.sh`) |
+| [Pin or fork a repository](pin-and-fork.md) | keep a copy of someone else's repository on your own storage: fork it to push your own work, or pin it to help host it (`dg repo pin`) |
 | [Collaborating](collaborating.md) | add members, work with issues, pull requests, reviews, merges, releases and webhooks |
+| [Organizations](organizations.md) | own repositories with an N-of-M multisig identity from multisig.dashhq.org: connect it, make requests and sign them with `dg org` (testnet) |
 | [Boards](boards.md) | plan issues and pull requests on a board: columns, fields, iterations and views, from `dg board` |
 | [Bots and agents](bots.md) | add a bot, say what it may do, ask an agent to work on an issue or pull request, and give it push access to chosen branches (beta) |
 | [Who can read what](../security/audiences.md) | keep issues, comments and reviews of a public repository members-only, and know who can read them, what everyone still sees and what can still leak |
@@ -44,10 +48,10 @@ These guides describe what is on `master` today. Features that are specified but
 
 Members-only issues, comments and reviews, messages to specific people, making posts public, members-only branches and pull requests, environments, and bots are built, in `dg` and the web app. What can be members-only, and who reads it, is in [Who can read what](../security/audiences.md), the single place to check. The features still marked **Beta** (narrower branches, branch sharing, bots and agents, bot push access, making a repository public, publication dates) work but have rough edges: [Known limitations](collaborating.md#known-limitations).
 
-Dash Wallet sign-in works on testnet with the testnet build of DashPay Wallet for Android 11.9.2 or later, and on mainnet with the store apps (DashPay Wallet for Android 11.9.2, Dash Wallet for iOS 9.1.4): see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Wallet sign-in works on mainnet with DashPay for Android 11.9.2+ or Dash Wallet for iOS 9.1.4+, and on testnet with DashPay for Android's testnet build: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
-The guides use **testnet**, a test network and the tools' default, throughout; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Testnet DASH is free from a faucet and has no value, and the network can be reset. Fees quoted as measured on a devnet are from the Platform v5 test networks Forge used before testnet. Forge is also live on mainnet, at [forge.dashhq.org](https://forge.dashhq.org), where DASH is real money: pass `--network mainnet` to the tools. [Networks](../networks.md) has the details and the history.
+The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. The v0.2.0 binaries work on testnet only and have no `--wallet`; for mainnet or wallet sign-in, build from source. [Networks](../networks.md) has the details.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

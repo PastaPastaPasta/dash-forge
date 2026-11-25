@@ -70,6 +70,7 @@ import {
   resetRepoGateways,
 } from './storage-status'
 import { mapPooled, trimOldest } from './pool'
+import { ipfsCidOf, PEER_SOURCE, peerFirst, peerReadRange, peerReadsOn, prefetchPackRoots } from '../storage/p2p'
 import { openBranchArtifact, openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded, type PrivateSession } from '../repo/private-session'
 import { branchRingFor } from '../repo/branch-ring'
@@ -589,6 +590,7 @@ const TIMED_OUT_MEMORY_MS = 5 * 60_000
 
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
+  forgetCoalescedSpans()
   deadUrls.clear()
   timedOutUrls.clear()
   resetGatewayHealth()
@@ -602,6 +604,7 @@ export function forgetDeadMirrors(): void {
 
 /** Test hook: forget the dead-URL list, the gateway probes and the per-origin queues. */
 export function resetExternalFetchState(): void {
+  forgetCoalescedSpans()
   deadUrls.clear()
   timedOutUrls.clear()
   originSlots.clear()
@@ -623,7 +626,7 @@ export function resetExternalFetchState(): void {
 async function fetchBody(
   url: string,
   init: RequestInit = {},
-  opts: { readonly cancel?: AbortSignal; readonly maxBytes?: number } = {},
+  opts: { readonly cancel?: AbortSignal; readonly maxBytes?: number; readonly onResponse?: () => void } = {},
 ): Promise<Uint8Array> {
   return withOriginSlot(url, async () => {
     if (opts.cancel?.aborted) throw new FetchFailure('another mirror served it first', false)
@@ -643,6 +646,7 @@ async function fetchBody(
     try {
       const resp = await fetch(url, { ...init, signal: controller.signal })
       if (!resp.ok && resp.status !== 206) throw new FetchFailure(`HTTP ${resp.status}`, false, true)
+      opts.onResponse?.()
       if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
       const reader = resp.body.getReader()
       const parts: Uint8Array[] = []
@@ -799,9 +803,72 @@ function preferredFailures(
 type OnServed = (uri: string, failed: readonly string[]) => void
 
 /**
- * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
- * mirror in turn. `onServed` is told which URL answered (and which failed first). A range
- * cannot be hashed on its own: the reader re-hashes every object it reconstructs from it.
+ * Ranged reads of an external artifact of at least this many bytes (a reader's read-ahead block)
+ * are widened to the aligned {@link COALESCE_BLOCK}-byte span around them, and every later range
+ * inside a span already asked for is answered from it: a history walk through a 27 MB pack cost
+ * one request per 256 KiB, a quarter as many this way. Smaller reads (one object) stay exact, so a
+ * file view does not download a mebibyte per object.
+ */
+const COALESCE_MIN = 128 * 1024
+const COALESCE_BLOCK = 1024 * 1024
+/** Bytes of coalesced spans kept (least recently used dropped first). */
+const COALESCED_BYTES_KEPT = 32 * 1024 * 1024
+
+interface CoalescedSpan {
+  readonly read: Promise<{ readonly bytes: Uint8Array; readonly url: string; readonly failed: readonly string[] }>
+  readonly size: number
+}
+const coalescedSpans = new Map<string, CoalescedSpan>()
+let coalescedBytes = 0
+
+/** One copy's span: copies of a pack are read apart, so a reader can fall back from a bad one. */
+function spanKey(manifest: PackManifest, index: number): string {
+  return `${manifest.documentId}:${manifest.packHash.toLowerCase()}:${index}`
+}
+
+function forgetCoalescedSpans(): void {
+  coalescedSpans.clear()
+  coalescedBytes = 0
+}
+
+/** The span `index` of `manifest`, fetched (or being fetched) once for every range inside it. */
+function coalescedSpan(manifest: PackManifest, index: number, gateways: readonly string[]): CoalescedSpan {
+  const key = spanKey(manifest, index)
+  const hit = coalescedSpans.get(key)
+  if (hit !== undefined) {
+    coalescedSpans.delete(key)
+    coalescedSpans.set(key, hit)
+    return hit
+  }
+  const from = index * COALESCE_BLOCK
+  const to = Math.min(manifest.sizeBytes, from + COALESCE_BLOCK)
+  let served: { url: string; failed: readonly string[] } = { url: '', failed: [] }
+  const read = fetchExactRange(manifest, from, to, gateways, (url, failed) => {
+    served = { url, failed }
+  }).then((bytes) => {
+    if (bytes.length !== to - from) throw new FetchFailure('served a short range', false, true)
+    return { bytes, ...served }
+  })
+  const span: CoalescedSpan = { read, size: to - from }
+  read.catch(() => {
+    if (coalescedSpans.get(key) === span) {
+      coalescedSpans.delete(key)
+      coalescedBytes -= span.size
+    }
+  })
+  coalescedSpans.set(key, span)
+  coalescedBytes += span.size
+  for (const [k, old] of coalescedSpans) {
+    if (coalescedBytes <= COALESCED_BYTES_KEPT) break
+    coalescedSpans.delete(k)
+    coalescedBytes -= old.size
+  }
+  return span
+}
+
+/**
+ * Bytes `[start, end)` of an external artifact: from the coalesced span holding them when one is
+ * held (or the range is a read-ahead block, {@link COALESCE_MIN}), else as an exact range.
  */
 async function fetchExternalRange(
   manifest: PackManifest,
@@ -810,15 +877,69 @@ async function fetchExternalRange(
   gateways: readonly string[],
   onServed?: OnServed,
 ): Promise<Uint8Array> {
+  const index = Math.floor(start / COALESCE_BLOCK)
+  const inOneSpan = manifest.sizeBytes > 0 && end <= manifest.sizeBytes && Math.floor((end - 1) / COALESCE_BLOCK) === index
+  const key = spanKey(manifest, index)
+  if (inOneSpan && (end - start >= COALESCE_MIN || coalescedSpans.has(key))) {
+    // A span no mirror served whole: the exact range, asked for on its own (the failed URLs are
+    // already marked, so it costs little more than before).
+    const span = await coalescedSpan(manifest, index, gateways).read.catch(() => null)
+    if (span !== null) {
+      onServed?.(span.url, span.failed)
+      const from = start - index * COALESCE_BLOCK
+      return span.bytes.subarray(from, from + (end - start))
+    }
+  }
+  return fetchExactRange(manifest, start, end, gateways, onServed)
+}
+
+/**
+ * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
+ * mirror in turn. `onServed` is told which URL answered (and which failed first). A range
+ * cannot be hashed on its own: the reader re-hashes every object it reconstructs from it.
+ */
+async function fetchExactRange(
+  manifest: PackManifest,
+  start: number,
+  end: number,
+  gateways: readonly string[],
+  onServed?: OnServed,
+): Promise<Uint8Array> {
+  const cid = peerReadsOn() ? ipfsCidOf(manifest.uris) : null
+  if (cid === null || end > manifest.sizeBytes) return fetchMirrorRange(manifest, start, end, gateways, onServed)
+  return peerFirst(
+    async (control) => {
+      const bytes = await peerReadRange(cid, start, end, control)
+      // A gateway that won the same tick names itself; the peer does not.
+      if (!control.signal.aborted) onServed?.(PEER_SOURCE, [])
+      return bytes
+    },
+    (signal) => fetchMirrorRange(manifest, start, end, gateways, onServed, signal),
+    { what: `${cid.slice(-6)} ${start}-${end}`, bytes: end - start },
+  )
+}
+
+/** {@link fetchExactRange} from the HTTP mirrors alone; `cancel` stops it (an IPFS peer served the range). */
+async function fetchMirrorRange(
+  manifest: PackManifest,
+  start: number,
+  end: number,
+  gateways: readonly string[],
+  onServed?: OnServed,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
   const { urls, live, down } = await mirrorUrls(manifest, gateways, true)
   const failed = [...down]
   for (const url of live) {
+    if (cancel?.aborted) throw new Error('an IPFS peer served it first')
     try {
-      const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
-      onServed?.(url, preferredFailures(urls, new Set(manifest.uris), url, failed))
+      const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } }, { cancel })
+      if (!cancel?.aborted) onServed?.(url, preferredFailures(urls, new Set(manifest.uris), url, failed))
       // Some hosts ignore Range and return the whole body — slice defensively.
-      return buf.length > end - start ? buf.subarray(start, end) : buf
+      // (`slice`, not `subarray`: a span cache must not keep a whole pack alive behind a range.)
+      return buf.length > end - start ? buf.slice(start, end) : buf
     } catch (e) {
+      if (cancel?.aborted) throw e
       if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
       else if (e instanceof FetchFailure && e.timedOut) timedOutUrls.set(url, { why: errorText(e), at: Date.now() })
       failed.push(failureAt(url, errorText(e)))
@@ -856,6 +977,27 @@ async function fetchExternalWhole(
   onServed?: OnServed,
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
+  const cid = peerReadsOn() && manifest.sizeBytes > 0 ? ipfsCidOf(manifest.uris) : null
+  if (cid === null) return fetchMirrorWhole(manifest, gateways, onServed, cancel)
+  return peerFirst(
+    async (control) => {
+      const bytes = await peerReadRange(cid, 0, manifest.sizeBytes, control)
+      if (bytesToHex(sha256(bytes)) !== manifest.packHash.toLowerCase()) throw new Error('IPFS peers served bytes that do not match the manifest sha256')
+      if (!control.signal.aborted) onServed?.(PEER_SOURCE, [])
+      return bytes
+    },
+    (signal) => fetchMirrorWhole(manifest, gateways, onServed, signal),
+    { what: `${cid.slice(-6)} whole`, cancel, bytes: manifest.sizeBytes },
+  )
+}
+
+/** {@link fetchExternalWhole} from the HTTP mirrors alone. */
+async function fetchMirrorWhole(
+  manifest: PackManifest,
+  gateways: readonly string[],
+  onServed?: OnServed,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
   const { urls, live, down } = await mirrorUrls(manifest, gateways)
   const want = manifest.packHash.toLowerCase()
   if (live.length === 0) {
@@ -878,15 +1020,23 @@ async function fetchExternalWhole(
   cancel?.addEventListener('abort', onCancel)
   if (cancel?.aborted) winner.abort()
 
+  /** Responses begun and not yet failed: a hedge waits while one is streaming. */
+  let streaming = 0
   const attempt = async (url: string): Promise<{ url: string; bytes: Uint8Array }> => {
+    let began = false
     try {
-      const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes })
+      const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes, onResponse: () => {
+          began = true
+          streaming += 1
+        },
+      })
       if (bytes.length !== manifest.sizeBytes || bytesToHex(sha256(bytes)) !== want) {
         corrupt = true
         throw new FetchFailure('served bytes that do not match the manifest sha256', false, true)
       }
       return { url, bytes }
     } catch (e) {
+      if (began) streaming -= 1
       if (!winner.signal.aborted) {
         failures.push(failureAt(url, errorText(e)))
         if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
@@ -897,12 +1047,12 @@ async function fetchExternalWhole(
   }
 
   try {
-    const got = (await raceBounded(live, mirrorRaceWidth, attempt, winner.signal)) ??
+    const got = (await raceBounded(live, mirrorRaceWidth, attempt, winner.signal, { ms: HEDGE_AFTER_MS, waiting: () => streaming > 0 })) ??
       (await firstSequential(timedOut, attempt, winner.signal))
     if (got !== null) {
       winner.abort()
       // The winner's own earlier timeout (it served on its retry) is not a failure: dropped.
-      onServed?.(got.url, preferredFailures(urls, new Set(manifest.uris), got.url, failures))
+      if (!cancel?.aborted) onServed?.(got.url, preferredFailures(urls, new Set(manifest.uris), got.url, failures))
       return got.bytes
     }
     if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
@@ -913,46 +1063,52 @@ async function fetchExternalWhole(
 }
 
 /**
+ * How long a whole-artifact fetch waits on the URLs it started before starting the next one too
+ * (a hedge) while none has begun to answer: the first gateway usually serves, and racing them all from the start downloaded every
+ * pack (a 2 MB index on each page load) two or three times over. A failure starts the next at once.
+ */
+const HEDGE_AFTER_MS = 2_500
+
+/**
  * Run `attempt` over `items` with at most `width` in flight; resolve with the first success,
- * or null once every item has failed (or `stop` fired).
+ * or null once every item has failed (or `stop` fired). With `hedge`, one starts at a time and
+ * another joins it each `hedge.ms` without a winner while none is `waiting` on a response that has
+ * begun (or at once when one fails), still at most `width`.
  */
 function raceBounded<T, R>(
   items: readonly T[],
   width: number,
   attempt: (item: T) => Promise<R>,
   stop: AbortSignal,
+  hedge?: { readonly ms: number; readonly waiting: () => boolean },
 ): Promise<R | null> {
   return new Promise((resolve) => {
     let next = 0
     let running = 0
     let settled = false
-    const launch = (): void => {
-      while (!settled && !stop.aborted && running < width && next < items.length) {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (r: R | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(r)
+    }
+    const launch = (count: number): void => {
+      for (let started = 0; started < count && !settled && !stop.aborted && running < width && next < items.length; started++) {
         const item = items[next++] as T
         running += 1
-        attempt(item).then(
-          (r) => {
-            if (!settled) {
-              settled = true
-              resolve(r)
-            }
-          },
-          () => {
-            running -= 1
-            if (settled) return
-            if ((next >= items.length || stop.aborted) && running === 0) {
-              settled = true
-              resolve(null)
-            } else launch()
-          },
-        )
+        attempt(item).then(finish, () => {
+          running -= 1
+          if (settled) return
+          if ((next >= items.length || stop.aborted) && running === 0) finish(null)
+          else launch(hedge ? 1 : width)
+        })
       }
-      if (!settled && running === 0) {
-        settled = true
-        resolve(null)
-      }
+      if (!settled && running === 0) finish(null)
+      clearTimeout(timer)
+      if (hedge && !settled && next < items.length) timer = setTimeout(() => launch(hedge.waiting() ? 0 : 1), hedge.ms)
     }
-    launch()
+    launch(hedge ? 1 : width)
   })
 }
 
@@ -1848,6 +2004,9 @@ export async function loadBrowseContext(
   // exists to prevent, reintroduced through the back door. A public repo's list comes from the
   // repo chrome store: the home's own read of a moment ago (zero requests), else its delta.
   const manifests = await readBrowseManifests(sdk, repo, { after, network: ACTIVE_NETWORK.network })
+  // Dial the IPFS peers (if the repo page has not) and ask for the packs' root nodes while the
+  // index is located: a pack's first range read is then one round trip.
+  prefetchPackRoots(manifests.map((m) => ipfsCidOf(m.uris)).filter((c): c is string => c !== null))
   // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
   // first. A past writer's, a bot's or a stranger's manifest cannot steer every read.
   noteRepoGateways(

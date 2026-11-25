@@ -27,7 +27,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { devices, expect, test, type Browser, type Page, type TestInfo } from '@playwright/test'
-import { PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved, showOtherWays, usePassword } from './helpers'
 
 const OWNER = process.env['E2E_LETTERS_OWNER'] ?? ''
 const NAME = process.env['E2E_LETTERS_NAME'] ?? ''
@@ -66,8 +66,10 @@ async function signedInAs(browser: Browser, name: string): Promise<Page> {
     await unlock(page)
   } else {
     await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
+    await showOtherWays(page)
     await page.getByTestId('tile-import').click()
     await page.setInputFiles('input[type="file"]', idFile(name))
+    await usePassword(page)
     await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
     await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
     await page.getByTestId('enable-private-repos').check()

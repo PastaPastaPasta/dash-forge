@@ -6,16 +6,18 @@
  * expiry in place (`IdentityKeyLimitsUpdate`; same key). **Renew** registers a fresh limited key
  * and disables this one. Both need the master key once (identity file or phrase), which is not
  * stored. Also: lock now, and sign out + forget.
+ *
+ * A key from a wallet's older code (DashConnect, removed) still signs where its bounds allow, but
+ * has no limits and may cover only part of Forge: "Replace with a limited key" offers one approval
+ * in the wallet (App Connect v2) first, and the identity file or recovery phrase beside it.
  */
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { GRANT_COPY, nextGrant } from '@/lib/auth/key-registration'
-import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
+import { AlertTriangle, BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
 import { creditsToDash } from '@/lib/sdk/cost'
 import { KeyBudgetText } from '@/components/funds-summary'
 import { FiatNote } from '@/components/ui/fiat-note'
-import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
@@ -25,6 +27,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
+import { PhraseAdvanced, phraseIsAdvanced } from '@/components/auth/phrase-advanced'
 import { PendingRenewal } from '@/components/pending-renewal'
 import { useConfirmAction, type ConfirmActionOptions } from '@/components/ui/confirm-action'
 
@@ -35,10 +38,21 @@ export const FORGET_CONFIRM: ConfirmActionOptions = {
   confirmLabel: 'Forget key',
 }
 
-/** {@link FORGET_CONFIRM}, saying what stays when the identity was topped up here. */
-export async function forgetConfirm(identityId: string): Promise<ConfirmActionOptions> {
+/** Shown before deleting a stored key found disabled on chain (a wallet disconnect): it can't sign. */
+export const FORGET_DISABLED_CONFIRM: ConfirmActionOptions = {
+  title: 'Forget this disabled key?',
+  body: `It's disabled on Platform and can't sign. Forgetting it also deletes this browser's storage settings, encryption key copy (import it again in Settings) and comment drafts for this identity. ${FORGET_DELETES}`,
+  confirmLabel: 'Forget key',
+}
+
+/**
+ * {@link FORGET_CONFIRM} ({@link FORGET_DISABLED_CONFIRM} for a key found `disabled`), saying
+ * what stays when the identity was topped up here.
+ */
+export async function forgetConfirm(identityId: string, { disabled = false }: { readonly disabled?: boolean } = {}): Promise<ConfirmActionOptions> {
+  const base = disabled ? FORGET_DISABLED_CONFIRM : FORGET_CONFIRM
   const stays = await topUpStays(identityId)
-  return stays === null ? FORGET_CONFIRM : { ...FORGET_CONFIRM, body: `${FORGET_CONFIRM.body} ${stays}` }
+  return stays === null ? base : { ...base, body: `${base.body} ${stays}` }
 }
 
 export function KeysPanel(): JSX.Element {
@@ -50,7 +64,7 @@ export function KeysPanel(): JSX.Element {
   const [revokeOpen, setRevokeOpen] = useState(false)
   const [confirm, confirmDialog] = useConfirmAction()
   const openLogin = useUiStore((s) => s.openLogin)
-  const missingGrant = nextGrant(grants)
+  const partial = grants != null && !(grants.core && grants.collab && grants.community && grants.meta)
   const low = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
   const [topUpOpen, setTopUpOpen] = useState(false)
   // Only a stored Forge browser key (a budget on a group-bound key) can be topped up here.
@@ -61,8 +75,8 @@ export function KeysPanel(): JSX.Element {
   // A key a wallet granted through App Connect is renewed in that wallet; one a passkey restored
   // may be a wallet's too, so the wallet renewal is offered beside the identity file's.
   const inWallet = storage === 'vault' && renewsInWallet(origin, ACTIVE_NETWORK.network, unlimitedKey)
-  const walletDisablesIt = origin === 'app-connect'
   const from = keyOriginLabel(storage, origin, unlimitedKey && !keyLimits)
+  const replace = storage === 'vault' && (unlimitedKey || partial)
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
@@ -119,52 +133,52 @@ export function KeysPanel(): JSX.Element {
       {heldOnly.length > 0 ? (
         <p className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="held-only-keys" data-key-ids={heldOnly.join(',')}>
           Also held, never used to sign: key{heldOnly.length > 1 ? 's' : ''} {heldOnly.map((k) => `#${k}`).join(', ')}, left live by an earlier renewal.
-          Renewing with your identity file or recovery phrase, or &quot;Revoke on Platform&quot;, disables {heldOnly.length > 1 ? 'them' : 'it'}.
+          A renewal with your master key, or &quot;Revoke on Platform&quot;, disables {heldOnly.length > 1 ? 'them' : 'it'}.
         </p>
       ) : null}
       {storage === 'vault' && unlimitedKey ? (
         <div className="space-y-2">
           <UnlimitedKeyWarning unbounded={unboundedKey} />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Limits can&apos;t be added to this key. Replace it with a limited key using your identity file or recovery phrase, or disable it.
+            Limits can&apos;t be added to this key. Replace it with a limited key: one approval in your wallet.
           </p>
         </div>
       ) : null}
-      {storage === 'vault' && missingGrant !== null ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="grant-collab">
-          <span>This sign-in covers repositories and pushes. {GRANT_COPY[missingGrant].what} need one more wallet approval.</span>
-          <Button variant="outline" size="sm" onClick={() => openLogin('grant', missingGrant)}>
-            <Wallet className="h-3.5 w-3.5" aria-hidden /> Approve in wallet
-          </Button>
-        </div>
+      {storage === 'vault' && partial ? (
+        <p className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="key-partial">
+          This key covers only part of Forge. Replace it with a limited key: one approval in your wallet covers all of Forge.
+        </p>
       ) : null}
       {low ? (
         <p className="text-caution-700 dark:text-caution-400">
-          {inWallet
-            ? "This browser's key is nearly used up. Renew it in your wallet, or top it up with your identity file or recovery phrase."
-            : "This browser's key is nearly used up. Top it up or renew it (uses your master key once)."}
+          {inWallet ? "This browser's key is nearly used up. Renew it in your wallet." : "This browser's key is nearly used up."}
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        {canTopUp ? (
-          <Button variant="primary" size="sm" onClick={() => setTopUpOpen(true)}>
-            <BatteryCharging className="h-3.5 w-3.5" aria-hidden /> Top up key budget
-          </Button>
-        ) : null}
-        {/* A pasted key is not Forge's to renew: that is a first import. */}
         {inWallet ? (
           <Button variant="primary" size="sm" onClick={() => openLogin('wallet-renew')} data-testid="key-renew-in-wallet">
             <Wallet className="h-3.5 w-3.5" aria-hidden /> Renew in your wallet
           </Button>
         ) : null}
-        <Button variant={!inWallet && (unlimitedKey || pasted) ? 'primary' : 'outline'} size="sm" onClick={() => openLogin(pasted ? 'import' : 'renew')}>
-          <RefreshCw className="h-3.5 w-3.5" aria-hidden />{' '}
-          {pasted ? 'Use a limited key instead' : unlimitedKey ? 'Replace with a limited key' : inWallet ? 'Renew with identity file' : 'Renew key'}
-        </Button>
-        {pasted ? (
-          <Button variant="danger" size="sm" onClick={() => logout()}>
-            <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
+        {replace ? (
+          <Button variant="primary" size="sm" onClick={() => openLogin('wallet-replace')} data-testid="key-replace">
+            <Wallet className="h-3.5 w-3.5" aria-hidden /> Replace with a limited key
           </Button>
+        ) : null}
+        {!inWallet && !replace && !pasted && phraseIsAdvanced() && low ? (
+          <Button variant="primary" size="sm" onClick={() => openLogin('wallet')} data-testid="key-sign-in-with-wallet">
+            <Wallet className="h-3.5 w-3.5" aria-hidden /> Sign in again with your wallet
+          </Button>
+        ) : null}
+        {pasted ? (
+          <>
+            <Button variant="primary" size="sm" onClick={() => openLogin(phraseIsAdvanced() ? 'wallet' : 'import')}>
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Use a limited key instead
+            </Button>
+            <Button variant="danger" size="sm" onClick={() => logout()}>
+              <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
+            </Button>
+          </>
         ) : (
           <>
             <Button variant="outline" size="sm" onClick={() => logout()}>
@@ -181,35 +195,34 @@ export function KeysPanel(): JSX.Element {
             </Button>
           </>
         )}
-        {storage === 'vault' ? (
-          <>
+      </div>
+      {storage === 'vault' ? (
+        <PhraseAdvanced testId="key-master-actions">
+          <div className="flex flex-wrap gap-2">
+            {canTopUp ? (
+              <Button variant="outline" size="sm" onClick={() => setTopUpOpen(true)}>
+                <BatteryCharging className="h-3.5 w-3.5" aria-hidden /> Top up key budget
+              </Button>
+            ) : null}
+            {replace ? null : (
+              <Button variant={inWallet || phraseIsAdvanced() ? 'outline' : 'primary'} size="sm" onClick={() => openLogin('renew')}>
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden /> {inWallet ? 'Renew with identity file' : 'Renew key'}
+              </Button>
+            )}
             <Button variant="danger" size="sm" loading={isLoading} onClick={() => setRevokeOpen(true)} data-testid="key-revoke">
               <ShieldOff className="h-3.5 w-3.5" aria-hidden /> {unlimitedKey ? 'Disable key on Platform' : 'Revoke on Platform'}
             </Button>
-          </>
-        ) : null}
-      </div>
-      {pasted ? (
-        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Import your identity file or recovery phrase to give this browser its own limited key. Forge doesn&apos;t renew or revoke the pasted key.
-        </p>
-      ) : (
-        <>
-          {unlimitedKey ? null : (
-            <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              {canTopUp ? 'Top-up keeps this key and adds budget (or a later expiry). ' : ''}
-              {inWallet && !walletDisablesIt
-                ? 'Renewing in your wallet adds a key without the master key; this one stays live until Revoke on Platform or a renewal with your identity file disables it. Renewing with the identity file replaces it and disables this one.'
-                : `Renew replaces it with a new key and disables this one.${inWallet ? ' Renewing in your wallet needs no master key.' : ''}`}
-              {inWallet
-                ? ' Top-up and the identity file use your master key once and do not store it.'
-                : `${canTopUp ? ' Both use' : ' It uses'} your master key once and ${canTopUp ? 'do' : 'does'} not store it.`}
-            </p>
-          )}
+          </div>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Forgetting deletes the key from this device only. Revoking disables it on Platform (needs your identity file or recovery phrase once).
+            {canTopUp ? 'Top-up keeps this key and adds budget. ' : ''}Renew replaces it and disables this one. Revoke disables it on Platform. Each uses your
+            master key once and does not store it.
           </p>
-        </>
+        </PhraseAdvanced>
+      ) : null}
+      {pasted ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Forge doesn&apos;t renew or revoke a pasted key.</p>
+      ) : (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Forgetting deletes the key from this device only.</p>
       )}
       {storage !== 'session' ? (
         <p className="text-[12px]">
@@ -222,6 +235,19 @@ export function KeysPanel(): JSX.Element {
       {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
       {revokeOpen ? <KeyRevokeDialog unlimited={unlimitedKey} onClose={() => setRevokeOpen(false)} /> : null}
       {confirmDialog}
+    </div>
+  )
+}
+
+/** "This key has no spending limit" (a key from a wallet's older code): what it means, what to do. */
+function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.Element {
+  return (
+    <div role="note" data-testid="unlimited-key-warning" className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
+      <span>
+        This wallet key has no spending limit or expiry. Anyone who copies it from this browser can spend your balance
+        {unbounded ? ' on any Platform app' : ' on Forge'}. Replace it with a limited key soon.
+      </span>
     </div>
   )
 }

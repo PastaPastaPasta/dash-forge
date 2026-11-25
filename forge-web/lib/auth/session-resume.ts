@@ -181,12 +181,29 @@ export async function wipeResume(): Promise<void> {
 
 /** Record a lock before anything async runs (a reload right after still sees it). */
 export function markLocked(): void {
-  writeMarker(LOCKED_AT_KEY)
+  writeMarker(LOCKED_AT_KEY, readMarker(DEVICE_OPENED_KEY))
 }
 
 /** The last lock's marker (0 when none, or when storage is disabled). */
 export function lockMarker(): number {
   return readMarker(LOCKED_AT_KEY)
+}
+
+/** When a key kept by this browser alone was last opened (stored or unlocked). */
+const DEVICE_OPENED_KEY = 'forge:device-opened-at'
+
+/** A key kept by this browser alone was stored or opened: later page loads may open it again. */
+export function markDeviceOpened(): void {
+  writeMarker(DEVICE_OPENED_KEY, lockMarker())
+}
+
+/**
+ * Whether a page load may open a key kept by this browser alone without asking: not after Lock,
+ * sign-out or a key found unusable, until it is next opened on purpose. The 12-hour lock of an
+ * open tab does not count: a browser-only key is meant to stay signed in here.
+ */
+export function deviceResumeAllowed(): boolean {
+  return readMarker(DEVICE_OPENED_KEY) > lockMarker()
 }
 
 /** Whether "Stay signed in for public repos" is off (every page load starts locked). */
@@ -245,11 +262,12 @@ function readLocal(key: string): string | null {
   }
 }
 
-function writeMarker(key: string): void {
+function writeMarker(key: string, after = 0): void {
   try {
     if (typeof window === 'undefined') return
-    // Strictly increasing, so two events in the same millisecond still fire a storage event.
-    const now = Math.max(Date.now(), readMarker(key) + 1)
+    // Strictly increasing, so two events in the same millisecond still fire a storage event,
+    // and an open right after a lock in the same millisecond still counts as later.
+    const now = Math.max(Date.now(), readMarker(key) + 1, after + 1)
     window.localStorage.setItem(key, String(now))
   } catch {
     /* storage disabled: the IndexedDB wipe still runs */

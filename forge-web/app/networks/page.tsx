@@ -12,6 +12,7 @@ import { AppShell } from '@/components/app-shell'
 import { faucetHost, faucetUrls } from '@/lib/faucets'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
+import { siteUrlFor } from '@/lib/network-sites'
 import { networkRows, type NetworkRow } from '@/lib/networks'
 import { cn } from '@/lib/utils'
 
@@ -19,6 +20,16 @@ const STANDING: Readonly<Record<NetworkRow['standing'], string>> = {
   live: 'Live',
   'not-yet': 'Not yet',
   retired: 'Retired',
+}
+
+function SiteLink({ row }: { row: NetworkRow }): JSX.Element | null {
+  const url = row.standing === 'live' && row.key !== ACTIVE_NETWORK.key ? siteUrlFor(row.key) : null
+  if (url === null) return null
+  return (
+    <a href={url} data-testid={`network-site-${row.key}`} className="hit-area mt-1 block w-fit font-normal text-forge-700 underline dark:text-forge-400">
+      Open Forge on {row.label}
+    </a>
+  )
 }
 
 function detailOf(row: NetworkRow): string {
@@ -106,6 +117,7 @@ export default function NetworksPage(): JSX.Element {
                     {row.label}
                     {row.key === ACTIVE_NETWORK.key ? <span className="ml-2 font-normal text-anvil-500 dark:text-anvil-400">this site</span> : null}
                     <span className="mt-1 block whitespace-normal font-normal text-anvil-600 dark:text-anvil-400 sm:hidden">{detailOf(row)}</span>
+                    <SiteLink row={row} />
                   </th>
                   <td className="whitespace-nowrap py-2 pr-4">
                     <span

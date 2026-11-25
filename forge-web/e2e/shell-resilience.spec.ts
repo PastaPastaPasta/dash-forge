@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { typicalIssueCredits } from '../lib/sdk/cost'
 import { creditsAsDash } from '../lib/view/format'
-import { atRoute, DEMO, ownerIs, repoUrl, waitForRepoResolved, skipWithoutFixture } from './helpers'
+import { atRoute, DEMO, ownerIs, repoUrl, waitForRepoResolved, skipWithoutFixture, showOtherWays } from './helpers'
 import { quorumGuardLong, quorumHeldMs } from './quorum-sync'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
@@ -46,10 +46,12 @@ test.describe('shell resilience (L-10, L-56)', () => {
 
     // Back online: the page finishes loading with no reload, and the card is Verified.
     await expect(README(page)).toBeVisible({ timeout: 90_000 })
-    await expect(summary(page)).toContainText('Verified', { timeout: 60_000 })
+    const chip = page.getByTestId('verification-chip')
+    await expect(chip).toContainText('Verified', { timeout: 60_000 })
+    await chip.click()
+    await expect(summary(page)).toContainText('Verified')
     await expect(summary(page)).not.toContainText('Failed')
     await expect(summary(page)).toContainText('checked this session')
-    await page.getByRole('button', { name: /Verification/ }).click()
     await expect(page.getByText(/did not match their git hash/)).toHaveCount(0)
   })
 
@@ -142,6 +144,7 @@ test.describe('signed-out writes (L-62)', () => {
     await expect(dialog.getByRole('heading', { name: 'Sign in to star this repo' })).toBeVisible({ timeout: 30_000 })
     await expect(dialog.getByTestId('signin-intent')).toContainText(/about 0\.000\d+ DASH/)
     // The create tile quotes what the New issue form previews, not the stale 0.00062.
+    await showOtherWays(dialog)
     await expect(dialog.getByTestId('tile-create-cost')).toContainText(`${creditsAsDash(typicalIssueCredits())} DASH per issue`)
     await expect(dialog.getByTestId('tile-create-cost')).not.toContainText('0.00062')
   })

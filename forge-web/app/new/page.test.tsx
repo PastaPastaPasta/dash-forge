@@ -164,6 +164,18 @@ describe('/new: members-only content at creation', () => {
     expect(createButton().disabled).toBe(false)
   })
 
+  it('a locked tab with no encryption key stored: a private create points to Settings, not to an unlock', async () => {
+    unlockScope = 'signing'
+    held = null
+    await render()
+    act(() => q('visibility-private')!.click())
+    await flush()
+    expect(q('new-private-unlock')).toBeNull()
+    expect(q('private-no-key')).not.toBeNull()
+    expect(createButton().disabled).toBe(true)
+    expect(createButton().title).toMatch(/Add your encryption key/)
+  })
+
   it('a failed members-only step says why and opens the repo with the notice', async () => {
     createRepo.mockResolvedValue({ repoId: 'R', name: 'demo', membersOnly: { on: false, error: 'quorum not found' } })
     await render()
@@ -200,5 +212,26 @@ describe('/new: members-only content at creation', () => {
     expect(q('repo-name-converted')).toBeNull()
     expect(host.textContent).toContain('A repository name uses a–z')
     expect(createButton().disabled).toBe(true)
+    expect(q('new-repo-blocked')?.textContent).toContain('A repository name uses a–z')
+  })
+
+  it('branch disclosure stays open while typing past a transient branch error', async () => {
+    await render()
+    const details = q('new-branch-details') as HTMLDetailsElement
+    const branch = host.querySelector('#repo-branch') as HTMLInputElement
+    expect(details.open).toBe(false)
+    const setBranch = async (text: string): Promise<void> => {
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(branch, text)
+        branch.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await flush()
+    }
+    await setBranch('feature/')
+    expect(details.open).toBe(true)
+    expect(host.querySelector('#repo-branch-error')).not.toBeNull()
+    await setBranch('feature/l')
+    expect(host.querySelector('#repo-branch-error')).toBeNull()
+    expect(details.open).toBe(true)
   })
 })

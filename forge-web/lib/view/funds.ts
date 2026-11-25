@@ -108,8 +108,8 @@ export function renewableInWallet(origin: string | null | undefined): boolean {
  * Whether "Renew" offers the wallet first: for a key a wallet may have granted, and on testnet for
  * any limited browser key (wallet-primary, `docs/design/wallet-primary.md`). For a key the wallet
  * did not grant to this browser, it adds a new key and the current one stays live until it is
- * disabled. A wallet's older unlimited key is replaced with the master key instead, which
- * disables it.
+ * disabled. A wallet's older unlimited key is replaced instead (Settings → Replace with a
+ * limited key).
  */
 export function renewsInWallet(origin: string | null | undefined, network: string, unlimited = false): boolean {
   return renewableInWallet(origin) || (network === 'testnet' && !unlimited)

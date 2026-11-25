@@ -3,3 +3,4 @@ e2e/screenshots/
 e2e/.playwright/
 test-results/
 playwright-report/
+/dash-site-external.json

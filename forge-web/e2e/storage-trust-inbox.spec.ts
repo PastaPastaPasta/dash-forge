@@ -236,7 +236,7 @@ test('g2. a release asset uploads on that default; without one the dialog says w
   // the dialog names the step and links to the page that fixes it.
   const repoPolicy = page.getByTestId('repo-storage-policy')
   const openRepoSettings = async (): Promise<void> => {
-    await page.goto(repoPath('settings'), { waitUntil: 'domcontentloaded' })
+    await page.goto(repoPath('settings', '#storage'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await unlockAll(page, repoPolicy)
     await expect(repoPolicy).toContainText(/Using your default|This repo has its own choice/, { timeout: 60_000 })
@@ -286,6 +286,7 @@ test('g3. on a file served from S3 the Verification summary names S3, not Platfo
   // The home reads the tip commit and root tree from the S3 pack (the second push) and the
   // README from the Platform pack (the first): both places served this view.
   await eventually(page, () => expect(page.getByText('Pushed to Platform.').first()).toBeVisible({ timeout: 60_000 }))
+  await page.getByTestId('verification-chip').first().click()
   await expect(summary).toContainText(new RegExp(`from (${S3_HOST.replace(/\./g, '\\.')}, Platform|Platform, ${S3_HOST.replace(/\./g, '\\.')})$`), { timeout: 60_000 })
   await shot(page, 'g5-04-home-both-places')
 
@@ -293,9 +294,9 @@ test('g3. on a file served from S3 the Verification summary names S3, not Platfo
   // already holds Platform as a source): every object of THIS view came from S3.
   await page.getByRole('link', { name: 's3file.txt' }).first().click()
   await expect(page.getByText(`served from S3 (${RUN})`)).toBeVisible({ timeout: 90_000 })
+  await page.getByTestId('verification-chip').first().click()
   await expect(summary).toHaveText(new RegExp(`· from ${S3_HOST.replace(/\./g, '\\.')}$`), { timeout: 60_000 })
   await expect(summary).not.toContainText('Platform')
-  await page.getByRole('button', { name: /verification/i }).first().click()
   await shot(page, 'g5-05-s3-file-from-s3')
 })
 

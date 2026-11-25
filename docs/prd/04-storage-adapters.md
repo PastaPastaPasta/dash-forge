@@ -27,7 +27,7 @@ Hash verification lives in PackPipeline, outside backends — a malicious backen
 `chunk` docs (3 × 4.9 KiB fields), pipelined STs, ranged reads by chunk seq via the `objectLocator`. ~$9/MiB @ $34/DASH, refundable; repack-with-refund keeps steady-state ≈ current size.
 
 ### 2. IPFS
-- Write: local Kubo, optionally plus any IPFS Pinning Service API endpoint (for example Pinata, Filebase or 4EVERLAND; endpoints in the [storage guide](../guides/bring-your-own-storage.md#ipfs-kubo--a-pinning-service)); URI `ipfs://CID` (CIDv1 raw-leaves; CID must re-derive from bytes → double verification with manifest sha256).
+- Write: local Kubo, optionally plus any IPFS Pinning Service API endpoint (for example Pinata, Filebase or 4EVERLAND); URI `ipfs://CID` (CIDv1 raw-leaves; CID must re-derive from bytes → double verification with manifest sha256).
 - Read: CLI via local Kubo else gateways; browser via gateway race (configurable list + self-host option from yappr `ipfs/` docker).
 - Availability = pinning; `dg reseed --from-local` re-uploads a lost copy to its recorded address from a clone that has the pack. Recording a copy at a new address needs repo membership (no `packMirror` type yet).
 

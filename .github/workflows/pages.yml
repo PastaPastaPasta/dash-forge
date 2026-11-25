@@ -16,6 +16,12 @@ name: Deploy forge-web to Pages
 # (run this workflow on master, or push to master); any other value fails the build. A tab opened before
 # the deploy keeps running the old build until it is reloaded, so it will not show the notice yet.
 #
+# Changing the network the live site serves (testnet -> mainnet, or back) is never automatic: set
+# PAGES_NETWORK, then run this workflow by workflow_dispatch with confirm_network set to the same
+# network. A push that would change it fails at the network guard, and a testnet or mainnet build
+# fails there while that network's deployment record is incomplete (docs/launch/mainnet-runbook.md).
+# PAGES_SITE_URL (default https://forge.dashhq.org) is where the guard reads the live network.
+#
 # The operator's switch works on every network (docs/hosting.md, "Pausing the site"): the
 # repository variable PAGES_NOTICE is unset (nothing), `advisory` (a banner that cannot be
 # dismissed, linking the advisory) or `paused` (the banner, and every write refused before anything
@@ -27,6 +33,12 @@ name: Deploy forge-web to Pages
 # PAGES_GATEWAY_LABEL) adds the HTTPS clone row of a forge-gateway, and PAGES_NOTIFY_URL adds
 # Settings → Notifications → Email and push for a forge-notify. A value that is not a usable URL
 # leaves the feature hidden.
+#
+# The hosted mainnet and testnet builds are separate sites. PAGES_MAINNET_SITE_URL and
+# PAGES_TESTNET_SITE_URL (https origins, such as https://forge.dashhq.org) let each point at the
+# other: the Networks page links a live network's site, a test network's build shows a dismissible
+# "Forge is live on mainnet" banner once the bundled mainnet record has Forge's contracts, and the
+# mainnet build's footer links the testnet site. A value that is not an https origin is ignored.
 
 on:
   push:
@@ -42,6 +54,11 @@ on:
       - 'forge-contracts/config/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
+    inputs:
+      confirm_network:
+        description: 'Required when this deploy changes the network the live site serves (e.g. mainnet). Type the network PAGES_NETWORK names.'
+        required: false
+        default: ''
 
 # Per job (below): the build runs third-party npm code, so it gets no token that can deploy or
 # attest.
@@ -68,6 +85,18 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: forge-web/pnpm-lock.yaml
+      # The network gate (forge-contracts/scripts/pages-network-guard.mjs): a testnet or mainnet
+      # build needs that network's record complete, and a deploy that changes the network the live
+      # site serves runs only by workflow_dispatch with confirm_network set to it.
+      - name: Network guard
+        working-directory: .
+        env:
+          PAGES_BUILD_NETWORK: ${{ vars.PAGES_NETWORK || 'testnet' }}
+          PAGES_DEVNET_NAME: ${{ vars.PAGES_NETWORK == 'devnet' && vars.PAGES_DEVNET_NAME || '' }}
+          PAGES_EVENT: ${{ github.event_name }}
+          PAGES_CONFIRM: ${{ inputs.confirm_network }}
+          PAGES_SITE_URL: ${{ vars.PAGES_SITE_URL || 'https://forge.dashhq.org' }}
+        run: node forge-contracts/scripts/pages-network-guard.mjs
       - run: pnpm install --frozen-lockfile
       - name: Build (${{ vars.PAGES_NETWORK || 'testnet' }})
         env:
@@ -83,6 +112,9 @@ jobs:
           NEXT_PUBLIC_GATEWAY_URL: ${{ vars.PAGES_GATEWAY_URL }}
           NEXT_PUBLIC_GATEWAY_LABEL: ${{ vars.PAGES_GATEWAY_LABEL }}
           NEXT_PUBLIC_NOTIFY_URL: ${{ vars.PAGES_NOTIFY_URL }}
+          # Unset (below) when the variable is: no link to the other network's site.
+          NEXT_PUBLIC_MAINNET_SITE_URL: ${{ vars.PAGES_MAINNET_SITE_URL }}
+          NEXT_PUBLIC_TESTNET_SITE_URL: ${{ vars.PAGES_TESTNET_SITE_URL }}
           # Cloudflare Web Analytics (forge-web/lib/cf-beacon.ts, docs/hosting.md §6): the page
           # carries the beacon so the zone's automatic injection stays off. The site token is
           # public (it is in every page). A fork's deploy gets none unless it sets the variable.
@@ -94,9 +126,11 @@ jobs:
         # (docs/guides/verify-the-app.md). That includes NEXT_PUBLIC_DEVNET_NAME, empty on every
         # network but a devnet.
         run: |
-          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL NEXT_PUBLIC_CF_BEACON_TOKEN; do
+          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL NEXT_PUBLIC_MAINNET_SITE_URL NEXT_PUBLIC_TESTNET_SITE_URL NEXT_PUBLIC_CF_BEACON_TOKEN; do
             [ -n "${!v}" ] || unset "$v"
           done
+          # A gateway on another network would hand out clone lines for that network's repos.
+          node scripts/check-gateway-network.mjs
           pnpm build
       # RFC 9116 security.txt: public/.well-known/security.txt must reach the export, and from
       # there the Pages artifact. actions/upload-pages-artifact@v3 (used below) archives dot

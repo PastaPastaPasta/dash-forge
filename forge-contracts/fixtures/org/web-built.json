@@ -1,0 +1,86 @@
+{
+  "about": "Organization transitions forge-web built on testnet (QA org, request 82101ebf4594a1ba: repo, maintainer, config). Rust must rebuild them byte for byte from their intents.",
+  "proposals": [
+    {
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "5",
+        "document": {
+          "action": "create",
+          "documentType": "repo",
+          "properties": {
+            "name": "org-qa-web1",
+            "visibility": "public"
+          },
+          "entropy": "a7a1a1e79e31fc6004f9610c70a2e574ae2f4602772dffd81d37243f6dd4a75a"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001e440fa0fd321f866ff93db463000b206375f4162118ee198d02300922d2c590a05047265706fb2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400a7a1a1e79e31fc6004f9610c70a2e574ae2f4602772dffd81d37243f6dd4a75a02046e616d65120b6f72672d71612d776562310a7669736962696c69747912067075626c696300000200"
+    },
+    {
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "6",
+        "document": {
+          "action": "create",
+          "documentType": "maintainer",
+          "properties": {
+            "repoId": "e440fa0fd321f866ff93db463000b206375f4162118ee198d02300922d2c590a",
+            "memberId": "676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb",
+            "vis": "public"
+          },
+          "entropy": "fdac4c5c638b841a807600472b4fce22e488c4df5fa86f1997f46390f84e4c9d"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000015c46fe5f94e4b385b684ab3848207d9a3907b3a760901902f80a096340872d1b060a6d61696e7461696e6572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400fdac4c5c638b841a807600472b4fce22e488c4df5fa86f1997f46390f84e4c9d03086d656d62657249640a20676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb067265706f49640a20e440fa0fd321f866ff93db463000b206375f4162118ee198d02300922d2c590a0376697312067075626c696300000200"
+    },
+    {
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "7",
+        "document": {
+          "action": "create",
+          "documentType": "config",
+          "properties": {
+            "repoId": "e440fa0fd321f866ff93db463000b206375f4162118ee198d02300922d2c590a",
+            "defaultBranch": "main",
+            "backend": {
+              "mode": 0
+            },
+            "protectedPatterns": [
+              "refs/heads/main",
+              "refs/tags/**"
+            ],
+            "vis": "public"
+          },
+          "entropy": "6f14aec565da2f10c505e30037d7ff45594336f60c79680eff87590c038a82c8"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001d7da07bcd2e935c10f0901d0713a8db59275a4527b072f53a080d23d51e84f040706636f6e666967b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a2594006f14aec565da2f10c505e30037d7ff45594336f60c79680eff87590c038a82c805076261636b656e64160112046d6f646502000d64656661756c744272616e636812046d61696e1170726f7465637465645061747465726e731502120f726566732f68656164732f6d61696e120c726566732f746167732f2a2a067265706f49640a20e440fa0fd321f866ff93db463000b206375f4162118ee198d02300922d2c590a0376697312067075626c696300000200"
+    }
+  ]
+}

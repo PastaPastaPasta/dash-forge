@@ -13,8 +13,8 @@
  * ```
  *
  * `S` hashes the **whole** compressed point, parity byte included (the `encryptedFor` scheme,
- * Platform's `derive_shared_key_ecdh`), never the x-only slice `lib/auth/wallet-protocol.ts`
- * feeds its own HKDF. ECDH is `@noble/secp256k1` (already in the app path); AES-CBC, AES-GCM,
+ * Platform's `derive_shared_key_ecdh`), never the x-only slice the older wallet
+ * key exchange (DashConnect) fed its own HKDF. ECDH is `@noble/secp256k1` (already in the app path); AES-CBC, AES-GCM,
  * HKDF and SHA-256 are WebCrypto.
  *
  * Reader rule: the sender key is the document owner's key `senderKeyId`, which must be an

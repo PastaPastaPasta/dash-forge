@@ -6,17 +6,22 @@
  * (`lib/repo/signers.ts`). Unsigned commits get no entry and cost nothing; the signers are read
  * only once a signed commit is on the page. Verdicts are kept per signer set: when the signers are
  * read again (their cache expired, or this browser changed its own keys), every commit is judged
- * again.
+ * again. A key on nobody's profile that a service signs with (GitHub's web-flow key) is checked
+ * against that service's published key (`lib/repo/well-known-signers.ts`).
  */
 
 import { useEffect, useState } from 'react'
 import { readRepoSigners } from '@/lib/repo/signers'
 import { repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
+import { serviceSignature, type SigningService } from '@/lib/repo/well-known-signers'
 import { verifyCommitSignature, type Signer, type SignatureVerdict } from '@/lib/rules/signature'
 import { useSdk } from '@/hooks/use-sdk'
 
+/** A verdict, and the service that signed it when its key is a service's (and the signature checks). */
+export type SignedVerdict = SignatureVerdict & { readonly service?: SigningService }
+
 /** A row's badge state: its verdict, still checking, or the check could not run. */
-export type SignatureState = SignatureVerdict | 'checking' | 'error'
+export type SignatureState = SignedVerdict | 'checking' | 'error'
 
 /** What the hook needs of a commit: its id and, when signed, its raw bytes. */
 export interface SignableCommit {
@@ -25,7 +30,7 @@ export interface SignableCommit {
 }
 
 /** Verdicts per signer set (a set read again is a new array: its verdicts start over). */
-const verdicts = new WeakMap<readonly Signer[], Map<string, SignatureVerdict | null>>()
+const verdicts = new WeakMap<readonly Signer[], Map<string, SignedVerdict | null>>()
 
 /** `extra`: identities that may have signed besides the repo's owner and members (a PR's author). */
 export function useCommitSignatures(repo: RepoRef, commits: readonly SignableCommit[], extra: readonly string[] = []): ReadonlyMap<string, SignatureState> {
@@ -63,7 +68,7 @@ export function useCommitSignatures(repo: RepoRef, commits: readonly SignableCom
         if (v === undefined) {
           try {
             // A 64-digit id is a SHA-256 repository's: its signature header is `gpgsig-sha256`.
-            v = await verifyCommitSignature(c.signed as Uint8Array, signers, c.oid.length === 64)
+            v = await judge(c.signed as Uint8Array, signers, c.oid.length === 64)
             known.set(c.oid, v)
           } catch {
             now.set(c.oid, 'error')
@@ -85,4 +90,13 @@ export function useCommitSignatures(repo: RepoRef, commits: readonly SignableCom
   }, [key, scope, ready, sdk])
 
   return states
+}
+
+/** The verdict on a commit, with the service that signed it when its key is a service's. */
+async function judge(bytes: Uint8Array, signers: readonly Signer[], sha256Repo: boolean): Promise<SignedVerdict | null> {
+  const v = await verifyCommitSignature(bytes, signers, sha256Repo)
+  if (v === null) return null
+  const service = await serviceSignature(bytes, v, sha256Repo)
+  if (service === null) return v
+  return service === 'bad' ? { ...v, reason: 'bad_signature' } : { ...v, service }
 }

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-requests.schema.json",
+  "title": "dg org requests --json",
+  "description": "Every request in the connected organizations.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "org": {
+            "type": "string"
+          },
+          "orgId": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "forge": {
+            "type": "boolean",
+            "description": "Made by Forge; false for a proposal made elsewhere (in multisig.dashhq.org)."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "collecting",
+              "ready",
+              "done",
+              "expired",
+              "declined",
+              "invalid"
+            ]
+          },
+          "collected": {
+            "type": "integer",
+            "description": "Valid signatures (the fewest any part of the request has)."
+          },
+          "threshold": {
+            "type": "integer"
+          },
+          "signedByYou": {
+            "type": "boolean"
+          },
+          "declinedByYou": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "org",
+          "orgId",
+          "id",
+          "title",
+          "status",
+          "collected",
+          "threshold"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "requests"
+  ],
+  "additionalProperties": true
+}

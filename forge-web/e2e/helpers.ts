@@ -514,7 +514,24 @@ export function stateFile(name: string): string {
 export async function openSignIn(page: Page, ready: Locator): Promise<void> {
   // "Sign in", or "Session locked — Unlock" when this browser holds a locked key.
   await page.getByRole('banner').getByRole('button', { name: /^sign in$|unlock$/i }).first().click()
+  const more = page.getByTestId('signin-more')
+  await more.or(ready).first().waitFor({ state: 'visible', timeout: 30_000 })
+  if (!(await ready.isVisible()) && (await more.isVisible())) await showOtherWays(page)
   await ready.waitFor({ state: 'visible', timeout: 30_000 })
+}
+
+/** Opens the sign-in sheet's collapsed "Other ways to sign in", where every tile but the wallet and the passkey sits. */
+export async function showOtherWays(scope: Page | Locator): Promise<void> {
+  const more = scope.getByTestId('signin-more')
+  await more.waitFor({ state: 'visible', timeout: 60_000 })
+  if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click()
+}
+
+/** Opens the protection form's collapsed "Use a password instead", where the passphrase fields sit. */
+export async function usePassword(scope: Page | Locator): Promise<void> {
+  const disclosure = scope.getByTestId('protect-password').first()
+  if ((await disclosure.count()) === 0 || (await disclosure.getAttribute('open')) !== null) return
+  await disclosure.locator('summary').click()
 }
 
 /** Import the identity file once: the master key registers a limited key for this browser. */
@@ -522,6 +539,7 @@ export async function importIdentity(page: Page, name: string): Promise<void> {
   await openSignIn(page, page.getByTestId('tile-import'))
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', idFile(name))
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await page.getByRole('button', { name: /create this browser's key/i }).click()

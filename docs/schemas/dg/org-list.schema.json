@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-list.schema.json",
+  "title": "dg org list --json",
+  "description": "The organizations connected on this computer for the network (public values only).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "network": {
+      "type": "string"
+    },
+    "orgs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "network": {
+            "type": "string"
+          },
+          "orgId": {
+            "type": "string"
+          },
+          "room": {
+            "type": "string"
+          },
+          "relay": {
+            "type": "string"
+          },
+          "authPub": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "threshold": {
+            "type": "integer"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "authPub": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "name",
+                "authPub"
+              ]
+            }
+          }
+        },
+        "required": [
+          "network",
+          "orgId",
+          "room",
+          "relay",
+          "authPub",
+          "label",
+          "threshold",
+          "members"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "network",
+    "orgs"
+  ],
+  "additionalProperties": true
+}

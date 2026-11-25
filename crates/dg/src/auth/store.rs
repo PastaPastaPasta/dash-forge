@@ -121,6 +121,9 @@ pub enum Slot {
     Main,
     /// A new key, not yet confirmed on chain.
     Pending,
+    /// forge-user's encryption key `E` (settings that follow the identity), which older dg
+    /// builds never read.
+    Sync,
 }
 
 impl Slot {
@@ -128,6 +131,7 @@ impl Slot {
         match self {
             Slot::Main => "",
             Slot::Pending => ".pending",
+            Slot::Sync => ".sync",
         }
     }
 }
@@ -141,6 +145,7 @@ fn slot_file(network: &str, identity_id: &str, slot: Slot) -> Result<PathBuf> {
     Ok(match slot {
         Slot::Main => f,
         Slot::Pending => f.with_extension("key.pending"),
+        Slot::Sync => f.with_extension("key.sync"),
     })
 }
 
@@ -331,7 +336,7 @@ pub fn discard_pending(network: &str, identity_id: &str) {
 /// was removed; fails if an entry exists but could not be removed.
 pub fn remove(network: &str, identity_id: &str, source: Option<&str>) -> Result<Vec<String>> {
     let mut removed = Vec::new();
-    let mut entries: Vec<(String, String)> = [Slot::Main, Slot::Pending]
+    let mut entries: Vec<(String, String)> = [Slot::Main, Slot::Pending, Slot::Sync]
         .iter()
         .map(|s| {
             (
@@ -354,7 +359,7 @@ pub fn remove(network: &str, identity_id: &str, source: Option<&str>) -> Result<
             Err(e) => failures.push(format!("{svc}/{acct}: {e}")),
         }
     }
-    for slot in [Slot::Main, Slot::Pending] {
+    for slot in [Slot::Main, Slot::Pending, Slot::Sync] {
         let path = slot_file(network, identity_id, slot)?;
         if path.exists() {
             std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
@@ -398,6 +403,21 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("DASH_FORGE_PASSPHRASE"), "{line}");
+    }
+
+    #[test]
+    fn the_sync_slot_is_where_forge_core_reads_the_sync_key() {
+        use forge_core::user_sync::key;
+        for network in ["testnet", "devnet-sakura"] {
+            assert_eq!(
+                account(network, "ID", Slot::Sync),
+                key::keychain_account(network, "ID")
+            );
+            assert_eq!(
+                slot_file(network, "ID", Slot::Sync).ok(),
+                key::key_file(network, "ID")
+            );
+        }
     }
 
     #[test]

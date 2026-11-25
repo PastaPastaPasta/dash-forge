@@ -45,6 +45,7 @@ mod make_public_keep;
 mod meta;
 mod milestone;
 mod narrow;
+mod org;
 mod pack_mirror;
 mod pin;
 mod pr;
@@ -58,6 +59,7 @@ mod release;
 mod release_verify;
 mod repo;
 mod repo_make_public;
+mod repo_pin;
 mod repo_settings;
 mod repo_sync;
 mod search;
@@ -66,6 +68,7 @@ mod signing;
 mod status;
 mod storage;
 mod storage_wizard;
+mod sync;
 mod verify_app;
 mod verify_mirror;
 mod webhook;
@@ -236,6 +239,12 @@ pub enum Command {
     /// Repository members and their access (Read, Triage, Write, Maintain).
     #[command(subcommand)]
     Collab(CollabCommand),
+    /// Organizations: repository owners that several people sign for together (N of M).
+    ///
+    /// Create the organization in multisig.dashhq.org, then connect it here. Owner actions on
+    /// its repositories become requests its members sign with `dg org sign`.
+    #[command(subcommand)]
+    Org(org::OrgCommand),
     /// Make members-only posts public: issues, comments and reviews.
     /// Your own posts are edited to Public; a maintainer makes anyone's public, and their authors
     /// are told. Everyone can read them from then on. This can't be undone.
@@ -455,8 +464,14 @@ pub struct RepoCreateArgs {
     /// the current branch with `-u`.
     #[arg(long)]
     pub push: bool,
+    /// Create it for an organization you connected (`dg org list`): its identity id or name.
+    /// The repository exists once enough of its members sign the request this makes.
+    #[arg(long, value_name = "ORG")]
+    pub owner: Option<String>,
     #[command(flatten)]
     pub opts: CreateOptions,
+    #[command(flatten)]
+    pub phrase: org::PhraseArgs,
 }
 
 /// `dg init` arguments.
@@ -483,9 +498,11 @@ pub enum RepoCommand {
         /// Where to clone it (default: the repository's name).
         dir: Option<std::path::PathBuf>,
     },
-    /// Fork a repo (nothing is re-uploaded).
+    /// Fork a repo: your own copy you can push to.
     ///
-    /// The fork records the parent's packs by reference and copies its branches and tags.
+    /// The parent's packs are copied to your storage (the first profile in your storage policy
+    /// that others can read, or --storage) and recorded with your copy first; with no such
+    /// storage, or --no-copy, they are recorded by reference. Its branches and tags are copied.
     Fork {
         /// The repository (`owner/name`).
         repo: String,
@@ -497,8 +514,27 @@ pub enum RepoCommand {
         #[arg(long)]
         default_branch_only: bool,
         /// Also keep the parent's files on your IPFS node.
-        #[arg(long)]
+        #[arg(long, hide = true)]
         pin: bool,
+        /// The storage profile to copy the parent's packs to.
+        #[arg(long, value_name = "PROFILE", conflicts_with = "no_copy")]
+        storage: Option<String>,
+        /// Record the parent's packs by reference only, without copying them.
+        #[arg(long)]
+        no_copy: bool,
+    },
+    /// Pin a repo: keep a copy of its packs on your own storage and tell readers about it.
+    ///
+    /// Each pack is copied to your storage profile (an IPFS node, or a bucket with a public
+    /// URL) and recorded as a pack mirror, so clones fall back to your copy when the repo's own
+    /// storage is gone. One record per pack (shown before you confirm). Public repos only.
+    Pin(crate::repo_pin::RepoPinArgs),
+    /// Unpin a repo: delete your pack mirror records for it and stop following it.
+    ///
+    /// The copies stay on your storage.
+    Unpin {
+        /// The repository (`owner/name`).
+        repo: String,
     },
     /// Sync a fork with the repo it was forked from (GitHub's "Sync fork").
     ///
@@ -513,6 +549,13 @@ pub enum RepoCommand {
         /// The fork's branch to sync (default: its default branch).
         #[arg(long)]
         branch: Option<String>,
+        /// The storage profile to copy the parent's new packs to (default: the one the fork's
+        /// packs are already on, else your storage policy's).
+        #[arg(long, value_name = "PROFILE", conflicts_with = "no_copy")]
+        storage: Option<String>,
+        /// Record the parent's new packs by reference only, without copying them.
+        #[arg(long)]
+        no_copy: bool,
     },
     /// Star a repo. Stars count toward Trending on Explore.
     ///
@@ -2192,6 +2235,8 @@ pub enum CollabCommand {
         /// adding them. Without it, an add the member has not accepted yet is refused.
         #[arg(long, value_name = "SECONDS")]
         wait: Option<u64>,
+        #[command(flatten)]
+        phrase: org::PhraseArgs,
     },
     /// Accept membership of a repository (write your consent), so its owner can add you.
     Accept {
@@ -2216,6 +2261,8 @@ pub enum CollabCommand {
         /// then go back to the version before it).
         #[arg(long)]
         no_resave: bool,
+        #[command(flatten)]
+        phrase: org::PhraseArgs,
     },
     /// List members.
     List {
@@ -2824,6 +2871,7 @@ fn run(cli: &Cli) -> Result<()> {
         Err(e) => return Err(e),
     };
     let ctx = Ctx::resolve(cli, &config)?;
+    forge_core::user_error::set_network(ctx.network());
     forge_core::fiat::initialize(
         ctx.network(),
         cli.fiat.as_deref(),
@@ -2850,6 +2898,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         }
         Command::VerifyMirror { url, strict } => verify_mirror::run(ctx, url, *strict).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
+        Command::Org(cmd) => Box::pin(org::run(ctx, cmd)).await,
         Command::MakePublic {
             repo,
             posts,

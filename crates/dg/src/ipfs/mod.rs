@@ -55,10 +55,13 @@ pub enum IpfsCommand {
     Serve,
     /// Show the node, stored bytes, pins and followed repositories.
     Status,
-    /// Get a new connection code for the web app.
+    /// Print a new connection link and code for the web app.
     Connect {
-        /// Print the connection link without opening a browser.
+        /// Also open the connection link in a browser.
         #[arg(long)]
+        open: bool,
+        /// The default; kept so existing scripts still run.
+        #[arg(long, hide = true, conflicts_with = "open")]
         no_open: bool,
         /// Use this allowed website for the connection link.
         #[arg(long, value_name = "ORIGIN")]
@@ -110,8 +113,11 @@ pub struct UpArgs {
     /// On Linux, keep the service running without a login.
     #[arg(long, conflicts_with = "no_service")]
     linger: bool,
-    /// Print the connection link without opening a browser.
+    /// Also open the connection link in a browser.
     #[arg(long)]
+    open: bool,
+    /// The default; kept so existing scripts still run.
+    #[arg(long, hide = true, conflicts_with = "open")]
     no_open: bool,
 }
 
@@ -163,13 +169,13 @@ pub async fn run(ctx: &Ctx, command: &IpfsCommand) -> Result<()> {
             });
             Ok(())
         }
-        IpfsCommand::Connect { no_open, origin } => {
+        IpfsCommand::Connect { open, origin, .. } => {
             let mut node = Node::load()?;
             if let Some(origin) = origin {
                 node.config.set_link_origin(Some(origin))?;
             }
             let connection = pair::create(&node)?;
-            let opened = open_link(&connection.link, *no_open || ctx.json).await;
+            let opened = open_link(&connection.link, !*open || ctx.json).await;
             ctx.emit(json!({"connect":connection}), || {
                 print_connection(&connection, opened);
             });
@@ -230,6 +236,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
             node.config.origins.push(origin);
         }
     }
+    node.config.add_forge_origins();
     node.config
         .set_link_origin(args.origin.first().map(String::as_str))?;
     node.config.validate()?;
@@ -275,7 +282,13 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
                 .spawn()?,
         )
     };
-    let verified = Box::pin(verify(&node, &tokens, !ctx.json)).await;
+    let verified = Box::pin(verify(
+        &node,
+        &tokens,
+        !ctx.json,
+        ctx.network().web_origin(),
+    ))
+    .await;
     if let Some(child) = temporary.as_mut() {
         let stopped = serve::stop(&node).await;
         if stopped.is_ok()
@@ -298,7 +311,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     let auth_ref = if stored {
         format!("keychain:dash-forge/{}", node.config.name)
     } else {
-        eprintln!("The OS keychain is unavailable. The CLI profile uses env:DASH_FORGE_KUBO_AUTH; set it to the node's Forge bearer token when pushing. IPFS commands use private tokens.toml directly.");
+        eprintln!("The OS keychain is unavailable. The CLI profile uses env:DASH_FORGE_KUBO_AUTH; set it to `Bearer <token>`, where <token> is the `forge` value in {}, wherever you push. IPFS commands use tokens.toml directly.", node.dir.join("tokens.toml").display());
         "env:DASH_FORGE_KUBO_AUTH".into()
     };
     crate::storage::save_profile(
@@ -314,7 +327,7 @@ async fn up(ctx: &Ctx, args: &UpArgs) -> Result<()> {
     let connection = pair::create(&node)?;
     let opened = open_link(
         &connection.link,
-        args.no_open || ctx.json || !node.config.service,
+        !args.open || ctx.json || !node.config.service,
     )
     .await;
     let value = json!({"node":up_node(&node, &peer_id, &version), "profile":node.config.name,"connect":connection});
@@ -385,7 +398,12 @@ async fn check_public_ports(node: &Node) -> Result<()> {
     Ok(())
 }
 
-async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, String)> {
+async fn verify(
+    node: &Node,
+    tokens: &Tokens,
+    live: bool,
+    origin: &'static str,
+) -> Result<(String, String)> {
     let http = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -418,6 +436,7 @@ async fn verify(node: &Node, tokens: &Tokens, live: bool) -> Result<(String, Str
         &profile(node, None)?,
         live,
         Some(&format!("Bearer {}", tokens.forge)),
+        origin,
     )
     .await;
     if !report.ok() {
@@ -448,7 +467,7 @@ async fn origin(ctx: &Ctx, command: &OriginCommand) -> Result<()> {
         OriginCommand::Remove { origin } => (origin, false),
     };
     let origin = config::validate_origin(origin)?;
-    if origin == config::DEFAULT_ORIGIN && !add {
+    if config::FORGE_ORIGINS.contains(&origin.as_str()) && !add {
         return Err(crate::errors::usage(
             "the Forge website must remain an allowed origin",
         ));
@@ -616,29 +635,73 @@ async fn open_link(link: &str, skip: bool) -> bool {
     }
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        command
-            .arg(link)
-            .output()
-            .await
-            .is_ok_and(|o| o.status.success())
+        command.arg(link);
+        run_opener(command, Duration::from_secs(3)).await
+    }
+}
+
+/// Run a URL opener without waiting on the browser. `xdg-open` without a desktop environment
+/// runs the browser in the foreground, and a browser it starts inherits the opener's stdout:
+/// waiting for its output or its exit hung `dg ipfs up` until the browser was closed. An opener
+/// still running after `grace` has started one, so it counts as opened.
+async fn run_opener(mut command: tokio::process::Command, grace: Duration) -> bool {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    match tokio::time::timeout(grace, child.wait()).await {
+        Ok(status) => status.is_ok_and(|s| s.success()),
+        Err(_) => true,
     }
 }
 
 fn print_connection(connection: &pair::Connection, opened: bool) {
+    println!();
     println!(
-        "Connecting the web app… {} {}",
-        if opened { "opened" } else { "open" },
-        connection.link
+        "Connect it to Forge: open this link{}",
+        if opened {
+            " (opened in your browser)"
+        } else {
+            ""
+        }
+    );
+    println!("  {}", connection.link);
+    println!(
+        "or paste this code on the Storage page: {}",
+        connection.code
     );
     println!(
-        "Settings → Storage → IPFS (kubo) → Connect with a code: {} (valid 10 min).",
-        connection.code
+        "The code works once and expires in {} minutes. For a new one: dg ipfs connect",
+        pair::CODE_LIFETIME_SECS / 60
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_opener_that_leaves_the_browser_running_does_not_block() {
+        let start = std::time::Instant::now();
+        let mut detached = tokio::process::Command::new("sh");
+        detached.args(["-c", "sleep 30 & exit 0"]);
+        assert!(run_opener(detached, Duration::from_secs(3)).await);
+        let mut foreground = tokio::process::Command::new("sh");
+        foreground.args(["-c", "sleep 30"]);
+        assert!(run_opener(foreground, Duration::from_millis(300)).await);
+        let mut failing = tokio::process::Command::new("sh");
+        failing.args(["-c", "exit 3"]);
+        assert!(!run_opener(failing, Duration::from_secs(3)).await);
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+    }
 
     #[test]
     fn up_output_reports_all_selected_daemon_ports() {

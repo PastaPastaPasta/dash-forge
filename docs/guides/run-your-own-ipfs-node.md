@@ -33,7 +33,7 @@ It does this, in order:
    - Windows (best effort): a Task Scheduler task, `DashForgeIPFS`, that runs at logon. If it can't be created, `dg` warns and you run `dg ipfs serve` yourself.
 4. **Checks it works.** It adds a small test file through the node, checks the CID, pins it, reads it back and removes it. This is the same check as `dg storage test`.
 5. **Saves a storage profile** called `kubo` and puts the node's token in your OS keychain.
-6. **Opens the connect page** in your browser. It doesn't, if you pass `--no-open`, if a Linux session has no display, or if you used `--no-service`.
+6. **Prints a link and a code** to connect the web app. It doesn't open a browser; pass `--open` if you want it to.
 
 You see:
 
@@ -44,15 +44,18 @@ IPFS node ready: kubo 0.43.1, peer 12D3Koo…, starts at login.
   Swarm    TCP+UDP 4001
   Internal API 5101; gateway 8180 (loopback only)
   CLI      storage profile "kubo" saved — `dg storage use kubo` sends your pushes there.
-Connecting the web app… opened https://forge.dashhq.org/settings/storage/#kubo=5001.7KQ2-M9XD-PF4C
-Settings → Storage → IPFS (kubo) → Connect with a code: 7KQ2-M9XD-PF4C (valid 10 min).
+
+Connect it to Forge: open this link
+  https://forge.dashhq.org/settings/storage/#kubo=5001.7KQ2-M9XD-PF4C
+or paste this code on the Storage page: 7KQ2-M9XD-PF4C
+The code works once and expires in 10 minutes. For a new one: dg ipfs connect
 ```
 
-Running it again is safe. It keeps the same kubo, repo and tokens, applies your new options, and restarts the node.
+Running it again is safe. It keeps the same kubo, repo, pins and tokens, so browsers you already connected stay connected. It adds any Forge website the node doesn't allow yet, applies your new options, and restarts the node.
 
 ### Your own Forge address
 
-The node only talks to websites on its allow-list. `https://forge.dashhq.org` is always on it. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
+The node only talks to websites on its allow-list. Both Forge web apps, `https://forge.dashhq.org` (mainnet) and `https://testnet-forge.dashhq.org` (testnet), are always on it. The link `dg ipfs up` prints opens forge.dashhq.org. On testnet-forge.dashhq.org, paste the code instead, or get a testnet link with `dg ipfs connect --origin https://testnet-forge.dashhq.org`. If you run your own copy of the web app ([Run your own copy of the web app](verify-forge.md#run-your-own-copy-of-the-web-app)), add its address:
 
 ```sh
 dg ipfs up --origin https://forge.example.org
@@ -60,7 +63,7 @@ dg ipfs up --origin https://forge.example.org
 
 The address must be `https://host` (a port is fine), with no path. `dg` refuses shared IPFS gateways such as `ipfs.io` or `dweb.link`, `null` and `*`. For a local development build only, `http://localhost:3000` and `http://127.0.0.1:3000` are accepted, with a warning.
 
-The link `dg` prints still points at forge.dashhq.org. On your own address, open **Settings → Storage** there and use [Connect with a code](#connect-the-web-app).
+With `--origin`, the link `dg` prints opens your address. You can also open **Settings → Storage** there and paste the code ([Connect the web app](#connect-the-web-app)).
 
 ### Options
 
@@ -74,7 +77,7 @@ The link `dg` prints still points at forge.dashhq.org. On your own address, open
 | `--rotate-token` | Replace both tokens. The old ones stop working at once, so connect your browsers again with `dg ipfs connect`. |
 | `--no-service` | Don't install a login service. `dg` checks the node, then stops it. You start it with `dg ipfs serve` under your own supervisor. |
 | `--linger` | Linux: keep the service running when you are logged out. |
-| `--no-open` | Print the connect link; don't open a browser. |
+| `--open` | Also open the connect link in your browser. |
 | `--json` | Print the result as JSON, including the connect link and code. |
 
 The public API, public gateway, two internal ports and swarm port must all differ. The internal API and gateway prefer 5101 and 8180; if either is busy, `dg` picks a free loopback port. Port selection scans upward from the preferred number, skipping conflicts. The chosen ports are saved in `node.toml`. The swarm port stays fixed on later runs, including origin changes; if it becomes busy, stop the conflicting program or choose another port with `--swarm-port`. Internal ports can move if needed. Any port change produces a warning on stderr, and `up` reports the swarm and both internal ports in human and JSON output. If a profile called `kubo` already points somewhere else, `dg` stops and asks for another `--name`.
@@ -112,14 +115,14 @@ Everything is under one directory, `$XDG_DATA_HOME/dash-forge/ipfs`. If `XDG_DAT
 
 Pairing means the web app learns your node's address and a token to use it. The token never goes in a link. The link carries a one-time code instead.
 
-**The link.** `dg ipfs up` opens it for you. The connect link also works when the Storage page is already open in the tab. The page:
+**The link.** Open the link `dg ipfs up` prints. It also works when the Storage page is already open in the tab. The page:
 
 1. reads the code from the address bar and removes it from the URL;
 2. asks your node to swap the code for the settings;
 3. shows **Connect the IPFS node on this computer?** with the node's kubo version and peer id;
 4. saves nothing until you press **Test and save**. You must be signed in, with the browser vault unlocked, because the token is stored with your other storage credentials ([the browser vault](identity-and-keys.md#the-browser-vault-and-its-limits)).
 
-**A code.** If the page didn't open, or you are on your own address, go to **Settings → Storage → IPFS (kubo)**, type the code under **Connect with a code**, and press **Connect**. The code looks like `7KQ2-M9XD-PF4C`. If you changed `--api-port`, open **Advanced** and enter the port too. Get a fresh code at any time:
+**A code.** In another browser, or when the link is not handy, go to **Settings → Storage → IPFS (kubo)**, paste the code under **Or paste the code `dg ipfs up` printed**, and press **Connect**. The code looks like `7KQ2-M9XD-PF4C`. If you changed `--api-port`, open **Advanced** and enter the port too. Get a fresh code at any time:
 
 ```sh
 dg ipfs connect
@@ -138,7 +141,7 @@ Chrome may ask you to **allow access to apps on this device** (Local Network Acc
 | Brave | Works after you allow it. If it doesn't ask, look at the site's permissions. |
 | Safari | **Does not work.** Safari doesn't let a secure site reach a node on your computer. The page says so. Use `dg` to push, or connect from another browser. |
 
-If you deny the prompt, the page says the node "is not running, or your browser blocked it". Allow local access for the site in the browser's site settings and connect again.
+While the prompt is open, the page says so and waits for your answer. If you block it, the page tells you to allow the site in its site settings (the icon left of the address); do that and press **Connect** again.
 
 ---
 
@@ -156,7 +159,7 @@ To keep a second copy elsewhere, list both: `dg storage use r2-main,kubo`. [Choo
 
 Two cautions, both from [Bring your own storage](bring-your-own-storage.md#ipfs-your-own-kubo-node):
 
-- The profile `dg ipfs up` saves has no public gateway. Other people can read your packs only if they can find your node on the IPFS network ([Being reachable](#being-reachable)). A laptop that is often off is a poor only copy. Keep a bucket or a pinning service as well.
+- The profile `dg ipfs up` saves has no public gateway. Other people can read your packs only if they can find your node on the IPFS network ([Being reachable](#being-reachable)). A laptop that is often off is a poor only copy. Keep a bucket as well.
 
 ---
 
@@ -170,7 +173,7 @@ shows the kubo version and peer id, whether the service is running, the bytes st
 
 | Command | What it does |
 |---|---|
-| `dg ipfs connect [--no-open]` | A new connection link and code. |
+| `dg ipfs connect [--open]` | A new connection link and code. |
 | `dg ipfs origin add <https://host>` | Allow another website. It restarts the node. |
 | `dg ipfs origin remove <https://host>` | Stop allowing a website. `https://forge.dashhq.org` can't be removed. |
 | `dg ipfs down` | Stop the node and remove its login service. Your files, tokens and profile stay. `dg ipfs up` starts it again. |
@@ -199,7 +202,7 @@ Where the tokens are:
 
 | Token | Stored in |
 |---|---|
-| Scoped | `tokens.toml` (readable only by you); your OS keychain, as the `kubo` profile's credential (if there is no keychain, the profile uses the variable `DASH_FORGE_KUBO_AUTH`, and you set it to the token when you push); and the browser vault, once you connect |
+| Scoped | `tokens.toml` (readable only by you); your OS keychain, as the `kubo` profile's credential (if there is no keychain, the profile uses the variable `DASH_FORGE_KUBO_AUTH`, and you set it to `Bearer <token>`, with the `forge` value from `tokens.toml`, where you push: a bare token is refused); and the browser vault, once you connect |
 | Owner | `tokens.toml` only |
 
 Other programs running as you can read `tokens.toml`. `dg` trusts your own account, as it does for your identity file. To change the scoped token, run `dg ipfs up --rotate-token` and connect your browsers again.
@@ -269,11 +272,13 @@ pins now and adds the repository to `follow.toml`. Your node's service pins agai
 
 ### From the web app
 
-On a repository's page, **Pin** opens a dialog with the number of files, their size and `cost 0 DASH (uses your disk)`. Pick your node and press **Pin**. The dialog shows the same progress rows as `dg`, and a copyable `dg ipfs pin owner/name --follow` line, because a web page can't keep a node up to date. The button shows when you are signed in (for a private repository, only to members). With no node connected, the dialog shows `dg ipfs up`.
+On a **public** repository's page, **Pin** copies each of its files to your storage (your node, or an S3 bucket with a public URL) and records one `packMirror` per file on Platform, so readers find your copy if the repository's own storage goes away. The dialog shows the number of files, their size, the storage they go to and the price of the records. Once every file is covered the button reads **Pinned**; when new files land it reads **Update pin (N new)**, and one click copies just those. **Unpin** deletes your records; the files stay on your node. The dialog's details hold a copyable `dg repo pin owner/name --follow` line, because a web page can't keep a copy up to date.
 
-The web app refuses a single file over 512 MiB and says to use `dg ipfs pin` instead.
+On a **private** repository's page (members only), **Pin** keeps a copy on your node without writing anything to Platform: the dialog shows the number of files, their size and `cost 0 DASH (uses your disk)`. Pick your node and press **Pin**. With no node connected, the dialog shows `dg ipfs up`.
 
-When you fork a repository in the web app, the dialog has a box, **Also pin its files on my IPFS node**, with the size. It is ticked by default when the total is under 256 MiB. In `dg`, use `dg repo fork owner/name --pin`.
+The web app refuses a single file over 512 MiB and says to use `dg` instead.
+
+When you fork a repository in the web app and your default storage policy names a node or a public bucket, each of the parent's files is copied there before the fork records it. With no such storage, the fork points at the parent's files, and the dialog says so.
 
 ### Privacy
 
@@ -304,14 +309,17 @@ Private repositories need more care:
 | `could not start the IPFS login service` (macOS) | Run `dg ipfs up --no-service`, then `dg ipfs serve` yourself. |
 | Windows: `could not start the logon task` | The task is best effort. Run `dg ipfs serve` yourself. |
 | The page says `Safari can't reach a node on this computer from a secure site` | Safari blocks it. Use `dg` to push, or Chrome, Firefox or Brave. |
-| `The node is not running, or your browser blocked it` | Run `dg ipfs status`. If it runs, allow the site to reach apps on this device in your browser. |
-| `The node blocked this site. Run dg ipfs up --origin …` | The address isn't on the allow-list. Run the command it shows, then connect again. |
-| `Wrong code` | Check the code. Five wrong tries cancel it; run `dg ipfs connect`. |
-| `This code expired or was already used` | Run `dg ipfs connect` for a new one. |
+| `The IPFS node on this computer isn't running` | Run `dg ipfs up` (or `dg ipfs status` to see why it stopped), then press **Connect**. |
+| `This site needs your OK to reach the node on this computer` | You closed the browser's prompt without answering. Press **Connect** and choose **Allow**. |
+| `Your browser isn't letting this site reach apps on this device` | You blocked the browser's prompt. Allow it in the site's settings, then press **Connect**. |
+| `The node on this computer doesn't accept this site yet` | The node was set up by an older `dg`. Update `dg` and run `dg ipfs up`; it adds the site and keeps your data. |
+| `The node on this computer doesn't accept this site. Run dg ipfs up --origin …` | Your own copy of the web app isn't on the allow-list. Run the command it shows, then connect again. |
+| `That code isn't right` | Check the code. Five wrong tries cancel it; run `dg ipfs connect`. |
+| `This code expired or was already used` | Codes work once, for 10 minutes. Run `dg ipfs connect` for a new one. |
 | The node refuses a push or a pin (HTTP 403) | The token the profile or browser holds is old, or was made by hand without `pin/add`. For `dg`, run `dg ipfs up`: it saves the node's current token to the profile. For a browser, run `dg ipfs connect` and connect again. |
 | `choose an IPFS storage profile before pinning` | No IPFS profile, or more than one. Run `dg ipfs up`, or pass `--profile <name>`. |
 | `only members can pin a private repo` | Sign in as a member. See [Privacy](#privacy). |
 | `some repository files could not be pinned` | Run the same command again. Each failed file is listed with its reason. If no copy can be read, the repository may have lost its stored bytes. |
 | `status` says `private-only` | [Forward the TCP and UDP port shown by status](#being-reachable). |
 
-Beyond that: a manual kubo setup, with the preflight proxy a browser needs, is in [Bring your own storage](bring-your-own-storage.md#set-up-kubo-by-hand), and kubo on a NAS is in [Storage on your home NAS](home-nas-storage.md#ipfs-kubo-on-the-nas).
+Beyond that: a manual kubo setup, with the preflight proxy a browser needs, is in [Bring your own storage](bring-your-own-storage.md#set-up-kubo-by-hand).

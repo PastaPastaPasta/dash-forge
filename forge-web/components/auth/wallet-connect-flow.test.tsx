@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 /**
  * Wallet sign-in over an unfinished renewal whose key is locked: the renewal's passphrase input is
- * uncontrolled, so the typed passphrase never lands in the DOM's `value` attribute. The wallet's
- * encryption key goes to the sign-in with every attempt, and is wiped once it is done (D27).
+ * uncontrolled, so the typed passphrase never lands in the DOM's `value` attribute.
  *
- * App Connect v2: shown first where the chain supports it (with the group check and the locked-key
- * check before the code), a link to the older code and back, the poll cut short on focus and on the
- * return page's message, the confirm step, and a renewal in the wallet that granted the key
- * (protection first, the old key's renewal mark ended on every way out but a stored key).
+ * App Connect v2, the only wallet sign-in (the older code is gone): the group check and the
+ * locked-key check before the code, a plain "not offered here" where the chain cannot take it, the
+ * poll cut short on focus and on the return page's message, the confirm step, and a renewal in the
+ * wallet that granted the key (protection first, the old key's renewal mark ended on every way out
+ * but a stored key).
  */
 
 import { act } from 'react'
@@ -15,23 +15,17 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PendingRenewalChoiceError, PendingRenewalLockedError } from '@/lib/auth/controller'
 
-const { ID, FORGE, answered, v2, auth } = vi.hoisted(() => ({
+const { ID, FORGE, v2, auth } = vi.hoisted(() => ({
   ID: '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD',
   FORGE: { core: 'CoreContract111', collab: 'CollabContract111', community: 'CommunityContract111', group: 'Group111' },
-  /** The encryption keys of the last answer the fake wallet gave. */
-  answered: { keys: [] as Uint8Array[] },
   /** The App Connect v2 side of the fake chain and wallet. */
   v2: {
-    available: false,
+    available: false as boolean | null,
     /** What the fake wallet answers: resolve it from a test, or reject it. */
     pending: null as { resolve: (g: unknown) => void; reject: (e: Error) => void } | null,
     trigger: null as { fire: () => void } | null,
     awaited: 0,
     calls: [] as string[],
-    /** The older (v1) request stays unanswered, so its request step stays on screen. */
-    holdV1: false,
-    /** The older flow's response-source lookup never returns (it is still being built). */
-    holdSources: false,
     /** The renewal request's private key, to see it spent. */
     renewalPriv: null as Uint8Array | null,
   },
@@ -39,6 +33,8 @@ const { ID, FORGE, answered, v2, auth } = vi.hoisted(() => ({
   auth: {
     identity: null as string | null,
     unlockScope: null as 'full' | 'signing' | null,
+    /** Where the signed-in key came from (a renewal's copy names the wallet only for its own key). */
+    origin: 'app-connect' as 'dg' | 'app-connect' | 'passkey' | null,
     controller: {} as Record<string, unknown>,
   },
 }))
@@ -54,19 +50,6 @@ vi.mock('@/lib/auth/connect', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/auth/connect')>()),
   connectPlatform: async () => ({}),
   withPlatformRead: <T,>(p: Promise<T>) => p,
-}))
-vi.mock('@/lib/auth/app-connect', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/auth/app-connect')>()),
-  responseSources: async () => (v2.holdSources ? new Promise<never>(() => undefined) : [{}]),
-  newLoginRequest: () => {
-    v2.calls.push('v1-request')
-    return { uri: 'dash-key:fake', expiresAt: Date.now() + 60_000 }
-  },
-  awaitWalletAnswer: async () => {
-    if (v2.holdV1) return new Promise<never>(() => undefined)
-    answered.keys = [new Uint8Array(32).fill(0x42)]
-    return { kind: 'keys', identityId: ID, keys: [{ scope: {}, limits: {} }], encryptionKeys: answered.keys }
-  },
 }))
 vi.mock('@/lib/auth/app-connect-v2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/auth/app-connect-v2')>()),
@@ -86,10 +69,6 @@ vi.mock('@/lib/auth/app-connect-v2', async (importOriginal) => ({
     })
   },
 }))
-vi.mock('@/lib/auth/key-registration', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/auth/key-registration')>()),
-  isUnlimited: () => false,
-}))
 vi.mock('@/lib/auth/responder-profile', () => ({
   responderProfile: async () => ({ identityId: ID, name: null, namedAt: null, warnings: [] }),
 }))
@@ -97,11 +76,11 @@ vi.mock('@/components/ui/qr', () => ({ Qr: ({ value }: { value: string }) => <fi
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
     adoptWalletKeys,
-    addWalletGrant: vi.fn(),
     identity: auth.identity,
     isLoading: false,
     vaults: [],
     unlockScope: auth.unlockScope,
+    origin: auth.origin,
     controller: auth.controller,
   }),
 }))
@@ -110,8 +89,8 @@ vi.mock('@/contexts/auth-context', () => ({
 function fakeV2Request(hint: string | null): { appEphemeralPriv: Uint8Array } & Record<string, unknown> {
   return {
     request: { authBindings: [{ totalBudget: 5_000_000_000n, expiresAt: 1_807_776_000_000 }] },
-    qrUri: 'dash-key:v2qr?v=2',
-    linkUri: 'dash-key:v2link?v=2&cb=x',
+    qrUri: 'dashpay://connect?v=2&n=d&r=qr',
+    linkUri: 'dashpay://connect?v=2&n=d&r=link&cb=x',
     requestHash: new Uint8Array(20).fill(0xab),
     createdAt: Date.now(),
     expiresAt: Date.now() + 600_000,
@@ -151,11 +130,10 @@ beforeEach(() => {
   v2.trigger = null
   v2.awaited = 0
   v2.calls = []
-  v2.holdV1 = false
-  v2.holdSources = false
   v2.renewalPriv = null
   auth.identity = null
   auth.unlockScope = null
+  auth.origin = 'app-connect'
   checkGroup.mockReset().mockImplementation(async () => {
     v2.calls.push('group')
     return { unknown: [], unchecked: [], notice: null }
@@ -181,8 +159,16 @@ afterEach(() => {
   host.remove()
 })
 
+/** What the verified v2 grant is: the identity and its group-bound key (budget 0.05 DASH). */
+const V2_GRANT = {
+  identityId: ID,
+  key: { keyId: 9, wif: 'wif', scope: { unbounded: false }, limits: { remaining: 5_000_000_000n, total: 5_000_000_000n, expiresAt: 1_807_776_000_000 } },
+}
+const q = (testId: string): HTMLElement | null => host.querySelector(`[data-testid="${testId}"]`)
+
 describe('WalletConnectFlow: a locked unfinished renewal', () => {
   it('keeps the renewal passphrase out of the DOM and passes it on', async () => {
+    v2.available = true
     adoptWalletKeys
       .mockRejectedValueOnce(new PendingRenewalChoiceError(7))
       .mockRejectedValueOnce(new PendingRenewalLockedError(7, ['passphrase'], false))
@@ -190,11 +176,13 @@ describe('WalletConnectFlow: a locked unfinished renewal', () => {
     const onDone = vi.fn()
     act(() => root.render(<WalletConnectFlow onDone={onDone} />))
     await flush()
+    await act(async () => v2.pending!.resolve(V2_GRANT))
+    await flush()
     expect(host.querySelector('[data-testid="wallet-confirm"]')).not.toBeNull()
-    act(() => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    act(() => q('wallet-confirm-me')!.click())
     act(() => type(host.querySelector<HTMLInputElement>('#vault-passphrase')!, FAKE_VAULT_PASSPHRASE))
     act(() => type(host.querySelector<HTMLInputElement>('#vault-passphrase-2')!, FAKE_VAULT_PASSPHRASE))
-    await act(async () => byText('Finish signing in').click())
+    await act(async () => q('protect-password-save')!.click())
     await act(async () => byText('Continue with the wallet').click())
 
     const input = host.querySelector<HTMLInputElement>('#renewal-passphrase')!
@@ -204,34 +192,16 @@ describe('WalletConnectFlow: a locked unfinished renewal', () => {
     expect(document.body.innerHTML).not.toContain(FAKE_RENEWAL_PASSPHRASE)
     expect(byText('Keep its key and continue').disabled).toBe(false)
     await act(async () => byText('Keep its key and continue').click())
-    expect(adoptWalletKeys).toHaveBeenLastCalledWith(ID, expect.anything(), expect.anything(), {
+    expect(adoptWalletKeys).toHaveBeenLastCalledWith(ID, [V2_GRANT.key], expect.anything(), {
+      origin: 'app-connect',
       discardPendingRenewal: true,
       renewalUnlock: { passphrase: FAKE_RENEWAL_PASSPHRASE },
-      encryptionKeys: answered.keys,
-      justRegistered: false,
     })
     expect(onDone).toHaveBeenCalled()
-    // Passed intact on each of the three attempts, and wiped once signed in.
     expect(adoptWalletKeys).toHaveBeenCalledTimes(3)
-    expect(answered.keys[0]!.every((b) => b === 0)).toBe(true)
-  })
-
-  it("wipes the wallet's encryption key when the sheet closes before signing in", async () => {
-    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
-    await flush()
-    expect(host.querySelector('[data-testid="wallet-confirm"]')).not.toBeNull()
-    expect(answered.keys[0]!.every((b) => b === 0x42)).toBe(true)
-    act(() => root.render(<></>))
-    expect(answered.keys[0]!.every((b) => b === 0)).toBe(true)
   })
 })
 
-/** What the verified v2 grant is: the identity and its group-bound key (budget 0.05 DASH). */
-const V2_GRANT = {
-  identityId: ID,
-  key: { keyId: 9, wif: 'wif', scope: { unbounded: false }, limits: { remaining: 5_000_000_000n, total: 5_000_000_000n, expiresAt: 1_807_776_000_000 } },
-}
-const q = (testId: string): HTMLElement | null => host.querySelector(`[data-testid="${testId}"]`)
 
 describe('WalletConnectFlow: App Connect v2 sign-in', () => {
   it('shows the v2 request first, after the group and locked-key checks, with one-approval terms', async () => {
@@ -239,47 +209,40 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(v2.calls).toEqual(['group', 'blocker', 'request'])
-    expect(q('qr-value')!.textContent).toBe('dash-key:v2qr?v=2')
+    expect(q('qr-value')!.textContent).toBe('dashpay://connect?v=2&n=d&r=qr')
     expect(q('approval-terms')!.textContent).toMatch(/One approval covers all of Forge, spending up to 0\.05\d* DASH/)
     expect(q('approval-terms')!.textContent).toMatch(/until /)
     expect(q('wallet-support')!.textContent).toMatch(/App Connect v2/)
-    expect(q('older-code')!.textContent).toBe('Using a Dash Wallet build without App Connect v2? Show the older code')
+    expect(host.textContent).not.toMatch(/older code/i)
     expect(v2.awaited).toBe(1)
   })
 
-  it('goes straight to the older code where v2 is not available', async () => {
-    v2.holdV1 = true
+  it('where v2 is not on offer, says so and shows no code (there is no older code to fall back on)', async () => {
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
-    expect(q('qr-value')!.textContent).toBe('dash-key:fake')
-    expect(q('older-code')).toBeNull()
-    expect(q('newer-code')).toBeNull()
-    expect(v2.calls).toEqual(['v1-request'])
+    expect(q('qr-value')).toBeNull()
+    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/needs App Connect v2.*recovery phrase or identity file/)
+    expect(v2.calls).toEqual([])
+    expect(byText('Try again')).toBeDefined()
   })
 
-  it('falls back to the older code when the group check refuses', async () => {
+  it('a protocol check Platform did not answer is an error to retry, not "not offered"', async () => {
+    v2.available = null
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
+    await flush()
+    expect(q('qr-value')).toBeNull()
+    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/Couldn't read Platform/)
+    expect(byText('Try again')).toBeDefined()
+  })
+
+  it('says v2 cannot be offered when the group check refuses', async () => {
     v2.available = true
-    v2.holdV1 = true
     checkGroup.mockRejectedValueOnce(new Error('refusing to bind a key to this group'))
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
-    expect(q('qr-value')!.textContent).toBe('dash-key:fake')
+    expect(q('qr-value')).toBeNull()
+    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/needs App Connect v2/)
     expect(v2.awaited).toBe(0)
-  })
-
-  it('switches to the older code and back', async () => {
-    v2.available = true
-    v2.holdV1 = true
-    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
-    await flush()
-    await act(async () => q('older-code')!.click())
-    await flush()
-    expect(q('qr-value')!.textContent).toBe('dash-key:fake')
-    expect(q('wallet-support')!.textContent).not.toMatch(/App Connect v2/)
-    expect(q('older-code')).toBeNull()
-    await act(async () => q('newer-code')!.click())
-    await flush()
-    expect(q('qr-value')!.textContent).toBe('dash-key:v2qr?v=2')
   })
 
   it('asks to unlock first when a locked vault holds a wallet key', async () => {
@@ -305,18 +268,34 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     await act(async () => v2.pending!.resolve(V2_GRANT))
     await flush()
     expect(q('wallet-confirm')).not.toBeNull()
-    expect(q('granted-identity')!.textContent).toBe(ID)
+    expect(q('granted-identity')!.getAttribute('title')).toBe(ID)
+    expect(q('responder-warning')).toBeNull()
     expect(q('unlimited-key-warning')).toBeNull()
     expect(q('approval-terms')!.textContent).toMatch(/spending capped at 0\.05\d* DASH/)
     expect(q('group-notice')!.textContent).toContain('does not know')
-    act(() => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    act(() => q('wallet-confirm-me')!.click())
     act(() => type(host.querySelector<HTMLInputElement>('#vault-passphrase')!, FAKE_VAULT_PASSPHRASE))
     act(() => type(host.querySelector<HTMLInputElement>('#vault-passphrase-2')!, FAKE_VAULT_PASSPHRASE))
-    await act(async () => byText('Finish signing in').click())
+    await act(async () => q('protect-password-save')!.click())
     expect(adoptWalletKeys).toHaveBeenCalledWith(ID, [V2_GRANT.key], expect.objectContaining({ passphrase: FAKE_VAULT_PASSPHRASE }), {
       discardPendingRenewal: false,
       origin: 'app-connect',
     })
+    expect(onDone).toHaveBeenCalled()
+  })
+
+  it('keeps the key in this browser alone on "Skip for now", and starts over on "Not me"', async () => {
+    v2.available = true
+    const onDone = vi.fn()
+    adoptWalletKeys.mockResolvedValue(undefined)
+    act(() => root.render(<WalletConnectFlow onDone={onDone} />))
+    await flush()
+    await act(async () => v2.pending!.resolve(V2_GRANT))
+    await flush()
+    act(() => q('wallet-confirm-me')!.click())
+    expect(q('wallet-protect')).not.toBeNull()
+    await act(async () => q('protect-skip')!.click())
+    expect(adoptWalletKeys).toHaveBeenCalledWith(ID, [V2_GRANT.key], { device: true }, { discardPendingRenewal: false, origin: 'app-connect' })
     expect(onDone).toHaveBeenCalled()
   })
 
@@ -359,60 +338,29 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
 })
 
 describe('WalletConnectFlow: App Connect v2, the edges', () => {
-  it('takes the old request off screen at once when the code is switched', async () => {
-    v2.available = true
-    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
-    await flush()
-    expect(q('qr-value')!.textContent).toBe('dash-key:v2qr?v=2')
-    // The older flow is still being built (its sources are not back): the spent v2 code must not stay up.
-    v2.holdSources = true
-    await act(async () => q('older-code')!.click())
-    await flush()
-    expect(q('qr-value')).toBeNull()
-    expect(q('older-code')).toBeNull()
-    expect(host.textContent).toContain('Finding the wallet login contract')
-  })
-
-  it('shows a failed group read with Try again, not a silent switch to the older code', async () => {
+  it('shows a failed group read with Try again', async () => {
     v2.available = true
     checkGroup.mockRejectedValueOnce(new Error('Reading the contract group timed out'))
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(host.querySelector('[role="alert"]')!.textContent).toContain('timed out')
     expect(byText('Try again')).toBeDefined()
-    expect(v2.calls).not.toContain('v1-request')
     expect(v2.awaited).toBe(0)
   })
 
-  it('takes a failed v2 request off screen and keeps the older code reachable', async () => {
+  it('takes a failed request off screen and offers another try', async () => {
     v2.available = true
-    v2.holdV1 = true
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(q('qr-value')).not.toBeNull()
     await act(async () => v2.pending!.reject(new Error('The key your wallet sent has no spending limit or no expiry.')))
     await flush()
-    // The spent code is gone; the error stands with Try again and a way to the older code.
+    // The spent code is gone; the error stands with Try again.
     expect(q('qr-value')).toBeNull()
     expect(host.querySelector('[role="alert"]')!.textContent).toContain('no spending limit')
-    await act(async () => q('older-code-error')!.click())
+    await act(async () => byText('Try again').click())
     await flush()
-    expect(v2.calls).toContain('v1-request')
-  })
-
-  it('offers the older code when the group read keeps failing, and does not read the group again for it', async () => {
-    v2.available = true
-    v2.holdV1 = true
-    checkGroup.mockRejectedValue(new Error('Reading the contract group timed out'))
-    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
-    await flush()
-    expect(host.querySelector('[role="alert"]')!.textContent).toContain('timed out')
-    checkGroup.mockClear()
-    await act(async () => q('older-code-error')!.click())
-    await flush()
-    expect(v2.calls).toContain('v1-request')
-    expect(checkGroup).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(v2.calls.filter((c) => c === 'request')).toHaveLength(2)
   })
 
   it('says what the wallet reported when it returns with a decline', async () => {
@@ -440,7 +388,7 @@ describe('WalletConnectFlow: renew in the wallet that granted the key', () => {
     expect(q('wallet-renew-prepare')).not.toBeNull()
     expect(q('qr-value')).toBeNull()
     expect(walletRenewalRequest).not.toHaveBeenCalled()
-    expect(byText('Continue to your wallet').disabled).toBe(true)
+    expect(byText('Continue to your wallet').disabled).toBe(false)
     fillProtection()
     expect(byText('Continue to your wallet').disabled).toBe(false)
     expect(walletRenewalRequest).not.toHaveBeenCalled()
@@ -456,9 +404,9 @@ describe('WalletConnectFlow: renew in the wallet that granted the key', () => {
     await act(async () => byText('Continue to your wallet').click())
     await flush()
     expect(walletRenewalRequest).toHaveBeenCalledTimes(1)
-    expect(q('qr-value')!.textContent).toBe('dash-key:v2qr?v=2')
-    expect(q('approval-terms')!.textContent).toMatch(/Approve the renewal in the wallet/)
-    expect(q('older-code')).toBeNull()
+    expect(q('qr-value')!.textContent).toBe('dashpay://connect?v=2&n=d&r=qr')
+    expect(host.textContent).toMatch(/Approve in your wallet/)
+    expect(q('approval-terms')!.textContent).toMatch(/One approval covers all of Forge/)
     expect(endWalletRenewal).not.toHaveBeenCalled()
     await act(async () => v2.pending!.resolve(V2_GRANT))
     await flush()
@@ -469,6 +417,19 @@ describe('WalletConnectFlow: renew in the wallet that granted the key', () => {
     expect(onDone).toHaveBeenCalled()
     // Stored: the controller already cleared the mark.
     expect(endWalletRenewal).not.toHaveBeenCalled()
+  })
+
+  it("a key this browser registered itself: the copy doesn't claim a wallet gave it", async () => {
+    auth.identity = ID
+    auth.origin = null
+    act(() => root.render(<WalletConnectFlow mode="renew" onDone={vi.fn()} />))
+    await flush()
+    fillProtection()
+    await act(async () => byText('Continue to your wallet').click())
+    await flush()
+    const terms = q('approval-terms')!.textContent
+    expect(terms).toMatch(/Approve in the wallet that holds this identity/)
+    expect(terms).not.toMatch(/gave this browser its key/)
   })
 
   it('ends the renewal when the sheet closes before the wallet answers', async () => {

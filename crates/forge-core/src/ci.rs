@@ -881,19 +881,20 @@ impl ReportPlan {
     }
 }
 
-/// The web page that shows a commit's check runs: the commit page of the repo, by its short URL
+/// The web page that shows a commit's check runs in `network`'s web app: the commit page of the
+/// repo, by its short URL
 /// (`/<owner>/<name>/commit/<oid>`) when the repo is public and the web app's 404 shim opens
 /// that oid (4 to 40 hex digits: a 64-digit SHA-256 id has only the canonical route).
-pub fn commit_web_url(repo: &RepoRef, oid: &str) -> String {
+pub fn commit_web_url(network: &crate::network::Network, repo: &RepoRef, oid: &str) -> String {
     let shim_opens_oid =
         (4..=40).contains(&oid.len()) && oid.bytes().all(|b| b.is_ascii_hexdigit());
-    match crate::user_error::short_repo_base(repo.owner_id(), repo.name(), repo.visibility)
+    match crate::user_error::short_repo_base(network, repo.owner_id(), repo.name(), repo.visibility)
         .filter(|_| shim_opens_oid)
     {
         Some(base) => format!("{base}/commit/{oid}"),
         None => format!(
             "{}&oid={oid}",
-            crate::user_error::web_page_url("repo/commit/", repo.owner_id(), repo.name())
+            crate::user_error::web_page_url(network, "repo/commit/", repo.owner_id(), repo.name())
         ),
     }
 }
@@ -1655,7 +1656,8 @@ mod tests {
 
     #[test]
     fn the_commit_link_is_the_web_commit_page() {
-        use crate::network::ForgeIds;
+        use crate::network::{ForgeIds, Network};
+        let m = &Network::Mainnet;
         let repo = RepoRef {
             forge: ForgeIds::test_forge(),
             repo_id: "R".into(),
@@ -1664,13 +1666,13 @@ mod tests {
             visibility: crate::rules::v2::Visibility::Public,
         };
         assert_eq!(
-            commit_web_url(&repo, "5950173cee3d651ec03af8c7257bf764a843d747"),
+            commit_web_url(m, &repo, "5950173cee3d651ec03af8c7257bf764a843d747"),
             "https://forge.dashhq.org/alice/proj/commit/5950173cee3d651ec03af8c7257bf764a843d747"
         );
         // An oid the shim does not open (too short, or a 64-digit SHA-256 id) keeps the canonical link.
         for oid in ["abc", &"a".repeat(64)] {
             assert_eq!(
-                commit_web_url(&repo, oid),
+                commit_web_url(m, &repo, oid),
                 format!("https://forge.dashhq.org/repo/commit/?owner=alice&name=proj&oid={oid}")
             );
         }
@@ -1680,8 +1682,12 @@ mod tests {
             ..repo.clone()
         };
         assert_eq!(
-            commit_web_url(&private, "5950173c"),
+            commit_web_url(m, &private, "5950173c"),
             "https://forge.dashhq.org/repo/commit/?owner=alice&name=proj&oid=5950173c"
+        );
+        assert_eq!(
+            commit_web_url(&Network::Testnet, &repo, "5950173c"),
+            "https://testnet-forge.dashhq.org/alice/proj/commit/5950173c"
         );
     }
 }

@@ -14,9 +14,8 @@ export function ForgeIntro({ title, heading: Heading = 'h3', testId = 'forge-int
         <Hammer className="mt-0.5 h-5 w-5 shrink-0 text-forge-600 dark:text-forge-400" aria-hidden />
         <div className="min-w-0">
           <Heading className="text-prose font-semibold">{title}</Heading>
-          <p className="mt-1 max-w-2xl text-dense text-anvil-600 dark:text-anvil-300">
-            Dash Forge is a git forge with no server: repositories, issues and pull requests live on Dash Platform, and your browser
-            verifies everything it shows. Start a project, bring one over from GitHub, or read how it works.
+          <p className="mt-1 max-w-xl text-dense text-anvil-600 dark:text-anvil-300">
+            Repositories, issues and pull requests live on Dash Platform, verified in your browser.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <Link href="/new/" className={buttonClass({ variant: 'primary', size: 'sm' })}>

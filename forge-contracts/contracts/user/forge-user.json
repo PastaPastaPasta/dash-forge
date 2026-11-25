@@ -1,0 +1,74 @@
+{
+  "$comment": "forge-user: settings that follow the identity (docs/design/identity-synced-state.md). New contract, member of the dash-forge contract group. requiresIdentityEncryptionBoundedKey lets App Connect wallets deliver one deterministic encryption key bound to this contract. Changes nothing in the other Forge contracts.",
+  "description": "Dash Forge user settings: encrypted per-identity state and repo storage shares",
+  "config": {
+    "$formatVersion": "1",
+    "canBeDeleted": false,
+    "readonly": false,
+    "keepsHistory": false,
+    "documentsKeepHistoryContractDefault": false,
+    "documentsMutableContractDefault": true,
+    "documentsCanBeDeletedContractDefault": true,
+    "requiresIdentityEncryptionBoundedKey": 2,
+    "requiresIdentityDecryptionBoundedKey": null,
+    "sizedIntegerTypes": false
+  },
+  "documentSchemas": {
+    "state": {
+      "type": "object",
+      "documentsMutable": true,
+      "canBeDeleted": true,
+      "properties": {
+        "slot": { "type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[a-z0-9][a-z0-9._-]*$", "position": 0 },
+        "v": { "type": "integer", "minimum": 1, "maximum": 255, "position": 1 },
+        "keyId": { "type": "integer", "minimum": 0, "maximum": 4294967295, "position": 2 },
+        "n": { "type": "array", "byteArray": true, "minItems": 12, "maxItems": 12, "position": 3 },
+        "d0": { "type": "array", "byteArray": true, "minItems": 17, "maxItems": 5000, "position": 4 },
+        "d1": { "type": "array", "byteArray": true, "minItems": 1, "maxItems": 5000, "position": 5 },
+        "d2": { "type": "array", "byteArray": true, "minItems": 1, "maxItems": 5000, "position": 6 }
+      },
+      "indices": [
+        { "name": "bySlot", "properties": [{ "$ownerId": "asc" }, { "slot": "asc" }], "unique": true }
+      ],
+      "required": ["$updatedAt", "slot", "v", "keyId", "n", "d0"],
+      "additionalProperties": false
+    },
+    "share": {
+      "type": "object",
+      "documentsMutable": true,
+      "canBeDeleted": true,
+      "properties": {
+        "repoId": { "type": "identifier", "position": 0 },
+        "epoch": { "type": "integer", "minimum": 0, "maximum": 4294967295, "position": 1 },
+        "keyId": { "type": "integer", "minimum": 0, "maximum": 4294967295, "position": 2 },
+        "n": { "type": "array", "byteArray": true, "minItems": 12, "maxItems": 12, "position": 3 },
+        "d0": { "type": "array", "byteArray": true, "minItems": 17, "maxItems": 5000, "position": 4 },
+        "d1": { "type": "array", "byteArray": true, "minItems": 1, "maxItems": 5000, "position": 5 }
+      },
+      "indices": [
+        { "name": "byRepo", "properties": [{ "$ownerId": "asc" }, { "repoId": "asc" }], "unique": true }
+      ],
+      "required": ["$updatedAt", "repoId", "epoch", "keyId", "n", "d0"],
+      "additionalProperties": false
+    },
+    "grant": {
+      "type": "object",
+      "documentsMutable": true,
+      "canBeDeleted": true,
+      "properties": {
+        "repoId": { "type": "identifier", "position": 0 },
+        "memberId": { "type": "identifier", "distinctFrom": "$ownerId", "position": 1 },
+        "epoch": { "type": "integer", "minimum": 0, "maximum": 4294967295, "position": 2 },
+        "senderKeyId": { "type": "integer", "minimum": 0, "maximum": 4294967295, "position": 3 },
+        "recipientKeyId": { "type": "integer", "minimum": 0, "maximum": 4294967295, "position": 4 },
+        "wrapped": { "type": "array", "byteArray": true, "minItems": 60, "maxItems": 96, "position": 5 }
+      },
+      "indices": [
+        { "name": "byMember", "properties": [{ "$ownerId": "asc" }, { "repoId": "asc" }, { "memberId": "asc" }], "unique": true },
+        { "name": "forMember", "properties": [{ "memberId": "asc" }, { "repoId": "asc" }] }
+      ],
+      "required": ["$updatedAt", "repoId", "memberId", "epoch", "senderKeyId", "recipientKeyId", "wrapped"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -34,8 +34,8 @@ import {
   writeStorageBlob,
   readStorageBlob,
 } from './vault'
-import { KEPT_IDLE_MS, LOCKED_AT_KEY, SAVED_AT_KEY, openResume, type ResumeRecord } from './session-resume'
-import { AuthController, KeyNotUsableError, UnlockNeededError } from './controller'
+import { KEPT_IDLE_MS, LOCKED_AT_KEY, SAVED_AT_KEY, deviceResumeAllowed, markDeviceOpened, markLocked, openResume, type ResumeRecord } from './session-resume'
+import { AuthController, KeyNotUsableError, UnlockNeededError, keyDisconnected } from './controller'
 import { encodeWif } from './wif'
 
 vi.mock('../sdk/write', async (orig) => {
@@ -515,6 +515,110 @@ describe('the controller', () => {
     expect(await kept()).toBeUndefined()
   }, 30_000)
 
+  /**
+   * A key a passkey restored here (or a wallet's App Connect key) that the wallet then
+   * disconnected: no unlock, reload or balance read lets it sign, and the vault entry is flagged
+   * with the way on (sign in again), not "renew it".
+   */
+  describe('a passkey-restored key disconnected in the wallet', () => {
+    async function restoredByPasskey(): Promise<AuthController> {
+      const c = await signIn()
+      await storeInVault(NET, SECRET, PASSKEY, { origin: 'passkey' })
+      return c
+    }
+
+    it('an unlock refuses it with "sign in again", locks, and flags the vault entry', async () => {
+      await restoredByPasskey()
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/disabled on Platform \(disconnected in your wallet, or revoked from another device\), so sign in again/)
+      expect(c.getState().session).toBeNull()
+      expect(c.writeAuth).toBeNull()
+      expect(unlockedSecret(NET, ID)).toBeNull()
+      expect(await kept()).toBeUndefined()
+      expect((await c.storedVaults()).find((v) => v.identityId === ID)?.disconnected).toBe(true)
+      // Forgetting it clears the flag with the entry.
+      await c.forget(ID)
+      expect(await c.storedVaults()).toEqual([])
+      expect(keyDisconnected(NET, ID)).toBeNull()
+    }, 30_000)
+
+    it('a reload resumes nothing: the background check signs out with the same words', async () => {
+      await restoredByPasskey()
+      releaseUnlocked()
+      keys[0]!.disabledAt = 1n
+      const next = make()
+      await next.resume()
+      await vi.waitFor(() => expect(next.getState().session).toBeNull(), WAIT)
+      expect(next.getState().notice).toMatch(/disconnected in your wallet, or revoked from another device\), so sign in again/)
+      expect(await kept()).toBeUndefined()
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('while signed in: the next balance read signs out and flags it', async () => {
+      const c = await restoredByPasskey()
+      // The session reads its origin at unlock: open it again as the restored key.
+      lockVault()
+      await c.unlock(ID, 'passkey')
+      keys[0]!.disabledAt = 1n
+      await c.refreshBalance()
+      expect(c.getState().session).toBeNull()
+      expect(c.getState().notice).toMatch(/disconnected in your wallet/)
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('a wallet\'s own App Connect key says plainly that the wallet disconnected it', async () => {
+      await signIn()
+      await storeInVault(NET, SECRET, PASSKEY, { origin: 'app-connect' })
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/^this key was disconnected in your wallet, so sign in again$/)
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('a service request (notifications) from a session that predates the disable signs nothing', async () => {
+      const c = await restoredByPasskey()
+      lockVault()
+      await c.unlock(ID, 'passkey')
+      expect((await c.checkedServiceKey()).keyId).toBe(5)
+      keys[0]!.disabledAt = 1n
+      await expect(c.checkedServiceKey()).rejects.toThrow(/so sign in again/)
+      expect(c.getState().session).toBeNull()
+      expect(keyDisconnected(NET, ID)).toBe(5)
+    }, 30_000)
+
+    it('a service request whose identity read comes back empty signs nothing', async () => {
+      const c = await restoredByPasskey()
+      lockVault()
+      await c.unlock(ID, 'passkey')
+      reads = 'missing'
+      await expect(c.checkedServiceKey()).rejects.toThrow(/not found/)
+    }, 30_000)
+
+    it('a key that is live again (a lagging read) clears the flag on the next unlock', async () => {
+      await restoredByPasskey()
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/disconnected/)
+      delete keys[0]!.disabledAt
+      await c.unlock(ID, 'passkey')
+      expect(c.getState().session?.keyId).toBe(5)
+      expect((await c.storedVaults()).find((v) => v.identityId === ID)?.disconnected).toBeUndefined()
+    }, 30_000)
+
+    it('a key this browser registered itself still says "renew it" (it is not the wallet\'s)', async () => {
+      await signIn()
+      lockVault()
+      keys[0]!.disabledAt = 1n
+      const c = make()
+      await expect(c.unlock(ID, 'passkey')).rejects.toThrow(/no longer usable/)
+      expect(keyDisconnected(NET, ID)).toBeNull()
+    }, 30_000)
+  })
+
   it('a key revoked elsewhere while signed in: the next balance read signs out', async () => {
     const c = await signIn()
     keys[0]!.disabledAt = 1n
@@ -575,15 +679,6 @@ describe('the controller', () => {
     expect((await kept())?.keyId).toBe(6)
   }, 60_000)
 
-  it('addWalletGrant after a lock does not bring the session back (M4)', async () => {
-    const c = await signIn()
-    lockVault()
-    await expect(
-      c.addWalletGrant(ID, { keyId: 9, wif: WIF2, scope: { core: false, collab: true, community: true, meta: true, unbounded: false }, limits: null }, FORGE.collab),
-    ).rejects.toThrow()
-    expect(c.getState().session).toBeNull()
-  }, 30_000)
-
   it('a reload after a D-016 adoption resumes the adopted key', async () => {
     const c = make()
     await storeInVault(NET, SECRET, PASSKEY)
@@ -641,12 +736,9 @@ describe('the controller', () => {
     await tab.resume()
     expect(tab.unlockScope()).toBe('signing')
     await stageInVault(NET, { identityId: ID, keyId: 6, wif: WIF2 }, PASSKEY)
-    // Discard (keeping its key), renew, revoke, a wallet grant: each asks for the full unlock.
+    // Discard (keeping its key), renew, revoke: each asks for the full unlock.
     await expect(tab.abandonPendingRenewal(ID, 'passkey')).rejects.toBeInstanceOf(UnlockNeededError)
     await expect(tab.revokeStored(ID, { fileText: '{}' })).rejects.toBeInstanceOf(UnlockNeededError)
-    await expect(
-      tab.addWalletGrant(ID, { keyId: 9, wif: WIF2, scope: { core: false, collab: true, community: true, meta: true, unbounded: false }, limits: null }, FORGE.collab),
-    ).rejects.toBeInstanceOf(UnlockNeededError)
     expect(await tab.pendingRenewal(ID)).toMatchObject({ keyId: 6 })
     // The same one-gesture unlock the private repos use, then the action goes through.
     // Key 6 is live too: unlocking finishes the renewal, unless the user discards it. Keep 5
@@ -712,4 +804,19 @@ describe('the controller', () => {
     expect(await kept()).toBeDefined()
     reads = 'ok'
   }, 30_000)
+})
+
+describe('browser-only resume markers within one millisecond', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('an open after a lock allows resume, and a lock after opens blocks it', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_800_000_000_000)
+    markLocked()
+    markDeviceOpened()
+    expect(deviceResumeAllowed()).toBe(true)
+    markDeviceOpened()
+    markLocked()
+    expect(deviceResumeAllowed()).toBe(false)
+  })
 })

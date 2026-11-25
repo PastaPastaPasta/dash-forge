@@ -39,6 +39,7 @@ use std::io::IsTerminal as _;
 use serde_json::{json, Value};
 
 use crate::error::Error as CoreError;
+use crate::network::Network;
 use crate::rules::v2::Visibility;
 use crate::storage::ReplicationError;
 
@@ -46,19 +47,27 @@ use crate::storage::ReplicationError;
 pub const DOCS_URL: &str =
     "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/errors.md";
 
-/// The web app origin (repo pages are `…/repo?owner=<id>&name=<name>`).
-pub const WEB_ORIGIN: &str = crate::storage::cors::PROBE_ORIGIN;
+/// The network this process resolved ([`set_network`]).
+static PROCESS_NETWORK: std::sync::OnceLock<Network> = std::sync::OnceLock::new();
 
-/// A repo's page in the web app.
-pub fn web_url(owner_id: &str, name: &str) -> String {
-    web_page_url("repo", owner_id, name)
+/// Record the network this process targets, once it is resolved: an error classified without
+/// [`ErrorContext::network`] still opens the top-up bridge on it. Later calls are ignored.
+pub fn set_network(network: &Network) {
+    let _ = PROCESS_NETWORK.set(network.clone());
 }
 
-/// A page of a repo in the web app (`repo`, `repo/commit/`, …), addressed by owner and name.
-pub fn web_page_url(page: &str, owner_id: &str, name: &str) -> String {
+/// A repo's page in `network`'s web app ([`Network::web_origin`]).
+pub fn web_url(network: &Network, owner_id: &str, name: &str) -> String {
+    web_page_url(network, "repo", owner_id, name)
+}
+
+/// A page of a repo in `network`'s web app (`repo`, `repo/commit/`, …), addressed by owner
+/// and name.
+pub fn web_page_url(network: &Network, page: &str, owner_id: &str, name: &str) -> String {
     use crate::backends::sigv4::uri_encode;
     format!(
-        "{WEB_ORIGIN}/{page}?owner={}&name={}",
+        "{}/{page}?owner={}&name={}",
+        network.web_origin(),
         uri_encode(owner_id, false),
         uri_encode(name, false)
     )
@@ -69,7 +78,12 @@ pub fn web_page_url(page: &str, owner_id: &str, name: &str) -> String {
 /// web app's 404 shim expands back to the same page: an owner or name it refuses (`.hidden`) has
 /// none. Never for a private repo: its page address carries per-tab tokens, and a link made here
 /// would put the repo's name in an address that is read by whoever sees the terminal.
-pub fn short_repo_base(owner_id: &str, name: &str, visibility: Visibility) -> Option<String> {
+pub fn short_repo_base(
+    network: &Network,
+    owner_id: &str,
+    name: &str,
+    visibility: Visibility,
+) -> Option<String> {
     let segment = |s: &str, extra: &[char]| {
         let mut chars = s.chars();
         chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
@@ -78,17 +92,15 @@ pub fn short_repo_base(owner_id: &str, name: &str, visibility: Visibility) -> Op
     // The same patterns as `OWNER_SEGMENT` and `NAME_SEGMENT` in `forge-web/lib/short-url.ts`.
     // An identity id is never one of the app's reserved first segments.
     (visibility == Visibility::Public && segment(owner_id, &['.']) && segment(name, &['.', '_']))
-        .then(|| format!("{WEB_ORIGIN}/{owner_id}/{name}"))
+        .then(|| format!("{}/{owner_id}/{name}", network.web_origin()))
 }
 
 /// A repo's page in the web app as a person should be shown it: the short URL of a public
 /// repo ([`short_repo_base`]), else the canonical [`web_url`].
-pub fn repo_link(owner_id: &str, name: &str, visibility: Visibility) -> String {
-    short_repo_base(owner_id, name, visibility).unwrap_or_else(|| web_url(owner_id, name))
+pub fn repo_link(network: &Network, owner_id: &str, name: &str, visibility: Visibility) -> String {
+    short_repo_base(network, owner_id, name, visibility)
+        .unwrap_or_else(|| web_url(network, owner_id, name))
 }
-
-/// Where to top up an identity's credits from any Dash wallet.
-pub const TOP_UP_URL: &str = "https://bridge.thepasta.org";
 
 /// E502's note when Platform chunks were (or may have been) uploaded before the policy
 /// failed.
@@ -669,6 +681,9 @@ pub struct ErrorContext<'a> {
     /// The error comes from `git-remote-dash` under a plain `git` command, which takes no
     /// `dg` flags: a fix names git config or the environment instead.
     pub via_git: bool,
+    /// The network the command targeted: the top-up fix opens the bridge on it
+    /// ([`Network::top_up_url`]). `None` = the one [`set_network`] recorded, if any.
+    pub network: Option<&'a Network>,
 }
 
 impl ErrorContext<'_> {
@@ -1187,7 +1202,11 @@ fn insufficient(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
     )
     .cause(detail)
     .fix(format!(
-        "top up the identity from any Dash wallet at {TOP_UP_URL} (`dg auth balance` shows the balance)"
+        "top up the identity from any Dash wallet at {} (`dg auth balance` shows the balance)",
+        ctx.network.or_else(|| PROCESS_NETWORK.get()).map_or_else(
+            || crate::network::TOP_UP_BRIDGE.to_string(),
+            Network::top_up_url
+        )
     ))
     .note("reads, clones and browsing are free and unaffected")
 }
@@ -1863,8 +1882,11 @@ fn unresolved_quorum_devnet(detail: &str) -> Option<&str> {
     let at = lower.find("quorums.")? + "quorums.".len();
     let rest = detail.get(at..)?;
     let name = rest.split_once(".networks.")?.0;
-    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-        .then_some(name)
+    // testnet and mainnet are not devnet names: offline there, the lookup fails the same way.
+    (!name.is_empty()
+        && !matches!(name, "testnet" | "mainnet")
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    .then_some(name)
 }
 
 /// E301 for a read of private `repo` (its `owner/name`) with no identity: its content is
@@ -2360,30 +2382,44 @@ mod tests {
     #[test]
     fn a_public_repo_links_by_its_short_url_and_a_private_one_does_not() {
         let owner = "HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr";
+        let m = &Network::Mainnet;
         assert_eq!(
-            repo_link(owner, "my-project.v2_x", Visibility::Public),
+            repo_link(m, owner, "my-project.v2_x", Visibility::Public),
             format!("https://forge.dashhq.org/{owner}/my-project.v2_x")
         );
         // Private: the canonical link, with no more in it than before.
         assert_eq!(
-            repo_link(owner, "secret", Visibility::Private),
+            repo_link(m, owner, "secret", Visibility::Private),
             format!("https://forge.dashhq.org/repo?owner={owner}&name=secret")
         );
-        assert_eq!(short_repo_base(owner, "secret", Visibility::Private), None);
+        assert_eq!(
+            short_repo_base(m, owner, "secret", Visibility::Private),
+            None
+        );
         // A name or owner the web app's shim refuses has no short form (`NAME_SEGMENT`,
         // `OWNER_SEGMENT` in forge-web/lib/short-url.ts).
         for name in [".hidden", "-x", "_x", "a b", "a/b", "a%2Fb", ""] {
             assert_eq!(
-                short_repo_base(owner, name, Visibility::Public),
+                short_repo_base(m, owner, name, Visibility::Public),
                 None,
                 "{name:?}"
             );
         }
-        assert_eq!(short_repo_base("a_b", "x", Visibility::Public), None);
-        assert_eq!(short_repo_base("", "x", Visibility::Public), None);
+        assert_eq!(short_repo_base(m, "a_b", "x", Visibility::Public), None);
+        assert_eq!(short_repo_base(m, "", "x", Visibility::Public), None);
         assert_eq!(
-            repo_link(owner, ".hidden", Visibility::Public),
+            repo_link(m, owner, ".hidden", Visibility::Public),
             format!("https://forge.dashhq.org/repo?owner={owner}&name=.hidden")
+        );
+        // Each network links to its own web app.
+        let t = &Network::Testnet;
+        assert_eq!(
+            repo_link(t, owner, "p", Visibility::Public),
+            format!("https://testnet-forge.dashhq.org/{owner}/p")
+        );
+        assert_eq!(
+            repo_link(t, owner, "secret", Visibility::Private),
+            format!("https://testnet-forge.dashhq.org/repo?owner={owner}&name=secret")
         );
     }
 
@@ -2704,6 +2740,7 @@ mod tests {
         repo: Some("alice/project"),
         retry_is_idempotent: true,
         via_git: false,
+        network: None,
     };
 
     /// The SDK's text for a forge-v2 writer-gate refusal: `ReferencedEntityNotFoundError`'s
@@ -3299,6 +3336,7 @@ mod tests {
         repo: Some("alice/project"),
         retry_is_idempotent: false,
         via_git: false,
+        network: None,
     };
 
     /// QW4-051: consensus refusals of role-gated writes read as role refusals (E601), not raw
@@ -3621,6 +3659,26 @@ mod tests {
             u.cause.as_deref(),
             Some("insufficient credits: needs 0.00042 DASH, balance 0.00011 DASH")
         );
+        // The top-up fix opens the bridge on the command's network; bare when it is unknown.
+        let top_up = |network: Option<&Network>| {
+            let ctx = ErrorContext { network, ..ctx };
+            core_chain(
+                CoreError::InsufficientCredits {
+                    needed: 2,
+                    available: 1,
+                },
+                &ctx,
+            )
+            .fix[0]
+                .clone()
+        };
+        assert_eq!(
+            top_up(Some(&Network::Mainnet)),
+            "top up the identity from any Dash wallet at https://bridge.thepasta.org/?network=mainnet (`dg auth balance` shows the balance)"
+        );
+        assert!(top_up(Some(&Network::Testnet))
+            .contains("https://bridge.thepasta.org/?network=testnet "));
+        assert!(top_up(None).contains("at https://bridge.thepasta.org ("));
     }
 
     #[test]
@@ -3757,6 +3815,25 @@ mod tests {
             unresolved_quorum_devnet("Failed to resolve domain 'quorums..networks.x'"),
             None
         );
+    }
+
+    /// Offline on testnet or mainnet, the quorum host lookup fails the same way, but there is
+    /// no devnet name to blame.
+    #[test]
+    fn an_offline_testnet_or_mainnet_names_no_devnet() {
+        for network in ["testnet", "mainnet"] {
+            let text = format!(
+                "connecting to Dash Platform ({network}): platform error: building context provider for {network}: Network error: Failed to resolve domain 'quorums.{network}.networks.dash.org': failed to lookup address information: Name or service not known"
+            );
+            assert_eq!(unresolved_quorum_devnet(&text), None);
+            let u = unreachable(&ErrorContext::default(), &text);
+            assert_eq!(u.code, "E701");
+            assert!(
+                !u.fix.iter().any(|f| f.contains("--devnet-name")),
+                "{:?}",
+                u.fix
+            );
+        }
     }
 
     #[derive(Debug)]

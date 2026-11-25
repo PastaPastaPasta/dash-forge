@@ -176,6 +176,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
         };
         let key_group = identity.key_group(k.id);
         let doc_type = identity.key_doc_type(k.id).map(|(_, t)| t);
+        let contract = identity.key_contract(k.id);
         rows.push(json!({
             "id": k.id,
             "purpose": k.purpose,
@@ -185,6 +186,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
             "boundTo": key_group.clone().or(k.bound_to.clone()),
             "forgeGroup": key_group.is_some() && key_group == group,
             "boundDocumentType": doc_type,
+            "boundContract": contract,
             "budgetCredits": limits.and_then(|l| l.total_budget),
             "budgetRemainingCredits": remaining,
             "expiresAt": limits.and_then(|l| l.expires_at),
@@ -217,7 +219,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
                 r["id"],
                 r["purpose"].as_str().unwrap_or(""),
                 r["securityLevel"].as_str().unwrap_or(""),
-                key_label(r),
+                key_label(r, ctx.target.v2.as_ref()),
                 if r["disabled"].as_bool() == Some(true) {
                     "DISABLED"
                 } else {
@@ -235,12 +237,19 @@ async fn list(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// What a key is for, in `dg auth keys list`: `dash-forge ` for a Forge limited key, and
-/// `checkRun only (CI runner) ` for a key bound to one document type (QW3-070: runner keys
-/// had a blank label).
-fn key_label(r: &serde_json::Value) -> String {
+/// What a key is for, in `dg auth keys list`: `dash-forge ` for a Forge limited key,
+/// `forge-core only ` for one bound to one contract, and `checkRun only (CI runner) ` for a key
+/// bound to one document type (QW3-070: runner keys had a blank label).
+fn key_label(r: &serde_json::Value, forge: Option<&ForgeIds>) -> String {
     if r["forgeGroup"].as_bool() == Some(true) {
         return "dash-forge ".into();
+    }
+    if let Some(id) = r["boundContract"].as_str() {
+        let bounds = KeyBounds::Contract {
+            id: id.into(),
+            document_type: None,
+        };
+        return format!("{} ", bounds_text(Some(&bounds), forge));
     }
     match r["boundDocumentType"].as_str() {
         Some("checkRun") => "checkRun only (CI runner) ".into(),
@@ -466,8 +475,14 @@ async fn add_for_browser(ctx: &Ctx, args: &AddArgs, request: &str) -> Result<()>
             "a browser key lives at most {BROWSER_KEY_MAX_DAYS} days; pass --expires 365d or less"
         )));
     }
-    let checked = super::check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
-    super::explain_new_key(ctx, &master.identity_id, &spec, "for a browser", &checked);
+    let checked = super::check_key_group(ctx, &client, &spec, &args.limits).await?;
+    super::explain_new_key(
+        ctx,
+        &master.identity_id,
+        &spec,
+        "for a browser",
+        Some(&checked),
+    );
     explain_handover(ctx, args.replace, encryption.as_ref());
     ctx.confirm_or_cancel("Add the key?")?;
     // The reply is sealed before anything is sent (as `register_limited_key` stores a key before
@@ -486,7 +501,7 @@ async fn add_for_browser(ctx: &Ctx, args: &AddArgs, request: &str) -> Result<()>
         &master,
         &spec,
         args.replace,
-        &checked,
+        Some(&checked),
         &mut |t| {
             let (id, reply) = seal(t)?;
             sealed = Some((id, reply, t.clone()));
@@ -613,13 +628,13 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         };
     }
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
-    let checked = super::check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+    let checked = super::check_key_group(ctx, &client, &spec, &args.limits).await?;
     super::explain_new_key(
         ctx,
         &master.identity_id,
         &spec,
         "for this computer",
-        &checked,
+        Some(&checked),
     );
     ctx.confirm_or_cancel("Add the key?")?;
     // The key this computer signs with now is replaced by default: otherwise it would stay live
@@ -630,7 +645,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         None if args.keep_current => None,
         None => identity
             .signing_key_id(&current, ctx.network())
-            .filter(|id| identity.is_limited_key(*id)),
+            .filter(|id| identity.is_limited_key(*id, super::forge_core_id(ctx))),
     };
     // The encryption keys the key in use holds are kept too, whatever the master source holds.
     let encryption =
@@ -704,7 +719,8 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
         return Err(crate::errors::usage("the MASTER key cannot be disabled"));
     }
     // A CI runner key (bound to one document type, `dg ci runner new`) is a Forge key too.
-    let forge_key = identity.is_limited_key(id) || identity.key_doc_type(id).is_some();
+    let forge_key = identity.is_limited_key(id, super::forge_core_id(ctx))
+        || identity.key_doc_type(id).is_some();
     if !forge_key && !force {
         return Err(crate::errors::usage(format!(
             "key #{id} is not a Forge limited key ({} / {}); pass --force to disable it anyway",
@@ -740,7 +756,8 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
 /// What a key is, as far as `--all-limited` can tell from its purpose, bounds and budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyKind {
-    /// A Forge limited key: bound to Forge's contract group, with a budget.
+    /// A Forge limited key: bound to Forge's contract group, or to forge-core alone (a
+    /// code-only CI key, `dg auth export --new-key --scope core`), with a budget.
     ForgeLimited,
     /// A wallet sign-in: no contract limits (the Android wallet), or a Forge contract or group
     /// without a budget (the iOS wallet).
@@ -773,7 +790,7 @@ impl KeyKind {
 
 /// Whether `id` (base58) is one of Forge's contracts, current or superseded.
 fn is_forge_contract(forge: Option<&ForgeIds>, id: &str) -> bool {
-    forge.is_some_and(|f| f.contains(id) || f.superseded_in_group.iter().any(|c| c == id))
+    forge.is_some_and(|f| f.is_group_member(id))
 }
 
 /// What an AUTHENTICATION key is, from its bounds and whether it has a budget. Mirrors
@@ -788,6 +805,10 @@ fn classify_key(bounds: Option<&KeyBounds>, has_budget: bool, forge: Option<&For
                 KeyKind::WalletSignIn
             }
         }
+        Some(KeyBounds::Contract {
+            id,
+            document_type: None,
+        }) if has_budget && forge.is_some_and(|f| f.core == *id) => KeyKind::ForgeLimited,
         Some(KeyBounds::Contract {
             id,
             document_type: Some(_),
@@ -821,7 +842,7 @@ fn bounds_text(bounds: Option<&KeyBounds>, forge: Option<&ForgeIds>) -> String {
         Some(KeyBounds::Contract {
             id,
             document_type: None,
-        }) => contract(id),
+        }) => format!("{} only", contract(id)),
         Some(KeyBounds::Contract {
             id,
             document_type: Some(t),
@@ -1049,6 +1070,7 @@ mod tests {
             group: "GROUP".into(),
             superseded_in_group: vec!["OLD".into()],
             group_owner: None,
+            user: None,
         }
     }
 
@@ -1148,6 +1170,10 @@ mod tests {
         let c = |b: Option<KeyBounds>, budget| classify_key(b.as_ref(), budget, Some(&f));
         // Forge limited: Forge's group with a budget
         assert_eq!(c(Some(group("GROUP")), true), KeyKind::ForgeLimited);
+        // forge-core alone with a budget: a code-only CI key (`--scope core`)
+        assert_eq!(c(Some(contract("CORE")), true), KeyKind::ForgeLimited);
+        assert_eq!(c(Some(contract("CORE")), false), KeyKind::WalletSignIn);
+        assert_eq!(c(Some(contract("COLLAB")), true), KeyKind::WalletSignIn);
         // the Android wallet's key: no bounds; the iOS wallet's: a Forge contract, no budget
         assert_eq!(c(None, false), KeyKind::WalletSignIn);
         assert_eq!(c(Some(contract("COLLAB")), false), KeyKind::WalletSignIn);
@@ -1177,9 +1203,10 @@ mod tests {
         assert_eq!(t(None), "any contract");
         assert_eq!(t(Some(group("GROUP"))), "Forge contract group");
         assert_eq!(t(Some(group("G2"))), "contract group G2");
-        assert_eq!(t(Some(contract("COLLAB"))), "forge-collab");
-        assert_eq!(t(Some(contract("OLD"))), "an older Forge contract");
-        assert_eq!(t(Some(contract("X"))), "contract X");
+        assert_eq!(t(Some(contract("CORE"))), "forge-core only");
+        assert_eq!(t(Some(contract("COLLAB"))), "forge-collab only");
+        assert_eq!(t(Some(contract("OLD"))), "an older Forge contract only");
+        assert_eq!(t(Some(contract("X"))), "contract X only");
         assert_eq!(
             t(Some(doc_type("COMMUNITY", "checkRun"))),
             "checkRun records of forge-community"

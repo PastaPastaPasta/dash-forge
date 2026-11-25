@@ -16,6 +16,8 @@ export const DOCS = {
   costs: '/docs/costs/',
   movingFromGithub: '/docs/moving-from-github/',
   storage: '/docs/bring-your-own-storage/',
+  /** backend.sh: IPFS + Caddy on a Linux server or NAS (the kubo tile's "Run it on a server or NAS"). */
+  selfHostBackend: '/docs/self-host-backend/',
   mirror: '/docs/mirror-a-github-repo/',
   mirrorKeepInSync: '/docs/mirror-a-github-repo/#3-keep-it-in-sync-without-the-action',
   mirrorPrivate: '/docs/mirror-a-github-repo/#into-a-private-repository',
@@ -31,6 +33,10 @@ export const DOCS = {
   networks: '/docs/networks/',
   /** What to do when a key may be compromised (disable all other keys, replace the encryption key). */
   revokeKeys: '/docs/revoke-keys/',
+  /** After removing a maintainer who could use your storage: roll its keys and tokens. */
+  rotateStorage: `${REPO_URL}/blob/master/docs/guides/rotate-storage-credentials.md`,
+  /** Running your own storage and keeping pins in sync on a server of yours. */
+  selfHost: `${REPO_URL}/blob/master/docs/guides/self-host-backend.md`,
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
 } as const

@@ -46,7 +46,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     // Foundry hero, header chrome (wordmark link, network badge, sign-in, search) and the
     // verification chip.
-    await expect(page.getByRole('heading', { name: /no server to trust/i })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: /no server to trust/i })).toBeVisible()
     await expect(page.locator('header a[href="/"]').first()).toBeVisible()
     await expect(page.getByTestId('network-badge')).toContainText(E2E_DEVNET)
     await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible()
@@ -83,7 +83,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
       await expect(page.getByRole('link', { name: entry, exact: true }).first()).toBeVisible()
     }
     await expect(page.getByText(/code, issues and pull requests in the shared contracts/i).first()).toBeVisible()
-    await expect(page.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
+    // The clone box leads with the network-pinned command; the bare URL is under More options.
+    await expect(page.getByText(new RegExp(`^git clone .*dash://${OWNER}/${NAME}`)).first()).toBeVisible()
     await expect(page.getByText(/\bmain\b/).first()).toBeVisible()
     // The Verification card says the ref was built from proof-checked history.
     await page.getByRole('button', { name: /verification/i }).click()
@@ -166,7 +167,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   })
 
   test('v2-7. settings list members from membership documents', async ({ page }) => {
-    await page.goto(url('settings'), { waitUntil: 'domcontentloaded' })
+    await page.goto(`${url('settings')}#collaborators`, { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     // Settings → Members (the glossary's term for people with a role; #66 had called it Collaborators).
     const collaborators = page.getByRole('region', { name: 'Members' })
@@ -194,7 +195,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-9. landing is usable at a 375px mobile viewport with no horizontal overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 })
     await page.goto('/', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByRole('heading', { name: /no server to trust/i })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: /no server to trust/i })).toBeVisible()
     // Header stays usable at mobile width: the icon-only home link and sign-in are reachable
     // (the "Dash Forge" wordmark text is intentionally hidden below the sm breakpoint); a
     // devnet badge shows at every width.

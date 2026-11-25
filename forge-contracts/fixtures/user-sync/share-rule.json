@@ -1,0 +1,59 @@
+{
+  "description": "What a repository's share holds (docs/design/identity-synced-state.md §5): forge-core ShareRule::of and forge-web shareRule over the same synced storage slot entries ({at, v}; v null is a tombstone). expect is keep, nothing, or the shared profile names and policy targets. Mirrors forge-core user_sync migration_tests the_share_rule_follows_the_synced_policy_only.",
+  "repo": "RuLeRepo11111111111111111111111111111111111",
+  "profiles": {
+    "web-r2": { "settings": { "kind": "s3", "provider": "r2", "endpoint": "https://files.example.org", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "https://pub.example.org", "prefix": "" }, "secrets": { "accessKeyId": "AK", "secretAccessKey": "SK", "sessionToken": "" } },
+    "chain": { "settings": { "kind": "platform", "provider": "platform" }, "secrets": {} },
+    "bad-s3": { "settings": { "kind": "s3", "provider": "r2", "endpoint": "https://files.example.org/some/path", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "", "prefix": "" }, "secrets": {} },
+    "future": { "settings": { "kind": "ftp", "host": "files.example.org" }, "secrets": {} }
+  },
+  "cases": [
+    { "name": "no synced policy", "entries": {}, "expect": "keep" },
+    { "name": "profiles but no policy", "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" } }, "expect": "keep" },
+    {
+      "name": "the default policy shares its synced profile as it is",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
+      "expect": { "profiles": ["web-r2"], "targets": ["web-r2"] }
+    },
+    {
+      "name": "the repository's own entry wins; naming a profile that is not synced keeps the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 2, "v": { "targets": ["r2-main"], "replicas": 1, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "Platform only, built in or a platform-kind profile: sharing stops",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "profile:chain": { "at": 1, "v": "@chain" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 3, "v": { "targets": ["chain", "platform"], "replicas": 1, "platformFallback": false } } },
+      "expect": "nothing"
+    },
+    {
+      "name": "a platform-kind profile under another name is the platform target",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "profile:chain": { "at": 1, "v": "@chain" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2", "chain"], "replicas": 1, "platformFallback": true } } },
+      "expect": { "profiles": ["web-r2"], "targets": ["web-r2", "platform"] }
+    },
+    {
+      "name": "a repository entry that does not parse keeps the share (no fall back to the default)",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "expect": "keep"
+    },
+    {
+      "name": "a tombstoned repository entry is absent: the default applies",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 2, "v": null } },
+      "expect": { "profiles": ["web-r2"], "targets": ["web-r2"] }
+    },
+    {
+      "name": "a named profile tombstoned keeps the share",
+      "entries": { "profile:web-r2": { "at": 2, "v": null }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "a named profile that does not validate keeps the share",
+      "entries": { "profile:bad-s3": { "at": 1, "v": "@bad-s3" }, "default": { "at": 1, "v": { "targets": ["bad-s3"], "replicas": 1, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "a named profile of a kind this build does not know keeps the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "profile:future": { "at": 1, "v": "@future" }, "default": { "at": 1, "v": { "targets": ["web-r2", "future"], "replicas": 2, "platformFallback": false } } },
+      "expect": "keep"
+    }
+  ]
+}

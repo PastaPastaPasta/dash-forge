@@ -1,6 +1,6 @@
 import { test, expect, type BrowserContext, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { FUNDS_PILL, PASSPHRASE, SESSION_UNLOCK, expectLocked, expectSignedIn, idFile, readKeptSession, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { FUNDS_PILL, PASSPHRASE, SESSION_UNLOCK, expectLocked, expectSignedIn, idFile, readKeptSession, repoUrl, shot, waitForRepoResolved, showOtherWays, usePassword } from './helpers'
 
 /**
  * The session lasts until it locks (G1, L-04, L-05; G19), live on moutai:
@@ -56,8 +56,10 @@ test('p1. import once, then a reload and a new tab stay signed in', async () => 
   const page = await context.newPage()
   await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await showOtherWays(page)
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', idFile(NAME))
+  await usePassword(page)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   // p5 creates a private repo as this identity: keep its encryption key too.

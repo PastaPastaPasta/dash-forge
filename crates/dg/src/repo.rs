@@ -45,9 +45,29 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             name,
             default_branch_only,
             pin,
-        } => Box::pin(fork(ctx, repo, name.as_deref(), *default_branch_only, *pin)).await,
-        RepoCommand::Sync { repo, branch } => {
-            crate::repo_sync::sync(ctx, repo, branch.as_deref()).await
+            storage,
+            no_copy,
+        } => {
+            Box::pin(fork(
+                ctx,
+                repo,
+                name.as_deref(),
+                *default_branch_only,
+                *pin,
+                storage.as_deref(),
+                *no_copy,
+            ))
+            .await
+        }
+        RepoCommand::Pin(args) => crate::repo_pin::pin(ctx, args).await,
+        RepoCommand::Unpin { repo } => crate::repo_pin::unpin(ctx, repo).await,
+        RepoCommand::Sync {
+            repo,
+            branch,
+            storage,
+            no_copy,
+        } => {
+            crate::repo_sync::sync(ctx, repo, branch.as_deref(), storage.as_deref(), *no_copy).await
         }
         RepoCommand::Reindex {
             repo,
@@ -111,6 +131,9 @@ fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
              (`dg repo clone {repo} <dir>`)",
             dest.display()
         )));
+    }
+    if !helper_installed() {
+        return Err(helper_missing(format!("could not clone {url}")).into());
     }
     let (_report_dir, report) = Report::new()?;
     let mut cmd = crate::git::dash_env(ctx).git_command()?;
@@ -205,16 +228,25 @@ fn clone_dir_name(name: &str) -> &str {
 }
 
 /// Fork `repo`: a new forge-v2 repository with `forkOf` = the parent, the parent's packs
-/// recorded without re-uploading (external URIs as they are; Platform chunks by a locator
-/// into the parent's scope), and the parent's branches and tags copied (its default branch
-/// alone with `default_branch_only`). Resumable.
+/// copied to the forker's own storage when they have some (listed first, the parent's copies
+/// after them) or else recorded by reference (external URIs as they are; Platform chunks by a
+/// locator into the parent's scope), and the parent's branches and tags copied (its default
+/// branch alone with `default_branch_only`). Resumable.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_lines
+)]
 async fn fork(
     ctx: &Ctx,
     repo: &str,
     name: Option<&str>,
     default_branch_only: bool,
     pin: bool,
+    storage: Option<&str>,
+    no_copy: bool,
 ) -> Result<()> {
+    let copy_to = crate::repo_pin::fork_storage(storage, no_copy)?;
     let Session {
         client,
         bridge,
@@ -253,7 +285,20 @@ async fn fork(
                     .flatten()
             })
             .collect();
-    let manifest_uris: Vec<u64> = planned.iter().map(|m| m.uris.len() as u64).collect();
+    // A copy adds its own addresses (a public URL or gateway, and a locator or CID) to each
+    // manifest that is not on Platform.
+    let own_uris = if copy_to.is_some() { OWN_COPY_URIS } else { 0 };
+    let manifest_uris: Vec<u64> = planned
+        .iter()
+        .map(|m| {
+            let own = if m.storage == 1 && !m.uris.iter().any(|u| u.starts_with("platform://")) {
+                own_uris
+            } else {
+                0
+            };
+            (m.uris.len() as u64 + own).min(8)
+        })
+        .collect();
     let packs = manifest_uris.len();
     warn_unreadable_packs(&parent, &planned);
     // As on GitHub, the fork takes the parent's default branch (QW2-013) and description
@@ -275,16 +320,29 @@ async fn fork(
     .len();
     let estimate = fork_estimate(&manifest_uris, refs as u64);
     if !ctx.json {
+        let packs_line = match &copy_to {
+            Some((name, _)) => format!("{} copied to {name}", crate::fmt::plural(packs, "pack")),
+            None => format!("{} by reference", crate::fmt::plural(packs, "pack")),
+        };
         println!(
-            "Forking {} as {}/{slug} on {}\n  repo + {}, nothing re-uploaded, + {}   {}",
+            "Forking {} as {}/{slug} on {}\n  repo + {packs_line} + {}   {}",
             parent.display(),
             identity.id(),
             ctx.network_label(),
-            crate::fmt::plural(packs, "pack"),
             crate::fmt::plural(refs, "ref"),
             cost_line(estimate, price)
         );
+        if copy_to.is_none() && packs > 0 {
+            println!(
+                "  Files stay on {}'s storage; `--storage <profile>` keeps your own copy.",
+                parent.display()
+            );
+        }
     }
+    let copy_name = copy_to.as_ref().map(|(name, _)| name.clone());
+    let copy_to = copy_to
+        .map(|(name, profile)| crate::repo_pin::target(&name, &profile))
+        .transpose()?;
     ctx.confirm_or_cancel(&format!("Fork {}?", parent.display()))?;
     let result = forge_core::fork::fork_repo(
         &client,
@@ -294,9 +352,18 @@ async fn fork(
         &opts,
         &default_journal_dir()?,
         default_branch_only,
+        copy_to,
     )
     .await
     .context("forking the repository")?;
+    if let Some(name) = copy_name {
+        crate::repo_pin::record_fork_storage(
+            &ctx.network_label(),
+            &identity.id(),
+            result.created.repo.id(),
+            &name,
+        )?;
+    }
     let pinned = if pin && result.unreferenceable.is_empty() {
         Some(
             Box::pin(crate::ipfs_pin::pin_parent_after_fork(
@@ -347,6 +414,9 @@ fn fork_opts(slug: String, default_branch: Option<String>, description: &str) ->
         ..base
     }
 }
+
+/// The addresses one copy to the forker's storage adds to a manifest, at most.
+pub(crate) const OWN_COPY_URIS: u64 = 2;
 
 /// The pre-sign quote for a fork writing one manifest per entry of `manifest_uris` (each
 /// recording that many URIs) and copying `refs` refs (QW2-020: it priced each manifest and ref
@@ -401,6 +471,7 @@ pub(crate) fn fork_body(
         "manifestsExisting": result.manifests_existing,
         "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
         "refsWritten": result.refs_written,
+        "packsCopied": result.copied,
         "cost": cost_json(result.cost_credits, price),
     })
 }
@@ -459,10 +530,17 @@ fn report_fork(
         body,
         || {
             println!("✓ forked {} → {}", parent.display(), fork.display());
-            println!(
-                "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
-                result.manifests_written, result.platform_referenced
-            );
+            if result.copied > 0 {
+                println!(
+                    "  packs:   {} recorded, {} copied to your storage",
+                    result.manifests_written, result.copied
+                );
+            } else {
+                println!(
+                    "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
+                    result.manifests_written, result.platform_referenced
+                );
+            }
             println!("  refs:    {} copied", result.refs_written.len());
             println!("  remote:  {}", fork.remote_url());
             println!("  cost:    {}", cost_line(result.cost_credits, price));
@@ -803,6 +881,8 @@ async fn view(ctx: &Ctx, repo: &str, skip_security_policy: bool) -> Result<()> {
             "members": members,
             "securityPolicy": policy.path,
             "securityPolicyChecked": policy.checked,
+            "securityPolicyNote": policy.note,
+            "securityPolicyError": policy.error,
             "remoteUrl": handle.remote_url(),
         }),
         || {
@@ -837,6 +917,9 @@ async fn view(ctx: &Ctx, repo: &str, skip_security_policy: bool) -> Result<()> {
                 println!("  Security policy: {note}");
             }
             println!("  remote:         {}", handle.remote_url());
+            if let Some(next) = &policy.next {
+                println!("  next step:      {next}");
+            }
         },
     );
     Ok(())
@@ -857,6 +940,10 @@ struct PolicyLookup {
     /// What the human output says in place of the path when `checked` is false and the viewer
     /// can do something about it.
     note: Option<String>,
+    /// What to do next, for the human output, when the look failed.
+    next: Option<String>,
+    /// Why the look failed, as git or the helper said it (`--json` only: scripts and bug reports).
+    error: Option<String>,
 }
 
 /// The security policy on the default branch: from the clone `dg` runs in when it has the
@@ -875,6 +962,8 @@ fn security_policy(
         path: None,
         checked: false,
         note,
+        next: None,
+        error: None,
     };
     if skip || handle.visibility == Visibility::Private {
         return unchecked(None);
@@ -891,6 +980,8 @@ fn security_policy(
             path: None,
             checked: true,
             note: None,
+            next: None,
+            error: None,
         };
     };
     // Read from Platform, but handed to git as an argument: only an object id goes through.
@@ -909,6 +1000,13 @@ fn security_policy(
                 pack_bytes.div_ceil(1024 * 1024)
             )));
         }
+        None if !helper_installed() => {
+            return lookup_failed(
+                handle,
+                true,
+                "git-remote-dash was not found on PATH or in git's exec-path".into(),
+            );
+        }
         None => security_policy_fetched(ctx, handle, &default_ref, &tip),
     };
     match found {
@@ -916,12 +1014,60 @@ fn security_policy(
             path: path.map(str::to_string),
             checked: true,
             note: None,
+            next: None,
+            error: None,
         },
-        Err(e) => {
-            eprintln!("note: the security policy was not looked up: {e:#}");
-            unchecked(None)
-        }
+        Err(e) => lookup_failed(handle, false, format!("{e:#}")),
     }
+}
+
+/// A security policy look that failed, in plain words (the raw `error` stays for `--json`):
+/// without the helper git can't read a `dash://` URL at all, so installing it is the next step.
+fn lookup_failed(
+    handle: &forge_core::scope::RepoRef,
+    helper_missing: bool,
+    error: String,
+) -> PolicyLookup {
+    let repo = handle.display();
+    let (note, next) = if helper_missing {
+        (
+            "not checked (git-remote-dash isn't installed, so git can't read dash:// URLs)",
+            format!("install git-remote-dash next to dg (docs/INSTALL.md; `dg doctor` checks it), then `dg repo clone {repo}`"),
+        )
+    } else {
+        (
+            "not checked (the default branch couldn't be fetched)",
+            format!("`dg repo clone {repo}`, then run `dg repo view` in the clone"),
+        )
+    };
+    PolicyLookup {
+        path: None,
+        checked: false,
+        note: Some(note.to_string()),
+        next: Some(next),
+        error: Some(error),
+    }
+}
+
+/// E206 before git runs: without the helper, git only says "'remote-dash' is not a git command".
+pub(crate) fn helper_missing(headline: String) -> UserError {
+    UserError::new(codes::GIT_REPO, headline)
+        .cause("git-remote-dash is not installed: git runs it for dash:// URLs, and it is not on PATH or in git's exec-path")
+        .fix("install git-remote-dash next to dg and put its directory on PATH (docs/INSTALL.md); `dg doctor` checks it")
+        .note("nothing was written")
+}
+
+/// Whether git can run `git-remote-dash` for a `dash://` URL: it looks on PATH and in its
+/// exec-path.
+pub(crate) fn helper_installed() -> bool {
+    let name = format!("git-remote-dash{}", std::env::consts::EXE_SUFFIX);
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Ok(exec) = git::git(Path::new("."), &["--exec-path"], &[]) {
+        dirs.push(exec.into());
+    }
+    dirs.iter().any(|d| d.join(&name).is_file())
 }
 
 /// [`security_policy_in`] over a scratch fetch of `default_ref`.
@@ -1214,6 +1360,50 @@ mod tests {
         g(&["commit", "-q", "-m", "c"]);
         let tip = g(&["rev-parse", "HEAD"]);
         (dir, tip)
+    }
+
+    /// A failed security policy look says what happened and what to do in plain words; git's own
+    /// "'remote-dash' is not a git command" stays in the raw `error` (`--json` only).
+    #[test]
+    fn a_failed_policy_look_is_plain_words_with_the_next_step() {
+        let handle = forge_core::scope::RepoRef {
+            forge: forge_core::network::ForgeIds::test_forge(),
+            repo_id: "r-id".into(),
+            owner_id: "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi".into(),
+            name: "project".into(),
+            visibility: Visibility::Public,
+        };
+        let raw =
+            "fetching the base branch: git fetch failed: git: 'remote-dash' is not a git command.";
+        let missing = lookup_failed(&handle, true, raw.into());
+        assert!(!missing.checked);
+        let note = missing.note.as_deref().unwrap();
+        assert!(note.contains("git-remote-dash isn't installed"), "{note}");
+        let next = missing.next.as_deref().unwrap();
+        assert!(
+            next.contains("docs/INSTALL.md") && next.contains("dg doctor"),
+            "{next}"
+        );
+        assert!(
+            next.contains(&format!("dg repo clone {}", handle.display())),
+            "{next}"
+        );
+        for shown in [note, next] {
+            assert!(!shown.contains("is not a git command"), "{shown}");
+        }
+        assert_eq!(missing.error.as_deref(), Some(raw));
+
+        let failed = lookup_failed(&handle, false, "git fetch failed: timeout".into());
+        assert!(failed
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("couldn't be fetched"));
+        assert!(failed
+            .next
+            .as_deref()
+            .unwrap()
+            .contains("run `dg repo view` in the clone"));
     }
 
     /// D37 / GitHub's order: `.github/`, then the root, then `docs/`.

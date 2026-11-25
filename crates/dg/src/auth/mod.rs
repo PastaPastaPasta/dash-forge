@@ -18,7 +18,7 @@ mod new;
 pub(crate) mod origin;
 mod rekey;
 pub mod store;
-mod wallet;
+pub(crate) mod wallet;
 
 use std::path::PathBuf;
 
@@ -28,7 +28,8 @@ use serde_json::json;
 
 use forge_core::keystore::{self, BridgeIdentity, Secret};
 use forge_core::platform::identity::{
-    self, dpns_label_kind, dpns_normalize, FreshKey, KeySpec, LimitedKeySpec, NewIdentityKeys,
+    self, dpns_label_kind, dpns_normalize, FreshKey, KeySpec, LimitedBounds, LimitedKeySpec,
+    NewIdentityKeys,
 };
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::user_error::{codes, UserError};
@@ -137,6 +138,7 @@ pub struct StorageArgs {
 /// `dg auth login` arguments. With nothing to sign in from (no file, --mnemonic, --full-key or
 /// --replace), it signs in with a DashPay wallet, as `--wallet` does.
 #[derive(Debug, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // independent clap flags
 pub struct LoginArgs {
     /// The identity file (bridge export, `dg auth export`, or mint-identity output). Also
     /// accepted via --identity. Without one (or --mnemonic), dg signs in with your wallet.
@@ -144,7 +146,7 @@ pub struct LoginArgs {
     /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
-    /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dash-key:` link,
+    /// Sign in with a DashPay wallet (App Connect): dg prints a QR code and a `dashpay://connect` link,
     /// the wallet adds a limited key (proposed: 0.25 DASH for 180 days, or --budget/--expires;
     /// the wallet may change them) and dg stores it. Testnet needs DashPay's testnet build.
     /// The default in a terminal; without one (or with --json) it must be asked for.
@@ -156,6 +158,11 @@ pub struct LoginArgs {
     /// Replace this limited key (disable it in the same update), e.g. the one a lost laptop held.
     #[arg(long, value_name = "KEY_ID", conflicts_with = "full_key")]
     pub replace: Option<u32>,
+    /// With --wallet: don't ask the wallet for the key that syncs your storage settings across
+    /// devices (for a wallet that shows an error for the sign-in code). A sync key kept from an
+    /// earlier sign-in still syncs; `dg auth logout` removes it.
+    #[arg(long)]
+    pub no_sync: bool,
     #[command(flatten)]
     pub limits: KeyLimitArgs,
     #[command(flatten)]
@@ -202,8 +209,26 @@ pub struct ExportArgs {
     /// the 12-word recovery phrase).
     #[arg(long, value_name = "FILE", requires = "new_key")]
     pub master: Option<PathBuf>,
+    /// With --new-key: what the key may write. `group` (default): every Forge contract.
+    /// `core`: forge-core only, the narrowest key for a CI job that pushes code: repositories
+    /// and their settings and collaborators, refs, packs and releases; not issues, pull
+    /// requests, stars, nor labels or private repositories on a network with forge-meta
+    /// (mainnet, testnet). It narrows the key but is not a code-only key: a leaked one can
+    /// still add maintainers and writers, change protected branches and settings, and create
+    /// or delete repositories.
+    #[arg(long, value_enum, default_value_t = KeyScope::Group, requires = "new_key")]
+    pub scope: KeyScope,
     #[command(flatten)]
     pub limits: KeyLimitArgs,
+}
+
+/// What a key `dg auth export --new-key` registers may write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum KeyScope {
+    /// The Forge contract group: every Forge contract.
+    Group,
+    /// forge-core alone: code and releases.
+    Core,
 }
 
 /// Dispatch an `auth` subcommand.
@@ -294,8 +319,42 @@ pub fn key_spec(
     Ok(LimitedKeySpec {
         budget_credits: dash_to_credits(args.budget.unwrap_or(default_budget))?,
         expires_at_ms: expiry_ms(days),
-        group: forge.group.clone(),
+        bounds: LimitedBounds::Group(forge.group.clone()),
     })
+}
+
+/// The network's forge-core id, which a `--scope core` key is bound to.
+pub fn forge_core_id(ctx: &Ctx) -> Option<&str> {
+    ctx.target.v2.as_ref().map(|f| f.core.as_str())
+}
+
+/// The group check for a group-bound `spec` (from [`key_spec`]).
+pub async fn check_key_group(
+    ctx: &Ctx,
+    client: &PlatformClient,
+    spec: &LimitedKeySpec,
+    limits: &KeyLimitArgs,
+) -> Result<group::GroupCheck> {
+    let group = spec
+        .group()
+        .context("internal error: the key is not bound to the contract group")?;
+    check_group(ctx, client, group, limits.strict_group()).await
+}
+
+/// The spec `dg auth export --new-key` registers, and its group check: none with `--scope
+/// core`, as a key bound to forge-core alone reaches nothing else the group holds.
+async fn export_spec(
+    ctx: &Ctx,
+    client: &PlatformClient,
+    args: &ExportArgs,
+) -> Result<(LimitedKeySpec, Option<group::GroupCheck>)> {
+    let mut spec = key_spec(ctx, &args.limits, 0.5, 365)?;
+    if args.scope == KeyScope::Core {
+        spec.bounds = LimitedBounds::Contract(ctx.target.require_v2()?.core.clone());
+        return Ok((spec, None));
+    }
+    let checked = check_key_group(ctx, client, &spec, &args.limits).await?;
+    Ok((spec, Some(checked)))
 }
 
 pub use group::check_group;
@@ -411,18 +470,17 @@ pub async fn register_limited_key(
     master: &BridgeIdentity,
     spec: &LimitedKeySpec,
     replace: Option<u32>,
-    checked: &group::GroupCheck,
+    checked: Option<&group::GroupCheck>,
     persist: &mut dyn FnMut(&Secret) -> Result<()>,
 ) -> Result<u32> {
-    if !checked.covers(&spec.group) {
-        anyhow::bail!(
-            "internal error: the group check was not made for group {}",
-            spec.group
-        );
+    if let Some(g) = spec.group() {
+        if !checked.is_some_and(|c| c.covers(g)) {
+            anyhow::bail!("internal error: the group check was not made for group {g}");
+        }
     }
     let before = client.fetch_signer(master).await?;
     let disable: Vec<u32> = match replace {
-        Some(id) if before.is_limited_key(id) => vec![id],
+        Some(id) if before.is_limited_key(id, forge_core_id(ctx)) => vec![id],
         Some(id) => {
             return Err(crate::errors::usage(format!(
                 "key {id} is not a live Forge limited key; `dg auth keys list` shows them"
@@ -501,6 +559,7 @@ pub async fn register_and_store(
         },
     };
     let mut staged = None;
+    let checked = Some(checked);
     let result = register_limited_key(ctx, client, master, spec, replace, checked, &mut |t| {
         staged = Some((t.clone(), (slots.stage)(t)?));
         Ok(())
@@ -957,13 +1016,13 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         (stored, None, None)
     } else {
         let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
-        let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+        let checked = check_key_group(ctx, &client, &spec, &args.limits).await?;
         explain_new_key(
             ctx,
             &master.identity_id,
             &spec,
             "for this computer",
-            &checked,
+            Some(&checked),
         );
         ctx.confirm_or_cancel("Register the key?")?;
         let (id, stored) = register_and_store(
@@ -1098,15 +1157,50 @@ fn master_key_note(mnemonic: bool) -> &'static str {
     }
 }
 
+/// What a forge-core key may still do if it leaks: forge-core holds membership, settings and
+/// protected refs too, not just code.
+const CORE_KEY_CAVEAT: &str = "this narrows the key but it is not a code-only key: if it leaks, it can add maintainers and writers (who outlast its budget and expiry), change protected branches and settings, and create or delete repositories";
+
+/// Where a new limited key may spend, and what it can write when that is not all of Forge.
+fn key_reach(
+    spec: &LimitedKeySpec,
+    forge: Option<&forge_core::network::ForgeIds>,
+) -> (String, Vec<&'static str>) {
+    match &spec.bounds {
+        LimitedBounds::Group(_) => ("only on Dash Forge".into(), vec![]),
+        // On a four-contract set labels and repo keys live in forge-meta (D44), out of reach.
+        LimitedBounds::Contract(c) if forge.is_some_and(|f| f.core == *c) => (
+            "only on forge-core".into(),
+            vec![
+                if forge.is_some_and(|f| f.meta.is_some()) {
+                    "it can write repositories and their settings and collaborators, refs, packs and releases; not issues, pull requests, stars or labels, and it cannot create a private repository"
+                } else {
+                    "it can write repositories and their settings and collaborators, refs, packs, releases and labels; not issues, pull requests or stars"
+                },
+                CORE_KEY_CAVEAT,
+            ],
+        ),
+        LimitedBounds::Contract(c) => (format!("only on contract {c}"), vec![]),
+    }
+}
+
+/// What `dg auth export --new-key --json` says the key is bound to.
+fn scope_fields(spec: &LimitedKeySpec) -> serde_json::Value {
+    match &spec.bounds {
+        LimitedBounds::Group(g) => json!({ "scope": "group", "group": g }),
+        LimitedBounds::Contract(c) => json!({ "scope": "core", "boundContract": c }),
+    }
+}
+
 /// Say what registering a limited key will allow and cost (human mode).
-/// `checked` is the group check made just before: members beyond Forge's known contracts are
-/// listed here, so they are seen before the key is confirmed.
+/// `checked` is the group check made just before for a group-bound key: members beyond
+/// Forge's known contracts are listed here, so they are seen before the key is confirmed.
 pub fn explain_new_key(
     ctx: &Ctx,
     identity_id: &str,
     spec: &LimitedKeySpec,
     purpose: &str,
-    checked: &group::GroupCheck,
+    checked: Option<&group::GroupCheck>,
 ) {
     if ctx.json {
         return;
@@ -1115,12 +1209,16 @@ pub fn explain_new_key(
         "Registering a limited key {purpose} on {identity_id} ({}):",
         ctx.network_label()
     );
+    let (reach, writes) = key_reach(spec, ctx.target.v2.as_ref());
     eprintln!(
-        "  it can spend at most {} DASH{}, only on Dash Forge, until it expires {}",
+        "  it can spend at most {} DASH{}, {reach}, until it expires {}",
         dash_amount(credits_to_dash(spec.budget_credits)),
         crate::fmt::cost_note(spec.budget_credits),
         expiry_text(spec.expires_at_ms)
     );
+    for line in writes {
+        eprintln!("  {line}");
+    }
     eprintln!(
         "  one identity update, {}; the master key signs once and is not stored",
         crate::fmt::cost_line(
@@ -1128,7 +1226,9 @@ pub fn explain_new_key(
             ctx.fiat_price()
         )
     );
-    checked.print_notice(ctx, "  ");
+    if let Some(c) = checked {
+        c.print_notice(ctx, "  ");
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1225,7 +1325,7 @@ pub(crate) async fn key_report(
     KeyReport {
         key_id,
         disabled_id,
-        limited: key_id.is_some_and(|id| identity.is_limited_key(id)),
+        limited: key_id.is_some_and(|id| identity.is_limited_key(id, forge_core_id(ctx))),
         doc_type: shown
             .and_then(|id| identity.key_doc_type(id))
             .map(|(_, doc_type)| doc_type),
@@ -1239,14 +1339,16 @@ pub(crate) async fn key_report(
 async fn status(ctx: &Ctx) -> Result<()> {
     let config = Config::load()?;
     let network = ctx.network_label();
+    let org_waiting = crate::org::waiting_count(ctx).await;
     let Some(source) = ctx.identity_path.clone() else {
         ctx.emit(
-            json!({ "network": network, "authenticated": false, "keyOrigin": null, "renew": null }),
+            json!({ "network": network, "authenticated": false, "keyOrigin": null, "renew": null, "orgRequestsWaiting": org_waiting }),
             || {
                 println!("Network:  {network}");
                 println!(
                     "Identity: none — `dg auth login` signs in with your wallet, `dg auth new` creates one"
                 );
+                org_waiting_line(org_waiting);
             },
         );
         return Ok(());
@@ -1322,6 +1424,7 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "keyUnopened": unopened,
             "keyOrigin": key_origin.map(origin::KeyOrigin::as_str),
             "renew": (from_wallet || key_origin == Some(origin::KeyOrigin::Wallet)).then_some(wallet::RENEW),
+            "orgRequestsWaiting": org_waiting,
         }),
         || {
             println!("Network:  {network}");
@@ -1358,9 +1461,21 @@ async fn status(ctx: &Ctx) -> Result<()> {
                     println!("          warning: an older dg put this master key in the keychain, where any program running as you can read it; `dg auth login --full-key <file>` moves it to a sealed file");
                 }
             }
+            org_waiting_line(org_waiting);
         },
     );
     Ok(())
+}
+
+/// One line when requests in the connected organizations wait for this member's signature.
+fn org_waiting_line(waiting: Option<usize>) {
+    match waiting {
+        Some(1) => println!("Orgs:     1 request waits for your signature: `dg org requests`"),
+        Some(n) if n > 1 => {
+            println!("Orgs:     {n} requests wait for your signature: `dg org requests`");
+        }
+        _ => {}
+    }
 }
 
 /// Where the status's key came from (nothing for a pasted key): a wallet grant, an inline `dfk1`,
@@ -1684,7 +1799,7 @@ async fn current_key_text(
     let identity = client.fetch_signer(current).await?;
     let id = identity
         .signing_key_id(current, ctx.network())
-        .filter(|id| identity.is_limited_key(*id))
+        .filter(|id| identity.is_limited_key(*id, forge_core_id(ctx)))
         .ok_or_else(|| {
             crate::errors::usage(
                 "the key in use is not a Forge limited key; export a new one for CI with \
@@ -1694,10 +1809,31 @@ async fn current_key_text(
     Ok((current.to_dfk1(key.id).context("no key")?, Some(id)))
 }
 
+/// Merge [`scope_fields`] (a `--new-key` export's) into the export's JSON output.
+fn with_scope_fields(
+    mut out: serde_json::Value,
+    scope: Option<serde_json::Value>,
+) -> serde_json::Value {
+    if let (Some(obj), Some(serde_json::Value::Object(fields))) = (out.as_object_mut(), scope) {
+        obj.extend(fields);
+    }
+    out
+}
+
+/// `--strict-group` with `--scope core`: the check it tightens is not made for a key that is
+/// not bound to the group.
+fn core_scope_refusal(args: &ExportArgs) -> Option<&'static str> {
+    (args.scope == KeyScope::Core && args.limits.strict_group).then_some(
+        "--strict-group checks the contract group, and a --scope core key is not bound to it; drop one of them",
+    )
+}
+
 /// Refuse export flag combinations before anything is loaded. A key reaches stdout only with
 /// `--format dfk1 --reveal-secrets -o -`, and never inside `--json` output.
 fn check_export_args(ctx: &Ctx, args: &ExportArgs, to_stdout: bool) -> Result<()> {
-    let refusal = if args.format == "dfk1" && !args.reveal_secrets {
+    let refusal = if let Some(r) = core_scope_refusal(args) {
+        r
+    } else if args.format == "dfk1" && !args.reveal_secrets {
         "--format dfk1 writes the key in the clear; add --reveal-secrets"
     } else if !to_stdout {
         return Ok(());
@@ -1730,34 +1866,52 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
             true,
         )?)
     };
-    let (key_id, identity_id, checked) = if args.new_key {
+    let (key_id, identity_id, checked, scope) = if args.new_key {
         let client = ctx.connect().await?;
         let master = master_identity(ctx, args.master.as_deref(), &current.identity_id)?;
-        let spec = key_spec(ctx, &args.limits, 0.5, 365)?;
-        let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
-        explain_new_key(ctx, &master.identity_id, &spec, "to export", &checked);
+        let (spec, checked) = export_spec(ctx, &client, args).await?;
+        explain_new_key(
+            ctx,
+            &master.identity_id,
+            &spec,
+            "to export",
+            checked.as_ref(),
+        );
         ctx.confirm_or_cancel("Register the key?")?;
         let mut written = false;
-        let id = register_limited_key(ctx, &client, &master, &spec, None, &checked, &mut |t| {
-            // A bridge-format export of a lone limited key.
-            let text = if args.format == "bridge" {
-                BridgeIdentity::from_dfk1(t.expose())?.to_json_with_secrets()
-            } else {
-                t.clone()
-            };
-            let bytes = sealed_or_clear(&text, pass.as_ref())?;
-            // The first write creates the file (refusing anything already there); a second one
-            // (the key landed under another id) replaces what the first wrote.
-            if written {
-                keystore::write_private_file(&path, &bytes)?;
-            } else {
-                keystore::create_private_file(&path, &bytes)?;
-                written = true;
-            }
-            Ok(())
-        })
+        let id = register_limited_key(
+            ctx,
+            &client,
+            &master,
+            &spec,
+            None,
+            checked.as_ref(),
+            &mut |t| {
+                // A bridge-format export of a lone limited key.
+                let text = if args.format == "bridge" {
+                    BridgeIdentity::from_dfk1(t.expose())?.to_json_with_secrets()
+                } else {
+                    t.clone()
+                };
+                let bytes = sealed_or_clear(&text, pass.as_ref())?;
+                // The first write creates the file (refusing anything already there); a second one
+                // (the key landed under another id) replaces what the first wrote.
+                if written {
+                    keystore::write_private_file(&path, &bytes)?;
+                } else {
+                    keystore::create_private_file(&path, &bytes)?;
+                    written = true;
+                }
+                Ok(())
+            },
+        )
         .await?;
-        (Some(id), master.identity_id, Some(checked))
+        (
+            Some(id),
+            master.identity_id,
+            checked,
+            Some(scope_fields(&spec)),
+        )
     } else {
         let (text, key_id) = current_key_text(ctx, &current, &args.format).await?;
         if to_stdout {
@@ -1766,22 +1920,20 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
             return Ok(());
         }
         keystore::create_private_file(&path, &sealed_or_clear(&text, pass.as_ref())?)?;
-        (key_id, current.identity_id.clone(), None)
+        (key_id, current.identity_id.clone(), None, None)
     };
     let encrypted = pass.is_some();
+    let out = json!({
+        "status": "exported",
+        "path": path.display().to_string(),
+        "identityId": identity_id,
+        "keyId": key_id,
+        "encrypted": encrypted,
+        "format": args.format,
+        "network": ctx.network_label(),
+    });
     ctx.emit(
-        group::with_group_fields(
-            json!({
-                "status": "exported",
-                "path": path.display().to_string(),
-                "identityId": identity_id,
-                "keyId": key_id,
-                "encrypted": encrypted,
-                "format": args.format,
-                "network": ctx.network_label(),
-            }),
-            checked.as_ref(),
-        ),
+        with_scope_fields(group::with_group_fields(out, checked.as_ref()), scope),
         || {
             println!(
                 "✓ wrote {} (0600, {})",
@@ -1826,7 +1978,7 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
         let identity = client.fetch_signer(&bridge).await?;
         let key_id = identity
             .signing_key_id(&bridge, ctx.network())
-            .filter(|id| identity.is_limited_key(*id))
+            .filter(|id| identity.is_limited_key(*id, forge_core_id(ctx)))
             .context("the stored key is not a live Forge limited key; nothing to disable")?;
         let full = master_identity(ctx, master, &identity_id)?;
         ctx.confirm_or_cancel(&format!("Disable key #{key_id} on chain?"))?;
@@ -1898,6 +2050,96 @@ mod tests {
         let other = t.path().join("c/dash-forge");
         export_path_in(&args, "ID", true, || Ok(other.clone())).unwrap();
         assert!(!other.exists());
+    }
+
+    /// `--scope core` narrows a `--new-key` export to forge-core; the default is the group, and
+    /// a scope without `--new-key` (the key in use keeps its bounds) is refused.
+    #[test]
+    fn an_export_scope_is_group_or_core_and_needs_a_new_key() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: ExportArgs,
+        }
+        let parse = |a: &[&str]| {
+            <Cli as clap::Parser>::try_parse_from(std::iter::once("dg").chain(a.iter().copied()))
+                .map(|c| c.args.scope)
+        };
+        assert_eq!(parse(&[]).unwrap(), KeyScope::Group);
+        assert_eq!(parse(&["--new-key"]).unwrap(), KeyScope::Group);
+        assert_eq!(
+            parse(&["--new-key", "--scope", "core"]).unwrap(),
+            KeyScope::Core
+        );
+        assert_eq!(
+            parse(&["--new-key", "--scope", "group"]).unwrap(),
+            KeyScope::Group
+        );
+        assert!(parse(&["--new-key", "--scope", "collab"]).is_err());
+        assert!(parse(&["--scope", "core"]).is_err());
+    }
+
+    /// The explanation of a forge-core key says what it can and cannot write.
+    #[test]
+    fn a_core_key_is_explained_as_code_only() {
+        let forge = forge_core::network::ForgeIds::test_forge();
+        let spec = |bounds| LimitedKeySpec {
+            budget_credits: 1,
+            expires_at_ms: 1,
+            bounds,
+        };
+        let group = spec(LimitedBounds::Group("G".into()));
+        let (reach, writes) = key_reach(&group, Some(&forge));
+        assert_eq!(reach, "only on Dash Forge");
+        assert!(writes.is_empty());
+        let core = spec(LimitedBounds::Contract("CORE".into()));
+        let (reach, writes) = key_reach(&core, Some(&forge));
+        assert_eq!(reach, "only on forge-core");
+        assert_eq!(writes, ["it can write repositories and their settings and collaborators, refs, packs, releases and labels; not issues, pull requests or stars", CORE_KEY_CAVEAT]);
+        // forge-meta holds labels and repo keys on a four-contract set (mainnet, testnet)
+        let meta = forge_core::network::ForgeIds::test_forge_meta();
+        let (_, writes) = key_reach(&core, Some(&meta));
+        assert_eq!(writes[0], "it can write repositories and their settings and collaborators, refs, packs and releases; not issues, pull requests, stars or labels, and it cannot create a private repository");
+        assert!(writes[1].contains("not a code-only key"));
+        assert!(writes[1].contains("add maintainers and writers"));
+        // --json names the scope and what the key is bound to
+        assert_eq!(
+            scope_fields(&core),
+            json!({ "scope": "core", "boundContract": "CORE" })
+        );
+        assert_eq!(
+            scope_fields(&group),
+            json!({ "scope": "group", "group": "G" })
+        );
+    }
+
+    /// `--strict-group` checks the contract group, which a `--scope core` key is not bound to.
+    #[test]
+    fn strict_group_is_refused_with_a_core_scope() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: ExportArgs,
+        }
+        let args = |a: &[&str]| {
+            <Cli as clap::Parser>::parse_from(
+                [
+                    "dg",
+                    "--new-key",
+                    "--format",
+                    "dfk1",
+                    "--reveal-secrets",
+                    "-o",
+                    "k",
+                ]
+                .into_iter()
+                .chain(a.iter().copied()),
+            )
+            .args
+        };
+        assert!(core_scope_refusal(&args(&["--scope", "core", "--strict-group"])).is_some());
+        assert!(core_scope_refusal(&args(&["--scope", "core"])).is_none());
+        assert!(core_scope_refusal(&args(&["--strict-group"])).is_none());
     }
 
     /// L-34: the recovery-words prompt names the way out for an identity-file user.

@@ -136,6 +136,8 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Activity { repo, .. }) => ("could not read the activity", Some(repo)),
         Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
         Command::Repo(Rp::Sync { repo, .. }) => ("fork not synced", Some(repo)),
+        Command::Repo(Rp::Pin(args)) => ("repository not pinned", args.repo.as_ref()),
+        Command::Repo(Rp::Unpin { repo }) => ("repository not unpinned", Some(repo)),
         Command::Repo(Rp::Reindex { repo, .. }) => ("browse index not published", Some(repo)),
         Command::Repo(Rp::Star { repo, .. }) => ("repository not starred", Some(repo)),
         Command::Repo(Rp::Unstar { repo }) => ("star not removed", Some(repo)),
@@ -270,6 +272,18 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Collab(C::Remove { repo, .. }) => ("collaborator not removed", Some(repo)),
         Command::Collab(C::List { repo }) => ("could not list collaborators", Some(repo)),
         Command::Collab(C::Accept { repo, .. }) => ("membership not accepted", Some(repo)),
+        Command::Org(o) => (
+            match o {
+                crate::org::OrgCommand::Connect { .. } => "organization not connected",
+                crate::org::OrgCommand::List => "could not list organizations",
+                crate::org::OrgCommand::Requests { .. } => "could not read the requests",
+                crate::org::OrgCommand::Show { .. } => "could not show the request",
+                crate::org::OrgCommand::Sign { .. } => "request not signed",
+                crate::org::OrgCommand::Decline { .. } => "request not declined",
+                crate::org::OrgCommand::Finish { .. } => "request not finished",
+            },
+            None,
+        ),
         Command::MakePublic { repo, .. } => ("nothing made public", Some(repo)),
         Command::Branch {
             cmd: Some(crate::branch::BranchCommand::List { repo }),

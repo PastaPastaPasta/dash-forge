@@ -30,6 +30,10 @@ paths = [
     '''forge-contracts/vectors/.*\.json''',
     # The generator for those vectors.
     '''forge-contracts/schema/vectors\.py''',
+    # forge-user sync crypto vectors (docs/design/identity-synced-state.md §4): keys derived from
+    # fixed labels by their generator, replayed by both clients, guarding nothing.
+    '''forge-contracts/fixtures/user-sync/vectors\.json''',
+    '''tools/user-sync-vectors/gen\.py''',
     # Interop vectors vendored from platform-auth (App Connect, passkey vault): keys derived from
     # fixed seeds and published upstream so every app reproduces the same bytes.
     '''forge-web/lib/vendor/platform-auth/[^/]+/(vectors\.json|__vectors__/[^/]+\.json)''',
@@ -81,6 +85,19 @@ paths = [
     # `allow-secret=` option value; neither holds a credential.
     '''crates/forge-core/src/envelope\.rs''',
     '''crates/git-remote-dash/src/options\.rs''',
+    # The dti/1 2-of-3 test vector from dash-threshold-identity: members' public auth and transport
+    # keys and BLS shares, derived from the published BIP-39 test mnemonics ("abandon … about",
+    # "legal winner … yellow", "letter advice … above") and replayed by Rust and web.
+    '''forge-contracts/fixtures/org/dti-2of3\.json''',
+]
+
+[[allowlists]]
+description = "Public dti/1 vector key used in dg tests"
+targetRules = ["generic-api-key"]
+regexes = [
+    # Member A's public Ed25519 auth key from forge-contracts/fixtures/org/dti-2of3.json. By value,
+    # so any other key in crates/dg/src/org.rs is still reported.
+    '''e40009bfc871bc5cb5f02fd1d71e13cbed2457d661bbad2920ff07add85402bb''',
 ]
 
 [[allowlists]]

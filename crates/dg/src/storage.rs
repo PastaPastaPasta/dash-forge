@@ -42,8 +42,8 @@ pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
     match cmd {
         StorageCommand::Status { repo } => status(ctx, repo).await,
         StorageCommand::Add(args) => add(ctx, args).await,
-        StorageCommand::List => list(ctx),
-        StorageCommand::Remove { name } => remove(ctx, name),
+        StorageCommand::List => list(ctx).await,
+        StorageCommand::Remove { name } => remove(ctx, name).await,
         StorageCommand::Test { name } => test(ctx, name).await,
         StorageCommand::Use {
             profiles,
@@ -176,9 +176,20 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
     let Some(name) = args.name.as_deref() else {
         let no_args = *args == StorageAddArgs::default();
         if no_args && ctx.interactive() {
-            return crate::storage_wizard::run(&mut crate::prompt::TtyPrompter)
-                .await
-                .map(drop);
+            let default_before = crate::sync::global_default_policy();
+            let added = crate::storage_wizard::run(
+                &mut crate::prompt::TtyPrompter,
+                ctx.network().web_origin(),
+            )
+            .await?;
+            let saved = StorageProfiles::load()?.profiles.get(&added.name).cloned();
+            let _ = crate::sync::after_profile_change(ctx, &added.name, saved.as_ref()).await;
+            if let Some(policy) =
+                crate::sync::global_default_policy().filter(|p| Some(p) != default_before.as_ref())
+            {
+                crate::sync::after_default_policy(ctx, &policy).await;
+            }
+            return Ok(());
         }
         return Err(UserError::new(codes::USAGE, "storage profile not added: no profile name")
             .cause(if no_args {
@@ -191,6 +202,7 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
             .into());
     };
     let (profile, path, replaced) = save_profile(name, args)?;
+    let _ = crate::sync::after_profile_change(ctx, name, Some(&profile)).await;
     let unresolved: Vec<String> = profile
         .secret_refs()
         .iter()
@@ -324,9 +336,20 @@ fn describe(profile: &Profile) -> String {
     }
 }
 
-fn list(ctx: &Ctx) -> Result<()> {
+async fn list(ctx: &Ctx) -> Result<()> {
+    use forge_core::user_sync::Origin;
     let path = StorageProfiles::default_path()?;
-    let profiles = StorageProfiles::load_from(&path)?;
+    let local = StorageProfiles::load_from(&path)?;
+    let sync = crate::sync::state(ctx);
+    let effective = crate::sync::merged(ctx, &local).await;
+    let profiles = &effective.profiles;
+    let origin_word = |name: &str| match effective.origin.get(name) {
+        Some(Origin::Synced) => "synced",
+        Some(Origin::Both) => "local+synced",
+        Some(Origin::LocalOverSynced) => "local (synced copy differs)",
+        Some(Origin::Shared) => "shared",
+        _ => "local",
+    };
     let mut rows: Vec<_> = profiles
         .profiles
         .iter()
@@ -336,7 +359,7 @@ fn list(ctx: &Ctx) -> Result<()> {
                 .iter()
                 .map(|(f, r)| json!({ "field": f, "ref": r.to_string(), "available": r.is_available() }))
                 .collect();
-            json!({ "name": name, "kind": p.kind(), "target": describe(p), "secrets": secrets, "builtIn": false })
+            json!({ "name": name, "kind": p.kind(), "target": describe(p), "secrets": secrets, "builtIn": false, "origin": origin_word(name) })
         })
         .collect();
     // The human list shows the built-in profile too; so does the JSON (QW-081).
@@ -347,11 +370,19 @@ fn list(ctx: &Ctx) -> Result<()> {
         "secrets": [],
         "builtIn": true,
     }));
+    let unusable: Vec<_> = effective
+        .unusable
+        .iter()
+        .map(|(n, why)| json!({ "name": n, "why": why }))
+        .collect();
+    let synced_here = matches!(&sync, crate::sync::SyncState::On { .. });
     ctx.emit(
         json!({
             "path": path.display().to_string(),
             "profiles": rows,
             "ipfsGateways": profiles.ipfs_gateways(),
+            "sync": sync.label(),
+            "unusableSynced": unusable,
         }),
         || {
             println!("Storage profiles ({}):", path.display());
@@ -359,7 +390,12 @@ fn list(ctx: &Ctx) -> Result<()> {
                 println!("  (none — add one with `dg storage add <name> --kind …`)");
             }
             for (name, p) in &profiles.profiles {
-                println!("  {name:<16} {:<22} {}", p.kind(), describe(p));
+                let origin = if synced_here {
+                    format!("  [{}]", origin_word(name))
+                } else {
+                    String::new()
+                };
+                println!("  {name:<16} {:<22} {}{origin}", p.kind(), describe(p));
                 for (field, r) in p.secret_refs() {
                     let state = if r.is_available() { "set" } else { "NOT SET" };
                     println!("  {:<16} {:<22}   {field} = {r} ({state})", "", "");
@@ -370,15 +406,47 @@ fn list(ctx: &Ctx) -> Result<()> {
                 "IPFS read gateways: {}",
                 profiles.ipfs_gateways().join(", ")
             );
+            for (name, why) in &effective.unusable {
+                println!("  synced profile {name} is not usable here: {why}");
+            }
+            match &sync {
+                crate::sync::SyncState::On { .. } => {
+                    println!("Synced with your identity: profiles marked synced come from another device.");
+                }
+                crate::sync::SyncState::Off => println!("{}", crate::sync::OFF_HINT),
+                crate::sync::SyncState::Locked => println!(
+                    "Settings sync is off for this run: its key is in a passphrase-sealed file; set DASH_FORGE_PASSPHRASE to use it"
+                ),
+                crate::sync::SyncState::Unavailable => {}
+            }
         },
     );
     Ok(())
 }
 
-fn remove(ctx: &Ctx, name: &str) -> Result<()> {
+async fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     let path = StorageProfiles::default_path()?;
     let mut profiles = StorageProfiles::load_from(&path)?;
     let Some(removed) = profiles.profiles.remove(name) else {
+        let effective = crate::sync::merged(ctx, &profiles).await;
+        if effective.origin.get(name) == Some(&forge_core::user_sync::Origin::Synced) {
+            if !crate::sync::after_profile_change(ctx, name, None).await {
+                return Err(UserError::new(
+                    codes::UNEXPECTED,
+                    format!("synced storage profile {name:?} was not removed"),
+                )
+                .cause(
+                    "the change did not reach your identity's synced settings (see the note above)",
+                )
+                .fix(format!("run `dg storage remove {name}` again"))
+                .into());
+            }
+            ctx.emit(
+                json!({ "status": "removed", "profile": name, "synced": true }),
+                || println!("Removed synced storage profile {name:?} from your identity (every device stops using it)."),
+            );
+            return Ok(());
+        }
         return Err(crate::errors::not_found(
             format!("no storage profile {name:?} in {}", path.display()),
             "`dg storage list` lists the profiles",
@@ -387,6 +455,7 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     profiles.save_to(&path)?;
     // The profile is gone first: a keychain that cannot be reached must not keep it.
     let secrets = remove_owned_secrets(name, &removed, &profiles, forge_core::keychain::delete);
+    let _ = crate::sync::after_profile_change(ctx, name, None).await;
     ctx.emit(
         json!({ "status": "removed", "profile": name, "keychain": secrets.to_json() }),
         || {
@@ -518,6 +587,8 @@ pub(crate) struct Report {
     pub fixes: Vec<String>,
     /// Print each row as it is recorded (human mode), so a slow check shows progress.
     live: bool,
+    /// The web app origin the browser CORS checks present ([`forge_core::network::Network::web_origin`]).
+    origin: &'static str,
 }
 
 impl Report {
@@ -604,9 +675,10 @@ impl Report {
 /// Run every check for `profile` (the same ones for `dg storage test` and the end of the
 /// `dg storage add` prompts): a signed PUT, a signed GET, an anonymous GET through the
 /// public URL, the browser CORS preflight for `Range`, and a delete of the probe (IPFS:
-/// add + pin, gateway reads, unpin). `live` prints each row as it finishes.
-pub(crate) async fn run_checks(profile: &Profile, live: bool) -> Report {
-    run_checks_with_auth(profile, live, None).await
+/// add + pin, gateway reads, unpin). `live` prints each row as it finishes. The CORS checks
+/// present `origin`, the web app of the network in use.
+pub(crate) async fn run_checks(profile: &Profile, live: bool, origin: &'static str) -> Report {
+    run_checks_with_auth(profile, live, None, origin).await
 }
 
 /// The managed node verifies with its private token even when no keychain is available.
@@ -615,10 +687,12 @@ pub(crate) async fn run_checks_with_auth(
     profile: &Profile,
     live: bool,
     auth: Option<&str>,
+    origin: &'static str,
 ) -> Report {
     let http = forge_core::storage::http_client();
     let mut r = Report {
         live,
+        origin,
         ..Report::default()
     };
     for w in publish_warnings(profile) {
@@ -666,7 +740,7 @@ async fn check_public_read(
     }
     let ok = r.steps.last().is_some_and(|s| s.ok);
     if ok {
-        let cors = probe_cors(http, url).await;
+        let cors = probe_cors(http, url, r.origin).await;
         if !cors.browser_ok() {
             r.fail("browser CORS", cors.problems.join("; "));
         } else if cors.warnings.is_empty() {
@@ -688,14 +762,16 @@ async fn check_public_read(
 }
 
 async fn test(ctx: &Ctx, name: &str) -> Result<()> {
-    let profiles = StorageProfiles::load()?;
+    let profiles = crate::sync::merged(ctx, &StorageProfiles::load()?)
+        .await
+        .profiles;
     let profile = profiles
         .get(name)
         .with_context(|| format!("no storage profile {name:?} (see `dg storage list`)"))?;
     if !ctx.json {
         println!("Testing storage profile {name:?} ({}):", profile.kind());
     }
-    let r = run_checks(&profile, !ctx.json).await;
+    let r = run_checks(&profile, !ctx.json, ctx.network().web_origin()).await;
 
     let ok = r.ok();
     let body = json!({
@@ -796,7 +872,8 @@ async fn test_s3(p: &S3Profile, http: &reqwest::Client, r: &mut Report) {
                 p.bucket
             ));
         } else if cors_failed {
-            r.fixes.push(cors_fix(provider_of(&p.endpoint), &p.bucket));
+            let fix = cors_fix(provider_of(&p.endpoint), &p.bucket, r.origin);
+            r.fixes.push(fix);
         }
     } else {
         r.pass(
@@ -1198,7 +1275,8 @@ async fn use_profiles(
     platform_fallback: bool,
     global: bool,
 ) -> Result<()> {
-    let profiles = StorageProfiles::load()?;
+    let effective = crate::sync::merged(ctx, &StorageProfiles::load()?).await;
+    let profiles = effective.profiles;
     let replicas_s = replicas.map(|r| r.to_string());
     let fallback_s = platform_fallback.then_some("true");
     let policy = StoragePolicy::from_git_values(Some(list), replicas_s.as_deref(), fallback_s)?;
@@ -1213,6 +1291,9 @@ async fn use_profiles(
         git_config(global, &["dash.platformFallback", "true"])?;
     } else {
         git_config(global, &["--unset", "dash.platformFallback"])?;
+    }
+    if global {
+        crate::sync::after_default_policy(ctx, &policy).await;
     }
     let url_warnings: Vec<String> = resolved
         .external

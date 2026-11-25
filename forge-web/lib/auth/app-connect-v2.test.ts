@@ -14,21 +14,25 @@ import { describe, expect, it } from 'vitest'
 import type { ForgeIds } from '../deployments'
 import { CREDITS_PER_DASH } from '../sdk/cost'
 import { bytesToBase64 } from '../sdk/query'
-import { AppConnectTlv, KeySecurityLevel, parseAppConnectUri } from '../vendor/platform-auth/app-connect'
-import { AmbiguousWalletLogin, APP_CONNECT_CONTRACT_ID, RequestExpired } from './app-connect'
+import { APP_CONNECT_MAX_REQUEST_SKEW_MS, AppConnectTlv, KeySecurityLevel, parseAppConnectUri } from '../vendor/platform-auth/app-connect'
 import {
+  APP_CONNECT_CREATED_AT_LEAD_MS,
+  requestCreatedAt,
+  AmbiguousWalletLogin,
   APP_CONNECT_LABEL,
   PollTrigger,
+  RequestExpired,
   TooManyAnswers,
   WalletGrantRefused,
   awaitV2Grant,
   forgeV2Request,
+  isSyncKey,
   newV2LoginRequest,
   type V2LoginRequest,
 } from './app-connect-v2'
-import { compareIds } from './app-connect-port'
+import { APP_CONNECT_CONTRACT_ID, compareIds } from './app-connect-port'
 import { base58Decode, base58Encode } from './base58'
-import { isUnlimited } from './key-registration'
+import { isUnlimited } from './wallet-key'
 import { answerV2 } from './wallet-sim'
 import { decodeWif } from './wif'
 
@@ -38,6 +42,8 @@ const FORGE: ForgeIds = {
   community: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS',
   group: '6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC',
 }
+const USER = '46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU'
+const SYNCED: ForgeIds = { ...FORGE, user: USER }
 const OTHER_GROUP = 'Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7'
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const MALLORY = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
@@ -91,6 +97,16 @@ describe('the request Forge makes', () => {
     expect(req.expiresAt - req.createdAt).toBe(10 * 60 * 1000)
   })
 
+  it('dates CREATED_AT within 90 s of the chain time it read, so a wallet judging by block time accepts it', () => {
+    const chain = 1_800_000_000_000
+    expect(requestCreatedAt(chain + 5_000, chain)).toBe(chain + 5_000)
+    // Mainnet blocks can be minutes apart: the device's clock is then ahead of the latest block.
+    expect(requestCreatedAt(chain + 6 * 60_000, chain)).toBe(chain + 90_000)
+    // A device clock behind the chain would read as stale: chain time instead.
+    expect(requestCreatedAt(chain - 20 * 60_000, chain)).toBe(chain)
+    expect(APP_CONNECT_CREATED_AT_LEAD_MS).toBeLessThan(APP_CONNECT_MAX_REQUEST_SKEW_MS)
+  })
+
   it('puts the callback on the deep link only', () => {
     let seen: Uint8Array | null = null
     const req = newV2LoginRequest('devnet', FORGE, {
@@ -133,6 +149,7 @@ interface ChainKey {
   priv: Uint8Array
   bounds: { $type: string; id: string } | null
   securityLevelNumber?: number
+  purposeNumber?: number
   totalBudget?: bigint
   expiresAt?: bigint
   disabledAt?: bigint
@@ -143,27 +160,32 @@ function fakeChain() {
   const identities = new Map<string, ChainKey[]>()
   const docs: Record<string, unknown>[] = []
   let queries = 0
+  const wasmKey = (k: ChainKey) => ({
+    keyId: k.keyId,
+    keyTypeNumber: 0,
+    data: bytesToHex(secp.getPublicKey(k.priv, true)),
+    purposeNumber: k.purposeNumber ?? 0,
+    securityLevelNumber: k.securityLevelNumber ?? 2,
+    disabledAt: k.disabledAt,
+    totalBudget: k.totalBudget,
+    expiresAt: k.expiresAt,
+    contractBounds: k.bounds ? { toJSON: () => k.bounds } : undefined,
+    validatePrivateKey: (bytes: Uint8Array) => bytesToHex(bytes) === bytesToHex(k.priv),
+  })
   const sdk = {
     identities: {
       async fetch(id: string) {
         const keys = identities.get(id)
         if (!keys) return undefined
-        return {
-          balance: 10n ** 11n,
-          revision: 1n,
-          publicKeys: keys.map((k) => ({
-            keyId: k.keyId,
-            keyTypeNumber: 0,
-            data: bytesToHex(secp.getPublicKey(k.priv, true)),
-            purposeNumber: 0,
-            securityLevelNumber: k.securityLevelNumber ?? 2,
-            disabledAt: k.disabledAt,
-            totalBudget: k.totalBudget,
-            expiresAt: k.expiresAt,
-            contractBounds: k.bounds ? { toJSON: () => k.bounds } : undefined,
-            validatePrivateKey: (bytes: Uint8Array) => bytesToHex(bytes) === bytesToHex(k.priv),
-          })),
-        }
+        return { balance: 10n ** 11n, revision: 1n, publicKeys: keys.map(wasmKey) }
+      },
+      async contractKeys(q: { identityIds: string[]; contractId: string; purposes: number[] }) {
+        return q.identityIds.map((id) => ({
+          identityId: { toBase58: () => id },
+          keys: (identities.get(id) ?? [])
+            .filter((k) => k.disabledAt === undefined && k.bounds?.$type === 'singleContract' && k.bounds.id === q.contractId && q.purposes.includes(k.purposeNumber ?? 0))
+            .map(wasmKey),
+        }))
       },
       async keysRemainingBudgets(id: string, ids: number[]) {
         const keys = identities.get(id) ?? []
@@ -191,7 +213,7 @@ function fakeChain() {
    * A v2 wallet approving `uri` for `identityId`: registers a fresh key (unless `register` is
    * false) with the limits asked for, overridden by `register`, and publishes its answer.
    */
-  async function approve(uri: string, identityId: string, register: Partial<ChainKey> | false = {}) {
+  async function approve(uri: string, identityId: string, register: Partial<ChainKey> | false = {}, enc: Partial<ChainKey> | 'none' = {}) {
     const { request } = parseAppConnectUri(uri)
     const binding = request.authBindings[0]!
     const priv = secp.utils.randomSecretKey()
@@ -206,14 +228,22 @@ function fakeChain() {
       ...(register || {}),
     }
     if (register !== false) keys.push(chainKey)
-    const answer = await answerV2(uri, { ownerId: identityId, slots: [priv] })
+    const slots: Uint8Array[] = [priv]
+    const encBinding = request.encBindings[0]
+    let encPriv: Uint8Array | null = null
+    if (encBinding && enc !== 'none') {
+      encPriv = secp.utils.randomSecretKey()
+      keys.push({ keyId: keys.length, priv: encPriv, bounds: { $type: 'singleContract', id: base58Encode(encBinding.contractId) }, purposeNumber: 1, securityLevelNumber: 3, ...enc })
+      slots.push(encPriv)
+    }
+    const answer = await answerV2(uri, { ownerId: identityId, slots })
     docs.push({
       $ownerId: identityId,
       appEphemeralPubKeyHash: bytesToBase64(answer.requestHash),
       walletEphemeralPubKey: bytesToBase64(answer.walletEphemeralPubKey),
       encryptedPayload: bytesToBase64(answer.encryptedPayload),
     })
-    return { priv, register: () => keys.push(chainKey) }
+    return { priv, encPriv, register: () => keys.push(chainKey) }
   }
   return { sdk: sdk as unknown as EvoSDK, identities, docs, approve, queries: () => queries }
 }
@@ -221,6 +251,90 @@ function fakeChain() {
 const fast = { network: 'devnet' as const, forge: FORGE, intervalMs: 1, settleMs: 0 }
 const request = (identityHint?: string): V2LoginRequest =>
   newV2LoginRequest('devnet', FORGE, { connectionId: CONNECTION, chainNow: Date.now(), ...(identityHint ? { identityHint } : {}) })
+
+describe('settings sync: the forge-user encryption binding', () => {
+  const chainNow = Date.UTC(2026, 9, 24)
+
+  it('where forge-user is deployed, the app is forge-user and one ENCRYPTION binding names it; the auth binding is unchanged', () => {
+    const plain = parseAppConnectUri(newV2LoginRequest('testnet', FORGE, { connectionId: CONNECTION, chainNow, now: chainNow }).qrUri).request
+    const req = newV2LoginRequest('testnet', SYNCED, { connectionId: CONNECTION, chainNow, now: chainNow })
+    const { request } = parseAppConnectUri(req.qrUri)
+    expect(req.syncContract).toBe(USER)
+    expect(base58Encode(request.appId)).toBe(USER)
+    expect(request.encBindings).toHaveLength(1)
+    expect(base58Encode(request.encBindings[0]!.contractId)).toBe(USER)
+    expect(request.encBindings[0]!.purpose).toBe(1)
+    expect(request.authBindings).toEqual(plain.authBindings)
+  })
+
+  it('without forge-user, or with sync off, the request is exactly the one before sync', () => {
+    const a = forgeV2Request(FORGE, { appEphemeralPubKey: new Uint8Array(33).fill(2), connectionId: CONNECTION, chainNow, now: chainNow })
+    const b = forgeV2Request(SYNCED, { appEphemeralPubKey: new Uint8Array(33).fill(2), connectionId: CONNECTION, chainNow, now: chainNow, sync: false })
+    expect(b).toEqual(a)
+    expect(base58Encode(a.appId)).toBe(FORGE.core)
+    expect(a.encBindings).toEqual([])
+  })
+
+  const syncFast = { ...fast, forge: SYNCED }
+  const syncRequest = (): V2LoginRequest => newV2LoginRequest('devnet', SYNCED, { connectionId: CONNECTION, chainNow: Date.now() })
+
+  it('keeps the encryption key the wallet sent, checked against the identity', async () => {
+    const chain = fakeChain()
+    const req = syncRequest()
+    const { encPriv } = await chain.approve(req.qrUri, ALICE)
+    const grant = await awaitV2Grant(chain.sdk, req, syncFast)
+    expect(grant.key.keyId).toBe(1)
+    expect(grant.syncKey?.keyId).toBe(2)
+    expect(bytesToHex(grant.syncKey!.secret)).toBe(bytesToHex(encPriv!))
+  })
+
+  it('signs in without sync when the wallet sends no encryption key', async () => {
+    const chain = fakeChain()
+    const req = syncRequest()
+    await chain.approve(req.qrUri, ALICE, {}, 'none')
+    const grant = await awaitV2Grant(chain.sdk, req, syncFast)
+    expect(grant.key.keyId).toBe(1)
+    expect(grant.syncKey).toBeUndefined()
+  })
+
+  it('signs in without sync when the encryption key is bound to another contract, at the wrong level, or disabled', async () => {
+    for (const bad of [{ bounds: { $type: 'singleContract', id: FORGE.core } }, { securityLevelNumber: 2 }, { disabledAt: 1n }] as Partial<ChainKey>[]) {
+      const chain = fakeChain()
+      const req = { ...syncRequest(), identityHint: ALICE }
+      await chain.approve(req.qrUri, ALICE, {}, bad)
+      const grant = await awaitV2Grant(chain.sdk, req, { ...syncFast, settleMs: 0 })
+      expect(grant.key.keyId).toBe(1)
+      expect(grant.syncKey).toBeUndefined()
+    }
+  })
+
+  it('still refuses an answer whose sign-in key is unusable, whatever the sync key', async () => {
+    const chain = fakeChain()
+    const req = { ...syncRequest(), identityHint: ALICE }
+    await chain.approve(req.qrUri, ALICE, { disabledAt: 1n })
+    await expect(awaitV2Grant(chain.sdk, req, { ...syncFast, settleMs: 0 })).rejects.toBeInstanceOf(WalletGrantRefused)
+  })
+
+  it('refuses an encryption key when Forge did not ask for one', async () => {
+    const chain = fakeChain()
+    const asked = newV2LoginRequest('devnet', SYNCED, { connectionId: CONNECTION, chainNow: Date.now(), identityHint: ALICE })
+    await chain.approve(asked.qrUri, ALICE)
+    await expect(awaitV2Grant(chain.sdk, { ...asked, syncContract: null }, syncFast)).rejects.toBeInstanceOf(WalletGrantRefused)
+  })
+})
+
+describe('isSyncKey', () => {
+  it('takes only a MEDIUM ENCRYPTION SECP256K1 key bound to forge-user alone, whose public key is the private key', () => {
+    const priv = secp.utils.randomSecretKey()
+    const key = { id: 3, type: 0, purpose: 1, securityLevel: 3, data: secp.getPublicKey(priv, true), bounds: { kind: 'singleContract' as const, contractId: USER } }
+    const granted = { role: 'encryption' as const, bindingIndex: 0, privateKey: priv, key }
+    expect(isSyncKey(granted, USER)).toBe(true)
+    expect(isSyncKey({ ...granted, key: { ...key, securityLevel: 2 } }, USER)).toBe(false)
+    expect(isSyncKey({ ...granted, key: { ...key, bounds: { kind: 'singleContract', contractId: FORGE.core } } }, USER)).toBe(false)
+    expect(isSyncKey({ ...granted, key: { ...key, disabledAt: 1 } }, USER)).toBe(false)
+    expect(isSyncKey({ ...granted, privateKey: secp.utils.randomSecretKey() }, USER)).toBe(false)
+  })
+})
 
 describe('v2 poll against a simulated wallet', () => {
   it('accepts a group-bound HIGH key with a budget and an expiry, as Forge’s own wallet key', async () => {

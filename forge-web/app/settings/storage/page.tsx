@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/ui/states'
 import { KuboConnectView } from '@/components/storage/kubo-connect'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { StorageWizardView } from '@/components/storage/storage-wizard'
+import { SyncNote } from '@/components/storage/sync-note'
 import { useAuth } from '@/contexts/auth-context'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
 import { FiatNote } from '@/components/ui/fiat-note'
@@ -27,20 +28,23 @@ export default function StorageSettingsPage(): JSX.Element {
           </p>
           <h1 className="mt-1 text-xl">Storage</h1>
           <p className="mt-1 max-w-2xl text-dense text-anvil-600 dark:text-anvil-300">
-            We host nothing. Your git data goes to a bucket or IPFS node you own, and Platform records where it is. A push costs about {dashRange(PUSH_COST_DASH.byo)} DASH<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} />, or {dashRange(PUSH_COST_DASH.platform)} with everything on Platform<FiatNote dash={PUSH_COST_DASH.platform.max} range={PUSH_COST_DASH.platform.min} />. Readers verify every file.
+            Store git data in your own bucket or IPFS node — pushes cost ~{dashRange(PUSH_COST_DASH.byo)} DASH<FiatNote dash={PUSH_COST_DASH.byo.max} range={PUSH_COST_DASH.byo.min} />.
           </p>
         </div>
         <p className="flex items-center gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-[12px] text-anvil-600 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-300 md:hidden">
-          <MonitorSmartphone className="h-4 w-4 shrink-0" aria-hidden /> Use a desktop browser for this step: it needs a few long fields and a copy-paste from your provider’s console.
+          <MonitorSmartphone className="h-4 w-4 shrink-0" aria-hidden /> Use a desktop browser for this step.
         </p>
         <KuboConnectView storage={storage} fragmentOnly showUnlock={false} />
         {identity ? (
-          <StorageWizardView storage={storage} />
+          <>
+            <StorageWizardView storage={storage} />
+            <SyncNote />
+          </>
         ) : (
           <EmptyState
             icon={HardDrive}
             title="Sign in to set up storage"
-            body="Storage credentials are kept encrypted with this browser’s key, so they need a signed-in session."
+            body="Storage credentials stay encrypted in this browser."
             action={<SignInButton />}
           />
         )}

@@ -32,7 +32,7 @@ This guide covers:
 
 ## The setup wizard
 
-Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. forge.dashhq.org runs on mainnet; the guides use testnet, at [testnet-forge.dashhq.org/mirror](https://testnet-forge.dashhq.org/mirror/) ([Which network](README.md#which-network)).
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. It first asks **Do you maintain the repo on GitHub?** Choose automatic sync if you have write access, or the command line for a one-time copy or your own re-runs. forge.dashhq.org is mainnet; testnet-forge.dashhq.org is testnet ([Which network](README.md#which-network)).
 
 ### Automatic sync
 
@@ -66,8 +66,6 @@ The Action path saves public answers in this browser per network and signed-in i
 
 The wizard pins the Action to one Dash Forge commit, the one the site was built from (`uses: PastaPastaPasta/dash-forge/action@<commit>`), and sets `install: 'source'`, so the Action builds the three tools from that same commit.
 
-**How long it takes.** A timed run on devnet bonsia (2026-09-30) mirrored a small public repository (two commits) with Platform storage. The wizard's own steps took 16 seconds of machine time: the GitHub check, signing in, creating the repository, the runner key and the workflow. A person reading, typing and pasting needs a few minutes more. From the workflow commit to the first mirrored push took 3 minutes 50 seconds. Of that, compiling the tools took 3 minutes 9 seconds, because the wizard's workflow builds them from source (no release was published then; a workflow pinned to a release tag downloads them instead). Mirroring took under 30 seconds and spent 0.018 DASH, the Action's own up-front estimate. Counted from opening the page, the mirror was live after 6 minutes 11 seconds, and that included a two-minute fix made during the run. Later runs reuse a build cache: the run for the next push took 1 minute 41 seconds in all. (That run built the tools in its own workflow steps with rust-cache; the wizard now leaves the build, and its cache, to the Action.)
-
 ---
 
 ## Before you start
@@ -81,7 +79,7 @@ For command-line imports, you need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
 
-> **Network.** Forge runs on mainnet and testnet; testnet is the tools' default network. See [Networks](../networks.md).
+> **Network.** The tools default to testnet; Forge is also live on mainnet. See [Networks](../networks.md).
 
 > **Cost.** A first import is mostly git data plus one document per issue, PR, comment and review. The Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost about **0.078 DASH**; a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. Re-runs pay only for what is new, and nothing when nothing changed. `--dry-run` prices your repository before you spend anything.
 
@@ -119,7 +117,7 @@ forge-import alice/project --network testnet --max-spend 0.5 --state ./alice-pro
 
 **Git LFS.** If the default branch's `.gitattributes` sets `filter=lfs`, the run warns that the mirror holds the LFS pointer files only: the large files stay on GitHub, and Dash Forge does not mirror LFS objects. The summary JSON says so too (`lfsDetected`).
 
-Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, which has no Forge deployment ([E702](../errors.md#e702)). `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
+Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet. `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
 
 Useful flags (see `forge-import --help`):
 
@@ -193,19 +191,6 @@ How the importer writes:
 - **Issues and PRs** are created one at a time, in GitHub's order, each confirmed before the next, so their numbers follow GitHub's.
 - **Everything else on an item** (its comments, reviews, labels and state) is written behind its creation, while later items are being created. `--concurrency` items (default 8) are written at once, and each item's own documents stay in their order: comments, then reviews, then labels and state.
 
-**How long it takes.** Timed on devnet bonsia (2026-09-30), importing the issues and PRs of `dashpay/dash-network-deploy` into two new repositories: 749 issues and PRs with 3,911 documents in all (1,097 comments, 1,301 reviews, 764 labels and state changes).
-
-| | `--concurrency 1` | `--concurrency 8` (the default) |
-|---|---|---|
-| Writing | 122.6 min (0.53 documents/s) | 38.1 min (1.71 documents/s) |
-| Whole run, including about 10 minutes reading GitHub | 132 min | about 48 min |
-| Spent (measured balance drop) | 3.164 DASH | 3.138 DASH |
-
-- **Speed:** writing was 3.2 times as fast; the cost was the same.
-- **Interrupted run:** the pipelined run was killed partway through by accident and then run again. The two passes together wrote every document once, and a sample of 47 items (including every item that was mid-write at the kill) matched the other mirror exactly.
-- **What limits it:** issues and PRs are still created one at a time, so a repository with many issues and PRs and few comments gains least.
-- **dashpay/dash:** about 74,000 documents. It took 10 to 28 hours one document at a time. From these rates, a pipelined import of it should take about 7 to 9 hours. This is an estimate, not a measurement.
-
 **Progress.** Every 30 seconds the importer prints a progress line to stderr:
 
 ```
@@ -241,6 +226,8 @@ The Action signs with the `DASH_FORGE_KEY` repository secret (Settings → Secre
   Without `--master`, `dg` asks for your 12-word recovery phrase instead. `dg` only reads the master key from the file: the key is not stored and CI never sees it.
 
   The file's one line is the secret. Paste it, then delete the file. `dg auth keys list` shows the key, and `dg auth keys disable <id>` retires it.
+
+  If the mirror only syncs code and releases (`sync: code,releases`), add `--scope core` for the narrowest key Platform allows. It is bound to the forge-core contract alone: repositories and their settings and collaborators, refs, packs and releases. It cannot write issues, pull requests or stars, nor, on mainnet and testnet (where forge-meta holds them), labels or a private repository's keys, so it cannot create a private repository. This narrows the key, but it is not a code-only key: forge-core also holds maintainers, writers, protected branches and repository settings, so a leaked core key can still add maintainers or writers (who keep their rights after the key's budget and expiry run out), change protected branches and settings, and create or delete your repositories. Treat it as a secret as carefully as a group key. A mirror that syncs issues, pull requests or labels needs the default `--scope group` key.
 - **A CI-only identity file**, stripped to the one signing key a push needs, the HIGH authentication key. The fields the tools need are kept, and every other secret is blanked:
 
   ```sh
@@ -280,13 +267,13 @@ jobs:
         with:
           install: 'source'
           repo: dash://<owner identity id>/<repo name>
-          network: testnet                # the Action's default; mainnet for a mainnet repository
+          network: testnet                # the default; or mainnet
           sync: code,releases
           storage-kind: s3
-          s3-endpoint: https://<account>.r2.cloudflarestorage.com
-          s3-region: auto
+          s3-endpoint: https://s3.example.org
+          s3-region: us-east-1
           s3-bucket: forge
-          s3-public-url: https://pub-9a1.r2.dev
+          s3-public-url: https://s3.example.org/forge
           cost-cap: '0.05'
         env:
           DASH_FORGE_KEY: ${{ secrets.DASH_FORGE_KEY }}
@@ -306,7 +293,7 @@ Before you copy it:
 - **Pinned to a release tag,** the Action installs that release's `dg`, `git-remote-dash` and `forge-import` with [`install.sh`](../../install.sh): it checks each archive against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. The Action's `version` input defaults to the release it was cut with, so `@v<version>` installs that version.
 - **Build from source (works today).** Pin a commit you have reviewed (all 40 characters) and set `install: 'source'`: the Action compiles the tools from the commit in `uses:` (Rust is preinstalled on `ubuntu-latest`; the Action installs a pinned, checksummed protoc). The first build takes several minutes, and the Action caches the compiled dependencies for later runs (that cache is trusted like any other cache of your repository; `build-cache: 'false'` turns it off). This is what [the setup wizard](#the-setup-wizard) writes, because the site runs `master`, which can be ahead of the latest release. [`.github/workflows/mirror-action.yml`](../../.github/workflows/mirror-action.yml) is this repository's own live test of the Action. To build the tools in your own steps instead, put them on `PATH` and set `install: 'false'`.
 - **Do not use `@master`.** The binaries run with your key, so following whatever `master` holds would hand the key to any future change there, and `master`'s scripts run with the latest release's binaries, which can be older than they expect.
-- **Forge runs on mainnet and testnet** ([Networks](../networks.md)). The Action's default network is testnet, as for `dg`; set `network: mainnet` for a repository on mainnet, where DASH is real money.
+- **Networks:** the Action defaults to testnet. For mainnet, set `network: mainnet`, and pin `uses:` to a commit from after the mainnet registration with `install: 'source'`: the v0.2.0 release's binaries know testnet only.
 - **Anyone who can open an issue or a PR can make a run spend**, up to `cost-cap` per event, until the key's budget or the identity's balance runs out. On a busy public repository, drop the event triggers and let the daily schedule do the work, or remove `issues,prs` from `sync`.
 - **Status.** `ok`, `dry_run` and `partial` succeed (`partial` with a warning, since the next run retries; `fail-on-partial: 'true'` fails it). `cap_exceeded` and `error` fail the step. The job summary shows what was written, the spend against the estimate, and the runner key's remaining budget and expiry.
 - Release assets are not copied. They are recorded by GitHub URL with a sha256: GitHub's digest when it reports one, otherwise one the importer computes by downloading the asset once (nothing is kept, and a re-run reuses the recorded hash). An asset that cannot be hashed is recorded without one, with a warning; `dg release download` and the web refuse to hand out such an asset unverified. GitHub's download links cannot be read by a web page (no CORS), so the web's release page links to them directly and offers to check the downloaded file against the hash.

@@ -67,10 +67,17 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
       data-testid="pending-renewal"
       data-key-id={data.keyId}
     >
-      <p>
-        Unfinished key renewal: key #{data.keyId}, started {formatDate(data.createdAt)}, protected with a{' '}
-        {data.methods.join(' or a ')}. It may already be registered on Platform. Finish it by unlocking with that passphrase or passkey.
-      </p>
+      {data.methods.some((m) => m !== 'device') ? (
+        <p>
+          Unfinished key renewal: key #{data.keyId}, started {formatDate(data.createdAt)}, protected with a{' '}
+          {data.methods.filter((m) => m !== 'device').join(' or a ')}. It may already be registered on Platform. Finish it by unlocking with that passphrase or passkey.
+        </p>
+      ) : (
+        <p>
+          Unfinished key renewal: key #{data.keyId}, started {formatDate(data.createdAt)}. It may already be registered on Platform. It finishes the next time
+          you unlock.
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"

@@ -108,7 +108,7 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
             variant="primary"
             className="mt-2"
             data-testid="invite-sign-in"
-            onClick={() => openLogin(undefined, undefined, { action: 'accept this invitation', credits: previewCreate('consent').credits })}
+            onClick={() => openLogin(undefined, { action: 'accept this invitation', credits: previewCreate('consent').credits })}
           >
             {locked ? 'Unlock to accept' : 'Sign in to accept'}
           </Button>

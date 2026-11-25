@@ -92,8 +92,8 @@ vi.mock('../view/dpns', async (orig) => {
   const real = await orig<typeof import('../view/dpns')>()
   return { ...real, dpnsLabelHolder: async (_sdk: unknown, label: string) => dpns.holders.get(label.toLowerCase()) ?? null }
 })
-vi.mock('./key-registration', async (orig) => {
-  const real = await orig<typeof import('./key-registration')>()
+vi.mock('./wallet-key', async (orig) => {
+  const real = await orig<typeof import('./wallet-key')>()
   return { ...real, keyScope: () => ({ core: true, collab: true, unbounded: false }), hasNoLimits: () => false }
 })
 

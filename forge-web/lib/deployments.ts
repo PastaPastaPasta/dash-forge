@@ -39,10 +39,17 @@ export interface DeploymentFile {
   readonly dapiAddresses?: readonly string[]
   readonly quorumBaseUrl?: string | null
   /**
-   * The legacy wallet key-exchange contract (`loginKeyResponse`) the shipped Dash wallets publish
-   * to: yappr's on testnet, a copy on a devnet (`forge-contracts/scripts/deploy-key-exchange.mjs`).
+   * The legacy wallet key-exchange contract (`loginKeyResponse`) of the older wallet code
+   * (DashConnect): yappr's on testnet, a copy on a devnet (`forge-contracts/scripts/deploy-key-exchange.mjs`).
+   * Kept in the deployment record; the web app no longer reads it.
    */
   readonly keyExchange?: { readonly contractId?: string | null }
+  /**
+   * forge-user (docs/design/identity-synced-state.md): settings that follow the identity. A member
+   * of the forge group, registered by `forge-contracts/scripts/deploy-user.mjs`; absent where it is
+   * not registered (mainnet until the owner registers it), and then nothing syncs.
+   */
+  readonly user?: { readonly contractId?: string | null; readonly ownerId?: string | null; readonly contractGroupId?: string | null }
   /** The forge-v2 record `forge-contracts/scripts/deploy-v2.mjs` read-modify-writes. */
   readonly v2?: {
     /**
@@ -98,6 +105,11 @@ export interface ForgeIds {
   readonly meta?: string
   /** The contract group they all belong to. */
   readonly group: string
+  /**
+   * forge-user, when the file records it in this group: wallet sign-ins ask for its encryption key
+   * and settings sync. Not one of {@link FORGE_CONTRACT_KINDS}: nothing else is stored there.
+   */
+  readonly user?: string
 }
 
 /** One of Forge's contracts, by role. */
@@ -139,7 +151,8 @@ export function forgeV2Ids(file: DeploymentFile | undefined): ForgeIds | null {
   const meta = metaRecord == null ? undefined : registeredId(metaRecord)
   const group = file?.v2?.contractGroupId || null
   if (!(core && collab && community && group) || meta === null) return null
-  return meta === undefined ? { core, collab, community, group } : { core, collab, community, meta, group }
+  const user = file?.user?.contractId && file.user.contractGroupId === group ? file.user.contractId : undefined
+  return { core, collab, community, ...(meta === undefined ? {} : { meta }), group, ...(user === undefined ? {} : { user }) }
 }
 
 /**
@@ -157,6 +170,8 @@ export interface GroupTrust {
   readonly owner: string | null
   /** Forge's own earlier contracts left in the same group. */
   readonly superseded: readonly string[]
+  /** forge-user, when the file records it in this group. */
+  readonly user?: string
 }
 
 /**

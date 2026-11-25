@@ -105,7 +105,7 @@ test.beforeAll(() => {
 test.afterAll(() => rmSync(SRC, { recursive: true, force: true }))
 
 test('s1. the owner protects main from Settings → Branches', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  const page = await signedIn(browser, 'OWNER', repoPath('settings', '#branches'))
   await waitForRepoResolved(page)
   const branches = page.getByRole('region', { name: 'Branches' })
   await expect(branches.getByText('Nothing is protected')).toBeVisible({ timeout: 60_000 })
@@ -121,7 +121,7 @@ test('s1. the owner protects main from Settings → Branches', async ({ browser 
 })
 
 test('s1b. the one-click suggestion completes the default: every tag', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  const page = await signedIn(browser, 'OWNER', repoPath('settings', '#branches'))
   await waitForRepoResolved(page)
   const branches = page.getByRole('region', { name: 'Branches' })
   // main is protected (s1), so only tags are missing.
@@ -175,17 +175,18 @@ test("s3. the writer's PR into main: no merge for the writer, a merge for the ma
 })
 
 test('s4. changing the default branch updates the repo home and the clone box', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  const page = await signedIn(browser, 'OWNER', repoPath('settings', '#general'))
   await waitForRepoResolved(page)
   const general = page.getByRole('region', { name: 'General' })
   await general.getByLabel('Default branch').selectOption('trunk')
   await expect(general.getByTestId('cost-preview')).toContainText('DASH')
-  await general.getByRole('button', { name: /^update$/i }).click()
+  await general.getByRole('button', { name: /^save$/i }).click()
   await confirmWrite(page, /sign & update/i)
   await expect(general.getByLabel('Default branch')).toHaveValue('trunk', { timeout: 60_000 })
 
   await page.goto(repoPath(''), { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
+  await page.getByTestId('clone-more').click()
   await expect(page.getByTestId('clone-default-branch')).toContainText('trunk', { timeout: 60_000 })
   await expect(page.getByRole('region', { name: 'About' }).getByText('trunk')).toBeVisible()
   await shot(page, 'settings-05-home-on-trunk')
@@ -195,14 +196,15 @@ test('s4. changing the default branch updates the repo home and the clone box', 
 })
 
 test('s5. the branch policy is saved and shown on the PR as enforced by Forge apps', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  const page = await signedIn(browser, 'OWNER', repoPath('settings', '#branches'))
   await waitForRepoResolved(page)
   const policy = page.getByTestId('policy-editor')
+  await policy.getByTestId('policy-toggle').click()
   await expect(policy.getByTestId('enforced-by-apps')).toBeVisible({ timeout: 60_000 })
   await policy.getByLabel('Required approvals').fill('1')
   await policy.getByRole('button', { name: /save policy/i }).click()
   await confirmWrite(page, /sign & save/i)
-  await expect(policy.getByRole('button', { name: /save policy/i })).toBeDisabled({ timeout: 60_000 })
+  await expect(policy.getByRole('button', { name: /save policy/i })).toHaveCount(0, { timeout: 60_000 })
 
   // A full navigation keeps the session (or unlocks a restored one with the passphrase).
   await page.goto(repoPath('pull', `&number=${prNumber}`), { waitUntil: 'domcontentloaded' })
@@ -219,7 +221,7 @@ test('s5. the branch policy is saved and shown on the PR as enforced by Forge ap
 })
 
 test('s6. archiving disables composers; unarchive restores them', async ({ browser }) => {
-  const owner = await signedIn(browser, 'OWNER', repoPath('settings'))
+  const owner = await signedIn(browser, 'OWNER', repoPath('settings', '#danger'))
   await waitForRepoResolved(owner)
   const danger = owner.getByRole('region', { name: 'Danger zone' })
   await danger.getByRole('button', { name: /^archive$/i }).click()
