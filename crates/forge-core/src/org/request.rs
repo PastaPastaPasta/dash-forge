@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::canon::{int_of, js_len};
 use super::envelope::is_hex;
-use super::state::{Proposal, ProposalStatus, RoomState};
+use super::state::{Ceremony, Proposal, ProposalStatus, RoomState};
 
 pub const MAX_TITLE: usize = 120;
 
@@ -179,6 +179,8 @@ pub enum RequestStatus {
     Ready,
     Done,
     Expired,
+    /// Still collecting, but so many members declined that the rest cannot reach the threshold.
+    Declined,
     Invalid,
 }
 
@@ -193,6 +195,7 @@ impl RequestStatus {
             Self::Ready => "ready",
             Self::Done => "done",
             Self::Expired => "expired",
+            Self::Declined => "declined",
             Self::Invalid => "invalid",
         }
     }
@@ -243,6 +246,34 @@ pub fn status(state: &RoomState, req: &Request, chain: Option<&ChainView>) -> Re
     } else {
         RequestStatus::Collecting
     }
+}
+
+/// Whether no part of `req` is ready or executed and more of `ceremony`'s participants declined
+/// it, without approving, than M−N: the rest cannot reach the threshold.
+pub fn declined_out(state: &RoomState, req: &Request, ceremony: &Ceremony) -> bool {
+    let ps: Vec<&Proposal> = req
+        .proposals
+        .iter()
+        .filter_map(|id| state.proposals.get(id))
+        .collect();
+    if ps
+        .iter()
+        .any(|p| matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed))
+    {
+        return false;
+    }
+    let approved: BTreeSet<&str> = ps
+        .iter()
+        .flat_map(|p| p.approvals.keys().map(String::as_str))
+        .collect();
+    let declined = ps
+        .iter()
+        .flat_map(|p| p.rejections.keys().map(String::as_str))
+        .filter(|k| ceremony.config.index_of(k).is_some() && !approved.contains(k))
+        .collect::<BTreeSet<_>>()
+        .len();
+    let c = &ceremony.config;
+    declined > c.participants.len().saturating_sub(c.threshold)
 }
 
 /// `(collected, threshold)`: the fewest valid shares any proposal has, against the threshold.

@@ -26,7 +26,7 @@ export function NewOrganizationSteps(): JSX.Element {
           Open multisig.dashhq.org
         </a>
       </p>
-      <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Then come back and connect it below with its invite link.</p>
+      <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Then come back and connect it above with its invite link.</p>
     </section>
   )
 }

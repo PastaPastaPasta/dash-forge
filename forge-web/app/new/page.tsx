@@ -644,6 +644,7 @@ export default function NewRepoPage(): JSX.Element {
         cost={forOrg ? null : confirm ? costOf(confirm) : cost}
         confirmLabel={forOrg ? 'Sign & ask co-signers' : 'Sign & create'}
         {...(forOrg ? {} : { successNote: 'Created — opening your repo', toast: { running: 'Creating the repository…', done: 'Repository created', failed: 'Repository creation stopped part-way' } })}
+        request={forOrg}
         onConfirm={() => (confirm ? create(confirm) : Promise.resolve())}
       />
       {org.dialog}

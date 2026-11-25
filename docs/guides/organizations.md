@@ -28,7 +28,7 @@ Maintainers and writers of an organization's repository push, merge and change s
 
 The header shows how many requests wait for your signature, and the Notifications page lists them under **Needs your signature**. Each request reads as a sentence that Forge builds from the transition it would sign, never from the text its creator typed. Forge refuses to sign a request that writes as another owner, to a contract that is not one of this network's Forge contracts, with a nonce already used, or an action it does not recognise.
 
-**Sign** adds your share. The signature that completes the threshold also combines the shares, broadcasts the transitions in order, and confirms each with a proved read; the request then reads **Done**. **Decline** records that you declined; it does not block the others. A request overtaken by another change of the organization reads as expired.
+**Sign** adds your share. The signature that completes the threshold also combines the shares, broadcasts the transitions in order, and confirms each with a proved read; the request then reads **Done**. **Decline** records that you declined; it does not block the others unless so many members decline that the rest can no longer reach the threshold, and then the request reads **Declined** and its nonces are free for new requests. A request overtaken by another change of the organization reads as expired.
 
 ## From the command line (dg)
 
@@ -79,6 +79,6 @@ dg org sign 3f2a9c1e0b7d4a55
 
 Before signing, dg decodes the request's transitions itself and checks them: the organization is the owner and its group key signs, there is one document write per transition, the write goes to this network's Forge contracts, the bytes to sign are the transition's, the nonce is unused, and the kind of write is one Forge makes for an owner. It refuses to sign anything else.
 
-The signature that completes a request also puts it on Platform. If that stops part way, any member runs `dg org finish <request>`. `dg org decline <request> --reason "…"` declines a request; it stays open for the others.
+The signature that completes a request also puts it on Platform. If that stops part way, any member runs `dg org finish <request>`. `dg org decline <request> --reason "…"` declines a request; it stays open for the others until so many members decline that it can no longer reach the threshold, and then it reads declined.
 
 `dg auth status` prints one line when requests wait for your signature (only when an organization is connected).
