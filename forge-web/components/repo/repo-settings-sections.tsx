@@ -152,7 +152,7 @@ export function Card({
     <div className="rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid={testId}>
       {title !== undefined ? (
         <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3', !collapsed && 'border-b border-anvil-100 dark:border-anvil-850')}>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-[10rem] flex-1">
             <h3 className="text-dense font-semibold text-anvil-900 dark:text-anvil-50">{title}</h3>
             {hint !== undefined ? <p className="mt-0.5 text-[12px] text-anvil-500 dark:text-anvil-400">{hint}</p> : null}
           </div>
