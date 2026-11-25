@@ -15,7 +15,9 @@ fn default_link_origin() -> String {
     DEFAULT_ORIGIN.into()
 }
 
-pub const DEFAULT_ORIGIN: &str = "https://forge.dashhq.org";
+pub const DEFAULT_ORIGIN: &str = forge_core::network::MAINNET_WEB_ORIGIN;
+/// The Forge websites every node allows; `dg ipfs up` adds any a saved node lacks.
+pub const FORGE_ORIGINS: [&str; 2] = [DEFAULT_ORIGIN, forge_core::network::TESTNET_WEB_ORIGIN];
 const STORAGE_DEFAULTS: &str =
     include_str!("../../../../forge-contracts/config/storage-defaults.json");
 
@@ -53,7 +55,7 @@ impl Default for NodeConfig {
             internal_api_port: 5101,
             internal_gateway_port: 8180,
             swarm_port: None,
-            origins: vec![DEFAULT_ORIGIN.into()],
+            origins: FORGE_ORIGINS.map(String::from).to_vec(),
             link_origin: default_link_origin(),
             kubo_version: KUBO_VERSION.into(),
             service: false,
@@ -164,6 +166,14 @@ impl NodeConfig {
     pub fn set_binary_override(&mut self, binary: Option<std::ffi::OsString>) -> Result<()> {
         self.binary_override = binary.map(fs::canonicalize).transpose()?;
         Ok(())
+    }
+
+    pub fn add_forge_origins(&mut self) {
+        for origin in FORGE_ORIGINS {
+            if !self.origins.iter().any(|o| o == origin) {
+                self.origins.push(origin.into());
+            }
+        }
     }
 
     pub fn set_link_origin(&mut self, origin: Option<&str>) -> Result<()> {
@@ -743,6 +753,37 @@ mod tests {
         );
         config.set_binary_override(None).unwrap();
         assert_eq!(config.binary_override, None);
+    }
+
+    #[test]
+    fn a_legacy_node_gains_the_testnet_site_and_keeps_its_own_origins() {
+        let legacy = r#"
+name = "kubo"
+apiPort = 5001
+gatewayPort = 8080
+internalApiPort = 5101
+internalGatewayPort = 8180
+origins = ["https://forge.dashhq.org", "https://forge.example.org"]
+linkOrigin = "https://forge.example.org"
+kuboVersion = "0.43.1"
+service = true
+"#;
+        let mut config: NodeConfig = toml::from_str(legacy).unwrap();
+        config.validate().unwrap();
+        config.add_forge_origins();
+        config.add_forge_origins();
+        assert_eq!(
+            config.origins,
+            [
+                "https://forge.dashhq.org",
+                "https://forge.example.org",
+                "https://testnet-forge.dashhq.org"
+            ]
+        );
+        assert_eq!(config.link_origin, "https://forge.example.org");
+        assert_eq!(NodeConfig::default().origins, FORGE_ORIGINS);
+        let saved: NodeConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(saved.origins, config.origins);
     }
 
     #[test]
