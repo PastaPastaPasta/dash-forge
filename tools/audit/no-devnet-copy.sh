@@ -32,6 +32,7 @@ ALLOW=(
   '^docs/archive/'
   '^docs/roadmap\.md$'
   '^docs/networks\.md$'                 # the networks record, with its history table
+  '^docs/qa/'                           # QA and audit reports, which quote what they found
   '^docs/releases/v0\.1\.0\.md$'        # the release that targeted sakura
   # developer pages
   '^docs/BUILDING\.md$'
