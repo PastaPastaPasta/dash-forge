@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import { cspProblem } from './csp-hashes.mjs'
-import { docsBase, externalAssets, redirectDocs } from './dash-site-postbuild.mjs'
+import { checkSiteOrigin, docsBase, externalAssets, redirectDocs, siteOrigin } from './dash-site-postbuild.mjs'
 
 const made: string[] = []
 afterAll(() => made.forEach((dir) => rmSync(dir, { recursive: true, force: true })))
@@ -34,6 +34,27 @@ function wasmPackage(bytes: Buffer, version = '5.0.0-rc.8'): string {
 }
 
 describe('dash-site postbuild', () => {
+  it('requires the dash.site address the build is published at, not forge.dashhq.org', () => {
+    expect(siteOrigin('https://forg3.dash.site')).toBe('https://forg3.dash.site')
+    expect(siteOrigin('https://forg3.dash.site/')).toBe('https://forg3.dash.site')
+    expect(() => siteOrigin(undefined)).toThrow(/NEXT_PUBLIC_SITE_URL/)
+    expect(siteOrigin('https://FORG3.dash.site:8443')).toBe('https://forg3.dash.site:8443')
+    for (const official of ['https://forge.dashhq.org', 'https://FORGE.DASHHQ.ORG', 'https://forge.dashhq.org:8443', 'https://forge.dashhq.org.', 'https://testnet-forge.dashhq.org']) {
+      expect(() => siteOrigin(official)).toThrow(/forge\.dashhq\.org: set it/)
+    }
+    for (const bad of ['http://forg3.dash.site', 'https://forg3.dash.site/x', 'https://forg3.dash.site?a', 'https://forg3.dash.site/?', 'https://forg3.dash.site#', 'https://u:p@forg3.dash.site']) {
+      expect(() => siteOrigin(bad)).toThrow(/plain https origin/)
+    }
+  })
+
+  it('checks that the export was built for that address', () => {
+    const out = exportDir()
+    writeFileSync(join(out, 'index.html'), '<link rel="canonical" href="https://forg3.dash.site/">')
+    expect(() => checkSiteOrigin(out, 'https://forg3.dash.site')).not.toThrow()
+    writeFileSync(join(out, 'index.html'), '<link rel="canonical" href="https://forge.dashhq.org/">')
+    expect(() => checkSiteOrigin(out, 'https://forg3.dash.site')).toThrow(/was NEXT_PUBLIC_SITE_URL set/)
+  })
+
   it('accepts only a plain https docs URL', () => {
     expect(docsBase('https://forge.dashhq.org/docs/')).toBe('https://forge.dashhq.org/docs')
     expect(docsBase('https://u:p@forge.dashhq.org/a"b<c/')).toBe('https://forge.dashhq.org/a%22b%3Cc')
