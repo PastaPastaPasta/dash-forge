@@ -21,7 +21,8 @@ The on-chain model is **forge-v2**: shared contracts in one Platform protocol 14
                  ┌───────────────────────────────────────────────────────┐
                  │   Dash Platform (contract group dash-forge)           │
                  │  forge-core: repo, members, config, refUpdate,        │
-                 │    protectedRefUpdate, packManifest, chunk, release   │
+                 │    pushGrant, protectedRefUpdate, packManifest,       │
+                 │    chunk, release                                     │
                  │  forge-collab: issue, patch, comment, review,         │
                  │    transition                                         │
                  │  forge-community: event, authorEvent, checkRun,       │

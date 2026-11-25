@@ -144,7 +144,7 @@ It fails (exit 5, [`E504`](../errors.md#e504)) when the site has no manifest, wh
 
 **What it checks.** The files this run was served, not what someone else gets: a host can serve different bytes to different visitors. Files the site serves beyond the manifest are not checked (the Pages deploy keeps the previous two builds' chunks for open tabs), but the pages and scripts the manifest lists load only each other.
 
-**A copy on dash.site** (such as forg3.dash.site, built with `pnpm build:dash-site`, [BUILDING.md](../BUILDING.md#the-dashsite-build)) can't be checked this way yet. A dash.site address answers every path with a small static page that loads the site from Dash Platform in your browser, so `dg verify-app` only sees that page and fails ([`E504`](../errors.md#e504)). No CI job attests that build's manifest either, so the app there shows its unofficial-copy note where it checks attestations (below).
+**A copy on dash.site** (for example forg3.dash.site, once published; built with `pnpm build:dash-site`, [BUILDING.md](../BUILDING.md#the-dashsite-build)) can't be checked this way yet. A dash.site address answers every path with a small static page that loads the site from Dash Platform in your browser, so `dg verify-app` only sees that page and fails ([`E504`](../errors.md#e504)). No CI job attests that build's manifest either, so the app there shows its unofficial-copy note where it checks attestations (above).
 
 ---
 
