@@ -86,7 +86,7 @@ With no `repo:<id>` entry (absent, or tombstoned by `--stop`), or one naming onl
 3. rewrites the remaining members' grants;
 4. deletes the removed member's grant.
 
-The removed member can no longer read the current share. **What cannot be revoked:** credentials they already decrypted, and old document versions anyone may have cached. The removal screen therefore says so in one line and links to `docs/guides/rotate-storage-credentials.md`: roll the R2 or S3 token, kubo auth or pinning token, update the profile, and the share follows automatically.
+The removed member can no longer read the current share. **What cannot be revoked:** credentials they already decrypted, and old document versions anyone may have cached. The removal screen therefore says so in one line and links to `docs/guides/rotate-storage-credentials.md`: roll the S3 key, kubo auth or pinning token, update the profile, and the share follows automatically.
 
 ## 6. Threat model
 
@@ -144,7 +144,7 @@ Registering `forge-user` on mainnet from the deployer `CL4UTHLA…` costs the am
 - **Name clashes.** On a dg device the local profile keeps its name, because `storage.toml` wins, and it is uploaded as `<name>-<device>`. The web app shows the local copy as `<name>-<device>`. dg-only profile fields (`allowPrivateUri`, `pinTimeoutSecs`) travel in a sibling `dg` object, which the web app keeps when it edits that profile.
 - **Shared storage on the maintainer's side.**
   - dg names a shared profile `share.<owner8>.<name>`, and the web app names it `shared-<name>`.
-  - It is used for that repo when the clone sets no `dash.storage` of its own. A repo's own setting always wins.
+  - It is used for that repo when git config (the clone's, or the global one `dg storage use --global` writes) sets no `dash.storage`; with one set, the push doesn't read the share. A repo's own setting always wins.
   - **What a share holds.** Both clients use the same rule (`forge-contracts/fixtures/user-sync/share-rule.json`): only the owner's synced `repo:<id>` policy and the synced profiles it names. The synced default is never shared, and a policy set only in git config is never shared. No synced slot: the share stays as it is. No live `repo:<id>` entry, or one naming only Platform: sharing stops. An entry that doesn't parse, or names a profile that isn't synced, live, known or valid: the share stays as it is. Shares are compared by content, not by bytes, so dg and the web app don't rewrite each other's share.
   - **Stopping.** A repo with no live `repo:<id>` entry, or one naming only Platform, gets a share with no content at the next epoch, and all its grants are revoked. A share that is already empty is left as it is. A share kept as it is (a repo entry that doesn't parse or names an unusable profile) still refreshes the grants its maintainers hold, but is never lent to a new maintainer, since it may hold what an older build shared from the default storage. A maintainer is told the owner shares nothing only when there is no share, or no grant to them at all; a grant that is just behind (a new key the owner hasn't reconciled yet) says nothing. A share is never deleted, and a new share starts above the highest epoch any grant ever used, so an epoch key a removed member kept never opens later content.
   - The owner side reconciles on owner pushes (dg), on `dg collab add/remove` and `dg storage share`, and on visits to the repo's settings (web).

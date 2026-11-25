@@ -17,20 +17,22 @@ The shared copy follows automatically. Your next push to the repository re-encry
 
 ## S3-compatible storage
 
-1. Make a new key that can read and write the bucket only. On a store you run ([Storage on your home NAS](home-nas-storage.md#a-bucket-a-key-for-that-bucket-only-public-reads-and-cors)):
+1. Make a new key that can read and write the bucket only. On a store you run, with the `g` function and `rc` commands from [Storage on your home NAS](home-nas-storage.md#a-bucket-a-key-for-that-bucket-only-public-reads-and-cors):
    - **Garage:** `g key create forge-key-2`, then `g bucket allow --read --write forge --key forge-key-2`.
    - **RustFS:** a new user with the same policy: `rc admin user add nas/ forge-2 <a new long random secret>`, then `rc admin policy attach nas/ forge-rw --user forge-2`.
    - **A hosted provider:** a new access key limited to the bucket, from its dashboard.
 2. Update the profile:
-   - **dg:** keep the old name so repositories that use it don't change. `dg storage add` with an existing name replaces that profile.
+   - **dg:** keep the old name so repositories that use it don't change. The simplest way is `dg storage add` with no arguments: give the same name, confirm the replace, and paste the new secret. It stores the secret, then syncs the profile.
+     With flags, store the new secret **first**, because `dg storage add` syncs the profile with whatever secret it finds at that moment:
      ```sh
+     security add-generic-password -U -s dash-forge -a nas -w     # macOS; on Linux: secret-tool store --label=nas service dash-forge account nas
      dg storage add nas --kind s3 --endpoint <endpoint> --region <region> \
        --bucket forge --public-url <public URL> \
        --access-key-id <new key id> --secret-access-key keychain:dash-forge/nas
      ```
-     Then store the new secret under that keychain entry. `dg storage add` with no arguments asks for each value and stores a pasted secret for you. Add `--session-token` if your provider uses one.
+     Add `--session-token` if your provider uses one.
    - **Web app:** open **Settings → Storage**, edit the profile, and paste the new keys.
-3. Delete the old key: `g key delete --yes forge-key` on Garage, remove the old user on RustFS, or delete it in the provider's dashboard.
+3. Delete the old key: `g key delete --yes forge-key` on Garage, remove the old user (`forge`) on RustFS, or delete it in the provider's dashboard.
 
 ## A kubo node behind auth
 

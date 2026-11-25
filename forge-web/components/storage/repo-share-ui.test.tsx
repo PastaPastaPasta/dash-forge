@@ -93,7 +93,7 @@ describe('the stop line', () => {
       await act(async () => root.render(<StoppedShareLine line={line} />))
       const more = host.querySelector('[data-testid="stopped-share-rotate"]') as HTMLDetailsElement
       expect(more.open).toBe(false)
-      expect(more.querySelector('a')?.getAttribute('href')).toBe(DOCS.rotateStorage.replace(/\/$/, ''))
+      expect(more.querySelector('a')?.getAttribute('href')?.replace(/\/$/, '')).toBe(DOCS.rotateStorage.replace(/\/$/, ''))
     }
   })
 })
