@@ -157,6 +157,9 @@ pub struct Storer {
     /// Never use the keychain (a full identity with its master key).
     pub no_keychain: bool,
     pass: Option<Secret>,
+    /// Where the keys this storer replaced in a main slot were kept ([`keep_file`],
+    /// [`keep_keychain_entry`]).
+    pub kept: Vec<String>,
 }
 
 impl Storer {
@@ -189,6 +192,15 @@ impl Storer {
     ) -> Result<Stored> {
         if !self.no_keychain && keychain::available() {
             let acct = account(network, identity_id, slot);
+            if slot == Slot::Main {
+                if let Some(kept) = keep_keychain_entry(&acct, &backup_stamp())? {
+                    self.kept_one(format!(
+                        "{} entry {}/{kept}",
+                        keychain::store_name(),
+                        keychain::SERVICE
+                    ));
+                }
+            }
             // keychain::set reads the value back before it reports success.
             match keychain::set(keychain::SERVICE, &acct, text.expose()) {
                 Ok(()) => {
@@ -205,6 +217,7 @@ impl Storer {
         }
         let path = slot_file(network, identity_id, slot)?;
         if self.insecure_plaintext && !self.no_keychain {
+            self.keep_main_file(&path, slot)?;
             keystore::write_private_file(&path, text.expose().as_bytes())?;
             return Ok(Stored::Plaintext(path));
         }
@@ -236,9 +249,111 @@ impl Storer {
         }
         let pass = self.pass.as_ref().context("no passphrase")?;
         let sealed_text = sealed::seal(text.expose().as_bytes(), pass.expose())?;
+        self.keep_main_file(&path, slot)?;
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
         Ok(Stored::Sealed(path))
     }
+
+    /// Before the main slot's key file is replaced, keep a copy of it ([`keep_file`]).
+    fn keep_main_file(&mut self, path: &std::path::Path, slot: Slot) -> Result<()> {
+        if slot == Slot::Main {
+            if let Some(kept) = keep_file(path, &backup_stamp())? {
+                self.kept_one(kept.display().to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn kept_one(&mut self, at: String) {
+        eprintln!("The key this computer held is kept at {at}");
+        self.kept.push(at);
+    }
+}
+
+/// The UTC time a backup is named after: `20261125T120000Z`.
+fn backup_stamp() -> String {
+    forge_core::backends::sigv4::AmzDate::now().datetime
+}
+
+/// How many names a backup tries (`….bak-<stamp>`, then `-2`, `-3`, …) before giving up.
+const BACKUP_NAMES: u32 = 1000;
+
+fn backup_name(name: &str, stamp: &str, n: u32) -> String {
+    if n == 1 {
+        format!("{name}.bak-{stamp}")
+    } else {
+        format!("{name}.bak-{stamp}-{n}")
+    }
+}
+
+/// Copy the key file `path`, byte for byte, to a new `<name>.bak-<stamp>` beside it (0600),
+/// never over an existing file. `None` when there is no file. Fails when it exists but can't
+/// be read or copied, so nothing replaces it.
+fn keep_file(path: &std::path::Path, stamp: &str) -> Result<Option<PathBuf>> {
+    use std::io::Write as _;
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "reading {} to keep a copy before replacing it",
+                    path.display()
+                )
+            })
+        }
+    };
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} names no file", path.display()))?
+        .to_string_lossy()
+        .into_owned();
+    for n in 1..=BACKUP_NAMES {
+        let backup = path.with_file_name(backup_name(&name, stamp, n));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut f = match opts.open(&backup) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e).with_context(|| format!("keeping a copy at {}", backup.display()))
+            }
+        };
+        if let Err(e) = f.write_all(&bytes).and_then(|()| f.sync_all()) {
+            drop(f);
+            let _ = std::fs::remove_file(&backup);
+            return Err(e).with_context(|| format!("keeping a copy at {}", backup.display()));
+        }
+        return Ok(Some(backup));
+    }
+    anyhow::bail!(
+        "no free name to keep a copy of {} (tried {BACKUP_NAMES})",
+        path.display()
+    )
+}
+
+/// Copy dg's keychain entry `acct` to a new account `<acct>.bak-<stamp>`, never over an existing
+/// entry. `None` when there is no entry. Fails when it can't be read or copied.
+fn keep_keychain_entry(acct: &str, stamp: &str) -> Result<Option<String>> {
+    let Some(value) = keychain::get(keychain::SERVICE, acct)
+        .context("reading the keychain entry to keep a copy before replacing it")?
+    else {
+        return Ok(None);
+    };
+    for n in 1..=BACKUP_NAMES {
+        let backup = backup_name(acct, stamp, n);
+        if keychain::get(keychain::SERVICE, &backup)?.is_some() {
+            continue;
+        }
+        keychain::set(keychain::SERVICE, &backup, value.expose())?;
+        return Ok(Some(backup));
+    }
+    anyhow::bail!("no free keychain account to keep a copy of {acct} (tried {BACKUP_NAMES})")
 }
 
 /// The line printed before the key file's passphrase is asked for: why there is one, and when
@@ -431,6 +546,105 @@ mod tests {
         let (d, kind) = describe_source("dfk1:testnet:ID:5:cWIF");
         assert_eq!(kind, "inline");
         assert!(!d.contains("cWIF"));
+    }
+
+    fn backups_of(path: &std::path::Path) -> Vec<PathBuf> {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let mut found: Vec<PathBuf> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&format!("{name}.bak-"))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// A master key, a limited key and a file that opens as no key are each kept byte for byte,
+    /// 0600, beside the file, before anything replaces it.
+    #[test]
+    fn a_replaced_key_file_is_kept_byte_for_byte() {
+        let master = br#"{"identityId":"X","identityKeys":[{"id":0,"purpose":"AUTHENTICATION","securityLevel":"MASTER","privateKeyWif":"cMASTER"}]}"#.to_vec();
+        let limited = b"dfk1:testnet:X:5:cLIMITED".to_vec();
+        let unreadable = vec![0xff, 0x00, 0xfe, b'\n', 0x80];
+        for bytes in [master, limited, unreadable] {
+            let t = tempfile::tempdir().unwrap();
+            let file = t.path().join("testnet-X.key");
+            std::fs::write(&file, &bytes).unwrap();
+            let kept = keep_file(&file, "20261125T120000Z").unwrap().unwrap();
+            assert_eq!(
+                kept.file_name().unwrap(),
+                "testnet-X.key.bak-20261125T120000Z"
+            );
+            assert_eq!(std::fs::read(&kept).unwrap(), bytes);
+            assert_eq!(std::fs::read(&file).unwrap(), bytes, "the original stays");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mode = std::fs::metadata(&kept).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+        }
+    }
+
+    #[test]
+    fn no_file_means_nothing_to_keep() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(
+            keep_file(&t.path().join("testnet-X.key"), "20261125T120000Z")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Two replacements in a row (in the same second, or later) keep both copies, and an
+    /// existing backup is never written over.
+    #[test]
+    fn a_backup_is_never_overwritten() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("testnet-X.key");
+        std::fs::write(&file, b"first").unwrap();
+        let one = keep_file(&file, "20261125T120000Z").unwrap().unwrap();
+        std::fs::write(&file, b"second").unwrap();
+        let two = keep_file(&file, "20261125T120000Z").unwrap().unwrap();
+        std::fs::write(&file, b"third").unwrap();
+        let three = keep_file(&file, "20261125T120001Z").unwrap().unwrap();
+        assert_eq!(
+            two.file_name().unwrap(),
+            "testnet-X.key.bak-20261125T120000Z-2"
+        );
+        assert_eq!(std::fs::read(&one).unwrap(), b"first");
+        assert_eq!(std::fs::read(&two).unwrap(), b"second");
+        assert_eq!(std::fs::read(&three).unwrap(), b"third");
+        assert_eq!(backups_of(&file), vec![one, two, three]);
+    }
+
+    /// A key file that exists but can't be read is not replaced: keeping the copy fails first.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_key_file_stops_the_replacement() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("testnet-X.key");
+        std::fs::write(&file, b"secret").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            return; // running as root: every file reads
+        }
+        assert!(keep_file(&file, "20261125T120000Z").is_err());
+        assert!(backups_of(&file).is_empty());
+    }
+
+    /// The stamp backups are named after is a UTC time that sorts.
+    #[test]
+    fn the_backup_stamp_is_a_utc_time() {
+        let s = backup_stamp();
+        assert_eq!(s.len(), 16, "{s}");
+        assert!(s.ends_with('Z') && s.as_bytes()[8] == b'T', "{s}");
     }
 
     /// `dg auth status` with an identity JSON pasted into `DASH_FORGE_KEY` never prints it.

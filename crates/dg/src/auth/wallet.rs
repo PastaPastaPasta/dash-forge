@@ -672,7 +672,8 @@ fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> 
     let cause = at_risk.join("; ");
     if !ctx.yes {
         eprintln!("The wallet's key would replace what this computer stores: {cause}.");
-        let prompt = "Sign in with the wallet's key instead (dg's own stored copy is overwritten; keep your recovery words)?";
+        let prompt =
+            "Sign in with the wallet's key instead (dg keeps a copy of the old key beside it)?";
         if ctx.ask(prompt, false)? {
             return Ok(());
         }
@@ -883,6 +884,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "balanceDash": credits_to_dash(balance),
                 "renew": RENEW,
                 "previousKeyLeftLive": left_live,
+                "previousKeyKeptAt": key_store.kept,
                 "settingsSync": sync_label,
             }),
             Some(&checked),
