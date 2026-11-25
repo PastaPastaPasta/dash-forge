@@ -96,6 +96,13 @@ describe('the last-writer-wins slot', () => {
     const plan = planSlot({ slot: 'storage', local: { 'profile:a': 1 }, base: null, remote: doc({ 'profile:a': { at: 5, v: null } }), now: 10, tag, options: {} })
     expect(plan.upload).toBe(false)
     expect(plan.view).toEqual({})
+    expect(plan.removed).toEqual(['profile:a'])
+  })
+
+  it('names the keys a tombstone hides, not those merely absent', () => {
+    const plan = planSlot({ slot: 'storage', local: {}, base: null, remote: doc({ 'repo:r': { at: 5, v: null }, default: { at: 5, v: { targets: [] } } }), now: 10, tag, options: {} })
+    expect(plan.removed).toEqual(['repo:r'])
+    expect(plan.view).toEqual({ default: { targets: [] } })
   })
 
   it('keeps fields an entry carries beyond at and v, also when its value changes', () => {

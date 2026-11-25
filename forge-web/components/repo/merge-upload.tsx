@@ -20,7 +20,8 @@ import { fragmentBytes, remainingPreAgreement, storageChoice, type PackEstimate,
 import type { UploadPack } from '@/lib/merge/runner'
 import { formatBytes, plural } from '@/lib/view'
 import { useStorageConfig } from '@/hooks/use-storage-config'
-import { useGrantedStorage } from '@/hooks/use-repo-share'
+import { useRepoGrant } from '@/hooks/use-repo-share'
+import { withGrantedStorage } from '@/lib/user-sync/maintainers'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -44,6 +45,8 @@ export interface MergeUpload {
   readonly storageNeedsUnlock: boolean
   /** The storage settings could not be read (a vault or IndexedDB error), or null. */
   readonly storageError: string | null
+  /** A maintainer here, on a network with sync, with no storage the owner set for this repo: its own is used. */
+  readonly ownerStorageUnset: boolean
 }
 
 export function useMergeUpload(repo: RepoRef): MergeUpload {
@@ -77,7 +80,8 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
   // The settings the upload uses: after a reload with none stored in this browser, the empty
   // ones (Platform, asked for) with no unlock; stored ones only once this tab is unlocked.
   // A maintainer's pushes here also reach the storage the owner shared with them (this repo only).
-  const config = useGrantedStorage(repo, storage.usable)
+  const repoGrant = useRepoGrant(repo)
+  const config = storage.usable === null ? null : withGrantedStorage(storage.usable, repo.repoId, repoGrant.grant)
   const { storedSince } = storage
   const policy = config === null ? null : policyForRepo(config, repo.repoId)
   const upload = useCallback<UploadPack>(
@@ -121,6 +125,7 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
     questionStep: asking,
     begin,
     storageNeedsUnlock: storage.sealed,
+    ownerStorageUnset: repoGrant.status === 'none',
     storageError: storage.error,
   }
 }
@@ -172,6 +177,17 @@ function StorageQuestion({
   )
 }
 
+/** What a maintainer reads where the owner set no storage for the repo (networks with sync only). */
+export const OWNER_STORAGE_UNSET = "The owner hasn't shared storage for this repo with you yet; your own storage is used. Ask them to set it in this repo's Settings → Storage."
+
+export function OwnerStorageUnsetLine(): JSX.Element {
+  return (
+    <p className="text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="owner-storage-unset">
+      {OWNER_STORAGE_UNSET}
+    </p>
+  )
+}
+
 /**
  * The Storage row, before the merge starts: where the pack goes, and, when Platform may be used,
  * "Allow storing on Platform, up to ≈X" (checked by default only when the policy lists Platform).
@@ -181,8 +197,11 @@ export function StorageRow({
   allowed,
   onAllow,
   disabled = false,
+  ownerUnset = false,
 }: {
   choice: StorageChoice | null
+  /** The maintainer line: the owner set no storage for this repo, so this merge uses the merger's own. */
+  ownerUnset?: boolean
   allowed: boolean
   onAllow: (allowed: boolean) => void
   /** While a run is going: its cap was fixed when it started. */
@@ -197,6 +216,7 @@ export function StorageRow({
         Storage: <span className="font-medium text-anvil-800 dark:text-anvil-100">{choice.label}</span>
         {uses && choice.platform.kind !== 'only' ? <> · {choice.platform.reason}</> : null}
       </p>
+      {ownerUnset ? <OwnerStorageUnsetLine /> : null}
       {uses ? (
         <>
           <div className="flex flex-wrap items-center gap-2 text-dense text-anvil-700 dark:text-anvil-200">

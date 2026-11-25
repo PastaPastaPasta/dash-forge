@@ -204,6 +204,7 @@
     "storage mirror list": "storage-mirror-list.schema.json",
     "storage mirror remove": "storage-mirror-remove.schema.json",
     "storage remove": "storage-remove.schema.json",
+    "storage share": "storage-share.schema.json",
     "storage status": "storage-status.schema.json",
     "storage test": "storage-test.schema.json",
     "storage use": "storage-use.schema.json",

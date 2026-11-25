@@ -1,5 +1,5 @@
 {
-  "description": "What a repository's share holds (docs/design/identity-synced-state.md §5): forge-core ShareRule::of and forge-web shareRule over the same synced storage slot entries ({at, v}; v null is a tombstone). expect is keep, nothing, or the shared profile names and policy targets. Mirrors forge-core user_sync migration_tests the_share_rule_follows_the_synced_policy_only.",
+  "description": "What a repository's share holds (docs/design/identity-synced-state.md §5): forge-core ShareRule::of and forge-web shareRule over the same synced storage slot entries ({at, v}; v null is a tombstone; entries null means the slot is absent or unreadable). Only the repository's own repo:<repoId> entry is ever shared; the synced default never is. No slot: keep. No live repo entry: nothing (stop sharing). A repo entry that does not parse, or names a non-Platform profile that is missing, tombstoned, of an unknown kind or invalid: keep. Platform only: nothing. A case's share, when given, is the repository's current share as its owner opens it: its format version, whether it lends storage (holds any profile), and whether any grant to it exists (grants, default false); without one there is no share. Version 2 is written only under this rule; a share kept while the slot was read that is still version 1 and lends storage may hold the default, so it stops (nothing); one that lends nothing but still has grants is a stop that was interrupted, so it stops again. With no slot read, any share is kept. expect is keep, nothing, or the shared profile names and policy targets.",
   "repo": "RuLeRepo11111111111111111111111111111111111",
   "profiles": {
     "web-r2": { "settings": { "kind": "s3", "provider": "r2", "endpoint": "https://files.example.org", "region": "auto", "bucket": "b", "pathStyle": true, "publicUrl": "https://pub.example.org", "prefix": "" }, "secrets": { "accessKeyId": "AK", "secretAccessKey": "SK", "sessionToken": "" } },
@@ -8,15 +8,30 @@
     "future": { "settings": { "kind": "ftp", "host": "files.example.org" }, "secrets": {} }
   },
   "cases": [
-    { "name": "no synced policy", "entries": {}, "expect": "keep" },
-    { "name": "profiles but no policy", "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" } }, "expect": "keep" },
+    { "name": "no synced storage slot keeps the share", "entries": null, "expect": "keep" },
+    { "name": "an empty synced slot (no repository entry) stops sharing", "entries": {}, "expect": "nothing" },
     {
-      "name": "the default policy shares its synced profile as it is",
+      "name": "profiles but no repository entry stop sharing",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" } },
+      "expect": "nothing"
+    },
+    {
+      "name": "default present, no repository entry: sharing stops (the default is never shared)",
       "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
+      "expect": "nothing"
+    },
+    {
+      "name": "a tombstoned repository entry is absent: sharing stops, the default is not used",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 2, "v": null } },
+      "expect": "nothing"
+    },
+    {
+      "name": "the repository entry shares its synced profile as it is",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
       "expect": { "profiles": ["web-r2"], "targets": ["web-r2"] }
     },
     {
-      "name": "the repository's own entry wins; naming a profile that is not synced keeps the share",
+      "name": "a repository entry naming a profile that is not synced keeps the share",
       "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 2, "v": { "targets": ["r2-main"], "replicas": 1, "platformFallback": false } } },
       "expect": "keep"
     },
@@ -31,29 +46,81 @@
       "expect": { "profiles": ["web-r2"], "targets": ["web-r2", "platform"] }
     },
     {
-      "name": "a repository entry that does not parse keeps the share (no fall back to the default)",
+      "name": "a repository entry that does not parse keeps the share",
       "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
       "expect": "keep"
     },
     {
-      "name": "a tombstoned repository entry is absent: the default applies",
-      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } }, "repo:@repo": { "at": 2, "v": null } },
-      "expect": { "profiles": ["web-r2"], "targets": ["web-r2"] }
-    },
-    {
       "name": "a named profile tombstoned keeps the share",
-      "entries": { "profile:web-r2": { "at": 2, "v": null }, "default": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
+      "entries": { "profile:web-r2": { "at": 2, "v": null }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
       "expect": "keep"
     },
     {
       "name": "a named profile that does not validate keeps the share",
-      "entries": { "profile:bad-s3": { "at": 1, "v": "@bad-s3" }, "default": { "at": 1, "v": { "targets": ["bad-s3"], "replicas": 1, "platformFallback": false } } },
+      "entries": { "profile:bad-s3": { "at": 1, "v": "@bad-s3" }, "repo:@repo": { "at": 1, "v": { "targets": ["bad-s3"], "replicas": 1, "platformFallback": false } } },
       "expect": "keep"
     },
     {
       "name": "a named profile of a kind this build does not know keeps the share",
-      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "profile:future": { "at": 1, "v": "@future" }, "default": { "at": 1, "v": { "targets": ["web-r2", "future"], "replicas": 2, "platformFallback": false } } },
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "profile:future": { "at": 1, "v": "@future" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2", "future"], "replicas": 2, "platformFallback": false } } },
       "expect": "keep"
+    },
+    {
+      "name": "replicas 0 does not parse: keep the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 0, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "replicas above 8 does not parse: keep the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 9, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "a fractional replicas does not parse: keep the share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1.5, "platformFallback": false } } },
+      "expect": "keep"
+    },
+    {
+      "name": "kept while the slot was read, a version 1 share that lends storage stops (it may hold the default)",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "share": { "version": 1, "lends": true },
+      "expect": "nothing"
+    },
+    {
+      "name": "kept while the slot was read, a version 2 share is kept",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "share": { "version": 2, "lends": true },
+      "expect": "keep"
+    },
+    {
+      "name": "kept while the slot was read, an empty version 1 share is kept (nothing to stop)",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "share": { "version": 1, "lends": false },
+      "expect": "keep"
+    },
+    {
+      "name": "kept while the slot was read, an empty share that still has grants stops again (an interrupted stop)",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 2, "v": { "targets": [] } } },
+      "share": { "version": 2, "lends": false, "grants": true },
+      "expect": "nothing"
+    },
+    {
+      "name": "no slot read: an empty share with grants is kept",
+      "entries": null,
+      "share": { "version": 2, "lends": false, "grants": true },
+      "expect": "keep"
+    },
+    {
+      "name": "no slot read: a version 1 share that lends storage is kept",
+      "entries": null,
+      "share": { "version": 1, "lends": true },
+      "expect": "keep"
+    },
+    {
+      "name": "a usable repository entry replaces a version 1 share",
+      "entries": { "profile:web-r2": { "at": 1, "v": "@web-r2" }, "repo:@repo": { "at": 1, "v": { "targets": ["web-r2"], "replicas": 1, "platformFallback": false } } },
+      "share": { "version": 1, "lends": true },
+      "expect": { "profiles": ["web-r2"], "targets": ["web-r2"] }
     }
   ]
 }
