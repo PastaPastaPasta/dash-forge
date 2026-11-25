@@ -106,6 +106,8 @@ impl LocalState {
 
     /// This computer's short id, made on first use (`<name>-<device>` keeps a clashing profile).
     fn device(path: &Path) -> String {
+        // Under the same lock as `record_synced`: two runs never save each other's older copy.
+        let _lock = crate::auth::wallet::lock_state(path);
         let mut s = Self::load(path);
         if s.device.len() == 6 && s.device.bytes().all(|b| b.is_ascii_hexdigit()) {
             return s.device;
@@ -283,7 +285,7 @@ async fn record_change(ctx: &Ctx, entry: String, value: Option<serde_json::Value
         }
         Err(e) => {
             if !ctx.json {
-                eprintln!("note: the change was saved here but not synced to your identity ({e:#}); it syncs on the next `dg storage` change");
+                eprintln!("note: the change was saved here but not synced to your identity ({e:#}); run the same `dg storage` command again to sync it");
             }
             false
         }
@@ -355,21 +357,29 @@ pub fn rotate_line(member: &str) -> String {
 
 /// As the owner of the session's repository, after its members changed: lend its shared
 /// storage to the current maintainers that have a forge-user key and revoke anyone else
-/// (`identity-synced-state.md` §5), the share holding what [`user_sync::ShareRule`] says. `None`
-/// when sync is off, the signer is not the owner, or it failed (a note says so).
+/// (`identity-synced-state.md` §5), the share holding what [`user_sync::ShareRule`] says.
+/// `removed`: a member this command just removed. `None` when sync is off, the signer is not the
+/// owner, or it failed (a note says so).
 pub async fn after_membership_change(
     ctx: &Ctx,
     s: &crate::common::Session,
+    removed: Option<&str>,
 ) -> Option<user_sync::Reconciled> {
-    let SyncState::On { key, contract } = state(ctx) else {
-        return None;
-    };
+    let contract = ctx.target.v2.as_ref()?.user.clone()?;
+    // The session's own identity, opened already: a sealed `--identity` file names none ahead.
     let me = s.identity.id();
-    if s.repo.owner_id() != me || key.identity_id != me {
+    if s.repo.owner_id() != me {
         return None;
     }
+    let LocalKey::Held(key) = user_sync::key::load(&ctx.network_label(), &me) else {
+        return None;
+    };
     let run = async {
-        let maintainers = user_sync::repo::current_maintainers(&s.client, &s.repo).await?;
+        let mut maintainers = user_sync::repo::current_maintainers(&s.client, &s.repo).await?;
+        // A read a block behind may still list the member just removed.
+        if let Some(gone) = removed {
+            maintainers.remove(gone);
+        }
         Writer::new(&s.client, &s.bridge, &s.identity)
             .with_store(&contract, async |store| {
                 Ok(UserSync::new(&key, store)

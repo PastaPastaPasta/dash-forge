@@ -442,18 +442,27 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     if !narrow_text.is_empty() {
         eprintln!("{}", narrow_text.trim_start());
     }
-    // A role already held writes nothing (a keyed repository's wrap may still).
-    let spent = if held && !keyed && post_keys.as_ref().is_none_or(|p| p.sent.is_empty()) {
+    let demoted = change_from == Some(Role::Maintainer) && role != Role::Maintainer;
+    let shared = if role == Role::Maintainer || demoted {
+        crate::sync::after_membership_change(ctx, &s, demoted.then_some(member)).await
+    } else {
+        None
+    };
+    let shared_wrote = shared
+        .as_ref()
+        .is_some_and(|d| d.share_written || !d.granted.is_empty() || !d.revoked.is_empty());
+    // A role already held writes nothing (a keyed repository's wrap, or its shared storage, may
+    // still): measured after every write of this command.
+    let spent = if held
+        && !keyed
+        && !shared_wrote
+        && post_keys.as_ref().is_none_or(|p| p.sent.is_empty())
+    {
         0
     } else {
         s.spent_since(before).await
     };
     let key_pending = (keyed || post_key) && !can_receive;
-    let shared = if role == Role::Maintainer || change_from == Some(Role::Maintainer) {
-        crate::sync::after_membership_change(ctx, &s).await
-    } else {
-        None
-    };
     let storage_shared = shared.as_ref().map(|d| {
         if d.revoked.iter().any(|m| m == member) {
             "revoked"
@@ -641,12 +650,13 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // after the rotation: the pinned environments saved again, unless changed meanwhile. Also
     // when they were gone already: a run that stopped before its saves is finished this way.
     let (resaved, exposed_lines) = crate::env::finish_removal(&s, &removal).await;
-    let storage_revoked = if removed && !stays_maintainer {
-        crate::sync::after_membership_change(ctx, &s)
+    // Also when the membership was already gone: a removal run again finishes the revocation.
+    let storage_revoked = if stays_maintainer {
+        false
+    } else {
+        crate::sync::after_membership_change(ctx, &s, Some(member))
             .await
             .is_some_and(|d| d.revoked.iter().any(|m| m == member))
-    } else {
-        false
     };
     let (relettered, narrow_text) = narrow.save(&s).await;
     if !narrow_text.is_empty() {

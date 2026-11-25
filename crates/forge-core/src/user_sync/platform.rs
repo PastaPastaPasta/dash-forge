@@ -10,12 +10,10 @@ use super::{DOC_GRANT, DOC_SHARE, DOC_STATE};
 use crate::error::{Error, Result};
 use crate::platform::{
     decode_identifier, FetchedDocument, FieldValue, KeyBounds, LoadedContract, PlatformClient,
-    QueryFilter, WriteEngine,
+    QueryFilter, QueryOrder, WriteEngine,
 };
 
 const PIECE_FIELDS: [&str; 3] = ["d0", "d1", "d2"];
-/// The most grants one repository's owner writes that a reader pages through.
-const MAX_GRANTS: u32 = 100;
 
 /// forge-user on Platform.
 pub struct PlatformUserStore<'a> {
@@ -227,19 +225,22 @@ impl UserStore for PlatformUserStore<'_> {
     }
 
     async fn grants_of_repo(&self, owner: &str, repo: &str) -> Result<Vec<GrantDoc>> {
-        self.query(
-            DOC_GRANT,
-            &[
-                QueryFilter::eq("$ownerId", id_field(owner)?),
-                QueryFilter::eq("repoId", id_field(repo)?),
-            ],
-            MAX_GRANTS,
-        )
-        .await?
-        .iter()
-        .filter(|d| d.owner_id == owner)
-        .map(grant_from)
-        .collect()
+        // Complete, never one page: a grant left out would be a revocation left undone.
+        self.client
+            .query_all_documents(
+                &self.contract,
+                DOC_GRANT,
+                &[
+                    QueryFilter::eq("$ownerId", id_field(owner)?),
+                    QueryFilter::eq("repoId", id_field(repo)?),
+                ],
+                &[QueryOrder::asc("memberId")],
+            )
+            .await?
+            .iter()
+            .filter(|d| d.owner_id == owner)
+            .map(grant_from)
+            .collect()
     }
 
     async fn grant(&self, owner: &str, repo: &str, member: &str) -> Result<Option<GrantDoc>> {

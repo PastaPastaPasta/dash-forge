@@ -1561,13 +1561,13 @@ impl Helper {
         let (head, refs): (Vec<PushSpec>, Vec<PushSpec>) =
             specs.iter().cloned().partition(|s| is_head(&s.dst));
         let mut outcomes: Vec<PushOutcome> = head.into_iter().map(head_outcome).collect();
+        let mut landed = false;
         if !refs.is_empty() {
-            outcomes.extend(Box::pin(self.push_refs(&refs, options)).await?);
+            let pushed = Box::pin(self.push_refs(&refs, options)).await?;
+            landed = pushed.iter().any(|o| matches!(o, PushOutcome::Ok(_)));
+            outcomes.extend(pushed);
         }
-        if std::mem::take(&mut self.reconcile_after_push)
-            && !options.dry_run
-            && outcomes.iter().any(|o| matches!(o, PushOutcome::Ok(_)))
-        {
+        if std::mem::take(&mut self.reconcile_after_push) && !options.dry_run && landed {
             self.reconcile_share().await;
         }
         Ok(outcomes)
@@ -1604,10 +1604,15 @@ impl Helper {
         };
         match read.await {
             Ok(view) => {
-                if let Some(owner) = &view.shared_by {
-                    if view.policy.is_some() {
-                        eprintln!("dash: using the storage {owner} shares with this repository's maintainers");
-                    }
+                if let (Some(owner), true) = (&view.shared_by, view.policy_from_share) {
+                    eprintln!(
+                        "dash: using the storage {owner} shares with this repository's maintainers"
+                    );
+                }
+                if let Some(why) = &view.share_skipped {
+                    eprintln!(
+                        "dash: note: the storage this repository's owner shares is not used: {why}"
+                    );
                 }
                 Some(view)
             }
@@ -1656,10 +1661,13 @@ impl Helper {
         };
         match run.await {
             Ok(done) => {
-                if done.share_written || !done.granted.is_empty() {
+                let writes =
+                    usize::from(done.share_written) + done.granted.len() + done.revoked.len();
+                if writes > 0 {
                     eprintln!(
-                        "dash: this repository's storage is shared with its maintainers (epoch {})",
-                        done.epoch
+                        "dash: this repository's shared storage was updated for its maintainers (epoch {}; {writes} more Platform write{}, paid by this identity)",
+                        done.epoch,
+                        if writes == 1 { "" } else { "s" }
                     );
                 }
                 for m in &done.revoked {
@@ -1703,7 +1711,11 @@ impl Helper {
                 None => local,
             }
             .context("reading the storage policy (dash.storage / dash.replicas)")?;
-            self.reconcile_after_push = has_user;
+            // Its writes are not part of the push's approved estimate: a push whose threshold is a
+            // hard cap (`dash.confirm = refuse`) leaves shared storage to `dg collab` and to
+            // pushes from a terminal.
+            self.reconcile_after_push =
+                has_user && policy.confirm != crate::policy::ConfirmMode::Refuse;
             policy
         } else {
             PushPolicy::guard_only(self.remote.as_deref()).context(
