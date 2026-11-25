@@ -324,6 +324,24 @@ describe('one section at a time, picked by the URL hash', () => {
     link.remove()
   })
 
+  it('stays put when a link to this page opens in another tab', async () => {
+    await render(repoHome('public'), 'collaborators')
+    const link = document.createElement('a')
+    link.href = `${window.location.pathname}${window.location.search}#storage`
+    link.addEventListener('click', (e) => e.preventDefault())
+    document.body.appendChild(link)
+    await act(async () => {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }))
+    })
+    expect(heading()).toBe('Members')
+    link.target = '_blank'
+    await act(async () => {
+      link.click()
+    })
+    expect(heading()).toBe('Members')
+    link.remove()
+  })
+
   it('goes back to the default section when the hash is cleared', async () => {
     await render(repoHome('public'), 'storage')
     await act(async () => {

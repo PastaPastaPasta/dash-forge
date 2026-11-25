@@ -100,8 +100,9 @@ export function useSettingsSection(fallback: SettingsSection, allowed: (s: Setti
     }
     const read = (): void => apply(window.location.hash)
     const afterClick = (e: MouseEvent): void => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       const link = e.target instanceof Element ? e.target.closest<HTMLAnchorElement>('a[href*="#"]') : null
-      if (link === null) return
+      if (link === null || (link.target !== '' && link.target !== '_self')) return
       const to = new URL(link.href, window.location.href)
       const here = new URL(window.location.href)
       if (to.pathname.replace(/\/$/, '') === here.pathname.replace(/\/$/, '') && to.search === here.search) apply(to.hash)
