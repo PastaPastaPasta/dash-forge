@@ -172,11 +172,18 @@ export function TabStrip({
     const ro = new ResizeObserver(() => reveal(false))
     ro.observe(el)
     for (const tab of el.children) ro.observe(tab)
+    // A tab that appears later (Boards, Settings) moves the ones after it without resizing any.
+    const mo = new MutationObserver((records) => {
+      for (const r of records) for (const n of r.addedNodes) if (n instanceof Element) ro.observe(n)
+      reveal(false)
+    })
+    mo.observe(el, { childList: true })
     const gestures = ['pointerdown', 'wheel', 'keydown'] as const
     for (const g of gestures) el.addEventListener(g, touched, { passive: true })
     el.addEventListener('scroll', scrolled, { passive: true })
     return () => {
       ro.disconnect()
+      mo.disconnect()
       for (const g of gestures) el.removeEventListener(g, touched)
       el.removeEventListener('scroll', scrolled)
     }
