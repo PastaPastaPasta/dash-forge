@@ -356,11 +356,18 @@ function errorMessage(e: unknown): string {
 
 /**
  * This exact transition is already in the mempool or the chain (a re-broadcast of cached
- * bytes, or a lost response). Only these mean "mine landed".
+ * bytes, or a lost response), or the SDK's own retry of it ended with its outcome unconfirmed
+ * (from v5.1: a node may hold it). Only these mean "mine may have landed": the caller settles
+ * it by reading, never by signing a replacement.
  */
 export function isAlreadyExistsError(e: unknown): boolean {
   const m = errorMessage(e).toLowerCase()
-  return m.includes('already in mempool') || m.includes('already in chain') || m.includes('already exists')
+  return (
+    m.includes('already in mempool') ||
+    m.includes('already in chain') ||
+    m.includes('already exists') ||
+    m.includes('state transition outcome is unconfirmed')
+  )
 }
 
 /**
@@ -794,8 +801,9 @@ async function settleUnanswered(
       await facades(sdk).stateTransitions.broadcastStateTransition(st)
     } catch (e) {
       // A used nonce shows as spent on the next round (this very transition may be what used
-      // it); "already exists" means pending. A refusal of the rebroadcast is a CheckTx answer.
-      const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+      // it); "already exists" (or an outcome the SDK could not confirm) means pending. A
+      // refusal of the rebroadcast is a CheckTx answer.
+      const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
       if (refusal !== null) throw refusal.atBroadcast()
     }
     if ((await awaitOutcome(sdk, st, owner.contractId, indexOnly)) === 'landed') return 'landed'
@@ -1414,8 +1422,9 @@ async function createDocumentUnlocked(
         // bytes cannot land (they round-trip exactly, so they are the transition first sent).
         // Already in, or a transport error: the poll decides, and the bytes stay cached until
         // it sees them. (The nonce check comes first: a rebroadcast of bytes that did land is
-        // answered "nonce already present".)
-        const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+        // answered "nonce already present". An outcome the SDK could not confirm may be these
+        // very bytes taken: the poll decides that too.)
+        const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
         if (refusal) {
           // These bytes can never land. Settle any earlier version first, then clear, so a
           // retry once the cause is fixed signs afresh instead of replaying refused bytes.
@@ -1780,7 +1789,8 @@ async function deleteDocumentUnlocked(
     // proof itself (platform#5136). The SDK rebroadcasts on its own retries: "nonce already
     // present" may be this delete having landed, so the gone-poll below decides it, never as a
     // refusal.
-    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+    // An outcome the SDK could not confirm wraps its last error: the poll below decides it.
+    const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
     if (refusal !== null) {
       if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
       throw refusal
@@ -1986,7 +1996,8 @@ async function replaceDocumentUnlocked(
   } catch (e) {
     // A nonce refusal of the SDK's own rebroadcast may be this replace having landed: the
     // read-back below decides it.
-    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+    // An outcome the SDK could not confirm wraps its last error: the poll below decides it.
+    const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
     // A revision refusal on a retry: an earlier attempt of this edit may have landed (its answer
     // lost), leaving the stored revision already at `next`. Re-read; if the content matches, the
     // edit is done.
