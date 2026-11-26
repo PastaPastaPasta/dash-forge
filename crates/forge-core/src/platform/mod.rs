@@ -4337,10 +4337,10 @@ where
         // could not confirm (not one refused before it left, such as every node banned).
         tried |= matches!(
             sent_now,
-            Ok(()) | Err(WriteFailure::Retryable(_)) | Err(WriteFailure::Unconfirmed)
+            Ok(()) | Err(WriteFailure::Retryable(_) | WriteFailure::Unconfirmed)
         );
         let failure = match sent_now {
-            Ok(()) | Err(WriteFailure::TxKnown) | Err(WriteFailure::Unconfirmed) => {
+            Ok(()) | Err(WriteFailure::TxKnown | WriteFailure::Unconfirmed) => {
                 // Ok and Unconfirmed are our own send, and so is TxKnown after an earlier send of
                 // ours; TxKnown on every send so far (a replayed journal) is not.
                 sent |= matches!(sent_now, Ok(()) | Err(WriteFailure::Unconfirmed)) || tried_before;
@@ -4375,7 +4375,7 @@ where
                         // (and once sending elsewhere, a silent node is passed over too).
                         if matches!(
                             sent_now,
-                            Err(WriteFailure::TxKnown) | Err(WriteFailure::Unconfirmed)
+                            Err(WriteFailure::TxKnown | WriteFailure::Unconfirmed)
                         ) || elsewhere.is_some()
                         {
                             go_elsewhere(&mut elsewhere);
