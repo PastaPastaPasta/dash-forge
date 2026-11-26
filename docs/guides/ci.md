@@ -153,7 +153,7 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
 ```yaml
       - name: Report to Dash Forge
         if: always()
-        uses: PastaPastaPasta/dash-forge/check-action@v0.3.0   # installs the v0.3.0 dg
+        uses: PastaPastaPasta/dash-forge/check-action@v0.3.1   # installs the v0.3.1 dg
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
