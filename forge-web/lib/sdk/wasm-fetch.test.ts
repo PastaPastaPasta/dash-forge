@@ -137,55 +137,17 @@ describe('fetchAndCompile: a server that never answers', () => {
 })
 
 describe('fetchAndCompileWithRetry: offline', () => {
-  it('waits for the browser to come back online, keeps the bar where it stopped, then starts again without spending a retry', async () => {
+  it('offline, a failure still spends the retries and fails fast (the connect waits for the network)', async () => {
     vi.stubGlobal('navigator', { onLine: false })
     try {
-      let calls = 0
       const fetchImpl = vi.fn(async () => {
-        calls++
-        if (calls <= 2) {
-          let pulls = 0
-          // Four bytes, then the connection drops.
-          return new Response(
-            new ReadableStream<Uint8Array>({
-              pull(controller) {
-                if (pulls++ === 0) controller.enqueue(new Uint8Array(4))
-                else controller.error(new TypeError('network error'))
-              },
-            }),
-            { status: 200 },
-          )
-        }
-        return new Response(streamOf([new Uint8Array(8)]), { status: 200 })
+        throw new TypeError('Failed to fetch')
       })
-      let back: () => void = () => undefined
-      const whenOnline = vi.fn(() => new Promise<void>((r) => (back = r)))
-      const seen: number[] = []
-      // No retry budget at all: only the offline wait lets it start again.
-      const run = fetchAndCompileWithRetry('/x.wasm', 8, (p) => seen.push(p.loaded), { fetchImpl, compile: drain, retryMs: [], whenOnline })
-      await vi.waitFor(() => expect(whenOnline).toHaveBeenCalledTimes(1))
-      expect(fetchImpl).toHaveBeenCalledTimes(1)
-      expect(seen.at(-1)).toBe(4)
-      back()
-      await vi.waitFor(() => expect(whenOnline).toHaveBeenCalledTimes(2))
-      ;(navigator as { onLine: boolean }).onLine = true
-      back()
-      const mod = (await run) as unknown as { bytes: number }
-      expect(mod.bytes).toBe(8)
-      expect(fetchImpl).toHaveBeenCalledTimes(3)
+      await expect(fetchAndCompileWithRetry('/x.wasm', 8, undefined, { fetchImpl, compile: drain, retryMs: [1] })).rejects.toThrow('Failed to fetch')
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
     } finally {
       vi.unstubAllGlobals()
     }
-  })
-
-  it('online, a failure still spends the retries and then fails', async () => {
-    const whenOnline = vi.fn(async () => undefined)
-    const fetchImpl = vi.fn(async () => {
-      throw new TypeError('Failed to fetch')
-    })
-    await expect(fetchAndCompileWithRetry('/x.wasm', 8, undefined, { fetchImpl, compile: drain, retryMs: [1], whenOnline })).rejects.toThrow('Failed to fetch')
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-    expect(whenOnline).not.toHaveBeenCalled()
   })
 
   it('reports zero bytes before the request, so a server that never answers still shows the download', async () => {

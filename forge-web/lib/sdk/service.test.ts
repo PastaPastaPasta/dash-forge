@@ -862,6 +862,7 @@ describe('EvoSdkService: offline', () => {
     const good = fakeSdk('good', async () => 'ok')
     const connector = vi.fn().mockRejectedValueOnce(new Error('Failed to fetch')).mockResolvedValue(connection(good.sdk))
     const svc = new EvoSdkService(connector, clock)
+    const before = svc.recoveryCount
     await expect(svc.initialize(CONFIG)).rejects.toThrow('Failed to fetch')
     expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: null })
     await clock.advance(10 * 60_000)
@@ -871,6 +872,28 @@ describe('EvoSdkService: offline', () => {
     await flush()
     expect(connector).toHaveBeenCalledTimes(2)
     expect(svc.getStatus().phase).toBe('ready')
+    // Views re-read once after the outage, even though it spent no automatic retry.
+    expect(svc.recoveryCount).toBe(before + 1)
+  })
+
+  it('failures while offline spend no automatic retry', async () => {
+    const nav = { onLine: false }
+    vi.stubGlobal('navigator', nav)
+    vi.stubGlobal('window', { addEventListener: () => undefined })
+    const clock = manualClock()
+    const connector = vi.fn().mockRejectedValue(new Error('Failed to fetch'))
+    const svc = new EvoSdkService(connector, clock)
+    await expect(svc.initialize(CONFIG)).rejects.toThrow('Failed to fetch')
+    for (let i = 0; i < CONNECT_BACKOFF_MS.length + 2; i++) {
+      svc.retryNow()
+      await flush()
+    }
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: null })
+    expect(svc.getStatus()).not.toMatchObject({ stopped: true })
+    nav.onLine = true
+    svc.retryNow()
+    await flush()
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: expect.any(Number) })
   })
 
   it('back online during a countdown retries now, not when the countdown ends', async () => {

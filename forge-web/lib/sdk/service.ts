@@ -288,6 +288,8 @@ export class EvoSdkService {
   private refreshDue = false
   private retryTimer: unknown = null
   private failures = 0
+  /** A connect failed since the last live one (offline ones too, which spend no retry). */
+  private down = false
   private recoveries = 0
   /** The highest protocol version any connection learned (never lowered by a new one). */
   private learnedVersion: number | undefined
@@ -546,7 +548,9 @@ export class EvoSdkService {
 
   /** Platform is unreachable: report it and schedule the next attempt. */
   private fail(cause: unknown): void {
-    this.failures++
+    // Offline explains the failure and the online listener retries: it spends no automatic retry.
+    if (!isOffline()) this.failures++
+    this.down = true
     noteClockSkew(cause)
     this.setStatus({ phase: 'error', message: messageOf(cause) || 'could not reach Platform', retryAt: null })
     this.scheduleRetry()
@@ -617,8 +621,9 @@ export class EvoSdkService {
     if (typeof document !== 'undefined' && document.documentElement) {
       document.documentElement.dataset['sdkGeneration'] = String(this.generationNo)
     }
-    if (this.failures > 0) {
+    if (this.down) {
       // Back from an outage (a scheduled retry, "Try again", or a refresh that got through).
+      this.down = false
       this.failures = 0
       this.clearRetry()
       this.recoveries++
@@ -923,6 +928,7 @@ export class EvoSdkService {
     this.recovering = null
     this.rotation = null
     this.failures = 0
+    this.down = false
     this.usedContracts.clear()
     this.outdated.clear()
     this.missing = null

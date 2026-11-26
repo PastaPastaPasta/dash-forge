@@ -10,6 +10,8 @@ import { QUORUM_KEY_ENDPOINT, type Network } from '../constants'
 import { isDownloadFailure, isProofFailure, isQuorumMiss, isQuorumServiceError } from '../sdk/unreachable'
 import { urlHost } from './format'
 
+const OFFLINE_BODY = 'This page will load as soon as your connection is back.'
+
 export interface FailureCopy {
   readonly title: string
   readonly body: string
@@ -32,7 +34,11 @@ export function connectFailureCopy(
   const keep = cached
     ? 'Showing what this tab already read and checked. It is not being re-checked until the connection comes back.'
     : 'Nothing can be read or checked until the connection comes back.'
-  if (offline) return { title: "You're offline", body: cached ? keep : 'This page loads as soon as your connection is back.' }
+  if (offline) return { title: "You're offline", body: cached ? keep : OFFLINE_BODY }
+  // A 4xx for the hashed file: the site was updated since this page loaded.
+  if (isDownloadFailure(message) && /HTTP 4\d\d/.test(message)) {
+    return { title: "The Platform verifier didn't download", body: 'This site was updated since the page loaded. Reload the page.' }
+  }
   if (isDownloadFailure(message)) {
     return {
       title: "The Platform verifier didn't download",
@@ -50,7 +56,7 @@ export function connectFailureCopy(
 
 /** A read that nothing answered ({@link isUnreachableError}), for the retrying state. */
 export function unreachableReadCopy(message: string, { network, offline }: { network: Network; offline: boolean }): FailureCopy {
-  if (offline) return { title: "You're offline", body: 'This page will load as soon as your connection is back.' }
+  if (offline) return { title: "You're offline", body: OFFLINE_BODY }
   if (isQuorumMiss(message)) {
     return {
       title: 'Waiting for new quorum keys',

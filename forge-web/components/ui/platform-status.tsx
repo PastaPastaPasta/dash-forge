@@ -50,14 +50,14 @@ export function ProgressBar({ label, pct, valueText }: { label: string; pct: num
 /** No new bytes for this long: the download view says it has stalled. */
 export const STALL_HINT_MS = 15_000
 
-/** Whether `loaded` has stayed the same for {@link STALL_HINT_MS}. */
-function useStalled(loaded: number): boolean {
+/** Whether `loaded` has stayed the same for {@link STALL_HINT_MS} while online. */
+function useStalled(loaded: number, offline: boolean): boolean {
   const [stalled, setStalled] = useState(false)
   useEffect(() => {
     setStalled(false)
     const id = setTimeout(() => setStalled(true), STALL_HINT_MS)
     return () => clearTimeout(id)
-  }, [loaded])
+  }, [loaded, offline])
   return stalled
 }
 
@@ -65,7 +65,7 @@ function useStalled(loaded: number): boolean {
 export function DownloadProgressBar({ status }: { status: Extract<SdkStatus, { phase: 'downloading' }> }): JSX.Element {
   const { loaded, total } = status.progress
   const offline = useOffline()
-  const stalled = useStalled(loaded)
+  const stalled = useStalled(loaded, offline)
   const note = offline
     ? "You're offline. The download starts again when you're back."
     : stalled

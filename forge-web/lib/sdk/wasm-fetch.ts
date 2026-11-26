@@ -11,7 +11,6 @@
  * call after a failure.
  */
 
-import { isOffline } from '../online'
 import { isDownloadFailure } from './unreachable'
 
 /** Download progress in bytes of wasm received (after any transfer encoding is undone). */
@@ -29,8 +28,6 @@ const WASM_BYTES = Number(process.env.FORGE_WASM_SDK_BYTES) || 0
 
 export interface FetchWasmOptions {
   readonly fetchImpl?: typeof fetch
-  /** Resolves once the browser is back online (only awaited while {@link isOffline}). */
-  readonly whenOnline?: () => Promise<void>
   readonly stallMs?: number
   readonly compile?: (response: Response) => Promise<WebAssembly.Module>
 }
@@ -105,20 +102,10 @@ export async function fetchAndCompile(
 /** Waits before each automatic retry of a failed download (L-19). */
 export const DOWNLOAD_RETRY_MS: readonly number[] = [1_000, 3_000]
 
-/** Back online, or 30 s later: a browser that wrongly reports itself offline still retries. */
-function browserOnline(): Promise<void> {
-  return new Promise((resolve) => {
-    window.addEventListener('online', () => resolve(), { once: true })
-    setTimeout(resolve, 30_000)
-  })
-}
-
 /**
  * {@link fetchAndCompile}, retried after a transient failure: a reset connection or a stream
  * that errors mid-body ("Failed to read from a ReadableStream", a QUIC reset on a cold profile)
  * usually succeeds at once on a second try. An HTTP 4xx is not transient and is not retried.
- * A failure while the browser is offline waits for it to come back online and starts again,
- * without spending a retry: the download view says so meanwhile, rather than the connect failing.
  */
 export async function fetchAndCompileWithRetry(
   url: string | URL,
@@ -127,27 +114,15 @@ export async function fetchAndCompileWithRetry(
   options: FetchWasmOptions & { readonly retryMs?: readonly number[] } = {},
 ): Promise<WebAssembly.Module> {
   const waits = options.retryMs ?? DOWNLOAD_RETRY_MS
-  let last: DownloadProgress = { loaded: 0, total }
-  const report = (p: DownloadProgress): void => {
-    last = p
-    onProgress?.(p)
-  }
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fetchAndCompile(url, total, report, options)
+      return await fetchAndCompile(url, total, onProgress, options)
     } catch (e) {
       // Not worth another download: a client error (except timeout / too many requests), or a
       // body that is not wasm (a stale deploy serving HTML), which fails the same way again.
       const permanent =
         (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.CompileError) ||
         (e instanceof Error && /HTTP 4(?!08|29)\d\d/.test(e.message))
-      if (!permanent && isOffline()) {
-        // Keeps the bar where it stopped (the service shows it with the offline note).
-        onProgress?.(last)
-        await (options.whenOnline ?? browserOnline)()
-        attempt--
-        continue
-      }
       const wait = waits[attempt]
       if (permanent || wait === undefined) throw e
       await new Promise((r) => setTimeout(r, wait))
