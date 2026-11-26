@@ -148,8 +148,8 @@ test('iPhone SE: every repo tab is reachable, the strip scrolls with a visible e
   expect(box!.x + box!.width).toBeLessThanOrEqual(375 + 1)
   // More tabs on the left now: the strip marks that side.
   await expect(nav.locator('..')).toHaveAttribute('data-more', /left/)
-  // Untouched, the strip keeps the active tab on screen when a tab before it widens (a count
-  // loading late) or a tab appears before it (Boards).
+  // The strip keeps the active tab on screen when a tab before it widens (a count loading
+  // late) or a tab appears before it (Boards).
   const releasesShown = async (): Promise<boolean> => {
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
     const r = await nav.getByRole('link', { name: 'Releases' }).boundingBox()
@@ -170,6 +170,7 @@ test('iPhone SE: every repo tab is reachable, the strip scrolls with a visible e
   await nav.getByRole('link', { name: /^Issues/ }).evaluate((a: HTMLElement) => {
     a.style.minWidth = ''
   })
+  expect(await releasesShown(), 'Releases on screen after the tabs settle').toBe(true)
   // Every tab can be tapped.
   for (const name of ['Code', /^Issues/, /^Pull requests/, 'Releases']) {
     const tab = nav.getByRole('link', { name })
