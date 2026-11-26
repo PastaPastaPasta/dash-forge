@@ -12,7 +12,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@cap.js/wasm": "^0.0.8",
