@@ -8,7 +8,22 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-11-27
+## [0.3.1] - 2026-11-26
+
+`dg` and `git-remote-dash` work on testnet again. The [release notes](docs/releases/v0.3.1.md) say what broke, what changed and why mainnet is unaffected.
+
+### Fixed
+
+- **`dg` and `git-remote-dash` work on testnet again.** Testnet moved to Platform protocol 15 at 2026-11-25 19:41:30Z (epoch 20634, block 740732), before v0.3.0 was published. v0.3.0 is built on the Platform SDK 5.0.0-rc.8, which speaks only protocols 13 and 14, and much of it fails on testnet: resolving a DPNS name stops with `UnexpectedVariant … DataContractInSerializationFormat … found: 2`, clones and fetches stop with a proof error, and writes are refused. Reads by identity id still work. v0.3.1 is built on 5.1.0, which speaks protocols 14 and 15 and learns which one a network runs from its first proof-verified answer ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756), [#758](https://github.com/PastaPastaPasta/dash-forge/pull/758)). The web app at testnet-forge.dashhq.org, built from the same code, reads testnet again.
+- **A document write the 5.1 SDK reports as unconfirmed is settled, not failed.** From 5.1 the SDK answers "state transition outcome is unconfirmed" when a send may have reached a node but it can't prove the result. `dg` and `git-remote-dash` treated every such answer as a failed write, and the web app did when the error it wrapped read as a refusal, although the write had often already been sent, so a rerun could sign a second copy. Now `dg` and `git-remote-dash` wait for the result, check whether the write landed and, if not, send the same bytes again; the web app checks whether the document landed and otherwise says the write is unconfirmed. Neither signs a replacement. Identity registration and key changes are not covered yet ([#759](https://github.com/PastaPastaPasta/dash-forge/pull/759)).
+
+### Changed
+
+- **Platform SDK 5.0.0-rc.8 → 5.1.0** in the Rust crates and the web app ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756), [#758](https://github.com/PastaPastaPasta/dash-forge/pull/758)). On mainnet, which runs protocol 14, what the tools write is unchanged: the protocol 14 serialization tables and document ids are the same in both SDKs.
+- **Document history (an issue's, pull request's or comment's earlier revisions) pages by revision.** On protocol 15 each page continues after the last revision read; on protocol 14 it starts at the last revision's time and skips revisions already read ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)).
+- **Organization (testnet) BLS signing uses a pure-Rust library** (`blstrs_plus` 0.10) in place of blst's assembly, because the new SDK needs a newer blst than the old library allowed ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)).
+
+## [0.3.0] - 2026-11-26
 
 The first release that knows Forge's mainnet contracts. The [release notes](docs/releases/v0.3.0.md) say what is new for mainnet users, what stays testnet only, and how to upgrade.
 
@@ -52,6 +67,10 @@ The first release that knows Forge's mainnet contracts. The [release notes](docs
 
 ### Fixed
 
+- **`git-remote-dash --help` and `-h` print the usage** and exit 0. They used to fail with E101 ("unknown admin command") and E203 ([#749](https://github.com/PastaPastaPasta/dash-forge/pull/749)).
+- **`dg storage share` says how to rotate a shared profile's credentials:** when only its secret changed, E502 now says to re-run `dg storage add <name>` with the new secret (testnet; [#742](https://github.com/PastaPastaPasta/dash-forge/pull/742)).
+- **Explore's Trending no longer fails with "this network runs protocol version 13"** on a slow first visit: the web app seeds the Platform SDK at the deployment's protocol version before it connects ([#744](https://github.com/PastaPastaPasta/dash-forge/pull/744)).
+- **Explore hides rankings with nothing to list, and on phones a commit's message gets the whole first line and the repo header's actions stay on one row** ([#745](https://github.com/PastaPastaPasta/dash-forge/pull/745), [#746](https://github.com/PastaPastaPasta/dash-forge/pull/746), [#747](https://github.com/PastaPastaPasta/dash-forge/pull/747)).
 - **A key `dg` replaces is kept.** Signing in again (with the wallet, an identity file or a recovery phrase) or renewing a key used to overwrite the key `dg` stored for that identity, a master key included, with no copy. `dg` now copies the old key first: the key file to `<network>-<id>.key.bak-<UTC time>` beside it (0600), a keychain entry to one named `….bak-<UTC time>`, never over an earlier copy, and says where it went (`previousKeyKeptAt` in `--json`). A key file it can't read is not replaced ([#741](https://github.com/PastaPastaPasta/dash-forge/pull/741)).
 - **Dash Wallet for iOS no longer refuses the web app's sign-in code as "dated ahead of the network's time".** ([#705](https://github.com/PastaPastaPasta/dash-forge/pull/705)) The request's creation time came from the browser's clock, and the wallet compares it with Platform's latest block time, which can be minutes behind on mainnet. It is now the browser's clock held within 90 seconds of the chain time Forge read.
 - **Connecting a node from the web app works on the first try.** A late **Allow** on the browser's local-network prompt no longer ends in "The node blocked this site" ([#727](https://github.com/PastaPastaPasta/dash-forge/pull/727)).
@@ -212,7 +231,8 @@ for networks, installation, verification and known limitations.
 
 See [Known limitations](docs/releases/v0.1.0.md#known-limitations) in the release notes.
 
-[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.1
 [0.3.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.1.0

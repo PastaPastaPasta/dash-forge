@@ -7,8 +7,10 @@
  */
 
 import { QUORUM_KEY_ENDPOINT, type Network } from '../constants'
-import { isProofFailure, isQuorumMiss, isQuorumServiceError } from '../sdk/unreachable'
+import { isClientErrorDownload, isDownloadFailure, isProofFailure, isQuorumMiss, isQuorumServiceError } from '../sdk/unreachable'
 import { urlHost } from './format'
+
+const OFFLINE_BODY = 'This page will load as soon as your connection is back.'
 
 export interface FailureCopy {
   readonly title: string
@@ -22,12 +24,27 @@ function keyHost(network: Network): string {
 
 /**
  * The connect failed (the SDK status is `error`). `cached`: the page still shows what this tab
- * read and checked earlier.
+ * read and checked earlier. `offline`: the browser has no network, which explains any failure
+ * and is the one thing to fix, so no part is blamed.
  */
-export function connectFailureCopy(message: string, { network, cached }: { network: Network; cached: boolean }): FailureCopy {
+export function connectFailureCopy(
+  message: string,
+  { network, cached, offline = false }: { network: Network; cached: boolean; offline?: boolean },
+): FailureCopy {
   const keep = cached
     ? 'Showing what this tab already read and checked. It is not being re-checked until the connection comes back.'
     : 'Nothing can be read or checked until the connection comes back.'
+  if (offline) return { title: "You're offline", body: cached ? keep : OFFLINE_BODY }
+  // A 4xx for the hashed file: the site was updated since this page loaded.
+  if (isDownloadFailure(message) && isClientErrorDownload(message)) {
+    return { title: "The Platform verifier didn't download", body: 'This site was updated since the page loaded. Reload the page.' }
+  }
+  if (isDownloadFailure(message)) {
+    return {
+      title: "The Platform verifier didn't download",
+      body: `Check your connection. ${keep}`,
+    }
+  }
   if (isQuorumServiceError(message)) {
     return {
       title: "Can't reach the quorum key service right now",
@@ -39,7 +56,7 @@ export function connectFailureCopy(message: string, { network, cached }: { netwo
 
 /** A read that nothing answered ({@link isUnreachableError}), for the retrying state. */
 export function unreachableReadCopy(message: string, { network, offline }: { network: Network; offline: boolean }): FailureCopy {
-  if (offline) return { title: "You're offline", body: 'This page will load as soon as your connection is back.' }
+  if (offline) return { title: "You're offline", body: OFFLINE_BODY }
   if (isQuorumMiss(message)) {
     return {
       title: 'Waiting for new quorum keys',

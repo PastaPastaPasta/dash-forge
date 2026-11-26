@@ -10,10 +10,10 @@ description = "Offline validation of the forge-v2 data contracts against Dash Pl
 [workspace]
 
 [dependencies]
-# PLATFORM_TAG = v5.1.0-rc.2 (protocol 14; the 4.2 line renamed, and the RC2 target). Only
+# PLATFORM_TAG = v5.1.0 (validates under protocol 14, what mainnet runs; Forge's RC2 contract target). Only
 # the schema and transition machinery is needed: no signing (a placeholder signature of the
 # real length is sized instead), no client, no system contracts.
-dpp = { git = "https://github.com/dashpay/platform.git", tag = "v5.1.0-rc.2", default-features = false, features = [
+dpp = { git = "https://github.com/dashpay/platform.git", tag = "v5.1.0", default-features = false, features = [
   "state-transitions",
   "validation",
   "json-conversion",

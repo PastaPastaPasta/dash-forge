@@ -44,6 +44,7 @@ import { noteClockOk, noteClockSkew } from './clock-skew'
 
 import { dapiReadAddresses, NETWORKS, quorumEndpoint, type Network } from '../constants'
 import { forgeContractIds } from '../deployments'
+import { isOffline } from '../online'
 import { userQuorumUrl } from '../quorum-url'
 import { installQuorumFetch } from './quorum-fetch'
 import { dapiBudget, installDapiFetchGate } from './budget'
@@ -136,7 +137,8 @@ export const RECOVER_MAX_WAIT_MS = 15_000
  * Waits before each automatic retry of a failed connect. After the last one the service stops
  * retrying by itself (`stopped`): a link that failed this many connects in a row will not get
  * better on a timer, and a page that spins on it forever reads as broken. "Try again", a tab that
- * is shown again, or the browser coming back online tries once more.
+ * is shown again, or the browser coming back online tries again. Failures while the browser is
+ * offline do not count: no timer runs then, and coming back online retries at once.
  */
 export const CONNECT_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000, 60_000]
 /** A connect (quorum prefetch + contract warm-up) that takes longer than this is abandoned. */
@@ -158,7 +160,7 @@ export type SdkStatus =
   /**
    * The connect failed; `retryAt` is when the next automatic attempt runs (epoch ms). `stopped`:
    * the automatic retries ran out ({@link CONNECT_BACKOFF_MS}); only "Try again" (or the tab
-   * shown again, or the browser back online) tries once more.
+   * shown again, or the browser back online) tries again.
    */
   | { readonly phase: 'error'; readonly message: string; readonly retryAt: number | null; readonly stopped?: boolean }
 
@@ -287,6 +289,8 @@ export class EvoSdkService {
   private refreshDue = false
   private retryTimer: unknown = null
   private failures = 0
+  /** A connect failed since the last live one (offline ones too, which spend no retry). */
+  private down = false
   private recoveries = 0
   /** The highest protocol version any connection learned (never lowered by a new one). */
   private learnedVersion: number | undefined
@@ -337,8 +341,9 @@ export class EvoSdkService {
       })
     }
     if (typeof window !== 'undefined') {
+      // Back online is the likeliest moment for a connect to work: try now, not at the countdown.
       window.addEventListener('online', () => {
-        if (this.status.phase === 'error' && this.retryTimer === null) this.retryOnceMore()
+        if (this.status.phase === 'error') this.retryConnect()
       })
     }
   }
@@ -544,7 +549,9 @@ export class EvoSdkService {
 
   /** Platform is unreachable: report it and schedule the next attempt. */
   private fail(cause: unknown): void {
-    this.failures++
+    // Offline explains the failure and the online listener retries: it spends no automatic retry.
+    if (!isOffline()) this.failures++
+    this.down = true
     noteClockSkew(cause)
     this.setStatus({ phase: 'error', message: messageOf(cause) || 'could not reach Platform', retryAt: null })
     this.scheduleRetry()
@@ -577,12 +584,13 @@ export class EvoSdkService {
       this.setStatus({ ...this.status, retryAt: null, stopped: true })
       return
     }
+    // Offline, a timer would only fail again: the online listener retries when the network is back.
     // A hidden tab waits: the visibilitychange listener schedules the retry when it is shown.
-    if (!visible()) {
+    if (isOffline() || !visible()) {
       this.setStatus({ ...this.status, retryAt: null })
       return
     }
-    const wait = CONNECT_BACKOFF_MS[this.failures - 1] ?? 5_000
+    const wait = CONNECT_BACKOFF_MS[Math.max(this.failures, 1) - 1] ?? 5_000
     this.setStatus({ ...this.status, retryAt: this.clock.now() + wait })
     this.retryTimer = this.clock.setTimeout(() => {
       this.retryTimer = null
@@ -614,8 +622,9 @@ export class EvoSdkService {
     if (typeof document !== 'undefined' && document.documentElement) {
       document.documentElement.dataset['sdkGeneration'] = String(this.generationNo)
     }
-    if (this.failures > 0) {
+    if (this.down) {
       // Back from an outage (a scheduled retry, "Try again", or a refresh that got through).
+      this.down = false
       this.failures = 0
       this.clearRetry()
       this.recoveries++
@@ -920,6 +929,7 @@ export class EvoSdkService {
     this.recovering = null
     this.rotation = null
     this.failures = 0
+    this.down = false
     this.usedContracts.clear()
     this.outdated.clear()
     this.missing = null
@@ -957,10 +967,13 @@ export class EvoSdkService {
     else if (this.progressTimer === null) this.progressTimer = this.clock.setTimeout(show, this.progressAt + PROGRESS_INTERVAL_MS - now)
   }
 
-  /** Only a connect that is waiting on the download shows its progress. */
+  /**
+   * Only a connect that is waiting on the download shows its progress. The phase alone says so:
+   * the download reports its first progress before `initPromise` is set.
+   */
   private showsProgress(): boolean {
     const p = this.status.phase
-    return (p === 'connecting' || p === 'downloading') && this.initPromise !== null
+    return p === 'connecting' || p === 'downloading'
   }
 
   private setStatus(status: SdkStatus): void {

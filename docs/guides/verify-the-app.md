@@ -41,7 +41,7 @@ ipfs dag import forge-web-<version>.car      # pins the site; prints its root CI
 
 The build works from any gateway: by subdomain (`https://<cid>.ipfs.<gateway>/`), by path (`https://<gateway>/ipfs/<cid>/`), or from an ordinary static host. It finds its own base path when it loads.
 
-The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`, `RELEASE_DEVNET_NAME`): testnet for v0.2.0. The network is part of the build, so it is fixed per commit.
+The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`, `RELEASE_DEVNET_NAME`): testnet for v0.2.0, mainnet from v0.3.0. The network is part of the build, so it is fixed per commit.
 
 ---
 
@@ -76,7 +76,7 @@ Read the script before you run it: it is short, and it is what you are trusting.
 
 What makes the build reproducible, in `forge-web/next.config.js`: the Next.js build id is the commit (Next's default is random), module ids are hashed into a range wide enough that none collide (webpack's default settles collisions in an order that varies between runs), entry chunks are named by the hash of their final bytes (Next's default name hashes webpack's internal state, which varies under load), the minifier is given placeholders for webpack's provisional chunk hashes, not the hashes (it picks short variable names by how often each letter occurs, and those hashes, which differ between builds before webpack replaces them with the final ones, sometimes tipped a tie in webpack's runtime chunk, which changed that chunk's name and the CID), the JavaScript is minified by Terser, and nothing reads the clock. Local rebuilds on x86_64 and on arm64, at several CPU limits, gave the same CID. The release workflow builds every tag on an x86_64 and an arm64 runner and refuses to publish unless both give the same CID (`.github/workflows/web-ipfs.yml`), and every pull request that touches the web app runs the same check.
 
-**Without Docker.** In a checkout of the tag, `cd forge-web && pnpm install --frozen-lockfile && FORGE_BUILD_COMMIT=$(git rev-parse HEAD) NEXT_PUBLIC_NETWORK=testnet pnpm build:ipfs` builds the same site with your own Node. The result matches only if your Node and pnpm are the pinned versions and your environment adds nothing, so a mismatch there is not evidence of anything. Use the script for the real check. To get a CID for a directory you built, `forge-web/scripts/ipfs-release.sh cid forge-web/out` (still needs Docker, for the pinned kubo), or, on a kubo of the pinned version, a repository initialised with `ipfs init --profile=unixfs-v1-2025` and `ipfs add` with the flags in `IPFS_ADD_FLAGS`.
+**Without Docker.** In a checkout of the tag, `cd forge-web && pnpm install --frozen-lockfile && FORGE_BUILD_COMMIT=$(git rev-parse HEAD) NEXT_PUBLIC_NETWORK=mainnet pnpm build:ipfs` builds the same site with your own Node, for a tag from v0.3.0 on (use `testnet` for v0.2.0; the tag's `ipfs-release.sh` names it as `RELEASE_NETWORK`). The result matches only if your Node and pnpm are the pinned versions and your environment adds nothing, so a mismatch there is not evidence of anything. Use the script for the real check. To get a CID for a directory you built, `forge-web/scripts/ipfs-release.sh cid forge-web/out` (still needs Docker, for the pinned kubo), or, on a kubo of the pinned version, a repository initialised with `ipfs init --profile=unixfs-v1-2025` and `ipfs add` with the flags in `IPFS_ADD_FLAGS`.
 
 ---
 

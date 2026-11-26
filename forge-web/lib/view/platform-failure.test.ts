@@ -42,6 +42,30 @@ describe('connectFailureCopy', () => {
   })
 })
 
+describe('connectFailureCopy: offline and a failed verifier download', () => {
+  it('offline blames no part, whatever the error', () => {
+    const c = connectFailureCopy(PREFETCH, { network: 'testnet', cached: false, offline: true })
+    expect(c.title).toBe("You're offline")
+    expect(c.body).toBe('This page will load as soon as your connection is back.')
+    expect(connectFailureCopy(PREFETCH, { network: 'testnet', cached: true, offline: true }).body).toMatch(/not being re-checked/)
+  })
+
+  it('names the verifier download, not Platform, when the wasm did not arrive', () => {
+    const c = connectFailureCopy('the Platform SDK download stalled (nothing received for 60 s)', { network: 'testnet', cached: false })
+    expect(c.title).toBe("The Platform verifier didn't download")
+    expect(c.body).toMatch(/Check your connection/)
+    expect(c.title).not.toMatch(/Can't reach/)
+  })
+
+  it('a 4xx for the hashed file says to reload, not to check the connection', () => {
+    const c = connectFailureCopy('the Platform SDK download failed (HTTP 404)', { network: 'testnet', cached: false })
+    expect(c.title).toBe("The Platform verifier didn't download")
+    expect(c.body).toBe('This site was updated since the page loaded. Reload the page.')
+    // Timeout and too many requests are transient: they keep the connection advice.
+    expect(connectFailureCopy('the Platform SDK download failed (HTTP 429)', { network: 'testnet', cached: false }).body).toMatch(/Check your connection/)
+  })
+})
+
 describe('unreachableReadCopy', () => {
   it('a quorum the app has no key for yet is the key service lagging, not Platform down (#212)', () => {
     const c = unreachableReadCopy(QUORUM_GONE, { network: 'testnet', offline: false })
