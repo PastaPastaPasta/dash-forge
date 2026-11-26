@@ -1089,9 +1089,9 @@ async function preload(sdk: EvoSDK, contractIds: readonly string[]): Promise<voi
  * Add the deployment's contract snapshots (`contract-seed.ts`) to the SDK's contract cache,
  * so no page spends a `getDataContract` request on them. `outdated` snapshots (an earlier
  * connection found the network had moved on) and any that fail to decode are skipped:
- * {@link preload} fetches those. The version the snapshots were serialized at is the one the
- * deployment needs (deploy-v2 registers only on a network at it), so the network runs at least
- * that one ({@link seedSdkVersion}, {@link learnVersion}).
+ * {@link preload} fetches those. The snapshots were serialized at the version the network ran
+ * when they were taken (`snapshot-contracts.mjs` reads it from a proved answer), so the network
+ * runs at least that one ({@link seedSdkVersion}, {@link learnVersion}).
  */
 async function seed(sdk: EvoSDK, snapshots: ContractSnapshots, outdated: ReadonlySet<string>): Promise<Map<string, number>> {
   const seeded = new Map<string, number>()

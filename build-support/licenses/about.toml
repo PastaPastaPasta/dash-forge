@@ -49,8 +49,9 @@ workarounds = ["chrono"]
 # Crates whose manifest declares no license field. Crate-specific tables must come last.
 #
 # dashpay/platform (the Dash Platform SDK crates): MIT, "Copyright (c) 2017-2021 Dash Core
-# Group, Inc." (LICENSE.md at the repository root, two levels above each package). wasm-dpp2 is
-# only in the web app's wasm module (generate-wasm.sh); the others are in both builds. The checksum
+# Group, Inc." (LICENSE.md at the repository root, two levels above each package). wasm-dpp2 and
+# json-schema-compatibility-validator are only in the web app's wasm module (generate-wasm.sh);
+# the others are in both builds. The checksum
 # is of that file; when a Platform bump changes it the clarification stops applying and
 # generation fails, so a new license is read before it ships. Re-check on every Platform tag.
 # ---------------------------------------------------------------------------------------------
@@ -87,6 +88,14 @@ path = '../../LICENSE.md'
 license = 'MIT'
 checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
 
+
+[json-schema-compatibility-validator.clarify]
+license = "MIT"
+
+[[json-schema-compatibility-validator.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
 
 [wasm-dpp2.clarify]
 license = "MIT"
@@ -436,3 +445,14 @@ checksum = 'c9dafdccf917011d1f3d9eb1db657527c5721948253044ce15e847c69a65180b'
 path = 'LICENSE_APACHE'
 license = 'Apache-2.0'
 checksum = '62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a'
+
+# Only in the web app's wasm module (generate-wasm.sh); the manifest says "MIT/Apache-2.0" and
+# LICENSE.txt is one notice that dedicates it to the public domain (CC0) and dual-licenses it
+# under MIT and Apache-2.0.
+[num-cmp.clarify]
+license = "MIT OR Apache-2.0"
+
+[[num-cmp.clarify.files]]
+path = 'LICENSE.txt'
+license = 'MIT'
+checksum = '3bb1e548250b3acc43febde65a5cdba9f2e0a3288018aa41f009a3c59ffab51a'

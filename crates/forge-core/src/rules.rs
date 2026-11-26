@@ -3699,10 +3699,8 @@ mod tests {
             assert_eq!(opened(reply), v.expected, "vector `{ctx}`");
             return;
         }
-        let secp = secp256k1::Secp256k1::new();
         let public_key = secp256k1::PublicKey::from_secret_key(
-            &secp,
-            &secp256k1::SecretKey::from_slice(&secret).unwrap(),
+            &secp256k1::SecretKey::from_secret_bytes(secret).unwrap(),
         );
         let request = Request {
             network: inp.network.clone(),

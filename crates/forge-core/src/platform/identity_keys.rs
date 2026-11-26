@@ -18,8 +18,8 @@ use std::fmt;
 use async_trait::async_trait;
 use dash_sdk::dpp::address_funds::AddressWitness;
 use dash_sdk::dpp::consensus::fee::fee_error::FeeError;
-use dash_sdk::dpp::dashcore::hashes::{hash160, Hash};
-use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
+use dash_sdk::dpp::dashcore::hashes::hash160;
 use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::key_wallet::{ChildNumber, ExtendedPrivKey, Mnemonic};
@@ -27,7 +27,8 @@ use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::ProtocolError;
-use zeroize::Zeroizing;
+use secp256k1::{PublicKey, SecretKey};
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{
     consensus_error_of, poll_confirm, to_dashcore, ConsensusError, IdentityGettersV0,
@@ -84,13 +85,13 @@ impl EncryptionSecret {
         let mut private = dash_sdk::dpp::dashcore::PrivateKey::from_wif(wif).map_err(|_| {
             Error::Config(format!("key {}: privateKeyWif is not a valid WIF", key.id))
         })?;
-        let secret = Self::new(private.inner.secret_bytes());
-        private.inner.non_secure_erase();
+        let secret = Self::new(*private.inner.to_bytes());
+        private.inner.zeroize();
         secret
     }
 
     fn secret_key(&self) -> Result<SecretKey> {
-        SecretKey::from_byte_array(&self.0)
+        SecretKey::from_secret_bytes(*self.0)
             .map_err(|_| Error::Config("not a valid secp256k1 private key".into()))
     }
 
@@ -99,7 +100,7 @@ impl EncryptionSecret {
         let mut sk = self
             .secret_key()
             .expect("validated in EncryptionSecret::new");
-        let public = PublicKey::from_secret_key(&Secp256k1::signing_only(), &sk).serialize();
+        let public = PublicKey::from_secret_key(&sk).serialize();
         sk.non_secure_erase();
         public
     }
@@ -201,14 +202,14 @@ pub fn identity_key_path(bridge: &BridgeIdentity, key_id: u32) -> Option<String>
     Some(format_hardened_path(&prefix))
 }
 
-fn derive_at(master: &ExtendedPrivKey, prefix: &[u32], key_id: u32) -> Option<SecretKey> {
+fn derive_at(master: &ExtendedPrivKey, prefix: &[u32], key_id: u32) -> Option<EcdsaSecretKey> {
     let path = prefix
         .iter()
         .chain(std::iter::once(&key_id))
         .map(|i| ChildNumber::from_hardened_idx(*i).ok())
         .collect::<Option<Vec<ChildNumber>>>()?;
-    let derived = master.derive_priv(&Secp256k1::signing_only(), &path).ok()?;
-    Some(derived.private_key)
+    let derived = master.derive_priv(&path).ok()?;
+    Some(derived.private_key.clone())
 }
 
 /// The private key of identity key `key_id`, derived from the identity's mnemonic at the path
@@ -231,21 +232,20 @@ pub fn derive_encryption_secret(
     let mnemonic = Mnemonic::from_phrase(phrase).ok()?;
     let seed = Zeroizing::new(mnemonic.to_seed(""));
     let master = ExtendedPrivKey::new_master(to_dashcore(network), seed.as_slice()).ok()?;
-    let secp = Secp256k1::signing_only();
     for key in recorded
         .iter()
         .filter(|k| !k.public_key_hex.trim().is_empty())
     {
         let mut sk = derive_at(&master, &prefix, key.id)?;
-        let public = hex::encode(PublicKey::from_secret_key(&secp, &sk).serialize());
-        sk.non_secure_erase();
+        let public = hex::encode(sk.public_key().to_compressed());
+        sk.zeroize();
         if !public.eq_ignore_ascii_case(key.public_key_hex.trim()) {
             return None;
         }
     }
     let mut sk = derive_at(&master, &prefix, key_id)?;
-    let secret = EncryptionSecret::new(sk.secret_bytes()).ok();
-    sk.non_secure_erase();
+    let secret = EncryptionSecret::new(*sk.to_bytes()).ok();
+    sk.zeroize();
     secret
 }
 
@@ -282,13 +282,11 @@ pub fn encryption_key_entry(
     derivation_path: &str,
 ) -> IdentityKey {
     let mut private = dash_sdk::dpp::dashcore::PrivateKey::new(
-        secret
-            .secret_key()
-            .expect("validated in EncryptionSecret::new"),
+        EcdsaSecretKey::from_bytes(secret).expect("validated in EncryptionSecret::new"),
         to_dashcore(network),
     );
     let wif = Secret::new(private.to_wif());
-    private.inner.non_secure_erase();
+    private.inner.zeroize();
     let hex_key = Zeroizing::new(hex::encode(secret.as_slice()));
     IdentityKey {
         id: key_id,

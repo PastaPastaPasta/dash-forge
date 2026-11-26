@@ -58,7 +58,9 @@ async fn main() -> anyhow::Result<()> {
         .as_str()
         .is_some_and(|t| t.eq_ignore_ascii_case("ECDSA_HASH160"))
         || entry["keyType"].as_u64() == Some(2);
-    let secret = secp256k1::SecretKey::from_slice(&zeroize::Zeroizing::new(hex::decode(key)?))?;
+    let secret = secp256k1::SecretKey::from_secret_bytes(<[u8; 32]>::try_from(
+        zeroize::Zeroizing::new(hex::decode(key)?).as_slice(),
+    )?)?;
     let mut nonce = [0u8; 18];
     rand::thread_rng().fill_bytes(&mut nonce);
     let time = std::time::SystemTime::now()
@@ -80,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         "signature": forge_notify::auth::sign(&request, &secret),
     });
     if hash160 {
-        let public = secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::new(), &secret);
+        let public = secp256k1::PublicKey::from_secret_key(&secret);
         body["public_key"] = STANDARD.encode(public.serialize()).into();
     }
     let res = reqwest::Client::new()
