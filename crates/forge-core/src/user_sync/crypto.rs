@@ -105,7 +105,7 @@ pub fn share_aad(network: &str, repo: &[u8; 32], epoch: u32, key_id: u32) -> Res
 
 /// The secp256k1 ECDH x coordinate of `secret · public`.
 pub fn ecdh_x(secret: &SecretBytes, public: &[u8]) -> Result<Key32> {
-    let sk = SecretKey::from_slice(secret.expose())
+    let sk = SecretKey::from_secret_bytes(*secret.expose())
         .map_err(|_| Error::InvalidInput("not a secp256k1 private key".into()))?;
     let pk = PublicKey::from_slice(public)
         .map_err(|_| Error::InvalidInput("not a secp256k1 public key".into()))?;

@@ -47,8 +47,8 @@ function fixture() {
     'LGPL-3.0+': [entry('openpgp', '6.3.2', pkg(root, 'openpgp', '6.3.2', { LICENSE: 'LGPL text' }, { repository: { url: 'git+https://github.com/openpgpjs/openpgpjs.git' } }))],
     'Apache-2.0': [entry('@swc/counter', '0.1.3', pkg(root, '@swc/counter', '0.1.3', {}))],
     Unknown: [
-      entry('@dashevo/evo-sdk', '5.0.0-rc.3', pkg(root, '@dashevo/evo-sdk', '5.0.0-rc.3', {})),
-      entry('@dashevo/wasm-sdk', '5.0.0-rc.3', pkg(root, '@dashevo/wasm-sdk', '5.0.0-rc.3', {})),
+      entry('@dashevo/evo-sdk', '5.1.0-rc.2', pkg(root, '@dashevo/evo-sdk', '5.1.0-rc.2', {})),
+      entry('@dashevo/wasm-sdk', '5.1.0-rc.2', pkg(root, '@dashevo/wasm-sdk', '5.1.0-rc.2', {})),
     ],
   }
   return { root, list }
@@ -77,8 +77,8 @@ describe('renderNotices', () => {
     expect(text).toContain('https://registry.npmjs.org/openpgp/-/openpgp-6.3.2.tgz')
     expect(text).toContain('licenses/LGPL-3.0.txt')
     // The Platform SDK packages declare no license; the repository's MIT text stands in for it.
-    expect(text).toContain('@dashevo/wasm-sdk 5.0.0-rc.3 (MIT)')
-    expect(text).toContain('https://github.com/dashpay/platform/blob/v5.0.0-rc.3/LICENSE.md')
+    expect(text).toContain('@dashevo/wasm-sdk 5.1.0-rc.2 (MIT)')
+    expect(text).toContain('https://github.com/dashpay/platform/blob/v5.1.0-rc.2/LICENSE.md')
     expect(text).toContain('Copyright (c) 2017-2021 Dash Core Group, Inc.')
   })
 
@@ -173,7 +173,7 @@ describe('renderNotices', () => {
 
   it('fails when the Platform SDK moves to a release line whose license was not read', () => {
     const { root, list } = fixture()
-    list.Unknown = [entry('@dashevo/evo-sdk', '5.1.0', pkg(root, '@dashevo/evo-sdk', '5.1.0', {}))]
+    list.Unknown = [entry('@dashevo/evo-sdk', '5.2.0', pkg(root, '@dashevo/evo-sdk', '5.2.0', {}))]
     expect(() => renderNotices(list)).toThrow(/read for another release line/)
   })
 

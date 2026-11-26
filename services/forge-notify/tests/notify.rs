@@ -13,7 +13,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use secp256k1::{PublicKey, SecretKey};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 use tower::ServiceExt as _;
@@ -149,15 +149,13 @@ struct World {
 }
 
 fn world() -> World {
-    let secret = SecretKey::from_slice(&[0x11; 32]).unwrap();
+    let secret = SecretKey::from_secret_bytes([0x11; 32]).unwrap();
     let key = IdentityKeyInfo {
         id: 2,
         purpose: "AUTHENTICATION".into(),
         security_level: "HIGH".into(),
         key_type: "ECDSA_SECP256K1".into(),
-        public_key: PublicKey::from_secret_key(&Secp256k1::new(), &secret)
-            .serialize()
-            .to_vec(),
+        public_key: PublicKey::from_secret_key(&secret).serialize().to_vec(),
         disabled: false,
         expires_at: None,
         bound_to: Some("contract-group".into()),
