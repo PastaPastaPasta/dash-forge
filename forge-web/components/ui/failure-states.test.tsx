@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@/hooks/use-ui-store', () => ({ useUiStore: (pick: (s: { loginOpen: boolean }) => unknown) => pick({ loginOpen: false }) }))
 
 const { ErrorState } = await import('./states')
-const { UnreachableBanner } = await import('./platform-status')
+const { DownloadProgressBar, STALL_HINT_MS, UnreachableBanner } = await import('./platform-status')
 
 const GROVEDB =
   'grovedb: invalid proof: V1 mismatch in lower layer hash, expected 0a77b19486fb1d5cadbb2bb3f042ccc49cd3defcc8d0d2bafd57353446342d43, got c071e547e3f178bdb4f8b46aae0dde36368d766b5d77e0c3dbe26a4cbc7c90cf'
@@ -75,5 +75,55 @@ describe('UnreachableBanner (QW-056)', () => {
   it('keeps the Platform wording for a Platform outage', () => {
     act(() => root.render(<UnreachableBanner status={status('Connecting to Platform timed out after 45 s')} onRetry={() => undefined} />))
     expect(el.querySelector('[role="alert"]')!.textContent).toContain("Can't reach Dash Platform right now")
+  })
+})
+
+describe('UnreachableBanner offline', () => {
+  it('says the browser is offline, with no countdown and one Try again', () => {
+    vi.stubGlobal('navigator', { onLine: false })
+    try {
+      act(() => root.render(<UnreachableBanner status={{ phase: 'error', message: 'Failed to prefetch quorums: HTTP request error', retryAt: 123 }} onRetry={() => undefined} />))
+      expect(el.querySelector('[role="alert"]')!.textContent).toContain("You're offline")
+      expect(visibleText()).not.toMatch(/quorum key service|Trying again in/)
+      expect(el.querySelectorAll('button')).toHaveLength(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('DownloadProgressBar (cold load on a bad link)', () => {
+  const downloading = (loaded: number) => ({ phase: 'downloading' as const, progress: { loaded, total: 26_500_000 } })
+  const note = () => el.querySelector('[data-testid="sdk-download-note"]')!.textContent
+
+  it('says nothing extra while bytes arrive', () => {
+    act(() => root.render(<DownloadProgressBar status={downloading(1_000_000)} />))
+    expect(note()).toBe('')
+    expect(el.textContent).toContain('Once per browser')
+  })
+
+  it('offline: says the download starts again when the connection is back', () => {
+    vi.stubGlobal('navigator', { onLine: false })
+    try {
+      act(() => root.render(<DownloadProgressBar status={downloading(1_000_000)} />))
+      expect(note()).toBe("You're offline. The download starts again when you're back.")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('no new bytes for STALL_HINT_MS: says it stalled; new bytes clear it', () => {
+    vi.useFakeTimers()
+    try {
+      act(() => root.render(<DownloadProgressBar status={downloading(1_000_000)} />))
+      act(() => vi.advanceTimersByTime(STALL_HINT_MS - 1))
+      expect(note()).toBe('')
+      act(() => vi.advanceTimersByTime(1))
+      expect(note()).toMatch(/^The download has stalled\. Check your connection/)
+      act(() => root.render(<DownloadProgressBar status={downloading(1_200_000)} />))
+      expect(note()).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -38,6 +38,11 @@ const QUORUM_SERVICE = /failed to prefetch quorums|fetching (?:current|previous)
 const PROOF_FAILED = /\binvalid proof\b|mismatch in lower layer hash/i
 const PROOF_MISUSE = /invalid proof verification parameters/i
 
+/** The Platform verifier (the SDK's wasm) did not download (every failure `wasm-fetch.ts` reports). */
+export function isDownloadFailure(e: unknown): boolean {
+  return /the Platform SDK download/.test(errorMessage(e, ''))
+}
+
 /** The connect failed because the quorum key service did not answer (see {@link QUORUM_SERVICE}). */
 export function isQuorumServiceError(e: unknown): boolean {
   return QUORUM_SERVICE.test(errorMessage(e, ''))

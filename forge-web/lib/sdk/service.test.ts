@@ -841,6 +841,45 @@ describe('EvoSdkService: an outage after a connect keeps retrying', () => {
   })
 })
 
+describe('EvoSdkService: offline', () => {
+  it('schedules no retry while offline, and reconnects at once when the browser is back online', async () => {
+    const nav = { onLine: false }
+    vi.stubGlobal('navigator', nav)
+    let onOnline: () => void = () => undefined
+    vi.stubGlobal('window', { addEventListener: (type: string, fn: () => void) => type === 'online' && (onOnline = fn) })
+    const clock = manualClock()
+    const good = fakeSdk('good', async () => 'ok')
+    const connector = vi.fn().mockRejectedValueOnce(new Error('Failed to fetch')).mockResolvedValue(connection(good.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await expect(svc.initialize(CONFIG)).rejects.toThrow('Failed to fetch')
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: null })
+    await clock.advance(10 * 60_000)
+    expect(connector).toHaveBeenCalledTimes(1)
+    nav.onLine = true
+    onOnline()
+    await flush()
+    expect(connector).toHaveBeenCalledTimes(2)
+    expect(svc.getStatus().phase).toBe('ready')
+  })
+
+  it('back online during a countdown retries now, not when the countdown ends', async () => {
+    let onOnline: () => void = () => undefined
+    vi.stubGlobal('window', { addEventListener: (type: string, fn: () => void) => type === 'online' && (onOnline = fn) })
+    const clock = manualClock()
+    const good = fakeSdk('good', async () => 'ok')
+    const connector = vi.fn().mockRejectedValueOnce(new Error('Failed to fetch')).mockResolvedValue(connection(good.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await expect(svc.initialize(CONFIG)).rejects.toThrow('Failed to fetch')
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: expect.any(Number) })
+    onOnline()
+    await flush()
+    expect(connector).toHaveBeenCalledTimes(2)
+    expect(svc.getStatus().phase).toBe('ready')
+    await clock.advance(CONNECT_BACKOFF_MS[0]!)
+    expect(connector).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('EvoSdkService: automatic connect retries are capped', () => {
   it('stops after CONNECT_BACKOFF_MS runs out (no endless spinner); Try again still tries once', async () => {
     const clock = manualClock()

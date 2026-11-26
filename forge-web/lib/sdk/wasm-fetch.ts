@@ -11,6 +11,9 @@
  * call after a failure.
  */
 
+import { isOffline } from '../online'
+import { isDownloadFailure } from './unreachable'
+
 /** Download progress in bytes of wasm received (after any transfer encoding is undone). */
 export interface DownloadProgress {
   readonly loaded: number
@@ -26,6 +29,8 @@ const WASM_BYTES = Number(process.env.FORGE_WASM_SDK_BYTES) || 0
 
 export interface FetchWasmOptions {
   readonly fetchImpl?: typeof fetch
+  /** Resolves once the browser is back online (only awaited while {@link isOffline}). */
+  readonly whenOnline?: () => Promise<void>
   readonly stallMs?: number
   readonly compile?: (response: Response) => Promise<WebAssembly.Module>
 }
@@ -69,13 +74,14 @@ export async function fetchAndCompile(
     }, stallMs)
   }
   arm()
+  let loaded = 0
+  // Reported before the request, so a server that never answers still shows the download view.
+  onProgress?.({ loaded, total })
   try {
     const response = await fetchImpl(url, { signal: controller.signal })
     if (!response.ok || response.body === null) {
       throw new Error(`the Platform SDK download failed (HTTP ${response.status})`)
     }
-    let loaded = 0
-    onProgress?.({ loaded, total })
     const counted = response.body.pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, out) {
@@ -99,10 +105,16 @@ export async function fetchAndCompile(
 /** Waits before each automatic retry of a failed download (L-19). */
 export const DOWNLOAD_RETRY_MS: readonly number[] = [1_000, 3_000]
 
+function browserOnline(): Promise<void> {
+  return new Promise((resolve) => window.addEventListener('online', () => resolve(), { once: true }))
+}
+
 /**
  * {@link fetchAndCompile}, retried after a transient failure: a reset connection or a stream
  * that errors mid-body ("Failed to read from a ReadableStream", a QUIC reset on a cold profile)
  * usually succeeds at once on a second try. An HTTP 4xx is not transient and is not retried.
+ * A failure while the browser is offline waits for it to come back online and starts again,
+ * without spending a retry: the download view says so meanwhile, rather than the connect failing.
  */
 export async function fetchAndCompileWithRetry(
   url: string | URL,
@@ -111,15 +123,27 @@ export async function fetchAndCompileWithRetry(
   options: FetchWasmOptions & { readonly retryMs?: readonly number[] } = {},
 ): Promise<WebAssembly.Module> {
   const waits = options.retryMs ?? DOWNLOAD_RETRY_MS
+  let last: DownloadProgress = { loaded: 0, total }
+  const report = (p: DownloadProgress): void => {
+    last = p
+    onProgress?.(p)
+  }
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fetchAndCompile(url, total, onProgress, options)
+      return await fetchAndCompile(url, total, report, options)
     } catch (e) {
       // Not worth another download: a client error (except timeout / too many requests), or a
       // body that is not wasm (a stale deploy serving HTML), which fails the same way again.
       const permanent =
         (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.CompileError) ||
         (e instanceof Error && /HTTP 4(?!08|29)\d\d/.test(e.message))
+      if (!permanent && isOffline()) {
+        // Keeps the bar where it stopped (the service shows it with the offline note).
+        onProgress?.(last)
+        await (options.whenOnline ?? browserOnline)()
+        attempt--
+        continue
+      }
       const wait = waits[attempt]
       if (permanent || wait === undefined) throw e
       await new Promise((r) => setTimeout(r, wait))
@@ -148,7 +172,11 @@ export function compileWasm(): Promise<WebAssembly.Module> {
     // webpack emits the file as a hashed static asset and rewrites this to its URL (a
     // `new URL` specifier is a URL, so the path is relative, not a package name).
     const url = new URL('../../node_modules/@dashevo/wasm-sdk/dist/raw/wasm_sdk_bg.wasm', import.meta.url)
-    const run = fetchAndCompileWithRetry(url, WASM_BYTES, (p) => listeners.forEach((l) => l(p)))
+    // Every failure names the download, so the connect's failure copy says what did not arrive.
+    const run = fetchAndCompileWithRetry(url, WASM_BYTES, (p) => listeners.forEach((l) => l(p))).catch((e: unknown) => {
+      if (isDownloadFailure(e)) throw e
+      throw new Error(`the Platform SDK download failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
+    })
     compiled = run
     run.catch(() => {
       if (compiled === run) compiled = null

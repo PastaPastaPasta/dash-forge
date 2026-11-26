@@ -4,7 +4,9 @@
  * The Platform connection's loading and unreachable states (D-025, D-058).
  *
  *   - {@link DownloadProgressBar}: while the SDK's WebAssembly downloads (seconds on a fast link,
- *     minutes on a slow one) a progress bar with bytes (the repo loading view shows it).
+ *     minutes on a slow one) a progress bar with bytes (the repo loading view shows it). Offline,
+ *     or with nothing arriving for {@link STALL_HINT_MS}, it says so; the download starts again
+ *     by itself (`lib/sdk/wasm-fetch.ts`).
  *   - {@link UnreachableBanner}: the connect failed. Plain words, the next automatic retry,
  *     a "Try again" that really reconnects, and the underlying error behind a disclosure.
  *     With `cached`, it heads cached content rather than replacing the page.
@@ -16,6 +18,7 @@ import { AlertTriangle, RotateCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import type { SdkStatus } from '@/lib/sdk'
+import { useOffline } from '@/components/ui/states'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { DEFAULT_NETWORK } from '@/lib/constants'
 import { connectFailureCopy } from '@/lib/view/platform-failure'
@@ -44,9 +47,30 @@ export function ProgressBar({ label, pct, valueText }: { label: string; pct: num
   )
 }
 
+/** No new bytes for this long: the download view says it has stalled. */
+export const STALL_HINT_MS = 15_000
+
+/** Whether `loaded` has stayed the same for {@link STALL_HINT_MS}. */
+function useStalled(loaded: number): boolean {
+  const [stalled, setStalled] = useState(false)
+  useEffect(() => {
+    setStalled(false)
+    const id = setTimeout(() => setStalled(true), STALL_HINT_MS)
+    return () => clearTimeout(id)
+  }, [loaded])
+  return stalled
+}
+
 /** Bytes of the SDK download, with a determinate bar when the size is known. */
 export function DownloadProgressBar({ status }: { status: Extract<SdkStatus, { phase: 'downloading' }> }): JSX.Element {
   const { loaded, total } = status.progress
+  const offline = useOffline()
+  const stalled = useStalled(loaded)
+  const note = offline
+    ? "You're offline. The download starts again when you're back."
+    : stalled
+      ? 'The download has stalled. Check your connection; it starts again by itself.'
+      : null
   const pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : null
   const bytes = total > 0 ? `${mb(loaded)} of ${mb(total)}` : mb(loaded)
   return (
@@ -57,7 +81,12 @@ export function DownloadProgressBar({ status }: { status: Extract<SdkStatus, { p
         {bytes}
         {pct !== null ? ` · ${pct}%` : ''}
       </p>
-      <p className="text-dense text-anvil-500 dark:text-anvil-400">Once per browser: it is cached after this.</p>
+      {note === null ? (
+        <p className="text-dense text-anvil-500 dark:text-anvil-400">Once per browser: it is cached after this.</p>
+      ) : null}
+      <p role="status" className="text-dense font-medium text-anvil-800 empty:hidden dark:text-anvil-100" data-testid="sdk-download-note">
+        {note}
+      </p>
     </div>
   )
 }
@@ -94,7 +123,8 @@ export function UnreachableBanner({
 }): JSX.Element {
   const seconds = useCountdown(status.retryAt)
   // Names the part that failed: the quorum key service is not Platform (QW-056).
-  const copy = connectFailureCopy(status.message, { network: DEFAULT_NETWORK, cached })
+  const offline = useOffline()
+  const copy = connectFailureCopy(status.message, { network: DEFAULT_NETWORK, cached, offline })
   const quorumService = isQuorumServiceError(status.message)
   // The sign-in sheet has its own "Try again" for the same connection: one at a time (L-30).
   const sheetOpen = useUiStore((s) => s.loginOpen)
@@ -110,8 +140,8 @@ export function UnreachableBanner({
             <p className="text-prose font-medium text-anvil-900 dark:text-anvil-50">{copy.title}</p>
             <p className="mt-0.5 text-dense text-anvil-700 dark:text-anvil-200">{copy.body}</p>
           </div>
-          <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="platform-retry-countdown">
-            {status.stopped === true ? (
+          <p className="text-dense text-anvil-700 empty:hidden dark:text-anvil-200" data-testid="platform-retry-countdown">
+            {offline ? null : status.stopped === true ? (
               <>
                 It stopped retrying on its own. Check your connection, then choose Try again
                 {quorumService ? (

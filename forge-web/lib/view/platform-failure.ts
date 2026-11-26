@@ -7,7 +7,7 @@
  */
 
 import { QUORUM_KEY_ENDPOINT, type Network } from '../constants'
-import { isProofFailure, isQuorumMiss, isQuorumServiceError } from '../sdk/unreachable'
+import { isDownloadFailure, isProofFailure, isQuorumMiss, isQuorumServiceError } from '../sdk/unreachable'
 import { urlHost } from './format'
 
 export interface FailureCopy {
@@ -22,12 +22,23 @@ function keyHost(network: Network): string {
 
 /**
  * The connect failed (the SDK status is `error`). `cached`: the page still shows what this tab
- * read and checked earlier.
+ * read and checked earlier. `offline`: the browser has no network, which explains any failure
+ * and is the one thing to fix, so no part is blamed.
  */
-export function connectFailureCopy(message: string, { network, cached }: { network: Network; cached: boolean }): FailureCopy {
+export function connectFailureCopy(
+  message: string,
+  { network, cached, offline = false }: { network: Network; cached: boolean; offline?: boolean },
+): FailureCopy {
   const keep = cached
     ? 'Showing what this tab already read and checked. It is not being re-checked until the connection comes back.'
     : 'Nothing can be read or checked until the connection comes back.'
+  if (offline) return { title: "You're offline", body: cached ? keep : 'This page loads as soon as your connection is back.' }
+  if (isDownloadFailure(message)) {
+    return {
+      title: "The Platform verifier didn't download",
+      body: `This page needs it to check what Platform returns. Check your connection. ${keep}`,
+    }
+  }
   if (isQuorumServiceError(message)) {
     return {
       title: "Can't reach the quorum key service right now",

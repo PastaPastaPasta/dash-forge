@@ -42,6 +42,22 @@ describe('connectFailureCopy', () => {
   })
 })
 
+describe('connectFailureCopy: offline and a failed verifier download', () => {
+  it('offline blames no part, whatever the error', () => {
+    const c = connectFailureCopy(PREFETCH, { network: 'testnet', cached: false, offline: true })
+    expect(c.title).toBe("You're offline")
+    expect(c.body).toBe('This page loads as soon as your connection is back.')
+    expect(connectFailureCopy(PREFETCH, { network: 'testnet', cached: true, offline: true }).body).toMatch(/not being re-checked/)
+  })
+
+  it('names the verifier download, not Platform, when the wasm did not arrive', () => {
+    const c = connectFailureCopy('the Platform SDK download stalled (nothing received for 60 s)', { network: 'testnet', cached: false })
+    expect(c.title).toBe("The Platform verifier didn't download")
+    expect(c.body).toMatch(/Check your connection/)
+    expect(c.title).not.toMatch(/Can't reach/)
+  })
+})
+
 describe('unreachableReadCopy', () => {
   it('a quorum the app has no key for yet is the key service lagging, not Platform down (#212)', () => {
     const c = unreachableReadCopy(QUORUM_GONE, { network: 'testnet', offline: false })

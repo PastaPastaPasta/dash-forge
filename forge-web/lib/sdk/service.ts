@@ -44,6 +44,7 @@ import { noteClockOk, noteClockSkew } from './clock-skew'
 
 import { dapiReadAddresses, NETWORKS, quorumEndpoint, type Network } from '../constants'
 import { forgeContractIds } from '../deployments'
+import { isOffline } from '../online'
 import { userQuorumUrl } from '../quorum-url'
 import { installQuorumFetch } from './quorum-fetch'
 import { dapiBudget, installDapiFetchGate } from './budget'
@@ -337,8 +338,9 @@ export class EvoSdkService {
       })
     }
     if (typeof window !== 'undefined') {
+      // Back online is the likeliest moment for a connect to work: try now, not at the countdown.
       window.addEventListener('online', () => {
-        if (this.status.phase === 'error' && this.retryTimer === null) this.retryOnceMore()
+        if (this.status.phase === 'error') this.retryConnect()
       })
     }
   }
@@ -577,8 +579,9 @@ export class EvoSdkService {
       this.setStatus({ ...this.status, retryAt: null, stopped: true })
       return
     }
+    // Offline, a timer would only fail again: the online listener retries when the network is back.
     // A hidden tab waits: the visibilitychange listener schedules the retry when it is shown.
-    if (!visible()) {
+    if (isOffline() || !visible()) {
       this.setStatus({ ...this.status, retryAt: null })
       return
     }
