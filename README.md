@@ -8,7 +8,7 @@
 |---|---|
 | **Mainnet** | Live since 2026-11-24 at **[forge.dashhq.org](https://forge.dashhq.org)**. Real DASH. |
 | **Testnet** | Live at **[testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)**. Free test DASH; the network can be reset. |
-| **Binaries** | The latest release, [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0) (2026-11-22), predates mainnet and works on **testnet only**. There is no mainnet release yet: to use mainnet from the terminal, build from source (below). |
+| **Binaries** | The latest release, [v0.3.1](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.1) (2026-11-26), works on **mainnet** and **testnet**. Testnet stays its default network ([release notes](docs/releases/v0.3.1.md)). |
 
 [Networks](docs/networks.md) has contract ids and history.
 
@@ -41,7 +41,7 @@ dg init                                    # creates the repository, adds `origi
 Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push`. Every push prints its cost first ([costs](docs/guides/costs.md)).
 
 - **Network:** `--network mainnet` on the first sign-in makes mainnet your default for `dg` and `git`. Without it the tools use testnet (free test DASH; DashPay's testnet build).
-- **v0.2.0 binaries:** `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh` installs them ([INSTALL.md](docs/INSTALL.md)). They work on testnet only and have no `--wallet`, so sign in with an identity file there.
+- **Prebuilt binaries:** `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh` installs the latest release's checksum-verified binaries ([v0.3.1](docs/releases/v0.3.1.md)) into `~/.local/bin`; Windows, manual downloads, checksums and attestations are in [INSTALL.md](docs/INSTALL.md).
 
 <details>
 <summary>Other ways to sign in (CI, scripts, developers)</summary>

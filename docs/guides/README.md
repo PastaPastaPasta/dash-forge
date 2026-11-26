@@ -53,6 +53,6 @@ Wallet sign-in works on mainnet with DashPay for Android 11.9.2+ or Dash Wallet 
 
 ## Which network
 
-The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. The v0.2.0 binaries work on testnet only and have no `--wallet`; there is no mainnet release yet, so for mainnet or wallet sign-in, [build from source](../INSTALL.md#build-from-source). [Networks](../networks.md) has the details.
+The guides use **testnet**, the tools' default, where DASH is free test money and the network can be reset; its web app is [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org). Forge is also live on **mainnet** at [forge.dashhq.org](https://forge.dashhq.org): pass `--network mainnet` to `dg auth new` or `dg auth login` to make it your default. The latest release, v0.3.1, works on both. v0.3.0 works on mainnet, but much of it fails on testnet since testnet moved to protocol 15 ([v0.3.1 notes](../releases/v0.3.1.md)); v0.2.0 works on testnet only. [Networks](../networks.md) has the details.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

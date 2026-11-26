@@ -1,9 +1,8 @@
 # Building Dash Forge
 
-On testnet you do not have to build Dash Forge: the latest release ships prebuilt binaries for
-Linux and macOS ([INSTALL.md](INSTALL.md)). That release, v0.2.0, predates Forge's mainnet
-registration, so **on mainnet, build `dg` and `git-remote-dash` from source** as
-[INSTALL.md](INSTALL.md#build-from-source) shows. The rest of this page is for contributors.
+You do not have to build Dash Forge to use it: the latest release, v0.3.1, ships prebuilt
+binaries for Linux and macOS that work on mainnet and testnet ([INSTALL.md](INSTALL.md)). The
+rest of this page is for contributors.
 
 A fresh clone builds with no out-of-tree setup:
 
@@ -139,7 +138,7 @@ The patch stays active until you remove it. Confirm which source is in use with
 ### Protocol versions
 
 The pinned SDK (`v5.1.0` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.1.0` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
-protocols 14 and 15. Mainnet runs protocol 14 and testnet protocol 15 (since 2026-11-26). Neither client pins
+protocols 14 and 15. Mainnet runs protocol 14 and testnet protocol 15 (since 2026-11-25 19:41:30Z, block 740732). Neither client pins
 a version. The SDK starts at protocol 14 on every network and raises it from the metadata of the
 first **proof-verified** response. So
 `Sdk::version()` / `sdk.version()` gives the network's version only after a proved query
