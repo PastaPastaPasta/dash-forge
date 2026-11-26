@@ -2,9 +2,9 @@ Rust crates in the Dash Platform SDK WebAssembly module
 ========================================================
 
 wasm_sdk_bg.wasm (npm package @dashevo/wasm-sdk) is the wasm-sdk crate of
-github.com/dashpay/platform, tag v5.1.0-rc.2, compiled to WebAssembly together with the Rust
+github.com/dashpay/platform, tag v5.1.0, compiled to WebAssembly together with the Rust
 crates below, grouped by license, each with the license text as the crate ships it.
-Platform tag: v5.1.0-rc.2
+Platform tag: v5.1.0
 
 Overview of licenses:
   * MIT License (MIT): 322 crates
@@ -1484,7 +1484,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * drive 5.1.0-rc.2
+  * drive 5.1.0
 
 // MIT LICENSE
 //
@@ -1591,7 +1591,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * drive 5.1.0-rc.2
+  * drive 5.1.0
 
 // MIT LICENSE
 //
@@ -5208,7 +5208,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dashpay-contract 5.1.0-rc.2
+  * dashpay-contract 5.1.0
 
 MIT License
 
@@ -5526,7 +5526,7 @@ MIT License (MIT)
 Used by:
   * dash-params 0.0.0 (https://github.com/dashpay/base-sdk)
   * grovedb-private-document-store 7.0.0 (https://github.com/dashpay/grovedb)
-  * dash-core-proof 5.1.0-rc.2
+  * dash-core-proof 5.1.0
   * ambassador 0.5.1 (https://github.com/hobofan/ambassador)
   * delegate 0.13.5 (https://github.com/kobzol/rust-delegate)
   * ed-derive 0.2.3
@@ -6181,7 +6181,7 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dapi-grpc 5.1.0-rc.2
+  * dapi-grpc 5.1.0
 
 The MIT License (MIT)
 
@@ -6211,26 +6211,26 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * dash-platform-queries 5.1.0-rc.2
-  * data-contracts 5.1.0-rc.2
-  * dash-context-provider 5.1.0-rc.2
-  * rs-dapi-client 5.1.0-rc.2
-  * dash-async 5.1.0-rc.2
-  * dash-platform-macros 5.1.0-rc.2
-  * dpp 5.1.0-rc.2
-  * dpp-json-convertible-derive 5.1.0-rc.2
-  * drive-proof-verifier 5.1.0-rc.2
-  * json-schema-compatibility-validator 5.1.0-rc.2
-  * platform-encryption 5.1.0-rc.2
-  * platform-serialization 5.1.0-rc.2
-  * platform-serialization-derive 5.1.0-rc.2
-  * platform-value 5.1.0-rc.2
-  * platform-version 5.1.0-rc.2
-  * platform-versioning 5.1.0-rc.2
-  * dash-sdk 5.1.0-rc.2
-  * rs-sdk-trusted-context-provider 5.1.0-rc.2
-  * wasm-dpp2 5.1.0-rc.2
-  * wasm-sdk 5.1.0-rc.2
+  * dash-platform-queries 5.1.0
+  * data-contracts 5.1.0
+  * dash-context-provider 5.1.0
+  * rs-dapi-client 5.1.0
+  * dash-async 5.1.0
+  * dash-platform-macros 5.1.0
+  * dpp 5.1.0
+  * dpp-json-convertible-derive 5.1.0
+  * drive-proof-verifier 5.1.0
+  * json-schema-compatibility-validator 5.1.0
+  * platform-encryption 5.1.0
+  * platform-serialization 5.1.0
+  * platform-serialization-derive 5.1.0
+  * platform-value 5.1.0
+  * platform-version 5.1.0
+  * platform-versioning 5.1.0
+  * dash-sdk 5.1.0
+  * rs-sdk-trusted-context-provider 5.1.0
+  * wasm-dpp2 5.1.0
+  * wasm-sdk 5.1.0
 
 The MIT License (MIT)
 
@@ -6260,17 +6260,17 @@ MIT License (MIT)
 --------------------------------------------------------------------------------
 
 Used by:
-  * app-connect-contract 5.1.0-rc.2
-  * decision-proposals-contract 5.1.0-rc.2
-  * document-history-contract 5.1.0-rc.2
-  * dpns-contract 5.1.0-rc.2
-  * keyword-search-contract 5.1.0-rc.2
-  * masternode-reward-shares-contract 5.1.0-rc.2
-  * moderation-charters-contract 5.1.0-rc.2
-  * token-history-contract 5.1.0-rc.2
-  * token-market-contract 5.1.0-rc.2
-  * wallet-utils-contract 5.1.0-rc.2
-  * withdrawals-contract 5.1.0-rc.2
+  * app-connect-contract 5.1.0
+  * decision-proposals-contract 5.1.0
+  * document-history-contract 5.1.0
+  * dpns-contract 5.1.0
+  * keyword-search-contract 5.1.0
+  * masternode-reward-shares-contract 5.1.0
+  * moderation-charters-contract 5.1.0
+  * token-history-contract 5.1.0
+  * token-market-contract 5.1.0
+  * wallet-utils-contract 5.1.0
+  * withdrawals-contract 5.1.0
 
 The MIT License (MIT)
 
