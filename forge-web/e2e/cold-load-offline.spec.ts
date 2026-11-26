@@ -40,9 +40,9 @@ test.describe('cold load on a bad link', () => {
     // Set once, read after the connection is back: the recovery must not reload the page.
     await page.evaluate(() => ((window as unknown as { coldLoadMarker: number }).coldLoadMarker = 1))
 
-    // The download view says so at once; once its quick retries fail, the banner does, with no
-    // countdown and nothing blamed.
-    await expect(page.getByTestId('sdk-download-note').getByText("You're offline")).toBeVisible({ timeout: 30_000 })
+    // Once the download's quick retries fail, the banner says so, with no countdown and nothing
+    // blamed. (The download view's own offline line can be gone before it paints: the unit tests
+    // and cl-2 cover that view.)
     await expect(page.getByTestId('platform-unreachable').getByText("You're offline")).toBeVisible({ timeout: 30_000 })
     await expect(page.getByText(/Can't reach|quorum key service/)).toHaveCount(0)
     // No countdown that would fire into a dead network.
