@@ -1789,7 +1789,8 @@ async function deleteDocumentUnlocked(
     // proof itself (platform#5136). The SDK rebroadcasts on its own retries: "nonce already
     // present" may be this delete having landed, so the gone-poll below decides it, never as a
     // refusal.
-    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+    // An outcome the SDK could not confirm wraps its last error: the poll below decides it.
+    const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
     if (refusal !== null) {
       if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
       throw refusal
@@ -1995,7 +1996,8 @@ async function replaceDocumentUnlocked(
   } catch (e) {
     // A nonce refusal of the SDK's own rebroadcast may be this replace having landed: the
     // read-back below decides it.
-    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+    // An outcome the SDK could not confirm wraps its last error: the poll below decides it.
+    const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
     // A revision refusal on a retry: an earlier attempt of this edit may have landed (its answer
     // lost), leaving the stored revision already at `next`. Re-read; if the content matches, the
     // edit is done.

@@ -674,6 +674,27 @@ describe('replace and delete refusals carry the charge the SDK says (wasm-sdk 4.
     }
   })
 
+  it('a delete the 5.1 SDK reports as unconfirmed is settled by the gone-poll, not thrown as the refusal it wraps', async () => {
+    const spends: SpendEvent[] = []
+    let deleted = false
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      // There until the delete is sent; gone once it landed.
+      exists: async () => (deleted ? null : {}),
+      del: async () => {
+        deleted = true
+        throw new Error(
+          `state transition outcome is unconfirmed: a node accepted it or may have received it; reconcile the original operation before submitting a replacement; last error: ${GATE_TEXT}`,
+        )
+      },
+    }
+    await deleteDocumentIdempotent(sdkOf(script, []), auth(spends), { contractId: 'P3', documentType: 'writer', documentId: 'X', confirmTimeoutMs: 0 })
+    await reported()
+    expect(spends.map((s) => s.kind)).not.toContain('refused:writer')
+  })
+
   it('a refusal of another kind has an unknown charge, and says nothing was charged only when known', async () => {
     const script: Script = {
       platformNonce: 1n,
