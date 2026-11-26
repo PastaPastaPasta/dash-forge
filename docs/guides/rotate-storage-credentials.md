@@ -2,10 +2,10 @@
 
 Rotate a storage credential when someone may have seen it:
 
-- **A maintainer you shared a repository's storage with** (testnet only). When you share a repository's storage with its maintainers (`dg storage share <owner/repo> <profile>`, or the repo's **Settings → Storage**; see [Collaborating](collaborating.md#storage-for-maintainers-testnet)), each maintainer's client decrypts the storage profiles you set for that repository, credentials included, so their pushes can write packs to your bucket or IPFS node. Removing a maintainer stops them reading anything shared **after** the removal: Forge moves the share to a new key and deletes their grant. It cannot take back what they already decrypted.
-- **Your settings-sync key** (testnet only), if a site may have tricked you into approving a wallet code: whoever holds it can read every storage credential synced with your identity ([Identity and keys](identity-and-keys.md#settings-that-follow-your-identity-testnet)).
+- **A maintainer you shared a repository's storage with**. When you share a repository's storage with its maintainers (`dg storage share <owner/repo> <profile>`, or the repo's **Settings → Storage**; see [Collaborating](collaborating.md#storage-for-maintainers)), each maintainer's client decrypts the storage profiles you set for that repository, credentials included, so their pushes can write packs to your bucket or IPFS node. Removing a maintainer stops them reading anything shared **after** the removal: Forge moves the share to a new key and deletes their grant. It cannot take back what they already decrypted.
+- **Your settings-sync key**, if a site may have tricked you into approving a wallet code: whoever holds it can read every storage credential synced with your identity ([Identity and keys](identity-and-keys.md#settings-that-follow-your-identity)).
 
-Sharing and settings sync use the forge-user contract, which is registered on testnet only. On mainnet, Forge neither shares nor syncs storage credentials.
+Sharing and settings sync use the forge-user contract, which is registered on testnet and mainnet.
 
 Rotating takes four steps, in this order, so nobody is left holding a key that no longer works:
 

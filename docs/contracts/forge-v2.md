@@ -18,11 +18,11 @@ The ids below are copied from the deployment records, `forge-contracts/deploymen
 | forge-collab | `7zfipc1sq39fr49L5nrkFoxaJVfYpw3NUjsNkbQe6rp4` | `C5b3Hys3Zb28dfrhDzn3tNdQDNCPU2ZJYgksdgDJe7ve` |
 | forge-community | `83qUBePxmhKgajCUC8Z6hrEXRytVSsTjPgrZ2Uuxdbyv` | `4heUXTZDrbDsy3tqVYJJP2wLCNkqUXRZzF9VQNaRq28o` |
 | forge-meta | `9M8qFSM4vSsnRArtEzeFkTJb5dHso3qxfVWUGkwHguQp` (version 1, with `vaultEntry`, `board` and `card` from the start) | `6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93` (version 3: UPDATE-2 and UPDATE-3 in place) |
-| forge-user | not registered | `46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU` (2026-11-25) |
+| forge-user | `hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK` (2026-11-26) | `46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU` (2026-11-25) |
 | contract group | `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ` | `EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC` |
 | deployer | `CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y` | `3pjHaytsQJg5aKZj3VeqwBPccN7uN3bCJiUNkT8KUBwM` |
 
-Both networks now run the same four files, `forge-contracts/contracts/mainnet/`: mainnet registered them as they are, and testnet reached forge-meta's current bytes through two updates. forge-user (`forge-contracts/contracts/user/forge-user.json`, settings that follow a person's identity: [design](../design/identity-synced-state.md)) is a fifth contract in the same group, on testnet only; on mainnet those settings stay on the device until it is registered there. The evidence for each registration is in `forge-contracts/evidence/<network>/`. Devnets bonsia, moutai and sakura, where RC1 and RC2 were registered first, are retired.
+Both networks now run the same four files, `forge-contracts/contracts/mainnet/`: mainnet registered them as they are, and testnet reached forge-meta's current bytes through two updates. forge-user (`forge-contracts/contracts/user/forge-user.json`, settings that follow a person's identity: [design](../design/identity-synced-state.md)) is a fifth contract in the same group on both networks. The evidence for each registration is in `forge-contracts/evidence/<network>/`. Devnets bonsia, moutai and sakura, where RC1 and RC2 were registered first, are retired.
 
 ## 1. Why shared contracts
 

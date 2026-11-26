@@ -47,7 +47,7 @@ export interface DeploymentFile {
   /**
    * forge-user (docs/design/identity-synced-state.md): settings that follow the identity. A member
    * of the forge group, registered by `forge-contracts/scripts/deploy-user.mjs`; absent where it is
-   * not registered (mainnet until the owner registers it), and then nothing syncs.
+   * not registered (a devnet without it), and then nothing syncs.
    */
   readonly user?: { readonly contractId?: string | null; readonly ownerId?: string | null; readonly contractGroupId?: string | null }
   /** The forge-v2 record `forge-contracts/scripts/deploy-v2.mjs` read-modify-writes. */

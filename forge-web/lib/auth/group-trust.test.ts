@@ -44,10 +44,10 @@ describe('group trust: members', () => {
     expect(checkMembers(TRUST, members(['CORE', 'COLLAB', 'USER']), new Map([['USER', DEPLOYER]])).unknown).toEqual(['USER'])
   })
 
-  it('reads forge-user from the testnet deployment into the trust root', () => {
+  it('reads forge-user from the testnet and mainnet deployments into the trust root', () => {
     const t = groupTrust(DEPLOYMENTS.testnet)!
     expect(t.user).toBe('46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU')
-    expect(groupTrust(DEPLOYMENTS.mainnet)?.user).toBeUndefined()
+    expect(groupTrust(DEPLOYMENTS.mainnet)?.user).toBe('hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK')
   })
 
   it('accepts an unknown member owned by the deployer, with a notice naming it', () => {
