@@ -73,8 +73,8 @@ const platformText = (v) => `https://github.com/dashpay/platform/blob/v${v}/LICE
  *     points at facebook/react, whose LICENSE (tag v18.3.1) is reproduced.
  */
 export const CLARIFIED = {
-  '@dashevo/evo-sdk': { license: 'MIT', versions: /^5\.0\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', checksum: 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3', source: platformText },
-  '@dashevo/wasm-sdk': { license: 'MIT', versions: /^5\.0\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', checksum: 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3', source: platformText },
+  '@dashevo/evo-sdk': { license: 'MIT', versions: /^5\.1\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', checksum: 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3', source: platformText },
+  '@dashevo/wasm-sdk': { license: 'MIT', versions: /^5\.1\.0(?:-|$)/, textFile: 'dash-platform-LICENSE.md', checksum: 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3', source: platformText },
   '@next/env': { license: 'MIT', versions: /^14\.2\./, textFile: 'next-LICENSE.md', checksum: 'e4f76a7a19ef2989dd79339bd3abf8afcf1d6f065e5a10c76c19415ffd727eb3', source: () => 'https://github.com/vercel/next.js/blob/v14.2.25/license.md' },
   '@swc/counter': { license: 'Apache-2.0', versions: /^0\.1\./, textFile: 'swc-counter-LICENSE.txt', checksum: 'd96eba1f1881334d50ffc144276dfa98e147a415e7c591ecdfcb81680361dc91', source: () => 'https://github.com/swc-project/pkgs/blob/main/packages/counter/LICENSE.txt' },
   'client-only': { license: 'MIT', versions: /^0\.0\./, textFile: 'react-LICENSE', checksum: '52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85', source: () => 'https://github.com/facebook/react/blob/v18.3.1/LICENSE' },

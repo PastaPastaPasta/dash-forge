@@ -25,7 +25,7 @@ import { base58Encode } from '../auth/base58'
 import type { PlainDocument } from '../sdk'
 import type { RepoRef } from './contract'
 import { readPull } from './issues'
-import { bundleCovers, invalidateRepoBundles, withBundles } from './made-public'
+import { bundleCovers, invalidateRepoBundles, readDocumentHistory, withBundles } from './made-public'
 import { AUDIENCE_FIELD, EDITED_AFTER_PUBLIC, MADE_PUBLIC_BY, REAL_HEAD, type Admission, type ContentGate } from './private-content'
 
 const VECTORS = join(__dirname, '..', '..', '..', 'forge-contracts', 'vectors')
@@ -286,5 +286,52 @@ describe('a maintainer’s bundle of a pull request’s own text', () => {
     delete shown['baseRefName']
     const pull = await readPull(sdk, repo, shown, { events: [], authorEvents: [] }, async () => [], async (h) => (asked.push(h), []), { transitions: [] })
     expect([pull.mergeBaseRefName, asked]).toEqual(['', []])
+  })
+})
+
+describe('readDocumentHistory', () => {
+  const repo: RepoRef = { forge: FORGE, repoId: 'R', ownerId: 'O', name: 'r', visibility: 'public' }
+  const entry = (revision: number, timeMs: number) => ({
+    revision: BigInt(revision),
+    timeMs: BigInt(timeMs),
+    document: { $id: 'D', $revision: revision, $updatedAt: timeMs },
+  })
+
+  type Query = { startAtMs?: number | bigint; startAfter?: { timeMs: bigint; revision: bigint }; limit: number }
+  // Drive's history: on protocol 14 (method version 0, one revision per time) `startAtMs` is
+  // exclusive; on protocol 15 (method version 1) it is inclusive and `startAfter` takes the
+  // (time, revision) cursor. `network` is the protocol the network runs, `version` what the SDK
+  // has learned (it can still say 14 on a protocol-15 network).
+  const sdkOver = (stored: ReturnType<typeof entry>[], version: number, network = version) => {
+    const after = (e: ReturnType<typeof entry>, c: { timeMs: bigint; revision: bigint }): boolean =>
+      e.timeMs > c.timeMs || (e.timeMs === c.timeMs && e.revision > c.revision)
+    const history = vi.fn(async (q: Query) => ({
+      entries: stored
+        .filter((e) =>
+          q.startAfter ? after(e, q.startAfter) : network < 15 ? e.timeMs > BigInt(q.startAtMs ?? 0) : e.timeMs >= BigInt(q.startAtMs ?? 0),
+        )
+        .slice(0, q.limit),
+    }))
+    return { history, sdk: { version: () => version, documents: { history } } as unknown as EvoSDK }
+  }
+  const revisions = (n: number) => Array.from({ length: n }, (_, i) => i + 1)
+
+  it('pages after the last revision time on protocol 14', async () => {
+    const { history, sdk } = sdkOver(Array.from({ length: 25 }, (_, i) => entry(i + 1, 1000 + i)), 14)
+    const docs = await readDocumentHistory(sdk, repo, 'issue', 'D')
+    expect(docs.map((d) => d['$revision'])).toEqual(revisions(25))
+    expect(history.mock.calls.map(([q]) => Number(q.startAtMs))).toEqual([0, 1009, 1019])
+  })
+
+  it('reads revisions sharing a time on a protocol-15 network the SDK still reports as 14, when a page still adds one', async () => {
+    const { sdk } = sdkOver(Array.from({ length: 13 }, (_, i) => entry(i + 1, i < 10 ? 1000 + i : 1009)), 14, 15)
+    expect((await readDocumentHistory(sdk, repo, 'issue', 'D')).map((d) => d['$revision'])).toEqual(revisions(13))
+  })
+
+  it('continues after the last revision read on protocol 15, whatever the times', async () => {
+    const { history, sdk } = sdkOver(Array.from({ length: 23 }, (_, i) => entry(i + 1, 1000)), 15)
+    const docs = await readDocumentHistory(sdk, repo, 'issue', 'D')
+    expect(docs.map((d) => d['$revision'])).toEqual(revisions(23))
+    expect(history.mock.calls.map(([q]) => q.startAfter?.revision)).toEqual([undefined, 10n, 20n])
   })
 })

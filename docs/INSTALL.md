@@ -200,8 +200,8 @@ This works from any commit and needs no release. You need:
   pinned by `rust-toolchain.toml`);
 - `protoc` 25 or newer. Distribution packages are often older (Ubuntu's is 3.21 and fails), so
   install a release from GitHub as [BUILDING.md](BUILDING.md#prerequisites) shows;
-- on Linux, a C compiler, `pkg-config` and the OpenSSL headers. On Debian or Ubuntu:
-  `sudo apt-get install build-essential pkg-config libssl-dev`, plus `curl unzip git ca-certificates`
+- on Linux, a C compiler, `clang`, `pkg-config` and the OpenSSL headers. On Debian or Ubuntu:
+  `sudo apt-get install build-essential clang pkg-config libssl-dev`, plus `curl unzip git ca-certificates`
   on a minimal system.
 
 ```sh
