@@ -1,6 +1,6 @@
 # Settings that follow the identity (storage, preferences, maintainer access)
 
-Status: built. Settings sync shipped in [#729](https://github.com/PastaPastaPasta/dash-forge/pull/729), and repo-only maintainer sharing in [#740](https://github.com/PastaPastaPasta/dash-forge/pull/740). testnet-forge.dashhq.org runs both; `dg` has them when built from source (no release includes them yet). forge-user is registered on testnet only; mainnet is the owner's decision (§9). Designed 2026-11-25. Request from the owner (via Forge PM): "if I set up storage in cli via dash wallet login, any other dash wallet login should share that storage automatically, whether in another wallet or computer. Being a maintainer should let someone else see the storage / use the storage (r2 / ipfs, not platform spend)."
+Status: built. Settings sync shipped in [#729](https://github.com/PastaPastaPasta/dash-forge/pull/729), and repo-only maintainer sharing in [#740](https://github.com/PastaPastaPasta/dash-forge/pull/740). testnet-forge.dashhq.org runs both; `dg` has them from v0.3.0 (testnet only). forge-user is registered on testnet only; mainnet is the owner's decision (§9). Designed 2026-11-25. Request from the owner (via Forge PM): "if I set up storage in cli via dash wallet login, any other dash wallet login should share that storage automatically, whether in another wallet or computer. Being a maintainer should let someone else see the storage / use the storage (r2 / ipfs, not platform spend)."
 
 ## 1. Where things live today
 

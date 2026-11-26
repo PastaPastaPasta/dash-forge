@@ -386,7 +386,7 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
           </p>
         </div>
         <div>
-          <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS, testnet only)</h3>
+          <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS)</h3>
           <div className="mb-1.5 flex">
             <CommandBox text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" what="install command" />
           </div>
