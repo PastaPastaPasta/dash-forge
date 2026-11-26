@@ -365,6 +365,8 @@ What the vault does **not** protect against:
 
 A wallet sign-in can carry your settings to every device where you sign in with a wallet restored from the same recovery phrase. On a device that has never had a wallet sign-in, settings stay on the device that made them, as before.
 
+On mainnet the web app syncs from 2026-11-26. `dg` syncs on mainnet from the first release after v0.3.1: v0.3.1 and earlier don't know mainnet's forge-user and keep mainnet settings on each computer. On testnet, `dg` syncs from v0.3.0 (use v0.3.1; v0.3.0 fails on testnet's protocol 15).
+
 **How it turns on.** When Forge's forge-user contract is on the network (testnet and mainnet), **Use my Dash wallet** and `dg auth login --wallet` ask the wallet for one more key: an encryption key bound to forge-user. Every wallet restored from your recovery phrase derives the same one. Forge encrypts your settings under it and stores them as documents of your identity on Platform, which only your identity can write. A passkey, an identity file, the recovery phrase or a pasted key doesn't bring that key: settings sync only on a device where you have signed in with your wallet. Each sync is a Platform write paid from your key's budget. If your wallet rejects the code or doesn't answer it, the web app asks once more without the extra key and signs you in without sync; with `dg`, run `dg auth login --wallet --no-sync`.
 
 **What follows you.**

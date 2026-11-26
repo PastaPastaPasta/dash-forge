@@ -106,7 +106,7 @@ A member is a `writer` or `maintainer` document in Forge's shared forge-core con
 
 ### Storage for maintainers
 
-Every member pushes to their own storage: `dash.storage` in `dg` and git, **Settings → Storage** in the web app ([Bring your own storage](bring-your-own-storage.md)). An owner can also share storage set for one repository with its maintainers. It needs a [wallet sign-in](identity-and-keys.md#settings-that-follow-your-identity) on both sides, because it uses the forge-user contract.
+Every member pushes to their own storage: `dash.storage` in `dg` and git, **Settings → Storage** in the web app ([Bring your own storage](bring-your-own-storage.md)). An owner can also share storage set for one repository with its maintainers. It needs a [wallet sign-in](identity-and-keys.md#settings-that-follow-your-identity) on both sides, because it uses the forge-user contract. On mainnet the web app shares from 2026-11-26, and `dg` from the first release after v0.3.1.
 
 - **Share it:** `dg storage share <owner>/<repo> <profile>[,<profile>…] [--copies N]`, or **Use separate storage for this repo to share it with maintainers** in the repo's **Settings → Storage**. Only storage set for that repository is shared, never your default storage. It is also where your own pushes to that repository go, unless your git config sets `dash.storage`.
 - **Stop:** `dg storage share <owner>/<repo> --stop`. Maintainers lose access to what you share from then on.
