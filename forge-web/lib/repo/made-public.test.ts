@@ -297,14 +297,33 @@ describe('readDocumentHistory', () => {
     document: { $id: 'D', $revision: revision, $updatedAt: timeMs },
   })
 
-  it('pages from the last revision time, skipping revisions already read', async () => {
-    const stored = Array.from({ length: 13 }, (_, i) => entry(i + 1, i < 10 ? 1000 + i : 1009))
-    const history = vi.fn(async (q: { startAtMs: number | bigint; limit: number }) => ({
-      entries: stored.filter((e) => e.timeMs >= BigInt(q.startAtMs)).slice(0, q.limit),
+  type Query = { startAtMs?: number | bigint; startAfter?: { timeMs: bigint; revision: bigint }; limit: number }
+  const sdkOver = (stored: ReturnType<typeof entry>[], version: number) => {
+    const history = vi.fn(async (q: Query) => ({
+      entries: stored
+        .filter((e) => (q.startAfter ? e.revision > q.startAfter.revision : e.timeMs >= BigInt(q.startAtMs ?? 0)))
+        .slice(0, q.limit),
     }))
-    const sdk = { documents: { history } } as unknown as EvoSDK
+    return { history, sdk: { version: () => version, documents: { history } } as unknown as EvoSDK }
+  }
+  const revisions = (n: number) => Array.from({ length: n }, (_, i) => i + 1)
+
+  it('pages from the last revision time on protocol 14, skipping revisions already read', async () => {
+    const { history, sdk } = sdkOver(Array.from({ length: 25 }, (_, i) => entry(i + 1, 1000 + i)), 14)
     const docs = await readDocumentHistory(sdk, repo, 'issue', 'D')
-    expect(docs.map((d) => d['$revision'])).toEqual(Array.from({ length: 13 }, (_, i) => i + 1))
-    expect(history.mock.calls.map(([q]) => Number(q.startAtMs))).toEqual([0, 1009])
+    expect(docs.map((d) => d['$revision'])).toEqual(revisions(25))
+    expect(history.mock.calls.map(([q]) => Number(q.startAtMs))).toEqual([0, 1009, 1018])
+  })
+
+  it('reads revisions sharing a time on protocol 14 when a page still adds one', async () => {
+    const { sdk } = sdkOver(Array.from({ length: 13 }, (_, i) => entry(i + 1, i < 10 ? 1000 + i : 1009)), 14)
+    expect((await readDocumentHistory(sdk, repo, 'issue', 'D')).map((d) => d['$revision'])).toEqual(revisions(13))
+  })
+
+  it('continues after the last revision read on protocol 15, whatever the times', async () => {
+    const { history, sdk } = sdkOver(Array.from({ length: 23 }, (_, i) => entry(i + 1, 1000)), 15)
+    const docs = await readDocumentHistory(sdk, repo, 'issue', 'D')
+    expect(docs.map((d) => d['$revision'])).toEqual(revisions(23))
+    expect(history.mock.calls.map(([q]) => q.startAfter?.revision)).toEqual([undefined, 10n, 20n])
   })
 })

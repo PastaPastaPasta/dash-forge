@@ -102,8 +102,9 @@ export function revisionOf(doc: PlainDocument): number {
 /**
  * Every stored revision of the `type` document `id` of `repo`, oldest first (Platform's
  * `getDocumentHistory`, proved): only a type that keeps history (an issue, a PR) has more than its
- * current revision. At most {@link MAX_HISTORY}. Each page starts at the time of the last
- * revision read, the one selector protocol 14 serves too, and skips the revisions already read.
+ * current revision. At most {@link MAX_HISTORY}. From protocol 15 each page continues after the
+ * last revision read; protocol 14 serves only `startAtMs`, so there a page starts at the last
+ * revision's time and skips the revisions already read.
  */
 export async function readDocumentHistory(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', id: string): Promise<PlainDocument[]> {
   const out: PlainDocument[] = []
@@ -114,7 +115,7 @@ export async function readDocumentHistory(sdk: EvoSDK, repo: RepoRef, type: 'iss
       documentTypeName: type,
       documentId: id,
       limit: HISTORY_PAGE,
-      startAtMs: cursor?.timeMs ?? 0,
+      ...(cursor === undefined ? { startAtMs: 0 } : sdk.version() >= 15 ? { startAfter: cursor } : { startAtMs: cursor.timeMs }),
     })
     const before = out.length
     for (const entry of entries) {

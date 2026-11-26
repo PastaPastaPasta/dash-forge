@@ -10,7 +10,8 @@ pub const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
 /// `OS2IP(bytes) mod r` for up to 64 bytes.
 pub fn scalar_from_be_wide(bytes: &[u8]) -> Scalar {
-    let mut wide = [0u8; 64];
+    debug_assert!(bytes.len() <= 64);
+    let mut wide = zeroize::Zeroizing::new([0u8; 64]);
     for (dst, src) in wide.iter_mut().zip(bytes.iter().rev()) {
         *dst = *src;
     }

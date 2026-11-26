@@ -308,7 +308,7 @@ impl NewIdentityKeys {
             purpose: super::purpose_name(*p).into(),
             security_level: super::level_name(*l).into(),
             private_key_wif: wif(&d.secret, &self.network),
-            private_key_hex: Secret::new(hex::encode(*d.secret.to_bytes())),
+            private_key_hex: Secret::new(hex::encode(d.secret.to_bytes().as_slice())),
             public_key_hex: hex::encode(d.public.to_bytes()),
             derivation_path: d.path.clone(),
         }
@@ -607,12 +607,11 @@ pub fn build_asset_lock(keys: &NewIdentityKeys, utxos: &[VerifiedUtxo]) -> Resul
             }]),
         )),
     };
-    let signing_key = secp256k1::SecretKey::from_secret_bytes(*secret.to_bytes())
+    let mut signing_key = secp256k1::SecretKey::from_secret_bytes(*secret.to_bytes())
         .map_err(|_| Error::Config("not a valid secp256k1 private key".into()))?;
-    let mut sigs = Vec::with_capacity(tx.input.len());
-    {
-        let cache = SighashCache::new(&tx);
-        for i in 0..tx.input.len() {
+    let cache = SighashCache::new(&tx);
+    let sigs = (0..tx.input.len())
+        .map(|i| {
             let hash = cache
                 .legacy_signature_hash(i, &script, 1)
                 .map_err(|e| Error::Config(format!("sighash: {e}")))?;
@@ -624,14 +623,14 @@ pub fn build_asset_lock(keys: &NewIdentityKeys, utxos: &[VerifiedUtxo]) -> Resul
             der.push(1); // SIGHASH_ALL
             let der = PushBytesBuf::try_from(der)
                 .map_err(|_| Error::Config("signature too long".into()))?;
-            sigs.push(
-                Builder::new()
-                    .push_slice(der)
-                    .push_slice(public.inner.to_compressed())
-                    .into_script(),
-            );
-        }
-    }
+            Ok(Builder::new()
+                .push_slice(der)
+                .push_slice(public.inner.to_compressed())
+                .into_script())
+        })
+        .collect::<Result<Vec<_>>>();
+    signing_key.non_secure_erase();
+    let sigs = sigs?;
     for (inp, sig) in tx.input.iter_mut().zip(sigs) {
         inp.script_sig = sig;
     }

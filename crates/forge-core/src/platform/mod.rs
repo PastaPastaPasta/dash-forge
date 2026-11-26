@@ -1107,9 +1107,9 @@ impl PlatformClient {
     /// Every stored revision of the `document_type` document `document_id` in `contract`, oldest
     /// first (Platform's `getDocumentHistory`, proved): only a type that keeps history
     /// (`documentsKeepHistory`, an issue or a PR) has more than its current revision. At most
-    /// `max` revisions are read, ten per request (Drive's page limit). Each page starts at the
-    /// time of the last revision read, the one filter protocol 14 serves too, and skips the
-    /// revisions already read.
+    /// `max` revisions are read, ten per request (Drive's page limit). From protocol 15 each page
+    /// continues after the last revision read; protocol 14 serves only a start time, so there a
+    /// page starts at the last revision's time and skips the revisions already read.
     pub async fn fetch_document_history(
         &self,
         contract: &LoadedContract,
@@ -1128,7 +1128,13 @@ impl PlatformClient {
                 data_contract_id: contract.0.id(),
                 document_type_name: document_type.to_string(),
                 document_id: doc_id,
-                filter: DocumentHistoryFilter::StartAtTime(cursor.map_or(0, |(time, _)| time)),
+                filter: match cursor {
+                    None => DocumentHistoryFilter::StartAtTime(0),
+                    Some((time_ms, revision)) if self.sdk.protocol_version_number() >= 15 => {
+                        DocumentHistoryFilter::StartAfter { time_ms, revision }
+                    }
+                    Some((time, _)) => DocumentHistoryFilter::StartAtTime(time),
+                },
                 limit: Some(PAGE),
             };
             let page = match retry_transient_read("fetch document history", || {
@@ -1887,8 +1893,9 @@ fn split_sums(entries: Vec<SplitSumEntry>) -> BTreeMap<Vec<u8>, i64> {
     let mut out: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
     for e in entries {
         let slot = out.entry(e.key).or_default();
-        let sum = e.sum.unwrap_or(0).clamp(i64::MIN.into(), i64::MAX.into());
-        *slot = slot.saturating_add(i64::try_from(sum).unwrap_or_default());
+        let sum = e.sum.unwrap_or(0);
+        let sum = i64::try_from(sum).unwrap_or(if sum < 0 { i64::MIN } else { i64::MAX });
+        *slot = slot.saturating_add(sum);
     }
     out
 }
