@@ -19,7 +19,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 |---|---|---|
 | Rust | pinned by `rust-toolchain.toml` (1.98.0) | install [rustup](https://rustup.rs); it installs the pinned toolchain automatically. MSRV floor is 1.98, which the pinned Platform packages (v5.1.0-rc.2) require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
-| C compiler, `pkg-config`, OpenSSL headers | any | on Linux, several dependencies build C code, and `openssl-sys` links the system OpenSSL. On Debian or Ubuntu: `sudo apt-get install build-essential pkg-config libssl-dev` (plus `curl unzip git ca-certificates` for the protoc recipe and the clone) |
+| C compiler, `clang`, `pkg-config`, OpenSSL headers | any | on Linux, several dependencies build C code, and `openssl-sys` links the system OpenSSL. `rs-x11-hash` (Platform's core-proof hashing) runs `clang` by name, whatever the default compiler. On Debian or Ubuntu: `sudo apt-get install build-essential clang pkg-config libssl-dev` (plus `curl unzip git ca-certificates` for the protoc recipe and the clone) |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
 

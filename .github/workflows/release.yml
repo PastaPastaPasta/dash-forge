@@ -299,9 +299,10 @@ jobs:
         shell: sh
         run: |
           # bash for the steps below, tar for actions/cache, protobuf-dev for protoc (29.x,
-          # >= the 25 tenderdash-proto needs), g++/cmake for aws-lc-sys and blst, perl +
-          # linux-headers for the vendored OpenSSL build.
-          apk add --no-cache bash tar git musl-dev protobuf-dev cmake make perl g++ linux-headers file
+          # >= the 25 tenderdash-proto needs), g++/cmake for aws-lc-sys and blst, clang for
+          # rs-x11-hash (its build script asks for clang by name), perl + linux-headers for the
+          # vendored OpenSSL build.
+          apk add --no-cache bash tar git musl-dev protobuf-dev cmake make perl g++ clang linux-headers file
           protoc --version
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
