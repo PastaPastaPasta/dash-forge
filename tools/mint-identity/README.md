@@ -14,7 +14,7 @@ Platform → write a bridge-format identity JSON
 
 It is a Node ≥ 20 ESM tool. The crypto/transaction/proof logic is ported from the
 `mainnet-bridge` browser app (`src/crypto`, `src/transaction`, `src/proof`,
-`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@5.0.0-rc.8` (`package.json`),
+`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@5.1.0-rc.2` (`package.json`),
 which runs natively under Node and talks protocol 14 to testnet and devnets alike.
 It does not mint on mainnet: there, create an identity in a Dash wallet or the bridge.
 
