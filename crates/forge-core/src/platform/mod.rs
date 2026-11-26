@@ -17,8 +17,9 @@
 //!   [`WriteEngine::prepare_delete`], capturing a fixed nonce + entropy into a
 //!   [`SignedTransition`]); [`WriteEngine::execute`] broadcasts those exact bytes and,
 //!   on a retryable failure, RE-broadcasts the *same* bytes. A duplicate landing
-//!   ("already exists") is reported as [`BroadcastOutcome::AlreadyExists`], never a fresh
-//!   write — so a killed-mid-push retry cannot double-spend or duplicate. A consumed nonce is
+//!   ("already exists") is reported as [`BroadcastOutcome::AlreadyExists`] or, when the v5.1
+//!   SDK reports the send as unconfirmed, as [`BroadcastOutcome::Applied`]; never a second
+//!   copy — so a killed-mid-push retry cannot double-spend or duplicate. A consumed nonce is
 //!   [`BroadcastOutcome::NonceConsumed`]: the write landed earlier OR another write took the
 //!   nonce, and the create/delete helpers confirm which with a proved read.
 //!   The SDK's `broadcast_and_wait` works on NATIVE Rust — the `waitForResponse` panic
@@ -3974,6 +3975,12 @@ enum WriteFailure {
     /// The node already holds these exact signed bytes (gRPC `AlreadyExists`: "already in
     /// mempool" or "already in chain"). Not an answer yet: wait for the result.
     TxKnown,
+    /// The SDK's broadcast cannot say whether a node took these bytes
+    /// (`StateTransitionResultUnconfirmed`; from v5.1 it also wraps a node's "already in mempool"
+    /// this way, even on the first send). Settled like [`Self::TxKnown`], and counted as a send
+    /// of this call that may have reached a node: a replayed journal's landing then reads as
+    /// `Applied`, and nothing after it is ever re-signed.
+    Unconfirmed,
     /// The document is already there (an already-present document, or a content-addressed
     /// unique-index duplicate). Idempotent success.
     AlreadyLanded,
@@ -4025,6 +4032,13 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     // answers both, at once for one already in a block.
     if matches!(e, dash_sdk::Error::AlreadyExists(_)) {
         return WriteFailure::TxKnown;
+    }
+    // From v5.1 the SDK's broadcast retries by itself, and when a send of it may have reached a
+    // node (a timeout, or a retry that finds the bytes already held) without its own wait
+    // proving the result, it reports the outcome as unconfirmed. Ours, then, possibly landed:
+    // settled like the above, never by signing a replacement.
+    if e.is_state_transition_result_unconfirmed() {
+        return WriteFailure::Unconfirmed;
     }
 
     // The id was derived at a protocol version the network is not on (a 13 -> 14 upgrade
@@ -4320,16 +4334,19 @@ where
         }
         // A refusal the broadcast returned is CheckTx's (nonce unspent: may be sent again); one
         // the wait returns (after a send or TxKnown) came from block execution: final.
-        let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown));
+        let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown | WriteFailure::Unconfirmed));
         let tried_before = tried;
-        // Only a send that may have reached a node: accepted, or no answer (not one refused
-        // before it left, such as every node banned).
-        tried |= matches!(sent_now, Ok(()) | Err(WriteFailure::Retryable(_)));
+        // Only a send that may have reached a node: accepted, no answer, or an outcome the SDK
+        // could not confirm (not one refused before it left, such as every node banned).
+        tried |= matches!(
+            sent_now,
+            Ok(()) | Err(WriteFailure::Retryable(_) | WriteFailure::Unconfirmed)
+        );
         let failure = match sent_now {
-            Ok(()) | Err(WriteFailure::TxKnown) => {
-                // Ok is our own send, and so is TxKnown after an earlier send of ours; TxKnown on
-                // every send so far (a replayed journal) is not.
-                sent |= sent_now.is_ok() || tried_before;
+            Ok(()) | Err(WriteFailure::TxKnown | WriteFailure::Unconfirmed) => {
+                // Ok and Unconfirmed are our own send, and so is TxKnown after an earlier send of
+                // ours; TxKnown on every send so far (a replayed journal) is not.
+                sent |= matches!(sent_now, Ok(()) | Err(WriteFailure::Unconfirmed)) || tried_before;
                 match wait().await {
                     Ok(()) => {
                         tracing::debug!(
@@ -4359,7 +4376,11 @@ where
                         // The node held these bytes and still nothing came, with the nonce
                         // free: it will refuse them from its cache from now on. Send elsewhere
                         // (and once sending elsewhere, a silent node is passed over too).
-                        if matches!(sent_now, Err(WriteFailure::TxKnown)) || elsewhere.is_some() {
+                        if matches!(
+                            sent_now,
+                            Err(WriteFailure::TxKnown | WriteFailure::Unconfirmed)
+                        ) || elsewhere.is_some()
+                        {
                             go_elsewhere(&mut elsewhere);
                             tracing::debug!(
                                 document_type,
@@ -4405,10 +4426,10 @@ where
                 );
                 tokio::time::sleep(delay).await;
             }
-            // Still ahead: nothing of it landed (refused before execution). A nonce error, so
-            // the caller re-signs once it reads the chain again.
-            // A send of this call that a node took is valid again once the tip catches up, so it
-            // may still land: unconfirmed, not a nonce error.
+            // Still ahead. With no send of this call that may have reached a node, nothing of it
+            // landed (refused before execution): a nonce error, and the caller re-signs once it
+            // reads the chain again. Otherwise that send is valid again once the tip catches up
+            // and may still land: unconfirmed (retryable), never a re-sign.
             WriteFailure::NonceAhead => {
                 tracing::warn!("{document_type}: nonce still too far ahead of the landed writes");
                 return Err(if tried || sent {
@@ -4433,6 +4454,7 @@ where
             // quorum miss was made Retryable above. Warned with why (re-broadcasts are debug).
             f @ (WriteFailure::Retryable(_)
             | WriteFailure::TxKnown
+            | WriteFailure::Unconfirmed
             | WriteFailure::QuorumMiss(_)) => {
                 tracing::warn!("write not confirmed; giving up ({document_type}: {f:?})");
                 return Err(Error::Timeout { retryable: true });
@@ -6276,6 +6298,36 @@ mod tests {
         )
         .await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+    }
+
+    #[test]
+    fn the_sdk_s_unconfirmed_outcome_is_classified_as_unconfirmed() {
+        let unconfirmed = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+            dash_sdk::Error::AlreadyExists("tx already exists in cache".into()),
+        ));
+        assert!(matches!(
+            super::classify_write_error(&unconfirmed, "chunk"),
+            super::WriteFailure::Unconfirmed
+        ));
+    }
+
+    /// An outcome the SDK could not confirm is our own send: settled by the result wait, its
+    /// landing is `Applied`, and a later "nonce too far ahead" never asks for a re-sign.
+    #[tokio::test]
+    async fn an_unconfirmed_send_is_settled_and_never_re_signed() {
+        use super::WriteFailure::{NonceAhead, Unconfirmed};
+        let (out, _, _) = scripted_write(vec![Err(Unconfirmed)], vec![Ok(())], vec![]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        // No result, the nonce free, then every node says the nonce is too far ahead: the first
+        // copy may still land, so it is unconfirmed (retryable), not a nonce error.
+        let n = super::MAX_AHEAD_RETRIES as usize + 1;
+        let mut sends = vec![Err(Unconfirmed)];
+        sends.extend((0..n).map(|_| Err(NonceAhead)));
+        let (out, _, _) = scripted_write(sends, vec![Err(timeout())], vec![false]).await;
+        assert!(
+            matches!(out, Err(Error::Timeout { retryable: true })),
+            "{out:?}"
+        );
     }
 
     #[tokio::test]
