@@ -1632,8 +1632,7 @@ mod tests {
             "000000001976a9143a2d4145a4f098523b3e8127f1da87cfc55b8e7988ac",
         ]
         .concat();
-        let raw: String = lock.raw.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(raw, expected);
+        assert_eq!(hex::encode(&lock.raw), expected);
         assert!(build_asset_lock(&keys, &[]).is_err());
         let dust = [VerifiedUtxo {
             txid: "22".repeat(32),
