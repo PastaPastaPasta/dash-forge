@@ -50,9 +50,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Bumping the tag: change PLATFORM_TAG below in ALL SEVEN entries together, run
 # `cargo update -p dash-sdk`, and commit the resulting Cargo.lock.
 # PLATFORM_TAG = v5.1.0
-# TODO(sdk-5.1-final): a pre-release tag that speaks protocol 15 (testnet since 2026-11-26) and 14
-# (mainnet), learning which from the network. Move to v5.1.0 when it is tagged, in lockstep with
-# forge-web's @dashevo/evo-sdk pin (tools/check-sdk-pins.sh fails CI when any of the pins disagree). v5 dpp refuses beta.7's `immutableAllowSetting` on every parse, so this
+# It speaks protocol 15 (testnet since 2026-11-25 19:41:30Z) and 14 (mainnet), learning which from
+# the network. It moves in lockstep with forge-web's @dashevo/evo-sdk pin (tools/check-sdk-pins.sh
+# fails CI when any of the pins disagree). v5 dpp refuses beta.7's `immutableAllowSetting` on every parse, so this
 # pin and the RC2 forge-community JSON move together.
 #
 # mocks/offline-testing are dropped (default-features = false) so only the live network

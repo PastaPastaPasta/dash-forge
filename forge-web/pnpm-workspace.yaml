@@ -3,7 +3,7 @@ allowBuilds:
   unrs-resolver: true
 # The Platform SDK pin (package.json, 5.1.0, published to npm 2026-11-26 in lockstep with the Rust
 # PLATFORM_TAG in ../Cargo.toml) is exempt from pnpm's minimum release age: it was published hours
-# before Forge moved to it, to keep testnet working. tools/check-sdk-pins.sh checks these entries
+# before Forge moved to it, so v0.3.1 ships on the final release. tools/check-sdk-pins.sh checks these entries
 # name the pinned version.
 minimumReleaseAgeExclude:
   - '@dashevo/evo-sdk@5.1.0'
