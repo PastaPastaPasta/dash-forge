@@ -105,8 +105,12 @@ export async function fetchAndCompile(
 /** Waits before each automatic retry of a failed download (L-19). */
 export const DOWNLOAD_RETRY_MS: readonly number[] = [1_000, 3_000]
 
+/** Back online, or 30 s later: a browser that wrongly reports itself offline still retries. */
 function browserOnline(): Promise<void> {
-  return new Promise((resolve) => window.addEventListener('online', () => resolve(), { once: true }))
+  return new Promise((resolve) => {
+    window.addEventListener('online', () => resolve(), { once: true })
+    setTimeout(resolve, 30_000)
+  })
 }
 
 /**
@@ -174,7 +178,8 @@ export function compileWasm(): Promise<WebAssembly.Module> {
     const url = new URL('../../node_modules/@dashevo/wasm-sdk/dist/raw/wasm_sdk_bg.wasm', import.meta.url)
     // Every failure names the download, so the connect's failure copy says what did not arrive.
     const run = fetchAndCompileWithRetry(url, WASM_BYTES, (p) => listeners.forEach((l) => l(p))).catch((e: unknown) => {
-      if (isDownloadFailure(e)) throw e
+      // A body that is not wasm (a stale deploy) is not a failed download: it keeps its own error.
+      if (isDownloadFailure(e) || e instanceof WebAssembly.CompileError) throw e
       throw new Error(`the Platform SDK download failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
     })
     compiled = run

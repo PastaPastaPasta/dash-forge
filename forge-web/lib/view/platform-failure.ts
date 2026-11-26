@@ -36,7 +36,7 @@ export function connectFailureCopy(
   if (isDownloadFailure(message)) {
     return {
       title: "The Platform verifier didn't download",
-      body: `This page needs it to check what Platform returns. Check your connection. ${keep}`,
+      body: `Check your connection. ${keep}`,
     }
   }
   if (isQuorumServiceError(message)) {

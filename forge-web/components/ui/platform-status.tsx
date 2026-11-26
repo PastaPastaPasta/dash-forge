@@ -69,7 +69,7 @@ export function DownloadProgressBar({ status }: { status: Extract<SdkStatus, { p
   const note = offline
     ? "You're offline. The download starts again when you're back."
     : stalled
-      ? 'The download has stalled. Check your connection; it starts again by itself.'
+      ? 'The download has stalled. Check your connection. It starts again by itself.'
       : null
   const pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : null
   const bytes = total > 0 ? `${mb(loaded)} of ${mb(total)}` : mb(loaded)

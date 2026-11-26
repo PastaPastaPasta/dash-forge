@@ -627,6 +627,17 @@ describe('EvoSdkService: download progress (L4, L5)', () => {
     expect(svc.getStatus().phase).toBe('idle')
   })
 
+  it('shows the progress the download reports while the connect is still starting', () => {
+    const connector = vi.fn(() => {
+      // As connectTrusted does: the download starts, and reports zero bytes, inside the connect call.
+      emitProgress({ loaded: 0, total: 100 })
+      return new Promise<Connection>(() => undefined)
+    })
+    const svc = new EvoSdkService(connector, manualClock())
+    void svc.initialize(CONFIG).catch(() => undefined)
+    expect(svc.getStatus()).toMatchObject({ phase: 'downloading', progress: { loaded: 0, total: 100 } })
+  })
+
   it('progress reaches the UI at most every PROGRESS_INTERVAL_MS, then "Connecting…" once every byte is in', async () => {
     const clock = manualClock()
     const pending = deferred<Connection>()

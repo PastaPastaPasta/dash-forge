@@ -960,10 +960,13 @@ export class EvoSdkService {
     else if (this.progressTimer === null) this.progressTimer = this.clock.setTimeout(show, this.progressAt + PROGRESS_INTERVAL_MS - now)
   }
 
-  /** Only a connect that is waiting on the download shows its progress. */
+  /**
+   * Only a connect that is waiting on the download shows its progress. The phase alone says so:
+   * the download reports its first progress before `initPromise` is set.
+   */
   private showsProgress(): boolean {
     const p = this.status.phase
-    return (p === 'connecting' || p === 'downloading') && this.initPromise !== null
+    return p === 'connecting' || p === 'downloading'
   }
 
   private setStatus(status: SdkStatus): void {

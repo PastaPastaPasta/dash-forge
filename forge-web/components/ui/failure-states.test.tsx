@@ -119,7 +119,7 @@ describe('DownloadProgressBar (cold load on a bad link)', () => {
       act(() => vi.advanceTimersByTime(STALL_HINT_MS - 1))
       expect(note()).toBe('')
       act(() => vi.advanceTimersByTime(1))
-      expect(note()).toMatch(/^The download has stalled\. Check your connection/)
+      expect(note()).toMatch(/^The download has stalled\. Check your connection\. It starts again by itself\.$/)
       act(() => root.render(<DownloadProgressBar status={downloading(1_200_000)} />))
       expect(note()).toBe('')
     } finally {
