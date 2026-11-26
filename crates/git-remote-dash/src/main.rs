@@ -16,7 +16,7 @@
 //!
 //! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--dump-refs`,
 //! `--balance`, `--version`, `--check-key`) used to provision/inspect repos outside the git
-//! protocol.
+//! protocol. `--help` / `-h` print the usage.
 //!
 //! **The signing key.** A key `dg` handed over on an inherited pipe
 //! ([`forge_core::key_handoff`]) is read first thing. Otherwise the key source is
@@ -140,14 +140,16 @@ fn run(goal: &mut Goal) -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // git always passes two arguments, so a flag alone is never a remote named `-h` or `-V`.
+    let alone = args.len() == 2;
     match args.get(1).map(String::as_str) {
         // `--version` / `-V`: what `dg doctor` compares against its own version. Checked
         // before admin mode, whose `--` prefix it shares.
-        Some("--version" | "-V") => {
+        Some("--version" | "-V") if alone => {
             println!("{}", version_line());
             return Ok(());
         }
-        Some("--help" | "-h") => {
+        Some("--help" | "-h") if alone => {
             print!("{}", help_text());
             return Ok(());
         }

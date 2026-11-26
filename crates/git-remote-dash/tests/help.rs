@@ -10,7 +10,8 @@ fn help_prints_usage_and_exits_zero() {
     for flag in ["--help", "-h"] {
         let out = Command::new(HELPER)
             .arg(flag)
-            .env_remove("DASH_FORGE_KEY")
+            .env_remove("RUST_LOG")
+            .env_remove("DASH_FORGE_KEY_FD")
             .output()
             .unwrap();
         assert!(out.status.success(), "{flag}: {out:?}");
@@ -27,4 +28,17 @@ fn help_prints_usage_and_exits_zero() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// git passes `<remote-name> <url>`: a remote named `-h` is not taken for the flag.
+#[test]
+fn a_remote_named_like_the_flag_is_not_the_flag() {
+    let out = Command::new(HELPER)
+        .args(["-h", "not-a-dash-url"])
+        .env_remove("RUST_LOG")
+        .env_remove("DASH_FORGE_KEY_FD")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("git clone dash://<owner>/<repo>"));
 }
