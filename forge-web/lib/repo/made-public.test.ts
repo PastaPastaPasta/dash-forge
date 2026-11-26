@@ -316,7 +316,7 @@ describe('readDocumentHistory', () => {
   }
   const revisions = (n: number) => Array.from({ length: n }, (_, i) => i + 1)
 
-  it('pages from the last revision time on protocol 14, skipping revisions already read', async () => {
+  it('pages after the last revision time on protocol 14', async () => {
     const { history, sdk } = sdkOver(Array.from({ length: 25 }, (_, i) => entry(i + 1, 1000 + i)), 14)
     const docs = await readDocumentHistory(sdk, repo, 'issue', 'D')
     expect(docs.map((d) => d['$revision'])).toEqual(revisions(25))
