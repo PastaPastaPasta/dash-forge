@@ -368,5 +368,16 @@
       "note": "custody: offline escrow (OD-2); never signs anything but Forge contract registrations and updates"
     },
     "restores": []
+  },
+  "user": {
+    "contractId": "hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK",
+    "ownerId": "CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y",
+    "identityNonce": "9",
+    "contractGroupId": "H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ",
+    "sizeBytes": 2240,
+    "status": "registered",
+    "reservedAt": "2026-11-26T02:44:42.401Z",
+    "deployedAt": "2026-11-26T02:44:46.790Z",
+    "costCredits": "20141511940"
   }
 }
