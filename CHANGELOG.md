@@ -10,19 +10,19 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [0.3.1] - 2026-11-26
 
-Testnet works again. The [release notes](docs/releases/v0.3.1.md) say what broke, what changed and why mainnet is unaffected.
+`dg` and `git-remote-dash` work on testnet again. The [release notes](docs/releases/v0.3.1.md) say what broke, what changed and why mainnet is unaffected.
 
 ### Fixed
 
-- **`dg`, `git-remote-dash` and the web app read and write on testnet again.** Testnet moved to Platform protocol 15 at 2026-11-25 19:41:30Z (epoch 20634, block 740732). v0.3.0 is built on the Platform SDK 5.0.0-rc.8, which speaks only protocols 13 and 14: on testnet its reads fail with `UnexpectedVariant … DataContractInSerializationFormat … found: 2` or a proof error, and its writes are refused with `InvalidDocumentTransitionIdError`. v0.3.1 is built on 5.1.0-rc.2, which speaks protocols 14 and 15 and learns which one a network runs from its first proof-verified answer ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)).
+- **`dg` and `git-remote-dash` work on testnet again.** Testnet moved to Platform protocol 15 at 2026-11-25 19:41:30Z (epoch 20634, block 740732), before v0.3.0 was published. v0.3.0 is built on the Platform SDK 5.0.0-rc.8, which speaks only protocols 13 and 14, and much of it fails on testnet: resolving a DPNS name stops with `UnexpectedVariant … DataContractInSerializationFormat … found: 2`, clones and fetches stop with a proof error, and writes are refused. Reads by identity id still work. v0.3.1 is built on 5.1.0-rc.2, which speaks protocols 14 and 15 and learns which one a network runs from its first proof-verified answer ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)). The web app at testnet-forge.dashhq.org, built from the same code, reads testnet again.
 
 ### Changed
 
 - **Platform SDK 5.0.0-rc.8 → 5.1.0-rc.2** in the Rust crates and the web app ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)). On mainnet, which runs protocol 14, what the tools write is unchanged: the protocol 14 serialization tables and document ids are the same in both SDKs.
-- **Document history pages by revision cursor.** On protocol 15 each page continues after the last revision read; on protocol 14 it starts at the last revision's time and skips revisions already read ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)).
+- **Document history (an issue's, pull request's or comment's earlier revisions) pages by revision.** On protocol 15 each page continues after the last revision read; on protocol 14 it starts at the last revision's time and skips revisions already read ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)).
 - **Organization (testnet) BLS signing uses a pure-Rust library** (`blstrs_plus` 0.10) in place of blst's assembly, because the new SDK needs a newer blst than the old library allowed ([#756](https://github.com/PastaPastaPasta/dash-forge/pull/756)).
 
-## [0.3.0] - 2026-11-27
+## [0.3.0] - 2026-11-26
 
 The first release that knows Forge's mainnet contracts. The [release notes](docs/releases/v0.3.0.md) say what is new for mainnet users, what stays testnet only, and how to upgrade.
 

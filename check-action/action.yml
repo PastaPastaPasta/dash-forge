@@ -43,7 +43,7 @@ inputs:
     description: "No longer has any effect: a private repository's check run cannot carry a log, so none is uploaded there."
     default: "false"
   network:
-    description: "mainnet, testnet or devnet. The default is testnet. Mainnet needs v0.3.0 or later (this version's default); v0.2.0 knows testnet only."
+    description: "mainnet, testnet or devnet. The default is testnet. Mainnet needs v0.3.0 or later (this version's default is v0.3.1); v0.2.0 knows testnet only."
     default: testnet
   devnet-name:
     description: "Devnet name, required when network is devnet and ignored otherwise: lowercase letters, digits and -."
