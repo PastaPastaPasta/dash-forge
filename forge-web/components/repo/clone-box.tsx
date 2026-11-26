@@ -399,7 +399,7 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
             .
           </p>
           <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-            The latest release predates mainnet and wallet sign-in: build from source for either.
+            It defaults to testnet: for mainnet, sign in with <span className="font-mono">dg auth login --network mainnet</span>.
           </p>
         </div>
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
