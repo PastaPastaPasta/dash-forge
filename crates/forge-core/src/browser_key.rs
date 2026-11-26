@@ -193,7 +193,7 @@ pub fn seal(request: &Request, payload: &Payload) -> Result<String> {
     loop {
         getrandom::getrandom(eph.as_mut())
             .map_err(|e| Error::Config(format!("no randomness: {e}")))?;
-        if SecretKey::from_slice(eph.as_ref()).is_ok() {
+        if SecretKey::from_secret_bytes(*eph).is_ok() {
             break;
         }
     }
@@ -230,10 +230,9 @@ pub fn seal_bytes(
     if plain.len() > MAX_PAYLOAD {
         return Err(Error::Config("the key handoff is too large".into()));
     }
-    let secp = secp256k1::Secp256k1::new();
-    let eph = SecretKey::from_slice(ephemeral_secret)
+    let eph = SecretKey::from_secret_bytes(*ephemeral_secret)
         .map_err(|_| Error::Config("bad ephemeral key".into()))?;
-    let eph_pub = PublicKey::from_secret_key(&secp, &eph);
+    let eph_pub = PublicKey::from_secret_key(&eph);
     let x = shared_x(&request.public_key, &eph);
     let key = reply_key(x.as_ref(), &eph_pub, &request.public_key);
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).expect("32-byte key");
@@ -294,9 +293,8 @@ pub fn open(
         return Err(OpenError::Malformed);
     }
     let eph_pub = PublicKey::from_slice(&bytes[..33]).map_err(|_| OpenError::Malformed)?;
-    let mine = SecretKey::from_slice(secret).map_err(|_| OpenError::Unreadable)?;
-    let secp = secp256k1::Secp256k1::new();
-    let my_pub = PublicKey::from_secret_key(&secp, &mine);
+    let mine = SecretKey::from_secret_bytes(*secret).map_err(|_| OpenError::Unreadable)?;
+    let my_pub = PublicKey::from_secret_key(&mine);
     let x = shared_x(&eph_pub, &mine);
     let key = reply_key(x.as_ref(), &eph_pub, &my_pub);
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).expect("32-byte key");
@@ -319,8 +317,7 @@ mod tests {
 
     fn browser() -> ([u8; 32], Request) {
         let secret = [7u8; 32];
-        let secp = secp256k1::Secp256k1::new();
-        let pk = PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&secret).unwrap());
+        let pk = PublicKey::from_secret_key(&SecretKey::from_secret_bytes(secret).unwrap());
         (
             secret,
             Request {

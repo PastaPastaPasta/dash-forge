@@ -16,6 +16,11 @@
 //   node scripts/snapshot-contracts.mjs [--network devnet|testnet|mainnet --devnet-name sakura]
 //   node scripts/snapshot-contracts.mjs --network testnet --record <scratch record> --out <snapshot file>
 //
+// The snapshot is taken at the protocol version the network runs, as the SDK learns it from the
+// proved answer (never below PROTOCOL_VERSION, the one deploy-v2 registers at). Re-run after a
+// network upgrade: an upgrade can bump a system contract (protocol 15 moved DPNS from version 2
+// to 3), and a stale snapshot costs every cold page a getDataContract request.
+//
 // A record that is not complete (a contract still `broadcasting`, no contract group) is refused:
 // a snapshot of half a deployment would seed a web build that cannot use it. Only a devnet passes
 // its recorded DAPI addresses to the SDK; testnet and mainnet use SDK discovery (the recorded list
@@ -99,14 +104,14 @@ async function main() {
   const addresses = network === 'devnet' ? dep.dapiAddresses ?? dep.v2?.devnet?.addresses : undefined;
 
   const { EvoSDK } = await loadEvoSdk();
-  // Pinned, as deploy-v2 pins it: before its first proof a testnet or mainnet SDK reports its
-  // built-in floor (13 on rc.8), and contracts serialized at that version are not the bytes the
-  // clients read the protocol-14 network with.
-  const sdk = new EvoSDK({ network, trusted: true, devnetName, version: PROTOCOL_VERSION, ...(addresses ? { addresses } : {}) });
+  // Not pinned: the SDK learns the network's version from the proved answer, and the bytes are
+  // serialized at it, the version the web clients read this network with. A pinned SDK would
+  // report the pin whatever the network runs. Below PROTOCOL_VERSION the deployment cannot run.
+  const sdk = new EvoSDK({ network, trusted: true, devnetName, ...(addresses ? { addresses } : {}) });
   await sdk.connect();
   const contracts = await sdk.contracts.getMany(ids);
   const platformVersion = sdk.version();
-  if (platformVersion !== PROTOCOL_VERSION) throw new Error(`${key} answered at protocol ${platformVersion}, not ${PROTOCOL_VERSION}: nothing written`);
+  if (platformVersion < PROTOCOL_VERSION) throw new Error(`${key} answered at protocol ${platformVersion}, below ${PROTOCOL_VERSION}: nothing written`);
 
   const snapshot = {};
   for (const id of ids) {

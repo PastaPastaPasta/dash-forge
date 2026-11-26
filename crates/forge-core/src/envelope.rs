@@ -23,7 +23,7 @@
 use std::fmt;
 
 use rand::RngCore;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use secp256k1::{PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
@@ -96,9 +96,11 @@ impl PrivateKey {
 
     /// Parse a 32-byte private key.
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        SecretKey::from_slice(bytes)
+        <[u8; 32]>::try_from(bytes)
+            .ok()
+            .and_then(|b| SecretKey::from_secret_bytes(b).ok())
             .map(Self)
-            .map_err(|_| Error::Config("not a valid secp256k1 private key".into()))
+            .ok_or_else(|| Error::Config("not a valid secp256k1 private key".into()))
     }
 
     /// The private key of a bridge-identity key entry.
@@ -109,12 +111,12 @@ impl PrivateKey {
     /// The raw scalar, wiped on drop: only for handing to another secp256k1 binding (the
     /// SDK's `encryptedFor` helpers). Never log it.
     pub(crate) fn secret_bytes(&self) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(self.0.secret_bytes())
+        Zeroizing::new(self.0.to_secret_bytes())
     }
 
     /// The compressed (33-byte) public key, as Platform stores an `ECDSA_SECP256K1` key.
     pub fn public_key(&self) -> [u8; 33] {
-        PublicKey::from_secret_key(&Secp256k1::signing_only(), &self.0).serialize()
+        PublicKey::from_secret_key(&self.0).serialize()
     }
 }
 

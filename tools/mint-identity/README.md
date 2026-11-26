@@ -12,10 +12,11 @@ key) → build & sign a type-8 asset-lock transaction → wait for the lock
 Platform → write a bridge-format identity JSON
 ```
 
-It is a Node ≥ 20 ESM tool. The crypto/transaction/proof logic is ported from the
+It is a Node ≥ 22 ESM tool. The crypto/transaction/proof logic is ported from the
 `mainnet-bridge` browser app (`src/crypto`, `src/transaction`, `src/proof`,
-`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@5.0.0-rc.8` (`package.json`),
-which runs natively under Node and talks protocol 14 to testnet and devnets alike.
+`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@5.1.0-rc.2` (`package.json`),
+which runs natively under Node and follows the protocol version each network runs (15 on
+testnet since 2026-11-26).
 It does not mint on mainnet: there, create an identity in a Dash wallet or the bridge.
 
 ## Install

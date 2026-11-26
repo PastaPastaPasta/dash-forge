@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use ripemd::Ripemd160;
-use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
+use secp256k1::{ecdsa::Signature, Message, PublicKey};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -111,8 +111,7 @@ pub fn digest(request: &str) -> [u8; 32] {
 /// Sign `request` with a raw secp256k1 secret key: the base64 compact signature (what a client
 /// does; used by tests and the CLI's `sign` helper).
 pub fn sign(request: &str, secret: &secp256k1::SecretKey) -> String {
-    let secp = Secp256k1::signing_only();
-    let sig = secp.sign_ecdsa(&Message::from_digest(digest(request)), secret);
+    let sig = secp256k1::ecdsa::sign(Message::from_digest(digest(request)), secret);
     STANDARD.encode(sig.serialize_compact())
 }
 
@@ -323,8 +322,7 @@ pub async fn verify(
     let public = signing_public_key(key, sent_public)?;
     let mut sig = sig;
     sig.normalize_s();
-    Secp256k1::verification_only()
-        .verify_ecdsa(&Message::from_digest(digest(&env.request)), &sig, &public)
+    secp256k1::ecdsa::verify(&sig, Message::from_digest(digest(&env.request)), &public)
         .map_err(|_| NotifyError::Unauthorized("the signature does not verify".into()))?;
     Ok(req)
 }
@@ -350,9 +348,7 @@ pub mod tests {
             purpose: "AUTHENTICATION".into(),
             security_level: "HIGH".into(),
             key_type: "ECDSA_SECP256K1".into(),
-            public_key: PublicKey::from_secret_key(&Secp256k1::new(), s)
-                .serialize()
-                .to_vec(),
+            public_key: PublicKey::from_secret_key(s).serialize().to_vec(),
             disabled: false,
             expires_at: None,
             bound_to: None,
@@ -395,7 +391,7 @@ pub mod tests {
     }
 
     fn public_b64(s: &secp256k1::SecretKey) -> String {
-        STANDARD.encode(PublicKey::from_secret_key(&Secp256k1::new(), s).serialize())
+        STANDARD.encode(PublicKey::from_secret_key(s).serialize())
     }
 
     /// An `ECDSA_HASH160` AUTHENTICATION/HIGH key `id` for secret `s` (what a wallet grants).
@@ -408,8 +404,8 @@ pub mod tests {
 
     #[tokio::test]
     async fn a_hash160_key_verifies_only_with_its_public_key() {
-        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
-        let other = secp256k1::SecretKey::from_slice(&[0x22; 32]).unwrap();
+        let s = secp256k1::SecretKey::from_secret_bytes([0x11; 32]).unwrap();
+        let other = secp256k1::SecretKey::from_secret_bytes([0x22; 32]).unwrap();
         let keys = StaticKeys(IDENTITY.into(), vec![hash160_key_info(2, &s)]);
         let op = "notify.example.org";
         let req = request(1_000_000, op);
@@ -433,8 +429,7 @@ pub mod tests {
             run(sign(&req, &other), Some(public_b64(&s))).await
         ));
         // Not a compressed public key.
-        let uncompressed = STANDARD
-            .encode(PublicKey::from_secret_key(&Secp256k1::new(), &s).serialize_uncompressed());
+        let uncompressed = STANDARD.encode(PublicKey::from_secret_key(&s).serialize_uncompressed());
         assert!(matches!(
             run(sign(&req, &s), Some(uncompressed)).await,
             Err(NotifyError::BadRequest(_))
@@ -462,8 +457,8 @@ pub mod tests {
 
     #[tokio::test]
     async fn a_secp256k1_key_takes_only_its_own_public_key() {
-        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
-        let other = secp256k1::SecretKey::from_slice(&[0x22; 32]).unwrap();
+        let s = secp256k1::SecretKey::from_secret_bytes([0x11; 32]).unwrap();
+        let other = secp256k1::SecretKey::from_secret_bytes([0x22; 32]).unwrap();
         let keys = StaticKeys(IDENTITY.into(), vec![key_info(2, &s)]);
         let op = "notify.example.org";
         let req = request(1_000_000, op);
@@ -493,7 +488,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn an_expired_key_is_refused_for_either_key_type() {
-        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let s = secp256k1::SecretKey::from_secret_bytes([0x11; 32]).unwrap();
         let op = "notify.example.org";
         let req = request(1_000_000, op);
         let now_ms = 1_000_100_000;
@@ -551,7 +546,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn a_good_signature_verifies_and_every_mismatch_is_refused() {
-        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let s = secp256k1::SecretKey::from_secret_bytes([0x11; 32]).unwrap();
         let keys = StaticKeys(IDENTITY.into(), vec![key_info(2, &s)]);
         let op = "notify.example.org";
         let req = request(1_000_000, op);
@@ -560,7 +555,7 @@ pub mod tests {
             .unwrap();
         assert_eq!((ok.action.as_str(), ok.key), ("account.get", 2));
 
-        let other = secp256k1::SecretKey::from_slice(&[0x22; 32]).unwrap();
+        let other = secp256k1::SecretKey::from_secret_bytes([0x22; 32]).unwrap();
         let unauthorized =
             |r: Result<SignedRequest>| matches!(r, Err(NotifyError::Unauthorized(_)));
         assert!(unauthorized(
@@ -589,7 +584,7 @@ pub mod tests {
     #[tokio::test]
     async fn a_key_bound_to_another_apps_contract_or_group_is_refused() {
         use forge_core::platform::KeyBounds;
-        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let s = secp256k1::SecretKey::from_secret_bytes([0x11; 32]).unwrap();
         let op = "notify.example.org";
         let req = request(1_000_000, op);
         let with = |bounds: KeyBounds| {
@@ -635,7 +630,7 @@ pub mod tests {
     /// signature deterministic, so both implementations must produce these exact bytes.
     #[test]
     fn the_shared_test_vector() {
-        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let s = secp256k1::SecretKey::from_secret_bytes([0x11; 32]).unwrap();
         let req = request(1_791_130_000, "notify.example.org");
         assert_eq!(
             hex::encode(digest(&req)),
