@@ -2,20 +2,20 @@
 //! `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_`), and the polynomial arithmetic a threshold
 //! group needs.
 
-use blstrs_plus::elliptic_curve::bigint::U512;
-use blstrs_plus::elliptic_curve::hash2curve::ExpandMsgXmd;
-use blstrs_plus::elliptic_curve::ops::Reduce;
-use blstrs_plus::ff::Field;
 use blstrs_plus::group::{Curve, Group};
 use blstrs_plus::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
+use hash2curve::ExpandMsgXmd;
 
 pub const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
 /// `OS2IP(bytes) mod r` for up to 64 bytes.
 pub fn scalar_from_be_wide(bytes: &[u8]) -> Scalar {
-    let mut wide = [0u8; 64];
-    wide[64 - bytes.len()..].copy_from_slice(bytes);
-    Scalar::reduce(U512::from_be_slice(&wide))
+    debug_assert!(bytes.len() <= 64);
+    let mut wide = zeroize::Zeroizing::new([0u8; 64]);
+    for (dst, src) in wide.iter_mut().zip(bytes.iter().rev()) {
+        *dst = *src;
+    }
+    Scalar::from_bytes_wide(&wide)
 }
 
 /// A 32-byte hex scalar reduced mod r (`scalarFromHex`).
@@ -95,7 +95,7 @@ pub fn lagrange_at_zero(i: u64, indices: &[u64]) -> Scalar {
 }
 
 pub fn hash_to_g2(message: &[u8]) -> G2Projective {
-    G2Projective::hash::<ExpandMsgXmd<sha2::Sha256>>(message, DST)
+    G2Projective::hash::<ExpandMsgXmd<sha2_011::Sha256>>(message, DST)
 }
 
 /// `share · H(message)`, compressed.
@@ -125,7 +125,7 @@ pub fn verify(signature: &[u8], message: &[u8], public_key: &str) -> bool {
 /// `Σ λⱼ·σⱼ` over the given `(index, share signature)` pairs.
 pub fn combine(shares: &[(u64, Vec<u8>)]) -> Option<[u8; 96]> {
     let indices: Vec<u64> = shares.iter().map(|(i, _)| *i).collect();
-    let mut acc = G2Projective::identity();
+    let mut acc = G2Projective::IDENTITY;
     for (i, sig) in shares {
         acc += g2_from_bytes(sig)? * lagrange_at_zero(*i, &indices);
     }

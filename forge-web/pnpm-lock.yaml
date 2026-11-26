@@ -12,11 +12,11 @@ importers:
         specifier: ^8.0.1
         version: 8.0.1
       '@dashevo/evo-sdk':
-        specifier: 5.0.0-rc.8
-        version: 5.0.0-rc.8
+        specifier: 5.1.0-rc.2
+        version: 5.1.0-rc.2
       '@dashevo/wasm-sdk':
-        specifier: 5.0.0-rc.8
-        version: 5.0.0-rc.8
+        specifier: 5.1.0-rc.2
+        version: 5.1.0-rc.2
       '@libp2p/interface':
         specifier: ^3.4.0
         version: 3.4.0
@@ -215,13 +215,13 @@ packages:
     resolution: {integrity: sha512-Vd/9EVDiu6PPJt9yAh6roZP6El1xHrdvIVGjyBsHR0RYwNHgL7FJPyIIW4fANJNG6FtyZfvlRPpFI4ZM/lubvw==}
     engines: {node: '>=18'}
 
-  '@dashevo/evo-sdk@5.0.0-rc.8':
-    resolution: {integrity: sha512-a8v+SB50mbffyyogT+eYN1Kg48E2mw0kA6kYSTcUEpPPwOHKy/eGR0BpfL5dUDLFdYpNINH1OewpHQmcIJFzJg==}
-    engines: {node: '>=18.18'}
+  '@dashevo/evo-sdk@5.1.0-rc.2':
+    resolution: {integrity: sha512-VRs1UWrJ8PBtbf+2Mv0qEe4xmAy4vJdBp9ggkufVy6rvtaKIiR5F9VuwiKpXdHNSaYTVMbXoQhT7OiDRBq6e+A==}
+    engines: {node: '>=22'}
 
-  '@dashevo/wasm-sdk@5.0.0-rc.8':
-    resolution: {integrity: sha512-WDwwuTLZIm1tDXsrInm2C4c2fkTT2+ywKn6qAXptPOw+OID/MfqOUYYrnOBkLWZNa+EUv6SOz/4LuqTewVlbOw==}
-    engines: {node: '>=18.18'}
+  '@dashevo/wasm-sdk@5.1.0-rc.2':
+    resolution: {integrity: sha512-3mzH4FQXznDcK/6cq/gfHpls+3Hjs75IVGCdfeGoAHOmmEodGGkmImc1IWXOi6G6hPA7s7yKDbsrukzjnoS42A==}
+    engines: {node: '>=22'}
 
   '@dnsquery/dns-packet@6.1.1':
     resolution: {integrity: sha512-WXTuFvL3G+74SchFAtz3FgIYVOe196ycvGsMgvSH/8Goptb1qpIQtIuM4SOK9G9lhMWYpHxnXyy544ZhluFOew==}
@@ -3005,11 +3005,11 @@ snapshots:
 
   '@csstools/css-tokenizer@3.0.4': {}
 
-  '@dashevo/evo-sdk@5.0.0-rc.8':
+  '@dashevo/evo-sdk@5.1.0-rc.2':
     dependencies:
-      '@dashevo/wasm-sdk': 5.0.0-rc.8
+      '@dashevo/wasm-sdk': 5.1.0-rc.2
 
-  '@dashevo/wasm-sdk@5.0.0-rc.8': {}
+  '@dashevo/wasm-sdk@5.1.0-rc.2': {}
 
   '@dnsquery/dns-packet@6.1.1':
     dependencies:
