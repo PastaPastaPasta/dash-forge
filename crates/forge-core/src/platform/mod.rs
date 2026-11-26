@@ -3974,6 +3974,10 @@ enum WriteFailure {
     /// The node already holds these exact signed bytes (gRPC `AlreadyExists`: "already in
     /// mempool" or "already in chain"). Not an answer yet: wait for the result.
     TxKnown,
+    /// The SDK sent these bytes in this call (from v5.1 its broadcast retries by itself) and
+    /// cannot say whether a node took them (`StateTransitionResultUnconfirmed`). Settled like
+    /// [`Self::TxKnown`], and it counts as a send of ours that may have reached a node.
+    Unconfirmed,
     /// The document is already there (an already-present document, or a content-addressed
     /// unique-index duplicate). Idempotent success.
     AlreadyLanded,
@@ -4026,12 +4030,12 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     if matches!(e, dash_sdk::Error::AlreadyExists(_)) {
         return WriteFailure::TxKnown;
     }
-    // From v5.1 the SDK's broadcast retries by itself, and when a retry finds these bytes
-    // already held ("tx already exists in cache") without its own wait proving the result, it
-    // reports the outcome as unconfirmed. Ours, then, possibly landed: settle it as above (the
-    // result wait, then the nonce), never by signing a replacement.
+    // From v5.1 the SDK's broadcast retries by itself, and when a send of it may have reached a
+    // node (a timeout, or a retry that finds the bytes already held) without its own wait
+    // proving the result, it reports the outcome as unconfirmed. Ours, then, possibly landed:
+    // settled like the above, never by signing a replacement.
     if matches!(e, dash_sdk::Error::StateTransitionResultUnconfirmed(_)) {
-        return WriteFailure::TxKnown;
+        return WriteFailure::Unconfirmed;
     }
 
     // The id was derived at a protocol version the network is not on (a 13 -> 14 upgrade
@@ -4327,16 +4331,19 @@ where
         }
         // A refusal the broadcast returned is CheckTx's (nonce unspent: may be sent again); one
         // the wait returns (after a send or TxKnown) came from block execution: final.
-        let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown));
+        let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown | WriteFailure::Unconfirmed));
         let tried_before = tried;
-        // Only a send that may have reached a node: accepted, or no answer (not one refused
-        // before it left, such as every node banned).
-        tried |= matches!(sent_now, Ok(()) | Err(WriteFailure::Retryable(_)));
+        // Only a send that may have reached a node: accepted, no answer, or an outcome the SDK
+        // could not confirm (not one refused before it left, such as every node banned).
+        tried |= matches!(
+            sent_now,
+            Ok(()) | Err(WriteFailure::Retryable(_)) | Err(WriteFailure::Unconfirmed)
+        );
         let failure = match sent_now {
-            Ok(()) | Err(WriteFailure::TxKnown) => {
-                // Ok is our own send, and so is TxKnown after an earlier send of ours; TxKnown on
-                // every send so far (a replayed journal) is not.
-                sent |= sent_now.is_ok() || tried_before;
+            Ok(()) | Err(WriteFailure::TxKnown) | Err(WriteFailure::Unconfirmed) => {
+                // Ok and Unconfirmed are our own send, and so is TxKnown after an earlier send of
+                // ours; TxKnown on every send so far (a replayed journal) is not.
+                sent |= matches!(sent_now, Ok(()) | Err(WriteFailure::Unconfirmed)) || tried_before;
                 match wait().await {
                     Ok(()) => {
                         tracing::debug!(
@@ -4366,7 +4373,11 @@ where
                         // The node held these bytes and still nothing came, with the nonce
                         // free: it will refuse them from its cache from now on. Send elsewhere
                         // (and once sending elsewhere, a silent node is passed over too).
-                        if matches!(sent_now, Err(WriteFailure::TxKnown)) || elsewhere.is_some() {
+                        if matches!(
+                            sent_now,
+                            Err(WriteFailure::TxKnown) | Err(WriteFailure::Unconfirmed)
+                        ) || elsewhere.is_some()
+                        {
                             go_elsewhere(&mut elsewhere);
                             tracing::debug!(
                                 document_type,
@@ -4440,6 +4451,7 @@ where
             // quorum miss was made Retryable above. Warned with why (re-broadcasts are debug).
             f @ (WriteFailure::Retryable(_)
             | WriteFailure::TxKnown
+            | WriteFailure::Unconfirmed
             | WriteFailure::QuorumMiss(_)) => {
                 tracing::warn!("write not confirmed; giving up ({document_type}: {f:?})");
                 return Err(Error::Timeout { retryable: true });
@@ -6285,6 +6297,36 @@ mod tests {
         assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
     }
 
+    #[test]
+    fn the_sdk_s_unconfirmed_outcome_is_classified_as_unconfirmed() {
+        let unconfirmed = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+            dash_sdk::Error::AlreadyExists("tx already exists in cache".into()),
+        ));
+        assert!(matches!(
+            super::classify_write_error(&unconfirmed, "chunk"),
+            super::WriteFailure::Unconfirmed
+        ));
+    }
+
+    /// An outcome the SDK could not confirm is our own send: settled by the result wait, its
+    /// landing is `Applied`, and a later "nonce too far ahead" never asks for a re-sign.
+    #[tokio::test]
+    async fn an_unconfirmed_send_is_settled_and_never_re_signed() {
+        use super::WriteFailure::{NonceAhead, Unconfirmed};
+        let (out, _, _) = scripted_write(vec![Err(Unconfirmed)], vec![Ok(())], vec![]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        // No result, the nonce free, then every node says the nonce is too far ahead: the first
+        // copy may still land, so it is unconfirmed (retryable), not a nonce error.
+        let n = super::MAX_AHEAD_RETRIES as usize + 1;
+        let mut sends = vec![Err(Unconfirmed)];
+        sends.extend((0..n).map(|_| Err(NonceAhead)));
+        let (out, _, _) = scripted_write(sends, vec![Err(timeout())], vec![false]).await;
+        assert!(
+            matches!(out, Err(Error::Timeout { retryable: true })),
+            "{out:?}"
+        );
+    }
+
     #[tokio::test]
     async fn the_loop_is_bounded_and_fatal_answers_stop_it() {
         let (out, nb, nw) = scripted_write(
@@ -6314,17 +6356,6 @@ mod tests {
 
     /// 40120 on the membership gates (`$ownerId`, `asMember`) is not being a member; on any
     /// other path it is a missing reference, typed with its path. 10422 names its rule.
-    #[test]
-    fn an_unconfirmed_outcome_is_settled_like_bytes_a_node_already_holds() {
-        let unconfirmed = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
-            dash_sdk::Error::AlreadyExists("tx already exists in cache".into()),
-        ));
-        assert!(matches!(
-            super::classify_write_error(&unconfirmed, "chunk"),
-            super::WriteFailure::TxKnown
-        ));
-    }
-
     #[test]
     fn consensus_refusals_are_typed_by_path_and_rule() {
         use dash_sdk::dpp::consensus::basic::document::{

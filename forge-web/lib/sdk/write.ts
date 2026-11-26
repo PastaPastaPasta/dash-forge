@@ -801,8 +801,9 @@ async function settleUnanswered(
       await facades(sdk).stateTransitions.broadcastStateTransition(st)
     } catch (e) {
       // A used nonce shows as spent on the next round (this very transition may be what used
-      // it); "already exists" means pending. A refusal of the rebroadcast is a CheckTx answer.
-      const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+      // it); "already exists" (or an outcome the SDK could not confirm) means pending. A
+      // refusal of the rebroadcast is a CheckTx answer.
+      const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
       if (refusal !== null) throw refusal.atBroadcast()
     }
     if ((await awaitOutcome(sdk, st, owner.contractId, indexOnly)) === 'landed') return 'landed'
@@ -1421,8 +1422,9 @@ async function createDocumentUnlocked(
         // bytes cannot land (they round-trip exactly, so they are the transition first sent).
         // Already in, or a transport error: the poll decides, and the bytes stay cached until
         // it sees them. (The nonce check comes first: a rebroadcast of bytes that did land is
-        // answered "nonce already present".)
-        const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+        // answered "nonce already present". An outcome the SDK could not confirm may be these
+        // very bytes taken: the poll decides that too.)
+        const refusal = isNonceUsedError(e) || isAlreadyExistsError(e) ? null : asConsensusRefusal(e)
         if (refusal) {
           // These bytes can never land. Settle any earlier version first, then clear, so a
           // retry once the cause is fixed signs afresh instead of replaying refused bytes.
