@@ -8,7 +8,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-11-27
+## [0.3.0] - 2026-11-26
 
 The first release that knows Forge's mainnet contracts. The [release notes](docs/releases/v0.3.0.md) say what is new for mainnet users, what stays testnet only, and how to upgrade.
 

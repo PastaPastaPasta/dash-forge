@@ -8,7 +8,7 @@
 |---|---|
 | **Mainnet** | Live since 2026-11-24 at **[forge.dashhq.org](https://forge.dashhq.org)**. Real DASH. |
 | **Testnet** | Live at **[testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)**. Free test DASH; the network can be reset. |
-| **Binaries** | The latest release, [v0.3.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.0) (2026-11-27), works on **mainnet** and **testnet**. Testnet stays its default network ([release notes](docs/releases/v0.3.0.md)). |
+| **Binaries** | The latest release, [v0.3.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.0) (2026-11-26), works on **mainnet** and **testnet**. Testnet stays its default network ([release notes](docs/releases/v0.3.0.md)). |
 
 [Networks](docs/networks.md) has contract ids and history.
 

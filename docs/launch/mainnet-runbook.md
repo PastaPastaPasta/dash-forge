@@ -1,6 +1,6 @@
 # Mainnet launch runbook (2026-11-24)
 
-> **Status (2026-11-27).** This is the plan as written for launch day, kept as the record. The registration is done: the four contracts are on mainnet (`forge-contracts/deployments/mainnet.json`, evidence in `forge-contracts/evidence/mainnet/`), forge.dashhq.org serves the mainnet build and testnet-forge.dashhq.org the testnet one. Step 11 is done: v0.3.0 is released ([release notes](../releases/v0.3.0.md)), and its `dg` and `git-remote-dash` know mainnet. Testnet stays their default network.
+> **Status (2026-11-26).** This is the plan as written for launch day, kept as the record. The registration is done: the four contracts are on mainnet (`forge-contracts/deployments/mainnet.json`, evidence in `forge-contracts/evidence/mainnet/`), forge.dashhq.org serves the mainnet build and testnet-forge.dashhq.org the testnet one. Step 11 is done: v0.3.0 is released ([release notes](../releases/v0.3.0.md)), and its `dg` and `git-remote-dash` know mainnet. Testnet stays their default network.
 
 **For the people who take Forge to Dash mainnet this morning:** Pasta (keys, funds, DNS, the go) and the agent on the launch thread (everything else). Read it all before the first step. The general procedure behind it is [Deploying Forge to a network](../deploying-to-a-network.md). This page is that procedure turned into today's ordered steps, with the decisions already made.
 
