@@ -627,6 +627,17 @@ describe('EvoSdkService: download progress (L4, L5)', () => {
     expect(svc.getStatus().phase).toBe('idle')
   })
 
+  it('shows the progress the download reports while the connect is still starting', () => {
+    const connector = vi.fn(() => {
+      // As connectTrusted does: the download starts, and reports zero bytes, inside the connect call.
+      emitProgress({ loaded: 0, total: 100 })
+      return new Promise<Connection>(() => undefined)
+    })
+    const svc = new EvoSdkService(connector, manualClock())
+    void svc.initialize(CONFIG).catch(() => undefined)
+    expect(svc.getStatus()).toMatchObject({ phase: 'downloading', progress: { loaded: 0, total: 100 } })
+  })
+
   it('progress reaches the UI at most every PROGRESS_INTERVAL_MS, then "Connecting…" once every byte is in', async () => {
     const clock = manualClock()
     const pending = deferred<Connection>()
@@ -838,6 +849,69 @@ describe('EvoSdkService: an outage after a connect keeps retrying', () => {
     expect(status.phase === 'error' && status.retryAt).toBe(clock.now() + CONNECT_BACKOFF_MS[1]!)
     await clock.advance(CONNECT_BACKOFF_MS[1]!)
     expect(svc.getStatus().phase).toBe('ready')
+  })
+})
+
+describe('EvoSdkService: offline', () => {
+  it('schedules no retry while offline, and reconnects at once when the browser is back online', async () => {
+    const nav = { onLine: false }
+    vi.stubGlobal('navigator', nav)
+    let onOnline: () => void = () => undefined
+    vi.stubGlobal('window', { addEventListener: (type: string, fn: () => void) => type === 'online' && (onOnline = fn) })
+    const clock = manualClock()
+    const good = fakeSdk('good', async () => 'ok')
+    const connector = vi.fn().mockRejectedValueOnce(new Error('Failed to fetch')).mockResolvedValue(connection(good.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    const before = svc.recoveryCount
+    await expect(svc.initialize(CONFIG)).rejects.toThrow('Failed to fetch')
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: null })
+    await clock.advance(10 * 60_000)
+    expect(connector).toHaveBeenCalledTimes(1)
+    nav.onLine = true
+    onOnline()
+    await flush()
+    expect(connector).toHaveBeenCalledTimes(2)
+    expect(svc.getStatus().phase).toBe('ready')
+    // Views re-read once after the outage, even though it spent no automatic retry.
+    expect(svc.recoveryCount).toBe(before + 1)
+  })
+
+  it('failures while offline spend no automatic retry', async () => {
+    const nav = { onLine: false }
+    vi.stubGlobal('navigator', nav)
+    vi.stubGlobal('window', { addEventListener: () => undefined })
+    const clock = manualClock()
+    const connector = vi.fn().mockRejectedValue(new Error('Failed to fetch'))
+    const svc = new EvoSdkService(connector, clock)
+    await expect(svc.initialize(CONFIG)).rejects.toThrow('Failed to fetch')
+    for (let i = 0; i < CONNECT_BACKOFF_MS.length + 2; i++) {
+      svc.retryNow()
+      await flush()
+    }
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: null })
+    expect(svc.getStatus()).not.toMatchObject({ stopped: true })
+    nav.onLine = true
+    svc.retryNow()
+    await flush()
+    // The first online failure waits the first backoff step: the offline ones spent none.
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: clock.now() + CONNECT_BACKOFF_MS[0]! })
+  })
+
+  it('back online during a countdown retries now, not when the countdown ends', async () => {
+    let onOnline: () => void = () => undefined
+    vi.stubGlobal('window', { addEventListener: (type: string, fn: () => void) => type === 'online' && (onOnline = fn) })
+    const clock = manualClock()
+    const good = fakeSdk('good', async () => 'ok')
+    const connector = vi.fn().mockRejectedValueOnce(new Error('Failed to fetch')).mockResolvedValue(connection(good.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await expect(svc.initialize(CONFIG)).rejects.toThrow('Failed to fetch')
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: expect.any(Number) })
+    onOnline()
+    await flush()
+    expect(connector).toHaveBeenCalledTimes(2)
+    expect(svc.getStatus().phase).toBe('ready')
+    await clock.advance(CONNECT_BACKOFF_MS[0]!)
+    expect(connector).toHaveBeenCalledTimes(2)
   })
 })
 
