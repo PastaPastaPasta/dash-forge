@@ -158,13 +158,13 @@ pub fn decode_id(text: &str) -> Option<Id> {
 
 /// The public key of `secret`.
 fn public_of(secret: &secp256k1::SecretKey) -> secp256k1::PublicKey {
-    secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::signing_only(), secret)
+    secp256k1::PublicKey::from_secret_key(secret)
 }
 
 /// `f` over `secret` as a secp256k1 key, wiped afterwards (`SecretKey` does not wipe itself);
 /// `None` when the bytes are not a private key.
 fn with_secret_key<T>(secret: &[u8; 32], f: impl FnOnce(&secp256k1::SecretKey) -> T) -> Option<T> {
-    let mut key = secp256k1::SecretKey::from_slice(secret).ok()?;
+    let mut key = secp256k1::SecretKey::from_secret_bytes(*secret).ok()?;
     let out = f(&key);
     key.non_secure_erase();
     Some(out)
@@ -181,7 +181,7 @@ fn random_secret() -> crate::Result<SecretBytes> {
     loop {
         getrandom::getrandom(bytes.as_mut())
             .map_err(|e| crate::Error::Config(format!("no randomness: {e}")))?;
-        if secp256k1::SecretKey::from_slice(bytes.as_ref()).is_ok() {
+        if secp256k1::SecretKey::from_secret_bytes(*bytes).is_ok() {
             return Ok(SecretBytes(bytes));
         }
     }
@@ -225,7 +225,7 @@ pub(crate) mod test_vectors {
     }
 
     pub fn secret(label: &str) -> secp256k1::SecretKey {
-        secp256k1::SecretKey::from_slice(&seed(label)).unwrap()
+        secp256k1::SecretKey::from_secret_bytes(seed(label)).unwrap()
     }
 
     /// `sha256("dash app-connect v2 vector/" + label)`.

@@ -25,7 +25,7 @@ import { base58Encode } from '../auth/base58'
 import type { PlainDocument } from '../sdk'
 import type { RepoRef } from './contract'
 import { readPull } from './issues'
-import { bundleCovers, invalidateRepoBundles, withBundles } from './made-public'
+import { bundleCovers, invalidateRepoBundles, readDocumentHistory, withBundles } from './made-public'
 import { AUDIENCE_FIELD, EDITED_AFTER_PUBLIC, MADE_PUBLIC_BY, REAL_HEAD, type Admission, type ContentGate } from './private-content'
 
 const VECTORS = join(__dirname, '..', '..', '..', 'forge-contracts', 'vectors')
@@ -286,5 +286,25 @@ describe('a maintainer’s bundle of a pull request’s own text', () => {
     delete shown['baseRefName']
     const pull = await readPull(sdk, repo, shown, { events: [], authorEvents: [] }, async () => [], async (h) => (asked.push(h), []), { transitions: [] })
     expect([pull.mergeBaseRefName, asked]).toEqual(['', []])
+  })
+})
+
+describe('readDocumentHistory', () => {
+  const repo: RepoRef = { forge: FORGE, repoId: 'R', ownerId: 'O', name: 'r', visibility: 'public' }
+  const entry = (revision: number, timeMs: number) => ({
+    revision: BigInt(revision),
+    timeMs: BigInt(timeMs),
+    document: { $id: 'D', $revision: revision, $updatedAt: timeMs },
+  })
+
+  it('pages from the last revision time, skipping revisions already read', async () => {
+    const stored = Array.from({ length: 13 }, (_, i) => entry(i + 1, i < 10 ? 1000 + i : 1009))
+    const history = vi.fn(async (q: { startAtMs: number | bigint; limit: number }) => ({
+      entries: stored.filter((e) => e.timeMs >= BigInt(q.startAtMs)).slice(0, q.limit),
+    }))
+    const sdk = { documents: { history } } as unknown as EvoSDK
+    const docs = await readDocumentHistory(sdk, repo, 'issue', 'D')
+    expect(docs.map((d) => d['$revision'])).toEqual(Array.from({ length: 13 }, (_, i) => i + 1))
+    expect(history.mock.calls.map(([q]) => Number(q.startAtMs))).toEqual([0, 1009])
   })
 })

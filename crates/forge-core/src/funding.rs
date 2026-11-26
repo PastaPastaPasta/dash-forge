@@ -676,7 +676,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use dash_sdk::dpp::dashcore::consensus::encode::serialize;
-    use dash_sdk::dpp::dashcore::hashes::Hash as _;
     use dash_sdk::dpp::dashcore::{Address, OutPoint, Transaction, TxIn, TxOut, Txid};
 
     const ADDR: &str = "yhJHMkBAT2TF6D8GHc4v9bMfBh3V2Z6meg";

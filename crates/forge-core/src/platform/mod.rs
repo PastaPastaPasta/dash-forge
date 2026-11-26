@@ -40,7 +40,6 @@ use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::consensus::basic::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::consensus::ConsensusError;
-use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::dpp::dashcore::Network as DashcoreNetwork;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::{
@@ -69,6 +68,7 @@ use drive_proof_verifier::{
     DocumentCount, DocumentSplitCounts, DocumentSplitSums, SplitCountEntry, SplitSumEntry,
 };
 use futures::future::BoxFuture;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
 
@@ -1107,7 +1107,9 @@ impl PlatformClient {
     /// Every stored revision of the `document_type` document `document_id` in `contract`, oldest
     /// first (Platform's `getDocumentHistory`, proved): only a type that keeps history
     /// (`documentsKeepHistory`, an issue or a PR) has more than its current revision. At most
-    /// `max` revisions are read, ten per request (Drive's page limit).
+    /// `max` revisions are read, ten per request (Drive's page limit). Each page starts at the
+    /// time of the last revision read, the one filter protocol 14 serves too, and skips the
+    /// revisions already read.
     pub async fn fetch_document_history(
         &self,
         contract: &LoadedContract,
@@ -1115,19 +1117,19 @@ impl PlatformClient {
         document_id: &str,
         max: usize,
     ) -> Result<Vec<FetchedDocument>> {
+        use dash_sdk::drive::query::document_history_drive_query::DocumentHistoryFilter;
         use dash_sdk::platform::DocumentHistoryQuery;
         const PAGE: u32 = 10;
         let doc_id = parse_id(document_id, "document id")?;
         let mut out: Vec<FetchedDocument> = Vec::new();
-        let mut offset = 0u32;
+        let mut cursor: Option<(u64, u64)> = None;
         while out.len() < max {
             let query = DocumentHistoryQuery {
                 data_contract_id: contract.0.id(),
                 document_type_name: document_type.to_string(),
                 document_id: doc_id,
-                start_at_ms: 0,
+                filter: DocumentHistoryFilter::StartAtTime(cursor.map_or(0, |(time, _)| time)),
                 limit: Some(PAGE),
-                offset: (offset > 0).then_some(offset),
             };
             let page = match retry_transient_read("fetch document history", || {
                 drive_proof_verifier::types::DocumentHistory::fetch(&self.sdk, query.clone())
@@ -1146,13 +1148,20 @@ impl PlatformClient {
                         .await)
                 }
             }
+            .map(|history| history.entries)
             .unwrap_or_default();
             let got = page.len();
-            out.extend(page.values().map(FetchedDocument::from_document));
-            if got < PAGE as usize {
+            let before = out.len();
+            for entry in page {
+                if cursor.is_some_and(|(_, revision)| entry.revision <= revision) {
+                    continue;
+                }
+                cursor = Some((entry.time_ms, entry.revision));
+                out.push(FetchedDocument::from_document(&entry.document));
+            }
+            if got < PAGE as usize || out.len() == before {
                 break;
             }
-            offset += PAGE;
         }
         out.truncate(max);
         out.sort_by_key(|d| d.revision.unwrap_or_default());
@@ -1878,7 +1887,8 @@ fn split_sums(entries: Vec<SplitSumEntry>) -> BTreeMap<Vec<u8>, i64> {
     let mut out: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
     for e in entries {
         let slot = out.entry(e.key).or_default();
-        *slot = slot.saturating_add(e.sum.unwrap_or(0));
+        let sum = e.sum.unwrap_or(0).clamp(i64::MIN.into(), i64::MAX.into());
+        *slot = slot.saturating_add(i64::try_from(sum).unwrap_or_default());
     }
     out
 }
@@ -6731,14 +6741,12 @@ mod tests {
 
     #[test]
     fn a_wallet_granted_hash160_key_signs() {
-        use dash_sdk::dpp::dashcore::hashes::{hash160, Hash};
+        use dash_sdk::dpp::dashcore::hashes::hash160;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
         use dash_sdk::dpp::identity::KeyType;
-        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
         let secret =
-            dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
-        let public = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&secp, &secret)
-            .serialize();
+            dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey::from_bytes(&[0x11; 32]).unwrap();
+        let public = secret.public_key().to_compressed();
         let wif = dash_sdk::dpp::dashcore::PrivateKey::new(
             secret,
             dash_sdk::dpp::dashcore::Network::Testnet,

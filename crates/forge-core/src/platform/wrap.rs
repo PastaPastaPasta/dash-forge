@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 
-use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters as _;
 use dash_sdk::dpp::document::{Document, DocumentV0};
 use dash_sdk::dpp::platform_value::Value;
@@ -17,6 +16,7 @@ use dash_sdk::platform::encrypted_for::{
     decrypt_property, encrypt_property, EncryptedPropertyEnvelope, EncryptionKeys,
 };
 use dash_sdk::platform::Identifier;
+use secp256k1::{PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
 use super::LoadedContract;
@@ -32,7 +32,7 @@ pub struct WrapSecret(SecretKey);
 impl WrapSecret {
     /// From 32 raw bytes (an identity's `ENCRYPTION` key).
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
-        SecretKey::from_byte_array(bytes)
+        SecretKey::from_secret_bytes(*bytes)
             .map(Self)
             .map_err(|_| Error::Config("invalid secp256k1 private key".into()))
     }
@@ -208,8 +208,8 @@ pub(crate) fn test_contract() -> LoadedContract {
 /// (production goes through `encrypt_property` / `decrypt_property`).
 #[cfg(test)]
 pub(crate) fn shared_key_for_vectors(secret: &WrapSecret, public: &[u8]) -> [u8; 32] {
-    use dash_sdk::dpp::dashcore::secp256k1::ecdh::SharedSecret;
-    SharedSecret::new(&public_key(public).expect("public key"), &secret.0).secret_bytes()
+    use secp256k1::ecdh::SharedSecret;
+    SharedSecret::new(&public_key(public).expect("public key"), &secret.0).to_secret_bytes()
 }
 
 /// Decrypt raw `encryptedFor` bytes through the SDK's own `decrypt_property`, with the

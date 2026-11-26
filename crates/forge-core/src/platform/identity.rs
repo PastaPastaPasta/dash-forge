@@ -17,9 +17,9 @@ use std::str::FromStr;
 
 use dash_sdk::dpp::address_funds::AddressWitness;
 use dash_sdk::dpp::dashcore::consensus::encode::{deserialize, serialize};
-use dash_sdk::dpp::dashcore::hashes::{hash160, Hash as _};
+use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey as SecretKey;
+use dash_sdk::dpp::dashcore::hashes::hash160;
 use dash_sdk::dpp::dashcore::script::{Builder, PushBytesBuf};
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
@@ -76,7 +76,7 @@ impl KeyRing {
     fn add(&mut self, secret: &SecretKey, network: &Network) {
         self.0
             .push(SingleKeySigner::from_private_key(PrivateKey::new(
-                *secret,
+                secret.clone(),
                 super::to_dashcore(network),
             )));
     }
@@ -160,7 +160,7 @@ fn coin_type(network: &Network) -> u32 {
 pub fn new_mnemonic() -> Result<Secret> {
     let m = Mnemonic::generate(12, Language::English)
         .map_err(|e| Error::Config(format!("generating the recovery phrase: {e}")))?;
-    Ok(Secret::new(m.phrase()))
+    Ok(Secret::new(m.phrase().as_str()))
 }
 
 /// Lowercase, single-spaced words; `Err` unless it is a valid BIP-39 phrase (checksum too).
@@ -189,16 +189,15 @@ fn derive(mnemonic: &Secret, path: &str, network: &Network) -> Result<Derived> {
         .map_err(|_| Error::Config("the recovery phrase is not valid".into()))?;
     let seed = Zeroizing::new(m.to_seed(""));
     let net = super::to_dashcore(network);
-    let secp = Secp256k1::new();
     let master = ExtendedPrivKey::new_master(net, seed.as_ref())
         .map_err(|e| Error::Config(format!("deriving keys: {e}")))?;
     let dp = DerivationPath::from_str(path)
         .map_err(|e| Error::Config(format!("derivation path {path}: {e}")))?;
     let key = master
-        .derive_priv(&secp, &dp)
+        .derive_priv(&dp)
         .map_err(|e| Error::Config(format!("deriving {path}: {e}")))?;
-    let secret = key.private_key;
-    let public = PublicKey::new(secret.public_key(&secp));
+    let secret = key.private_key.clone();
+    let public = PublicKey::new(secret.public_key());
     Ok(Derived {
         secret,
         public,
@@ -215,7 +214,7 @@ fn asset_lock_path(network: &Network) -> String {
 }
 
 fn wif(secret: &SecretKey, network: &Network) -> Secret {
-    Secret::new(PrivateKey::new(*secret, super::to_dashcore(network)).to_wif())
+    Secret::new(PrivateKey::new(secret.clone(), super::to_dashcore(network)).to_wif())
 }
 
 fn p2pkh_address(public: &PublicKey, network: &Network) -> String {
@@ -224,13 +223,18 @@ fn p2pkh_address(public: &PublicKey, network: &Network) -> String {
 
 /// The public key of `secret`.
 fn public_of(secret: &SecretKey) -> PublicKey {
-    PublicKey::new(secret.public_key(&Secp256k1::new()))
+    PublicKey::new(secret.public_key())
 }
 
 /// A fresh random secp256k1 key (OS RNG).
 fn random_secret() -> SecretKey {
-    use dash_sdk::dpp::dashcore::secp256k1::rand::rngs::OsRng;
-    SecretKey::new(&mut OsRng)
+    let mut bytes = Zeroizing::new([0u8; 32]);
+    loop {
+        getrandom::getrandom(bytes.as_mut()).expect("OS randomness");
+        if let Ok(secret) = SecretKey::from_bytes(&bytes) {
+            return secret;
+        }
+    }
 }
 
 fn secret_from_wif(wif: &str, network: &Network) -> Result<SecretKey> {
@@ -304,7 +308,7 @@ impl NewIdentityKeys {
             purpose: super::purpose_name(*p).into(),
             security_level: super::level_name(*l).into(),
             private_key_wif: wif(&d.secret, &self.network),
-            private_key_hex: Secret::new(hex::encode(d.secret.secret_bytes())),
+            private_key_hex: Secret::new(hex::encode(*d.secret.to_bytes())),
             public_key_hex: hex::encode(d.public.to_bytes()),
             derivation_path: d.path.clone(),
         }
@@ -603,7 +607,8 @@ pub fn build_asset_lock(keys: &NewIdentityKeys, utxos: &[VerifiedUtxo]) -> Resul
             }]),
         )),
     };
-    let secp = Secp256k1::new();
+    let signing_key = secp256k1::SecretKey::from_secret_bytes(*secret.to_bytes())
+        .map_err(|_| Error::Config("not a valid secp256k1 private key".into()))?;
     let mut sigs = Vec::with_capacity(tx.input.len());
     {
         let cache = SighashCache::new(&tx);
@@ -611,7 +616,10 @@ pub fn build_asset_lock(keys: &NewIdentityKeys, utxos: &[VerifiedUtxo]) -> Resul
             let hash = cache
                 .legacy_signature_hash(i, &script, 1)
                 .map_err(|e| Error::Config(format!("sighash: {e}")))?;
-            let sig = secp.sign_ecdsa(&Message::from_digest(hash.to_byte_array()), secret);
+            let sig = secp256k1::ecdsa::sign(
+                secp256k1::Message::from_digest(hash.to_byte_array()),
+                &signing_key,
+            );
             let mut der = sig.serialize_der().to_vec();
             der.push(1); // SIGHASH_ALL
             let der = PushBytesBuf::try_from(der)
@@ -619,7 +627,7 @@ pub fn build_asset_lock(keys: &NewIdentityKeys, utxos: &[VerifiedUtxo]) -> Resul
             sigs.push(
                 Builder::new()
                     .push_slice(der)
-                    .push_slice(public.inner.serialize())
+                    .push_slice(public.inner.to_compressed())
                     .into_script(),
             );
         }
@@ -852,7 +860,10 @@ impl PlatformClient {
         debug_assert!(public_keys.len() <= MAX_KEYS_IN_CREATION);
         let identity = Identity::new_with_id_and_keys(id, public_keys, self.sdk().version())
             .map_err(|e| sdk_err("building the identity", e))?;
-        let lock_key = PrivateKey::new(keys.asset_lock.secret, super::to_dashcore(self.network()));
+        let lock_key = PrivateKey::new(
+            keys.asset_lock.secret.clone(),
+            super::to_dashcore(self.network()),
+        );
         identity
             .put_to_platform_and_wait_for_response_with_private_key(
                 self.sdk(),
@@ -1353,7 +1364,7 @@ pub fn is_wif(wif: &str) -> bool {
 /// that are not a secp256k1 private key: callers hold keys already checked as one.
 pub fn wif_from_bytes(secret: &[u8; 32], network: &Network) -> Secret {
     wif(
-        &SecretKey::from_slice(secret).expect("a checked secp256k1 private key"),
+        &SecretKey::from_bytes(secret).expect("a checked secp256k1 private key"),
         network,
     )
 }
@@ -1380,7 +1391,7 @@ mod tests {
     #[test]
     fn a_wif_finds_its_hash160_key() {
         use dash_sdk::dpp::identity::v0::IdentityV0;
-        let secret = SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let secret = SecretKey::from_bytes(&[0x11; 32]).unwrap();
         let w = wif(&secret, &testnet());
         let public = public_of(&secret).to_bytes();
         let group = Identifier::from([9u8; 32]);

@@ -27,8 +27,8 @@
   },
   "dependencies": {
     "@chainsafe/libp2p-yamux": "^8.0.1",
-    "@dashevo/evo-sdk": "5.0.0-rc.8",
-    "@dashevo/wasm-sdk": "5.0.0-rc.8",
+    "@dashevo/evo-sdk": "5.1.0-rc.2",
+    "@dashevo/wasm-sdk": "5.1.0-rc.2",
     "@libp2p/interface": "^3.4.0",
     "@libp2p/noise": "~17.0.7",
     "@libp2p/websockets": "^10.1.25",

@@ -1043,8 +1043,8 @@ mod tests {
     }
 
     fn public(label: &str) -> [u8; 33] {
-        let secret = secp256k1::SecretKey::from_slice(&seed(label)).unwrap();
-        secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::new(), &secret).serialize()
+        let secret = secp256k1::SecretKey::from_secret_bytes(seed(label)).unwrap();
+        secp256k1::PublicKey::from_secret_key(&secret).serialize()
     }
 
     /// The key a released wallet registers for `owner` (`ECDSA_HASH160`), 0.25 DASH / 180 d.
@@ -1092,7 +1092,7 @@ mod tests {
         /// `owner` answers `req` with its key.
         fn answer(&self, req: &request::Request, owner: &str) {
             let wallet_eph =
-                secp256k1::SecretKey::from_slice(&seed(&format!("{owner} eph"))).unwrap();
+                secp256k1::SecretKey::from_secret_bytes(seed(&format!("{owner} eph"))).unwrap();
             let (pub_key, payload) = crypto::seal_with(
                 &req.app_ephemeral_pub_key,
                 &seed(owner),

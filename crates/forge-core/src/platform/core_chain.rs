@@ -25,7 +25,6 @@ use dash_sdk::dapi_client::{
 };
 use dash_sdk::dpp::dashcore::bloom::{BloomFilter, BloomFlags};
 use dash_sdk::dpp::dashcore::consensus::encode::{deserialize, serialize};
-use dash_sdk::dpp::dashcore::hashes::Hash as _;
 use dash_sdk::dpp::dashcore::{Address, ScriptBuf, Transaction};
 
 use super::identity::VerifiedUtxo;

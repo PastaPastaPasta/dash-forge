@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use blstrs_plus::group::Group;
 use blstrs_plus::{G1Projective, Scalar};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};

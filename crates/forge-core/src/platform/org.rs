@@ -490,6 +490,7 @@ pub fn decode_unsigned(bytes: &[u8]) -> Result<DecodedWrite> {
             DocumentTransition::UpdatePrice(_) => "updatePrice",
             DocumentTransition::Purchase(_) => "purchase",
             DocumentTransition::IndexOnlyDelete(_) => "indexOnlyDelete",
+            DocumentTransition::Erase(_) => "erase",
         }
         .to_string();
         out.document_id = dt.get_id().to_string(Encoding::Base58);
