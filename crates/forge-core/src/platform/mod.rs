@@ -4026,6 +4026,13 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     if matches!(e, dash_sdk::Error::AlreadyExists(_)) {
         return WriteFailure::TxKnown;
     }
+    // From v5.1 the SDK's broadcast retries by itself, and when a retry finds these bytes
+    // already held ("tx already exists in cache") without its own wait proving the result, it
+    // reports the outcome as unconfirmed. Ours, then, possibly landed: settle it as above (the
+    // result wait, then the nonce), never by signing a replacement.
+    if matches!(e, dash_sdk::Error::StateTransitionResultUnconfirmed(_)) {
+        return WriteFailure::TxKnown;
+    }
 
     // The id was derived at a protocol version the network is not on (a 13 -> 14 upgrade
     // under a long-running client). Refused at basic validation: nothing landed.
@@ -6307,6 +6314,17 @@ mod tests {
 
     /// 40120 on the membership gates (`$ownerId`, `asMember`) is not being a member; on any
     /// other path it is a missing reference, typed with its path. 10422 names its rule.
+    #[test]
+    fn an_unconfirmed_outcome_is_settled_like_bytes_a_node_already_holds() {
+        let unconfirmed = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+            dash_sdk::Error::AlreadyExists("tx already exists in cache".into()),
+        ));
+        assert!(matches!(
+            super::classify_write_error(&unconfirmed, "chunk"),
+            super::WriteFailure::TxKnown
+        ));
+    }
+
     #[test]
     fn consensus_refusals_are_typed_by_path_and_rule() {
         use dash_sdk::dpp::consensus::basic::document::{

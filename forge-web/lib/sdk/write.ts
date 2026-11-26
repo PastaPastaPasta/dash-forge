@@ -356,11 +356,18 @@ function errorMessage(e: unknown): string {
 
 /**
  * This exact transition is already in the mempool or the chain (a re-broadcast of cached
- * bytes, or a lost response). Only these mean "mine landed".
+ * bytes, or a lost response), or the SDK's own retry of it ended with its outcome unconfirmed
+ * (from v5.1: a node may hold it). Only these mean "mine may have landed": the caller settles
+ * it by reading, never by signing a replacement.
  */
 export function isAlreadyExistsError(e: unknown): boolean {
   const m = errorMessage(e).toLowerCase()
-  return m.includes('already in mempool') || m.includes('already in chain') || m.includes('already exists')
+  return (
+    m.includes('already in mempool') ||
+    m.includes('already in chain') ||
+    m.includes('already exists') ||
+    m.includes('state transition outcome is unconfirmed')
+  )
 }
 
 /**

@@ -231,6 +231,12 @@ describe('nonce error classification', () => {
   it('treats only mempool/chain duplicates as "mine landed"', () => {
     expect(isAlreadyExistsError(new Error('state transition already in mempool'))).toBe(true)
     expect(isAlreadyExistsError(new Error('invalid identity nonce: nonce already present'))).toBe(false)
+    // v5.1: the SDK's own retry could not prove the result of bytes a node may hold.
+    expect(
+      isAlreadyExistsError(
+        new Error('state transition outcome is unconfirmed: a node accepted it or may have received it; reconcile the original operation before submitting a replacement; last error: timeout reached'),
+      ),
+    ).toBe(true)
     expect(isNonceUsedError(new Error('invalid identity nonce: nonce already present'))).toBe(true)
   })
 })
