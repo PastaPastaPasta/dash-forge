@@ -1622,6 +1622,18 @@ mod tests {
         assert_eq!(p.credit_outputs.len(), 1);
         assert_eq!(p.credit_outputs[0].value, lock.locked_duffs);
         assert!(!tx.input[0].script_sig.is_empty(), "inputs are signed");
+        // The exact bytes the rc.8 build signed (RFC 6979: deterministic), so a change to the
+        // signing code that alters what a mainnet asset lock spends fails here.
+        let expected: String = [
+            "03000800011111111111111111111111111111111111111111111111111111111111111111010000006b4830",
+            "450221008f04fa35f22fb7c3438dab3c66b95b6eddec5a37eef97a0dc7d0de3c152fd081022056a3684ae7fe",
+            "441cf84616fa03519943b75a1b5b55095b282dc29f82d1dfecc1012102a7451395735369f2ecdfc829c0f774",
+            "e88ef1303dfe5b2f04dbaab30a535dfdd6ffffffff0158474c0000000000026a000000000024010158474c00",
+            "000000001976a9143a2d4145a4f098523b3e8127f1da87cfc55b8e7988ac",
+        ]
+        .concat();
+        let raw: String = lock.raw.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(raw, expected);
         assert!(build_asset_lock(&keys, &[]).is_err());
         let dust = [VerifiedUtxo {
             txid: "22".repeat(32),
