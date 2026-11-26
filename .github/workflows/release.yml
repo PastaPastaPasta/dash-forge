@@ -318,6 +318,16 @@ jobs:
           git config --global core.longpaths true
           printf '%s\n' 'CARGO_HOME=C:\ch' >> "$GITHUB_ENV"
           printf '%s\n' 'C:\ch\bin' >> "$GITHUB_PATH"
+      # rs-x11-hash (Platform v5.1's core-proof X11 hashing) includes <unistd.h>, which MSVC
+      # does not have, and uses nothing from it (its own wasm build fakes the header): give the
+      # Windows build an empty one.
+      - name: Empty unistd.h for rs-x11-hash (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          dir="$(cygpath -m "$RUNNER_TEMP")/unistd-shim"
+          mkdir -p "$dir"
+          : > "$dir/unistd.h"
+          printf '%s\n' "CFLAGS_x86_64_pc_windows_msvc=-I$dir" >> "$GITHUB_ENV"
 
       # tenderdash-proto compiles .proto files at build time and needs protoc >= 25; distro
       # packages are too old (see docs/BUILDING.md). The zip is checked against a pinned
