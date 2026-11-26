@@ -102,24 +102,32 @@ export function revisionOf(doc: PlainDocument): number {
 /**
  * Every stored revision of the `type` document `id` of `repo`, oldest first (Platform's
  * `getDocumentHistory`, proved): only a type that keeps history (an issue, a PR) has more than its
- * current revision. At most {@link MAX_HISTORY}.
+ * current revision. At most {@link MAX_HISTORY}. From protocol 15 each page continues after the
+ * last revision read; protocol 14 serves only `startAtMs`, exclusive there and with one revision
+ * per time, so a page starts after the last revision's time. (An SDK that has not yet learned 15
+ * sends `startAtMs` to a protocol-15 network, where it is inclusive: the revisions already read
+ * are skipped.)
  */
 export async function readDocumentHistory(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', id: string): Promise<PlainDocument[]> {
   const out: PlainDocument[] = []
-  for (let offset = 0; out.length < MAX_HISTORY; offset += HISTORY_PAGE) {
-    const page = await sdk.documents.history({
+  let cursor: { readonly timeMs: bigint; readonly revision: bigint } | undefined
+  while (out.length < MAX_HISTORY) {
+    const { entries } = await sdk.documents.history({
       dataContractId: contractOf(repo.forge, type),
       documentTypeName: type,
       documentId: id,
       limit: HISTORY_PAGE,
-      ...(offset > 0 ? { offset } : {}),
+      ...(cursor === undefined ? { startAtMs: 0 } : sdk.version() >= 15 ? { startAfter: cursor } : { startAtMs: cursor.timeMs }),
     })
-    for (const [at, d] of page) {
-      const doc = normalizeDocument(d)
-      // A revision's time is the history entry's key when the document carries none.
-      out.push(typeof doc['$updatedAt'] === 'number' || typeof doc['$createdAt'] === 'number' ? doc : { ...doc, $updatedAt: Number(at) })
+    const before = out.length
+    for (const entry of entries) {
+      if (cursor !== undefined && entry.revision <= cursor.revision) continue
+      cursor = { timeMs: entry.timeMs, revision: entry.revision }
+      const doc = normalizeDocument(entry.document)
+      // A revision's time is the history entry's when the document carries none.
+      out.push(typeof doc['$updatedAt'] === 'number' || typeof doc['$createdAt'] === 'number' ? doc : { ...doc, $updatedAt: Number(entry.timeMs) })
     }
-    if (page.size < HISTORY_PAGE) break
+    if (entries.length < HISTORY_PAGE || out.length === before) break
   }
   return out.slice(0, MAX_HISTORY).sort((a, b) => revisionOf(a) - revisionOf(b))
 }

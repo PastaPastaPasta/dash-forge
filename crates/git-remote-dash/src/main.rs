@@ -16,7 +16,7 @@
 //!
 //! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--dump-refs`,
 //! `--balance`, `--version`, `--check-key`) used to provision/inspect repos outside the git
-//! protocol.
+//! protocol. `--help` / `-h` print the usage.
 //!
 //! **The signing key.** A key `dg` handed over on an inherited pipe
 //! ([`forge_core::key_handoff`]) is read first thing. Otherwise the key source is
@@ -140,11 +140,17 @@ fn run(goal: &mut Goal) -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // git always passes two arguments, so a flag alone is never a remote named `-h` or `-V`.
+    let alone = args.len() == 2;
     match args.get(1).map(String::as_str) {
         // `--version` / `-V`: what `dg doctor` compares against its own version. Checked
         // before admin mode, whose `--` prefix it shares.
-        Some("--version" | "-V") => {
+        Some("--version" | "-V") if alone => {
             println!("{}", version_line());
+            return Ok(());
+        }
+        Some("--help" | "-h") if alone => {
+            print!("{}", help_text());
             return Ok(());
         }
         // `--check-key`: `dg`'s check, before it pays for a repository, that a push can sign.
@@ -211,6 +217,31 @@ fn run(goal: &mut Goal) -> Result<()> {
 /// `git-remote-dash <version> (<sha> <target>)` — the same shape as `dg --version`.
 fn version_line() -> String {
     format!("git-remote-dash {}", env!("DASH_FORGE_VERSION"))
+}
+
+/// `--help`: what the helper is and how git uses it.
+fn help_text() -> String {
+    format!(
+        "{}
+The git remote helper for dash:// URLs. git runs it; you don't run it by hand:
+
+  git clone dash://<owner>/<repo>     <owner> is an identity id or a DPNS name
+  git fetch, git pull, git push       in that clone
+
+Network: DASH_FORGE_NETWORK, else git config dash.network (a clone made by dg records it),
+else the default dg recorded (testnet when none).
+Signing key for a push: DASH_FORGE_KEY, else identities/<owner id>.identity.json in dg's
+config directory if it exists, else the default dg recorded (`dg auth login`).
+
+Options:
+  -V, --version   print the version
+  -h, --help      print this help
+
+dg is the command for everything else (dg --help). Install and setup:
+https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/INSTALL.md
+",
+        version_line()
+    )
 }
 
 /// Rewrite a relative `GIT_DIR` to an absolute path (no-op when unset or already absolute).

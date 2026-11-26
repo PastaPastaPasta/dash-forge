@@ -14,7 +14,7 @@
 FROM rust:1.100-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS builder
 ARG PROTOC_VERSION=28.3
 RUN apt-get update \
- && apt-get install -y --no-install-recommends unzip cmake \
+ && apt-get install -y --no-install-recommends unzip cmake clang \
  && rm -rf /var/lib/apt/lists/* \
  && case "$(uname -m)" in \
       x86_64) asset=linux-x86_64; sum=0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f ;; \
