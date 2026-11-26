@@ -49,7 +49,7 @@ This one line installs the latest release's checksum-verified binaries into `~/.
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
 ```
 
-The latest release, v0.2.0, works on testnet only and has no `--wallet` sign-in: for mainnet or the wallet, build from source above.
+The latest release, v0.3.0, works on mainnet and testnet, with testnet as its default network.
 
 [INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads, Windows (WSL), `cargo binstall`, and pinning a version.
 

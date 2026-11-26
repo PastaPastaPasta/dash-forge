@@ -41,7 +41,7 @@ ipfs dag import forge-web-<version>.car      # pins the site; prints its root CI
 
 The build works from any gateway: by subdomain (`https://<cid>.ipfs.<gateway>/`), by path (`https://<gateway>/ipfs/<cid>/`), or from an ordinary static host. It finds its own base path when it loads.
 
-The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`, `RELEASE_DEVNET_NAME`): testnet for v0.2.0. The network is part of the build, so it is fixed per commit.
+The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`, `RELEASE_DEVNET_NAME`): testnet for v0.2.0, mainnet from v0.3.0. The network is part of the build, so it is fixed per commit.
 
 ---
 

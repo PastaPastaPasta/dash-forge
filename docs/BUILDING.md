@@ -1,9 +1,8 @@
 # Building Dash Forge
 
-On testnet you do not have to build Dash Forge: the latest release ships prebuilt binaries for
-Linux and macOS ([INSTALL.md](INSTALL.md)). That release, v0.2.0, predates Forge's mainnet
-registration, so **on mainnet, build `dg` and `git-remote-dash` from source** as
-[INSTALL.md](INSTALL.md#build-from-source) shows. The rest of this page is for contributors.
+You do not have to build Dash Forge to use it: the latest release, v0.3.0, ships prebuilt
+binaries for Linux and macOS that work on mainnet and testnet ([INSTALL.md](INSTALL.md)). The
+rest of this page is for contributors.
 
 A fresh clone builds with no out-of-tree setup:
 

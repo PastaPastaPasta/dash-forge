@@ -153,11 +153,11 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
 ```yaml
       - name: Report to Dash Forge
         if: always()
-        uses: PastaPastaPasta/dash-forge/check-action@v0.2.0   # installs the v0.2.0 dg
+        uses: PastaPastaPasta/dash-forge/check-action@v0.3.0   # installs the v0.3.0 dg
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
-          network: testnet          # the default; mainnet also needs a recent commit in uses: and install: 'source'
+          network: testnet          # the default; or mainnet
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```
