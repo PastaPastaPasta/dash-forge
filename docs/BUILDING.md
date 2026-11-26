@@ -17,7 +17,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | pinned by `rust-toolchain.toml` (1.98.0) | install [rustup](https://rustup.rs); it installs the pinned toolchain automatically. MSRV floor is 1.98, which the pinned Platform packages (v5.1.0-rc.2) require |
+| Rust | pinned by `rust-toolchain.toml` (1.98.0) | install [rustup](https://rustup.rs); it installs the pinned toolchain automatically. MSRV floor is 1.98, which the pinned Platform packages (v5.1.0) require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | C compiler, `clang`, `pkg-config`, OpenSSL headers | any | on Linux, several dependencies build C code, and `openssl-sys` links the system OpenSSL. `rs-x11-hash` (Platform's core-proof hashing) runs `clang` by name, whatever the default compiler. On Debian or Ubuntu: `sudo apt-get install build-essential clang pkg-config libssl-dev` (plus `curl unzip git ca-certificates` for the protoc recipe and the clone) |
 | Node | 22 | forge-web |
@@ -138,7 +138,7 @@ The patch stays active until you remove it. Confirm which source is in use with
 
 ### Protocol versions
 
-The pinned SDK (`v5.1.0-rc.2` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.1.0-rc.2` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
+The pinned SDK (`v5.1.0` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.1.0` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
 protocols 14 and 15. Mainnet runs protocol 14 and testnet protocol 15 (since 2026-11-26). Neither client pins
 a version. The SDK starts at protocol 14 on every network and raises it from the metadata of the
 first **proof-verified** response. So
