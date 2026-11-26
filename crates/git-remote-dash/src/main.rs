@@ -147,6 +147,10 @@ fn run(goal: &mut Goal) -> Result<()> {
             println!("{}", version_line());
             return Ok(());
         }
+        Some("--help" | "-h") => {
+            print!("{}", help_text());
+            return Ok(());
+        }
         // `--check-key`: `dg`'s check, before it pays for a repository, that a push can sign.
         Some("--check-key") => return helper::check_key(),
         // `--pre-push <remote> <url>`: the clone's `pre-push` hook (E810), with git's input on
@@ -211,6 +215,31 @@ fn run(goal: &mut Goal) -> Result<()> {
 /// `git-remote-dash <version> (<sha> <target>)` — the same shape as `dg --version`.
 fn version_line() -> String {
     format!("git-remote-dash {}", env!("DASH_FORGE_VERSION"))
+}
+
+/// `--help`: what the helper is and how git uses it.
+fn help_text() -> String {
+    format!(
+        "{}
+The git remote helper for dash:// URLs. git runs it; you don't run it by hand:
+
+  git clone dash://<owner>/<repo>     <owner> is an identity id or a DPNS name
+  git fetch, git pull, git push       in that clone
+
+Network: DASH_FORGE_NETWORK, else git config dash.network (a clone made by dg records it),
+else the default dg recorded (testnet when none).
+Signing key for a push: DASH_FORGE_KEY, else identities/<owner id>.identity.json in dg's
+config directory if it exists, else the default dg recorded (`dg auth login`).
+
+Options:
+  -V, --version   print the version
+  -h, --help      print this help
+
+dg is the command for everything else (dg --help). Install and setup:
+https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/INSTALL.md
+",
+        version_line()
+    )
 }
 
 /// Rewrite a relative `GIT_DIR` to an absolute path (no-op when unset or already absolute).
