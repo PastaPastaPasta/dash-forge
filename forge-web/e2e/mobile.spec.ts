@@ -156,6 +156,16 @@ test('iPhone SE: every repo tab is reachable, the strip scrolls with a visible e
     expect(b && b.x >= -1 && b.x + b.width <= 376, `tab ${name} on screen`).toBe(true)
     expect(b!.height).toBeGreaterThanOrEqual(43.5)
   }
+  // A scroll the strip did not make (a screen reader moving focus) holds when a tab then resizes
+  // (a count loading late): the strip does not jump back to the active tab.
+  const code = nav.getByRole('link', { name: 'Code' })
+  await code.scrollIntoViewIfNeeded()
+  await code.evaluate((a: HTMLElement) => {
+    a.style.minWidth = `${a.offsetWidth + 24}px`
+  })
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  const held = await code.boundingBox()
+  expect(held && held.x >= -1 && held.x + held.width <= 376, 'Code stays on screen after a tab resizes').toBe(true)
   expect(await overflowX(page)).toBeLessThanOrEqual(1)
   await context.close()
 })

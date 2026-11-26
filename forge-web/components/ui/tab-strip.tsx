@@ -137,21 +137,35 @@ export function TabStrip({
     // Keep the active tab inside the strip by scrolling the strip only (scrollIntoView would
     // also scroll the page, e.g. jump to the tabs when Back restores a scrolled position). On a
     // new active tab it is placed by `stripScroll`, and placed again on a resize (a count that
-    // loads later widens its tab) until the user scrolls the strip themselves; after that only
-    // an active tab pushed out of view brings it back.
+    // loads later widens its tab) until the strip is scrolled by anything else (a swipe, the
+    // wheel, keys, or a screen reader or the browser bringing a focused tab into view). After
+    // that a resize moves the strip only when it pushed a shown active tab out of view: a tab
+    // the user scrolled to stays where they put it.
     let userScrolled = false
+    let placedAt = el.scrollLeft
+    let activeShown = true
+    const shown = (boxes: readonly TabBox[], at: number): boolean => {
+      const on = boxes[at]
+      return on !== undefined && on.left >= el.scrollLeft - 1 && on.left + on.width <= el.scrollLeft + el.clientWidth + 1
+    }
     const touched = (): void => {
       userScrolled = true
     }
+    const scrolled = (): void => {
+      if (Math.abs(el.scrollLeft - placedAt) > 1) userScrolled = true
+      const { boxes, active } = tabBoxes(el, padRef.current)
+      activeShown = shown(boxes, active)
+    }
     const reveal = (place: boolean): void => {
       const { boxes, active: at } = tabBoxes(el, padRef.current)
-      const on = boxes[at]
-      const outOfView = on !== undefined && (on.left < el.scrollLeft - 1 || on.left + on.width > el.scrollLeft + el.clientWidth + 1)
-      if (on !== undefined && (place || !userScrolled || outOfView)) {
+      const pushedOut = activeShown && !shown(boxes, at)
+      if (boxes[at] !== undefined && (place || !userScrolled || pushedOut)) {
         const next = stripScroll(boxes, at, el.clientWidth)
         if (padRef.current) padRef.current.style.width = `${next.pad}px`
         el.scrollLeft = next.left
+        placedAt = el.scrollLeft
       }
+      activeShown = shown(boxes, at)
       paint(boxes, at)
     }
     reveal(true)
@@ -160,9 +174,11 @@ export function TabStrip({
     for (const tab of el.children) ro.observe(tab)
     const gestures = ['pointerdown', 'wheel', 'keydown'] as const
     for (const g of gestures) el.addEventListener(g, touched, { passive: true })
+    el.addEventListener('scroll', scrolled, { passive: true })
     return () => {
       ro.disconnect()
       for (const g of gestures) el.removeEventListener(g, touched)
+      el.removeEventListener('scroll', scrolled)
     }
   }, [activeKey, paint])
   // Opaque at the edge for a third of its width, so what the edge cuts (a count) is not legible;
