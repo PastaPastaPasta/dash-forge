@@ -116,7 +116,11 @@ async fn protocol_14_create_reports_the_landed_id_and_is_idempotent() {
     );
 
     let again = engine.execute(&prepared).await.expect("re-broadcast");
-    assert_eq!(again, BroadcastOutcome::AlreadyExists);
+    // v5.1's SDK reports a node's "already in chain" as an unconfirmed send, settled as Applied.
+    assert!(matches!(
+        again,
+        BroadcastOutcome::AlreadyExists | BroadcastOutcome::Applied
+    ));
 
     engine
         .delete_document(&contract, DOC_TYPE, &doc_id)

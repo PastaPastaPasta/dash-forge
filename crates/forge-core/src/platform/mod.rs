@@ -17,8 +17,9 @@
 //!   [`WriteEngine::prepare_delete`], capturing a fixed nonce + entropy into a
 //!   [`SignedTransition`]); [`WriteEngine::execute`] broadcasts those exact bytes and,
 //!   on a retryable failure, RE-broadcasts the *same* bytes. A duplicate landing
-//!   ("already exists") is reported as [`BroadcastOutcome::AlreadyExists`], never a fresh
-//!   write — so a killed-mid-push retry cannot double-spend or duplicate. A consumed nonce is
+//!   ("already exists") is reported as [`BroadcastOutcome::AlreadyExists`] or, when the v5.1
+//!   SDK reports the send as unconfirmed, as [`BroadcastOutcome::Applied`]; never a second
+//!   copy — so a killed-mid-push retry cannot double-spend or duplicate. A consumed nonce is
 //!   [`BroadcastOutcome::NonceConsumed`]: the write landed earlier OR another write took the
 //!   nonce, and the create/delete helpers confirm which with a proved read.
 //!   The SDK's `broadcast_and_wait` works on NATIVE Rust — the `waitForResponse` panic
@@ -3974,9 +3975,11 @@ enum WriteFailure {
     /// The node already holds these exact signed bytes (gRPC `AlreadyExists`: "already in
     /// mempool" or "already in chain"). Not an answer yet: wait for the result.
     TxKnown,
-    /// The SDK sent these bytes in this call (from v5.1 its broadcast retries by itself) and
-    /// cannot say whether a node took them (`StateTransitionResultUnconfirmed`). Settled like
-    /// [`Self::TxKnown`], and it counts as a send of ours that may have reached a node.
+    /// The SDK's broadcast cannot say whether a node took these bytes
+    /// (`StateTransitionResultUnconfirmed`; from v5.1 it also wraps a node's "already in mempool"
+    /// this way, even on the first send). Settled like [`Self::TxKnown`], and counted as a send
+    /// of this call that may have reached a node: a replayed journal's landing then reads as
+    /// `Applied`, and nothing after it is ever re-signed.
     Unconfirmed,
     /// The document is already there (an already-present document, or a content-addressed
     /// unique-index duplicate). Idempotent success.
@@ -4034,7 +4037,7 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     // node (a timeout, or a retry that finds the bytes already held) without its own wait
     // proving the result, it reports the outcome as unconfirmed. Ours, then, possibly landed:
     // settled like the above, never by signing a replacement.
-    if matches!(e, dash_sdk::Error::StateTransitionResultUnconfirmed(_)) {
+    if e.is_state_transition_result_unconfirmed() {
         return WriteFailure::Unconfirmed;
     }
 
@@ -4423,10 +4426,10 @@ where
                 );
                 tokio::time::sleep(delay).await;
             }
-            // Still ahead: nothing of it landed (refused before execution). A nonce error, so
-            // the caller re-signs once it reads the chain again.
-            // A send of this call that a node took is valid again once the tip catches up, so it
-            // may still land: unconfirmed, not a nonce error.
+            // Still ahead. With no send of this call that may have reached a node, nothing of it
+            // landed (refused before execution): a nonce error, and the caller re-signs once it
+            // reads the chain again. Otherwise that send is valid again once the tip catches up
+            // and may still land: unconfirmed (retryable), never a re-sign.
             WriteFailure::NonceAhead => {
                 tracing::warn!("{document_type}: nonce still too far ahead of the landed writes");
                 return Err(if tried || sent {
