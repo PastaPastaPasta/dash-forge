@@ -893,7 +893,8 @@ describe('EvoSdkService: offline', () => {
     nav.onLine = true
     svc.retryNow()
     await flush()
-    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: expect.any(Number) })
+    // The first online failure waits the first backoff step: the offline ones spent none.
+    expect(svc.getStatus()).toMatchObject({ phase: 'error', retryAt: clock.now() + CONNECT_BACKOFF_MS[0]! })
   })
 
   it('back online during a countdown retries now, not when the countdown ends', async () => {

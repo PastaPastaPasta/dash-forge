@@ -7,7 +7,7 @@
  */
 
 import { QUORUM_KEY_ENDPOINT, type Network } from '../constants'
-import { isDownloadFailure, isProofFailure, isQuorumMiss, isQuorumServiceError } from '../sdk/unreachable'
+import { isClientErrorDownload, isDownloadFailure, isProofFailure, isQuorumMiss, isQuorumServiceError } from '../sdk/unreachable'
 import { urlHost } from './format'
 
 const OFFLINE_BODY = 'This page will load as soon as your connection is back.'
@@ -36,7 +36,7 @@ export function connectFailureCopy(
     : 'Nothing can be read or checked until the connection comes back.'
   if (offline) return { title: "You're offline", body: cached ? keep : OFFLINE_BODY }
   // A 4xx for the hashed file: the site was updated since this page loaded.
-  if (isDownloadFailure(message) && /HTTP 4\d\d/.test(message)) {
+  if (isDownloadFailure(message) && isClientErrorDownload(message)) {
     return { title: "The Platform verifier didn't download", body: 'This site was updated since the page loaded. Reload the page.' }
   }
   if (isDownloadFailure(message)) {

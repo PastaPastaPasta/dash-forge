@@ -43,6 +43,11 @@ export function isDownloadFailure(e: unknown): boolean {
   return /the Platform SDK download/.test(errorMessage(e, ''))
 }
 
+/** An HTTP 4xx for the verifier, except timeout / too many requests: another try fails the same way. */
+export function isClientErrorDownload(e: unknown): boolean {
+  return /HTTP 4(?!08|29)\d\d/.test(errorMessage(e, ''))
+}
+
 /** The connect failed because the quorum key service did not answer (see {@link QUORUM_SERVICE}). */
 export function isQuorumServiceError(e: unknown): boolean {
   return QUORUM_SERVICE.test(errorMessage(e, ''))

@@ -61,6 +61,8 @@ describe('connectFailureCopy: offline and a failed verifier download', () => {
     const c = connectFailureCopy('the Platform SDK download failed (HTTP 404)', { network: 'testnet', cached: false })
     expect(c.title).toBe("The Platform verifier didn't download")
     expect(c.body).toBe('This site was updated since the page loaded. Reload the page.')
+    // Timeout and too many requests are transient: they keep the connection advice.
+    expect(connectFailureCopy('the Platform SDK download failed (HTTP 429)', { network: 'testnet', cached: false }).body).toMatch(/Check your connection/)
   })
 })
 

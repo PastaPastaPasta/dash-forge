@@ -137,7 +137,8 @@ export const RECOVER_MAX_WAIT_MS = 15_000
  * Waits before each automatic retry of a failed connect. After the last one the service stops
  * retrying by itself (`stopped`): a link that failed this many connects in a row will not get
  * better on a timer, and a page that spins on it forever reads as broken. "Try again", a tab that
- * is shown again, or the browser coming back online tries once more.
+ * is shown again, or the browser coming back online tries again. Failures while the browser is
+ * offline do not count: no timer runs then, and coming back online retries at once.
  */
 export const CONNECT_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000, 60_000]
 /** A connect (quorum prefetch + contract warm-up) that takes longer than this is abandoned. */
@@ -159,7 +160,7 @@ export type SdkStatus =
   /**
    * The connect failed; `retryAt` is when the next automatic attempt runs (epoch ms). `stopped`:
    * the automatic retries ran out ({@link CONNECT_BACKOFF_MS}); only "Try again" (or the tab
-   * shown again, or the browser back online) tries once more.
+   * shown again, or the browser back online) tries again.
    */
   | { readonly phase: 'error'; readonly message: string; readonly retryAt: number | null; readonly stopped?: boolean }
 
@@ -589,7 +590,7 @@ export class EvoSdkService {
       this.setStatus({ ...this.status, retryAt: null })
       return
     }
-    const wait = CONNECT_BACKOFF_MS[this.failures - 1] ?? 5_000
+    const wait = CONNECT_BACKOFF_MS[Math.max(this.failures, 1) - 1] ?? 5_000
     this.setStatus({ ...this.status, retryAt: this.clock.now() + wait })
     this.retryTimer = this.clock.setTimeout(() => {
       this.retryTimer = null

@@ -11,7 +11,7 @@
  * call after a failure.
  */
 
-import { isDownloadFailure } from './unreachable'
+import { isClientErrorDownload, isDownloadFailure } from './unreachable'
 
 /** Download progress in bytes of wasm received (after any transfer encoding is undone). */
 export interface DownloadProgress {
@@ -122,7 +122,7 @@ export async function fetchAndCompileWithRetry(
       // body that is not wasm (a stale deploy serving HTML), which fails the same way again.
       const permanent =
         (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.CompileError) ||
-        (e instanceof Error && /HTTP 4(?!08|29)\d\d/.test(e.message))
+        isClientErrorDownload(e)
       const wait = waits[attempt]
       if (permanent || wait === undefined) throw e
       await new Promise((r) => setTimeout(r, wait))
