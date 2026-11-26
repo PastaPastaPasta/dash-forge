@@ -103,8 +103,10 @@ export function revisionOf(doc: PlainDocument): number {
  * Every stored revision of the `type` document `id` of `repo`, oldest first (Platform's
  * `getDocumentHistory`, proved): only a type that keeps history (an issue, a PR) has more than its
  * current revision. At most {@link MAX_HISTORY}. From protocol 15 each page continues after the
- * last revision read; protocol 14 serves only `startAtMs`, so there a page starts at the last
- * revision's time and skips the revisions already read.
+ * last revision read; protocol 14 serves only `startAtMs`, exclusive there and with one revision
+ * per time, so a page starts after the last revision's time. (An SDK that has not yet learned 15
+ * sends `startAtMs` to a protocol-15 network, where it is inclusive: the revisions already read
+ * are skipped.)
  */
 export async function readDocumentHistory(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', id: string): Promise<PlainDocument[]> {
   const out: PlainDocument[] = []

@@ -1108,8 +1108,10 @@ impl PlatformClient {
     /// first (Platform's `getDocumentHistory`, proved): only a type that keeps history
     /// (`documentsKeepHistory`, an issue or a PR) has more than its current revision. At most
     /// `max` revisions are read, ten per request (Drive's page limit). From protocol 15 each page
-    /// continues after the last revision read; protocol 14 serves only a start time, so there a
-    /// page starts at the last revision's time and skips the revisions already read.
+    /// continues after the last revision read; protocol 14 serves only a start time, exclusive
+    /// there and with one revision per time, so a page starts after the last revision's time. (An
+    /// SDK that has not yet learned 15 sends a start time to a protocol-15 network, where it is
+    /// inclusive: the revisions already read are skipped.)
     pub async fn fetch_document_history(
         &self,
         contract: &LoadedContract,
