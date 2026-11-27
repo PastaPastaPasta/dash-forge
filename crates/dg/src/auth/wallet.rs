@@ -864,6 +864,11 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let replaced = key_store.main_slot_replaced(&network, &grant.identity_id)?;
     let held = held_keys(ctx, &replaced, &grant.identity_id);
     guard_replacement(ctx, &held, renewing)?;
+    key_store.may_replace(
+        held.iter()
+            .filter(|h| h.key.as_ref().is_ok_and(|b| b.master_key().is_none()))
+            .map(|h| h.source.clone()),
+    );
     // A request naming forge-user is a new app to the wallet, so it may not disable the key it
     // granted this computer under forge-core: the chain says whether it did.
     let app = if forge.user.is_some() && !args.no_sync {

@@ -15,7 +15,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Fixed
 
-- **A wallet renewal no longer asks about a master key it does not touch.** After a `--full-key` sign-in on a computer with a keychain, every wallet renewal asked about the master-key file and refused under `--yes`, though the wallet's key goes to the keychain. dg now asks only about what the store overwrites, says where the master key stays (`masterKeyKeptAt` in `--json`), and refuses to fall back to a key file it did not ask about when the keychain refuses the key ([#764](https://github.com/PastaPastaPasta/dash-forge/pull/764)).
+- **A wallet renewal no longer asks about a master key it does not touch.** After a `--full-key` sign-in on a computer with a keychain, every wallet renewal asked about the master-key file and refused under `--yes`, though the wallet's key goes to the keychain. dg now asks only about what the store overwrites, says where the master key stays (`masterKeyKeptAt` in `--json`), and, when the keychain refuses the key, never falls back over a key file holding a master key or one it cannot open ([#764](https://github.com/PastaPastaPasta/dash-forge/pull/764)).
 
 ## [0.3.1] - 2026-11-26
 

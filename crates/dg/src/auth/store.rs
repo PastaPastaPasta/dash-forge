@@ -244,10 +244,15 @@ impl Storer {
         }
         let path = slot_file(network, identity_id, slot)?;
         let guarded = self.guarded_main.as_deref().filter(|_| slot == Slot::Main);
-        if self.insecure_plaintext && !self.no_keychain {
+        // Refused before a passphrase is asked for, unless only that passphrase can tell (a
+        // sealed file).
+        let sealed_there = std::fs::read_to_string(&path).is_ok_and(|raw| sealed::is_sealed(&raw));
+        if !sealed_there || (self.insecure_plaintext && !self.no_keychain) {
             if let Some(refused) = unguarded_overwrite(guarded, &path, None) {
                 return Err(refused.into());
             }
+        }
+        if self.insecure_plaintext && !self.no_keychain {
             keep_replaced_file(&path, text.expose().as_bytes(), slot)?;
             keystore::write_private_file(&path, text.expose().as_bytes())?;
             return Ok(Stored::Plaintext(path));
@@ -300,7 +305,12 @@ fn unguarded_overwrite(
     pass: Option<&Secret>,
 ) -> Option<UserError> {
     let predicted = predicted?;
-    if !path.exists() || predicted.contains(&path.to_string_lossy().into_owned()) {
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.into());
+    if !path.exists()
+        || predicted
+            .iter()
+            .any(|s| real(std::path::Path::new(s)) == real(path))
+    {
         return None;
     }
     let raw = std::fs::read_to_string(path).ok();
@@ -311,7 +321,7 @@ fn unguarded_overwrite(
         let opened = sealed::open(raw, pass?.expose()).ok()?;
         keystore::BridgeIdentity::from_source_text(std::str::from_utf8(&opened).ok()?).ok()
     });
-    if plain.is_some_and(|b| b.master_key().is_none()) {
+    if plain.as_ref().is_some_and(|b| b.master_key().is_none()) {
         return None;
     }
     Some(
@@ -320,8 +330,15 @@ fn unguarded_overwrite(
             "the key could not be stored in the keychain, and the key file there was kept",
         )
         .cause(format!(
-            "the keychain did not take the key, and {} holds a master key or a key dg could not open",
-            path.display()
+            "the keychain did not take the key, and {} holds {}",
+            path.display(),
+            if plain.is_some() {
+                "this identity's master key"
+            } else if raw.as_deref().is_some_and(sealed::is_sealed) {
+                "a key sealed with another passphrase than the one typed, so dg cannot tell whether it is the master key"
+            } else {
+                "something dg could not read as a key"
+            }
         ))
         .fix("unlock the keychain (over SSH on a Mac: `security unlock-keychain`) and run it again")
         .fix(format!(
@@ -502,6 +519,14 @@ impl Storer {
         let predicted = self.predict_main(network, identity_id)?;
         self.guarded_main = Some(predicted.clone());
         Ok(predicted)
+    }
+
+    /// Key sources the caller opened and found to hold no master key: a main-slot fallback may
+    /// write over them (after keeping a copy) whatever passphrase this run seals with.
+    pub fn may_replace(&mut self, sources: impl IntoIterator<Item = String>) {
+        if let Some(guarded) = self.guarded_main.as_mut() {
+            guarded.extend(sources);
+        }
     }
 
     fn predict_main(&self, network: &str, identity_id: &str) -> Result<Vec<String>> {
@@ -709,7 +734,7 @@ mod tests {
     /// #664 review: the keychain refusing the key never writes over a master key (or a key that
     /// does not open) nobody was asked about; a limited key there is replaced as usual.
     #[test]
-    fn a_key_file_the_guard_did_not_name_is_never_written_over() {
+    fn the_keychain_fallback_never_writes_over_a_master_key_unasked() {
         // the testnet WIF of 0x11..11 (.gitleaks.toml lists it as a public example)
         let wif = "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
         let master = &serde_json::json!({
@@ -737,13 +762,26 @@ mod tests {
             .is_some());
         let u = refused(None).expect("a master key is refused");
         assert_eq!(u.code, codes::USAGE);
-        assert!(u.cause.as_deref().unwrap().contains("master key"));
+        assert!(
+            u.cause
+                .as_deref()
+                .unwrap()
+                .contains("this identity's master key"),
+            "{u:?}"
+        );
         std::fs::write(
             &file,
             sealed::seal(master.as_bytes(), "test-passphrase-1").unwrap(),
         )
         .unwrap();
-        assert!(refused(Some(&pass)).is_some(), "a sealed master key");
+        assert!(
+            refused(Some(&pass)).is_some_and(|u| u
+                .cause
+                .as_deref()
+                .unwrap()
+                .contains("this identity's master key")),
+            "a sealed master key"
+        );
         assert!(
             refused(None).is_some(),
             "a sealed file without its passphrase"
@@ -760,7 +798,11 @@ mod tests {
         .unwrap();
         assert!(refused(Some(&pass)).is_none(), "a sealed limited key");
         assert!(
-            refused(Some(&Secret::new("other-passphrase-2"))).is_some(),
+            refused(Some(&Secret::new("other-passphrase-2"))).is_some_and(|u| u
+                .cause
+                .as_deref()
+                .unwrap()
+                .contains("another passphrase")),
             "another passphrase"
         );
         std::fs::write(&file, master).unwrap();
