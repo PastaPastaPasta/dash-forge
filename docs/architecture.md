@@ -2,7 +2,7 @@
 
 Follows `../INIT.md` (design path & PRDs); deviations forced by verified platform constraints are listed in [init-reconciliation.md](init-reconciliation.md).
 
-The on-chain model is **forge-v2**: shared contracts in one Platform protocol 14 contract group. Testnet and mainnet run four, forge-core, forge-collab, forge-community and forge-meta; devnets may run the first three alone. Testnet also has forge-user, which keeps a person's own settings (§4.1). The full specification is [contracts/forge-v2.md](contracts/forge-v2.md). (forge-v1, a global registry contract plus one contract per repository with token access control, was removed on 2026-09-26 with no backwards compatibility.)
+The on-chain model is **forge-v2**: shared contracts in one Platform protocol 14 contract group. Testnet and mainnet run four, forge-core, forge-collab, forge-community and forge-meta; devnets may run the first three alone. Both also run forge-user, which keeps a person's own settings (§4.1). The full specification is [contracts/forge-v2.md](contracts/forge-v2.md). (forge-v1, a global registry contract plus one contract per repository with token access control, was removed on 2026-09-26 with no backwards compatibility.)
 
 ## 1. Goals and non-goals
 
@@ -62,7 +62,7 @@ Shared contracts, registered once per network by one deployer identity and joine
 - **forge-collab**: `issue`, `patch` (PR), `transition` (open, closed, merged, draft and lock state, as a consensus sum), `comment`, `review`, `repoKey` (private repositories' key wraps) and `ban` (a maintainer's ban of an identity from a repo).
 - **forge-community**: `event` (member actions: label, assign, ...), `authorEvent` (actions the target's author may take), `milestone`, `runner` and `checkRun` (CI results written by runner identities), `policy` (branch policy), `webhook` (relay subscription, secret encrypted to the relay identity), and the social graph (`profile`, `star`, `watch`, `follow`).
 - **forge-meta** (testnet and mainnet): takes `label`, `topic` and `packMirror` from forge-core, `repoKey` and `ban` from forge-collab, and `profile` and `follow` from forge-community, and adds the passkey vault (`vaultEntry`) and boards (`board`, `card`). forge-core gains `pushGrant` (a bot's push grant) on the same set. On a devnet with three contracts those types stay where the list above puts them. Clients read the layout from the deployment record.
-- **forge-user** (testnet only, in the same group): `state`, `share` and `grant`, the settings that follow a person's identity between devices. Until it is registered on mainnet, those settings stay on the device there.
+- **forge-user** (testnet and mainnet, in the same group): `state`, `share` and `grant`, the settings that follow a person's identity between devices.
 
 ### 4.2 Membership gates (the authorization system)
 - Access is **membership documents** in forge-core: `maintainer` and `writer`, unique per `(repoId, memberId)`, created only by the repo owner (`dg collab add <owner/name> <member> --role writer|maintainer`, `dg collab remove`, `dg collab list`). The membership list is on-chain and publicly queryable.

@@ -192,6 +192,8 @@ cmd('auth login', 'Signed in: the identity and the key stored for it.', {
     'previousKeyKeptAt': D('Where the keys this sign-in replaced were kept, as key sources `--identity` '
                            'takes: a `.bak-<UTC time>` copy of the key file, or a `keychain:` entry of that '
                            'name. Empty when nothing was replaced.', SA),
+    'masterKeyKeptAt': D('With `--wallet`: the key source that still holds this identity\'s master key, which '
+                         'the wallet\'s key only replaced as the default; else null.', nl(S)),
 }, ['status', 'identityId', 'network'])
 cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', {
     'network': S, 'authenticated': B, 'identityId': S, 'names': SA, 'keyId': nl(I), 'keyDisabled': nl(B),
@@ -917,6 +919,19 @@ cmd('storage mirror list', 'The pack mirrors recorded for a repository, or by yo
 cmd('storage mirror remove', 'A pack mirror record deleted.', {
     'status': E('removed'), 'documentId': S, 'type': E('packMirror'),
 }, ['status', 'documentId'])
+cmd('storage sync move-key', 'Synced settings moved to a new sync key, or already under the newest one.', {
+    'status': D('moved: this run moved or finished moving; current: already under the newest key, nothing written.', E('moved', 'current')),
+    'identityId': S, 'keyId': I,
+    'disabledKeyIds': D('The keys this run disabled; empty when an earlier run or another device already moved.', A(I)),
+    'resealed': D('Slots sealed again under the new key.', SA),
+    'created': D('Slots created empty under the new key.', SA),
+    'shares': D('Repositories whose shared storage moved to a new epoch.', SA),
+    'grantsRewritten': I, 'grantsDropped': I,
+    'storedAt': D('Where this computer keeps the key; null when nothing changed.', nl(S)),
+}, ['status', 'identityId', 'keyId'])
+cmd('storage sync add-key', 'This computer\'s sync key, added or already current.', {
+    'status': E('added', 'current'), 'identityId': S, 'keyId': I, 'storedAt': nl(S),
+}, ['status', 'identityId', 'keyId'])
 
 # -- webhooks, CI -----------------------------------------------------------------------------
 cmd('webhook add', 'A webhook registered with a relay.', {

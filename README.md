@@ -8,7 +8,7 @@
 |---|---|
 | **Mainnet** | Live since 2026-11-24 at **[forge.dashhq.org](https://forge.dashhq.org)**. Real DASH. |
 | **Testnet** | Live at **[testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)**. Free test DASH; the network can be reset. |
-| **Binaries** | The latest release, [v0.2.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0) (2026-11-22), predates mainnet and works on **testnet only**. There is no mainnet release yet: to use mainnet from the terminal, build from source (below). |
+| **Binaries** | The latest release, [v0.3.1](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.1) (2026-11-26), works on **mainnet** and **testnet**. Testnet stays its default network ([release notes](docs/releases/v0.3.1.md)). |
 
 [Networks](docs/networks.md) has contract ids and history.
 
@@ -22,12 +22,10 @@ Then **New → Repository**, and **Settings → Storage** to choose where code i
 
 ## Use it from the terminal
 
-`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Build both (needs Rust, `protoc` 25+ and, on Linux, a C compiler, `pkg-config` and the OpenSSL headers; see [INSTALL.md](docs/INSTALL.md#build-from-source)):
+`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Install both from the latest release ([v0.3.1](docs/releases/v0.3.1.md); the script checks the release archive's SHA-256 and installs into `~/.local/bin`):
 
 ```sh
-git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
-cargo install --locked --path crates/dg
-cargo install --locked --path crates/git-remote-dash
+curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
 ```
 
 Sign in with your wallet, then publish a repository:
@@ -38,10 +36,10 @@ dg storage add                             # where packs go: your S3 bucket, you
 dg init                                    # creates the repository, adds `origin`, pushes this branch
 ```
 
-Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push`. Every push prints its cost first ([costs](docs/guides/costs.md)).
+Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push` (to clone from mainnet before you sign in there: `git clone -c dash.network=mainnet dash://<owner>/<repo>`). Every push prints its cost first ([costs](docs/guides/costs.md)).
 
 - **Network:** `--network mainnet` on the first sign-in makes mainnet your default for `dg` and `git`. Without it the tools use testnet (free test DASH; DashPay's testnet build).
-- **v0.2.0 binaries:** `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh` installs them ([INSTALL.md](docs/INSTALL.md)). They work on testnet only and have no `--wallet`, so sign in with an identity file there.
+- **Other installs:** Windows, manual downloads, attestations and building from source (Rust, `protoc` 25+ and, on Linux, a C compiler, `pkg-config` and the OpenSSL headers) are in [INSTALL.md](docs/INSTALL.md#build-from-source).
 
 <details>
 <summary>Other ways to sign in (CI, scripts, developers)</summary>

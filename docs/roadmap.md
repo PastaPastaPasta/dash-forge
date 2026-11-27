@@ -194,7 +194,8 @@ Deferred, none blocking a testnet launch (stated as known limitations, not promi
 - [ ] Durability and risk statement, terms, privacy notice and an announcement channel (owner-approved); the soft-launch period; the announcement.
 
 ### Phase 6 — Mainnet launch (S, gated on PV14 mainnet)
-- [x] The owner registers the forge-v2 contracts (D-D); commit `deployments/mainnet.json`; mainnet web build (network switch retained). *Done 2026-11-24: forge.dashhq.org serves mainnet, testnet moved to testnet-forge.dashhq.org ([networks.md](networks.md)). No release has the mainnet contracts yet: v0.2.0 is testnet only.*
+- [x] The owner registers the forge-v2 contracts (D-D); commit `deployments/mainnet.json`; mainnet web build (network switch retained). *Done 2026-11-24: forge.dashhq.org serves mainnet, testnet moved to testnet-forge.dashhq.org ([networks.md](networks.md)). v0.3.0 is the first release with the mainnet contracts; v0.2.0 is testnet only.*
+- [x] Tag and publish v0.3.0, the first release whose `dg` and `git-remote-dash` know the mainnet contracts; the default network stays testnet.
 - [ ] dashpay mirrors on mainnet; Dash Forge hosts itself on Forge with GitHub as its mirror. *Partial: this repository is mirrored to mainnet Forge on every push to master (`forge-sync`), but its home is still GitHub.*
 - [ ] Weekly mainnet smoke run from a user-funded CI identity.
 

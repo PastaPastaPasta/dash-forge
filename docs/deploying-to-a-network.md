@@ -4,7 +4,7 @@
 
 Registration is the one step in a Forge launch that cannot be undone. Contracts cannot be deleted or re-owned, and an update may only add types and optional properties or loosen a few bounds ([after registration](#7-after-registration-what-can-still-change)). Rehearse it on a scratch set first, and read this page to the end before you broadcast anything.
 
-**Status.** Forge is registered on testnet (2026-10-26) and mainnet (2026-11-24). A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; on any other network every client reports "not deployed" ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where, and [forge-v2.md](contracts/forge-v2.md#where-they-are-registered) lists the ids. Testnet also has a fifth contract, forge-user (2026-11-25, settings that follow a person's identity), in the same group; it is not registered on mainnet, and this page does not cover it.
+**Status.** Forge is registered on testnet (2026-10-26) and mainnet (2026-11-24). A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; on any other network every client reports "not deployed" ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where, and [forge-v2.md](contracts/forge-v2.md#where-they-are-registered) lists the ids. Both networks also have a fifth contract, forge-user (settings that follow a person's identity), in the same group, registered with `forge-contracts/scripts/deploy-user.mjs`; this page does not cover it.
 
 1. [What is registered](#1-what-is-registered)
 2. [Before you register](#2-before-you-register)
@@ -45,7 +45,7 @@ A group-bound key can sign for every member of the group ([Contract group trust]
 
 All of these come first. `deploy-v2.mjs` enforces the ones it can; the rest are on you.
 
-1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.1.0-rc.2 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
+1. **The platform pin.** `forge-contracts/sdk-v2/package.json` pins the SDK the script uses (`@dashevo/evo-sdk` 5.1.0 today); the clients, `dg` and the web app, pin the same release. Run `(cd forge-contracts/sdk-v2 && npm ci)`. The script refuses to broadcast unless the network runs protocol 14 (`PROTOCOL_VERSION` in `deploy-v2.mjs`).
 2. **Freeze the schema.** Rules, indexes and config freeze at registration ([§7](#7-after-registration-what-can-still-change)). Decide `config.readonly` (it can only be set at registration; Forge registers writable so later additive updates can land) and every other now-or-never choice, and merge the schema to `master`. The script refuses to register files that differ from git `HEAD`, a `HEAD` that is not on a branch of `origin`, or a committed set that `build.py --check` rejects.
 3. **Rehearse on a scratch set.** Register the same committed JSON under a throwaway deployer and run the live suites against it, on the same network and the same Platform release. A scratch registration is permanent too, so use a different deployer from the real one:
 

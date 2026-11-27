@@ -456,7 +456,7 @@ pub struct ForgeIds {
     /// The group must also have no admins (`deploy-v2.mjs` registers none).
     pub group_owner: Option<String>,
     /// forge-user (settings that follow the identity), a member of the same group; `None`
-    /// where it is not registered (mainnet, until the owner registers it).
+    /// where it is not registered (a devnet without it).
     pub user: Option<String>,
 }
 

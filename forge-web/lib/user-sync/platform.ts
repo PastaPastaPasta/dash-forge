@@ -37,11 +37,26 @@ export interface SyncPublicKey {
   readonly pub: Uint8Array
 }
 
+/** One of an identity's forge-user ENCRYPTION keys, live or disabled. */
+export interface IdentitySyncKey extends SyncPublicKey {
+  readonly disabled: boolean
+}
+
+/** An identity's forge-user ENCRYPTION keys (live and disabled, oldest first) and its highest key id of any kind. */
+export interface IdentitySyncKeys {
+  readonly keys: readonly IdentitySyncKey[]
+  readonly maxKeyId: number
+}
+
 /** What sync reads and writes on Platform. A fake implements it in tests. */
 export interface UserSyncPort {
   readState(ownerId: string, slot: string): Promise<Stored<StateFields> | null>
+  /** Every `state` slot `ownerId` has. */
+  statesOf(ownerId: string): Promise<Stored<StateFields>[]>
   writeState(fields: StateFields, existing: Stored<StateFields> | null): Promise<void>
   readShare(ownerId: string, repoId: string): Promise<Stored<ShareFields> | null>
+  /** Every `share` `ownerId` made, with its repo. */
+  sharesOf(ownerId: string): Promise<{ readonly repoId: string; readonly share: Stored<ShareFields> }[]>
   writeShare(repoId: string, fields: ShareFields, existing: Stored<ShareFields> | null): Promise<void>
   /** The grants `ownerId` made for `repoId`. */
   grantsOf(ownerId: string, repoId: string): Promise<Stored<GrantFields>[]>
@@ -53,6 +68,8 @@ export interface UserSyncPort {
   syncKey(identityId: string, keyId?: number): Promise<SyncPublicKey | null>
   /** Every live forge-user ENCRYPTION key of `identityId`, oldest (lowest id) first (forge-core `encryption_keys`). */
   syncKeys(identityId: string): Promise<readonly SyncPublicKey[]>
+  /** `identityId`'s forge-user ENCRYPTION keys, disabled ones too, or null when the identity is not found. */
+  identitySyncKeys(identityId: string): Promise<IdentitySyncKeys | null>
 }
 
 const isU32 = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 0xffffffff
@@ -147,12 +164,12 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
     }
     await replaceDocumentIdempotent(sdk, signer(), { contractId, documentType, documentId: existing.id, changes, ...(existing.revision !== undefined ? { expectedRevision: existing.revision } : {}) })
   }
-  // Live forge-user ENCRYPTION keys bound to this contract with a usable public key, oldest first.
-  const liveSyncKeys = async (identityId: string): Promise<readonly SyncPublicKey[]> => {
+  // forge-user ENCRYPTION keys bound to this contract with a usable public key, oldest first.
+  const allSyncKeys = async (identityId: string): Promise<IdentitySyncKeys | null> => {
     const identity = await authSdk(sdk).identities.fetch(identityId)
-    if (!identity) return []
-    const live = identity.publicKeys.filter((k) => {
-      if (k.disabledAt !== undefined || k.purposeNumber !== KeyPurpose.ENCRYPTION || k.keyTypeNumber !== KeyType.ECDSA_SECP256K1) return false
+    if (!identity) return null
+    const ours = identity.publicKeys.filter((k) => {
+      if (k.purposeNumber !== KeyPurpose.ENCRYPTION || k.keyTypeNumber !== KeyType.ECDSA_SECP256K1) return false
       if (typeof k.data !== 'string' || !/^(?:[0-9a-f]{2}){33}$/i.test(k.data)) return false
       try {
         const b = k.contractBounds?.toJSON()
@@ -161,12 +178,19 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
         return false
       }
     })
-    return live.sort((a, b) => a.keyId - b.keyId).map((k) => ({ keyId: k.keyId, pub: hexToBytes(k.data as string) }))
+    const keys = ours.sort((a, b) => a.keyId - b.keyId).map((k) => ({ keyId: k.keyId, pub: hexToBytes(k.data as string), disabled: k.disabledAt !== undefined }))
+    return { keys, maxKeyId: Math.max(-1, ...identity.publicKeys.map((k) => k.keyId)) }
   }
+  const liveSyncKeys = async (identityId: string): Promise<readonly SyncPublicKey[]> =>
+    ((await allSyncKeys(identityId))?.keys ?? []).filter((k) => !k.disabled).map(({ keyId, pub }) => ({ keyId, pub }))
   return {
     async readState(ownerId, slot) {
       const doc = await one('state', [['$ownerId', '==', ownerId], ['slot', '==', slot]], [['slot', 'asc']])
       return doc ? stateOf(doc, ownerId, slot) : null
+    },
+    async statesOf(ownerId) {
+      const documents = await queryAllDocuments(sdk, { dataContractId: contractId, documentTypeName: 'state', where: [['$ownerId', '==', ownerId]], orderBy: [['slot', 'asc']] })
+      return documents.map((d) => stateOf(d, ownerId, typeof d['slot'] === 'string' ? d['slot'] : ''))
     },
     async writeState(f, existing) {
       const changes = { v: f.v, keyId: f.keyId, n: f.n, d0: f.d0, d1: f.d1, d2: f.d2 }
@@ -175,6 +199,14 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
     async readShare(ownerId, repoId) {
       const doc = await one('share', [['$ownerId', '==', ownerId], ['repoId', '==', repoId]], [['repoId', 'asc']])
       return doc ? shareOf(doc, ownerId, repoId) : null
+    },
+    async sharesOf(ownerId) {
+      const documents = await queryAllDocuments(sdk, { dataContractId: contractId, documentTypeName: 'share', where: [['$ownerId', '==', ownerId]], orderBy: [['repoId', 'asc']] })
+      return documents.map((d) => {
+        const repoId = idOf(d['repoId'])
+        if (repoId === null) throw unreadable('storage share')
+        return { repoId, share: shareOf(d, ownerId, repoId) }
+      })
     },
     async writeShare(repoId, f, existing) {
       const changes = { epoch: f.epoch, keyId: f.keyId, n: f.n, d0: f.d0, d1: f.d1 }
@@ -197,5 +229,6 @@ export function forgeUserPort(sdk: EvoSDK, contractId: string, auth: WriteAuth |
       return (keyId === undefined ? live.at(-1) : live.find((k) => k.keyId === keyId)) ?? null
     },
     syncKeys: liveSyncKeys,
+    identitySyncKeys: allSyncKeys,
   }
 }

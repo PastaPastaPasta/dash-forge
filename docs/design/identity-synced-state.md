@@ -1,6 +1,6 @@
 # Settings that follow the identity (storage, preferences, maintainer access)
 
-Status: built. Settings sync shipped in [#729](https://github.com/PastaPastaPasta/dash-forge/pull/729), and repo-only maintainer sharing in [#740](https://github.com/PastaPastaPasta/dash-forge/pull/740). testnet-forge.dashhq.org runs both; `dg` has them when built from source (no release includes them yet). forge-user is registered on testnet only; mainnet is the owner's decision (§9). Designed 2026-11-25. Request from the owner (via Forge PM): "if I set up storage in cli via dash wallet login, any other dash wallet login should share that storage automatically, whether in another wallet or computer. Being a maintainer should let someone else see the storage / use the storage (r2 / ipfs, not platform spend)."
+Status: built. Settings sync shipped in [#729](https://github.com/PastaPastaPasta/dash-forge/pull/729), and repo-only maintainer sharing in [#740](https://github.com/PastaPastaPasta/dash-forge/pull/740). testnet-forge.dashhq.org and forge.dashhq.org run both; `dg` has them on testnet from v0.3.0 (use v0.3.1 or later, since v0.3.0 fails on testnet's protocol 15) and on mainnet from the first release after v0.3.1. forge-user is registered on testnet (2026-11-25) and mainnet (2026-11-26 UTC, §9). Designed 2026-11-25. Request from the owner (via Forge PM): "if I set up storage in cli via dash wallet login, any other dash wallet login should share that storage automatically, whether in another wallet or computer. Being a maintainer should let someone else see the storage / use the storage (r2 / ipfs, not platform spend)."
 
 ## 1. Where things live today
 
@@ -99,7 +99,7 @@ The removed member can no longer read the current share. **What cannot be revoke
 | XSS in the Forge origin, with a session unlocked | `E`, and through it the synced config. This is the same exposure as today's vault blob and private-repo key | the wallet seed, other apps' keys |
 | Malware on a device running dg | `E` from the keychain or sealed file. This is equivalent to today's storage.toml secrets | the seed |
 | A phishing page that gets a wallet approval | `E` (SECU-08), and with it this identity's synced settings, including storage credentials, and every repo share the identity can open. That's more than an auth-key phish gives. | the seed, and other apps' keys |
-| Disabling `E` on-chain | blocks new grants to it | old ciphertext. The rotation path is a new rotation index, which the wallets do not offer yet |
+| Disabling `E` on-chain | blocks new grants to it | old ciphertext. Moving to a new rotation from the recovery phrase (§12) is what shuts the old key out |
 
 `E` is bound to `forge-user` only. It can't open private-repo content (that uses the separate encryption key from Settings) and can't sign anything.
 
@@ -125,11 +125,11 @@ The removed member can no longer read the current share. **What cannot be revoke
   - A wallet that refuses the binding (an older iOS) leaves the user unable to sign in. To prevent that, a refusal of type `unsupported` or `invalid` is retried once without the binding and with the old `appId`.
 - **Shares made from the default storage (testnet only).** Builds before repo-specific sharing could share the owner's synced default. At the owner's next reconcile (a push, `dg collab add/remove`, `dg storage share`, or a visit to the repo's settings) such a share, whose repo has no `repo:<id>` entry, moves to an empty share at the next epoch and every grant is revoked: the same path as a removal. The same happens to a version 1 share that lends storage when the repo's `repo:<id>` entry can't be used (§5). The owner sees one line saying the default storage is no longer shared, how to set storage for the repo, and where to rotate what the maintainers saw; the maintainers fall back to their own storage. Nothing local is deleted.
 - **Share version 2.** New clients write shares as `version: 2` and read versions 1 and 2. A dg that predates it refuses to rewrite a share newer than it knows (`crates/forge-core/src/user_sync/mod.rs`, "written by a newer Forge; update dg to change it"); its push prints a note and goes on, so it can't put back a share the new rule stopped. As a maintainer it still reads a version 2 share. The web app before it does not check the version, so the web app ships with or before the dg that writes version 2. A version 1 share that a usable `repo:<id>` entry replaces is written again as version 2 once, and so is an empty version 1 share when sharing stops. A share kept with no usable entry that lends nothing but still has grants (a stop that was interrupted) stops again, so those grants go.
-- **Mainnet.** `forge-user` is not registered on mainnet. Until it is, mainnet builds behave exactly as today (§7, last bullet). Registering it is the owner's decision (§9).
+- **Mainnet.** `forge-user` is registered on mainnet as `hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK` (2026-11-26 UTC, in group `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ`, recorded in `deployments/mainnet.json` `user`). Builds that embed that record sync on mainnet; older builds behave exactly as before (§7, last bullet).
 
 ## 9. Mainnet decision (owner)
 
-Registering `forge-user` on mainnet from the deployer `CL4UTHLA…` costs the amount measured by its testnet registration (recorded in `deployments/testnet.json` `user.costCredits`). Fees are protocol constants, so mainnet costs the same in credits. It needs the deployer key, which is only on the owner's machine. Until then, mainnet keeps device-local settings.
+Registering `forge-user` on mainnet from the deployer `CL4UTHLA…` costs a fixed registration fee: 0.20 DASH (0.1 base, 3 types at 0.02, 4 indexes at 0.01; rs-platform-version fee v3) plus storage and processing. The testnet registration's balance change wasn't captured. It needs the deployer key, which is only on the owner's machine. The owner approved it on 2026-11-25; it cost 20,141,511,940 credits (0.2014 DASH).
 
 ## 10. As built (where the code differs from the plan above)
 
@@ -167,3 +167,22 @@ The proof used builds of this branch, the testnet `forge-user` contract, and a R
    - The maintainer's push stores its pack on `share.G1SAVd3d.proof-s3`. Platform fees come from the maintainer's balance.
 6. **Removal.** `dg collab remove --role maintainer` prints the line about rotating credentials. On-chain, the share is at epoch 1 and no grants remain. The maintainer's next push is refused before anything is stored.
 
+## 12. Moving sync to a new key (#751)
+
+A wallet always hands out rotation 0, so a phished `E` stays good until the identity stops using it. The wallets offer no rotation, but the recovery phrase derives every rotation the same way they do.
+
+- **Derivation.** `E_r` is the wallet's key at `m/9'/coin'/5'/7'/0'/identityId'/contractId'/1'/r'` (coin 5 on mainnet, 1 elsewhere; the two ids are DIP-14 256-bit hardened children), from the phrase's BIP-39 seed with no passphrase, exactly as dashpay/kotlin-platform `platform-mobile/src/key_wallet.rs`. Its pre-rotation testnet path (no `r'` level) is recognised as "legacy". Fixture: `forge-contracts/fixtures/user-sync/rotation.json`, including that file's own wallet vectors; `tools/user-sync-vectors/rotation.py` generates it, and Rust and TypeScript both reproduce it.
+- **Move** (`dg storage sync move-key`, **Settings → Storage → Move sync to a new key**):
+  1. The phrase must make the identity's current forge-user key (the newest live one) and its master key (identity index 0 to 4). Otherwise nothing is written.
+  2. A run resumes only when the current key is the highest rotation the phrase makes and something is still sealed under another key, or this device holds an older one. Otherwise one master-key identity update adds `E_{max+1}` (ENCRYPTION, MEDIUM, bound to forge-user, at the next key id) and disables every live key the phrase makes. A legacy key moves to rotation 1, because rotation 0 is what wallets hand out.
+  3. Every `state` slot is sealed again under the new key with its plaintext unchanged, byte for byte, and read back. `storage` and `prefs` are created empty if missing, so a client holding the old key never starts them.
+  4. Every `share` moves to an epoch above every grant's, under `RSK(new key, epoch)`, with its content unchanged, then every grant is written again with the new `senderKeyId`. Grants to keys no longer live are deleted, as a reconcile does.
+  5. This device stores the new key.
+- **Add** (`dg storage sync add-key`, **Add the new key** / **Add the sync key**): derive rotations until one matches the current live key, then store it.
+- **Afterwards.** The wallet finds a current forge-user key that isn't its rotation 0, so it hands out no encryption key and registers none; the sign-in still succeeds (DashPay `AppConnectKeyState.currentEncryptionKey`). Clients holding an older key, released ones included, fail to open the re-sealed `storage` slot and write nothing (web `SyncKeyChangedError`, dg AEAD failure). New clients also check, before each write, that the key they hold is the identity's current one; a read that fails doesn't block the write.
+- **Compatibility.** No contract, document type or field changes. Only the values `keyId`, `epoch` and `senderKeyId` change, and only when the owner moves. Nothing local is deleted.
+- **Testnet proof (2026-11-27).** Identity `4hUrroaDe281iaMpW6KL5yR2V6LFsUiY6tFFFnMY5c2t` (`syncmove7q2x.dash`), signed in through DashPay's testnet build on the Platform 5.1 Kotlin SDK (released DashPay 11.9.2 and 12.0.2 can't read testnet since protocol 15).
+  - The wallet gave key #7 (rotation 0) to new `dg`, released `dg` v0.3.1 and the web app.
+  - The web app moved sync to key #12 and disabled #7. v0.3.1 then read no synced profile, and its new profile stayed local.
+  - Fresh wallet sign-ins got no sync key and no new key was registered; `add-key` and **Add the sync key** opened the earlier settings, and an update made under #12 reached the other devices.
+  - `dg storage sync move-key` then moved to #14, and the web app showed "moved" until it added the new key.

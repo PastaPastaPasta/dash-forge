@@ -59,6 +59,7 @@ pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
         } => share(ctx, repo, profiles.as_deref(), *copies, *stop).await,
         StorageCommand::Advertise { repo, remote } => advertise(ctx, repo, remote.as_deref()).await,
         StorageCommand::Mirror(cmd) => crate::pack_mirror::run(ctx, cmd).await,
+        StorageCommand::Sync(cmd) => crate::sync::run_key_command(ctx, cmd).await,
     }
 }
 
@@ -637,6 +638,13 @@ async fn list(ctx: &Ctx) -> Result<()> {
         .map(|(n, why)| json!({ "name": n, "why": why }))
         .collect();
     let synced_here = matches!(&sync, crate::sync::SyncState::On { .. });
+    let moved = match &sync {
+        crate::sync::SyncState::On { key, contract } if !ctx.json => match ctx.connect().await {
+            Ok(client) => crate::sync::moved_away(&client, contract, key).await,
+            Err(_) => false,
+        },
+        _ => false,
+    };
     ctx.emit(
         json!({
             "path": path.display().to_string(),
@@ -671,10 +679,13 @@ async fn list(ctx: &Ctx) -> Result<()> {
                 println!("  synced profile {name} is not usable here: {why}");
             }
             match &sync {
+                crate::sync::SyncState::On { .. } if moved => {
+                    println!("Note: {}", crate::sync::ADD_KEY_NOTE);
+                }
                 crate::sync::SyncState::On { .. } => {
                     println!("Synced with your identity: profiles marked synced come from another device.");
                 }
-                crate::sync::SyncState::Off => println!("{}", crate::sync::OFF_HINT),
+                crate::sync::SyncState::Off => println!("{}", crate::sync::off_hint(ctx)),
                 crate::sync::SyncState::Locked => println!(
                     "Settings sync is off for this run: its key is in a passphrase-sealed file; set DASH_FORGE_PASSPHRASE to use it"
                 ),

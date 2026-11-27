@@ -361,8 +361,8 @@ const RELEASES_URL = 'https://github.com/PastaPastaPasta/dash-forge/releases'
 const BUILDING_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/BUILDING.md'
 
 /**
- * Where the CLI comes from (`ux-dx-spec.md` §7.6; `docs/INSTALL.md`). Building from source works
- * from any commit, so it leads; the checksum-verified installer of the latest release follows.
+ * Where the CLI comes from (`ux-dx-spec.md` §7.6; `docs/INSTALL.md`). The checksum-verified
+ * installer of the latest release leads; building from source (any commit) is folded below it.
  */
 function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element {
   const link = 'text-forge-700 underline dark:text-forge-400'
@@ -370,7 +370,25 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
     <Dialog open={open} onClose={onClose} title="Install git-remote-dash and dg" description="Needed for git clone dash://… and pushes.">
       <div className="space-y-3 text-dense">
         <div>
-          <h3 className="mb-1 font-medium">From source (any OS)</h3>
+          <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS)</h3>
+          <div className="mb-1.5 flex">
+            <CommandBox text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" what="install command" />
+          </div>
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+            It downloads the latest release, checks its SHA-256 (and its GitHub attestation when <span className="font-mono">gh</span> is signed in),
+            then installs into <span className="font-mono">~/.local/bin</span>. Windows: the .zip on the{' '}
+            <a href={RELEASES_URL} target="_blank" rel="noreferrer noopener" className={link}>
+              Releases page
+            </a>
+            .
+          </p>
+          <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+            It defaults to testnet: for mainnet, sign in with <span className="font-mono">dg auth login --network mainnet</span>.
+          </p>
+        </div>
+        <details>
+          <summary className="cursor-pointer font-medium">From source (any OS)</summary>
+          <div className="mt-1.5">
           <div className="mb-1.5 flex">
             <CommandBox text="git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge" what="source clone command" />
           </div>
@@ -384,24 +402,8 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
             </a>
             ). On Windows, run the same commands in PowerShell.
           </p>
-        </div>
-        <div>
-          <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS, testnet only)</h3>
-          <div className="mb-1.5 flex">
-            <CommandBox text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" what="install command" />
           </div>
-          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            It downloads the latest release, checks its SHA-256 (and its GitHub attestation when <span className="font-mono">gh</span> is signed in),
-            then installs into <span className="font-mono">~/.local/bin</span>. Windows: the .zip on the{' '}
-            <a href={RELEASES_URL} target="_blank" rel="noreferrer noopener" className={link}>
-              Releases page
-            </a>
-            .
-          </p>
-          <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-            The latest release predates mainnet and wallet sign-in: build from source for either.
-          </p>
-        </div>
+        </details>
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           Then check it: <span className="font-mono">dg doctor</span>. Shell completions: <span className="font-mono">dg completions zsh</span>.
         </p>

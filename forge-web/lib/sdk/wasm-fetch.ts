@@ -11,6 +11,8 @@
  * call after a failure.
  */
 
+import { isClientErrorDownload, isDownloadFailure } from './unreachable'
+
 /** Download progress in bytes of wasm received (after any transfer encoding is undone). */
 export interface DownloadProgress {
   readonly loaded: number
@@ -69,13 +71,14 @@ export async function fetchAndCompile(
     }, stallMs)
   }
   arm()
+  let loaded = 0
+  // Reported before the request, so a server that never answers still shows the download view.
+  onProgress?.({ loaded, total })
   try {
     const response = await fetchImpl(url, { signal: controller.signal })
     if (!response.ok || response.body === null) {
       throw new Error(`the Platform SDK download failed (HTTP ${response.status})`)
     }
-    let loaded = 0
-    onProgress?.({ loaded, total })
     const counted = response.body.pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, out) {
@@ -119,7 +122,7 @@ export async function fetchAndCompileWithRetry(
       // body that is not wasm (a stale deploy serving HTML), which fails the same way again.
       const permanent =
         (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.CompileError) ||
-        (e instanceof Error && /HTTP 4(?!08|29)\d\d/.test(e.message))
+        isClientErrorDownload(e)
       const wait = waits[attempt]
       if (permanent || wait === undefined) throw e
       await new Promise((r) => setTimeout(r, wait))
@@ -148,7 +151,12 @@ export function compileWasm(): Promise<WebAssembly.Module> {
     // webpack emits the file as a hashed static asset and rewrites this to its URL (a
     // `new URL` specifier is a URL, so the path is relative, not a package name).
     const url = new URL('../../node_modules/@dashevo/wasm-sdk/dist/raw/wasm_sdk_bg.wasm', import.meta.url)
-    const run = fetchAndCompileWithRetry(url, WASM_BYTES, (p) => listeners.forEach((l) => l(p)))
+    // Every failure names the download, so the connect's failure copy says what did not arrive.
+    const run = fetchAndCompileWithRetry(url, WASM_BYTES, (p) => listeners.forEach((l) => l(p))).catch((e: unknown) => {
+      // A body that is not wasm (a stale deploy) is not a failed download: it keeps its own error.
+      if (isDownloadFailure(e) || e instanceof WebAssembly.CompileError) throw e
+      throw new Error(`the Platform SDK download failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
+    })
     compiled = run
     run.catch(() => {
       if (compiled === run) compiled = null

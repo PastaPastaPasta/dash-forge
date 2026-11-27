@@ -135,3 +135,30 @@ describe('fetchAndCompile: a server that never answers', () => {
     ).rejects.toThrow(/stalled/)
   })
 })
+
+describe('fetchAndCompileWithRetry: offline', () => {
+  it('offline, a failure still spends the retries and fails fast (the connect waits for the network)', async () => {
+    vi.stubGlobal('navigator', { onLine: false })
+    try {
+      const fetchImpl = vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      })
+      await expect(fetchAndCompileWithRetry('/x.wasm', 8, undefined, { fetchImpl, compile: drain, retryMs: [1] })).rejects.toThrow('Failed to fetch')
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('reports zero bytes before the request, so a server that never answers still shows the download', async () => {
+    const seen: number[] = []
+    const fetchImpl = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))),
+    )
+    await expect(
+      fetchAndCompile('/x.wasm', 100, (p) => seen.push(p.loaded), { fetchImpl: fetchImpl as unknown as typeof fetch, compile: drain, stallMs: 20 }),
+    ).rejects.toThrow(/stalled/)
+    expect(seen).toEqual([0])
+  })
+})

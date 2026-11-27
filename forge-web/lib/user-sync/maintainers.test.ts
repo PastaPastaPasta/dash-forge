@@ -479,6 +479,7 @@ describe('maintainers use the owner’s storage', () => {
       const { [`repo:${REPO}`]: _own, ...defaultOnly } = VIEW
       expect((await reconcileRepoShare(owner, { repoId: REPO, view: defaultOnly, maintainers: [ALICE] })).stopped).toBe('default')
       const rekeyed = { ...owner, keyId: 8 }
+      platform.keys.set(OWNER, { keyId: 8, pub: secp.getPublicKey(owner.E, true) })
       const done = await reconcileRepoShare(rekeyed, { repoId: REPO, view: defaultOnly, maintainers: [ALICE] })
       expect(done.stopped).toBeUndefined()
       expect([...platform.shares.values()][0]!.fields.keyId).toBe(8)

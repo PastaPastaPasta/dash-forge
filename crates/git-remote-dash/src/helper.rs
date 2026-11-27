@@ -1630,7 +1630,14 @@ impl Helper {
                 Some(view)
             }
             Err(e) => {
-                eprintln!("dash: note: your synced storage settings were not read ({e}); using this computer's");
+                if Self::sync_moved(&conn.client, &contract, &key).await {
+                    eprintln!(
+                        "dash: note: using this computer's storage settings; {}",
+                        forge_core::user_sync::rotate::ADD_KEY_NOTE
+                    );
+                } else {
+                    eprintln!("dash: note: your synced storage settings were not read ({e}); using this computer's");
+                }
                 None
             }
         }
@@ -1696,9 +1703,33 @@ impl Helper {
                 }
             }
             Err(e) => {
-                eprintln!("dash: note: this repository's shared storage was not updated ({e})");
+                if Self::sync_moved(&conn.client, &contract, &key).await {
+                    eprintln!(
+                        "dash: note: this repository's shared storage was not updated; {}",
+                        forge_core::user_sync::rotate::ADD_KEY_NOTE
+                    );
+                } else {
+                    eprintln!("dash: note: this repository's shared storage was not updated ({e})");
+                }
             }
         }
+    }
+
+    /// Whether sync moved away from `key` to a new key (one identity read; `false` when it
+    /// can't tell).
+    async fn sync_moved(
+        client: &forge_core::platform::PlatformClient,
+        contract: &str,
+        key: &forge_core::user_sync::SyncKey,
+    ) -> bool {
+        use forge_core::user_sync::{platform::PlatformUserStore, rotate};
+        let Ok(store) = PlatformUserStore::open(client, contract, None).await else {
+            return false;
+        };
+        matches!(
+            rotate::standing(&store, key).await,
+            Ok(rotate::KeyStanding::Moved)
+        )
     }
 
     /// [`Self::push`] of real refs (no `HEAD`).

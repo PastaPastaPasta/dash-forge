@@ -1036,16 +1036,30 @@ fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
 async fn check_storage(ctx: &Ctx) -> Vec<Check> {
     let sync = match crate::sync::state(ctx) {
         crate::sync::SyncState::Unavailable => None,
-        crate::sync::SyncState::Off => Some(Check::ok("settings sync", crate::sync::OFF_HINT)),
+        crate::sync::SyncState::Off => Some(Check::ok("settings sync", crate::sync::off_hint(ctx))),
         crate::sync::SyncState::Locked => Some(Check::warn(
             "settings sync",
             "its key is in a passphrase-sealed file, so this run uses this computer's storage only",
             "set DASH_FORGE_PASSPHRASE, or sign in with your wallet again where a keychain is available",
         )),
-        crate::sync::SyncState::On { .. } => Some(Check::ok(
-            "settings sync",
-            "on: storage profiles follow your identity across devices",
-        )),
+        crate::sync::SyncState::On { key, contract } => {
+            let moved = match ctx.connect().await {
+                Ok(client) => crate::sync::moved_away(&client, &contract, &key).await,
+                Err(_) => false,
+            };
+            Some(if moved {
+                Check::warn(
+                    "settings sync",
+                    "your synced settings moved to a new key, which this computer doesn't hold yet",
+                    "run `dg storage sync add-key`",
+                )
+            } else {
+                Check::ok(
+                    "settings sync",
+                    "on: storage profiles follow your identity across devices",
+                )
+            })
+        }
     };
     sync.into_iter()
         .chain(check_storage_profiles(ctx).await)

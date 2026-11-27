@@ -219,6 +219,8 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg storage remove` | [`storage-remove.schema.json`](dg/storage-remove.schema.json) |
 | `dg storage share` | [`storage-share.schema.json`](dg/storage-share.schema.json) |
 | `dg storage status` | [`storage-status.schema.json`](dg/storage-status.schema.json) |
+| `dg storage sync add-key` | [`storage-sync-add-key.schema.json`](dg/storage-sync-add-key.schema.json) |
+| `dg storage sync move-key` | [`storage-sync-move-key.schema.json`](dg/storage-sync-move-key.schema.json) |
 | `dg storage test` | [`storage-test.schema.json`](dg/storage-test.schema.json) |
 | `dg storage use` | [`storage-use.schema.json`](dg/storage-use.schema.json) |
 | `dg verify-app` | [`verify-app.schema.json`](dg/verify-app.schema.json) |

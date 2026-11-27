@@ -148,6 +148,29 @@ test('iPhone SE: every repo tab is reachable, the strip scrolls with a visible e
   expect(box!.x + box!.width).toBeLessThanOrEqual(375 + 1)
   // More tabs on the left now: the strip marks that side.
   await expect(nav.locator('..')).toHaveAttribute('data-more', /left/)
+  // The strip keeps the active tab on screen when a tab before it widens (a count loading
+  // late) or a tab appears before it (Boards).
+  const releasesShown = async (): Promise<boolean> => {
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+    const r = await nav.getByRole('link', { name: 'Releases' }).boundingBox()
+    return r !== null && r.x >= -1 && r.x + r.width <= 376
+  }
+  await nav.getByRole('link', { name: /^Issues/ }).evaluate((a: HTMLElement) => {
+    a.style.minWidth = `${a.offsetWidth + 60}px`
+  })
+  expect(await releasesShown(), 'Releases on screen after a tab before it widens').toBe(true)
+  await nav.getByRole('link', { name: 'Releases' }).evaluate((a: HTMLElement) => {
+    const late = document.createElement('span')
+    late.id = 'e2e-late-tab'
+    late.style.cssText = 'flex-shrink:0;width:120px'
+    a.before(late)
+  })
+  expect(await releasesShown(), 'Releases on screen after a tab appears before it').toBe(true)
+  await page.evaluate(() => document.getElementById('e2e-late-tab')?.remove())
+  await nav.getByRole('link', { name: /^Issues/ }).evaluate((a: HTMLElement) => {
+    a.style.minWidth = ''
+  })
+  expect(await releasesShown(), 'Releases on screen after the tabs settle').toBe(true)
   // Every tab can be tapped.
   for (const name of ['Code', /^Issues/, /^Pull requests/, 'Releases']) {
     const tab = nav.getByRole('link', { name })
@@ -156,6 +179,16 @@ test('iPhone SE: every repo tab is reachable, the strip scrolls with a visible e
     expect(b && b.x >= -1 && b.x + b.width <= 376, `tab ${name} on screen`).toBe(true)
     expect(b!.height).toBeGreaterThanOrEqual(43.5)
   }
+  // A scroll the strip did not make (a screen reader moving focus) holds when a tab then resizes
+  // (a count loading late): the strip does not jump back to the active tab.
+  const code = nav.getByRole('link', { name: 'Code' })
+  await code.scrollIntoViewIfNeeded()
+  await code.evaluate((a: HTMLElement) => {
+    a.style.minWidth = `${a.offsetWidth + 24}px`
+  })
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  const held = await code.boundingBox()
+  expect(held && held.x >= -1 && held.x + held.width <= 376, 'Code stays on screen after a tab resizes').toBe(true)
   expect(await overflowX(page)).toBeLessThanOrEqual(1)
   await context.close()
 })
