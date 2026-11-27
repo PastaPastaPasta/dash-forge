@@ -439,22 +439,29 @@ fn main_keychain_source(network: &str, identity_id: &str) -> String {
     )
 }
 
-/// The key sources this computer keeps in `identity_id`'s main slot on `network`, which a new
-/// key stored there replaces: dg's keychain entry (where the keychain is used, when there is
-/// one or it cannot be read) and the key file (when it exists).
-pub fn main_slot_sources(network: &str, identity_id: &str) -> Result<Vec<String>> {
-    let mut sources = Vec::new();
-    if keychain::available() {
-        let acct = account(network, identity_id, Slot::Main);
-        if !matches!(keychain::get(keychain::SERVICE, &acct), Ok(None)) {
-            sources.push(main_keychain_source(network, identity_id));
+impl Storer {
+    /// The key sources in `identity_id`'s main slot on `network` that [`Storer::store`] would
+    /// overwrite (after keeping a copy): dg's keychain entry when the keychain takes the key and
+    /// an entry is there, else the key file when it exists. An entry that cannot be read is left
+    /// as it is and the key goes to the file, so the file is what is overwritten then.
+    pub fn main_slot_replaced(&self, network: &str, identity_id: &str) -> Result<Vec<String>> {
+        if !self.no_keychain && keychain::available() {
+            match keychain::get(
+                keychain::SERVICE,
+                &account(network, identity_id, Slot::Main),
+            ) {
+                Ok(Some(_)) => return Ok(vec![main_keychain_source(network, identity_id)]),
+                Ok(None) => return Ok(Vec::new()),
+                Err(_) => {}
+            }
         }
+        let file = slot_file(network, identity_id, Slot::Main)?;
+        Ok(if file.exists() {
+            vec![file.to_string_lossy().into_owned()]
+        } else {
+            Vec::new()
+        })
     }
-    let file = slot_file(network, identity_id, Slot::Main)?;
-    if file.exists() {
-        sources.push(file.to_string_lossy().into_owned());
-    }
-    Ok(sources)
 }
 
 /// Whether a limited key can be stored here without failing: in the keychain, unencrypted

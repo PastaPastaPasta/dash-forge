@@ -166,6 +166,10 @@ pub struct LoginArgs {
     /// earlier sign-in still syncs; `dg auth logout` removes it.
     #[arg(long)]
     pub no_sync: bool,
+    /// With --wallet: let any identity in your wallet answer the code. Without it, the code
+    /// renews the identity whose wallet key this computer holds, and only its answer is read.
+    #[arg(long, conflicts_with_all = ["file", "mnemonic", "full_key", "replace"])]
+    pub any_identity: bool,
     #[command(flatten)]
     pub limits: KeyLimitArgs,
     #[command(flatten)]

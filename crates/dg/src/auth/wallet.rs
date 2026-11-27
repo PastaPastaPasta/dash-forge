@@ -51,6 +51,8 @@ const SCAN_HOW: &str =
 const TESTNET_WALLET: &str = "on testnet, use DashPay's testnet build: the `-testnet.apk` on https://github.com/dashpay/dash-wallet/releases/latest (installs beside the store app)";
 /// The fix a JSON field and `dg auth status` name for a wallet key.
 pub(crate) const RENEW: &str = "dg auth login";
+/// A wallet sign-in that any identity can answer (no `IDENTITY_HINT`).
+const ANY_IDENTITY: &str = "dg auth login --wallet --any-identity";
 
 // ---------------------------------------------------------------------------------------
 // The state file
@@ -88,7 +90,8 @@ fn state_path() -> Result<PathBuf> {
 pub(crate) fn lock_state(path: &Path) -> Result<std::fs::File> {
     let lock = path.with_extension("lock");
     if let Some(dir) = lock.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        forge_core::keystore::ensure_private_dir(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
     }
     let file = std::fs::File::options()
         .write(true)
@@ -348,8 +351,11 @@ fn login_error(
     let u = match e {
         LoginError::Expired(read_error) => {
             let mut u = UserError::new(codes::TIMED_OUT, "no wallet answered the sign-in code")
-                .cause("the code is valid for 10 minutes and nobody answered it in time")
-                .fix(format!("run `{RENEW}` again and scan the new code: {SCAN_HOW}"));
+                .cause("the code is valid for 10 minutes and nobody answered it in time");
+            if renewing {
+                u = u.fix(format!("if you answered as another identity: `{ANY_IDENTITY}` (this code renewed the identity signed in here, so dg read only its answer)"));
+            }
+            u = u.fix(format!("run `{RENEW}` again and scan the new code: {SCAN_HOW}"));
             if testnet {
                 u = u.fix(TESTNET_WALLET);
             }
@@ -444,7 +450,7 @@ async fn verify_grant(
                 match on_chain(identity.key_disabled(grant.key_id), check, renewing) {
                     OnChain::Granted => return Ok(identity),
                     OnChain::Refused(u) => return Err(u.into()),
-                    OnChain::NotYet => {}
+                    OnChain::NotYet => last = None,
                 }
             }
             Err(e) => last = Some(e),
@@ -466,15 +472,18 @@ async fn verify_grant(
 struct Terminal<'a> {
     ctx: &'a Ctx,
     tty: bool,
+    /// The identity a renewal's code names, as shown ("alice.dash (ID)").
+    renews: Option<String>,
     /// A progress line is on the terminal without its newline.
     mid_line: std::sync::atomic::AtomicBool,
 }
 
 impl Terminal<'_> {
-    fn new(ctx: &Ctx) -> Terminal<'_> {
+    fn new(ctx: &Ctx, renews: Option<String>) -> Terminal<'_> {
         Terminal {
             ctx,
             tty: std::io::stderr().is_terminal(),
+            renews,
             mid_line: false.into(),
         }
     }
@@ -496,6 +505,11 @@ fn clock(ms: u64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// The line under a renewal's code: whom it renews, and how to sign in as someone else.
+fn renew_text(shown_as: &str) -> String {
+    format!("This code renews {shown_as}; only that identity's answer is read. To sign in as another identity: `{ANY_IDENTITY}`\n")
+}
+
 /// The lines around the QR code.
 fn request_text(uri: &str, network: &str) -> String {
     format!(
@@ -515,6 +529,9 @@ impl LoginUi for Terminal<'_> {
 
     fn show(&self, req: &LoginRequest) {
         eprint!("{}", request_text(req.uri(), &self.ctx.network_label()));
+        if let Some(shown_as) = &self.renews {
+            eprint!("{}", renew_text(shown_as));
+        }
         if matches!(self.ctx.network(), Network::Testnet) {
             eprintln!("({TESTNET_WALLET})");
         }
@@ -612,18 +629,21 @@ fn preflight(ctx: &Ctx, storable: bool) -> Result<()> {
 struct HeldKey {
     source: String,
     key: std::result::Result<BridgeIdentity, String>,
+    /// Storing the wallet's key overwrites it (after keeping a copy); otherwise the wallet's
+    /// key only takes its place as the default, and it stays where it is.
+    replaced: bool,
 }
 
-/// What this computer keeps for `identity_id`: `main_slot` (its keychain entry and key file,
-/// which the wallet's key is written to: [`store::main_slot_sources`]) and the default identity
-/// when it is this one.
-fn held_keys(ctx: &Ctx, main_slot: Vec<String>, identity_id: &str) -> Vec<HeldKey> {
+/// What this computer keeps for `identity_id`: `replaced` (what storing the wallet's key
+/// overwrites: [`store::Storer::main_slot_replaced`]) and the default identity when it is this
+/// one.
+fn held_keys(ctx: &Ctx, replaced: &[String], identity_id: &str) -> Vec<HeldKey> {
     let default = ctx
         .identity_path
         .as_ref()
         .filter(|_| ctx.identity_id_hint().as_deref() == Some(identity_id))
         .map(|p| p.to_string_lossy().into_owned());
-    let mut sources = main_slot;
+    let mut sources = replaced.to_vec();
     if let Some(d) = default.as_ref().filter(|d| !sources.contains(d)) {
         sources.push(d.clone());
     }
@@ -638,18 +658,21 @@ fn held_keys(ctx: &Ctx, main_slot: Vec<String>, identity_id: &str) -> Vec<HeldKe
             };
             HeldKey {
                 key: key.map_err(|e| format!("{e:#}")),
+                replaced: replaced.contains(&source),
                 source,
             }
         })
         .collect()
 }
 
-/// Before the wallet's key takes the place of what `held` holds: ask when that is a master key
-/// or a key that does not open (it may be one), and refuse under `--yes`.
+/// Before storing the wallet's key overwrites what `held` holds: ask when that is a master key
+/// or a key that does not open (it may be one), and refuse under `--yes`. A key that only stops
+/// being the default stays where it is, so it is not asked about ([`master_kept`]).
 fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> {
     let mut unopened = false;
     let at_risk: Vec<String> = held
         .iter()
+        .filter(|h| h.replaced)
         .filter_map(|h| {
             let at = store::describe_source(&h.source).0;
             match &h.key {
@@ -696,6 +719,13 @@ fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> 
         .fix(format!("keep using it, or run `{RENEW}` in a terminal and confirm: dg first copies a key it replaces beside it"))
         .note(nothing_stored(renewing, "the key your wallet added stays on the identity until you disconnect Dash Forge in the wallet (More → Tools → Connections)"))
         .into())
+}
+
+/// Where the master key stays when the wallet's key only takes its place as the default.
+fn master_kept(held: &[HeldKey]) -> Option<String> {
+    held.iter()
+        .find(|h| !h.replaced && h.key.as_ref().is_ok_and(|b| b.master_key().is_some()))
+        .map(|h| store::describe_source(&h.source).0)
 }
 
 /// The limited keys `held` signed with that stay live on Platform once the wallet's key
@@ -756,17 +786,33 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let network = ctx.network_label();
     let state = state_path()?;
     let (connection_id, known) = State::connection_id(&state, &network)?;
-    let renew = ctx
-        .identity_id_hint()
-        .filter(|id| known && State::wallet_key(&state, &network, id).is_some())
-        .and_then(|id| forge_core::app_connect::decode_id(&id));
+    let renew_id = ctx.identity_id_hint().filter(|id| {
+        !args.any_identity && known && State::wallet_key(&state, &network, id).is_some()
+    });
+    let renew = renew_id
+        .as_deref()
+        .and_then(forge_core::app_connect::decode_id);
     let renewing = renew.is_some();
     let client = ctx.connect().await?;
     let checked =
         super::check_group(ctx, &client, &forge.group, args.limits.strict_group()).await?;
     checked.print_notice(ctx, "");
 
-    let ui = Terminal::new(ctx);
+    let renews = match renew_id.filter(|_| renewing) {
+        Some(id) => Some(
+            match client
+                .dpns_names_of(&id)
+                .await
+                .ok()
+                .and_then(|n| n.into_iter().next())
+            {
+                Some(name) => format!("{name} ({id})"),
+                None => id,
+            },
+        ),
+        None => None,
+    };
+    let ui = Terminal::new(ctx, renews);
     // The expiry the request proposes, as dg's clock sees it (the request uses chain time).
     let proposed_expiry_ms = ui.now_ms() + proposal.lifetime_ms;
     let grant = request_grant(
@@ -800,9 +846,11 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let changed = changed_limits(&grant, proposal, proposed_expiry_ms);
     confirm_identity(ctx, &shown_as, &grant, changed.as_deref(), renewing)?;
 
-    let main_slot = store::main_slot_sources(&network, &grant.identity_id)?;
-    let held = held_keys(ctx, main_slot, &grant.identity_id);
+    let mut key_store = store::Storer::new(args.storage.insecure_plaintext);
+    let replaced = key_store.main_slot_replaced(&network, &grant.identity_id)?;
+    let held = held_keys(ctx, &replaced, &grant.identity_id);
     guard_replacement(ctx, &held, renewing)?;
+    let master_kept = master_kept(&held);
     // A request naming forge-user is a new app to the wallet, so it may not disable the key it
     // granted this computer under forge-core: the chain says whether it did.
     let app = if forge.user.is_some() && !args.no_sync {
@@ -818,7 +866,6 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let opened: Vec<&BridgeIdentity> = held.iter().filter_map(|h| h.key.as_ref().ok()).collect();
     let encryption = super::encryption_to_store(ctx, &args.storage, &identity, &opened);
     let text = stored_text(&grant, ctx.network(), &network, &encryption)?;
-    let mut key_store = store::Storer::new(args.storage.insecure_plaintext);
     let stored = key_store
         .store(&network, &grant.identity_id, &text, store::Slot::Main)
         .map_err(|e| not_stored(&e, grant.key_id, renewing))?;
@@ -885,6 +932,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "renew": RENEW,
                 "previousKeyLeftLive": left_live,
                 "previousKeyKeptAt": store::kept_this_run(),
+                "masterKeyKeptAt": master_kept,
                 "settingsSync": sync_label,
             }),
             Some(&checked),
@@ -912,6 +960,9 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             );
             if let Some(line) = &left_live {
                 println!("  {line}");
+            }
+            if let Some(at) = &master_kept {
+                println!("  your master key stays in {at}; dg signs with the wallet's key now");
             }
             println!("  renew: {RENEW}; disconnect Dash Forge in your wallet to disable the key");
         },
@@ -968,7 +1019,7 @@ fn rewrap(e: &anyhow::Error, message: String) -> UserError {
 fn not_stored(e: &anyhow::Error, key_id: u32, renewing: bool) -> anyhow::Error {
     rewrap(e, format!("key #{key_id} your wallet added could not be stored here"))
         .fix(format!("then run `{RENEW}` again"))
-        .note(nothing_stored(renewing, &format!("key #{key_id} stays on the identity until you disconnect Dash Forge in your wallet (More → Tools → Connections)")))
+        .note(nothing_stored(renewing, &format!("key #{key_id} stays live on the identity until it expires, a wallet renewal replaces it, or you disconnect Dash Forge in your wallet (More → Tools → Connections)")))
         .into()
 }
 
@@ -1539,7 +1590,7 @@ mod tests {
     #[test]
     fn yes_does_not_show_new_codes_forever() {
         let ctx = Ctx::scripted(true, false, true, None);
-        assert!(!Terminal::new(&ctx).again().unwrap());
+        assert!(!Terminal::new(&ctx, None).again().unwrap());
     }
 
     /// A full identity (master key included), as `dg auth login --full-key` stores it.
@@ -1580,7 +1631,7 @@ mod tests {
             Some(grant.identity_id.as_str())
         );
 
-        let held = held_keys(&ctx, vec![bob_file.to_string_lossy().into_owned()], &bob);
+        let held = held_keys(&ctx, &[bob_file.to_string_lossy().into_owned()], &bob);
         assert_eq!(held.len(), 1, "alice's default is not bob's");
         assert!(held[0].key.as_ref().unwrap().master_key().is_some());
         let err = guard_replacement(&ctx, &held, false).unwrap_err();
@@ -1596,9 +1647,33 @@ mod tests {
             .contains("MASTER"));
 
         // Alice answering is judged by alice's key, the default: limited, so it is replaced.
-        let held = held_keys(&ctx, vec![], &grant.identity_id);
+        let held = held_keys(&ctx, &[], &grant.identity_id);
         assert_eq!(held.len(), 1);
         assert!(guard_replacement(&ctx, &held, false).is_ok());
+    }
+
+    /// #664: a `--full-key` file that is the default but that storing the wallet's key does not
+    /// overwrite (the key goes to the keychain) is not asked about, also under --yes, and is
+    /// named as where the master key stays.
+    #[test]
+    fn a_master_key_the_wallet_key_does_not_overwrite_is_not_asked_about() {
+        let alice = encode_base58(&seed("alice"));
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join(format!("testnet-{alice}.key"));
+        std::fs::write(&file, full_identity(&alice)).unwrap();
+        let source = file.to_string_lossy().into_owned();
+        let ctx = Ctx::scripted(true, false, false, Some(source.clone().into()));
+        let held = held_keys(&ctx, &[], &alice);
+        assert_eq!(held.len(), 1, "the default is this identity's");
+        assert!(!held[0].replaced);
+        assert!(guard_replacement(&ctx, &held, false).is_ok());
+        assert!(master_kept(&held)
+            .is_some_and(|at| at.contains(&*file.file_name().unwrap().to_string_lossy())));
+        // the same file as what the store overwrites (no keychain) is still guarded
+        let held = held_keys(&ctx, &[source], &alice);
+        assert!(held[0].replaced);
+        assert!(guard_replacement(&ctx, &held, false).is_err());
+        assert_eq!(master_kept(&held), None);
     }
 
     /// Review finding 1, second case: the stored key does not open (a sealed file with no
@@ -1609,7 +1684,7 @@ mod tests {
         let file = t.path().join("testnet-X.key");
         std::fs::write(&file, "not a key").unwrap();
         let ctx = Ctx::scripted(true, false, false, None);
-        let held = held_keys(&ctx, vec![file.to_string_lossy().into_owned()], "X");
+        let held = held_keys(&ctx, &[file.to_string_lossy().into_owned()], "X");
         assert!(held[0].key.is_err());
         let sealed_without_passphrase = HeldKey {
             source: t
@@ -1618,6 +1693,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
             key: Err("no passphrase for the sealed file".into()),
+            replaced: true,
         };
         for held in [held, vec![sealed_without_passphrase]] {
             let err = guard_replacement(&ctx, &held, false).unwrap_err();
@@ -1645,6 +1721,7 @@ mod tests {
         let held = vec![HeldKey {
             source: "keychain:dash-forge/testnet/ALICE".into(),
             key: Ok(BridgeIdentity::from_dfk1(old.expose()).unwrap()),
+            replaced: true,
         }];
         let ctx = Ctx::scripted(true, false, false, None);
         assert!(guard_replacement(&ctx, &held, false).is_ok());
@@ -1677,7 +1754,12 @@ mod tests {
         assert_eq!(u.fix[0], "set DASH_FORGE_PASSPHRASE");
         let note = u.note.as_deref().unwrap();
         assert!(!note.contains("registered on Platform"), "{note}");
-        assert!(note.contains("key #7 stays on the identity"), "{note}");
+        assert!(
+            note.contains(
+                "key #7 stays live on the identity until it expires, a wallet renewal replaces it"
+            ),
+            "{note}"
+        );
         assert!(note.contains(RENEW), "{note}");
     }
 
@@ -1701,6 +1783,30 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("may already have disabled"));
+    }
+
+    /// #664: a renewal's code says whom it renews and how to sign in as someone else, and so
+    /// does its timeout; a first sign-in's does not.
+    #[test]
+    fn a_renewal_says_how_to_sign_in_as_another_identity() {
+        let line = renew_text("alice.dash (ID)");
+        assert!(
+            line.starts_with("This code renews alice.dash (ID)"),
+            "{line}"
+        );
+        assert!(line.contains(ANY_IDENTITY), "{line}");
+        let fixes = |renewing| {
+            user_error(&login_error(
+                &Network::Mainnet,
+                &LoginError::Expired(None),
+                renewing,
+                false,
+            ))
+            .fix
+            .clone()
+        };
+        assert!(fixes(true)[0].contains(ANY_IDENTITY));
+        assert!(!fixes(false).iter().any(|f| f.contains(ANY_IDENTITY)));
     }
 
     #[test]
@@ -1736,7 +1842,13 @@ mod tests {
         let crate::Command::Auth(super::super::AuthCommand::Login(args)) = cli.command else {
             panic!("not auth login")
         };
-        assert!(args.wallet && args.storage.insecure_plaintext);
+        assert!(args.wallet && args.storage.insecure_plaintext && !args.any_identity);
+        assert!(login(&["--any-identity"]).is_ok());
+        assert!(crate::Cli::try_parse_from(["dg", "auth", "login", "--any-identity"]).is_ok());
+        assert!(
+            crate::Cli::try_parse_from(["dg", "auth", "login", "id.json", "--any-identity"])
+                .is_err()
+        );
         assert_eq!(args.limits.budget, Some(1.0));
         for other in [
             &["id.json"][..],
