@@ -19,6 +19,7 @@ CADDYFILE=/etc/caddy/Caddyfile
 die() { echo "deploy.sh: $*" >&2; exit 1; }
 net_ok() { [[ ${1:-} == mainnet || ${1:-} == testnet ]] || die "network must be mainnet or testnet"; }
 host_of() { [[ $1 == mainnet ]] && echo git-forge.dashhq.org || echo testnet-git-forge.dashhq.org; }
+snippet_of() { [[ $1 == mainnet ]] && echo forge_gateway_mainnet || echo forge_gateway; }
 port_of() { [[ $1 == mainnet ]] && echo 18081 || echo 18082; }
 sample_of() { [[ $1 == mainnet ]] && echo "${FORGE_SAMPLE_REPO:-forg3/dash-forge}" || echo "${FORGE_SAMPLE_REPO:-AyvEsSQfK5qBotCsi2gZpePa7DcniqWzZ281TaNsJGv7/forge-v2-demo}"; }
 
@@ -51,14 +52,14 @@ caddy_step() {
   fetch deploy/dashhq/forge-gateway.caddy "$tmp"
   for net in "$@"; do
     net_ok "$net"
-    printf '\n%s {\n\timport forge_gateway %s\n}\n' "$(host_of "$net")" "$(port_of "$net")" >> "$tmp"
+    printf '\n%s {\n\timport %s %s\n}\n' "$(host_of "$net")" "$(snippet_of "$net")" "$(port_of "$net")" >> "$tmp"
   done
   # Keep the sites enabled earlier.
   if sudo test -f "$CADDY_INCLUDE"; then
     for net in mainnet testnet; do
       local h; h=$(host_of "$net")
       if sudo grep -q "^$h {" "$CADDY_INCLUDE" && ! grep -q "^$h {" "$tmp"; then
-        printf '\n%s {\n\timport forge_gateway %s\n}\n' "$h" "$(port_of "$net")" >> "$tmp"
+        printf '\n%s {\n\timport %s %s\n}\n' "$h" "$(snippet_of "$net")" "$(port_of "$net")" >> "$tmp"
       fi
     done
   fi
