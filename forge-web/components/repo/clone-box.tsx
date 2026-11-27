@@ -95,7 +95,7 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
           {gateway !== null ? (
             <div className="space-y-1">
               <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">HTTPS</p>
-              <GatewayRow gateway={gateway} home={home} addr={addr} />
+              <GatewayRow key={home.repo.repoId} gateway={gateway} home={home} addr={addr} />
             </div>
           ) : null}
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
