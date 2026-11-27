@@ -7,8 +7,9 @@
  *   New to Dash: Create a new identity, badged Recommended — mnemonic + backup quiz + deposit
  *      QR, registered with a limited key inside the IdentityCreate. It ends on a "You're in"
  *      view with next steps and a check for a second payment left on the deposit address (F13, F14).
- *      On mainnet, where the wallet leads, this is "Get DashPay" instead (create the identity in
- *      the wallet, then sign in with it), and the in-page create sits under "Other ways to sign in".
+ *      On mainnet, where the wallet leads, a "Get DashPay" link under the wallet tile opens the
+ *      install step (store links, then create a username in the app), whose button leads on to the
+ *      wallet's code; the in-page create sits under Advanced.
  *   Already have one: a passkey from another device; Import an identity file (or mnemonic) — the
  *      master key signs one IdentityUpdate that registers a limited key for this browser, and is
  *      not stored; dg; and Use my Dash wallet — App Connect v2 (one approval covers all of Forge,
@@ -39,7 +40,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow, type CreatedIdentity } from '@/components/auth/create-identity-flow'
 import { TestCreditsBadge, isTestNetwork } from '@/components/ui/test-credits'
-import { DASHPAY_ANDROID_RELEASES, WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
+import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { Tile } from '@/components/auth/sign-in-tile'
 import { PasskeySignIn } from '@/components/auth/passkey-sign-in'
 import { DgHandoffFlow, type HandoffTarget } from '@/components/auth/dg-handoff-flow'
@@ -56,7 +57,7 @@ import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
 import { signInMethods, walletLeads, type SignInGroup, type SignInMethod } from '@/lib/auth/sign-in-methods'
-import { appConnectV2Available } from '@/lib/auth/app-connect-v2'
+import { appConnectSupport } from '@/lib/auth/app-connect-v2'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { lockedIdentityOf } from '@/lib/auth/last-identity'
 import { faucetUrls } from '@/lib/faucets'
@@ -69,7 +70,7 @@ import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage, shortId } from '@/lib/utils'
 import type { UnlockMethod } from '@/lib/auth/vault'
 
-type View = 'choose' | 'unlock' | 'advanced' | 'welcome' | LoginView
+type View = 'choose' | 'unlock' | 'advanced' | 'welcome' | 'get-dashpay' | LoginView
 
 export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
@@ -196,7 +197,8 @@ export function LoginModal(): JSX.Element {
         />
       ) : null}
       {view === 'welcome' && created ? <WelcomeView created={created} onDone={close} /> : null}
-      {view === 'wallet' ? <WalletConnectFlow onDone={close} onUnlock={() => setView('unlock')} /> : null}
+      {view === 'get-dashpay' ? <GetDashPayView onHaveIt={() => setView('wallet')} /> : null}
+      {view === 'wallet' ? <WalletConnectFlow onDone={close} onUnlock={() => setView('unlock')} onGetDashPay={ACTIVE_NETWORK.network === 'mainnet' ? () => setView('get-dashpay') : undefined} /> : null}
       {view === 'wallet-renew' || view === 'wallet-replace' ? (
         <>
           <WalletConnectFlow mode={view === 'wallet-renew' ? 'renew' : 'login'} onDone={close} onUnlock={() => setView('unlock')} />
@@ -230,6 +232,8 @@ function titleFor(view: View | null, action: string | undefined): string {
       return "You're in"
     case 'dg':
       return 'Sign in with dg'
+    case 'get-dashpay':
+      return 'Get DashPay'
     default:
       return action ? `Sign in to ${action}` : 'Sign in to Dash Forge'
   }
@@ -239,7 +243,7 @@ function titleFor(view: View | null, action: string | undefined): string {
 function describeView(view: View, limitedKeys: boolean, notWalletGrant: boolean): ReactNode {
   if (view === 'welcome') return 'Your identity is registered and this browser is signed in. Pick a first step, or close this and look around.'
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
-  if (view === 'wallet') return null
+  if (view === 'wallet' || view === 'get-dashpay') return null
   if (view === 'wallet-replace') {
     return "This browser's key came from your wallet's older code, with no spending limit or only part of Forge. One approval gives a limited key for all of Forge. The current key stays live until Revoke on Platform disables it."
   }
@@ -274,7 +278,7 @@ function KeyLimitsNote(): JSX.Element {
 function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () => void }): JSX.Element {
   const { limitedKeys } = useAuth()
   const closeLogin = useUiStore((s) => s.closeLogin)
-  const { available: walletAvailable, v2: walletV2 } = useWalletAvailability(limitedKeys)
+  const { available: walletAvailable, v2: walletV2, releasedWallet } = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
   const [more, setMore] = useState(false)
   const creating = useCreationInProgress()
@@ -284,10 +288,10 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
   const network = ACTIVE_NETWORK.network
-  const methods = signInMethods({ network, walletAvailable, walletV2, creating: creating !== null })
+  const methods = signInMethods({ network, walletAvailable, walletV2, releasedWallet, creating: creating !== null })
   // The wallet leads only where a wallet a newcomer can install answers; elsewhere it is last,
   // saying why, so the first thing a newcomer tries is not a dead end (F3).
-  const walletFirst = walletLeads({ network, walletV2 })
+  const walletFirst = walletLeads({ network, walletV2, releasedWallet })
   const recommended = { label: 'Recommended', tone: 'recommended' } as const
   const tile = ({ id, recommended: isRecommended }: SignInMethod): ReactNode => {
     switch (id) {
@@ -322,7 +326,9 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
                   : 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve once for all of Forge.'
                 : network === 'devnet'
                   ? `Test wallets only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps carry no devnet's settings.`
-                  : "Wallet sign-in isn't available here right now. Use another way."
+                  : walletV2 && !releasedWallet
+                    ? `Released DashPay builds can't sign in on ${networkName()} since it moved to Platform protocol 15. Use another way until a DashPay update ships.`
+                    : "Wallet sign-in isn't available here right now. Use another way."
             }
             muted={!walletFirst}
             badge={walletFirst ? (isRecommended ? recommended : null) : { label: 'Not available yet', tone: 'waiting' }}
@@ -333,23 +339,16 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
         )
       case 'get-dashpay':
         return (
-          <Fragment key={id}>
-            <Tile
-              testId="tile-get-dashpay"
-              icon={Smartphone}
-              title="Get DashPay, create your identity there, then sign in"
-              body="Install DashPay (Android) or Dash Wallet (iPhone) and create your Dash identity in it; your recovery phrase stays on the phone. Then come back and choose this to sign in with it."
-              onClick={() => onPick('wallet')}
-              pausedReason={pausedReason}
-            />
-            <p data-testid="get-dashpay-links" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              DashPay for Android 11.9.2 or later (see the{' '}
-              <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
-                DashPay Wallet releases (opens in a new tab)
-              </a>
-              ), or Dash Wallet for iOS 9.1.4 or later.
-            </p>
-          </Fragment>
+          <button
+            key={id}
+            type="button"
+            data-testid="tile-get-dashpay"
+            onClick={() => onPick('get-dashpay')}
+            className="hit-area flex w-full items-center gap-1.5 px-1 text-left text-dense text-forge-700 underline dark:text-forge-400"
+          >
+            <Smartphone className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            No DashPay yet? Get it first
+          </button>
         )
       case 'create':
         return (
@@ -595,26 +594,62 @@ function useCreationInProgress(): { readonly address: string; readonly funded: b
  * shows anyway (`available` without `v2`): the flow behind it names what failed and offers "Try
  * again", where hiding it would fail silently.
  */
-function useWalletAvailability(limitedKeys: boolean): { readonly available: boolean; readonly v2: boolean } {
-  const [state, setState] = useState({ available: false, v2: false })
+function useWalletAvailability(limitedKeys: boolean): { readonly available: boolean; readonly v2: boolean; readonly releasedWallet: boolean } {
+  const [state, setState] = useState({ available: false, v2: false, releasedWallet: false })
   useEffect(() => {
     if (!limitedKeys) return
     let cancelled = false
     connectPlatform(ACTIVE_NETWORK.network)
       .then(async (sdk) => {
         // A check that could not finish shows the tile anyway (see above).
-        const v2 = await withTimeout(appConnectV2Available(sdk, ACTIVE_NETWORK.network), PLATFORM_READ_MS, 'Checking what your wallet can answer').catch(() => null)
-        return { available: v2 !== false, v2: v2 === true }
+        const support = await withTimeout(appConnectSupport(sdk, ACTIVE_NETWORK.network), PLATFORM_READ_MS, 'Checking what your wallet can answer').catch(() => null)
+        return { available: support?.v2 !== false, v2: support?.v2 === true, releasedWallet: support?.releasedWallet === true }
       })
       .then(
         (next) => !cancelled && setState(next),
-        () => !cancelled && setState({ available: true, v2: false }),
+        () => !cancelled && setState({ available: true, v2: false, releasedWallet: false }),
       )
     return () => {
       cancelled = true
     }
   }, [limitedKeys])
   return state
+}
+
+/** The store pages of DashPay (Android, `hashengineering.darkcoin.wallet`) and of DashPay – Dash Wallet (iOS). */
+export const DASHPAY_GOOGLE_PLAY = 'https://play.google.com/store/apps/details?id=hashengineering.darkcoin.wallet'
+export const DASHPAY_APP_STORE = 'https://apps.apple.com/app/id1206647026'
+
+/** Mainnet's way in for someone without DashPay: install it and create a username there, then scan Forge's code. */
+function GetDashPayView({ onHaveIt }: { onHaveIt: () => void }): JSX.Element {
+  const store = 'inline-flex items-center justify-center rounded-md border border-anvil-300 px-3 py-2 text-dense font-medium hover:border-forge-400 dark:border-anvil-700'
+  return (
+    <div className="space-y-4" data-testid="get-dashpay">
+      <ol className="space-y-3 text-dense">
+        <li>
+          <p className="font-medium">1. Install DashPay on your phone</p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <a data-testid="get-dashpay-android" href={DASHPAY_GOOGLE_PLAY} target="_blank" rel="noreferrer" className={store}>
+              Google Play
+            </a>
+            <a data-testid="get-dashpay-ios" href={DASHPAY_APP_STORE} target="_blank" rel="noreferrer" className={store}>
+              App Store
+            </a>
+          </div>
+        </li>
+        <li>
+          <p className="font-medium">2. Create your username in DashPay</p>
+          <p className="mt-1 text-anvil-600 dark:text-anvil-300">That is your Dash identity. Its recovery phrase stays on the phone.</p>
+        </li>
+        <li>
+          <p className="font-medium">3. Scan Forge&apos;s code with DashPay</p>
+        </li>
+      </ol>
+      <Button variant="primary" className="w-full" data-testid="get-dashpay-continue" onClick={onHaveIt}>
+        I have DashPay: show the code
+      </Button>
+    </div>
+  )
 }
 
 /** A dashed "choose a file" button over a hidden file input. */

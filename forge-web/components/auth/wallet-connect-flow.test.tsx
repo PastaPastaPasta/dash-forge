@@ -21,6 +21,7 @@ const { ID, FORGE, v2, auth } = vi.hoisted(() => ({
   /** The App Connect v2 side of the fake chain and wallet. */
   v2: {
     available: false as boolean | null,
+    released: true,
     /** What the fake wallet answers: resolve it from a test, or reject it. */
     pending: null as { resolve: (g: unknown) => void; reject: (e: Error) => void } | null,
     trigger: null as { fire: () => void } | null,
@@ -53,7 +54,7 @@ vi.mock('@/lib/auth/connect', async (importOriginal) => ({
 }))
 vi.mock('@/lib/auth/app-connect-v2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/auth/app-connect-v2')>()),
-  appConnectV2Available: async () => v2.available,
+  appConnectSupport: async () => (v2.available === null ? null : { v2: v2.available, releasedWallet: v2.released }),
   readChainClock: async () => ({ timeMs: 1_800_000_000_000, protocolVersion: 14 }),
   newV2LoginRequest: () => {
     v2.calls.push('request')
@@ -126,6 +127,7 @@ const endWalletRenewal = vi.fn()
 beforeEach(() => {
   adoptWalletKeys.mockReset()
   v2.available = false
+  v2.released = true
   v2.pending = null
   v2.trigger = null
   v2.awaited = 0
@@ -215,6 +217,27 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     expect(q('wallet-support')!.textContent).toMatch(/App Connect v2/)
     expect(host.textContent).not.toMatch(/older code/i)
     expect(v2.awaited).toBe(1)
+  })
+
+  it('at a protocol no released wallet reads, the code still shows and Details says released DashPay builds cannot sign in', async () => {
+    v2.available = true
+    v2.released = false
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
+    await flush()
+    expect(q('qr-value')).not.toBeNull()
+    expect(q('wallet-support')!.textContent).toMatch(/Released DashPay builds \(11\.9\.2, and the 12\.0\.2 pre-release\) can't sign in on .* since it moved to Platform protocol 15\./)
+  })
+
+  it('offers the install step from the code only when the sheet gives one', async () => {
+    v2.available = true
+    const onGetDashPay = vi.fn()
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} onGetDashPay={onGetDashPay} />))
+    await flush()
+    act(() => (q('wallet-get-dashpay') as HTMLButtonElement).click())
+    expect(onGetDashPay).toHaveBeenCalledOnce()
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
+    await flush()
+    expect(q('wallet-get-dashpay')).toBeNull()
   })
 
   it('where v2 is not on offer, says so and shows no code (there is no older code to fall back on)', async () => {

@@ -257,9 +257,30 @@ export async function readChainClock(sdk: EvoSDK): Promise<{ readonly timeMs: nu
  * caller also runs the group check (`AuthController.checkGroup`) before showing a code.
  */
 export async function appConnectV2Available(sdk: EvoSDK, network: Network): Promise<boolean | null> {
-  if (NETWORKS[network].v2 === null) return false
+  return (await appConnectSupport(sdk, network))?.v2 ?? null
+}
+
+/**
+ * The newest protocol a released DashPay build reads. DashPay for Android 11.9.2 and the 12.0.2
+ * pre-release fail on testnet's protocol 15 (`UnexpectedVariant … found 2`, 2026-11-27); mainnet
+ * runs 14. Raise it once a released build signs in at a newer protocol.
+ */
+export const RELEASED_WALLET_MAX_PROTOCOL = 14
+
+/** Whether released wallets sign in at `protocolVersion`. */
+export function releasedWalletReads(protocolVersion: number): boolean {
+  return protocolVersion <= RELEASED_WALLET_MAX_PROTOCOL
+}
+
+/**
+ * {@link appConnectV2Available}, and whether a released wallet can answer here
+ * ({@link releasedWalletReads}); null when Platform could not be read.
+ */
+export async function appConnectSupport(sdk: EvoSDK, network: Network): Promise<{ readonly v2: boolean; readonly releasedWallet: boolean } | null> {
+  if (NETWORKS[network].v2 === null) return { v2: false, releasedWallet: false }
   const { protocolVersion } = await readChainClock(sdk)
-  return protocolVersion === null ? null : protocolVersion >= APP_CONNECT_MIN_PROTOCOL
+  if (protocolVersion === null) return null
+  return { v2: protocolVersion >= APP_CONNECT_MIN_PROTOCOL, releasedWallet: releasedWalletReads(protocolVersion) }
 }
 
 /** Why Forge refused a wallet's v2 answer, in a user's words. */

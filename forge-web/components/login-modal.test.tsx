@@ -64,13 +64,15 @@ vi.mock('@/lib/constants', async (orig) => {
 let platformUp = false
 /** Whether the chain supports App Connect v2. */
 let v2Available: boolean | null = false
+/** Whether a released wallet reads the chain's protocol. */
+let releasedWallet = true
 vi.mock('@/lib/auth/connect', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/connect')>()),
   connectPlatform: () => (platformUp ? Promise.resolve({}) : Promise.reject(new Error('offline in tests'))),
 }))
 vi.mock('@/lib/auth/app-connect-v2', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/app-connect-v2')>()),
-  appConnectV2Available: async () => v2Available,
+  appConnectSupport: async () => (v2Available === null ? null : { v2: v2Available, releasedWallet }),
 }))
 /** What the finished creation's deposit address still holds (duffs), or an Error when unreadable. */
 let leftover: number | Error | Promise<number> = 0
@@ -185,6 +187,7 @@ beforeEach(() => {
   balanceCalls.length = 0
   platformUp = false
   v2Available = false
+  releasedWallet = true
   network.override = null
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
@@ -625,16 +628,35 @@ describe('App Connect v2 in the sheet', () => {
     v2Available = true
     act(() => useUiStore.getState().openLogin())
     for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
-    expect(shownTiles()).toEqual(['tile-wallet'])
+    expect(shownTiles()).toEqual(['tile-wallet', 'tile-get-dashpay'])
     expect(tileOrder()).toEqual(['tile-wallet', 'tile-get-dashpay', 'tile-dg'])
     expect(q('[data-testid="tile-wallet-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-create-badge"]')).toBeNull()
-    expect(q('[data-testid="tile-get-dashpay"]')!.textContent).toMatch(/Get DashPay, create your identity there, then sign in/)
-    expect(q<HTMLAnchorElement>('[data-testid="get-dashpay-links"] a')!.href).toBe('https://github.com/dashpay/dash-wallet/releases/latest')
+    expect(q('[data-testid="tile-get-dashpay"]')!.textContent).toBe('No DashPay yet? Get it first')
     expect(q('[data-testid="signin-more"]')!.textContent).toBe('Other ways to sign in')
     await click(q('[data-testid="tile-get-dashpay"]'))
-    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
+    // The install step comes before any code: store links, then the username, then the code.
+    expect(q('[data-testid="wallet-request"]')).toBeNull()
+    expect(q<HTMLAnchorElement>('[data-testid="get-dashpay-android"]')!.href).toBe('https://play.google.com/store/apps/details?id=hashengineering.darkcoin.wallet')
+    expect(q<HTMLAnchorElement>('[data-testid="get-dashpay-ios"]')!.href).toBe('https://apps.apple.com/app/id1206647026')
+    expect(q('[data-testid="get-dashpay"]')!.textContent).toMatch(/Create your username in DashPay/)
+    await click(q('[data-testid="get-dashpay-continue"]'))
+    expect(q('[data-testid="get-dashpay"]')).toBeNull()
     expect(q('[data-testid="wallet-request"]')).not.toBeNull()
+  })
+
+  it('at a protocol no released wallet reads (testnet at 15), creating leads and the wallet tile says why, under Other ways', async () => {
+    auth.vaults = []
+    platformUp = true
+    v2Available = true
+    releasedWallet = false
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
+    expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
+    expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBe('true')
+    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/Released DashPay builds can't sign in on testnet since it moved to Platform protocol 15/)
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
   })
 
   it('on mainnet without v2, creating stays first: there is no wallet to finish in yet', async () => {
