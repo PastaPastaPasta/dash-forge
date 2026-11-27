@@ -18,6 +18,13 @@
       "type": "string"
     },
     "removed": {},
+    "keptAt": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Copies kept before removing a key that holds the master key, or that dg could not open to check, as key sources `--identity` takes."
+    },
     "disabledKeyId": {
       "type": [
         "integer",
