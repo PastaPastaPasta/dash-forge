@@ -166,6 +166,10 @@ pub struct LoginArgs {
     /// earlier sign-in still syncs; `dg auth logout` removes it.
     #[arg(long)]
     pub no_sync: bool,
+    /// With --wallet: let any identity in your wallet answer the code. Without it, the code
+    /// renews the identity whose wallet key this computer holds, and only its answer is read.
+    #[arg(long, conflicts_with_all = ["file", "mnemonic", "full_key", "replace"])]
+    pub any_identity: bool,
     #[command(flatten)]
     pub limits: KeyLimitArgs,
     #[command(flatten)]
@@ -958,7 +962,7 @@ async fn login_source(
 /// that key and the identity's encryption keys (or, with `--full-key`, the whole identity).
 #[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
-    if args.wallet || signs_in_with_wallet(ctx, args)? {
+    if args.wallet || args.any_identity || signs_in_with_wallet(ctx, args)? {
         return wallet::login(ctx, args).await;
     }
     let client = ctx.connect().await?;

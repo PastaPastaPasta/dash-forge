@@ -710,12 +710,14 @@ mod tests {
     /// does not open) nobody was asked about; a limited key there is replaced as usual.
     #[test]
     fn a_key_file_the_guard_did_not_name_is_never_written_over() {
+        // the testnet WIF of 0x11..11 (.gitleaks.toml lists it as a public example)
+        let wif = "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
         let master = &serde_json::json!({
             "network": "testnet",
             "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
             "identityKeys": [{
                 "id": 0, "name": "Master", "keyType": "ECDSA_SECP256K1", "purpose": "AUTHENTICATION",
-                "securityLevel": "MASTER", "privateKeyWif": "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw",
+                "securityLevel": "MASTER", "privateKeyWif": wif,
                 "privateKeyHex": "", "publicKeyHex": "", "derivationPath": ""
             }],
             "mnemonic": "",
@@ -747,7 +749,7 @@ mod tests {
             "a sealed file without its passphrase"
         );
         // a limited key (a wallet key an earlier fallback stored) is replaced as usual
-        let limited = "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
+        let limited = &format!("dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:{wif}");
         assert!(keystore::BridgeIdentity::from_source_text(limited).is_ok());
         std::fs::write(&file, limited).unwrap();
         assert!(refused(None).is_none(), "a plain limited key");
