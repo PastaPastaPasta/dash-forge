@@ -51,6 +51,8 @@ The list is [`forge-contracts/config/curation.json`](../forge-contracts/config/c
 3. The merge deploys the web app: `.github/workflows/pages.yml` runs on changes under `forge-contracts/config/`. The entry takes effect when that deploy finishes. A tab opened before the deploy keeps running the old build until it is reloaded.
 4. Removing an entry is the same pull request in reverse.
 
+A maintainer may also hide Forge's own test repositories whose code can no longer load (their storage was a temporary test host that is gone), so a first visit doesn't land on them. The note says so.
+
 Every entry carries its date and reason.
 
 ## The gateway

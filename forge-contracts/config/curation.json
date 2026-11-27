@@ -61,7 +61,7 @@
         {
           "id": "4hCCt8A6nhFo1f4ih2D7U44WiWj2ASHk52mqKdpueP5B",
           "added": "2026-11-27",
-          "note": "Forge QA repo mnqa-cli-s3: its storage was a temporary test host that no longer exists, so its code can't load"
+          "note": "Forge QA repo mnqa-cli-s3: its S3 storage endpoint no longer answers and a browser has no other place to fetch it from, so its code can't load"
         },
         {
           "id": "9NBGFrAfC4ws7A9TMsjMVj9s7yBPfQVfNVpk88BM27QJ",
@@ -81,7 +81,7 @@
         {
           "id": "881j9kqkzn3n9ZemCvsyp1BtVaMHL7JSKTKPFzehJtvg",
           "added": "2026-11-27",
-          "note": "Forge QA repo mnqa-cli-ipfs: its storage was a temporary test host that no longer exists, so its code can't load"
+          "note": "Forge QA repo mnqa-cli-ipfs: its IPFS content is no longer available on any gateway, so its code can't load"
         }
       ],
       "hiddenIdentities": []
