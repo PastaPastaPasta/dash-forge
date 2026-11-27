@@ -43,11 +43,14 @@ export function RepoRail({
   home,
   addr,
   selected,
+  clone = true,
 }: {
   home: RepoHome
   addr: RepoAddress
   /** The ref the page is showing: the Verification card attests its tip. */
   selected: SelectedRef
+  /** False when the page shows Clone itself (the repo home on a phone, `PhoneCloneBox`). */
+  clone?: boolean
 }): JSX.Element {
   // Here, not in the page frame: each content check re-renders the rail, not the whole page.
   const report = useRepoTrust(home, selected)
@@ -59,7 +62,7 @@ export function RepoRail({
       <TrustPanel report={report} />
       {isPrivate && role === null ? null : (
         <>
-          <CloneBox home={home} addr={addr} selected={selected} />
+          {clone ? <CloneBox home={home} addr={addr} selected={selected} /> : null}
           <About home={home} addr={addr} selected={selected} />
           <Members repo={home.repo} />
           <LatestRelease home={home} addr={addr} />

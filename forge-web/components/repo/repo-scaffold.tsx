@@ -17,6 +17,7 @@ import { RepoLoading } from '@/components/repo/repo-loading'
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoShellHeader } from '@/components/repo/repo-shell-header'
 import { RepoRail } from '@/components/repo/repo-rail'
+import { PhoneCloneProvider } from '@/components/repo/phone-clone'
 import { useRepoHome, type HomeReloadOptions } from '@/hooks/use-repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateHome } from '@/hooks/use-private-home'
@@ -229,10 +230,14 @@ function ScaffoldBody({
       <MembersOnlyCreateNotice home={home} />
       <ViewAsPublicButton home={home} />
       {rail ? (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
-          <div className="min-w-0">{children(home, reload)}</div>
-          <RepoRail home={home} addr={addr} selected={selected} />
-        </div>
+        <PhoneCloneProvider>
+          {(railClone) => (
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
+              <div className="min-w-0">{children(home, reload)}</div>
+              <RepoRail home={home} addr={addr} selected={selected} clone={railClone} />
+            </div>
+          )}
+        </PhoneCloneProvider>
       ) : (
         <div className="min-w-0 space-y-4">
           {verification ? <RepoVerification home={home} selected={selected} /> : null}
