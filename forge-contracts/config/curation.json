@@ -1,8 +1,98 @@
 {
   "$comment": "Hosted-surface curation for dashhq's builds (docs/hosted-curation.md). Not protocol moderation: hidden repos stay on Platform and dash:// still works.",
   "networks": {
-    "testnet": { "hiddenRepos": [], "hiddenIdentities": [] },
-    "devnet-sakura": { "hiddenRepos": [], "hiddenIdentities": [] },
-    "mainnet": { "hiddenRepos": [], "hiddenIdentities": [] }
+    "testnet": {
+      "hiddenRepos": [
+        {
+          "id": "xdeXRkcuZL4UM9dn4PeH6hMJe55MxYDsaDRinh5HYi9",
+          "added": "2026-11-27",
+          "note": "Forge QA repo r2sec-proof: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "5SqDNtxGrGJekoBeGqHCzLRa95BgZuHtYY7PUTTPTRMm",
+          "added": "2026-11-27",
+          "note": "Forge QA repo usersync-proof2: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "5E63gkPP6X6ys1oNduvztuuMeu2jAksofqLF6ZUWREr",
+          "added": "2026-11-27",
+          "note": "Forge QA repo usersync-proof: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "H5nMVh5Sci4TqnB2gncc7Cr5qmerTSrYxdwCfhetf4Dn",
+          "added": "2026-11-27",
+          "note": "Forge QA repo pin-e2e-11241844: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "5TKdEcjKmDAKuGizihoFiTJcMVPxSMrju4RnyEo5kwZ4",
+          "added": "2026-11-27",
+          "note": "Forge QA repo nas-amd64-fork: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "6puPuqW8EogqGVrfaMhK4CyK44PsfpPqrJ2DoMSRHzFL",
+          "added": "2026-11-27",
+          "note": "Forge QA repo nas-arm64: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "6MkR2gZMoqQnVsDDB74qBqbTyEPjEf2WunBAiEG76uea",
+          "added": "2026-11-27",
+          "note": "Forge QA repo nas-amd64: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "5zWNqKAkoZPt134qiNVfgkCfEiLqEfTNSoftdSrshhE8",
+          "added": "2026-11-27",
+          "note": "Forge QA repo pin-e2e-11241901: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "kuixRdA8sRsWpktZMai7APPmMAVfYxk1J8d8JKiY1Xc",
+          "added": "2026-11-27",
+          "note": "Forge QA repo pin-e2e-11241844-fork2: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "6X2x6vj4gGzdT3zu58CKqtcEJh1trYs2YGgTCWssUzPn",
+          "added": "2026-11-27",
+          "note": "Forge QA repo pin-e2e-11241844-fork: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "FpLpzbACkcYSoeFN7AuSNXW6oYUL2iFw9R1xHDheyivk",
+          "added": "2026-11-27",
+          "note": "Forge QA repo pin-e2e-11241843: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "4hCCt8A6nhFo1f4ih2D7U44WiWj2ASHk52mqKdpueP5B",
+          "added": "2026-11-27",
+          "note": "Forge QA repo mnqa-cli-s3: its S3 storage endpoint no longer answers and a browser has no other place to fetch it from, so its code can't load"
+        },
+        {
+          "id": "9NBGFrAfC4ws7A9TMsjMVj9s7yBPfQVfNVpk88BM27QJ",
+          "added": "2026-11-27",
+          "note": "Forge QA repo migr-proof: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "E6JXStUXPq3CT3RgYgKV78gh9TUcJbRCicTZMKbxu8ZD",
+          "added": "2026-11-27",
+          "note": "Forge QA repo selfhost-arm64-1795550521: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "5qogfZqNKaCwKjJ1gnzgNTA5FCrGT9hZGWeq9PVakqiz",
+          "added": "2026-11-27",
+          "note": "Forge QA repo selfhost-e2e-1795545526: its storage was a temporary test host that no longer exists, so its code can't load"
+        },
+        {
+          "id": "881j9kqkzn3n9ZemCvsyp1BtVaMHL7JSKTKPFzehJtvg",
+          "added": "2026-11-27",
+          "note": "Forge QA repo mnqa-cli-ipfs: its IPFS content is no longer available on any gateway, so its code can't load"
+        }
+      ],
+      "hiddenIdentities": []
+    },
+    "devnet-sakura": {
+      "hiddenRepos": [],
+      "hiddenIdentities": []
+    },
+    "mainnet": {
+      "hiddenRepos": [],
+      "hiddenIdentities": []
+    }
   }
 }
