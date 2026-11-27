@@ -24,7 +24,7 @@ Reports a GitHub Actions job's result as a [Dash Forge](../README.md) check run 
 
 2. **Report each job.** Add the action as the last step, with `if: always()` so failures are reported too.
 
-> **Pin a release tag.** At `@v0.3.1` the action's `version` defaults to `0.3.1`, so the default `install: 'true'` downloads that release's `dg` with [`install.sh`](../install.sh), which checks its SHA-256 against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. That takes seconds and works on Linux and macOS runners. Windows runners are not supported: put `dg` on `PATH` yourself and set `install: 'false'`. `install: 'source'` (or an empty `version`) builds `dg` from the action's own source instead, the ref after `@` in `uses:`. That works on **Linux runners only** (it needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on x86_64 and arm64) and costs several minutes per job, so report from one Linux leg of a matrix, or from one summary job that `needs:` the others. `@master` pins the latest release's binaries while running master's scripts; use a release tag, or a commit you have reviewed with `install: 'source'`, since the key is handed to that `dg`.
+> **Pin a release tag.** At `@v0.3.2` the action's `version` defaults to `0.3.2`, so the default `install: 'true'` downloads that release's `dg` with [`install.sh`](../install.sh), which checks its SHA-256 against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. That takes seconds and works on Linux and macOS runners. Windows runners are not supported: put `dg` on `PATH` yourself and set `install: 'false'`. `install: 'source'` (or an empty `version`) builds `dg` from the action's own source instead, the ref after `@` in `uses:`. That works on **Linux runners only** (it needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on x86_64 and arm64) and costs several minutes per job, so report from one Linux leg of a matrix, or from one summary job that `needs:` the others. `@master` pins the latest release's binaries while running master's scripts; use a release tag, or a commit you have reviewed with `install: 'source'`, since the key is handed to that `dg`.
 
 ```yaml
 jobs:
@@ -35,7 +35,7 @@ jobs:
       - run: cargo test
       - name: Report to Dash Forge
         if: always()
-        uses: PastaPastaPasta/dash-forge/check-action@v0.3.1   # installs the v0.3.1 dg
+        uses: PastaPastaPasta/dash-forge/check-action@v0.3.2   # installs the v0.3.2 dg
         with:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}
@@ -66,7 +66,7 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 | `log-storage` | | The storage profile the log goes to. The job must provide it: a `storage.toml` under `$XDG_CONFIG_HOME/dash-forge/` naming a bucket, with the bucket's credentials in the job's environment (see [Bring your own storage](../docs/guides/bring-your-own-storage.md)). |
 | `public-log` | `false` | No longer has any effect (it warns): a private repository's check run cannot carry a log. |
 | `network` / `devnet-name` | `testnet` / empty | Which network the Forge repository is on. The default is testnet. Mainnet needs v0.3.0 or later; the v0.2.0 release knows testnet only. `devnet-name` (lowercase letters, digits, `-`) is required with `network: devnet` and ignored otherwise. |
-| `version` | `0.3.1` | The Dash Forge release to install: the release this action version was cut with. Empty: `install: 'true'` builds from source. |
+| `version` | `0.3.2` | The Dash Forge release to install: the release this action version was cut with. Empty: `install: 'true'` builds from source. |
 | `install` | `true` | `true`: install release `version` (the step warns, or fails with `fail-on-error`, if it is not published), or, with `version` empty, build `dg` from the action's own source. `source`: always build from source. `false`: use a `dg` already on `PATH`. A second use of the action in the same job reuses the installed `dg`. |
 | `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, which is trusted like any other cache of your repository: a workflow there that can write the default branch's caches (one that runs a pull request's code, say) could plant one. `false`: compile everything on every run. |
 | `fail-on-error` | `false` | `true`: fail the step when `dg` cannot be installed or the report cannot be written. |

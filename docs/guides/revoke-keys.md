@@ -85,7 +85,7 @@ Wallet keys this browser holds, besides the one it signs with, are disabled too,
 
 Disabling signing keys does not replace your encryption key. If a wallet sign-in or the web app may have copied keys, the encryption key may have been copied too. If you use private repositories, follow [replacing the encryption key](identity-and-keys.md#replacing-it-after-a-lost-device): `dg auth keys rotate --encryption`.
 
-Where settings sync (testnet, and mainnet in the web app and in `dg` after v0.3.1), a wallet sign-in also gives Forge the key that [syncs your settings](identity-and-keys.md#settings-that-follow-your-identity). Disabling keys doesn't take it back, and whoever has it can read your synced storage credentials: [rotate them](rotate-storage-credentials.md).
+Where settings sync (testnet, and mainnet in the web app and in `dg` from v0.3.2), a wallet sign-in also gives Forge the key that [syncs your settings](identity-and-keys.md#settings-that-follow-your-identity). Disabling keys doesn't take it back, and whoever has it can read your synced storage credentials: [rotate them](rotate-storage-credentials.md).
 
 ## If the master key or the 12 words may have been copied
 

@@ -1,7 +1,7 @@
 # Installing Dash Forge
 
-> **Current release: [v0.3.1](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.1)**
-> ([release notes](releases/v0.3.1.md), [changelog](../CHANGELOG.md)). It works on **mainnet** and
+> **Current release: [v0.3.2](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.2)**
+> ([release notes](releases/v0.3.2.md), [changelog](../CHANGELOG.md)). It works on **mainnet** and
 > **testnet** (protocol 15 since 2026-11-25). Testnet stays the default network: pass
 > `--network mainnet`, or sign in with `dg auth login --network mainnet` to make mainnet your
 > default. v0.3.0 works on mainnet but much of it fails on testnet; v0.2.0 works on testnet only. The version policy is in [VERSIONING.md](VERSIONING.md).
@@ -75,7 +75,7 @@ The script never runs `sudo`. You can control it with these environment variable
 
 | Variable | Default | Effect |
 |---|---|---|
-| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.3.1`; needed for a pre-release such as `0.4.0-rc.1`, which "latest" never picks |
+| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.3.2`; needed for a pre-release such as `0.4.0-rc.1`, which "latest" never picks |
 | `DASH_FORGE_INSTALL_DIR` | `~/.local/bin` | where the binaries go |
 | `DASH_FORGE_BINARIES` | `dg git-remote-dash` | add `forge-relay` / `forge-import` / `forge-runner` if you want them |
 | `DASH_FORGE_COMPLETIONS` | `0` | `1` installs bash, zsh and fish completions under `~/.local/share` and `~/.config/fish` |
@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/i
 Then check the install:
 
 ```sh
-dg --version      # dg 0.3.1 (<commit> <target>), then the Forge contracts built in, per network
+dg --version      # dg 0.3.2 (<commit> <target>), then the Forge contracts built in, per network
 dg doctor         # git, git-remote-dash (same version as dg), network, identity
 ```
 

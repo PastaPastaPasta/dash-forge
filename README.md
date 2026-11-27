@@ -8,7 +8,7 @@
 |---|---|
 | **Mainnet** | Live since 2026-11-24 at **[forge.dashhq.org](https://forge.dashhq.org)**. Real DASH. |
 | **Testnet** | Live at **[testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)**. Free test DASH; the network can be reset. |
-| **Binaries** | The latest release, [v0.3.1](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.1) (2026-11-26), works on **mainnet** and **testnet**. Testnet stays its default network ([release notes](docs/releases/v0.3.1.md)). |
+| **Binaries** | The latest release, [v0.3.2](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.2) (2026-11-27), works on **mainnet** and **testnet**. Testnet stays its default network ([release notes](docs/releases/v0.3.2.md)). |
 
 [Networks](docs/networks.md) has contract ids and history.
 
@@ -22,7 +22,7 @@ Then **New → Repository**, and **Settings → Storage** to choose where code i
 
 ## Use it from the terminal
 
-`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Install both from the latest release ([v0.3.1](docs/releases/v0.3.1.md); the script checks the release archive's SHA-256 and installs into `~/.local/bin`):
+`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Install both from the latest release ([v0.3.2](docs/releases/v0.3.2.md); the script checks the release archive's SHA-256 and installs into `~/.local/bin`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh

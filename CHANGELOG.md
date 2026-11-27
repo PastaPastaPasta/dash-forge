@@ -8,15 +8,19 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-27
+
 ### Added
 
-- **Move settings sync to a new key** ([#751](https://github.com/PastaPastaPasta/dash-forge/issues/751)). A site that tricks you into approving a wallet code gets your settings-sync key, and every wallet sign-in hands out the same one. **Settings → Storage → Move sync to a new key** and `dg storage sync move-key` make the next key from your recovery phrase, register it, disable the old one, and encrypt your synced settings and repository shares again under it; nothing of yours is deleted. Other devices add it once with **Add the new key** or `dg storage sync add-key`. After a move, wallet sign-ins no longer carry the sync key, and devices still holding the old one (released `dg` included) stop syncing until they add the new one ([guide](docs/guides/rotate-storage-credentials.md#if-a-site-may-have-your-settings-sync-key)).
-
-- **Settings that follow your identity, on mainnet.** forge-user is registered on mainnet (`hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK`, 2026-11-26, in contract group `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ`), so on mainnet as on testnet a wallet sign-in keeps your storage profiles (and in the web app your preferences) encrypted on Platform, and an owner can share a repository's storage with its maintainers. forge.dashhq.org has it from this change; `dg` from the first release after v0.3.1, which compiles the record in ([#750](https://github.com/PastaPastaPasta/dash-forge/pull/750)).
+- **Move settings sync to a new key** ([#751](https://github.com/PastaPastaPasta/dash-forge/issues/751), [#766](https://github.com/PastaPastaPasta/dash-forge/pull/766)). A site that tricks you into approving a wallet code gets your settings-sync key, and every wallet sign-in hands out the same one. **Settings → Storage → Move sync to a new key** and `dg storage sync move-key` make the next key from your recovery phrase, register it, disable the old one, and encrypt your synced settings and repository shares again under it; none of your settings or shares are deleted. Other devices add it once with **Add the new key** or `dg storage sync add-key`. After a move, wallet sign-ins no longer carry the sync key, and devices still holding the old one (released `dg` included) stop syncing until they add the new one ([guide](docs/guides/rotate-storage-credentials.md#if-a-site-may-have-your-settings-sync-key)).
+- **Settings that follow your identity, on mainnet.** forge-user is registered on mainnet (`hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK`, 2026-11-26, in contract group `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ`), so on mainnet as on testnet a wallet sign-in keeps your storage profiles (and in the web app your preferences) encrypted on Platform, and an owner can share a repository's storage with its maintainers. forge.dashhq.org has had it since [#750](https://github.com/PastaPastaPasta/dash-forge/pull/750); `dg` has it from this release, which compiles the record in. `--strict-group` on mainnet accepts the group again: v0.3.1 doesn't know forge-user and refuses it as an unknown member.
 - **`dg auth login --wallet --any-identity`.** A wallet renewal's code now says which identity it renews ("This code renews alice.dash …"), because only that identity's answer is read. `--any-identity` lets any identity in the wallet answer instead ([#764](https://github.com/PastaPastaPasta/dash-forge/pull/764)).
 
 ### Fixed
 
+- **`dg auth logout` keeps a copy of a master key** instead of deleting it: a `--full-key` file, or a key file dg can't open to check, is copied to `<name>.bak-<UTC time>` first, and logout prints where. A wallet sign-in on a computer whose OS keychain fails now keeps the settings-sync key in the sealed `.key.sync` file instead of not storing it ([#771](https://github.com/PastaPastaPasta/dash-forge/pull/771), [#768](https://github.com/PastaPastaPasta/dash-forge/issues/768)).
+- **The wallet sign-in's Details** say that an approval can also give the settings-sync key, which disabling keys doesn't take back, and link to moving sync to a new key ([#752](https://github.com/PastaPastaPasta/dash-forge/pull/752)).
+- **`git clone dash://…` of a name on the other network** now names both fixes: `dg … --network` and, for plain git, `git clone -c dash.network=<testnet|mainnet> dash://…`. On a fresh install, `dg doctor` and `dg storage list` no longer say "sign in with your wallet again" to someone who never has ([#765](https://github.com/PastaPastaPasta/dash-forge/pull/765)).
 - **A wallet renewal no longer asks about a master key it does not touch.** After a `--full-key` sign-in on a computer with a keychain, every wallet renewal asked about the master-key file and refused under `--yes`, though the wallet's key goes to the keychain. dg now asks only about what the store overwrites, says where the master key stays (`masterKeyKeptAt` in `--json`), and, when the keychain refuses the key, never falls back over a key file holding a master key or one it cannot open ([#764](https://github.com/PastaPastaPasta/dash-forge/pull/764)).
 
 ## [0.3.1] - 2026-11-26
@@ -242,7 +246,8 @@ for networks, installation, verification and known limitations.
 
 See [Known limitations](docs/releases/v0.1.0.md#known-limitations) in the release notes.
 
-[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/PastaPastaPasta/dash-forge/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.2
 [0.3.1]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.1
 [0.3.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.2.0

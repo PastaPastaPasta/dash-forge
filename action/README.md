@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge is live on **mainnet** (since 2026-11-24, [forge.dashhq.org](https://forge.dashhq.org)) and on **testnet** ([testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)). The Action's default network is still testnet; to mirror to mainnet, set `network: mainnet` with a runner key of a mainnet identity. Pin a release tag: at `@v0.3.1` the Action's `version` defaults to `0.3.1`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
+> **Status.** Forge is live on **mainnet** (since 2026-11-24, [forge.dashhq.org](https://forge.dashhq.org)) and on **testnet** ([testnet-forge.dashhq.org](https://testnet-forge.dashhq.org)). The Action's default network is still testnet; to mirror to mainnet, set `network: mainnet` with a runner key of a mainnet identity. Pin a release tag: at `@v0.3.2` the Action's `version` defaults to `0.3.2`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
 
 ## Quick start
 
@@ -32,7 +32,7 @@ jobs:
     permissions: { contents: read, issues: read, pull-requests: read }
     steps:
       # A release tag: installs that release's checksum-verified binaries, which run with your key.
-      - uses: PastaPastaPasta/dash-forge/action@v0.3.1
+      - uses: PastaPastaPasta/dash-forge/action@v0.3.2
         with:
           repo: dash://<owner identity id>/project
           network: testnet               # the default; or mainnet
@@ -89,7 +89,7 @@ This is opt-in, because it lets anyone spend your DASH. Anyone with a GitHub acc
 | `fail-on-partial` | `false` | `true`: fail the step when some items were skipped (`status: partial`). By default that is a warning, because the next run retries them. |
 | `github-repo` | `${{ github.repository }}` | The GitHub repository to mirror. |
 | `i-have-the-rights` | *(empty)* | Your acknowledgement that you may publish the mirrored repository's content permanently on Dash Platform (see [Rights](#rights-licence-and-git-lfs)). Empty: acknowledged when `github-repo` belongs to the account that owns the workflow's repository, so mirroring your own repository needs nothing. `true`: you may publish it; needed for a repository of another owner. `false`: never; a real run refuses. |
-| `version` | `0.3.1` | The Dash Forge release this Action version pins: the one it was cut with. Empty: `install: 'true'` builds from source. |
+| `version` | `0.3.2` | The Dash Forge release this Action version pins: the one it was cut with. Empty: `install: 'true'` builds from source. |
 | `install` | `true` | `true`: install release `version` with [`install.sh`](../install.sh) (the step fails if that release is not published), or, with `version` empty, build from source as `source` does. `source`: build `dg`, `git-remote-dash` and `forge-import` from the Action's own source, the ref after `@` in `uses:` (needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on Linux x86_64 and arm64). `false`: use the binaries already on `PATH`. |
 | `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, keyed by `Cargo.lock` and the toolchain. `false`: compile everything on every run. |
 | `state-cache` | `true` | Keep the incremental sync state in `actions/cache`, so a run looks only at what changed on GitHub since the last one. This is only for speed: without the cache a run re-examines everything and still writes nothing that is already there. |
